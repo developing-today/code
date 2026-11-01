@@ -232,3 +232,44 @@ func TestMissingEntriesAreKeptUnlessAskedOtherwise(t *testing.T) {
 		t.Errorf("dropped when asked: %+v", pruned.Entries)
 	}
 }
+
+func TestOnlyBareTildeAndTildeSlashExpandHome(t *testing.T) {
+	// #1702, rule pinned by triage task 1921: only a bare ~ and ~/...
+	// name the caller's home. A ~name entry is not expanded -- the
+	// tilde survives as a literal first segment of an ordinary
+	// relative entry -- because resolving it under the caller's home
+	// silently searches a lookalike directory (and invents one for
+	// users that do not exist), while a passwd lookup would answer
+	// differently for the CLI user and the daemon user.
+	t.Setenv("HOME", "/home/testhome")
+	got := searchpath.Resolve([]string{
+		"~", "~/scripts", "~alice/scripts", "~nosuchuser/scripts", "~scratch",
+	}, null, searchpath.Options{Dir: "/w"})
+	want := []string{
+		"/home/testhome",
+		"/home/testhome/scripts",
+		"/w/~alice/scripts",
+		"/w/~nosuchuser/scripts",
+		"/w/~scratch",
+	}
+	if len(got.Entries) != len(want) {
+		t.Fatalf("entries = %+v", got.Entries)
+	}
+	for i, w := range want {
+		if got.Entries[i].Path != w {
+			t.Errorf("entry %d = %q, want %q", i, got.Entries[i].Path, w)
+		}
+	}
+	// Describe renders what Find/List actually search, so a reader
+	// can see the literal ~name directory instead of a rewritten
+	// path under the caller's home.
+	d := got.Describe()
+	for _, w := range want {
+		if !strings.Contains(d, w) {
+			t.Errorf("Describe() does not mention %q:\n%s", w, d)
+		}
+	}
+	if strings.Contains(d, "/home/testhome/alice") || strings.Contains(d, "/home/testhome/scratch") {
+		t.Errorf("Describe() still rewrites a ~name entry under the caller's home:\n%s", d)
+	}
+}

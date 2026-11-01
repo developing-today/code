@@ -331,11 +331,15 @@ jobs:
             echo
             echo "The workflow file under .github/workflows/ (flake-inputs-update.yml) is where to reproduce it. Diagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains \"Fixes #<tracking issue number>\", so the tracking issue closes when the fix lands and a later successful update run confirms it. Run the relevant checks before opening the PR. Merge only if you are reasonably certain the PR is correct; otherwise leave it open and state your confidence and what a human should check. If the root cause belongs to a different repository (for example the upstream project this update pulls in), say exactly that on the tracking issue instead of opening a PR here."
           } > "${prompt_file}"
+          # Runtime-generated delimiter (#2712): the prompt is built from
+          # failure-issue content, so a fixed delimiter line inside it would
+          # truncate this output and corrupt the rest.
+          prompt_delim="PM_DISPATCH_PROMPT_EOF_$(openssl rand -hex 8)"
           {
             echo "title=${title}"
-            echo "prompt<<PM_DISPATCH_PROMPT_EOF"
+            echo "prompt<<$prompt_delim"
             cat "${prompt_file}"
-            echo "PM_DISPATCH_PROMPT_EOF"
+            echo "$prompt_delim"
           } >> "$GITHUB_OUTPUT"
 
       # No open tracking issue: the starter creates the one tracking

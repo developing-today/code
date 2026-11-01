@@ -363,3 +363,206 @@ describe("overlayTursoUsage (#1049)", () => {
     ).toBe(arr);
   });
 });
+
+describe("per-credential quota rows (#1113)", () => {
+  const twoLogins = (aPct: number, bPct: number, bMeasured = iso(2 * 60_000)) =>
+    file([
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialLabel: "OpenAI",
+        windows: [win("weekly", aPct, iso(5 * 60_000))],
+      }),
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-second",
+        credentialLabel: "OpenAI 2",
+        measuredAt: bMeasured,
+        windows: [win("weekly", bPct, bMeasured)],
+      }),
+    ]);
+
+  test("two logins with genuinely differing quotas split into rows; headline stays the newest read", () => {
+    const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.windows.map((w) => w.percent)).toEqual([80]);
+    expect(pool.credentials).toHaveLength(2);
+    const byLabel = new Map(pool.credentials!.map((c) => [c.label, c]));
+    expect(byLabel.get("OpenAI")!.windows.map((w) => w.percent)).toEqual([30]);
+    expect(byLabel.get("OpenAI 2")!.windows.map((w) => w.percent)).toEqual([80]);
+    expect(byLabel.get("OpenAI 2")!.freshness.state).toBe("ok");
+  });
+
+  test("two logins sharing one pool read do not split", () => {
+    const out = overlayQuotaCurrent(baseView(), twoLogins(42, 42), NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.credentials).toBeUndefined();
+  });
+
+  test("a credential whose newest read is an error surfaces as an error row beside the ok one", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-second",
+          credentialLabel: "OpenAI 2",
+          state: "error",
+          measuredAt: iso(1 * 60_000),
+          error: "Sign in with ChatGPT only",
+        }),
+      ]),
+      NOW,
+    );
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.windows.map((w) => w.percent)).toEqual([30]); // headline from the ok login
+    const err = pool.credentials!.find((c) => c.label === "OpenAI 2")!;
+    expect(err.freshness.state).toBe("error");
+    expect(err.freshness.error).toContain("Sign in with ChatGPT");
+    expect(err.windows).toEqual([]);
+  });
+
+  test("a single credential never produces rows", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+  });
+
+  test("pool card renders one line per credential row", async () => {
+    const { renderQuota } = await import("../src/render.ts");
+    const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
+    const prov = {
+      board: "", roadmap: "", items: "", comments: "", quota: "", usage: "",
+      attention: "", orchestration: "", dns: "", registry: "", aa: "",
+    };
+    const html = renderQuota(out, prov);
+    expect(html).toContain("credential OpenAI:");
+    expect(html).toContain("credential OpenAI 2:");
+    expect(html).toContain("weekly 80%");
+  });
+});
+
+describe("per-credential rows: Codex findings on PR #2978", () => {
+  test("distinct credentialIds with identical labels still split when quotas differ", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialId: "cred-a",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialId: "cred-b",
+          credentialLabel: "OpenAI",
+          measuredAt: iso(2 * 60_000),
+          windows: [win("weekly", 80, iso(2 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.credentials).toHaveLength(2);
+    expect(pool.credentials!.map((c) => c.credentialId).sort()).toEqual(["cred-a", "cred-b"]);
+    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => a - b)).toEqual([30, 80]);
+  });
+
+  test("reset drift under the tolerance does not split a shared read", () => {
+    const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialId: cred,
+        credentialLabel: label,
+        measuredAt,
+        windows: [{ ...win("weekly", 42, measuredAt), resetsAt }],
+      });
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        mk("cred-a", "OpenAI", "2026-10-27T12:00:00.000Z", iso(5 * 60_000)),
+        mk("cred-b", "OpenAI 2", "2026-10-27T12:00:00.700Z", iso(2 * 60_000)),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+  });
+
+  test("resets genuinely apart still split even at equal percent", () => {
+    const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialId: cred,
+        credentialLabel: label,
+        measuredAt,
+        windows: [{ ...win("weekly", 42, measuredAt), resetsAt }],
+      });
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        mk("cred-a", "OpenAI", "2026-10-27T12:00:00.000Z", iso(5 * 60_000)),
+        mk("cred-b", "OpenAI 2", "2026-10-27T18:00:00.000Z", iso(2 * 60_000)),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toHaveLength(2);
+  });
+});
+
+describe("stale-path newest pick is finite-gated (#2253)", () => {
+  const staleRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
+  const garbageRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
+
+  test("a garbage measuredAt listed first does not shadow the real stale read", () => {
+    const out = overlayQuotaCurrent(baseView(), file([garbageRead(), staleRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a garbage measuredAt listed last gives the same winner (order independence)", () => {
+    const out = overlayQuotaCurrent(baseView(), file([staleRead(), garbageRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a +30d future entry does not outrank a real 1h-old stale read", () => {
+    const future = entry({
+      serviceId: "meta:high-usage",
+      measuredAt: new Date(NOW.getTime() + 30 * 86_400_000).toISOString(),
+      source: "future-src",
+      windows: [],
+    });
+    const real = entry({ serviceId: "meta:high-usage", measuredAt: iso(3_600_000), source: "real-src", windows: [] });
+    const out = overlayQuotaCurrent(baseView(), file([future, real]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("parseQuotaCurrent still accepts a document carrying a garbage entry (lenient parse)", () => {
+    const doc = file([garbageRead(), staleRead()]);
+    expect(parseQuotaCurrent(JSON.parse(JSON.stringify(doc)))).not.toBeNull();
+  });
+});

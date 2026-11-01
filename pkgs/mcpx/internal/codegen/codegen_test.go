@@ -122,6 +122,25 @@ func TestAllOfBecomesIntersection(t *testing.T) {
 	}
 }
 
+// The effective schema for a ruled tool (#1986) keeps the upstream
+// properties and required list at the root and adds the rules under
+// allOf. The rendered type must keep the root fields: dropping them
+// would hide required arguments (path, owner) behind the one field a
+// rule happens to constrain.
+func TestAllOfKeepsSiblingRootProperties(t *testing.T) {
+	got := typeOf(t, `{
+	  "type":"object",
+	  "properties":{"path":{"type":"string"},"owner":{"type":"string"}},
+	  "required":["path","owner"],
+	  "allOf":[{"type":"object","properties":{"owner":{"enum":["my-org"]}},"required":["owner"]}]
+	}`)
+	for _, want := range []string{"path: string;", "owner: string;", `owner: "my-org";`, "&"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered type %q missing %q", got, want)
+		}
+	}
+}
+
 func TestAdditionalPropertiesBecomesIndexSignature(t *testing.T) {
 	got := typeOf(t, `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"number"}}`)
 	if !strings.Contains(got, "[key: string]: number;") {
@@ -362,5 +381,25 @@ func TestOutputSchemaTypeGeneration(t *testing.T) {
 	mod := codegen.Module([]codegen.Namespace{n}, "http://127.0.0.1:1234", "sess-1")
 	if !strings.Contains(mod, "Promise<Attached<{") || !strings.Contains(mod, "export type Attached<T, R = RawToolResult> = T & { raw: R };") {
 		t.Fatalf("module missing typed return signature or Attached export:\n%s", mod)
+	}
+}
+
+// Argument rules (#1986) carry their required lists under allOf (via
+// EffectiveSchema $defs copies), not at the root: a rule that requires
+// an argument must still make the generated parameter mandatory, or
+// generated clients pass strict type checking for calls the gate
+// necessarily rejects (Codex P2 on PR #2855, round 5).
+func TestArgsTypeMarksRuleRequiredAsMandatory(t *testing.T) {
+	_, optional := codegen.ArgsTypeFor(json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"allOf":[{"required":["a"]}]}`), "")
+	if optional {
+		t.Fatal("an allOf member requiring a prop must demand the argument object")
+	}
+	_, optional = codegen.ArgsTypeFor(json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"$defs":{"argumentrule0$doc":{"type":"object","required":["a"]}},"allOf":[{"$ref":"#/$defs/argumentrule0$doc"}]}`), "")
+	if optional {
+		t.Fatal("a $ref'd rule requiring a prop must demand the argument object")
+	}
+	_, optional = codegen.ArgsTypeFor(json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}},"anyOf":[{"required":["a"]}]}`), "")
+	if !optional {
+		t.Fatal("an anyOf branch requiring a prop must not demand the argument object")
 	}
 }

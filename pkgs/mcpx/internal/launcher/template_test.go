@@ -100,6 +100,121 @@ func TestAMisspelledPlaceholderIsCaughtWithSuggestions(t *testing.T) {
 	}
 }
 
+func TestAMisspelledUserDefinedPlaceholderIsCaught(t *testing.T) {
+	// #1681 BUG-A: the near-miss targets used to be only the built-ins, so
+	// a typo of a name the user defined themselves was never flagged.
+	_, err := launcher.Expand(tmpl("@bannner"), launcher.Fill{
+		launcher.Entry: "E", "banner": "BANNER;",
+	}, launcher.Options{})
+	if err == nil {
+		t.Fatal("a near-miss of a user-defined placeholder should be reported")
+	}
+	if !strings.Contains(err.Error(), "@bannner") || !strings.Contains(err.Error(), "@banner") {
+		t.Errorf("the message should name both the typo and the options: %v", err)
+	}
+}
+
+func TestAMisspellingInsideAFillBodyIsCaught(t *testing.T) {
+	// #1681 BUG-B: only the template text used to be scanned, so a typo
+	// inside a fill body reached the generated launcher verbatim.
+	_, err := launcher.Expand(tmpl("@wrap"), launcher.Fill{
+		launcher.Entry: "RUN();", "wrap": "try { @entyr } catch {}",
+	}, launcher.Options{})
+	if err == nil {
+		t.Fatal("a near-miss inside a fill body should be reported")
+	}
+	if !strings.Contains(err.Error(), "@entyr") {
+		t.Errorf("the message should name the typo: %v", err)
+	}
+}
+
+func TestAMisspellingInsideADefinitionBodyIsCaught(t *testing.T) {
+	// Definition bodies and their parameter names are user-defined text
+	// too: a typo of a parameter inside its own definition is the same
+	// failure as one in a fill.
+	_, err := launcher.Expand(tmpl("@wrap"), launcher.Fill{
+		launcher.Entry: "RUN();",
+	}, launcher.Options{Defs: []launcher.Definition{
+		{Name: "wrap", Params: []string{"message"}, Body: "log(@mesage);"},
+	}})
+	if err == nil {
+		t.Fatal("a near-miss of a definition parameter should be reported")
+	}
+	if !strings.Contains(err.Error(), "@mesage") {
+		t.Errorf("the message should name the typo: %v", err)
+	}
+}
+
+func TestImplicitArgumentPlaceholdersAreNotMisspellings(t *testing.T) {
+	// Codex P2 on PR #2959: withArgs binds @args and the positional
+	// @1, @2, ... inside a definition body whether or not the
+	// declaration named its parameters. A parameter named arg makes
+	// @args a near miss, and one named x left @1 flagged, so valid
+	// parameterized definitions were refused.
+	for _, body := range []string{"run(@args);", "run(@1);"} {
+		_, err := launcher.Expand(tmpl("@wrap"), launcher.Fill{
+			launcher.Entry: "RUN();",
+		}, launcher.Options{Defs: []launcher.Definition{
+			{Name: "wrap", Params: []string{"arg", "x"}, Body: body},
+		}})
+		if err != nil {
+			t.Errorf("body %q should expand: %v", body, err)
+		}
+	}
+}
+
+func TestLiteralAtContentInAFillIsNotAMisspelling(t *testing.T) {
+	// Codex P2 on PR #2959: fills carry literal @-content -- a scoped
+	// package in an import, a quoted script path in the generated
+	// header. sentry is one edit from entry and entrypoints starts
+	// with entry, so both were refused as misspellings even though
+	// the @-names sit inside quoted strings, as data.
+	got, err := launcher.Expand(tmpl("@before @header"), launcher.Fill{
+		launcher.Entry:  "RUN();",
+		launcher.Before: `await import("@sentry/node");`,
+		launcher.Header: `const scriptPath = "/work/@entrypoints/foo.ts";`,
+	}, launcher.Options{})
+	if err != nil {
+		t.Fatalf("literal @-content in fills should not trip the checker: %v", err)
+	}
+	if !strings.Contains(got, `"@sentry/node"`) || !strings.Contains(got, `@entrypoints/foo.ts`) {
+		t.Errorf("the literal content should survive verbatim: %q", got)
+	}
+}
+
+func TestDefinitionParametersDoNotExemptOtherTexts(t *testing.T) {
+	// Codex P2 on PR #2959: parameters bind only inside their own
+	// definition body. An unused definition declaring an entyr
+	// parameter must not silence the typo diagnostic for @entyr in
+	// the template itself.
+	_, err := launcher.Expand(tmpl("@entyr"), launcher.Fill{
+		launcher.Entry: "RUN();",
+	}, launcher.Options{Defs: []launcher.Definition{
+		{Name: "unused", Params: []string{"entyr"}, Body: "noop();"},
+	}})
+	if err == nil {
+		t.Fatal("a parameter of an unrelated definition should not exempt a template typo")
+	}
+	if !strings.Contains(err.Error(), "@entyr") {
+		t.Errorf("the message should name the typo: %v", err)
+	}
+}
+
+func TestAnOrdinaryAtSignInAFillBodyIsLeftAlone(t *testing.T) {
+	// Widening the scan to bodies must not widen it past the near-miss
+	// bar: generated fills legitimately contain emails and decorators.
+	got, err := launcher.Expand(tmpl("@wrap"), launcher.Fill{
+		launcher.Entry: "RUN();",
+		"wrap":         `const email = "a@b.com"; // @Component({})`,
+	}, launcher.Options{})
+	if err != nil {
+		t.Fatalf("an ordinary @word in a fill body should not trip the checker: %v", err)
+	}
+	if !strings.Contains(got, "a@b.com") {
+		t.Errorf("the body should survive verbatim: %q", got)
+	}
+}
+
 func TestAnOrdinaryAtSignIsLeftAlone(t *testing.T) {
 	// The cost of a false positive is refusing a valid launcher.
 	for _, text := range []string{

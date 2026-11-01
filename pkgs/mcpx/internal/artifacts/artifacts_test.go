@@ -1,6 +1,7 @@
 package artifacts_test
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	_ "modernc.org/sqlite"
 )
 
 func open(t *testing.T, opts artifacts.Options) *artifacts.Store {
@@ -136,7 +138,7 @@ func TestQuotaRefusesNewContentButNotDuplicates(t *testing.T) {
 	}
 }
 
-func TestPutFileHardlinksRatherThanCopies(t *testing.T) {
+func TestPutFileCopiesRatherThanLinks(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "shot.png")
 	if err := os.WriteFile(src, []byte("PNGDATA"), 0o600); err != nil {
@@ -150,8 +152,104 @@ func TestPutFileHardlinksRatherThanCopies(t *testing.T) {
 	if m.Name != "shot.png" {
 		t.Errorf("the name should default to the file's, got %q", m.Name)
 	}
-	if !sameInode(t, src, s.BodyPath(m)) {
-		t.Error("a file on the same filesystem should be linked, not copied")
+	// #1660: the blob must never share an inode with the source file,
+	// or rewriting the source in place would rewrite the stored bytes.
+	if sameInode(t, src, s.BodyPath(m)) {
+		t.Error("the blob should be a copy with its own inode, not a link to the source")
+	}
+}
+
+// #1660 regression: rewriting a PutFile source in place afterwards
+// must leave the stored bytes — and their agreement with the
+// registered hash — untouched.
+func TestPutFileSourceRewrittenInPlaceLeavesStoredBytesAlone(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(src, []byte("PNGDATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := open(t, artifacts.Options{})
+	m, err := s.PutFile(src, artifacts.PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("FORGED!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, got, err := s.Bytes(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "PNGDATA" {
+		t.Errorf("stored bytes followed the source rewrite: %q", body)
+	}
+	if got.SHA256 != m.SHA256 || int64(len(body)) != got.Size {
+		t.Errorf("served bytes disagree with the registration: sha %s vs %s, size %d vs %d",
+			got.SHA256, m.SHA256, len(body), got.Size)
+	}
+}
+
+// #1660 regression: editing an exported copy in place must leave the
+// stored bytes untouched — the export is a copy, not a link.
+func TestExportEditedInPlaceLeavesStoredBytesAlone(t *testing.T) {
+	s := open(t, artifacts.Options{})
+	m, err := s.Put(strings.NewReader("PNGDATA"), artifacts.PutOptions{Name: "shot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	dest, err := s.Export(m, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameInode(t, dest, s.BodyPath(m)) {
+		t.Fatal("the export should be a copy with its own inode, not a link to the blob")
+	}
+	if err := os.WriteFile(dest, []byte("FORGED!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, _, err := s.Bytes(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "PNGDATA" {
+		t.Errorf("stored bytes followed the export edit: %q", body)
+	}
+}
+
+// #1660 regression: after a mutation attempt on the source, putting
+// the original content again still serves the original bytes (the
+// content address was never poisoned).
+func TestRePutOfOriginalContentAfterMutationServesOriginal(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(src, []byte("PNGDATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := open(t, artifacts.Options{})
+	first, err := s.PutFile(src, artifacts.PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("FORGED!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutFile(src, artifacts.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Put(strings.NewReader("PNGDATA"), artifacts.PutOptions{Name: "shot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.SHA256 != first.SHA256 {
+		t.Fatalf("the original content should keep its address: %s vs %s", again.SHA256, first.SHA256)
+	}
+	body, _, err := s.Bytes(again.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "PNGDATA" {
+		t.Errorf("the original registration serves %q, not the original bytes", body)
 	}
 }
 
@@ -247,5 +345,163 @@ func TestMissingArtifactSaysItMayHaveExpired(t *testing.T) {
 	_, err := s.Get("art-nope")
 	if err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Errorf("want an expiry hint, got %v", err)
+	}
+}
+
+// --- Touch-on-read opt-in (#2548, decision 0006) ---
+
+// With idleTtl unset, an item read changes nothing: expiry stays at
+// put + ttl exactly, and lastTouched stays at creation.
+func TestItemReadDoesNotRenewByDefault(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Expires.UnixMilli() != m.Expires.UnixMilli() {
+		t.Errorf("default expiry must not move on read: put %v, read %v", m.Expires, got.Expires)
+	}
+	if got.LastTouched.UnixMilli() != m.Created.UnixMilli() {
+		t.Errorf("lastTouched should stay at creation when the opt-in is off, got %v", got.LastTouched)
+	}
+	if got.ExpiresAt != got.Expires {
+		t.Errorf("expiresAt should mirror expires, got %v vs %v", got.ExpiresAt, got.Expires)
+	}
+	if got.TTLRemainingMs <= 0 || got.TTLRemainingMs > int64(time.Hour/time.Millisecond) {
+		t.Errorf("ttlRemainingMs should be within the TTL, got %d", got.TTLRemainingMs)
+	}
+}
+
+// With idleTtl set, an item read renews: expires becomes
+// lastTouched + idleTtl (past the absolute put + ttl), and the
+// renewal is persisted, not just rendered.
+func TestItemReadRenewsWhenIdleTtlSet(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour, IdleTTL: 2 * time.Hour, MaxAge: 24 * time.Hour})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Expires.After(m.Expires) {
+		t.Fatalf("read should renew past the absolute expiry %v, got %v", m.Expires, got.Expires)
+	}
+	want := got.LastTouched.Add(2 * time.Hour)
+	if got.Expires.Sub(want) > time.Second || want.Sub(got.Expires) > time.Second {
+		t.Errorf("expires should be lastTouched + idleTtl (%v), got %v", want, got.Expires)
+	}
+	if got.LastTouched.Before(before.Add(-time.Second)) || got.LastTouched.After(time.Now().Add(time.Second)) {
+		t.Errorf("lastTouched should be the read time, got %v", got.LastTouched)
+	}
+	// A collection read afterwards must show the renewed deadline
+	// without renewing it further.
+	list, err := s.List(artifacts.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Expires.UnixMilli() != got.Expires.UnixMilli() {
+		t.Errorf("renewal should persist: list shows %+v, get showed %v", list, got.Expires)
+	}
+	if list[0].LastTouched.UnixMilli() != got.LastTouched.UnixMilli() {
+		t.Errorf("list must not touch: lastTouched moved from %v to %v", got.LastTouched, list[0].LastTouched)
+	}
+}
+
+// Renewal is bounded: however often an artifact is read, its deadline
+// never passes created + maxAge.
+func TestRenewalIsBoundedByMaxAge(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour, IdleTTL: 2 * time.Hour, MaxAge: 90 * time.Minute})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ceiling := m.Created.Add(90 * time.Minute)
+	if got.Expires.UnixMilli() != ceiling.UnixMilli() {
+		t.Errorf("expires should be clamped to created + maxAge (%v), got %v", ceiling, got.Expires)
+	}
+}
+
+// Touch never shortens an explicit per-artifact lifetime, and never
+// revives an expired artifact.
+func TestTouchNeverShortensOrRevives(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour, IdleTTL: time.Minute, MaxAge: 24 * time.Hour})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt", TTL: 3 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Expires.UnixMilli() != m.Expires.UnixMilli() {
+		t.Errorf("explicit lifetime should stand: put %v, read %v", m.Expires, got.Expires)
+	}
+
+	short := open(t, artifacts.Options{TTL: time.Millisecond, IdleTTL: time.Hour, MaxAge: 24 * time.Hour})
+	dead, err := short.Put(strings.NewReader("bye"), artifacts.PutOptions{Name: "b.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	got, err = short.Get(dead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Expires.UnixMilli() != dead.Expires.UnixMilli() {
+		t.Errorf("an expired artifact must not be revived: was %v, read shows %v", dead.Expires, got.Expires)
+	}
+	n, err := short.GC(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("GC should still collect the expired artifact, collected %d", n)
+	}
+}
+
+// A store written before the touch-on-read opt-in has last_touched = 0
+// on its rows. That sentinel must render as the creation time, not as
+// 1970: time.UnixMilli(0) is not the zero Time.
+func TestMigratedRowsReportCreationAsLastTouched(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, artifacts.Options{Dir: dir})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE artifacts SET last_touched = 0 WHERE id = ?`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2 := open(t, artifacts.Options{Dir: dir})
+	list, err := s2.List(artifacts.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("want 1 artifact, got %d", len(list))
+	}
+	if list[0].LastTouched.UnixMilli() != m.Created.UnixMilli() {
+		t.Errorf("migrated row lastTouched = %v, want creation %v", list[0].LastTouched, m.Created)
 	}
 }

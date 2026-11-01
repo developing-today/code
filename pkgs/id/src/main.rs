@@ -191,6 +191,7 @@ async fn main() -> Result<()> {
         }) => {
             cmd_serve(ServeOptions {
                 ephemeral,
+                groups_log: cli.groups_log,
                 no_relay,
                 no_gossip,
                 web,

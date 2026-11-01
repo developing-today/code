@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -395,6 +394,14 @@ type askReq struct {
 	Relay *CallRelay `json:"relay,omitempty"`
 }
 
+// askRequestor names who an ask-seam task counts against: the caller's
+// session in the ASK role — not the caller role the MCP wrapper
+// charges, for the two-ledgers reason recorded on tasks.Requestor.
+// An anonymous caller's empty identity is the anonymous ask bucket.
+func askRequestor(cc config.CallContext) tasks.Requestor {
+	return tasks.Ask(cc.SessionID)
+}
+
 func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	var req askReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, defaults.HTTPCallBodyLimit)).Decode(&req); err != nil {
@@ -431,7 +438,12 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	// arrives for a call nothing has heard of.
 	ready := make(chan string, 1)
 	caps := withClientCaps(context.Background(), r)
-	t := s.taskStore().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+	// The /v1/ask ttl is the interruptible call's lifetime (proto.askTTL
+	// by default), not just retention: it bounds the work itself, which
+	// internal/pool's budget treats as the outer bound while upstream
+	// working time pauses for questions. StartWithDeadline keeps that
+	// bound explicit now that Start's ttl is retention-only (#1653).
+	t, terr := s.taskStore().StartWithDeadline(askRequestor(cc), ttl, time.Duration(ttl)*time.Millisecond, func(ctx context.Context) (any, *tasks.Fault) {
 		id := <-ready
 		start := time.Now()
 		// The task outlives this request, so the header is carried over
@@ -473,6 +485,11 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 		return map[string]any{"result": raw, "kind": req.Kind, "server": req.Server,
 			"durationMs": time.Since(start).Milliseconds()}, nil
 	})
+	if terr != nil {
+		// The store's per-requestor cap (protoTasks.maxPerRequestor).
+		writeErr(w, http.StatusTooManyRequests, terr)
+		return
+	}
 	ready <- t.TaskID
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"callId": t.TaskID, "task": t})
@@ -512,9 +529,10 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 // or a delay somebody notices, and this is neither.
 func (s *Server) handleAskPoll(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	wait := defaults.ProtoAskPoll
-	if ms, err := strconv.Atoi(r.URL.Query().Get("waitMs")); err == nil && ms > 0 {
-		wait = time.Duration(ms) * time.Millisecond
+	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("proto.askPoll"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	t, known := s.taskStore().Get(id)
 	if !known {

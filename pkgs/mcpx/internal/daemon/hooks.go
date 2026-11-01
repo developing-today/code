@@ -51,6 +51,16 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 			if k != "" {
 				r.publish(events.Event{Kind: k, Server: server})
 			}
+			// A changed catalog can orphan an argument rule (#1986):
+			// note that this server's rules need a re-check. The
+			// check itself is deferred to the next genuine catalog
+			// observation -- refreshing here would acquire a pool
+			// instance solely for a diagnostic and can evict a
+			// session-scoped caller's live process. See
+			// noteDeadRuleRecheck.
+			if kind == "tools" {
+				r.noteDeadRuleRecheck(server)
+			}
 		},
 		OnResourceUpdated: func(server, uri string) {
 			r.publish(events.Event{Kind: events.ResourceUpdated, Server: server, URI: uri})

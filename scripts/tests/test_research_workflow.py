@@ -712,6 +712,33 @@ class ResearchWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("C001", output["ready"])
 
+    def test_frontier_treats_merged_concept_as_complete(self):
+        package = self.init()
+        state = self.state(package)
+        # C001 is the prerequisite for C002. Once C001 reaches the
+        # documented merged status it must classify as complete
+        # (#3212): it is not re-reported ready itself, and C002
+        # unblocks instead of staying blocked on a finished prereq.
+        state["concepts"][0]["status"] = "merged"
+        self.write_state(package, state)
+        # A complete concept may not keep scaffold placeholders
+        # (validation rejects them), so fill C001's document the way a
+        # genuinely merged concept's would be.
+        document = package / state["concepts"][0]["path"]
+        document.write_bytes(
+            document.read_bytes()
+            .replace(b"Not yet explored.", b"Explored and merged.")
+            .replace(b"Pending: research", b"Research merged")
+            .replace(b"TODO", b"DONE")
+            .replace(b"TBD", b"DONE")
+        )
+        output = json.loads(
+            self.cli("status", "--package", package, "--repo-root", self.root).stdout
+        )
+        self.assertNotIn("C001", output["ready"])
+        self.assertIn("C002", output["ready"])
+        self.assertNotIn("C002", output["blocked"])
+
     def test_concept_title_rejects_newlines(self):
         outline = {
             "title": "Title",

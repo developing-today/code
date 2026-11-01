@@ -33,8 +33,12 @@ Body:
   "prompt": "Fix the flaky widget test", // required
   "title": "fix(widget): flaky test", // optional; default: prompt's first line
   "model": "opencode-go/gpt-5.6-luna", // optional "provider/model" or {"providerID","id"}
-  "directory": "/home/user/git/code", // optional; default: the repo's laptop primary
-  "priority": "high", // optional: 10-90 or critical|high|normal|low → 10/20/40/70
+  "directory": "/home/user/git/code", // optional; default: the repo's laptop primary.
+  // OIDC callers may only omit it or repeat the repo's primary — anything
+  // else is rejected (400) before any side effect (issue #2903).
+  // Bearer callers keep the free-form directory (deliberate: the bearer
+  // secret lives on the laptop, so whoever holds it already has the run).
+  "priority": "high", // optional: integer 10-90 (number or decimal string), or critical|high|normal|low → 10/20/40/70
   "issue": true, // optional; default true
   "wait": true, // optional; default true
 }
@@ -42,6 +46,9 @@ Body:
 
 Flow:
 
+0. Scope the directory: OIDC callers must omit `directory` or repeat
+   the repo's laptop primary clone — anything else is a 400 with no
+   issue, task, or session created (issue #2903).
 1. Create the tracking GitHub issue (`source/dispatch` label; body = the
    prompt + a dispatch footer). Skipped with a `warnings` entry for
    dezren39/nix, where the pm-stack GitHub App is not installed.
@@ -62,13 +69,15 @@ Repo <repo>` so the session knows its tracking ids.
 Responses: `wait: true` → `201 {task_id, session_id, issue_number|null,
 queue, status: "claimed"}` after the launch. `wait: false` → `202
 {task_id, issue_number|null, status: "launching"}` right after the
-enqueue; steps 3–5 finish asynchronously and any failure is PATCHed onto
-the task's `last_error`.
+enqueue; steps 3–5 finish asynchronously.
 
-If the launch fails after the enqueue (wait: true), the task is
-cancelled via `cancel_repo_task`, the failure is noted on the issue, and
-the response is `502 {task_id, error}` — a task is never left `queued`
-for a session that launched, nor `claimed` without a session id.
+If the launch fails after the enqueue, the task is cancelled via
+`cancel_repo_task` and the failure is noted on the issue — the same
+handling for both wait modes. For `wait: true` the response is
+`502 {task_id, error}`; for `wait: false` the `202` has already been
+returned, so the cancellation and the issue note are the record — a
+task is never left `queued` for a session that did not launch, nor
+`claimed` without a session id.
 
 ### `POST /v1/tasks` — enqueue only
 
@@ -132,6 +141,12 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
   the claim need not equal the request body's `repo`. Repos outside
   the allowlist can neither call nor be targeted. Bearer callers are
   bound only by the allowlist on the target.
+  **Directory scoping (issue #2903):** OIDC callers may only omit
+  `directory` or repeat the target repo's laptop primary clone — any
+  other value is rejected with 400 before the issue, task, or session
+  is created. Bearer callers keep the free-form directory as a
+  deliberate choice: the static secret lives on the laptop, so its
+  holder already has the run the directory would grant.
   See `examples/dispatch-workflow.yml`.
 - **Static bearer secret**: `DISPATCH_API_TOKEN` (in the laptop's
   `~/secrets/dispatch.env`), compared in constant time — the shape a

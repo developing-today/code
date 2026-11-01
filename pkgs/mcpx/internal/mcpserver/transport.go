@@ -540,7 +540,7 @@ func (s *Server) serveGET(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	f.Flush()
-	s.startListChanged(c)
+	s.startListChanged(r.Context(), c)
 
 	tick := time.NewTicker(s.Timing.resolved().SSEKeepAlive)
 	defer tick.Stop()
@@ -563,10 +563,18 @@ func (s *Server) serveGET(w http.ResponseWriter, r *http.Request) {
 // A legacy client has no subscriptions/listen to opt in with: declaring
 // listChanged at initialize is the promise, and a notification stream the
 // client can receive -- stdio, or an open GET stream -- is the delivery.
-func (s *Server) startListChanged(c *Conn) {
+//
+// reqCtx is the context of the request that opened the stream (the GET, or
+// initialize on stdio): it decides toolsListChanged, because a raw-surface
+// request (codemode=false) was promised tools.listChanged on a list that is
+// every upstream's. The notifier itself runs on a background context, as
+// before -- the stream outlives the request that opened it and is ended by
+// stopListChanged, not by that request finishing.
+func (s *Server) startListChanged(reqCtx context.Context, c *Conn) {
 	if s.Notify == nil {
 		return
 	}
+	toolsChanged := s.toolsListChangedFor(reqCtx)
 	ctx, cancel := context.WithCancel(context.Background())
 	c.mu.Lock()
 	if c.listChanged != nil {
@@ -574,7 +582,7 @@ func (s *Server) startListChanged(c *Conn) {
 	}
 	c.listChanged = cancel
 	c.mu.Unlock()
-	go s.Notify.Listen(ctx, ListenFilter{ToolsListChanged: s.toolsVary(),
+	go s.Notify.Listen(ctx, ListenFilter{ToolsListChanged: toolsChanged,
 		PromptsListChanged: true, ResourcesListChanged: true}, c.push)
 }
 

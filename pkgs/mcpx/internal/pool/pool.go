@@ -41,6 +41,22 @@ import (
 // Version reported to MCP servers during initialize.
 var Version = "dev"
 
+// ownServerName is the identity mcpx's own MCP server reports in
+// serverInfo during initialize: internal/cli builds it with this name
+// (mcpserver.New(backend, "mcpx", version)). An upstream answering to
+// it is this daemon, another mcpx, or a proxy of one (#1877).
+const ownServerName = "mcpx"
+
+// OwnInstanceID is the instance identity of the MCP server this
+// process itself serves, wired by internal/cli at startup (#1877).
+// The self-connection guard compares an mcpx-claiming upstream's
+// reported instance against it: equal is this very daemon (refuse),
+// different is a distinct mcpx daemon (admit -- self-composition
+// across daemons is a topology #1877 wants made safe, not banned).
+// Empty means this process has not wired an identity, and the guard
+// falls back to convicting on the aggregate surface alone.
+var OwnInstanceID string
+
 // Trace, when set, receives a line per tool call naming the instance that
 // served it. The daemon wires this to its logger when MCPX_TRACE is set.
 var Trace func(string, ...any)
@@ -657,6 +673,12 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		_ = tr.Close()
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, p.oauthWaitError(err))
 	}
+	// Self-connection loop guard (#1877): see guardSelfConnection.
+	if cl.ServerInfo.Name == ownServerName {
+		if err := p.guardSelfConnection(sctx, cl, tr); err != nil {
+			return nil, err
+		}
+	}
 	if cl.CachedEraWrong {
 		lifecycle("server.era.stale", map[string]any{
 			"server": p.cfg.Name, "cached": string(cached.Era), "cachedAt": cached.At,
@@ -711,6 +733,126 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		"readyMs": float64(time.Since(launched).Microseconds()) / 1000,
 	})
 	return in, nil
+}
+
+// ownMetaTools are the tools mcpx's aggregate MCP surface always
+// carries (mcpserver.Server.Tools, non-ExtrasOnly). Their presence in
+// an upstream's catalogue is what makes that upstream mcpx itself
+// rather than a namesake.
+var ownMetaTools = map[string]bool{
+	"mcpx_namespaces": true, "mcpx_catalog": true, "mcpx_types": true,
+	"mcpx_search": true, "mcpx_call": true, "mcpx_exec": true,
+	"mcpx_log": true, "mcpx_stats": true, "mcpx_registry": true,
+	"mcpx_status": true, "mcpx_batch": true,
+}
+
+// ownReactiveTools are the activation pair mcpx's reactive surface
+// (mcpserver.reactiveSurface) exposes before any tool is activated:
+// request_tools searches and activates the aggregate's tools, and
+// batch_call executes across them. A reactive aggregate initially
+// lists neither the mcpx_* tools nor its upstreams' tools, so the
+// pair -- both names together, never either alone -- is its identity
+// independently of which tools happen to be activated right now
+// (Codex review on PR 2975).
+var ownReactiveTools = []string{"request_tools", "batch_call"}
+
+// guardSelfConnection decides whether an upstream that identifies as
+// mcpx may be served (#1877). Identity decides first, when both sides
+// report one: an instance equal to this process's own is this daemon
+// connecting to itself -- the loop that grows tools/list on every
+// reload -- and is refused without ever listing its tools; a
+// different instance is a distinct mcpx daemon, admitted as a peer
+// (its catalogue is finite: the aggregate meta tools plus its own
+// upstreams, none of them this daemon). When either side reports no
+// instance -- an mcpx predating instance identity, or a process that
+// never wired one -- identity cannot clear the claimant, so the
+// aggregate surface decides instead (refuseIfAggregate): a claimant
+// serving mcpx's meta tools with no distinguishable identity is
+// treated as self, the safe side of the ambiguity.
+func (p *Pool) guardSelfConnection(ctx context.Context, cl *mcpclient.Client, tr mcpclient.Transport) error {
+	own, peer := OwnInstanceID, cl.ServerInfo.Instance
+	if own != "" && peer != "" {
+		if peer != own {
+			lifecycle("server.peer_mcpx_admitted", map[string]any{
+				"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+				"serverInfoVersion": cl.ServerInfo.Version, "instance": peer,
+			})
+			return nil
+		}
+		err := fmt.Errorf("server %q: refusing self-connection: upstream is this daemon itself (instance %q matches this process); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, peer)
+		lifecycle("server.self_connection_refused", map[string]any{
+			"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+			"serverInfoVersion": cl.ServerInfo.Version, "instance": peer, "via": "instance",
+		})
+		p.dropSchemas(err)
+		_ = cl.Close()
+		_ = tr.Close()
+		return err
+	}
+	return p.refuseIfAggregate(ctx, cl, tr)
+}
+
+// refuseIfAggregate lists a self-claiming upstream's tools once and
+// refuses the instance when the aggregate meta surface is among them
+// (#1877). It also drops any cached catalogue for this server: an
+// installation upgraded with a self entry already in its schema cache
+// would otherwise keep advertising the proxied tools indefinitely.
+// A claimant whose tools cannot be listed is refused too -- the
+// identity check could not clear it, and a catalogue that cannot be
+// listed could not be served either.
+func (p *Pool) refuseIfAggregate(ctx context.Context, cl *mcpclient.Client, tr mcpclient.Transport) error {
+	tools, lerr := cl.ListTools(ctx)
+	meta := ""
+	if lerr == nil {
+		names := make(map[string]bool, len(tools))
+		for _, t := range tools {
+			names[t.Name] = true
+			if ownMetaTools[t.Name] && meta == "" {
+				meta = t.Name
+			}
+		}
+		if meta == "" {
+			reactive := true
+			for _, n := range ownReactiveTools {
+				if !names[n] {
+					reactive = false
+					break
+				}
+			}
+			if reactive {
+				meta = "request_tools+batch_call (reactive surface)"
+			}
+		}
+		if meta == "" {
+			lifecycle("server.namesake_admitted", map[string]any{
+				"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+				"serverInfoVersion": cl.ServerInfo.Version,
+			})
+			return nil
+		}
+	}
+	err := fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself) and serves mcpx's aggregate surface (%s); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, cl.ServerInfo.Name, meta)
+	if lerr != nil {
+		err = fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself) and its tools could not be listed to clear the identity check: %w (#1877)", p.cfg.Name, cl.ServerInfo.Name, lerr)
+	}
+	lifecycle("server.self_connection_refused", map[string]any{
+		"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+		"serverInfoVersion": cl.ServerInfo.Version, "metaTool": meta,
+	})
+	p.dropSchemas(err)
+	_ = cl.Close()
+	_ = tr.Close()
+	return err
+}
+
+// dropSchemas forgets the cached catalogue and records why, so a
+// refused server stops being advertised from cache (#1877).
+func (p *Pool) dropSchemas(err error) {
+	p.schemaMu.Lock()
+	p.tools, p.resources, p.prompts = nil, nil, nil
+	p.instructions, p.schemaAt, p.schemaDeadline = "", time.Time{}, time.Time{}
+	p.schemaErr = err
+	p.schemaMu.Unlock()
 }
 
 // connectSSE closes tr and connects over the HTTP+SSE transport instead,
@@ -1228,6 +1370,18 @@ func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (jso
 	if Trace != nil {
 		Trace("call %s.%s session=%q instance=%s pid=%d", p.cfg.Name, tool, sessionKey, lease.inst.ID, lease.inst.PID())
 	}
+
+	// The serving client may never have listed the catalogue itself --
+	// refreshSchemas lists on the schema lease's instance, which for
+	// session- or call-scoped scopes is a throwaway, and a restarted
+	// global instance starts empty behind the retained cache. Seed its
+	// taskSupport snapshot from the cached catalogue so a "required"
+	// tool is recognised on the client that actually serves the call
+	// (#1556 Codex review).
+	p.schemaMu.RLock()
+	catalogue := p.tools
+	p.schemaMu.RUnlock()
+	lease.Client().SeedToolExec(catalogue)
 
 	cctx, finish := p.upstream(ctx, sessionKey, lease)
 	started := time.Now()

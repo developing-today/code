@@ -8,6 +8,11 @@ Type=oneshot
 # the quota sources, the OpenCode server password file, and the
 # laptop SSH key all live under that home, so HOME is pinned here.
 Environment=HOME=/home/hatch
+# AA section source: muse-dev2 (the original muse-dev project's
+# Postgres has been down since 2026-10-30; the collector's bws
+# management token is muse-dev2-scoped, so the ref must match it
+# or the AA query 403s and the explorer's AA section goes absent.
+Environment=SUPABASE_PROJECT_REF=keihfchslgjetkmnmzra
 # Runs from the feed clone (~hatch/git/pm-feed): collector + push over
 # the tailnet proxy route. Proxy credential from mcpx-daemon.env.
 ExecStart=/home/hatch/git/pm-feed/pm-stack/aggregator/scripts/push-fleet-feed.sh

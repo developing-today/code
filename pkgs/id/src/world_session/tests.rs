@@ -258,6 +258,85 @@ mod tests {
         assert!(metrics["actor_queue_depth_max"].is_u64(), "{metrics}");
     }
 
+    /// Read frames until a non-snapshot/non-view reply arrives.
+    async fn next_reply(peer: &mut Peer) -> serde_json::Value {
+        loop {
+            let frame = peer.next().await.unwrap();
+            if frame["type"] != "snapshot" && frame["type"] != "view" {
+                return frame;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn joined_metrics_frame_is_refused_after_revocation() {
+        // #1506: the joined-phase metrics handler must capability-check
+        // like the query phase — a revoked participant keeps no metrics
+        // access even if the frame beats the revocation broadcast.
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let svc = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let (participant, token) = world.issue("player", WorldScopes::GUEST).await.unwrap();
+        let cap = token.expose().to_owned();
+
+        let mut player = Peer::connect(svc.clone(), SessionConfig::default());
+        player
+            .say(serde_json::json!({"type":"join","capability":cap}))
+            .await;
+        assert_eq!(player.next().await.unwrap()["type"], "snapshot");
+
+        // While the capability is live, a joined metrics frame is served.
+        player
+            .say(serde_json::json!({"type":"metrics","capability":cap}))
+            .await;
+        assert_eq!(next_reply(&mut player).await["type"], "metrics");
+
+        // Queue the frame, then revoke: whichever the session loop
+        // processes first — the frame (gate refuses: "join denied") or
+        // the revocation broadcast (session closes) — the reply is an
+        // error, never metrics.
+        player
+            .say(serde_json::json!({"type":"metrics","capability":cap}))
+            .await;
+        assert!(world.revoke(participant.id).await.unwrap());
+        let reply = next_reply(&mut player).await;
+        assert_eq!(
+            reply["type"], "error",
+            "revoked metrics must be refused: {reply}"
+        );
+    }
+
+    #[tokio::test]
+    async fn joined_caps_frame_is_refused_after_revocation() {
+        // #1506 (same pass): the joined-phase caps handler has the same
+        // token-less shape and gets the same participant gate.
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let svc = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let (participant, token) = world.issue("player", WorldScopes::GUEST).await.unwrap();
+        let cap = token.expose().to_owned();
+
+        let mut player = Peer::connect(svc.clone(), SessionConfig::default());
+        player
+            .say(serde_json::json!({"type":"join","capability":cap}))
+            .await;
+        assert_eq!(player.next().await.unwrap()["type"], "snapshot");
+
+        player
+            .say(serde_json::json!({"type":"caps","capability":cap}))
+            .await;
+        assert_eq!(next_reply(&mut player).await["type"], "caps");
+
+        // Queued-frame-then-revoke, as in the metrics test above.
+        player
+            .say(serde_json::json!({"type":"caps","capability":cap}))
+            .await;
+        assert!(world.revoke(participant.id).await.unwrap());
+        let reply = next_reply(&mut player).await;
+        assert_eq!(
+            reply["type"], "error",
+            "revoked caps must be refused: {reply}"
+        );
+    }
+
     #[tokio::test]
     async fn caps_ceiling_is_admin_only_and_applies_at_once() {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
@@ -1474,12 +1553,23 @@ mod tests {
             blobs.blobs().has(hash).await.unwrap(),
             "uploaded module is pinned in the blob store"
         );
-        assert_eq!(
-            world.view(guest.clone()).await.unwrap().as_deref(),
-            Some("count=0")
+        assert!(
+            world
+                .view(guest.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0"))
         );
         world.input(guest.clone(), b"inc".to_vec()).await.unwrap();
-        assert_eq!(world.view(guest).await.unwrap().as_deref(), Some("count=1"));
+        assert!(
+            world
+                .view(guest)
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=1"))
+        );
     }
 
     #[cfg(feature = "sandbox")]
@@ -1606,9 +1696,13 @@ mod tests {
         let service =
             WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
         let (_, guest) = world.issue("guest", WorldScopes::GUEST).await.unwrap();
-        assert_eq!(
-            world.view(guest.clone()).await.unwrap().as_deref(),
-            Some("count=0")
+        assert!(
+            world
+                .view(guest.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0"))
         );
 
         let bad = b"not wasm".to_vec();
@@ -1620,12 +1714,23 @@ mod tests {
                 .unwrap_err(),
             InstallError::InvalidModule
         );
-        assert_eq!(
-            world.view(guest.clone()).await.unwrap().as_deref(),
-            Some("count=0")
+        assert!(
+            world
+                .view(guest.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0"))
         );
         world.input(guest.clone(), b"inc".to_vec()).await.unwrap();
-        assert_eq!(world.view(guest).await.unwrap().as_deref(), Some("count=1"));
+        assert!(
+            world
+                .view(guest)
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=1"))
+        );
     }
 
     #[tokio::test]

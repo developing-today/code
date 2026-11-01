@@ -46,7 +46,13 @@ func TestNearIsTheStrictTest(t *testing.T) {
 		{"entry", "entr", true}, // distance one
 		{"entry", "entries", false},
 		{"cat", "catalog", true}, // prefix rule, both longer than two
+		{"catalog", "cat", true}, // the same pair, swapped
 		{"ab", "abcd", false},    // prefix rule needs length > 2
+		{"abcd", "ab", false},    // #3075: the swapped pair must agree — the guard keys on both lengths, not the first argument alone
+		{"en", "entry", false},   // a two-letter prefix of a known name, both orders
+		{"entry", "en", false},
+		{"ab", "abcde", false},
+		{"abcde", "ab", false},
 		{"entry", "zebra", false},
 	} {
 		if got := Near(c.a, c.b); got != c.want {

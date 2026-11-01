@@ -20,13 +20,16 @@ import (
 
 // standardHeaders are Mcp-Method and Mcp-Name for one modern frame. Mcp-Name
 // is the tool or prompt name, or the resource URI, of the three methods the
-// table names.
+// table names -- or, for the tasks extension's methods, the taskId, so a
+// gateway can route a poll or cancel to the node holding the task
+// (SEP-2663; mirrors mcpserver.nameOf).
 func standardHeaders(msg []byte) map[string]string {
 	var f struct {
 		Method string `json:"method"`
 		Params struct {
-			Name *string `json:"name"`
-			URI  *string `json:"uri"`
+			Name   *string `json:"name"`
+			URI    *string `json:"uri"`
+			TaskID *string `json:"taskId"`
 		} `json:"params"`
 	}
 	if json.Unmarshal(msg, &f) != nil || f.Method == "" {
@@ -39,6 +42,8 @@ func standardHeaders(msg []byte) map[string]string {
 		name = f.Params.Name
 	case "resources/read":
 		name = f.Params.URI
+	case "tasks/get", "tasks/update", "tasks/cancel":
+		name = f.Params.TaskID
 	}
 	if name != nil {
 		h["Mcp-Name"] = mcpheaders.Encode(*name)

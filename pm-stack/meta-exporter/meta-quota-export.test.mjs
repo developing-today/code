@@ -160,3 +160,59 @@ test("parseSubscriptionQuota: malformed reset fails closed even at zero usage", 
     assert.throws(() => parseSubscriptionQuota(payload), /windowReset not a finite number/);
   }
 });
+
+// #2789: num() used to be a bare Number() coercion, so drifted
+// spellings became real measurements ("" -> 0% window, "0x10" -> 16,
+// "1e2" -> 100). Only plain decimal spellings are accepted now.
+test("parseSubscriptionQuota: non-decimal numeric spellings fail closed", () => {
+  for (const bad of ["", "   ", "0x10", "0b101", "0o17", "1e2", "1E2", "abc", "12,000", " 123", "123 ", "1023570000n"]) {
+    for (const field of ["window_weighted_used", "window_weighted_limit", "window_duration_secs"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = bad;
+      assert.throws(() => parseSubscriptionQuota(payload), /not a finite|window_duration_secs/);
+    }
+  }
+  // The same spellings are rejected on the weekly fields too.
+  for (const bad of ["", "0x10", "1e2"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.weekly_weighted_used = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /weeklyUsed/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a used window fails closed", () => {
+  for (const bad of ["", "   "]) {
+    const shortUsed = structuredClone(QUOTA);
+    shortUsed.subscription_quota.window_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(shortUsed), /windowReset/);
+    const weeklyUsed = structuredClone(QUOTA);
+    weeklyUsed.subscription_quota.weekly_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(weeklyUsed), /weeklyReset/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a zero-usage window is tolerated like absent", () => {
+  const payload = structuredClone(QUOTA_INACTIVE_SHORT);
+  payload.subscription_quota.window_resets_at = "";
+  assert.equal(parseSubscriptionQuota(payload).windows[0].resetAt, null);
+});
+
+test("parseSubscriptionQuota: decimal spellings still parse, including fractions", () => {
+  const frac = structuredClone(QUOTA);
+  frac.subscription_quota.window_weighted_used = "1023570000.5";
+  assert.equal(parseSubscriptionQuota(frac).windows[0].usedPct, 1.02);
+});
+
+test("parseSubscriptionQuota: empty as_of stays null; non-decimal as_of fails closed", () => {
+  const empty = structuredClone(QUOTA);
+  empty.subscription_quota.as_of = "";
+  assert.equal(parseSubscriptionQuota(empty).consoleAsOf, null);
+  const blank = structuredClone(QUOTA);
+  delete blank.subscription_quota.as_of;
+  assert.equal(parseSubscriptionQuota(blank).consoleAsOf, null);
+  for (const bad of ["0x10", "1e2", "soon"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /unparseable|finite/);
+  }
+});

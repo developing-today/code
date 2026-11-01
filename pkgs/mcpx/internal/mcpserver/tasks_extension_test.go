@@ -465,6 +465,75 @@ func TestCancellingAnAskedTaskAbandonsTheCall(t *testing.T) {
 	t.Error("the call behind a cancelled task was never abandoned")
 }
 
+// A task-supporting call refused by the per-requestor cap abandons the call
+// already running upstream: with no task to drive it, nothing could observe
+// or cancel it otherwise.
+func TestRefusedAskedTaskAbandonsTheCall(t *testing.T) {
+	// askAfter far out keeps the first task Working (never polled done),
+	// so it holds the one unbound slot while the second call arrives.
+	a := &timedAsker{askAfter: time.Hour}
+	s := askingServer(a, "capped_job")
+	s.Timing.TaskMaxPerRequestor = 1
+	first := resultOf(t, handle(t, s, "tools/call", callTool(extAskCaps, "capped_job")))
+	id, _ := first["taskId"].(string)
+	if id == "" {
+		t.Fatalf("want a task holding the unbound slot, got %v", first)
+	}
+	second := handle(t, s, "tools/call", callTool(extAskCaps, "capped_job"))
+	e, _ := second["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	if e == nil || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want the cap refusal naming the limit, got %v", second)
+	}
+	a.mu.Lock()
+	gone := a.abandoned
+	a.mu.Unlock()
+	if !gone {
+		t.Error("the call behind a refused task was never abandoned")
+	}
+	handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": id}))
+}
+
+// The per-requestor cap charges a modern client's resolved identity, not
+// its (deliberately empty) task owner: two clients naming distinct
+// sessions each get their own bucket, so with a cap of one, Alice's slow
+// task does not refuse Bob's first call -- but Alice's second is refused.
+// (Codex on #2869, round 3: accounting identity is not ownership.)
+func TestModernTaskCapChargesTheResolvedIdentity(t *testing.T) {
+	u := &taskUpstream{fakeBackend: newBackend(), delay: 2 * time.Second,
+		tools: map[string][]mcpserver.Tool{"tasks": {supportTool("slow_compute", "optional")}}}
+	s := taskServer(u, "tasks")
+	s.Timing.TaskEager = 50 * time.Millisecond
+	s.Timing.TaskMaxPerRequestor = 1
+
+	callAs := func(session string) map[string]any {
+		params := callTool(extCaps, "slow_compute")
+		params["_meta"].(map[string]any)[mcpserver.MetaSession] = session
+		return handle(t, s, "tools/call", params)
+	}
+
+	alice := resultOf(t, callAs("alice"))
+	aliceID, _ := alice["taskId"].(string)
+	if aliceID == "" {
+		t.Fatalf("want a task for alice, got %v", alice)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": aliceID}))
+
+	bob := resultOf(t, callAs("bob"))
+	bobID, _ := bob["taskId"].(string)
+	if bobID == "" {
+		t.Fatalf("want a task for bob (his own bucket), got %v", bob)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": bobID}))
+
+	second := callAs("alice")
+	e, _ := second["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	if e == nil || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want alice's second call refused by the cap naming the limit, got %v", second)
+	}
+}
+
 // tasks-request-headers / sep-2663-server-rejects-mismatched-mcp-name-on-tasks-get:
 // Mcp-Name on tasks/get mirrors the taskId, and one that contradicts it is
 // -32020. One left out is tolerated: SEP-2243 does not name the tasks
@@ -483,5 +552,88 @@ func TestMcpNameOnTasksMethodsMustMatchTheTaskID(t *testing.T) {
 	w = post(s, body, modernHeaders("tasks/get", ""))
 	if code, _ := rpcErr(t, w.Body.Bytes()); code != -32602 {
 		t.Errorf("no Mcp-Name: want the unknown-task -32602, got %d:\n%s", code, w.Body)
+	}
+}
+
+// The per-requestor cap on the Asker path charges the resolved caller
+// identity from the request context, not the shared unbound bucket:
+// with a cap of one, two identified clients' first slow asked tasks
+// each start, and a second task for the same identity is refused.
+// (Codex on #2869: hard-coding unbound accounting in askTask passes
+// the anonymous tests while reintroducing cross-client refusals, so
+// this path needs its own failing-first regression.)
+func TestAskedTaskCapChargesTheResolvedIdentity(t *testing.T) {
+	// askAfter far out keeps every asked task Working (never polled
+	// done), so each holds its requestor's one slot while the next
+	// call arrives.
+	a := &timedAsker{askAfter: time.Hour}
+	s := askingServer(a, "capped_job")
+	s.Timing.TaskMaxPerRequestor = 1
+
+	callAs := func(session string) map[string]any {
+		params := callTool(extAskCaps, "capped_job")
+		params["_meta"].(map[string]any)[mcpserver.MetaSession] = session
+		return handle(t, s, "tools/call", params)
+	}
+
+	alice := resultOf(t, callAs("alice"))
+	aliceID, _ := alice["taskId"].(string)
+	if aliceID == "" {
+		t.Fatalf("want a task for alice, got %v", alice)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": aliceID}))
+
+	bob := resultOf(t, callAs("bob"))
+	bobID, _ := bob["taskId"].(string)
+	if bobID == "" {
+		t.Fatalf("want a task for bob (his own bucket), got %v", bob)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": bobID}))
+
+	second := callAs("alice")
+	e, _ := second["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	if e == nil || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want alice's second call refused by the cap naming the limit, got %v", second)
+	}
+}
+
+// The per-requestor cap on the LEGACY task path charges the resolved
+// identity, not the connection id that legacy ownership records: two
+// connections naming the same session in _meta are one requestor, so
+// with a cap of one the second connection's first task is refused even
+// though its owner id differs. (Codex on #2869, round 6: identityFor
+// gives the named session precedence over the connection id, and
+// task-route admission already charges the resolved identity -- only
+// startTask's owner-first accounting disagreed.)
+func TestLegacyTaskCapChargesTheResolvedIdentityNotTheOwner(t *testing.T) {
+	u := &taskUpstream{fakeBackend: newBackend(), delay: 2 * time.Second,
+		tools: map[string][]mcpserver.Tool{"tasks": {supportTool("slow_compute", "optional")}}}
+	s := taskServer(u, "tasks")
+	s.Timing.TaskMaxPerRequestor = 1
+
+	callAs := func(connID string) (admitted bool, errMsg string) {
+		c := s.ConnForTest(connID)
+		gateInit(t, s, c, "2025-11-25")
+		params := map[string]any{
+			"name": "slow_compute", "arguments": map[string]any{},
+			"task":  map[string]any{"ttl": 60000},
+			"_meta": map[string]any{mcpserver.MetaSession: "alice"},
+		}
+		resp := s.HandleOn(context.Background(), c, mcpserver.Request(9, "tools/call", params))
+		if resp == nil {
+			return false, "no response"
+		}
+		if resp.Error != nil {
+			return false, resp.Error.Message
+		}
+		return true, ""
+	}
+
+	if ok, msg := callAs("conn-a"); !ok {
+		t.Fatalf("want alice's first legacy task admitted, got %s", msg)
+	}
+	if ok, msg := callAs("conn-b"); ok || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want the second connection naming alice refused by the cap, admitted=%v err=%q", ok, msg)
 	}
 }

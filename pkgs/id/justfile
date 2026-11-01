@@ -202,6 +202,11 @@ just-recipes:
     just --dump --dump-format json > just-recipes.json
     biome format --write --config-path . just-recipes.json
 
+# Fail when just-recipes.json has drifted from this justfile (#2729)
+[group('deps')]
+just-recipes-check:
+    bash scripts/just-recipes-check.sh
+
 # =============================================================================
 # Testing
 # =============================================================================

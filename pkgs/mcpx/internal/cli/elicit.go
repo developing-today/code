@@ -1,14 +1,22 @@
 package cli
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
@@ -57,6 +65,7 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 	fs := newFlagSet("elicit")
 	session := fs.String("session", "", "restrict to one session")
 	audience := fs.String("audience", "", "agent or human")
+	yes := fs.Bool("yes", false, "answer without the interactive review prompt")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -136,6 +145,35 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 				}
 				content = json.RawMessage(raw)
 			}
+		}
+		// Review before relay (#1678): on a terminal, a form answer is
+		// shown back -- credential-shaped values masked -- and relayed
+		// only on an explicit yes. --yes and non-interactive stdin keep
+		// the historical one-shot behaviour byte-for-byte.
+		if len(content) > 0 && !*yes && isTerminal(os.Stdin) {
+			r, found, err := b.Get(fs.Arg(0))
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("no elicitation %s", fs.Arg(0))
+			}
+			if r.Mode == elicit.Form {
+				fmt.Print(renderAnswerReview(r, content))
+				confirmed, err := confirmSend(ctx, os.Stdin)
+				if err != nil {
+					return err
+				}
+				if !confirmed {
+					return fmt.Errorf("answer not sent: declined at review")
+				}
+			}
+		}
+		// A cancellation that landed during the review (or at any
+		// point above) wins over the relay: the user said stop, so
+		// nothing is sent (Codex review, PR #3011).
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		return b.Respond(elicit.Answer{
 			ID: fs.Arg(0), Action: elicit.Accept, Content: content, By: "cli",
@@ -222,6 +260,7 @@ func renderQuestion(r elicit.Request) string {
 	fmt.Fprintf(&b, "  expires  in %s\n", short(r.TTLRemaining()))
 	if r.Mode == elicit.URL {
 		fmt.Fprintf(&b, "  url      %s\n", r.URL)
+		b.WriteString(urlDomainLines(r.URL))
 		fmt.Fprintf(&b, "\n  mcpx elicit accept %s     (after visiting it)\n", r.ID)
 		fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
 		return b.String()
@@ -229,12 +268,16 @@ func renderQuestion(r elicit.Request) string {
 	for _, f := range describeSchema(r.Schema) {
 		fmt.Fprintf(&b, "  %-8s %s\n", f.name, f.detail)
 	}
-	fmt.Fprintf(&b, "\n  mcpx elicit answer %s '%s'\n", r.ID, exampleFor(r.Schema))
+	fmt.Fprintf(&b, "\n  mcpx elicit answer %s %s\n", r.ID, shellQuote(exampleFor(r.Schema)))
 	fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
 	return b.String()
 }
 
-type schemaField struct{ name, detail string }
+type schemaField struct {
+	name, detail string
+	format       string
+	def          json.RawMessage
+}
 
 func describeSchema(raw json.RawMessage) []schemaField {
 	if len(raw) == 0 {
@@ -242,9 +285,11 @@ func describeSchema(raw json.RawMessage) []schemaField {
 	}
 	var doc struct {
 		Properties map[string]struct {
-			Type        string `json:"type"`
-			Description string `json:"description"`
-			Enum        []any  `json:"enum"`
+			Type        string          `json:"type"`
+			Format      string          `json:"format"`
+			Description string          `json:"description"`
+			Enum        []any           `json:"enum"`
+			Default     json.RawMessage `json:"default"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
@@ -271,8 +316,12 @@ func describeSchema(raw json.RawMessage) []schemaField {
 		if p.Description != "" {
 			detail += " -- " + p.Description
 		}
-		out = append(out, schemaField{name: name, detail: detail})
+		if len(p.Default) > 0 {
+			detail += ", default: " + compactJSON(p.Default)
+		}
+		out = append(out, schemaField{name: name, detail: detail, format: p.Format, def: p.Default})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out
 }
 
@@ -283,9 +332,161 @@ func exampleFor(raw json.RawMessage) string {
 	}
 	var parts []string
 	for _, f := range fields {
-		parts = append(parts, fmt.Sprintf("%q:%q", f.name, "..."))
+		v := `"..."`
+		if len(f.def) > 0 {
+			v = compactJSON(f.def)
+		}
+		parts = append(parts, fmt.Sprintf("%q:%s", f.name, v))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// shellQuote renders s as a single POSIX shell word: wrapped in single
+// quotes, with each embedded single quote closed, escaped and reopened.
+// The suggested answer command embeds schema defaults, which are
+// server-controlled; quoting at this boundary keeps a default such as
+// O'Reilly (or worse) from breaking the command or injecting into it.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// urlDomainLines renders the registrable domain under a URL question's
+// full URL, and -- for a punycode or non-ASCII host -- both host forms and
+// the warning. Plain ASCII hosts get the domain line only (#1678).
+func urlDomainLines(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	if host == "" {
+		return ""
+	}
+	// The publicsuffix list compares labels case-sensitively, while
+	// URL hosts are case-insensitive: an uppercase host would look
+	// up CO.UK, miss the lowercase rules, and render the suffix
+	// itself as the domain -- dropping the registrant's label from
+	// the review indicator (Codex review, PR #3011). The lookup
+	// uses the lowercased host; the full URL printed above and the
+	// host forms below keep the host as the server sent it.
+	domain, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(host))
+	if err != nil {
+		domain = host
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  domain   %s\n", domain)
+	if uni, ascii, puny := hostForms(host); puny {
+		fmt.Fprintf(&b, "  host     %s (%s)\n", uni, ascii)
+		b.WriteString("  warn     host uses punycode; check the domain is the one you expect\n")
+	}
+	return b.String()
+}
+
+// hostForms returns the unicode and punycode forms of a host that uses
+// either, reporting whether the host is punycode-shaped at all.
+func hostForms(host string) (uni, ascii string, puny bool) {
+	nonASCII := false
+	for _, r := range host {
+		if r > 127 {
+			nonASCII = true
+			break
+		}
+	}
+	if !nonASCII && !strings.Contains(strings.ToLower(host), "xn--") {
+		return "", "", false
+	}
+	uni, err := idna.ToUnicode(host)
+	if err != nil {
+		uni = host
+	}
+	ascii, err = idna.ToASCII(host)
+	if err != nil {
+		ascii = host
+	}
+	return uni, ascii, true
+}
+
+// renderAnswerReview prints the answer about to be relayed, with
+// credential-shaped values masked as (set)/(not set) -- never the value,
+// never its length (#1678).
+func renderAnswerReview(r elicit.Request, content json.RawMessage) string {
+	var b strings.Builder
+	b.WriteString("About to send this answer:\n")
+	var values map[string]json.RawMessage
+	if json.Unmarshal(content, &values) != nil {
+		fmt.Fprintf(&b, "  %s\n", compactJSON(content))
+		return b.String()
+	}
+	formats := map[string]string{}
+	for _, f := range describeSchema(r.Schema) {
+		formats[f.name] = f.format
+		// The relay applies schema defaults to omitted fields
+		// (mcpclient.applyDefaults), so the review must show the
+		// effective answer -- defaults included -- not only what
+		// was explicitly supplied (#1678, Codex P2 on PR 3011).
+		if _, supplied := values[f.name]; !supplied && len(f.def) > 0 {
+			values[f.name] = f.def
+		}
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		raw := values[name]
+		if elicit.IsSensitiveField(name, formats[name]) {
+			state := "(not set)"
+			if isSetValue(raw) {
+				state = "(set)"
+			}
+			fmt.Fprintf(&b, "  %-8s %s\n", name, state)
+			continue
+		}
+		fmt.Fprintf(&b, "  %-8s %s\n", name, compactJSON(raw))
+	}
+	return b.String()
+}
+
+// isSetValue reports whether an answer value carries anything: JSON null,
+// an empty string and an absent value all count as not set.
+func isSetValue(raw json.RawMessage) bool {
+	t := strings.TrimSpace(string(raw))
+	return t != "" && t != "null" && t != `""`
+}
+
+// confirmSend asks for the relay decision; anything but y/yes -- EOF
+// included -- is a no, so a vanished terminal never sends. The read is
+// cancellation-aware: main cancels the command context on SIGINT, and
+// a prompt that ignored that would sit blocked on the read and could
+// still relay on a later y, after the user already said stop
+// (Codex review, PR #3011).
+func confirmSend(ctx context.Context, in io.Reader) (bool, error) {
+	fmt.Print("Send this answer? [y/N] ")
+	type result struct{ line string }
+	read := make(chan result, 1)
+	go func() {
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		read <- result{line}
+	}()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case r := <-read:
+		switch strings.ToLower(strings.TrimSpace(r.line)) {
+		case "y", "yes":
+			return true, nil
+		}
+		return false, nil
+	}
+}
+
+func compactJSON(raw json.RawMessage) string {
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		return string(raw)
+	}
+	return b.String()
 }
 
 func short(d time.Duration) string {

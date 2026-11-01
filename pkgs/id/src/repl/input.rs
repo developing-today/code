@@ -46,6 +46,44 @@
 //! cat file.txt |> put - backup
 //! ```
 //!
+//! # Quoting Contract
+//!
+//! Every operator scan in this module — heredoc (`<<`), here-string
+//! (`<<<`), `$(` and its closing paren, the opening backtick, and the pipe
+//! operator (`|>`) — skips single- and double-quoted spans:
+//!
+//! - A quoted span is literal until its closing quote; operator
+//!   characters inside it are text, not operators.
+//! - The scanner does NOT interpret backslash escapes: a quote
+//!   character preceded by `\` still opens or closes a span.
+//! - An unterminated quote makes the rest of the line quoted, so no
+//!   operators are recognized in it.
+//! - The closing backtick is not quote-aware. The next backtick that is
+//!   not inside captured output closes the substitution, even when that
+//!   backtick lies inside quotes. The substitution body is shell code.
+//! - Quote state tracks the original input only. Captured substitution
+//!   output is data, never source: it is appended to the result without
+//!   being rescanned, so an apostrophe in a captured filename cannot
+//!   open a quote span and hide later substitutions.
+//!
+//! Full shell grammar is out of scope. The contract exists so quoted
+//! arguments containing operator characters (`get "a<<b"`,
+//! `get $(echo ')')`) preprocess the way a shell user expects.
+//!
+//! # Rescan Boundary
+//!
+//! Content a stage inserts into the line is a protected span that
+//! later stages never rescan:
+//!
+//! - Here-string content — single-quoted, double-quoted, or
+//!   unquoted — is stored literally: a `$(...)` or backtick span
+//!   inside it is text, not a substitution (#2281).
+//! - `$(...)` output is data, not source: the backtick stage never
+//!   rescans it, so backticks in captured output stay literal.
+//!
+//! Substitutions written in the typed line itself, outside any
+//! inserted content, still execute exactly as documented above.
+//!
 //! # Content Markers
 //!
 //! When preprocessing detects inline content (from `$()`, here-strings, or pipes),
@@ -151,6 +189,96 @@ pub fn shell_capture(cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// Find the first occurrence of `needle` in `haystack` that lies
+/// outside single- and double-quoted spans, returning its byte index.
+///
+/// Implements the module's quoting contract: a quoted span is literal
+/// until its closing quote, backslash escapes are not interpreted, and
+/// an unterminated quote makes the rest of the line quoted (so no
+/// occurrence is found in it).
+fn find_unquoted(haystack: &str, needle: &str) -> Option<usize> {
+    find_unquoted_from(haystack, needle, &[], 0)
+}
+
+/// Whether byte index `idx` lies inside a protected span. Protected
+/// spans are text an earlier preprocessing stage inserted (captured
+/// command output, here-string content): data, not source. Their
+/// bytes never toggle quote state and never begin an operator match,
+/// in this or any later stage — an apostrophe in captured output
+/// (`O'Reilly`) must not read as source quoting and hide a genuine
+/// operator behind it (#1585, Codex review).
+fn is_protected(protected: &[(usize, usize)], idx: usize) -> bool {
+    protected.iter().any(|&(a, b)| idx >= a && idx < b)
+}
+
+/// `find_unquoted`, searching from byte offset `from` (a point the
+/// caller knows to be unquoted in the source) and treating protected
+/// spans as inert.
+fn find_unquoted_from(
+    haystack: &str,
+    needle: &str,
+    protected: &[(usize, usize)],
+    from: usize,
+) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (rel, c) in haystack[from..].char_indices() {
+        let i = from + rel;
+        if is_protected(protected, i) {
+            continue;
+        }
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                } else if haystack[i..].starts_with(needle) {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The protected spans of the content markers a stage inserted into
+/// `result`, located by their literal marker text in insertion order.
+fn content_spans(result: &str, contents: &[String]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    for content in contents {
+        let marker = format!("__STDIN_CONTENT__:{content}");
+        if let Some(pos) = result[cursor..].find(&marker) {
+            let start = cursor + pos;
+            spans.push((start, start + marker.len()));
+            cursor = start + marker.len();
+        }
+    }
+    spans
+}
+
+/// Carry the protected spans that lie inside a verbatim-copied source
+/// chunk into the rebuilt string: a chunk copied from
+/// `src_from..src_from + len` to `dst_base` shifts its spans by the
+/// same offset. Spans outside the chunk (consumed by a substitution,
+/// or not yet copied) do not carry.
+fn remap_spans(
+    protected: &[(usize, usize)],
+    src_from: usize,
+    len: usize,
+    dst_base: usize,
+    out: &mut Vec<(usize, usize)>,
+) {
+    for &(a, b) in protected {
+        if a >= src_from && b <= src_from + len {
+            out.push((dst_base + (a - src_from), dst_base + (b - src_from)));
+        }
+    }
+}
+
 /// Preprocess a REPL input line, handling shell-like features.
 ///
 /// This function transforms the input line by:
@@ -212,7 +340,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     }
 
     // Check for heredoc: put - name <<EOF
-    if let Some(heredoc_start) = line.find("<<") {
+    if let Some(heredoc_start) = find_unquoted(line, "<<") {
         let after = &line[heredoc_start + 2..];
         // Check it's not <<< (here-string)
         if !after.starts_with('<') {
@@ -230,8 +358,13 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
 
     let mut result = line.to_owned();
 
+    // Protected spans of stage-inserted text, in `result` coordinates.
+    // Every later stage searches with them (see is_protected).
+    let mut protected: Vec<(usize, usize)> = Vec::new();
+
     // Process here-string: <<< 'content' or <<< "content" or <<< content
-    while let Some(pos) = result.find("<<<") {
+    let mut here_contents: Vec<String> = Vec::new();
+    while let Some(pos) = find_unquoted_from(&result, "<<<", &protected, 0) {
         let before = &result[..pos];
         let after = &result[pos + 3..].trim_start();
 
@@ -260,76 +393,142 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let new_before = before_str
             .replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
             .replace(" -$", &format!(" __STDIN_CONTENT__:{content}"));
+        here_contents.push(content.to_owned());
         result = format!("{new_before}{rest}");
+        protected = content_spans(&result, &here_contents);
     }
 
-    // Process $(...) command substitution
-    while let Some(start) = result.find("$(") {
-        let mut depth = 1;
-        let mut end = start + 2;
-        for (i, c) in result[start + 2..].char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = start + 2 + i;
-                        break;
-                    }
+    // Process $(...) command substitution in a single pass over the
+    // source text. Quote state tracks the original input only: each
+    // search resumes right after the previous substitution's closing
+    // paren (a point where the source is known to be unquoted), and
+    // captured output is appended to `substituted` without ever being
+    // rescanned -- an unmatched quote in captured output (an apostrophe
+    // in a filename) must not read as source quoting and hide a later
+    // substitution (#1585, Codex review). Text inserted by earlier
+    // stages (here-string content) is protected the same way, and this
+    // stage's own insertions are recorded as protected spans for the
+    // stages after it: source/output separation holds across stages,
+    // not only within one pass.
+    {
+        let source = std::mem::take(&mut result);
+        let mut substituted = String::with_capacity(source.len());
+        let mut new_protected: Vec<(usize, usize)> = Vec::new();
+        let mut pos = 0;
+        while let Some(start) = find_unquoted_from(&source, "$(", &protected, pos) {
+            let mut depth = 1;
+            let mut end = start + 2;
+            let mut quote: Option<char> = None;
+            for (i, c) in source[start + 2..].char_indices() {
+                if is_protected(&protected, start + 2 + i) {
+                    continue;
                 }
-                _ => {}
+                match quote {
+                    Some(q) => {
+                        if c == q {
+                            quote = None;
+                        }
+                    }
+                    None => match c {
+                        '\'' | '"' => quote = Some(c),
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = start + 2 + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    },
+                }
             }
-        }
-        if depth != 0 {
-            bail!("unterminated $(...) in command");
-        }
-        let cmd = &result[start + 2..end];
-        let output = shell_capture(cmd)?;
-
-        // Check if this $() is the first arg to put - if so, treat as content
-        let before = result[..start].trim();
-        if before == "put" || before.ends_with(" put") {
-            result = format!(
-                "{}__STDIN_CONTENT__:{}{}",
-                &result[..start],
-                output,
-                &result[end + 1..]
-            );
-        } else {
-            result = format!("{}{}{}", &result[..start], output, &result[end + 1..]);
-        }
-    }
-
-    // Process `...` backtick substitution
-    while let Some(start) = result.find('`') {
-        if let Some(end) = result[start + 1..].find('`') {
-            let cmd = &result[start + 1..start + 1 + end];
+            if depth != 0 {
+                bail!("unterminated $(...) in command");
+            }
+            let cmd = &source[start + 2..end];
             let output = shell_capture(cmd)?;
 
-            // Check if this `` is the first arg to put - if so, treat as content
-            let before = result[..start].trim();
+            // Check if this $() is the first arg to put - if so, treat as content
+            let before = format!("{}{}", substituted, &source[pos..start]);
+            let before = before.trim();
+            let chunk_base = substituted.len();
+            substituted.push_str(&source[pos..start]);
+            remap_spans(&protected, pos, start - pos, chunk_base, &mut new_protected);
+            let span_start = substituted.len();
             if before == "put" || before.ends_with(" put") {
-                result = format!(
-                    "{}__STDIN_CONTENT__:{}{}",
-                    &result[..start],
-                    output,
-                    &result[start + 2 + end..]
-                );
-            } else {
-                result = format!(
-                    "{}{}{}",
-                    &result[..start],
-                    output,
-                    &result[start + 2 + end..]
-                );
+                substituted.push_str("__STDIN_CONTENT__:");
             }
-        } else {
-            bail!("unterminated backtick in command");
+            substituted.push_str(&output);
+            new_protected.push((span_start, substituted.len()));
+            pos = end + 1;
         }
+        let chunk_base = substituted.len();
+        substituted.push_str(&source[pos..]);
+        remap_spans(
+            &protected,
+            pos,
+            source.len() - pos,
+            chunk_base,
+            &mut new_protected,
+        );
+        protected = new_protected;
+        result = substituted;
+    }
+
+    // Process `...` backtick substitution, with the same single-pass
+    // discipline as $(...) above: captured output is never rescanned,
+    // so a backtick or quote inside it cannot corrupt the scan. The
+    // protected spans from the earlier stages are honoured here too:
+    // an apostrophe in $(...) output sitting before a backtick pair
+    // must not open a quote span that hides the pair (#1585, Codex
+    // review).
+    {
+        let source = std::mem::take(&mut result);
+        let mut substituted = String::with_capacity(source.len());
+        let mut new_protected: Vec<(usize, usize)> = Vec::new();
+        let mut pos = 0;
+        while let Some(start) = find_unquoted_from(&source, "`", &protected, pos) {
+            let closing = source[start + 1..]
+                .char_indices()
+                .find(|&(i, c)| c == '`' && !is_protected(&protected, start + 1 + i))
+                .map(|(i, _)| i);
+            if let Some(end) = closing {
+                let cmd = &source[start + 1..start + 1 + end];
+                let output = shell_capture(cmd)?;
+
+                // Check if this `` is the first arg to put - if so, treat as content
+                let before = format!("{}{}", substituted, &source[pos..start]);
+                let before = before.trim();
+                let chunk_base = substituted.len();
+                substituted.push_str(&source[pos..start]);
+                remap_spans(&protected, pos, start - pos, chunk_base, &mut new_protected);
+                let span_start = substituted.len();
+                if before == "put" || before.ends_with(" put") {
+                    substituted.push_str("__STDIN_CONTENT__:");
+                }
+                substituted.push_str(&output);
+                new_protected.push((span_start, substituted.len()));
+                pos = start + 2 + end;
+            } else {
+                bail!("unterminated backtick in command");
+            }
+        }
+        let chunk_base = substituted.len();
+        substituted.push_str(&source[pos..]);
+        remap_spans(
+            &protected,
+            pos,
+            source.len() - pos,
+            chunk_base,
+            &mut new_protected,
+        );
+        protected = new_protected;
+        result = substituted;
     }
 
     // Process |> pipe operator: echo hello |> put - name
-    if let Some(pos) = result.find("|>") {
+    if let Some(pos) = find_unquoted_from(&result, "|>", &protected, 0) {
         let left = result[..pos].trim().to_owned();
         let right = result[pos + 2..].trim().to_owned();
 
@@ -541,6 +740,78 @@ mod tests {
     }
 
     #[test]
+    fn test_preprocess_quoted_close_paren_in_substitution() {
+        match preprocess_repl_line("get $(echo ')')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get )"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_open_paren_in_substitution() {
+        match preprocess_repl_line("get $(echo '(')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get ("),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_double_quoted_close_paren_in_substitution() {
+        match preprocess_repl_line("get $(echo \")\")").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get )"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_heredoc_marker_inside_substitution() {
+        match preprocess_repl_line("get $(printf 'a<<b')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get a<<b"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_heredoc_marker_in_argument() {
+        match preprocess_repl_line("get \"a<<b\"").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get \"a<<b\""),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_unterminated_quote_makes_rest_of_line_quoted() {
+        match preprocess_repl_line("get \"a<<b").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get \"a<<b"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_backtick_is_not_substitution() {
+        match preprocess_repl_line("get 'a`b'").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 'a`b'"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_here_string_marker_is_not_an_operator() {
+        match preprocess_repl_line("get 'a<<<b'").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 'a<<<b'"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_pipe_is_not_an_operator() {
+        match preprocess_repl_line("get 'a|>b'").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 'a|>b'"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
     fn test_shell_capture_simple() {
         let result = shell_capture("echo hello").unwrap();
         assert_eq!(result, "hello");
@@ -578,6 +849,111 @@ mod tests {
         match preprocess_repl_line("get $(echo test)").unwrap() {
             ReplInput::Ready(s) => assert_eq!(s, "get test"),
             _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_substitution_output_quotes_do_not_hide_later_substitutions() {
+        // Captured output is data, not source: an unmatched apostrophe in
+        // the first substitution's output must not open a quote span that
+        // hides the second substitution (#1585, Codex review).
+        match preprocess_repl_line("get $(printf \"O'Reilly\")$(printf .txt)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get O'Reilly.txt"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_substitution_output_quotes_do_not_hide_backticks() {
+        // Cross-stage (#1585, Codex review): the apostrophe arrives via
+        // the $(...) stage, and the backtick stage runs after it. The
+        // output is data, not source, so the backtick pair behind it is
+        // still a substitution.
+        match preprocess_repl_line("get $(printf \"O'Reilly\")`printf .txt`").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get O'Reilly.txt"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_content_quotes_do_not_hide_substitutions() {
+        // Cross-stage (#1585, Codex review): the here-string stage runs
+        // first and inserts its content into the line; the apostrophe
+        // in that content must not open a quote span that hides the
+        // $(...) substitution the $(...) stage looks for afterwards.
+        match preprocess_repl_line("put - $(printf name) <<< \"O'Reilly\"").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(s, "put __STDIN_CONTENT__:O'Reilly name");
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_single_quoted_substitution_is_literal() {
+        // #2281 regression: single-quoted here-string content is
+        // documented literal; the $(...) stage must not rescan the
+        // content the here-string stage inserted and execute it.
+        match preprocess_repl_line("put - name <<< 'price $(echo SUBSTITUTED) end'").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price $(echo SUBSTITUTED) end name"
+                );
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_single_quoted_backticks_are_literal() {
+        // #2281 regression: same boundary for the backtick stage.
+        match preprocess_repl_line("put - name <<< 'a `echo TICK` b'").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(s, "put __STDIN_CONTENT__:a `echo TICK` b name");
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_substitution_output_backticks_are_not_rescanned() {
+        // #2281 regression: $(...) output containing backticks is a
+        // protected span; the backtick stage must not execute it.
+        match preprocess_repl_line("get $(printf '`echo TICK`')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get `echo TICK`"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_double_quoted_substitution_is_literal() {
+        // #2281 pinned semantics: double-quoted here-string content is
+        // literal too — inserted content is never rescanned, whatever
+        // quote form carried it.
+        match preprocess_repl_line("put - name <<< \"price $(echo SUBSTITUTED) end\"").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price $(echo SUBSTITUTED) end name"
+                );
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_unquoted_substitution_is_literal() {
+        // #2281 pinned semantics: unquoted here-string content is
+        // likewise inserted as a protected span and never rescanned.
+        match preprocess_repl_line("put - name <<< price_$(echo SUBSTITUTED)_end").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price_$(echo SUBSTITUTED)_end name"
+                );
+            }
+            other => panic!("expected Ready, got {other:?}"),
         }
     }
 

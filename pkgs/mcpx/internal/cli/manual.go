@@ -741,6 +741,16 @@ func ManPage(version string) string {
 			for _, ex := range c.Examples {
 				fmt.Fprintf(&b, ".RS\n.PP\n.EX\n%s\n.EE\n.RE\n", roffEscape(ex))
 			}
+			for _, g := range handFlagGroups(c.Name) {
+				var parts []string
+				for _, f := range g.Flags {
+					parts = append(parts, "--"+roffEscape(f.Name)+" "+roffEscape(f.Usage))
+				}
+				if len(parts) > 0 {
+					fmt.Fprintf(&b, ".RS\n.PP\nFlags (%s): %s\n.RE\n",
+						roffEscape(g.Scope), strings.Join(parts, "; "))
+				}
+			}
 		}
 	}
 

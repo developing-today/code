@@ -91,7 +91,7 @@ func Expand(t Template, fill Fill, opt Options) (string, error) {
 	if err := checkAcyclic(t, fill); err != nil {
 		return "", err
 	}
-	if err := checkUnknown(t, fill); err != nil {
+	if err := checkUnknown(t, fill, opt.Defs); err != nil {
 		return "", err
 	}
 
@@ -349,34 +349,95 @@ func refs(text string, fill Fill) []Placeholder {
 // A typo silently leaves the text in place, producing a syntax error from the
 // runtime that points at a line the user did not write. Catching it here
 // means the message names the misspelling and lists what was available.
-func checkUnknown(t Template, fill Fill) error {
-	known := map[string]bool{}
+//
+// The scan covers every text that can reach the generated launcher -- the
+// template text, the fill bodies, and the definition bodies and defaults --
+// and the known names are every name a reference could legitimately mean IN
+// THAT TEXT: the built-ins, the fill keys and the definition names
+// everywhere, and a definition's parameters only inside its own body.
+// Until #1681 only the template text was scanned and only the built-ins
+// counted as near-miss targets, so a typo of a user-defined name, or any
+// typo inside a body, passed silently and landed in the launcher verbatim.
+// The first fix made parameters known globally, which suppressed typo
+// diagnostics everywhere else (Codex P2 on PR #2959): parameters bind only
+// inside the called definition body, as withArgs implements, so the
+// exemption is scoped to that body. Inside a body, withArgs also binds
+// @args and the positional @1, @2, ... whether or not the declaration
+// named its parameters, so those implicit names are known there too --
+// a body using @args next to a parameter named arg, or @1 next to one
+// named x, is not a misspelling (Codex P2 on PR #2959).
+//
+// Literal @-content is not a reference: an @name inside a quoted string
+// (an import of "@sentry/node" in a hook, a generated header quoting a
+// script path under /work/@entrypoints/) is data the launcher carries,
+// not a placeholder someone meant to fill, so quoted spans are skipped
+// (Codex P2 on PR #2959).
+func checkUnknown(t Template, fill Fill, defs []Definition) error {
+	base := map[string]bool{}
 	for _, p := range All {
-		known[string(p)] = true
+		base[string(p)] = true
 	}
 	for p := range fill {
-		known[string(p)] = true
+		base[string(p)] = true
+	}
+	for _, d := range defs {
+		base[string(d.Name)] = true
+	}
+	// bodyKnown is the known set inside one definition's body: the base
+	// names plus that definition's parameters and the implicit argument
+	// bindings withArgs layers on.
+	bodyKnown := map[Placeholder]map[string]bool{}
+	for _, d := range defs {
+		known := map[string]bool{}
+		for name := range base {
+			known[name] = true
+		}
+		for _, param := range d.Params {
+			known[param] = true
+		}
+		known["args"] = true
+		bodyKnown[d.Name] = known
+	}
+	type textToScan struct {
+		text  string
+		known map[string]bool
+		// body marks a definition body, where purely numeric names are
+		// positional bindings (@1, @2, ...) rather than references.
+		body bool
+	}
+	var texts []textToScan
+	texts = append(texts, textToScan{t.Text, base, false})
+	for name, body := range fill {
+		if known, isDef := bodyKnown[name]; isDef {
+			texts = append(texts, textToScan{body, known, true})
+		} else {
+			texts = append(texts, textToScan{body, base, false})
+		}
+	}
+	for _, d := range defs {
+		texts = append(texts, textToScan{d.Body, bodyKnown[d.Name], true})
+		for _, def := range d.Defaults {
+			// A default is resolved against the OUTER fill (withArgs),
+			// so its references mean the base names, not the params.
+			texts = append(texts, textToScan{def, base, false})
+		}
 	}
 	var bad []string
 	seen := map[string]bool{}
-	for i := 0; i < len(t.Text); i++ {
-		if t.Text[i] != '@' {
-			continue
-		}
-		ref, ok := readRef(t.Text[i:])
-		if !ok {
-			continue
-		}
-		name := string(ref.Name)
-		i += max(ref.Width-1, 0)
-		if known[name] || seen[name] {
-			continue
-		}
-		// Only complain about names that look deliberate. An email address
-		// or a decorator should not trip this.
-		if looksLikePlaceholder(name) {
-			seen[name] = true
-			bad = append(bad, "@"+name)
+	for _, ts := range texts {
+		for _, name := range scanRefs(ts.text) {
+			if ts.known[name] || seen[name] {
+				continue
+			}
+			if ts.body && isAllDigits(name) {
+				continue
+			}
+			// Only complain about names that look deliberate. An email
+			// address or a decorator should not trip this.
+			if looksLikePlaceholder(name, ts.known) {
+				seen[name] = true
+				bad = append(bad, "@"+name)
+			}
 		}
 	}
 	if len(bad) == 0 {
@@ -387,8 +448,81 @@ func checkUnknown(t Template, fill Fill) error {
 	for _, p := range All {
 		names = append(names, "@"+string(p))
 	}
+	union := map[string]bool{}
+	for name := range base {
+		union[name] = true
+	}
+	for _, known := range bodyKnown {
+		for name := range known {
+			union[name] = true
+		}
+	}
+	var extra []string
+	for name := range union {
+		if !containsPlaceholder(All, name) {
+			extra = append(extra, "@"+name)
+		}
+	}
+	sort.Strings(extra)
+	names = append(names, extra...)
 	return fmt.Errorf("%s: unknown placeholder %s; available are %s",
 		t.Name, strings.Join(bad, ", "), strings.Join(names, " "))
+}
+
+// scanRefs returns the name of every @reference in text that sits
+// outside a quoted string. Quoted spans ('...', "..." and `...`,
+// backslash escapes honoured, single-line for ' and ") are literal
+// content -- an import path or a quoted file path -- not references.
+func scanRefs(text string) []string {
+	var out []string
+	var quote byte
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if quote != 0 {
+			switch {
+			case c == '\\':
+				i++ // an escaped character inside quotes is data
+			case c == quote:
+				quote = 0
+			case c == '\n' && quote != '`':
+				quote = 0 // ' and " strings do not span lines
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+		case '@':
+			ref, ok := readRef(text[i:])
+			if !ok {
+				continue
+			}
+			out = append(out, string(ref.Name))
+			i += max(ref.Width-1, 0)
+		}
+	}
+	return out
+}
+
+func isAllDigits(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !isDigit(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsPlaceholder(all []Placeholder, name string) bool {
+	for _, p := range all {
+		if string(p) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // looksLikePlaceholder is a near-miss test against the known names. It is
@@ -399,9 +533,9 @@ func checkUnknown(t Template, fill Fill) error {
 // one -- the transposition case ("entyr" for "entry") is one edit there,
 // where this file used to keep its own pair of helpers to say the same
 // thing.
-func looksLikePlaceholder(name string) bool {
-	for _, p := range All {
-		if nearmiss.Near(name, string(p)) {
+func looksLikePlaceholder(name string, known map[string]bool) bool {
+	for p := range known {
+		if nearmiss.Near(name, p) {
 			return true
 		}
 	}

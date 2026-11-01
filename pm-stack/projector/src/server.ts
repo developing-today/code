@@ -34,6 +34,30 @@ function repos(env: ServerEnv): string[] {
     .filter(Boolean);
 }
 
+export const DEFAULT_ITEMS_LIMIT = 200;
+export const MAX_ITEMS_LIMIT = 1000;
+export const DEFAULT_COMMENTS_LIMIT = 500;
+export const MAX_COMMENTS_LIMIT = 1000;
+
+/**
+ * Parse the `limit` query parameter (#1547). Only a positive integer is
+ * honoured, clamped to the endpoint maximum. An absent, non-numeric,
+ * fractional, zero, or negative value falls back to the endpoint default:
+ * an unvalidated value must never reach the store, where SQLite binds a
+ * negative LIMIT as "no limit" and a fractional one raises an error that
+ * escapes the handler as a 500.
+ */
+export function parseLimit(raw: string | null, defaultLimit: number, maxLimit: number): number {
+  if (raw === null) return defaultLimit;
+  // Only a decimal-digit spelling is honoured (#2971): Number() coercion
+  // re-admits every spelling it accepts ('1e2', '0x10', '5.0', '+5', ' 5'),
+  // which is the #1547 residual this gate exists to close.
+  if (!/^[0-9]+$/.test(raw)) return defaultLimit;
+  const n = Number(raw);
+  if (n < 1) return defaultLimit;
+  return Math.min(n, maxLimit);
+}
+
 function bearerAuthorized(req: Request, env: ServerEnv): boolean {
   const token = env.PM_PROJECTOR_API_TOKEN;
   if (!token) return false; // fail closed when no token configured
@@ -116,7 +140,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
       repo: url.searchParams.get("repo") ?? undefined,
       state: url.searchParams.get("state") ?? undefined,
       kind: url.searchParams.get("kind") ?? undefined,
-      limit: Number(url.searchParams.get("limit") ?? 200),
+      limit: parseLimit(url.searchParams.get("limit"), DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT),
     });
     return jsonResponse(200, { items: rows });
   }
@@ -125,7 +149,7 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
   if (path === "/comments" && method === "GET") {
     const refsParam = url.searchParams.get("refs");
     const subject = url.searchParams.get("subject");
-    const limit = Number(url.searchParams.get("limit") ?? 500);
+    const limit = parseLimit(url.searchParams.get("limit"), DEFAULT_COMMENTS_LIMIT, MAX_COMMENTS_LIMIT);
     if (subject) {
       const rows = await store.getCommentsForSubject(db, subject, { limit });
       return jsonResponse(200, { comments: rows });
@@ -173,7 +197,17 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
 
   // -- read: joined subject ---------------------------------------------------
   if (path.startsWith("/subjects/") && method === "GET") {
-    const subject = decodeURIComponent(path.slice("/subjects/".length));
+    // A malformed percent-encoding is a 400, never a 500: an unguarded
+    // decodeURIComponent throws URIError out of the handler (#2693,
+    // design #2747 Phase 2; same guard as #2720 in cf-container-hello).
+    // Only the decode is guarded \u2014 a well-formed subject still
+    // resolves (or 404s) exactly as before.
+    let subject: string;
+    try {
+      subject = decodeURIComponent(path.slice("/subjects/".length));
+    } catch {
+      return jsonResponse(400, { error: "malformed percent-encoding in subject" });
+    }
     const view = await store.getSubject(db, subject);
     if (!view) return jsonResponse(404, { error: "subject_not_found" });
     return jsonResponse(200, view);

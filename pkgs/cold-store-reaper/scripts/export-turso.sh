@@ -77,7 +77,13 @@ case "${DUMP_MAX_TIME}" in
   echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
   exit 1
   ;;
-*) ;;
+*[1-9]*) ;;
+*)
+  # All digits but no non-zero digit (0, 00, ...): curl --max-time 0
+  # disables the timeout entirely, so zero is not a positive integer.
+  echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
+  exit 1
+  ;;
 esac
 API_BASE="${TURSO_API_BASE:-https://api.turso.tech}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

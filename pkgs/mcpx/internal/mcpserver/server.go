@@ -208,6 +208,12 @@ type Server struct {
 	// ExtrasOnly is set: they describe the meta-tools, which are absent.
 	OwnInstructions string
 
+	// Instance is this server process's unique instance identity,
+	// reported to clients as serverInfo.instance (#1877). Empty means
+	// no identity is reported -- the zero value every test server and
+	// ExtrasOnly adapter keeps, so nothing about their surface changes.
+	Instance string
+
 	// PageSize caps how many items a list reply carries.
 	PageSize int
 
@@ -353,6 +359,7 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		Ask:                s.Ask,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
+		Instance:           s.Instance,
 		Reactive:           s.Reactive,
 		PinnedTools:        s.PinnedTools,
 		ReactiveWorkingSet: s.ReactiveWorkingSet,
@@ -769,9 +776,20 @@ func (s *Server) envelope(req request, result any) any {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	meta[MetaServerInfo] = map[string]any{"name": s.name, "version": s.version}
+	meta[MetaServerInfo] = s.serverInfo()
 	m["_meta"] = meta
 	return m
+}
+
+// serverInfo is the identity this server reports, in initialize and in
+// the modern _meta alike: name and version, plus the process instance
+// identity when one is set (#1877).
+func (s *Server) serverInfo() map[string]any {
+	info := map[string]any{"name": s.name, "version": s.version}
+	if s.Instance != "" {
+		info["instance"] = s.Instance
+	}
+	return info
 }
 
 func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
@@ -802,6 +820,55 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		return fail(codeMethodNotFound, "no method "+req.Method+" in "+peer.Version)
 	}
 
+	// Advertised-capability gate (#2436, Phase 2 of #2434): a method
+	// whose gating capability was not advertised to this peer is
+	// method-not-found, even though mcpx answers it for peers it was
+	// advertised to. The gated set is exactly the two proven
+	// advertisement/dispatch disagreements — completion/complete and
+	// resources/subscribe|unsubscribe; widening it needs its own
+	// evidence per #2434. Placement is after the Removed check, whose
+	// precedence it keeps.
+	//
+	// The capability source is what the peer was (or would now be)
+	// advertised, never a dispatch-time guess: for a legacy peer the
+	// snapshot taken when initialize answered, because re-evaluating
+	// capabilities() here can differ from the advertisement (its push
+	// term moves as push functions are installed after the handshake);
+	// for a modern per-request peer, capabilities() evaluated with
+	// this request's own context, version, and connection, exactly as
+	// an advertisement for this request would compute it.
+	if capName, gated := gatedCapability(req.Method); gated {
+		// The peer's declared revision: per-request _meta first, else
+		// what the handshake settled. Empty means the peer told us
+		// nothing — peerFor's Oldest fallback is a shape-downgrade
+		// default, not an advertisement, and no advertisement ever
+		// happened on the connection either, so there is nothing to
+		// gate against: serve as today. A genuine 2024-11-05 peer
+		// always declares (legacy initialize settles a version;
+		// modern per-request peers carry _meta), so it stays gated.
+		version := requestVersion(req.Params)
+		if version == "" && c != nil {
+			version = c.Version()
+		}
+		if version != "" {
+			var caps map[string]any
+			if peer.Modern {
+				caps = s.capabilities(ctx, peer.Version, c)
+			} else if c != nil {
+				caps = c.advertisedCaps()
+			}
+			if caps == nil {
+				// No advertisement happened on this connection (a peer
+				// that never shook hands): evaluate what it would be
+				// advertised now.
+				caps = s.capabilities(ctx, peer.Version, c)
+			}
+			if !capabilityAdvertised(caps, capName) {
+				return fail(codeMethodNotFound, "no method "+req.Method+": capability "+capName+" not advertised")
+			}
+		}
+	}
+
 	switch req.Method {
 	case "tasks/get", "tasks/list", "tasks/result", "tasks/cancel", "tasks/update":
 		return s.handleTask(ctx, c, req, peer)
@@ -816,7 +883,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		var call struct {
 			Name string `json:"name"`
 		}
-		ctx = s.withPass(ctx)
+		ctx = s.withRaw(s.withPass(ctx))
 		if json.Unmarshal(req.Params, &call) == nil && call.Name != "" {
 			found, err := s.hasTool(ctx, call.Name)
 			if err == nil && !found {
@@ -852,10 +919,15 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		}
 		_ = json.Unmarshal(req.Params, &ip)
 		c.SetCapabilities(ip.Capabilities, version)
+		caps := s.capabilities(ctx, version, c)
+		// Snapshot what this peer was advertised: the dispatch gate
+		// (#2436) judges legacy peers against this map, not against a
+		// later re-evaluation.
+		c.setAdvertised(caps)
 		return reply(map[string]any{
 			"protocolVersion": version,
-			"capabilities":    s.capabilities(ctx, version, c),
-			"serverInfo":      map[string]any{"name": s.name, "version": s.version},
+			"capabilities":    caps,
+			"serverInfo":      s.serverInfo(),
 			"instructions":    s.instructions(),
 		})
 
@@ -864,9 +936,13 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		// uses to decide which era it is talking to. serverInfo is not here:
 		// 2026-07-28 moved it into _meta, which envelope adds to every
 		// modern result, this one included.
+		caps := s.capabilities(ctx, ModernLatest, c)
+		if c != nil {
+			c.setAdvertised(caps)
+		}
 		return reply(map[string]any{
 			"supportedVersions": Supported,
-			"capabilities":      s.capabilities(ctx, ModernLatest, c),
+			"capabilities":      caps,
 			"instructions":      s.instructions(),
 		})
 
@@ -1023,7 +1099,8 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 			return fail(codeInvalidParams, err.Error())
 		}
 		text, err := s.invoke(s.withRelay(ctx, c, req, peer), p.Name, p.Arguments)
-		if up := (*UpstreamError)(nil); errors.As(err, &up) {
+		if up := (*UpstreamError)(nil); errors.As(err, &up) &&
+			(up.Code != codeURLElicitationRequired || peer.eligibleURLElicitationRequired()) {
 			return up.relay(req.ID)
 		}
 		// A client-side validation failure (the caller's arguments
@@ -1767,7 +1844,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 			// it, because what it settles governs every later reply.
 			resp := s.HandleOn(base, c, req)
 			if req.Method == "initialize" && resp != nil && resp.Error == nil {
-				s.startListChanged(c)
+				s.startListChanged(base, c)
 			}
 			// Never a reply to a notification, not even an error: JSON-RPC
 			// forbids it, and a client would have nothing to match it to.
@@ -1893,6 +1970,12 @@ func (s *Server) RESTHandler(tool string) http.HandlerFunc {
 // initialize, a GET notification stream, batches for 2025-03-26, and
 // responses to questions mcpx asked.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// ?codemode=false asks for raw tools instead of the code-mode
+	// surface (codemode.go). It is on the URL, so it is read here, once,
+	// and rides the request context every later stage already derives
+	// from r.Context(). Any other value -- and its absence -- is the
+	// surface as it has always been.
+	r = r.WithContext(withCodemode(r.Context(), r.URL.Query().Get("codemode") == "false"))
 	if !s.originAllowed(r.Header.Get("Origin")) {
 		writeJSON(w, http.StatusForbidden, response{JSONRPC: "2.0", Error: &rpcError{
 			Code: codeInvalidRequest, Message: "Origin " + r.Header.Get("Origin") + " is not allowed"}})
@@ -2465,7 +2548,7 @@ func (s *Server) capabilities(ctx context.Context, version string, c *Conn) map[
 		// is the upstreams' list and changes when theirs does. It used to
 		// be declared for the fixed list too, and a client re-listed on
 		// every upstream change and got the same ten tools back.
-		"tools":     map[string]any{"listChanged": push && s.toolsVary()},
+		"tools":     map[string]any{"listChanged": push && s.toolsListChangedFor(ctx)},
 		"resources": map[string]any{"subscribe": push, "listChanged": push},
 		"prompts":   map[string]any{"listChanged": push},
 	}
@@ -2503,6 +2586,37 @@ func (s *Server) capabilities(ctx context.Context, version string, c *Conn) map[
 		}
 	}
 	return caps
+}
+
+// gatedCapability names the advertised capability a method depends on
+// for the dispatch gate in handle (#2436). The set is deliberately
+// only the two advertisement/dispatch disagreements proven in #2434's
+// triage; a method not listed is not gated.
+func gatedCapability(method string) (string, bool) {
+	switch method {
+	case "completion/complete":
+		return "completions", true
+	case "resources/subscribe", "resources/unsubscribe":
+		return "resources.subscribe", true
+	}
+	return "", false
+}
+
+// capabilityAdvertised reports whether the capabilities map caps
+// advertises the named gating capability: completions by presence
+// (it is declared as an empty object when the revision defines it),
+// resources.subscribe by its boolean.
+func capabilityAdvertised(caps map[string]any, capName string) bool {
+	switch capName {
+	case "completions":
+		_, ok := caps["completions"]
+		return ok
+	case "resources.subscribe":
+		res, _ := caps["resources"].(map[string]any)
+		on, _ := res["subscribe"].(bool)
+		return on
+	}
+	return true
 }
 
 // SetPush installs how to reach the default connection's client.
@@ -2740,6 +2854,16 @@ func (s *Server) invoke(ctx context.Context, name string, args json.RawMessage) 
 		}
 	} else if s.ReactiveWorkingSet != nil {
 		s.ReactiveWorkingSet.Touch("", name)
+	}
+	if rawToolsRequested(ctx) {
+		nt, isRaw, err := s.rawOwner(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		if !isRaw {
+			return "", fmt.Errorf("no tool named %q on the raw surface (codemode=false)", name)
+		}
+		return s.backend.Call(ctx, nt.Namespace, nt.Tool.Name, args)
 	}
 	if name == "request_tools" {
 		return s.executeRequestTools(ctx, args)

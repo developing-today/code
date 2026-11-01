@@ -172,3 +172,4 @@ codedb.snapshot
 /.local/
 /r.out
 /r.err
+*.db

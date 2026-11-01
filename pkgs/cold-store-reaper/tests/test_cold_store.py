@@ -699,6 +699,12 @@ class FakeS3:
         # list_attempts counts every listing call, failed or not.
         self.list_failures = []
         self.list_attempts = 0
+        # Broken-pagination injection for LIST responses: None serves
+        # well-behaved advancing tokens; "missing" truncates with no
+        # NextContinuationToken, "empty" with an empty one, "repeat"
+        # with the token the current page was requested with (no
+        # progress). A correct client aborts; a broken one loops.
+        self.list_token_mode = None
 
     def put(self, key, body: bytes, last_modified: str):
         self.objects[key] = {"body": body, "last_modified": last_modified}
@@ -767,12 +773,19 @@ def make_s3_handler(fake: FakeS3):
                     f"<Size>{len(fake.objects[k]['body'])}</Size></Contents>"
                     for k in page
                 )
-                token = (
-                    f"<NextContinuationToken>{start + fake.page_size}"
-                    "</NextContinuationToken>"
-                    if truncated
-                    else ""
-                )
+                if not truncated:
+                    token = ""
+                elif fake.list_token_mode == "missing":
+                    token = ""
+                elif fake.list_token_mode == "empty":
+                    token = "<NextContinuationToken></NextContinuationToken>"
+                elif fake.list_token_mode == "repeat":
+                    token = f"<NextContinuationToken>{start}</NextContinuationToken>"
+                else:
+                    token = (
+                        f"<NextContinuationToken>{start + fake.page_size}"
+                        "</NextContinuationToken>"
+                    )
                 body = (
                     '<?xml version="1.0" encoding="UTF-8"?>'
                     '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
@@ -1329,6 +1342,41 @@ class TestS3Client(S3TestBase):
         for o in objects:
             self.assertEqual(o["size"], 1)
             self.assertIsNotNone(o["last_modified"])
+
+    def _list_calls(self):
+        return [r for r in self.s3.requests if r["path"] == "/supabase-backups"]
+
+    def _put_five_for_pagination(self):
+        for i in range(5):
+            self.s3.put(f"pg/muse-dev/k{i}.bin", b"x", "2026-10-01T00:00:00.000Z")
+
+    def test_list_pagination_missing_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "missing"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertIn("missing or empty", str(ctx.exception))
+        self.assertEqual(len(self._list_calls()), 1)  # aborts on page 1
+
+    def test_list_pagination_empty_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "empty"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertEqual(len(self._list_calls()), 1)
+
+    def test_list_pagination_repeated_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "repeat"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertIn("non-advancing", str(ctx.exception))
+        # Page 1 hands back token "0"; the re-request returns it again
+        # and the guard fires — two calls, never a third.
+        self.assertEqual(len(self._list_calls()), 2)
 
     def test_missing_credentials_error(self):
         env = {
@@ -1920,6 +1968,78 @@ class TestOffsetLessLastModified(EvictTestBase):
             listed[self.keys["oldtimer"]]["last_modified"],
             datetime(2026, 6, 1, tzinfo=timezone.utc),
         )
+
+
+
+class TestS3ListPageValidation(unittest.TestCase):
+    """#2733: _parse_s3_list_page must fail closed with ColdStoreError.
+
+    A malformed or shape-drifted body must never escape as a raw
+    ParseError/ValueError, and a wrong-root document must never be
+    read as an empty bucket (backup + eviction plan from this list).
+    """
+
+    def _page(self, contents="", root="ListBucketResult", extra=""):
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<{root} xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            f"<Name>b</Name>{extra}{contents}</{root}>"
+        ).encode()
+
+    def _entry(self, size_marker):
+        return (
+            "<Contents><Key>a.bin</Key>"
+            "<LastModified>2026-10-01T00:00:00.000Z</LastModified>"
+            f"{size_marker}</Contents>"
+        )
+
+    def test_non_xml_body_raises_cold_store_error(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(b'{"error": "nope"}')
+
+    def test_wrong_root_raises_cold_store_error(self):
+        body = b"<html><body>proxy error</body></html>"
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(body)
+
+    def test_non_numeric_size_raises(self):
+        for bad in ("abc", "1.5"):
+            with self.subTest(size=bad):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    cold_store._parse_s3_list_page(
+                        self._page(self._entry(f"<Size>{bad}</Size>"))
+                    )
+
+    def test_negative_size_raises(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(
+                self._page(self._entry("<Size>-5</Size>"))
+            )
+
+    def test_missing_size_keeps_default_zero(self):
+        objects, truncated, token = cold_store._parse_s3_list_page(
+            self._page(self._entry(""))
+        )
+        self.assertEqual(objects[0]["size"], 0)
+        self.assertFalse(truncated)
+        self.assertIsNone(token)
+
+    def test_valid_page_pagination_and_stamp_unchanged(self):
+        body = self._page(
+            self._entry("<Size>3</Size>"),
+            extra=("<IsTruncated>true</IsTruncated>"
+                   "<NextContinuationToken>tok2</NextContinuationToken>"),
+        )
+        objects, truncated, token = cold_store._parse_s3_list_page(body)
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0]["key"], "a.bin")
+        self.assertEqual(objects[0]["size"], 3)
+        self.assertEqual(
+            objects[0]["last_modified"],
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        self.assertTrue(truncated)
+        self.assertEqual(token, "tok2")
 
 
 class TestOffsetLessBackupPick(S3TestBase):

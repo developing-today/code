@@ -110,7 +110,14 @@ export function parseLaunchRecords(jsonl: string): SessionRecord[] {
 /**
  * Merge incoming records into the stored set, keyed by (source, id).
  * Tokens are cumulative, so the max wins; lastSeenAt keeps the newest;
- * every other field takes the incoming value when present.
+ * every other field takes the incoming value when present. "Present"
+ * means the incoming key holds a real value: undefined-valued keys are
+ * skipped (a sparse re-read must not wipe what the store already knew,
+ * #1560), an incoming parentId of null is treated as absent (a feed
+ * entry that does not state a parent is not a root claim), and the
+ * label follows the title — when the incoming title is absent the
+ * incoming label is just the session-id fallback, so the stored label
+ * is preserved.
  */
 export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[]): SessionRecord[] {
   const byKey = new Map<string, SessionRecord>();
@@ -122,12 +129,18 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
       byKey.set(key, r);
       continue;
     }
+    const present: Partial<SessionRecord> = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (v !== undefined) (present as Record<string, unknown>)[k] = v;
+    }
     byKey.set(key, {
       ...prev,
-      ...r,
+      ...present,
+      parentId: r.parentId ?? prev.parentId,
+      label: r.title !== undefined ? r.label : prev.label,
       startedAt: prev.startedAt ?? r.startedAt,
       tokensTotal: Math.max(prev.tokensTotal ?? 0, r.tokensTotal ?? 0) || undefined,
-      taskRefs: [...new Set([...prev.taskRefs, ...r.taskRefs])],
+      taskRefs: [...new Set([...(prev.taskRefs ?? []), ...(r.taskRefs ?? [])])],
       lastSeenAt: (prev.lastSeenAt ?? "") >= (r.lastSeenAt ?? "") ? (prev.lastSeenAt ?? r.lastSeenAt) : r.lastSeenAt,
     });
   }

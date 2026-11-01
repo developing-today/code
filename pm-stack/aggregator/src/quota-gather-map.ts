@@ -143,7 +143,11 @@ export function entryFromFileExport(
       value: pct,
       pctOfLimit: pct,
       valueLabel: null,
-      windowSeconds: FILE_EXPORT_WINDOW_SECONDS[w.name] ?? null,
+      // Own-key rule (#2781, design #2792): a window name that is not an
+      // own key — including prototype spellings (constructor/__proto__/
+      // toString) — is an unknown window and gets null, never a prototype
+      // member as its windowSeconds.
+      windowSeconds: Object.hasOwn(FILE_EXPORT_WINDOW_SECONDS, w.name) ? FILE_EXPORT_WINDOW_SECONDS[w.name] : null,
       resetsAt: normalizeResetAt(w.resetAt),
       measuredAt,
       source: entry.source,
@@ -280,7 +284,13 @@ export function recordsFromEntries(
   for (const entry of entries) {
     if (entry.state !== "ok") continue;
     for (const w of entry.windows) {
-      const native = entry.serviceId === "turso" ? TURSO_NATIVE_RECORDS[w.name] : undefined;
+      // Own-key rule (#2781, design #2792): only an own key takes the
+      // native-record branch; a prototype spelling falls through to the
+      // normal pct path like any unknown window name.
+      const native =
+        entry.serviceId === "turso" && Object.hasOwn(TURSO_NATIVE_RECORDS, w.name)
+          ? TURSO_NATIVE_RECORDS[w.name]
+          : undefined;
       if (native) {
         if (w.value == null) continue;
         const key = `${entry.serviceId}|${w.name}`;

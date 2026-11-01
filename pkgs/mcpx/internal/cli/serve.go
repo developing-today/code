@@ -119,6 +119,15 @@ func (b mcpBackend) Search(ctx context.Context, query string, limit int) (string
 	return sb.String(), nil
 }
 
+// isRawCall reports whether this Call serves a raw (codemode=false)
+// tool: the request's own raw lookup resolves the exposed name
+// <ns>_<tool> back to exactly this namespace and the upstream's own
+// tool name, as RawToolOf resolved it for the asker bridge.
+func isRawCall(ctx context.Context, ns, tool string) bool {
+	rns, rtool, known := mcpserver.RawToolOf(ctx, ns+"_"+tool)
+	return known && rns == ns && rtool == tool
+}
+
 func (b mcpBackend) Call(ctx context.Context, ns, tool string, args json.RawMessage) (string, error) {
 	c, err := b.app.ensure(ctx)
 	if err != nil {
@@ -134,7 +143,13 @@ func (b mcpBackend) Call(ctx context.Context, ns, tool string, args json.RawMess
 	if !visible(ns) {
 		return "", unknownNamespace(ns)
 	}
-	if b.app.isPass(ns) {
+	// A raw call (codemode=false) is a direct upstream call under a
+	// namespaced name, exactly as a pass-through call is under its own:
+	// the upstream judges what the client can answer and its JSON-RPC
+	// errors relay as themselves, so both take the pass-through path
+	// through this function.
+	direct := b.app.isPass(ns) || isRawCall(ctx, ns, tool)
+	if direct {
 		ctx = mcpclient.WithClientCapabilities(ctx, mcpserver.DeclaredCapabilities(ctx))
 	}
 	ctx = mcpclient.WithCallerVersion(ctx, mcpserver.PeerVersion(ctx))
@@ -150,7 +165,7 @@ func (b mcpBackend) Call(ctx context.Context, ns, tool string, args json.RawMess
 		res, err = c.Call(ctx, ns, tool, b.app.mcpCaller(ctx), args)
 	}
 	if err != nil {
-		if b.app.isPass(ns) {
+		if direct {
 			return "", relayedFault(err)
 		}
 		return "", err
@@ -497,6 +512,7 @@ func (a *App) mcpSession() string {
 // existed.
 func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	srv := mcpserver.New(mcpBackend{app: a}, "mcpx", a.Version)
+	srv.Instance = a.InstanceID()
 	srv.Notify = daemonNotifier{app: a}
 	// The daemon's task store, when this server is the daemon's own
 	// (root.go set a.daemonStore): MCP tasks and /v1 tasks are then
@@ -530,6 +546,12 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 		SSEKeepAlive: a.Settings().Duration("transport.sseKeepAlive"),
 		StdioDrain:   a.Settings().Duration("transport.stdioDrain"),
 		TaskPoll:     a.Settings().Duration("protoTasks.pollInterval"),
+		// The task-store limits (#2498), read from the same settings the
+		// daemon's taskStore() wiring reads. perMinute's 0 disables the
+		// window and is translated to -1 here (see Timing).
+		TaskMaxTTL:          a.Settings().Duration("protoTasks.maxTTL"),
+		TaskMaxPerRequestor: a.Settings().Int("protoTasks.maxPerRequestor"),
+		TaskWindowPerMinute: perMinuteSetting(a.Settings().Int("protoTasks.perMinute")),
 	}
 	srv.Cache = mcpserver.Cache{
 		List: a.Settings().Duration("protoMessages.listMaxAge"),
@@ -616,6 +638,21 @@ func (a *App) CmdServe(ctx context.Context, args []string) error {
 		maxTools := a.Settings().Int("retention.maxTools")
 		stickyWindow := a.Settings().Duration("retention.stickyWindow")
 		srv.ReactiveWorkingSet = catalog.NewWorkingSet(maxTools, stickyWindow, srv.PinnedTools)
+	}
+	// #1877 (Codex P2 on PR 2975): this stdio server is a shim over its
+	// backing daemon, so the identity it reports must be the DAEMON's,
+	// not this shim process's. Otherwise a daemon configured with this
+	// shim as a stdio upstream sees a "distinct peer" and admits its
+	// own aggregate surface back into itself. Ensuring the connection
+	// here only moves the daemon start to serve start; the shim can
+	// answer nothing without it anyway. A daemon that reports no
+	// instance (older build) leaves the shim's own identity in place.
+	if c, err := a.ensure(ctx); err == nil {
+		if st, err := c.Status(ctx); err == nil {
+			if inst, ok := st["instance"].(string); ok && inst != "" {
+				srv.Instance = inst
+			}
+		}
 	}
 	if *printTools {
 		return a.out(srv.Tools())
@@ -907,13 +944,26 @@ func (b mcpBackend) ReadResource(ctx context.Context, uri string) ([]mcpserver.R
 		}
 		return nil, err
 	}
-	return b.app.resourceContents(raw, ns), nil
+	entries, err := b.app.resourceContents(raw, ns)
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 // resourceContents reads a resources/read reply into entries, keeping each
 // blob a blob. Entry URIs are namespaced the way the listing namespaces
 // them, so a client can read any of them back.
-func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.ResourceContents {
+//
+// The reply is validated first (#2754, mirroring the prompts/get
+// validator in #2193): a malformed upstream result is an error on the
+// read, never an empty or fabricated successful read. Until now an
+// unparseable reply was returned as one application/json text entry
+// carrying the raw bytes, and null/missing contents read as empty.
+func (a *App) resourceContents(raw json.RawMessage, ns string) ([]mcpserver.ResourceContents, error) {
+	if err := mcpclient.ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read: invalid result from upstream: %w", err)
+	}
 	var doc struct {
 		Contents []struct {
 			URI      string          `json:"uri"`
@@ -924,7 +974,7 @@ func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.Resou
 		} `json:"contents"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return []mcpserver.ResourceContents{{MimeType: "application/json", Text: string(raw)}}
+		return nil, fmt.Errorf("resources/read: invalid result from upstream: %w", err)
 	}
 	out := make([]mcpserver.ResourceContents, 0, len(doc.Contents))
 	for _, c := range doc.Contents {
@@ -935,7 +985,7 @@ func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.Resou
 		out = append(out, mcpserver.ResourceContents{URI: uri, MimeType: c.MimeType,
 			Text: c.Text, Blob: c.Blob, Meta: c.Meta})
 	}
-	return out
+	return out, nil
 }
 
 // textMime is what the daemon serves an artifact as text; everything else
@@ -1531,6 +1581,33 @@ func (a *App) uriOwner(ctx context.Context, pass []string, u string) string {
 	return ""
 }
 
+// RawTools lists every visible namespace's tools under their owners'
+// names, for the raw surface a ?codemode=false request to /mcp asks for
+// (mcpserver.RawToolsBackend). One namespace that cannot be listed fails
+// the whole list, as it does in pass-through mode: a partial catalogue
+// would have a client trust that the missing server has no tools.
+func (b mcpBackend) RawTools(ctx context.Context) ([]mcpserver.NamespacedTool, error) {
+	c, err := b.app.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nss, err := c.Namespaces(ctx, b.app.Profile)
+	if err != nil {
+		return nil, err
+	}
+	var out []mcpserver.NamespacedTool
+	for _, n := range nss {
+		ts, err := b.UpstreamTools(ctx, n.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range ts {
+			out = append(out, mcpserver.NamespacedTool{Namespace: n.Namespace, Tool: t})
+		}
+	}
+	return out, nil
+}
+
 // UpstreamTools lists one namespace's tools under their own names, for
 // pass-through mode. A namespace outside the profile has none.
 func (b mcpBackend) UpstreamTools(ctx context.Context, ns string) ([]mcpserver.Tool, error) {
@@ -1579,4 +1656,14 @@ func relayedFault(err error) error {
 		return err
 	}
 	return &mcpserver.UpstreamError{Code: body.Upstream.Code, Message: body.Upstream.Message, Data: body.Upstream.Data}
+}
+
+// perMinuteSetting translates protoTasks.perMinute for mcpserver.Timing:
+// the setting's 0 disables the admission window, which Timing carries as
+// -1 so a zero Timing still means "the store's default".
+func perMinuteSetting(v int) int {
+	if v == 0 {
+		return -1
+	}
+	return v
 }

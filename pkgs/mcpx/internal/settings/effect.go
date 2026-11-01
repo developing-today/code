@@ -56,6 +56,8 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
+	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -86,12 +88,15 @@ var EffectExemptions = map[string]string{
 	"script.onError":                     "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"script.suffix":                      "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"exec.timeout":                       "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
+	"exec.maxOutputBytes":                "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.output":                        "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.where":                         "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"artifacts.enabled":                  "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.dir":                      "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.delivery":                 "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.ttl":                      "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
+	"artifacts.idleTtl":                  "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
+	"artifacts.maxAge":                   "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.maxBytes":                 "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.quota":                    "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.inlineMaxBytes":           "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
@@ -235,6 +240,9 @@ var EffectExemptions = map[string]string{
 	"protoMessages.readMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.taskAfter":            "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoTasks.pollInterval":            "protocol task polling: its effect is a timing interval no single run observes deterministically",
+	"protoTasks.maxTTL":                  "task-store limits: covered by internal/tasks store tests (TTL clamp), not by a settings with/without probe",
+	"protoTasks.maxPerRequestor":         "task-store limits: covered by internal/tasks store tests (per-requestor cap), not by a settings with/without probe",
+	"protoTasks.perMinute":               "task-store limits: covered by internal/tasks store tests (admission window), not by a settings with/without probe",
 	"upstream.protocol":                  "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
 	"upstream.probeTimeout":              "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
 	"upstream.eraCache":                  "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
@@ -249,7 +257,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 182 // raised by one for policy.write (#1979), in the elicitation-flow exemption style of elicit.confirmDestructive
+const EffectExemptionPin = 188 // raised by three for protoTasks.maxTTL / maxPerRequestor / perMinute (#2498): task-store limits whose effects are covered by internal/tasks store tests, not settings probes; raised by two for artifacts.idleTtl + artifacts.maxAge (#2548), in the artifact-store exemption style of artifacts.ttl; raised by one for exec.maxOutputBytes (CODE-16, #1937), in the call-scoped exec exemption style of exec.timeout; previously raised by one for policy.write (#1979)
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

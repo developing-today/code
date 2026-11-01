@@ -30,6 +30,14 @@ type Conn struct {
 	// the specification says a server MUST NOT infer them from an earlier
 	// request.
 	caps map[string]json.RawMessage
+	// advertised is the server-capabilities map this connection's peer
+	// was actually given, snapshotted when initialize (or
+	// server/discover) answered. The dispatch capability gate (#2436)
+	// reads it for legacy peers: re-evaluating capabilities() at
+	// dispatch time can disagree with what was advertised, because
+	// capabilities() depends on canPush() and push functions are
+	// installed and mutated after advertisement.
+	advertised map[string]any
 	// version is what the initialize handshake settled on. Empty until a
 	// legacy client has shaken hands, and empty forever for a modern one.
 	version string
@@ -127,6 +135,22 @@ func (c *Conn) SetCapabilities(caps map[string]json.RawMessage, version string) 
 	c.mu.Lock()
 	c.caps, c.version = caps, version
 	c.mu.Unlock()
+}
+
+// setAdvertised snapshots the server-capabilities map an advertisement
+// answer (initialize / server/discover) gave this connection's peer.
+func (c *Conn) setAdvertised(caps map[string]any) {
+	c.mu.Lock()
+	c.advertised = caps
+	c.mu.Unlock()
+}
+
+// advertisedCaps returns the snapshotted advertised capabilities, or
+// nil when this connection has not been advertised to yet.
+func (c *Conn) advertisedCaps() map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.advertised
 }
 
 // Version is the revision this connection settled on, for a legacy client.

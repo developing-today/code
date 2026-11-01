@@ -161,6 +161,8 @@ func (a *App) localStore() (*artifacts.Store, error) {
 	return artifacts.Open(artifacts.Options{
 		Dir:      filepath.Join(paths.State, "artifacts"),
 		TTL:      set.Duration("artifacts.ttl"),
+		IdleTTL:  set.Duration("artifacts.idleTtl"),
+		MaxAge:   set.Duration("artifacts.maxAge"),
 		MaxBytes: set.Bytes("artifacts.maxBytes"),
 		Quota:    set.Bytes("artifacts.quota"),
 	})
@@ -175,10 +177,13 @@ func (a *App) localStore() (*artifacts.Store, error) {
 func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Service {
 	set := a.Settings()
 	lim := execsvc.DefaultLimits()
+	lim.Interpreter = set.String("script.interpreter")
+	lim.CwdPolicy = set.String("script.cwd")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
+	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 	return &execsvc.Service{
 		Store: store,
 		// The script runs in this process's machine, and the daemon whose
@@ -307,18 +312,30 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 			return err
 		}
 		name := "artifact"
+		match := -1
 		for i := range res.Artifacts {
 			if res.Artifacts[i].ID == f.ID {
 				name = res.Artifacts[i].Name
-				dest := filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(name))
-				if err := os.Rename(w.Name(), dest); err != nil {
-					return err
-				}
-				res.Artifacts[i].Path = dest
-				return nil
+				match = i
+				break
 			}
 		}
-		return os.Rename(w.Name(), filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(name)))
+		// Never overwrite: a second artifact whose name sanitises to the
+		// same file is suffixed, exactly as Store.Export does (#1605).
+		// Renaming onto the bare sanitised name silently destroyed the
+		// first artifact's body and left both Path fields pointing at
+		// the one surviving file.
+		dest, err := artifacts.UniquePath(eo.ArtifactsDir, name)
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(w.Name(), dest); err != nil {
+			return err
+		}
+		if match >= 0 {
+			res.Artifacts[match].Path = dest
+		}
+		return nil
 	}
 	return nil
 }
@@ -393,7 +410,11 @@ func (a *App) fetchArtifacts(res *execsvc.Result, eo execOptions) error {
 				return err
 			}
 		}
-		dest := filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(art.Name))
+		// Never overwrite, same rule as the streaming path (#1605).
+		dest, err := artifacts.UniquePath(eo.ArtifactsDir, art.Name)
+		if err != nil {
+			return err
+		}
 		if err := writeNew(dest, body); err != nil {
 			return err
 		}
@@ -537,7 +558,15 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	opts := execsvc.Options{
 		Runtime:     rf.runtime,
 		Permissions: rf.permissions,
-		Session:     session,
+		// From the resolved set, so --interpreter/--shell, the env and
+		// config files reach local and remote exec the same way.
+		Interpreter: a.Settings().String("script.interpreter"),
+		// The caller's script.cwd policy travels with the request; the
+		// daemon's own policy is only the fallback for callers that send
+		// none. Without this a caller's --script-cwd (or env/config
+		// value) was silently ignored by remote runs.
+		CwdPolicy: a.Settings().String("script.cwd"),
+		Session:   session,
 		// The caller's context, not the daemon's. A remote daemon has a
 		// different working directory and a different environment, and a
 		// script that reads either should see the one belonging to whoever

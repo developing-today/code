@@ -7,6 +7,11 @@ function testKeyB64(type: "pkcs8" | "pkcs1"): string {
   return Buffer.from(privateKey.export({ type, format: "der" })).toString("base64");
 }
 
+function testKeyPem(type: "pkcs8" | "pkcs1"): string {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  return privateKey.export({ type, format: "pem" }) as string;
+}
+
 describe("appJwt key formats", () => {
   test("signs with a PKCS#8 key (control)", async () => {
     const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8") });
@@ -15,6 +20,28 @@ describe("appJwt key formats", () => {
 
   test("signs with a PKCS#1 key — the format GitHub issues for Apps", async () => {
     const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs1") });
+    expect(jwt.split(".")).toHaveLength(3);
+  });
+
+  test("signs with raw PKCS#8 PEM text", async () => {
+    const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: testKeyPem("pkcs8") });
+    expect(jwt.split(".")).toHaveLength(3);
+  });
+
+  test("signs with raw PKCS#1 PEM text", async () => {
+    const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: testKeyPem("pkcs1") });
+    expect(jwt.split(".")).toHaveLength(3);
+  });
+
+  test("signs with base64-of-PEM PKCS#8 key", async () => {
+    const b64 = Buffer.from(testKeyPem("pkcs8"), "utf8").toString("base64");
+    const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: b64 });
+    expect(jwt.split(".")).toHaveLength(3);
+  });
+
+  test("signs with base64-of-PEM PKCS#1 key", async () => {
+    const b64 = Buffer.from(testKeyPem("pkcs1"), "utf8").toString("base64");
+    const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: b64 });
     expect(jwt.split(".")).toHaveLength(3);
   });
 });

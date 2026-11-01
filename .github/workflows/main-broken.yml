@@ -141,6 +141,11 @@ jobs:
             action=create
             prompt=$(printf '%s\nDiagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #<number>", using the number of the issue this dispatch created, so the issue closes when the fix lands.\n' "$body")
           fi
+          # Runtime-generated delimiters (#2712): body and prompt carry
+          # arbitrary workflow/issue content, so fixed delimiter lines inside
+          # them would truncate these outputs and corrupt the rest.
+          body_delim="MAIN_BROKEN_BODY_EOF_$(openssl rand -hex 8)"
+          prompt_delim="MAIN_BROKEN_PROMPT_EOF_$(openssl rand -hex 8)"
           {
             echo "action=${action}"
             echo "existing_number=${existing}"
@@ -150,12 +155,12 @@ jobs:
             echo "wf=${wf}"
             echo "short_sha=${short_sha}"
             echo "title=${title}"
-            echo "body<<MAIN_BROKEN_BODY_EOF"
+            echo "body<<$body_delim"
             printf '%s\n' "$body"
-            echo "MAIN_BROKEN_BODY_EOF"
-            echo "prompt<<MAIN_BROKEN_PROMPT_EOF"
+            echo "$body_delim"
+            echo "prompt<<$prompt_delim"
             printf '%s\n' "$prompt"
-            echo "MAIN_BROKEN_PROMPT_EOF"
+            echo "$prompt_delim"
           } >> "$GITHUB_OUTPUT"
           echo "Identified breakage: action=${action} existing=${existing:-none} Breakage-ID=${bid}"
 

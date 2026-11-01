@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
@@ -404,21 +406,18 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 // server's own completion knows the *values* an argument may take, which
 // mcpx cannot guess, so this is a floor rather than a substitute.
 func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource, req completeReq, max int) map[string]any {
-	var values []string
+	var candidates []string
 	switch req.Ref.Type {
 	case "ref/prompt":
 		for _, p := range prompts {
-			if hasPrefixFold(p.Name, req.Argument.Value) {
-				values = append(values, p.Name)
-			}
+			candidates = append(candidates, p.Name)
 		}
 	case "ref/resource":
 		for _, t := range templates {
-			if hasPrefixFold(t.URI, req.Argument.Value) {
-				values = append(values, t.URI)
-			}
+			candidates = append(candidates, t.URI)
 		}
 	}
+	values := rankCompletions(candidates, req.Argument.Value)
 	if values == nil {
 		values = []string{}
 	}
@@ -429,6 +428,62 @@ func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource,
 		values = values[:max]
 	}
 	return map[string]any{"values": values, "total": total, "hasMore": total > len(values)}
+}
+
+// rankCompletions orders the candidates that match value by relevance
+// (issue #2388, Phase 2 of design #2386): tier 1 is an exact
+// case-folded match, tier 2 a prefix match (shorter names first, then
+// folded alphabetical, then the raw string), tier 3 a substring
+// (non-prefix) match (by first-match position, then folded
+// alphabetical, then raw). Matching and ordering are case-folded with
+// strings.ToLower, consistent with hasPrefixFold. An empty value puts
+// every candidate in the prefix tier. The sort is stable and duplicate
+// candidates are preserved. Non-matches are dropped.
+func rankCompletions(candidates []string, value string) []string {
+	q := strings.ToLower(value)
+	type scored struct {
+		raw    string
+		folded string
+		tier   int
+		pos    int // tier 3: first-match index in the folded candidate
+	}
+	var hits []scored
+	for _, c := range candidates {
+		fc := strings.ToLower(c)
+		switch {
+		case q != "" && fc == q:
+			hits = append(hits, scored{c, fc, 1, 0})
+		case strings.HasPrefix(fc, q):
+			hits = append(hits, scored{c, fc, 2, 0})
+		case q != "" && strings.Index(fc, q) >= 0:
+			hits = append(hits, scored{c, fc, 3, strings.Index(fc, q)})
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if a.tier != b.tier {
+			return a.tier < b.tier
+		}
+		switch a.tier {
+		case 2:
+			if ra, rb := utf8.RuneCountInString(a.raw), utf8.RuneCountInString(b.raw); ra != rb {
+				return ra < rb
+			}
+		case 3:
+			if a.pos != b.pos {
+				return a.pos < b.pos
+			}
+		}
+		if a.folded != b.folded {
+			return a.folded < b.folded
+		}
+		return a.raw < b.raw
+	})
+	values := make([]string, 0, len(hits))
+	for _, h := range hits {
+		values = append(values, h.raw)
+	}
+	return values
 }
 
 // ---- tasks ----
@@ -455,16 +510,61 @@ func (s *Server) taskStore() *tasks.Store {
 		}
 		if s.set != nil {
 			s.tasks.PollInterval = s.set.Duration("protoTasks.pollInterval")
+			// The task-store limits (#2498): both surfaces share this
+			// store, so wiring them here covers /v1 and, when this store
+			// is injected into the MCP server, MCP too.
+			s.tasks.MaxTTL = s.set.Duration("protoTasks.maxTTL")
+			s.tasks.MaxPerRequestor = s.set.Int("protoTasks.maxPerRequestor")
+			// The setting's 0 disables the window; the store's 0 means
+			// "default", so translate here.
+			if pm := s.set.Int("protoTasks.perMinute"); pm == 0 {
+				s.tasks.PerMinute = -1
+			} else {
+				s.tasks.PerMinute = pm
+			}
 		}
 	})
 	return s.tasks
 }
 
-func (s *Server) handleTasksList(w http.ResponseWriter, _ *http.Request) {
+// taskRequestor names who a /v1 request belongs to for the task store's
+// per-requestor limits: the session the caller named (the query param,
+// or the X-Mcpx-Session header creation keys by via callContext), else
+// its run, else the unbound bucket (capped like any other).
+func taskRequestor(r *http.Request) tasks.Requestor {
+	if v := r.URL.Query().Get("session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Run"); v != "" {
+		return tasks.Caller(v)
+	}
+	return tasks.UnboundRequestor
+}
+
+// admitTaskRoute counts one /v1/tasks call against the tasks/* admission
+// window (protoTasks.perMinute) and writes the 429 when it is full.
+func (s *Server) admitTaskRoute(w http.ResponseWriter, r *http.Request) bool {
+	if !s.taskStore().Admit(taskRequestor(r)) {
+		writeErr(w, http.StatusTooManyRequests, tasks.ErrRateWindow)
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleTasksList(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskStore().List()})
 }
 
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	t, ok := s.taskStore().Get(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
@@ -474,9 +574,13 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
-	wait := s.callSettings(r).Duration("tasks.resultWait")
-	if ms, err := strconv.Atoi(r.URL.Query().Get("waitMs")); err == nil && ms > 0 {
-		wait = time.Duration(ms) * time.Millisecond
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
+	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("tasks.resultWait"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
@@ -508,6 +612,9 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	reason := r.URL.Query().Get("reason")
 	if reason == "" {
 		reason = "cancelled by client"
@@ -521,8 +628,10 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 // startCallTask runs a tool call in the background and hands back a handle.
-func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallContext, args any) tasks.Task {
-	return s.taskStore().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+// The task counts against requestor (the caller session, else its
+// run); an empty requestor lands in the store unbound bucket.
+func (s *Server) startCallTask(ttl int64, server, tool string, requestor tasks.Requestor, cc config.CallContext, args any) (tasks.Task, error) {
+	return s.taskStore().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		if err != nil {

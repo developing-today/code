@@ -538,30 +538,180 @@ mod tests {
     use crate::chain::{ChainExt, sign};
     use crate::waiting::WaitingLimits;
 
-    /// The build has no SQLite, with `LogSync` wired in. p2panda-sync's store dependency defaults to
-    /// SQLite, so the vendored copy turns that default off (`vendor/README.md`). This fails if the
-    /// lock names SQLite or sqlx, if p2panda-sync is missing, or if the vendored line loses the change.
+    /// One `[[package]]` entry of the lock: its name and the names it
+    /// depends on. Dependency entries are `"name"`, `"name version"` or
+    /// `"name version (source)"`; the name is the first word.
+    fn lock_packages(lock: &str) -> Vec<(String, Vec<String>)> {
+        let mut packages = Vec::new();
+        let mut current: Option<(String, Vec<String>)> = None;
+        let mut in_deps = false;
+        for raw in lock.lines() {
+            let line = raw.trim();
+            if line.starts_with("[[") {
+                in_deps = false;
+                if let Some(package) = current.take() {
+                    packages.push(package);
+                }
+            } else if current.is_none() {
+                if let Some(rest) = line.strip_prefix("name = \"") {
+                    current = Some((rest.trim_end_matches('"').to_owned(), Vec::new()));
+                }
+            } else if line == "dependencies = [" {
+                in_deps = true;
+            } else if in_deps && line == "]" {
+                in_deps = false;
+            } else if in_deps {
+                if let Some(entry) = line.strip_suffix(',') {
+                    let entry = entry.trim_matches('"');
+                    if let Some(name) = entry.split(' ').next() {
+                        current.as_mut().unwrap().1.push(name.to_owned());
+                    }
+                }
+            }
+        }
+        if let Some(package) = current.take() {
+            packages.push(package);
+        }
+        packages
+    }
+
+    /// Whether a manifest section header opens a dev-dependency section
+    /// (`Some(true)`), a shipped one — normal or build (`Some(false)`) — or
+    /// neither. Plain, target-specific and per-crate subtable spellings all
+    /// count: `[dev-dependencies]`, `[target.'cfg(..)'.dependencies]`,
+    /// `[dependencies.rusqlite]`.
+    fn dep_section_dev(section: &str) -> Option<bool> {
+        let tail = section.rsplit('.').next().unwrap_or(section);
+        match tail {
+            "dev-dependencies" => Some(true),
+            "dependencies" | "build-dependencies" => Some(false),
+            _ if section.starts_with("dev-dependencies.") => Some(true),
+            _ if section.starts_with("dependencies.")
+                || section.starts_with("build-dependencies.") =>
+            {
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+
+    /// The crate names a manifest declares in dependency sections of one
+    /// class (`dev` selects dev-dependencies, otherwise the shipped ones).
+    /// A `package = "..."` rename counts under the real name.
+    fn manifest_dep_names(manifest: &str, dev: bool) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut in_class = false;
+        for raw in manifest.lines() {
+            let line = raw.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                let section = line.trim_matches(|c| c == '[' || c == ']');
+                in_class = dep_section_dev(section) == Some(dev);
+                if in_class {
+                    // A per-crate subtable names the crate in the header:
+                    // `[dependencies.rusqlite]`.
+                    if let Some((_, name)) = section.rsplit_once('.')
+                        && !matches!(
+                            name,
+                            "dependencies" | "build-dependencies" | "dev-dependencies"
+                        )
+                    {
+                        names.push(name.to_owned());
+                    }
+                }
+                continue;
+            }
+            if !in_class {
+                continue;
+            }
+            if let Some((key, _)) = line.split_once('=') {
+                let key = key.trim().trim_matches('"');
+                if !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                {
+                    names.push(key.to_owned());
+                }
+            }
+            if let Some((_, rest)) = line.split_once("package = \"")
+                && let Some(name) = rest.split('"').next()
+            {
+                names.push(name.to_owned());
+            }
+        }
+        names
+    }
+
+    /// The `[package]` name of a manifest.
+    fn manifest_package_name(manifest: &str) -> Option<String> {
+        let mut in_package = false;
+        for raw in manifest.lines() {
+            let line = raw.trim();
+            if line.starts_with('[') {
+                in_package = line == "[package]";
+                continue;
+            }
+            if in_package && let Some(rest) = line.strip_prefix("name = \"") {
+                return Some(rest.trim_end_matches('"').to_owned());
+            }
+        }
+        None
+    }
+
+    /// The shipped build has no SQLite, with `LogSync` wired in. p2panda-sync's store dependency
+    /// defaults to SQLite, so the vendored copy turns that default off (`vendor/README.md`).
+    ///
+    /// The raw lock cannot carry this check on its own: it resolves dev-dependencies too, and
+    /// #2276 dev-depends on `rusqlite` for the bridge PoC's hosted store, which never ships.
+    /// So this reads the resolved graph instead. A SQLite-family package may appear only when
+    /// every package that depends on it is SQLite-family itself or this package — and this
+    /// package's manifest, checked section by section, must declare SQLite names as
+    /// dev-dependencies only. It fails if a shipped dependency pulls SQLite in, if the
+    /// manifest moves it out of dev-dependencies, if p2panda-sync is missing, or if the
+    /// vendored line loses the change.
     #[test]
     fn test_the_lock_has_no_sqlite_with_logsync_wired() {
-        let lock =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).unwrap();
-        for name in ["sqlx", "sqlite", "rusqlite", "libsqlite3-sys"] {
-            assert!(
-                !lock.contains(&format!("name = \"{name}")),
-                "Cargo.lock names {name}: SQLite is back in the build (see vendor/README.md)"
-            );
-        }
+        const SQLITE: [&str; 4] = ["sqlx", "sqlite", "rusqlite", "libsqlite3-sys"];
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let lock = std::fs::read_to_string(format!("{manifest_dir}/Cargo.lock")).unwrap();
+        let packages = lock_packages(&lock);
         assert!(
-            lock.contains("name = \"p2panda-sync\""),
+            packages.iter().any(|(name, _)| name == "p2panda-sync"),
             "Cargo.lock does not name p2panda-sync: LogSync is not wired in"
         );
 
-        let manifest = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/vendor/p2panda-sync/Cargo.toml"
-        ))
-        .unwrap();
-        let store_line = manifest
+        let manifest = std::fs::read_to_string(format!("{manifest_dir}/Cargo.toml")).unwrap();
+        let root = manifest_package_name(&manifest).unwrap();
+        // This package may declare SQLite names only as dev-dependencies.
+        let shipped = manifest_dep_names(&manifest, false);
+        for name in SQLITE {
+            assert!(
+                !shipped.iter().any(|declared| declared.as_str() == name),
+                "Cargo.toml declares {name} outside dev-dependencies: SQLite is back in the \
+                 shipped build (see vendor/README.md)"
+            );
+        }
+        // Nothing outside the family itself and this package (dev-only,
+        // checked above) may depend on a SQLite-family package.
+        for (name, deps) in &packages {
+            for dep in deps {
+                if SQLITE.contains(&dep.as_str()) {
+                    assert!(
+                        SQLITE.contains(&name.as_str()) || name == &root,
+                        "{name} depends on {dep}: SQLite is back in the shipped build (see \
+                         vendor/README.md)"
+                    );
+                }
+            }
+        }
+
+        let vendored =
+            std::fs::read_to_string(format!("{manifest_dir}/vendor/p2panda-sync/Cargo.toml"))
+                .unwrap();
+        let store_line = vendored
             .lines()
             .find(|line| line.starts_with("p2panda-store = {"))
             .unwrap();

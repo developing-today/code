@@ -124,7 +124,7 @@ const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
   quota text, tokens_estimated integer, error_body text, hedged integer,
   cost_usd real)`;
 
-const startProxy = async () => {
+const startProxy = async ({ nowMs: pinnedNow } = {}) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
   const leafB = await makeLeaf("LEAF-B", "key-b");
@@ -165,11 +165,17 @@ const startProxy = async () => {
     },
   },
   "experimental": {
+    "model_route_windows": {
+      "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
+    },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
       "t-variant": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "variants": { "medium": "high" } } ] },
       "t-nested": { "selection": "ordered", "targets": ["opencode-route/t-ordered"] },
       "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
+      "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
+      "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
+      "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
     },
   },
 }`,
@@ -183,6 +189,9 @@ const startProxy = async () => {
     OPENCODE_ROUTE_PROXY_CONFIG: configPath,
     OPENCODE_ROUTE_PROXY_DB: dbPath,
     OPENCODE_ROUTE_PROXY_TIMEOUT_MS: "15000",
+    ...(pinnedNow
+      ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
+      : {}),
   };
   const child = spawn(
     process.execPath,
@@ -356,6 +365,81 @@ test("unknown route and malformed bodies are rejected", async () => {
     assert.match((await res.json()).error.message, /unknown route/);
     const bad = await p.post({ model: "opencode-route/t-ordered", messages: "x" });
     assert.equal(bad.status, 400);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// Window gates (#3225): the fixture "peak" window is Mon-Fri
+// 01:00-04:00 UTC. 2026-11-04 is a Wednesday.
+const IN_PEAK = Date.UTC(2026, 10, 4, 2, 30);
+const OUT_PEAK = Date.UTC(2026, 10, 4, 12, 0);
+
+test("window-gated target is expanded inside its window", async () => {
+  const p = await startProxy({ nowMs: IN_PEAK });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafA");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("window-gated target is excluded outside its window", async () => {
+  const p = await startProxy({ nowMs: OUT_PEAK });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("inverted window gate is eligible only outside the window", async () => {
+  const inP = await startProxy({ nowMs: IN_PEAK });
+  try {
+    const res = await inP.post({
+      model: "opencode-route/t-window-inv",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await inP.cleanup();
+  }
+  const outP = await startProxy({ nowMs: OUT_PEAK });
+  try {
+    const res = await outP.post({
+      model: "opencode-route/t-window-inv",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await outP.cleanup();
+  }
+});
+
+test("a gate naming an unknown window fails closed", async () => {
+  const p = await startProxy({ nowMs: IN_PEAK });
+  try {
+    const res = await p.post({
+      model: "opencode-route/t-window-unknown",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
   } finally {
     await p.cleanup();
   }

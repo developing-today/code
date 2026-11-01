@@ -73,6 +73,7 @@ import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
 import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
 import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
+import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import type {
   AaFeedSection,
   DnsSection,
@@ -83,6 +84,7 @@ import type {
   SessionRecord,
 } from "../src/model.ts";
 import { matchCharges, type UnmatchedCharge } from "../src/charges-match.ts";
+import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
@@ -433,7 +435,7 @@ async function main(): Promise<void> {
     if (candidates.length) {
       const auto = matchCharges(
         candidates,
-        (saas ?? []).map((s) => ({ name: s.name })),
+        chargeServiceCatalog(saas ?? [], pools),
       );
       charges = mergeChargeRows(auto.rows, charges ?? []);
       let surfaced = new Set<string>();
@@ -444,13 +446,9 @@ async function main(): Promise<void> {
       } catch {
         /* no state yet: everything unmatched is new */
       }
-      const { fresh, keys } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
+      const { fresh } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
       if (fresh.length) {
         chargesAttention = fresh;
-        await writeFile(
-          chargesSurfacedStatePath,
-          JSON.stringify({ version: 1, surfaced: keys, updatedAt: now.toISOString() }, null, 2),
-        );
       }
       console.log(
         `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,
@@ -617,9 +615,16 @@ async function main(): Promise<void> {
     }
   }
 
+  // #1116 item 3: this collector runs from the pm-feed checkout of
+  // this repo; measure its drift vs origin/main so a stale checkout
+  // (collector running old code) is visible in the health view
+  // instead of lying quietly. Fail-soft: any git problem becomes
+  // state "unknown" with the reason, never a failed collection.
+  const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
   const feed: FleetFeed = {
     version: 1,
     generatedAt: now.toISOString(),
+    checkout,
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
     julesSummary: jules,

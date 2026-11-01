@@ -1864,10 +1864,20 @@ export function renderQuota(
             `<div class="muted">burning: ${esc(s.session)} (${esc(s.model)}) ${s.tokens.toLocaleString()} tok</div>`,
         )
         .join("");
+      const credRows = (p.credentials ?? [])
+        .map((c) => {
+          const wins = c.windows.map((w) => `${esc(w.name)} ${windowPercent(w).toFixed(0)}%`).join(" \u00b7 ");
+          const state =
+            c.freshness.state === "ok"
+              ? ""
+              : ` \u00b7 ${esc(c.freshness.state)}${c.freshness.error ? ` \u00b7 ${esc(c.freshness.error)}` : ""}`;
+          return `<div class="muted">credential ${esc(c.label)}: ${wins || esc(c.freshness.state)}${state}</div>`;
+        })
+        .join("");
       const fresh = p.freshness
         ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(p.provider)}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      return `<div class="card pool"><div><strong>${esc(p.provider)}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
@@ -4729,8 +4739,15 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
     : `no run on record · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""}`;
   const coll = view.jobs.collector;
+  const drift = view.feed.checkout;
+  const driftLine =
+    drift.state === "behind"
+      ? ` · <span class="badge stale">collector checkout behind origin/main by ${drift.behindBy ?? "?"} commit(s)</span> — the collector is running old code`
+      : drift.state === "in-sync"
+        ? ` · collector checkout in sync with origin/main`
+        : ` · collector checkout drift unknown: ${esc(drift.reason ?? "no reason given")}`;
   const collLine = coll.generatedAt
-    ? `feed generated ${esc(ageMsText(coll.ageMs ?? 0))} · file written ${coll.fileMtime ? esc(coll.fileMtime) : "unknown"}`
+    ? `feed generated ${esc(ageMsText(coll.ageMs ?? 0))} · file written ${coll.fileMtime ? esc(coll.fileMtime) : "unknown"}${driftLine}`
     : "no readable fleet feed";
   const pageRows = view.pages
     .map((p) => {
@@ -4782,7 +4799,7 @@ ${degraded}${modeNote}
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
 <h2>Dashboard comments</h2>
-<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that never drains means the triage/poster loop is not running)</div>
+<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting)</div>
 <h2>Source facets</h2>
 ${facets}
 <h2>Pages</h2>

@@ -24,6 +24,7 @@ import type {
   GathererSummary,
   PoolFreshness,
   QuotaCurrentEntry,
+  QuotaCredentialRow,
   QuotaCurrentFile,
   QuotaPool,
   QuotaView,
@@ -75,6 +76,32 @@ function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
   return "error";
 }
 
+/**
+ * Newest-pick ordering for gatherer entries (#2253): one shared
+ * comparator for every "newest entry wins" sort in this module. The
+ * sort key is the entry's parsed measuredAt, or -Infinity when the
+ * stamp does not parse to a finite time or sits beyond the
+ * future-skew bound — entryState already refuses such stamps the
+ * "ok" classification, but the stale-path pick must refuse them the
+ * win too, or a garbage or skewed write becomes the pool's displayed
+ * freshness (stamp + source) in place of the newest real read (the
+ * stale-path residual of the #1541 gate). Entries equal under the
+ * key (both unusable, or the same instant) keep their file order —
+ * Array.prototype.sort is stable — so all-finite inputs behave
+ * exactly as the raw Date.parse difference did.
+ */
+function newestFirst(nowMs: number): (a: QuotaCurrentEntry, b: QuotaCurrentEntry) => number {
+  const key = (e: QuotaCurrentEntry): number => {
+    const t = Date.parse(e.measuredAt);
+    return Number.isFinite(t) && t - nowMs <= QUOTA_CURRENT_FUTURE_SKEW_MS ? t : -Infinity;
+  };
+  return (a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    return ka === kb ? 0 : kb - ka;
+  };
+}
+
 function errorText(entry: QuotaCurrentEntry): string {
   if (entry.error) return entry.error;
   return entry.state === "unconfigured" ? "not configured on the gatherer host" : "gatherer could not read this pool";
@@ -123,6 +150,69 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   return true;
 }
 
+/**
+ * Reset instants closer than this are the same window: some producers
+ * recompute resetsAt from a duration on every fetch, so one shared
+ * read's stamp drifts sub-second between credentials (and by up to
+ * the gap between their fetches in one tick). Genuinely different
+ * windows reset minutes-to-days apart (#2978 Codex finding).
+ */
+const RESET_DRIFT_TOLERANCE_MS = 60_000;
+
+function sameReset(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) <= RESET_DRIFT_TOLERANCE_MS;
+}
+
+function sameQuotaRead(a: QuotaCredentialRow, b: QuotaCredentialRow): boolean {
+  return (
+    a.freshness.state === b.freshness.state &&
+    a.windows.length === b.windows.length &&
+    a.windows.every(
+      (w, i) => w.name === b.windows[i].name && w.percent === b.windows[i].percent && sameReset(w.resetsAt, b.windows[i].resetsAt),
+    )
+  );
+}
+
+/**
+ * Per-credential rows for one pool's entries (#1113): the newest
+ * entry per credential identity — the stable credentialId when the
+ * entry carries one, else credentialLabel, else providerId. Keying
+ * on the label alone would collapse two distinct credentials that
+ * share (or lack) a display label (#2978 Codex finding). Rows are
+ * returned only when they genuinely differ — in state or in percent
+ * windows, with reset-drift tolerance — so two logins sharing one
+ * pool read stay a single headline row, while two logins with
+ * distinct quotas (or one read failing while the other succeeds)
+ * each get a row.
+ */
+function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCredentialRow[] | undefined {
+  const newest = [...entries].sort(newestFirst(nowMs));
+  const byCred = new Map<string, QuotaCurrentEntry>();
+  for (const e of newest) {
+    const key = e.credentialId ?? e.credentialLabel ?? e.providerId;
+    if (!byCred.has(key)) byCred.set(key, e);
+  }
+  if (byCred.size < 2) return undefined;
+  const rows: QuotaCredentialRow[] = [...byCred.values()].map((e) => {
+    const state = entryState(e, nowMs);
+    const freshness: PoolFreshness = { measuredAt: e.measuredAt, source: e.source, state };
+    if (state === "error") freshness.error = errorText(e);
+    return {
+      label: e.credentialLabel ?? e.providerName ?? e.providerId,
+      ...(e.credentialId ? { credentialId: e.credentialId } : {}),
+      providerId: e.providerId,
+      windows: state === "ok" ? pctWindows(e) : [],
+      freshness,
+    };
+  });
+  if (rows.every((r) => sameQuotaRead(r, rows[0]))) return undefined;
+  return rows;
+}
+
 function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
   return {
     generatedAt: file.generatedAt,
@@ -164,12 +254,14 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     const pool: QuotaPool = { ...orig, windows: [...orig.windows] };
     const freshOk = entries
       .filter((e) => entryState(e, nowMs) === "ok")
-      .sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+      .sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
       if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      const rows = credentialRows(entries, nowMs);
+      if (rows) pool.credentials = rows;
       return pool;
     }
-    const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt))[0];
+    const newest = [...entries].sort(newestFirst(nowMs))[0];
     applyEntry(pool, newest, entryState(newest, nowMs));
     return pool;
   });
@@ -207,7 +299,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   const svc = services[idx];
   const freshOk = entries
     .filter((e) => entryState(e, nowMs) === "ok")
-    .sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+    .sort(newestFirst(nowMs));
   const out = [...services];
   if (freshOk.length > 0) {
     const entry = freshOk[0];
@@ -238,7 +330,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
     };
     return out;
   }
-  const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt))[0];
+  const newest = [...entries].sort(newestFirst(nowMs))[0];
   const flag = `quota gatherer turso read ${entryState(newest, nowMs)} at ${newest.measuredAt}: ${errorText(newest)} — card keeps its last dated read`;
   if (svc.conflicts.includes(flag)) return services;
   out[idx] = { ...svc, conflicts: [...svc.conflicts, flag] };

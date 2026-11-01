@@ -18,6 +18,7 @@
 //   reports "fixtures", which is also the degraded-state test fixture.
 import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
+import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
 import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
@@ -160,6 +161,10 @@ export interface HealthView {
     generatedAt: string | null;
     fileMtime: string | null;
     ageMs: number | null;
+    /** #1116 item 3: the collector checkout's drift vs origin/main,
+     *  as reported in the feed; "unknown" with a reason when the feed
+     *  carries no report — never a silently invented state. */
+    checkout: CheckoutDrift;
     sections: FeedSectionHealth[];
   };
   jobs: {
@@ -217,7 +222,24 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
   if (!feed) return [];
   const from = (generatedAt: string | undefined, present: boolean, note?: string): Partial<FeedSectionHealth> => {
     const ts = generatedAt ?? feed.generatedAt;
-    return { present, generatedAt: ts, ageMs: Math.max(0, now - Date.parse(ts)), ...(note ? { note } : {}) };
+    const parsed = Date.parse(ts);
+    // Section stamps get the same validation as the top-level one
+    // (#2242, mirroring #1564): an unparseable stamp must not render
+    // as ageMs NaN/null, and a stamp beyond the future-skew bound
+    // must not render as ageMs 0 (maximally fresh) for as long as
+    // the skew lasts. Either way the section reports absent with a
+    // legible note instead of a fabricated age.
+    if (!Number.isFinite(parsed)) {
+      return { present: false, generatedAt: ts, note: `invalid generatedAt (${ts})` };
+    }
+    if (parsed - now > GENERATED_AT_FUTURE_SKEW_MS) {
+      return {
+        present: false,
+        generatedAt: ts,
+        note: `generatedAt (${ts}) is ${ageMsText(parsed - now)} in the future — never fresh`,
+      };
+    }
+    return { present, generatedAt: ts, ageMs: Math.max(0, now - parsed), ...(note ? { note } : {}) };
   };
   const aa = feed.aa;
   const aaNote =
@@ -355,9 +377,12 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     });
   }
 
+  const checkout = feed?.checkout ?? unreportedCheckoutDrift();
   const degraded =
     inputs.mode === "live" &&
-    (services.some((s) => s.ok === false) || (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS));
+    (services.some((s) => s.ok === false) ||
+      (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS) ||
+      checkout.state === "behind");
 
   return {
     status: "ok",
@@ -371,6 +396,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       generatedAt: feed?.generatedAt ?? null,
       fileMtime: inputs.feedFileMtimeMs !== null ? new Date(inputs.feedFileMtimeMs).toISOString() : null,
       ageMs: feedAgeMs,
+      checkout,
       sections: feedSections(feed, now),
     },
     jobs: {

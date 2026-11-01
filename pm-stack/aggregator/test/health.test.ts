@@ -189,6 +189,50 @@ describe("buildHealth probes", () => {
     expect(view.degraded).toBe(true);
   });
 
+  test("garbage dns/aa section stamps render absent with an invalid-generatedAt note, never NaN (#2242)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const feed = feedAt(5 * 60_000);
+    (feed.dns as { generatedAt: string }).generatedAt = "not-a-date";
+    (feed as unknown as { aa: unknown }).aa = { status: "ok", generatedAt: "garbage!!", batch: "b", rankings: [], configs: [], testRuns: [] };
+    const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
+    const dns = view.feed.sections.find((x) => x.key === "dns");
+    expect(dns?.present).toBe(false);
+    expect(dns?.note).toContain("invalid generatedAt (not-a-date)");
+    expect(dns?.ageMs).toBeUndefined();
+    const aa = view.feed.sections.find((x) => x.key === "aa");
+    expect(aa?.present).toBe(false);
+    expect(aa?.note).toContain("invalid generatedAt (garbage!!)");
+    expect(aa?.ageMs).toBeUndefined();
+    // Untouched sections render exactly as before.
+    const orch = view.feed.sections.find((x) => x.key === "orchestration");
+    expect(orch?.present).toBe(true);
+    expect(orch?.ageMs).toBe(5 * 60_000);
+  });
+
+  test("future dns/aa section stamps render absent with a future note, never age 0 (#2242)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const feed = feedAt(5 * 60_000);
+    const future = new Date(NOW + 3_600_000).toISOString();
+    (feed.dns as { generatedAt: string }).generatedAt = future;
+    (feed as unknown as { aa: unknown }).aa = { status: "ok", generatedAt: future, batch: "b", rankings: [], configs: [], testRuns: [] };
+    const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
+    const dns = view.feed.sections.find((x) => x.key === "dns");
+    expect(dns?.present).toBe(false);
+    expect(dns?.note).toContain("in the future");
+    expect(dns?.ageMs).toBeUndefined();
+    const aa = view.feed.sections.find((x) => x.key === "aa");
+    expect(aa?.present).toBe(false);
+    expect(aa?.note).toContain("in the future");
+    expect(aa?.ageMs).toBeUndefined();
+    // A stamp inside the 60s skew bound still renders as a live section.
+    const feed2 = feedAt(5 * 60_000);
+    (feed2.dns as { generatedAt: string }).generatedAt = new Date(NOW + 30_000).toISOString();
+    const view2 = await buildHealth(inputs({ feed: feed2 }), { fetcher, cache: createProbeCache(), now: NOW });
+    const dns2 = view2.feed.sections.find((x) => x.key === "dns");
+    expect(dns2?.present).toBe(true);
+    expect(dns2?.ageMs).toBe(0);
+  });
+
   test("fixtures mode never probes and reports fixtures for every service", async () => {
     const { fetcher, calls } = fakeFetcher(allUp);
     const view = await buildHealth(
@@ -375,6 +419,8 @@ describe("pending comment counts (#1145)", () => {
     expect(html).toContain("3 messages awaiting triage");
     expect(html).toContain("2 GitHub comments awaiting posting");
     expect(html).toContain("9 comments in the store");
+    expect(html).toContain("a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting");
+    expect(html).not.toContain("a pending count that never drains means the triage/poster loop is not running");
   });
 });
 
