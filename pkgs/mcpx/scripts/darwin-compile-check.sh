@@ -14,11 +14,10 @@ cd "$(dirname "$0")/.."
 
 # The single exception list. A package named here may fail the darwin
 # test compile without failing this gate; every other package must
-# compile. Empty this list (one line) when the last entry is fixed.
-#   github.com/developing-today/code/pkgs/mcpx/internal/daemon — #237: takeover_test.go
-#   uses syscall.SOCK_CLOEXEC (undefined on darwin). DELETE this entry
-#   when #237's compile fix lands.
-DARWIN_COMPILE_EXCEPTIONS="${DARWIN_COMPILE_EXCEPTIONS-github.com/developing-today/code/pkgs/mcpx/internal/daemon}"
+# compile. Empty since #237 landed (the internal/daemon entry — its
+# takeover_test.go used the Linux-only syscall.SOCK_CLOEXEC — was the
+# last one). Add an entry only with a tracking issue.
+DARWIN_COMPILE_EXCEPTIONS="${DARWIN_COMPILE_EXCEPTIONS-}"
 
 export GOOS=darwin GOARCH=arm64 CGO_ENABLED=0
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""test_drain_queue.py — regression tests for #3219 ack discipline.
+"""test_drain_queue.py — regression tests for #3219 ack discipline
+and the #3326 owner allowlist.
 
 Drives the real drain_queue.main() with a stub Worker and a stub
 fetch_mirrors.fetch_repo, against a temp backup root:
@@ -10,6 +11,9 @@ fetch_mirrors.fetch_repo, against a temp backup root:
   unplanned repo   -> event acked + fetch.log note (behavior preserved)
   inside coalesce  -> event NOT acked, no fetch attempted
   chronic failures -> run exits non-zero, DRAIN-CHRONIC logged, still queued
+  foreign owner    -> dropped + acked + DRAIN-DROP logged, never fetched,
+                      never counted toward the chronic failure streak
+  missing owner    -> dropped + acked + DRAIN-DROP logged (malformed)
 
 Run: python3 infra/github-backup/tests/test_drain_queue.py
 """
@@ -46,7 +50,11 @@ class Harness:
         self._saved = (drain_queue.worker_req, drain_queue.load_config,
                        drain_queue.backup_root, fetch_mirrors.fetch_repo)
         drain_queue.worker_req = self._worker_req
-        drain_queue.load_config = lambda: {"worker": {"queue_poll_path": "/queue"}}
+        drain_queue.load_config = lambda: {
+            "worker": {"queue_poll_path": "/queue"},
+            # "Owner" is capitalised on purpose: the allowlist compare is
+            # case-insensitive, and every case below uses "owner/...".
+            "owners": ["Owner", "other", "a", "b", "c"]}
         drain_queue.backup_root = lambda cfg=None: self.root
         fetch_mirrors.fetch_repo = self._fetch_repo
 
@@ -169,5 +177,74 @@ h = Harness([ev("e1", "a/ok"), ev("e2", "b/bad"), ev("e3", "c/new")],
 check("mixed: exit 0", h.run() == 0)
 check("mixed: acked = ok + unplanned only",
       sorted(h.acked_ids()) == ["e1", "e3"])
+
+# 9. foreign owner -> dropped + acked + DRAIN-DROP logged, no fetch,
+#    even though the repo IS in plan.json (filter precedes the plan check)
+import contextlib, io
+h = Harness([ev("e9", "stranger/pwned")], ["stranger/pwned"],
+            {"stranger/pwned": "ok"})
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = h.run()
+check("foreign: exit 0", rc == 0)
+check("foreign: event acked (handled-by-policy)", h.acked_ids() == ["e9"])
+check("foreign: no fetch attempted", h.fetch_calls == [])
+check("foreign: DRAIN-DROP logged",
+      "DRAIN-DROP foreign owner=stranger repo=stranger/pwned delivery=e9"
+      in h.fetch_log())
+check("foreign: no failure state",
+      not any(k.startswith("drain_fail::") for k in h.state()))
+summary = json.loads(buf.getvalue().strip().splitlines()[-1])
+check("foreign: drop counted in summary", summary.get("dropped_foreign") == 1)
+
+# 10. malformed event, no determinable owner -> dropped + acked + logged
+h = Harness([{"id": "e10", "event": "push", "ts": iso_age(60)}],
+            ["owner/repo"], {})
+check("no-owner: exit 0", h.run() == 0)
+check("no-owner: event acked", h.acked_ids() == ["e10"])
+check("no-owner: DRAIN-DROP logged",
+      "DRAIN-DROP foreign owner=unknown repo=unknown delivery=e10"
+      in h.fetch_log())
+check("no-owner: no fetch attempted", h.fetch_calls == [])
+
+# 11. repository.owner.login takes precedence over the installation
+#     account: an allowed installation does NOT rescue a foreign repo
+evf = {"id": "e11", "event": "push", "ts": iso_age(60),
+       "repository": {"full_name": "dezren39/real",
+                      "owner": {"login": "mallory"}},
+       "installation": {"account": {"login": "Owner"}}}
+h = Harness([evf], [], {})
+check("precedence: exit 0", h.run() == 0)
+check("precedence: dropped despite allowed installation",
+      "DRAIN-DROP foreign owner=mallory repo=dezren39/real delivery=e11"
+      in h.fetch_log())
+check("precedence: acked", h.acked_ids() == ["e11"])
+check("precedence: no fetch attempted", h.fetch_calls == [])
+
+# 12. installation account is the fallback when the payload carries no
+#     repository owner; repo normalises from repository.full_name
+evi = {"id": "e12", "event": "push", "ts": iso_age(60),
+       "repository": {"full_name": "owner/repo"},
+       "installation": {"account": {"login": "owner"}}}
+h = Harness([evi], ["owner/repo"], {"owner/repo": "ok"})
+check("install-fallback: exit 0", h.run() == 0)
+check("install-fallback: fetched via repository full_name",
+      h.fetch_calls == ["owner/repo"])
+check("install-fallback: acked", h.acked_ids() == ["e12"])
+check("install-fallback: not dropped", "DRAIN-DROP" not in h.fetch_log())
+
+# 13. a foreign drop never feeds the chronic-failure streak: a repo one
+#     failure short of DRAIN-CHRONIC is dropped quietly, streak untouched
+h = Harness([ev("e13", "stranger/pwned")], ["stranger/pwned"],
+            {"stranger/pwned": "fail"},
+            initial_state={"drain_fail::stranger/pwned":
+                           {"count": drain_queue.CHRONIC_DRAIN_FAILURES - 1,
+                            "first": now}})
+check("foreign-chronic: exit 0 (drop is not a failure)", h.run() == 0)
+check("foreign-chronic: acked", h.acked_ids() == ["e13"])
+check("foreign-chronic: streak untouched",
+      h.state()["drain_fail::stranger/pwned"]["count"]
+      == drain_queue.CHRONIC_DRAIN_FAILURES - 1)
+check("foreign-chronic: no DRAIN-CHRONIC", "DRAIN-CHRONIC" not in h.fetch_log())
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

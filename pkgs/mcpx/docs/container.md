@@ -4,6 +4,8 @@ What `Containerfile` builds, what it deliberately does not, and what was
 measured along the way.
 
 ```
+id:           running-mcpx-in-a-container
+since:        pre-release
 created:      2026-09-30T04:00:00-05:00
 last-updated: 2026-10-30T06:40:00-05:00
 status:       implemented

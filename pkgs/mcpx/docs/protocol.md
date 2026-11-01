@@ -1,9 +1,10 @@
 # Protocol: every revision, both directions
 
 ```
+id:           protocol-every-revision-both-directions
+since:        pre-release
 created:      2026-09-29T20:00:00-05:00
 last-updated: 2026-09-30T16:00:00-05:00
-increment:    3
 status:       standard
 tags:         area:protocol
 description:  what each revision defines, what mcpx accepts, what it sends,
