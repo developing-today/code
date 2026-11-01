@@ -223,10 +223,16 @@ func TestCheckDiffNeedsFragment(t *testing.T) {
 	if !strings.Contains(strings.Join(problems, "\n"), "pools-lifetime") {
 		t.Fatalf("expected a problem naming pools-lifetime, got %v", problems)
 	}
-	// With a fragment naming the section, the same diff passes.
+	// A fragment that merely exists in docs/changes (left by an
+	// earlier PR) does NOT satisfy the gate for this PR's change.
 	writeFile(t, dir, "docs/changes/lifetime.md", "sections: pools-lifetime\nkind: Fixed\nsummary: wording\n")
-	if problems := Check([]string{p}, sampleDiff, false, ""); len(problems) != 0 {
-		t.Fatalf("fragment should satisfy the check, got %v", problems)
+	if problems := Check([]string{p}, sampleDiff, false, ""); !strings.Contains(strings.Join(problems, "\n"), "pools-lifetime") {
+		t.Fatalf("pre-existing fragment must not satisfy the check, got %v", problems)
+	}
+	// The same fragment added by the checked diff does satisfy it.
+	diffWithFrag := sampleDiff + "diff --git a/docs/changes/lifetime.md b/docs/changes/lifetime.md\n--- /dev/null\n+++ b/docs/changes/lifetime.md\n@@ -0,0 +1,3 @@\n+sections: pools-lifetime\n+kind: Fixed\n+summary: wording\n"
+	if problems := Check([]string{p}, diffWithFrag, false, ""); len(problems) != 0 {
+		t.Fatalf("fragment in the diff should satisfy the check, got %v", problems)
 	}
 	// Trivial marker also satisfies it (fragment removed again).
 	os.Remove(filepath.Join(dir, "docs/changes/lifetime.md"))
@@ -319,5 +325,45 @@ func TestMdBookRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "Since: 0.1.0") || !strings.Contains(string(out), "\"number\":[1]") {
 		t.Errorf("mdBook render lost content or fields: %s", out)
+	}
+}
+
+func TestStampRejectsBadDateBeforeConsumingFragments(t *testing.T) {
+	dir := t.TempDir()
+	docPath := writeFile(t, dir, "docs/story.md", sampleDoc)
+	fragPath := writeFile(t, dir, "docs/changes/pools-idle.md",
+		"sections: pools\nkind: Changed\nsummary: idle exit is now a setting\n")
+	for _, bad := range []string{"2026-11-2", "2026-13-01", "Nov 2 2026"} {
+		if err := Stamp([]string{docPath}, "0.2.0", bad, ""); err == nil {
+			t.Fatalf("stamp should reject date %q", bad)
+		}
+	}
+	if _, err := os.Stat(fragPath); err != nil {
+		t.Error("a rejected stamp must not consume the fragment")
+	}
+	data, _ := os.ReadFile(docPath)
+	if strings.Contains(string(data), "since:        0.2.0") {
+		t.Error("a rejected stamp must not write any file")
+	}
+}
+
+func TestDocLevelMetadataReindexesByID(t *testing.T) {
+	src := "# Container Guide\n\nThe lede prose.\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: container-doc\nsince: pre-release\nstatus: core\ndescription: d\n```\n\n## Sub\n\nProse.\n"
+	doc := ParseDocument("container.md", src)
+	sec := doc.ByID["container-doc"]
+	if sec == nil || sec.Heading != "Container Guide" {
+		t.Fatalf("adopted document-level ID not indexed in ByID: %v", doc.ByID)
+	}
+	if stale := doc.ByID["container-guide"]; stale != nil {
+		t.Error("ByID still indexes the section under its heading slug")
+	}
+}
+
+func TestDiffChangedLinesDeletedHeadingNotAttributed(t *testing.T) {
+	diff := "diff --git a/docs/a.md b/docs/a.md\n--- a/docs/a.md\n+++ b/docs/a.md\n@@ -3,4 +3,4 @@\n \n-## Old Name\n+## New Name\n prose\n"
+	changed := diffChangedLines(diff)
+	got := changed["docs/a.md"]
+	if len(got) != 1 || !got[3] {
+		t.Fatalf("changed lines = %v, want only the added heading line 3", got)
 	}
 }

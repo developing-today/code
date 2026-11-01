@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -92,6 +93,7 @@ var (
 	changeValAlt  = regexp.MustCompile(`^(\S+):\s*(.*)$`)
 	compactRe     = regexp.MustCompile(`^<!--\s*(.*?)\s*-->$`)
 	semverRe      = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+	dateRe        = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 )
 
 // Slugify freezes a heading's GitHub-style slug as its section ID.
@@ -275,8 +277,16 @@ func ParseDocument(path string, content string) *Document {
 					sec.KeyBlock = parseKeyBlock(lines, j, end)
 					sec.HeaderEnd = end
 					if v, ok := sec.KeyBlock.Keys["id"]; ok {
+						// Reindex: ByID still maps the heading
+						// slug to this section, but Stamp looks
+						// fragments up in ByID under the adopted
+						// ID (Codex, PR 3266).
+						if doc.ByID[sec.ID] == sec {
+							delete(doc.ByID, sec.ID)
+						}
 						sec.ID = v
 						sec.Explicit = true
+						doc.ByID[sec.ID] = sec
 					}
 					if v, ok := sec.KeyBlock.Keys["since"]; ok {
 						sec.Since = v
@@ -624,6 +634,15 @@ func Stamp(files []string, version, date, changesDir string) error {
 	if !semverRe.MatchString(version) {
 		return fmt.Errorf("version %q is not a release version (want X.Y.Z)", version)
 	}
+	// Validate the date up front, before any file is written or any
+	// fragment consumed: an unparseable date would be written into
+	// changed entries its own parser cannot read back (Codex, PR 3266).
+	if !dateRe.MatchString(date) {
+		return fmt.Errorf("date %q is not a stamp date (want YYYY-MM-DD)", date)
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return fmt.Errorf("date %q is not a valid calendar date: %w", date, err)
+	}
 	docs := map[string]*Document{}
 	allIDs := map[string]*Section{}
 	for _, f := range files {
@@ -825,10 +844,32 @@ func Check(files []string, diff string, trivial bool, changesDir string) []strin
 			idDocCount[sec.ID][path] = true
 		}
 	}
+	// When a diff is being checked, only a fragment the PR itself
+	// adds or modifies counts toward the gate: a fragment left in
+	// docs/changes by an earlier PR records that PR's change and
+	// must not silently cover a later PR's prose change to the same
+	// section (Codex, PR 3266).
+	var diffFiles map[string]map[int]bool
+	if diff != "" {
+		diffFiles = diffChangedLines(diff)
+	}
+	fragmentInDiff := func(frag *Fragment) bool {
+		if diff == "" {
+			return true
+		}
+		for df := range diffFiles {
+			if sameDocPath(df, frag.Path) {
+				return true
+			}
+		}
+		return false
+	}
 	fragmented := map[string]bool{}
 	for _, frag := range fragments {
 		for _, id := range frag.Sections {
-			fragmented[id] = true
+			if fragmentInDiff(frag) {
+				fragmented[id] = true
+			}
 			if !allIDs[id] && !anySlugID(docs, id) {
 				problems = append(problems, fmt.Sprintf("%s: fragment names unknown section ID %q", frag.Path, id))
 			} else if len(idDocCount[id]) > 1 {
@@ -837,7 +878,7 @@ func Check(files []string, diff string, trivial bool, changesDir string) []strin
 		}
 	}
 	if diff != "" && !trivial {
-		changed := diffChangedLines(diff)
+		changed := diffFiles
 		for path, doc := range docs {
 			for diffPath, lineSet := range changed {
 				if !sameDocPath(diffPath, path) {
@@ -949,6 +990,14 @@ func diffChangedLines(diff string) map[string]map[int]bool {
 			lastNew = newLine
 			newLine++
 		case inHunk && strings.HasPrefix(ln, "-"):
+			// A deleted heading line is the old form of a heading
+			// (metadata), not prose of the preceding section: the
+			// added heading line is itself ownerless, so a rename
+			// must not demand a fragment for the untouched
+			// preceding section (Codex, PR 3266).
+			if headingRe.MatchString(strings.TrimSpace(strings.TrimPrefix(ln, "-"))) {
+				continue
+			}
 			// A deleted line has no new-file position; attribute
 			// it to the nearest preceding new-file line in the
 			// hunk (or the hunk's first line), so a deletion-only
