@@ -79,6 +79,14 @@ id tag del myfile.txt category
 # Migrate existing files to have name/file auto-tags
 id migrate-tags
 
+# Client-only by default: the remote operations above and every
+# `id world ...` subcommand are clients — they connect out to a host
+# and never start a listener or server, however many world sessions
+# they open. Serving begins only through the explicit `id serve`
+# (its SSH world serving is opt-in via `serve` flags). Reaching a
+# node is not world authority: a valid world capability is still
+# required for world operations. See "Client-only boundary" below.
+
 # Start a server
 id serve                          # CLI only
 id serve --web                    # With web UI (default port 3000)
@@ -98,6 +106,22 @@ id list <node_id>
 id id                   # Print local node ID
 id peers                # List discovered peers
 ```
+
+## Client-only boundary
+
+Remote commands are clients, full stop. `id world join`, `id world
+invite`, `id world records`, the other `id world ...` subcommands and
+the remote `put` / `list` forms connect out to a host node; none of
+them starts a listener, a host, or any authority on your node, and
+opening additional world sessions from a client changes none of that.
+There is no `--client-only` flag: no client command has a server mode
+to switch off.
+
+Serving starts only when you run `id serve` explicitly (SSH world
+serving is a further opt-in among the `serve` flags). And connectivity
+is never authority: being able to reach a node proves only which node
+it is — a valid world capability, minted by the host's admin with
+`id world invite`, is still required for every world operation.
 
 ## CLI Commands
 

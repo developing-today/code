@@ -212,6 +212,12 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
     ///
+    /// This is the only command that starts a server or a listener
+    /// (F13.8 client-only boundary): every other command — including
+    /// all `id world ...` subcommands — is a client that connects out
+    /// to a host and never serves. SSH world serving is likewise
+    /// opt-in here, via the `--world-ssh-port` family of flags.
+    ///
     /// The server runs indefinitely, hosting stored blobs and accepting
     /// new content from remote nodes. Automatically discovers other
     /// servers via gossip-based peer discovery using the `BitTorrent` DHT.
@@ -1092,6 +1098,15 @@ pub enum Command {
     /// the admin token mints a guest capability with `id world invite`; a guest
     /// presents it with `id world join`. Reaching a node proves only which node
     /// you are, never what you may do: the capability is the authority.
+    ///
+    /// Every `world` subcommand is a client command (F13.8 client-only
+    /// boundary): it connects out to a host, and opening further world
+    /// sessions starts no listener, host, or authority on this node.
+    /// Serving begins only through the explicit top-level `id serve`
+    /// command; there is no `--client-only` flag because no world
+    /// subcommand has a server mode to switch off. Node connectivity is
+    /// not world authority: a valid world capability is still required
+    /// for every world operation.
     ///
     /// # Examples
     ///
@@ -4199,6 +4214,45 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
         ));
+    }
+
+    #[test]
+    fn test_world_client_commands_never_dispatch_serve() {
+        // F13.8 client-only boundary (#3846): every `id world ...`
+        // subcommand is a client command. It must parse to
+        // `Command::World`, never to `Command::Serve` — `main` only
+        // dispatches server startup from the `Serve` arm, so a client
+        // argv reaching this parse can never start a listener, and
+        // opening further world sessions starts no host or authority.
+        let node = "a".repeat(64);
+        let client_argvs: Vec<Vec<&str>> = vec![
+            vec!["id", "world", "join", &node, "--capability", "c"],
+            vec![
+                "id", "world", "invite", &node, "--admin-token", "t", "--name", "ann",
+            ],
+            vec!["id", "world", "records", &node, "--capability", "c"],
+            vec!["id", "world", "list", &node, "--admin-token", "t"],
+        ];
+        for argv in client_argvs {
+            let cli = Cli::parse_from(argv.iter().copied());
+            assert!(
+                matches!(cli.command, Some(Command::World(_))),
+                "client argv {argv:?} must parse as a world client command"
+            );
+            assert!(
+                !matches!(cli.command, Some(Command::Serve { .. })),
+                "client argv {argv:?} must never dispatch server startup"
+            );
+        }
+        // Explicit `id serve` remains the only server entry point.
+        let cli = Cli::parse_from(["id", "serve"]);
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+        // There is deliberately no `--client-only` flag (#3846): no
+        // world subcommand has a server mode such a flag could disable.
+        assert!(Cli::try_parse_from([
+            "id", "world", "join", &node, "--capability", "c", "--client-only",
+        ])
+        .is_err());
     }
 
     #[test]
