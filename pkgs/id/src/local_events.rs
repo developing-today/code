@@ -423,6 +423,24 @@ impl LocalEvents {
                 );
             }
         }
+        // Reserve the parent authors' current heads in the new event's
+        // `after` frontier (PR #3908 Codex P2): past the frontier cap, a
+        // parent author omitted from `after` breaks dependency closure --
+        // a receiver could apply this revision before its note or parents
+        // arrive and then fail its note queries with UnknownNote or
+        // UnknownParent. `tag.clear` already reserves claim authors' heads
+        // the same way.
+        let parent_authors: HashSet<AuthorKey> = parents
+            .iter()
+            .filter_map(|parent| record.revision(*parent))
+            .map(|revision| revision.author)
+            .collect();
+        let required: Vec<Hash> = self
+            .frontier()?
+            .into_iter()
+            .filter(|head| parent_authors.contains(&head.author))
+            .map(|head| head.event)
+            .collect();
         let content = DocumentRef::for_bytes(media_type, content)?;
         let op = NoteOp::Revise {
             note,
@@ -430,7 +448,7 @@ impl LocalEvents {
             parents: parents.to_vec(),
         };
         check_note_op(NOTE_REVISE_KIND, &op)?;
-        self.record(NOTE_REVISE_KIND, None, None, None, Some(op), &[])
+        self.record(NOTE_REVISE_KIND, None, None, None, Some(op), &required)
     }
 
     /// Every note in the store, in note ID order, each with its revisions and heads.
@@ -472,6 +490,38 @@ impl LocalEvents {
                 _ => None,
             })
             .collect();
+        // Quarantine invalid remote revisions (PR #3908 Codex P1): ingest
+        // applies a signed note.revise after checking only its shape, so a
+        // peer can land a revision naming an unknown note or parent, and
+        // the strict fold would then fail every note query in the store --
+        // notes(), note_history(), and revise_note() with it. Drop,
+        // repeatedly (a revision that names a dropped one as parent goes
+        // too), every revise whose note has no create here or whose
+        // parents are not revisions of that note. The events stay in the
+        // store; valid notes fold exactly as before.
+        let mut applied = applied;
+        loop {
+            let owners: HashMap<Hash, Hash> = applied
+                .iter()
+                .map(|event| match &event.op {
+                    NoteOp::Create { .. } => (event.id, event.id),
+                    NoteOp::Revise { note, .. } => (event.id, *note),
+                })
+                .collect();
+            let before = applied.len();
+            applied.retain(|event| match &event.op {
+                NoteOp::Create { .. } => true,
+                NoteOp::Revise { note, parents, .. } => {
+                    owners.get(note) == Some(note)
+                        && parents
+                            .iter()
+                            .all(|parent| owners.get(parent) == Some(note))
+                }
+            });
+            if applied.len() == before {
+                break;
+            }
+        }
         Ok(fold_notes(&applied)?)
     }
 
@@ -637,7 +687,8 @@ impl LocalEvents {
 
     /// Signs one event with the node's key, after a bounded frontier of the other authors'
     /// heads (see [`LocalEvents::bounded_after`]), and ingests it. `required` names heads the
-    /// frontier must include when it is capped; other kinds than `tag.clear` require none.
+    /// frontier must include when it is capped; most kinds require none, a `tag.clear`
+    /// requires its claim authors' heads, and a `note.revise` its parent authors' heads.
     /// The store must apply it, or the call fails.
     fn record(
         &mut self,
@@ -888,6 +939,74 @@ mod tests {
         assert!(events
             .revise_note(note, "text/markdown", b"bad", &[id(222)])
             .is_err());
+    }
+
+    #[test]
+    fn test_invalid_remote_revision_does_not_disable_valid_notes() {
+        // PR #3908 Codex P1: a signed note.revise naming an unknown note
+        // is applied by ingest (shape is all it checks); it must not make
+        // notes(), note_history(), or revise_note() fail for valid notes.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut events = LocalEvents::open(dir.path(), key(7)).unwrap();
+        let note = events.create_note("text/markdown", b"first").unwrap();
+        let foreign = sign(
+            &key(9),
+            0,
+            None,
+            None,
+            ChainExt {
+                kind: NOTE_REVISE_KIND.to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+                note: Some(NoteOp::Revise {
+                    note: id(222),
+                    content: DocumentRef::for_bytes("text/markdown", b"bogus").unwrap(),
+                    parents: vec![id(223)],
+                }),
+            },
+        )
+        .unwrap();
+        let ingested = events.store.ingest(&foreign.bytes, now_ms()).unwrap();
+        assert!(matches!(ingested, Ingest::Accepted { .. }), "{ingested:?}");
+        let notes = events.notes().unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, note);
+        assert!(events.note_history(note).is_ok());
+        assert!(events
+            .revise_note(note, "text/markdown", b"second", &[note])
+            .is_ok());
+    }
+
+    #[test]
+    fn test_revise_reserves_parent_author_head_past_the_after_cap() {
+        // PR #3908 Codex P2: with more other authors than MAX_AFTER, the
+        // parent author's head must still be named in the revision's
+        // `after`, or a receiver could apply the revision before its
+        // parents arrive.
+        let dir = tempfile::TempDir::new().unwrap();
+        let subject = id(210);
+        for byte in 1..=40u8 {
+            foreign_claim(dir.path(), byte, subject, "topic");
+        }
+        let mut parent_events = LocalEvents::open(dir.path(), key(99)).unwrap();
+        let note = parent_events
+            .create_note("text/markdown", b"first")
+            .unwrap();
+        drop(parent_events);
+        let mut events = LocalEvents::open(dir.path(), key(0)).unwrap();
+        let revision = events
+            .revise_note(note, "text/markdown", b"second", &[note])
+            .unwrap();
+        let author = events.author();
+        let applied = events
+            .store
+            .applied_events(&author, None, None, usize::MAX)
+            .unwrap();
+        let event = applied.iter().find(|e| e.id == revision).unwrap();
+        assert!(event.header.extensions.after.contains(&note));
     }
 
     #[test]
