@@ -103,6 +103,10 @@ pub fn search_terms(
             .or_default()
             .push(claim.id);
     }
+    // Memoized subject kinds, resolved lazily as kind terms are evaluated:
+    // `subject_kind` is called at most once per subject across the whole call,
+    // however many kind terms the term set carries (including duplicates).
+    let kind_cache: RefCell<HashMap<[u8; 32], Option<String>>> = RefCell::new(HashMap::new());
     // For each term, the subjects it matches and, for claim terms, the claims that match it.
     let mut matched: Vec<(BTreeSet<[u8; 32]>, BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>)> =
         Vec::with_capacity(terms.len());
@@ -137,7 +141,14 @@ pub fn search_terms(
                 .keys()
                 .copied()
                 .filter(|subject| {
-                    subject_kind(&Hash::from_bytes(*subject)).as_deref() == Some(*kind)
+                    let resolved = {
+                        let mut cache = kind_cache.borrow_mut();
+                        cache
+                            .entry(*subject)
+                            .or_insert_with(|| subject_kind(&Hash::from_bytes(*subject)))
+                            .clone()
+                    };
+                    resolved.as_deref() == Some(*kind)
                 })
                 .collect(),
             _ => claims_by_subject.keys().copied().collect(),

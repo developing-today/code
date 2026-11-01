@@ -583,6 +583,68 @@ fn test_search_by_subject_kind_matches_only_events_of_that_kind() {
 }
 
 #[test]
+fn test_search_terms_resolves_subject_kind_at_most_once_per_subject() {
+    // Three subjects, one live claim each. The counting lookup maps one to
+    // kind "alpha", one to "beta", and one to no kind at all.
+    let alpha = Hash::digest(b"alpha-subject");
+    let beta = Hash::digest(b"beta-subject");
+    let unknown = Hash::digest(b"unknown-subject");
+    let mut a = Writer::new(1);
+    let on_alpha = a.set(alpha, "city", Some("Seattle"), vec![]);
+    let on_beta = a.set(beta, "city", Some("Seattle"), vec![on_alpha.id]);
+    let on_unknown = a.set(unknown, "city", Some("Seattle"), vec![on_beta.id]);
+
+    let (_dir, mut store) = open();
+    for event in [&on_alpha, &on_beta, &on_unknown] {
+        deliver(&mut store, event);
+    }
+    let live = store.tag_claims().unwrap();
+
+    let calls = std::cell::Cell::new(0usize);
+    let lookup = |subject: &Hash| {
+        calls.set(calls.get() + 1);
+        match *subject {
+            s if s == alpha => Some("alpha".to_owned()),
+            s if s == beta => Some("beta".to_owned()),
+            _ => None,
+        }
+    };
+
+    // K=2 kind terms, the same term twice: the alpha subject matches, and the
+    // lookup runs at most once per subject (N=3), not once per term (2*N=6).
+    let hits = search_terms(
+        &live,
+        &[Term::SubjectKind("alpha"), Term::SubjectKind("alpha")],
+        &lookup,
+    );
+    assert_eq!(shape(&hits), vec![(alpha, vec![on_alpha.id])]);
+    assert!(
+        calls.get() <= 3,
+        "subject_kind called {} times for 3 subjects x 2 kind terms",
+        calls.get()
+    );
+
+    // A second, distinct kind term in the AND set still adds no new lookups:
+    // no subject is both kinds, so the answer is empty, at <= N calls again.
+    calls.set(0);
+    let hits = search_terms(
+        &live,
+        &[
+            Term::SubjectKind("alpha"),
+            Term::SubjectKind("beta"),
+            Term::SubjectKind("alpha"),
+        ],
+        &lookup,
+    );
+    assert!(hits.is_empty());
+    assert!(
+        calls.get() <= 3,
+        "subject_kind called {} times for 3 subjects x 3 kind terms",
+        calls.get()
+    );
+}
+
+#[test]
 fn test_search_terms_without_kind_succeeds_even_when_subject_event_is_missing() {
     let mut author = Writer::new(1);
     // Subject is a raw hash whose event was never delivered to the store.
