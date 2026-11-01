@@ -1178,6 +1178,11 @@ def _apply_userinfo_auth(req):
 
 
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    # Keep in sync with src/lib.ts's fetchFollowingValidatedRedirects:
+    # max_redirections=10, max_repeats=4, and only 301/302/303/307/308.
+    max_redirections = 10
+    max_repeats = 4
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Follow the validated form, not the raw Location: a redirect
         # target is validated raw (no Worker normalisation in between),

@@ -1607,8 +1607,8 @@ class TestFetchCrawl(unittest.TestCase):
                     self.end_headers()
                     self.wfile.write(body)
                     return
-                if self.path == "/choices":
-                    self.send_response(300)
+                if self.path in ("/choices", "/not-modified"):
+                    self.send_response(300 if self.path == "/choices" else 304)
                     self.send_header("Location", "/ok")
                     self.send_header("content-length", str(len(body)))
                     self.end_headers()
@@ -1660,22 +1660,19 @@ class TestFetchCrawl(unittest.TestCase):
         # non-followed 3xx). Those are crawl failures, not results —
         # they must propagate so do_POST returns 502 and the Worker
         # fallback runs, instead of recording a successful 302 crawl.
-        # The plain opener stands in for the validating one here: the
-        # validating handler refuses 127.0.0.1 targets by design, which
-        # would mask the HTTPError handling under test; the redirect
-        # mechanics are urllib's either way.
         import urllib.error
-        import urllib.request
         from unittest import mock
 
-        plain = urllib.request.build_opener()
-        with mock.patch.object(app, "_OPENER", plain):
-            for path in ("/loop", "/hop0", "/choices"):
+        # Exercise the validating handler and its explicit urllib limits,
+        # allowing this test server's loopback targets through validation.
+        with mock.patch.object(app, "validate_crawl_url", side_effect=lambda url: url):
+            for path in ("/loop", "/hop1", "/choices", "/not-modified"):
                 with self.assertRaises(urllib.error.HTTPError, msg=path) as ctx:
                     self.fetch(path)
                 self.assertTrue(300 <= ctx.exception.code < 400, path)
-            # Control: a short chain under the limit still succeeds.
-            status, raw = self.fetch("/hop10")
+
+            # urllib allows exactly ten redirects and rejects the eleventh.
+            status, raw = self.fetch("/hop2")
             self.assertEqual(status, 200)
             self.assertIn(b"Missing Thing", raw)
 
