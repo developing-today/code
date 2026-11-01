@@ -24,6 +24,10 @@ use p2panda_core::{Hash, SigningKey};
 use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{EventStore, Ingest};
+use crate::notes::{
+    AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteOp, NoteRecord,
+    REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
+};
 use crate::search::{Hit, ValueMatch, search_store};
 use crate::tag_claims::{CLEAR_KIND, Claim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, check_op};
 use crate::waiting::{AuthorKey, WaitingLimits};
@@ -66,6 +70,28 @@ pub enum Entry {
         /// The claims it names.
         claims: Vec<Hash>,
     },
+    /// A `note.create`: the note it establishes. Its ID is the note's stable ID.
+    NoteCreate {
+        /// The event's ID, which is also the note's ID.
+        id: Hash,
+        /// The key that signed it.
+        author: AuthorKey,
+        /// The note's first content.
+        content: DocumentRef,
+    },
+    /// A `note.revise` of the note it names.
+    NoteRevise {
+        /// The event's ID, which is the revision's ID.
+        id: Hash,
+        /// The key that signed it.
+        author: AuthorKey,
+        /// The note's stable ID.
+        note: Hash,
+        /// The revision's content.
+        content: DocumentRef,
+        /// The revisions this one builds on.
+        parents: Vec<Hash>,
+    },
     /// A `document.remove` of the document it names.
     Remove {
         /// The event's ID.
@@ -85,6 +111,8 @@ impl Entry {
             Self::Document { id, .. }
             | Self::Set { id, .. }
             | Self::Clear { id, .. }
+            | Self::NoteCreate { id, .. }
+            | Self::NoteRevise { id, .. }
             | Self::Remove { id, .. } => *id,
         }
     }
@@ -96,6 +124,8 @@ impl Entry {
             Self::Document { author, .. }
             | Self::Set { author, .. }
             | Self::Clear { author, .. }
+            | Self::NoteCreate { author, .. }
+            | Self::NoteRevise { author, .. }
             | Self::Remove { author, .. } => *author,
         }
     }
@@ -107,6 +137,8 @@ impl Entry {
             Self::Document { .. } => DOCUMENT_KIND,
             Self::Set { .. } => SET_KIND,
             Self::Clear { .. } => CLEAR_KIND,
+            Self::NoteCreate { .. } => NOTE_CREATE_KIND,
+            Self::NoteRevise { .. } => NOTE_REVISE_KIND,
             Self::Remove { .. } => REMOVAL_KIND,
         }
     }
@@ -208,7 +240,7 @@ impl LocalEvents {
         for (name, value) in tags {
             check_tag(name, value.as_deref())?;
         }
-        let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, &[])?;
+        let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, None, &[])?;
         let mut claims = Vec::with_capacity(tags.len());
         for (name, value) in tags {
             claims.push(self.set_tag(id, name, value.as_deref())?);
@@ -231,7 +263,7 @@ impl LocalEvents {
             name: name.to_owned(),
             value: value.map(str::to_owned),
         };
-        self.record(SET_KIND, Some(op), None, None, &[])
+        self.record(SET_KIND, Some(op), None, None, None, &[])
     }
 
     /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
@@ -320,6 +352,7 @@ impl LocalEvents {
                 Some(TagOp::Clear { claims: ids }),
                 None,
                 None,
+                None,
                 &required,
             )?);
         }
@@ -349,6 +382,115 @@ impl LocalEvents {
     pub fn search(&self, name: &str, value: Option<&str>) -> Result<Vec<Hit>> {
         let matching = value.map_or(ValueMatch::Any, ValueMatch::Exact);
         Ok(search_store(&self.store, name, matching)?)
+    }
+
+    /// Creates a note with `content` as its first content. The returned ID is the note's
+    /// stable ID: the `note.create` event's ID. The bytes are not kept here: they are a
+    /// blob, named by the content reference the event carries.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the media type is refused, or the store cannot record the event.
+    pub fn create_note(&mut self, media_type: &str, content: &[u8]) -> Result<Hash> {
+        let content = DocumentRef::for_bytes(media_type, content)?;
+        let op = NoteOp::Create { content };
+        check_note_op(NOTE_CREATE_KIND, &op)?;
+        self.record(NOTE_CREATE_KIND, None, None, None, Some(op), &[])
+    }
+
+    /// Adds one revision with `content` to the note `note`, building on `parents`. The
+    /// parents must be revisions of that note already in the store; naming two heads is
+    /// an explicit merge. The new revision's ID is returned.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the note is not in the store, a parent is not a revision of it, the
+    /// operation breaks a note rule, or the store cannot record the event.
+    pub fn revise_note(
+        &mut self,
+        note: Hash,
+        media_type: &str,
+        content: &[u8],
+        parents: &[Hash],
+    ) -> Result<Hash> {
+        let record = self.note_history(note)?;
+        for parent in parents {
+            if record.revision(*parent).is_none() {
+                bail!(
+                    "{} is not a revision of note {}",
+                    parent.to_hex(),
+                    note.to_hex()
+                );
+            }
+        }
+        let content = DocumentRef::for_bytes(media_type, content)?;
+        let op = NoteOp::Revise {
+            note,
+            content,
+            parents: parents.to_vec(),
+        };
+        check_note_op(NOTE_REVISE_KIND, &op)?;
+        self.record(NOTE_REVISE_KIND, None, None, None, Some(op), &[])
+    }
+
+    /// Every note in the store, in note ID order, each with its revisions and heads.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store cannot be read, or its note events do not fold.
+    pub fn notes(&self) -> Result<Vec<NoteRecord>> {
+        let (entries, _) = self.log()?;
+        let applied: Vec<AppliedNote> = entries
+            .values()
+            .filter_map(|entry| match entry {
+                Entry::NoteCreate {
+                    id,
+                    author,
+                    content,
+                } => Some(AppliedNote {
+                    id: *id,
+                    author: *author,
+                    op: NoteOp::Create {
+                        content: content.clone(),
+                    },
+                }),
+                Entry::NoteRevise {
+                    id,
+                    author,
+                    note,
+                    content,
+                    parents,
+                } => Some(AppliedNote {
+                    id: *id,
+                    author: *author,
+                    op: NoteOp::Revise {
+                        note: *note,
+                        content: content.clone(),
+                        parents: parents.clone(),
+                    },
+                }),
+                _ => None,
+            })
+            .collect();
+        Ok(fold_notes(&applied)?)
+    }
+
+    /// The note `note`: its revisions in ID order and its current heads.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `note` is not the ID of a `note.create` in the store, or the store
+    /// cannot be read.
+    pub fn note_history(&self, note: Hash) -> Result<NoteRecord> {
+        self.notes()?
+            .into_iter()
+            .find(|record| record.id == note)
+            .with_context(|| {
+                format!(
+                    "{} is not a note: no note.create has that event ID",
+                    note.to_hex()
+                )
+            })
     }
 
     /// The head of each author's chain, in author order.
@@ -418,6 +560,7 @@ impl LocalEvents {
                 Entry::Remove {
                     document: removed, ..
                 } => *removed == document,
+                Entry::NoteCreate { .. } | Entry::NoteRevise { .. } => false,
             })
             .cloned()
             .collect())
@@ -502,6 +645,7 @@ impl LocalEvents {
         tag: Option<TagOp>,
         document: Option<DocumentRef>,
         removes: Option<Hash>,
+        note: Option<NoteOp>,
         required: &[Hash],
     ) -> Result<Hash> {
         let author = self.author();
@@ -514,6 +658,7 @@ impl LocalEvents {
             tag,
             document,
             removes,
+            note,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -540,11 +685,39 @@ fn entry_of(event: &Event) -> Option<Entry> {
     let id = event.id;
     let author = *event.header.verifying_key.as_bytes();
     let ext = &event.header.extensions;
-    match (ext.kind.as_str(), &ext.tag, &ext.document, ext.removes) {
-        (DOCUMENT_KIND, _, Some(document), _) => Some(Entry::Document {
+    match (
+        ext.kind.as_str(),
+        &ext.tag,
+        &ext.document,
+        ext.removes,
+        &ext.note,
+    ) {
+        (DOCUMENT_KIND, _, Some(document), _, _) => Some(Entry::Document {
             id,
             author,
             document: document.clone(),
+        }),
+        (NOTE_CREATE_KIND, _, _, _, Some(NoteOp::Create { content })) => Some(Entry::NoteCreate {
+            id,
+            author,
+            content: content.clone(),
+        }),
+        (
+            NOTE_REVISE_KIND,
+            _,
+            _,
+            _,
+            Some(NoteOp::Revise {
+                note,
+                content,
+                parents,
+            }),
+        ) => Some(Entry::NoteRevise {
+            id,
+            author,
+            note: *note,
+            content: content.clone(),
+            parents: parents.clone(),
         }),
         (
             SET_KIND,
@@ -555,6 +728,7 @@ fn entry_of(event: &Event) -> Option<Entry> {
             }),
             _,
             _,
+            _,
         ) => Some(Entry::Set {
             id,
             author,
@@ -562,12 +736,12 @@ fn entry_of(event: &Event) -> Option<Entry> {
             name: name.clone(),
             value: value.clone(),
         }),
-        (CLEAR_KIND, Some(TagOp::Clear { claims }), _, _) => Some(Entry::Clear {
+        (CLEAR_KIND, Some(TagOp::Clear { claims }), _, _, _) => Some(Entry::Clear {
             id,
             author,
             claims: claims.clone(),
         }),
-        (REMOVAL_KIND, _, _, Some(document)) => Some(Entry::Remove {
+        (REMOVAL_KIND, _, _, Some(document), _) => Some(Entry::Remove {
             id,
             author,
             document,
@@ -687,6 +861,36 @@ mod tests {
     }
 
     #[test]
+    fn test_notes_revise_concurrently_and_merge_explicitly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut events = LocalEvents::open(dir.path(), key(7)).unwrap();
+        let note = events.create_note("text/markdown", b"first").unwrap();
+        let a = events
+            .revise_note(note, "text/markdown", b"branch a", &[note])
+            .unwrap();
+        let b = events
+            .revise_note(note, "text/markdown", b"branch b", &[note])
+            .unwrap();
+        let record = events.note_history(note).unwrap();
+        assert_eq!(record.id, note);
+        assert_eq!(record.heads, {
+            let mut heads = vec![a, b];
+            heads.sort_by_key(|id| *id.as_bytes());
+            heads
+        });
+        let merged = events
+            .revise_note(note, "text/markdown", b"merged", &[a, b])
+            .unwrap();
+        let record = events.note_history(note).unwrap();
+        assert_eq!(record.heads, vec![merged]);
+        assert_eq!(record.revisions.len(), 4);
+        // A parent that is not a revision of this note is refused before signing.
+        assert!(events
+            .revise_note(note, "text/markdown", b"bad", &[id(222)])
+            .is_err());
+    }
+
+    #[test]
     fn test_causal_order_puts_every_event_after_its_parents() {
         // 1 and 2 are roots. 3 names 1, and 4 names 3 and 2. 5 names nothing it did not see.
         let parents = HashMap::from([
@@ -762,13 +966,11 @@ mod tests {
         );
         // The returned ID is the final chunk's, the one that completes the clear.
         assert_eq!(chunks.last().unwrap().0, event);
-        assert!(
-            events
-                .tags_on(subject)
-                .unwrap()
-                .iter()
-                .all(|claim| claim.name != "topic")
-        );
+        assert!(events
+            .tags_on(subject)
+            .unwrap()
+            .iter()
+            .all(|claim| claim.name != "topic"));
         // Other names, and the same name on other subjects, are untouched.
         assert_eq!(events.tags_on(subject).unwrap().len(), 1);
         assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
