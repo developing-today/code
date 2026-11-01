@@ -60,6 +60,12 @@ case "$cmd" in
           exit 42
         fi
         ;;
+      drive:*)
+        if [[ "${RCLONE_FAIL:-}" == "DRIVE" ]]; then
+          echo "stub rclone: forced Drive failure" >&2
+          exit 42
+        fi
+        ;;
     esac
     cp "$src" "$store/$(key "$dest")"
     ;;
@@ -80,10 +86,20 @@ STUB
 chmod +x "$BIN/bws" "$BIN/journalctl" "$BIN/rclone"
 
 run_scenario() {
-  local name="$1" fail_mode="$2"
+  local name="$1" fail_mode="$2" dump_mode="${3:-absent}"
   local home="$TMP_ROOT/$name/home"
   mkdir -p "$home/backups/dashboard" "$home/.local/state/pm-aggregator" \
     "$home/atlas/meta-quota-export"
+  local dump_script="$home/no-such-dump-script.sh"
+  if [[ "$dump_mode" == "ok" ]]; then
+    dump_script="$home/dump-ok.sh"
+    printf '#!/usr/bin/env bash\nmkdir -p "$HOME/backups/db-dumps/$1"\nprintf "{}\\n" > "$HOME/backups/db-dumps/$1/dump.sql"\n' >"$dump_script"
+    chmod +x "$dump_script"
+  elif [[ "$dump_mode" == "fail" ]]; then
+    dump_script="$home/dump-fail.sh"
+    printf '#!/usr/bin/env bash\nexit 3\n' >"$dump_script"
+    chmod +x "$dump_script"
+  fi
   for f in actions.json comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
     printf '{}\n' >"$home/.local/state/pm-aggregator/$f"
   done
@@ -91,7 +107,7 @@ run_scenario() {
   printf '{}\n' >"$home/atlas/meta-quota-export/history.jsonl"
   HOME="$home" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
     RCLONE_FAIL="$fail_mode" RCLONE_STUB_DIR="$TMP_ROOT/$name/rclone-store" \
-    PM_DB_DUMP_SCRIPT="$home/no-such-dump-script.sh" \
+    PM_DB_DUMP_SCRIPT="$dump_script" \
     bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/$name.log" 2>&1
   RC=$?
   SCEN_HOME="$home"
@@ -120,6 +136,14 @@ assert rec["failing_step"] is None, rec
 assert rec["archive_sha256"] == sha, (rec, sha)
 assert rec["destinations"] == {"local": "ok", "r2": "ok", "drive": "ok"}, rec
 assert rec["started_at"] and rec["finished_at"], rec
+assert rec["steps"] == [
+    {"step": "validate-date", "outcome": "ok"},
+    {"step": "credentials", "outcome": "ok"},
+    {"step": "db-dump", "outcome": "not-applicable"},
+    {"step": "local-archive", "outcome": "ok"},
+    {"step": "r2-upload", "outcome": "ok"},
+    {"step": "drive-upload", "outcome": "ok"},
+], rec
 PYEOF
 
 cat >"$TMP_ROOT/assert-r2fail.py" <<'PYEOF'
@@ -131,6 +155,14 @@ assert rec["destinations"]["local"] == "ok", rec
 assert rec["destinations"]["r2"] == "failed", rec
 assert rec["destinations"]["drive"] == "not-attempted", rec
 assert rec["archive_sha256"], rec
+assert rec["steps"] == [
+    {"step": "validate-date", "outcome": "ok"},
+    {"step": "credentials", "outcome": "ok"},
+    {"step": "db-dump", "outcome": "not-applicable"},
+    {"step": "local-archive", "outcome": "ok"},
+    {"step": "r2-upload", "outcome": "failed"},
+    {"step": "drive-upload", "outcome": "not-attempted"},
+], rec
 PYEOF
 
 run_scenario happy ""
@@ -177,9 +209,65 @@ rec = json.load(open(os.environ["RECORD"]))
 assert rec["result"] == "failed", rec
 assert rec["exit_code"] == 143, rec
 assert rec["failing_step"] == "credentials", rec
+steps = {s["step"]: s["outcome"] for s in rec["steps"]}
+assert steps["validate-date"] == "ok", rec
+assert steps["credentials"] == "failed", rec
+assert steps["db-dump"] == "not-attempted", rec
+assert steps["local-archive"] == "not-attempted", rec
+assert steps["r2-upload"] == "not-attempted", rec
+assert steps["drive-upload"] == "not-attempted", rec
 SIGASSERT
   check_record sigterm "$TMP_ROOT/assert-sigterm.py"
 fi
+
+cat >"$TMP_ROOT/assert-drivefail.py" <<'PYEOF'
+import json, os
+rec = json.load(open(os.environ["RECORD"]))
+assert rec["result"] == "failed", rec
+assert rec["failing_step"] == "drive-upload", rec
+assert rec["destinations"] == {"local": "ok", "r2": "ok", "drive": "failed"}, rec
+steps = {s["step"]: s["outcome"] for s in rec["steps"]}
+assert steps["r2-upload"] == "ok", rec
+assert steps["drive-upload"] == "failed", rec
+PYEOF
+
+run_scenario drivefail DRIVE
+if [[ "$RC" -ne 0 ]]; then echo "ok: drivefail: script exited non-zero ($RC)"
+else fail "drivefail: expected non-zero exit, got 0"; fi
+check_record drivefail "$TMP_ROOT/assert-drivefail.py"
+
+cat >"$TMP_ROOT/assert-dumpfail.py" <<'PYEOF'
+import json, os
+rec = json.load(open(os.environ["RECORD"]))
+assert rec["result"] == "failed", rec
+assert rec["failing_step"] == "db-dump", rec
+assert rec["destinations"] == {"local": "not-attempted", "r2": "not-attempted", "drive": "not-attempted"}, rec
+steps = {s["step"]: s["outcome"] for s in rec["steps"]}
+assert steps["validate-date"] == "ok", rec
+assert steps["credentials"] == "ok", rec
+assert steps["db-dump"] == "failed", rec
+assert steps["local-archive"] == "not-attempted", rec
+PYEOF
+
+run_scenario dumpfail "" fail
+if [[ "$RC" -ne 0 ]]; then echo "ok: dumpfail: script exited non-zero ($RC)"
+else fail "dumpfail: expected non-zero exit, got 0"; fi
+check_record dumpfail "$TMP_ROOT/assert-dumpfail.py"
+
+cat >"$TMP_ROOT/assert-dumpok.py" <<'PYEOF'
+import json, os
+rec = json.load(open(os.environ["RECORD"]))
+assert rec["result"] == "complete", rec
+assert rec["failing_step"] is None, rec
+steps = {s["step"]: s["outcome"] for s in rec["steps"]}
+assert steps["db-dump"] == "ok", rec
+assert all(o == "ok" for o in steps.values()), rec
+PYEOF
+
+run_scenario dumpok "" ok
+if [[ "$RC" -eq 0 ]]; then echo "ok: dumpok: script exited 0"
+else fail "dumpok: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/dumpok.log")"; fi
+check_record dumpok "$TMP_ROOT/assert-dumpok.py"
 
 if (( failures > 0 )); then
   echo "pm-dashboard-backup record tests: $failures failure(s)" >&2

@@ -69,6 +69,22 @@ DEST_LOCAL="not-attempted"
 DEST_R2="not-attempted"
 DEST_DRIVE="not-attempted"
 ARC_SHA=""
+# --- run ledger (#1854 rule 2: one failure ledger per run) ------------------
+# Every material step's outcome lands in ONE ordered ledger, serialized
+# into the run record as "steps" by write_record below. Outcomes:
+# not-attempted -> in-progress -> ok | failed, plus not-applicable for
+# a step whose precondition is absent (the optional DB dump, #1514).
+# The record's overall result is DERIVED from this ledger in
+# write_record: a run whose required steps are not all ok (db-dump may
+# be ok or not-applicable) is recorded failed even on a zero exit, so a
+# failed or interrupted step can never be recorded as complete. A step
+# is non-fatal only when named here as tolerated -- db-dump's
+# not-applicable; an undeclared swallow is a defect.
+LEDGER_ORDER="validate-date credentials db-dump local-archive r2-upload drive-upload"
+declare -A LEDGER=()
+for _s in $LEDGER_ORDER; do LEDGER[$_s]="not-attempted"; done
+ledger_set() { LEDGER["$1"]="$2"; }
+ledger_begin() { STEP="$1"; ledger_set "$1" "in-progress"; }
 # Suppressed until DATE validation passes: an invalid DATE must be
 # rejected before ANY side effect (#989, pinned by the date suite),
 # so a rejected run leaves no record and no backup root.
@@ -81,10 +97,31 @@ write_record() {
     [ "$d_r2" = "in-progress" ] && d_r2="failed"
     [ "$d_drive" = "in-progress" ] && d_drive="failed"
   fi
+  # Ledger derivation (#1854 rule 2): an in-progress step on a failed
+  # exit is the failing step; on ANY exit, the first required step that
+  # is not ok (db-dump: not ok and not not-applicable) makes the run
+  # failed and names failing_step -- the exit code alone never decides.
+  local steps_arg="" _name _outcome failing=""
+  for _name in $LEDGER_ORDER; do
+    _outcome="${LEDGER[$_name]}"
+    if [ "$rc" -ne 0 ] && [ "$_outcome" = "in-progress" ]; then _outcome="failed"; fi
+    steps_arg="${steps_arg:+$steps_arg,}$_name:$_outcome"
+    if [ -z "$failing" ]; then
+      if [ "$_outcome" = "failed" ]; then
+        failing="$_name"
+      elif [ "$_name" = "db-dump" ]; then
+        { [ "$_outcome" != "ok" ] && [ "$_outcome" != "not-applicable" ]; } && failing="$_name"
+      elif [ "$rc" -eq 0 ] && [ "$_outcome" != "ok" ]; then
+        failing="$_name"
+      fi
+    fi
+  done
+  if [ -n "$failing" ]; then result="failed"; fi
   command -v python3 >/dev/null 2>&1 || return 0
   mkdir -p "$ROOT" 2>/dev/null || return 0
   RECORD_PATH="$RECORD" RECORD_RESULT="$result" RECORD_RC="$rc" \
-  RECORD_STEP="$STEP" RECORD_DATE="$DATE" RECORD_STARTED="$CREATED_AT" \
+  RECORD_STEP="${failing:-$STEP}" RECORD_STEPS="$steps_arg" \
+  RECORD_DATE="$DATE" RECORD_STARTED="$CREATED_AT" \
   RECORD_SHA="$ARC_SHA" RECORD_LOCAL="$d_local" RECORD_R2="$d_r2" \
   RECORD_DRIVE="$d_drive" \
   python3 - <<'PYEOF' 2>/dev/null || true
@@ -98,6 +135,10 @@ rec = {
     "result": os.environ["RECORD_RESULT"],
     "exit_code": int(os.environ["RECORD_RC"]),
     "failing_step": os.environ["RECORD_STEP"] if os.environ["RECORD_RESULT"] == "failed" else None,
+    "steps": [
+        {"step": pair.split(":", 1)[0], "outcome": pair.split(":", 1)[1]}
+        for pair in os.environ["RECORD_STEPS"].split(",") if pair
+    ],
     "archive_sha256": os.environ["RECORD_SHA"] or None,
     "destinations": {
         "local": os.environ["RECORD_LOCAL"],
@@ -146,6 +187,7 @@ if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
   || [ "$(date -d "$DATE" +%F 2>/dev/null)" != "$DATE" ]; then
   fail "invalid DATE '$DATE' - expected a real calendar date as YYYY-MM-DD"
 fi
+ledger_set validate-date ok
 
 mkdir -p "$ROOT"
 RECORD_SKIP=0
@@ -181,7 +223,7 @@ if ! command -v bws >/dev/null 2>&1 && [ -x "$HOME/tools/bin/bws" ]; then
 fi
 command -v bws >/dev/null 2>&1 || fail "bws not in PATH"
 
-STEP="credentials"
+ledger_begin credentials
 # --- credentials from Bitwarden (names only in code/logs) ------------------
 if [ -z "${BWS_ACCESS_TOKEN:-}" ] && [ -f "$HOME/.config/bws/access-token" ]; then
   BWS_ACCESS_TOKEN="$(cat "$HOME/.config/bws/access-token")"
@@ -216,6 +258,7 @@ export RCLONE_CONFIG_R2BAK_REGION="auto"
 # bucket check - otherwise it falls back to CreateBucket and the upload
 # fails with AccessDenied (found 2026-10-28 via the openclaw-backup job).
 export RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET="true"
+ledger_set credentials ok
 
 
 # --- optional pm-stack DB dumps (code#1514) --------------------------------
@@ -228,16 +271,20 @@ DUMP_SCRIPT="${PM_DB_DUMP_SCRIPT:-$HOME/tools/pm-stack-db-backup.sh}"
 DUMP_DIR="$HOME/backups/db-dumps/$DATE"
 DUMP_RAN=0
 if [ -x "$DUMP_SCRIPT" ]; then
-  STEP="db-dump"
+  ledger_begin db-dump
   log "running DB dump step: $DUMP_SCRIPT"
   "$DUMP_SCRIPT" "$DATE" || fail "DB dump step failed"
   DUMP_RAN=1
+  ledger_set db-dump ok
 else
+  # Tolerated absence (named in the ledger contract above): the dump
+  # job has not landed, so the step is not-applicable, never a failure.
+  ledger_set db-dump not-applicable
   log "no DB dump script at $DUMP_SCRIPT (code#1514 pending) - dashboard state only"
 fi
 
 # === leg 1: the local archive (dashboard-backup.sh, code#1459) ============
-STEP="local-archive"
+ledger_begin local-archive
 DEST_LOCAL="in-progress"
 STAGE="$(mktemp -d)"
 mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTDIR"
@@ -410,6 +457,7 @@ rm -rf "$VDIR"
 
 ARC_SHA="$(sha256sum "$ARCHIVE" | cut -d' ' -f1)"
 DEST_LOCAL="ok"
+ledger_set local-archive ok
 log "local OK $ARCHIVE ($(stat -c%s "$ARCHIVE") bytes, sha256 $ARC_SHA)"
 
 # --- prune local day dirs older than 30 days (only this script's own;
@@ -449,21 +497,23 @@ prune_remote() { # $1 rclone dir holding <date> subdirs, $2 label
   done
 }
 
-STEP="r2-upload"
+ledger_begin r2-upload
 DEST_R2="in-progress"
 R2_DEST="r2bak:$R2_BUCKET/$R2_PREFIX/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$R2_DEST" || fail "R2 upload failed"
 verify_remote "$R2_DEST" "R2"
 prune_remote "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
 DEST_R2="ok"
+ledger_set r2-upload ok
 
-STEP="drive-upload"
+ledger_begin drive-upload
 DEST_DRIVE="in-progress"
 DRIVE_DEST="drive:$DRIVE_DIR/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$DRIVE_DEST" || fail "Drive upload failed"
 verify_remote "$DRIVE_DEST" "Drive"
 prune_remote "drive:$DRIVE_DIR" "Drive"
 DEST_DRIVE="ok"
+ledger_set drive-upload ok
 STEP="complete"
 
 # --- journal cursor: advance ONLY now that all three legs have succeeded ---
