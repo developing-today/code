@@ -3,7 +3,8 @@ import { spawn, type Subprocess } from "bun";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorOptionsHtml, cardCommentHtml, commentFormHtml, statusRequestHtml } from "../src/render.ts";
+import { authorOptionsHtml, cardCommentHtml, commentFormHtml, renderBoardBody, statusRequestHtml } from "../src/render.ts";
+import type { BoardItem } from "../src/model.ts";
 import { STANDING_IDENTITIES, type AuthorIdentity } from "../src/registry.ts";
 import { FIXTURE_REGISTRY } from "../src/sources/fixtures.ts";
 
@@ -129,5 +130,45 @@ describe("/api/author-identities (#1179)", () => {
     expect(html).toContain("/api/author-identities");
     // A registry session must never appear as an inlined picker option.
     expect(html).not.toContain('<option value="agent|claude-2026-10-25-slice2-review|');
+  });
+});
+
+describe("board done strip cap (#1179)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const doneCard = (n: number): BoardItem => ({
+    id: `kaneo:code/done-${n}`,
+    title: `Finished card ${n}`,
+    repo: "developing-today/code",
+    source: "kaneo",
+    status: "done",
+    // All inside the 7-day window; higher n = more recent.
+    updatedAt: new Date(now - (200 - n) * 60_000).toISOString(),
+    links: [],
+  });
+  const board: BoardItem[] = Array.from({ length: 150 }, (_, i) => doneCard(i));
+
+  test("default render caps the strip at the limit, newest first, with a show-all link", () => {
+    const html = renderBoardBody(board, new Map());
+    expect(html).toContain("Done recently (150)");
+    expect(html).toContain('<a href="/board?done=all">show all 150</a>');
+    expect(html.match(/class="card"/g)?.length).toBe(100);
+    expect(html).toContain("Finished card 149"); // newest kept
+    expect(html).not.toContain("Finished card 0"); // oldest dropped from the strip
+    expect(html.indexOf("Finished card 149")).toBeLessThan(html.indexOf("Finished card 148"));
+  });
+
+  test("showAllDone renders every done card", () => {
+    const html = renderBoardBody(board, new Map(), undefined, undefined, { showAllDone: true });
+    expect(html.match(/class="card"/g)?.length).toBe(150);
+    expect(html).toContain("Finished card 0");
+    expect(html).toContain('<a href="/board">show fewer</a>');
+  });
+
+  test("a strip at or under the limit renders untouched, with no show-all link", () => {
+    const html = renderBoardBody(board.slice(0, 3), new Map());
+    expect(html).toContain("Done recently (3)");
+    expect(html).not.toContain("show all");
+    expect(html.match(/class="card"/g)?.length).toBe(3);
   });
 });

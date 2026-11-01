@@ -647,7 +647,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/board") {
     const { board, items, counts, act } = await boardRender();
-    return html(renderBoard(board, items, prov(), counts, provDetail(), act));
+    return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
