@@ -69,6 +69,7 @@ import {
   renderProgram,
   renderProgramProject,
   renderQuota,
+  buildRoadmapDrill,
   renderRoadmap,
   renderServiceDetail,
   renderSessions,
@@ -360,7 +361,12 @@ async function roadmapContext() {
   } else {
     reconciliation = reconcileRoadmap(rows, poolResult.pool);
   }
-  return { rows, items, reconciliation };
+  // #1168: the drill-down index rides the same pass as the
+  // reconciliation, and only exists when the reconciliation is
+  // available — an unavailable source must not render as "no epic yet".
+  const drill =
+    reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
+  return { rows, items, reconciliation, drill };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -669,10 +675,12 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/roadmap") {
-    const { rows, items, reconciliation } = await roadmapContext();
+    const { rows, items, reconciliation, drill } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation));
+    return html(
+      renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill),
+    );
   }
 
   if (path === "/quota") {
