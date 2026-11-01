@@ -1567,3 +1567,56 @@ func TestProjectPinnedPropertyUndecidableIsPreserved(t *testing.T) {
 		}
 	}
 }
+
+// Codex P2 on PR #2976 (2026-11-01 re-review): the argument-rule
+// projector dropped pinned property declarations but left the rule's
+// own minProperties/maxProperties counting caller properties alone,
+// while enforcement counts the merged pin.
+func TestEffectiveSchemaPinnedAdjustsRulePropertyCounts(t *testing.T) {
+	reproCheckPinned(t, `{"properties":{"tailnet":{}},"minProperties":2}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, true},
+	})
+	reproCheckPinned(t, `{"properties":{"tailnet":{}},"maxProperties":1}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1}`, false},
+	})
+}
+
+// Codex P2 on PR #2976 (2026-11-01 re-review): a combinator inside a
+// subschema declaring its own $id must have its branch verdicts
+// evaluated against that resource's definitions, not the outer
+// document's -- here the outer $defs.need requires the pinned
+// tailnet (always satisfied) while the resource's own $defs.need
+// requires limit, so the branch must survive the projection.
+func TestEffectiveSchemaPinnedCombinatorVerdictUsesResource(t *testing.T) {
+	reproCheckPinned(t, `{"$defs":{"need":{"required":["tailnet"]}},"allOf":[{"$id":"https://example.test/resource","$defs":{"need":{"required":["limit"]}},"allOf":[{"$ref":"#/$defs/need"}]}]}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, true},
+	})
+}
+
+// Codex P2 on PR #2976 (2026-11-01 re-review): the argument-rule
+// projector drops a pinned property's declaration after a satisfied
+// verdict, but another property's schema may reference that
+// declaration (#/properties/tailnet); the reference must keep
+// resolving in the advertised schema.
+func TestEffectiveSchemaPinnedPreservesReferencedPinnedProperty(t *testing.T) {
+	reproCheckPinned(t, `{"properties":{"tailnet":{"type":"string"},"cursor":{"$ref":"#/properties/tailnet"}}}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"cursor":"x"}`, true},
+		{`{"cursor":1}`, false},
+	})
+}

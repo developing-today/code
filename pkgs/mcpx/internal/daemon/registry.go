@@ -490,8 +490,9 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 	for _, name := range hide {
 		unique[name] = true
 	}
-	projector := schemaProjector{root: m, hide: hide, hiddenCount: len(unique), refs: map[string]string{}}
-	projector.hidePropsAtScope(m)
+	projector := schemaProjector{root: m, resRoot: m, hide: hide, hiddenCount: len(unique), refs: map[string]string{}}
+	collectSchemaRefUses(m, "", "", &projector.docRefs)
+	projector.hidePropsAtPath(m, "")
 	out, err := json.Marshal(m)
 	if err != nil {
 		return schema
@@ -501,29 +502,186 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 
 // hidePropsAtScope removes the hidden properties from one schema
 // object's properties and required lists, and recurses into its
-// allOf members and the targets of its local references, which
-// constrain the same instance: a member's or referenced schema's
-// requirement on a hidden property would otherwise survive the root
-// projection, and against additionalProperties:false with the
-// property's declaration deleted it advertises a schema no caller
-// can satisfy, even though calls succeed because pins merge before
-// forwarding (Codex P2 on PR #2976). Same-instance references point to
-// projected copies; their original targets may also constrain nested instances.
-// Disjunctive applicators (anyOf/oneOf) are not projected: a branch
-// requiring the hidden property stays satisfiable through the merged
-// pin at call time, and weakening a branch would misstate the choice
-// the schema offers.
+// same-instance applicators (allOf, anyOf, oneOf) and the targets of
+// its local references, which constrain the same instance: a member's
+// or referenced schema's requirement on a hidden property would
+// otherwise survive the root projection, and against
+// additionalProperties:false with the property's declaration deleted
+// it advertises a schema no caller can satisfy, even though calls
+// succeed because pins merge before forwarding (Codex P2 on
+// PR #2976). The disjunctive applicators are projected the same way:
+// the merged instance always carries the hidden pins, so a branch's
+// hidden-property requirement is always satisfied at enforcement and
+// projecting it out states the caller's real choice. Dependencies
+// triggered by a hidden property likewise always fire once the pin
+// merges, so they are promoted to unconditional constraints at the
+// scope instead of staying conditional on a property the caller can
+// no longer supply (Codex P2 on PR #2976).
+//
+// A subschema declaring its own $id is a separate schema resource:
+// fragment references inside it resolve against that resource's own
+// definitions, and projected copies are stored in that resource's
+// $defs, never the outer document's (Codex P2 on PR #2976). A hidden
+// property another schema in the same resource still references --
+// for example a sibling property whose schema is
+// {"$ref": "#/properties/tailnet"} -- keeps its schema: the
+// declaration moves into the resource's $defs and every reference to
+// it is rewritten before the caller-facing declaration is deleted
+// (Codex P2 on PR #2976).
 type schemaProjector struct {
 	root        map[string]any
+	resRoot     map[string]any
+	resPath     string
+	path        string
 	hide        []string
 	hiddenCount int
 	refs        map[string]string
+	docRefs     []schemaRefUse
+}
+
+// schemaRefUse records one local $ref together with the JSON Pointer
+// of the schema resource it sits in ("" for the document root),
+// collected before projection starts so a declaration can tell
+// whether anything still references it while the traversal mutates
+// the document.
+type schemaRefUse struct {
+	resPath string
+	ref     string
+}
+
+func escapePointerSegment(s string) string {
+	s = strings.ReplaceAll(s, "~", "~0")
+	return strings.ReplaceAll(s, "/", "~1")
+}
+
+func collectSchemaRefUses(v any, path, resPath string, out *[]schemaRefUse) {
+	switch v := v.(type) {
+	case map[string]any:
+		if path != "" {
+			if id, ok := v["$id"].(string); ok && id != "" {
+				resPath = path
+			}
+		}
+		if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
+			*out = append(*out, schemaRefUse{resPath: resPath, ref: ref})
+		}
+		for k, val := range v {
+			collectSchemaRefUses(val, path+"/"+escapePointerSegment(k), resPath, out)
+		}
+	case []any:
+		for i, val := range v {
+			collectSchemaRefUses(val, path+"/"+strconv.Itoa(i), resPath, out)
+		}
+	}
+}
+
+// refUsed reports whether any local reference inside the projector's
+// current resource points at or below the given JSON Pointer.
+func (p *schemaProjector) refUsed(pointer string) bool {
+	for _, u := range p.docRefs {
+		if u.resPath != p.resPath {
+			continue
+		}
+		if u.ref == "#"+pointer || strings.HasPrefix(u.ref, "#"+pointer+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// rewriteResourceRefs rewrites every local reference in the current
+// resource that points at or below oldPointer so it points at or
+// below newPointer instead. Nested resources are not entered: their
+// fragments resolve against themselves.
+func (p *schemaProjector) rewriteResourceRefs(oldPointer, newPointer string) {
+	rewriteSchemaRefs(p.resRoot, true, "#"+oldPointer, "#"+newPointer)
+}
+
+func rewriteSchemaRefs(v any, isResourceRoot bool, oldRef, newRef string) {
+	switch v := v.(type) {
+	case map[string]any:
+		if !isResourceRoot {
+			if id, ok := v["$id"].(string); ok && id != "" {
+				return
+			}
+		}
+		if ref, ok := v["$ref"].(string); ok {
+			if ref == oldRef {
+				v["$ref"] = newRef
+			} else if strings.HasPrefix(ref, oldRef+"/") {
+				v["$ref"] = newRef + ref[len(oldRef):]
+			}
+		}
+		for _, val := range v {
+			rewriteSchemaRefs(val, false, oldRef, newRef)
+		}
+	case []any:
+		for _, val := range v {
+			rewriteSchemaRefs(val, false, oldRef, newRef)
+		}
+	}
+}
+
+func (p *schemaProjector) hidePropsAtPath(m map[string]any, path string) {
+	saved := p.path
+	p.path = path
+	p.hidePropsAtScope(m)
+	p.path = saved
+}
+
+func (p *schemaProjector) hidden(name string) bool {
+	for _, h := range p.hide {
+		if h == name {
+			return true
+		}
+	}
+	return false
+}
+
+// preserveReferenced moves a hidden property's schema into the
+// current resource's $defs and rewrites every reference to it there,
+// reporting whether anything in the resource referenced the
+// declaration at all. Unreferenced declarations need no preservation:
+// the caller simply deletes them.
+func (p *schemaProjector) preserveReferenced(props map[string]any, name string) bool {
+	pointer := p.path + "/properties/" + escapePointerSegment(name)
+	if !p.refUsed(pointer) {
+		return false
+	}
+	defs, ok := p.resRoot["$defs"].(map[string]any)
+	if !ok && p.resRoot["$defs"] != nil {
+		return false
+	}
+	if !ok {
+		defs = map[string]any{}
+		p.resRoot["$defs"] = defs
+	}
+	defName := "_mcpx_hidden_" + name
+	for i := 1; ; i++ {
+		if _, exists := defs[defName]; !exists {
+			break
+		}
+		defName = fmt.Sprintf("_mcpx_hidden_%s_%d", name, i)
+	}
+	defs[defName] = cloneSchemaValue(props[name])
+	p.rewriteResourceRefs(pointer, "/$defs/"+escapePointerSegment(defName))
+	return true
 }
 
 func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
+	savedResRoot, savedResPath := p.resRoot, p.resPath
+	if id, ok := m["$id"].(string); ok && id != "" {
+		p.resRoot = m
+		p.resPath = p.path
+	}
+	defer func() { p.resRoot, p.resPath = savedResRoot, savedResPath }()
+
 	if props, ok := m["properties"].(map[string]any); ok {
 		for _, h := range p.hide {
-			delete(props, h)
+			if _, present := props[h]; present {
+				p.preserveReferenced(props, h)
+				delete(props, h)
+			}
 		}
 	}
 	if p.hiddenCount > 0 {
@@ -533,14 +691,7 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 		kept := req[:0]
 		for _, r := range req {
 			name, _ := r.(string)
-			hidden := false
-			for _, h := range p.hide {
-				if name == h {
-					hidden = true
-					break
-				}
-			}
-			if !hidden {
+			if !p.hidden(name) {
 				kept = append(kept, r)
 			}
 		}
@@ -550,27 +701,137 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 			m["required"] = kept
 		}
 	}
-	if subs, ok := m["allOf"].([]any); ok {
-		for _, sub := range subs {
-			if sm, ok := sub.(map[string]any); ok {
-				p.hidePropsAtScope(sm)
+	var promoted []string
+	var promotedSubs []any
+	if deps, ok := m["dependentRequired"].(map[string]any); ok {
+		keptDeps := map[string]any{}
+		triggers := make([]string, 0, len(deps))
+		for prop := range deps {
+			triggers = append(triggers, prop)
+		}
+		sort.Strings(triggers)
+		for _, prop := range triggers {
+			names, ok := deps[prop].([]any)
+			if !ok {
+				if !p.hidden(prop) {
+					keptDeps[prop] = deps[prop]
+				}
+				continue
+			}
+			kept := make([]any, 0, len(names))
+			for _, n := range names {
+				if name, isStr := n.(string); isStr && p.hidden(name) {
+					continue
+				}
+				kept = append(kept, n)
+			}
+			if p.hidden(prop) {
+				// The pin always supplies the trigger, so its
+				// remaining dependencies promote to unconditional
+				// requirements at this scope.
+				for _, n := range kept {
+					if name, isStr := n.(string); isStr {
+						promoted = append(promoted, name)
+					}
+				}
+				continue
+			}
+			if len(kept) > 0 {
+				keptDeps[prop] = kept
+			}
+		}
+		if len(keptDeps) > 0 {
+			m["dependentRequired"] = keptDeps
+		} else {
+			delete(m, "dependentRequired")
+		}
+	}
+	if subs, ok := m["dependentSchemas"].(map[string]any); ok {
+		keptSubs := map[string]any{}
+		triggers := make([]string, 0, len(subs))
+		for prop := range subs {
+			triggers = append(triggers, prop)
+		}
+		sort.Strings(triggers)
+		for _, prop := range triggers {
+			sub := subs[prop]
+			if sm, isMap := sub.(map[string]any); isMap {
+				p.hidePropsAtPath(sm, p.path+"/dependentSchemas/"+escapePointerSegment(prop))
+				if p.hidden(prop) {
+					if len(sm) > 0 {
+						promotedSubs = append(promotedSubs, sm)
+					}
+					continue
+				}
+				keptSubs[prop] = sub
+				continue
+			}
+			if p.hidden(prop) {
+				// A boolean dependent schema the pin always
+				// triggers applies unconditionally: true
+				// constrains nothing, false rejects everything.
+				if b, isBool := sub.(bool); isBool && !b {
+					promotedSubs = append(promotedSubs, sub)
+				}
+				continue
+			}
+			keptSubs[prop] = sub
+		}
+		if len(keptSubs) > 0 {
+			m["dependentSchemas"] = keptSubs
+		} else {
+			delete(m, "dependentSchemas")
+		}
+	}
+	if len(promoted) > 0 {
+		req, _ := m["required"].([]any)
+		seen := map[string]bool{}
+		for _, n := range req {
+			if name, ok := n.(string); ok {
+				seen[name] = true
+			}
+		}
+		for _, name := range promoted {
+			if !seen[name] {
+				seen[name] = true
+				req = append(req, name)
+			}
+		}
+		m["required"] = req
+	}
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		if subs, ok := m[key].([]any); ok {
+			for i, sub := range subs {
+				if sm, ok := sub.(map[string]any); ok {
+					p.hidePropsAtPath(sm, p.path+"/"+key+"/"+strconv.Itoa(i))
+				}
 			}
 		}
 	}
+	if len(promotedSubs) > 0 {
+		if subs, ok := m["allOf"].([]any); ok {
+			m["allOf"] = append(subs, promotedSubs...)
+		} else if _, exists := m["allOf"]; !exists {
+			m["allOf"] = promotedSubs
+		} else {
+			m["allOf"] = append([]any{m["allOf"]}, promotedSubs...)
+		}
+	}
 	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
-		if projected, ok := p.refs[ref]; ok {
+		resKey := p.resPath + "|" + ref
+		if projected, ok := p.refs[resKey]; ok {
 			m["$ref"] = projected
 			return
 		}
-		if target, ok := resolveSchemaPointer(p.root, ref); ok {
+		if target, ok := resolveSchemaPointer(p.resRoot, ref); ok {
 			if tm, ok := target.(map[string]any); ok {
-				defs, ok := p.root["$defs"].(map[string]any)
-				if !ok && p.root["$defs"] != nil {
+				defs, ok := p.resRoot["$defs"].(map[string]any)
+				if !ok && p.resRoot["$defs"] != nil {
 					return
 				}
 				if !ok {
 					defs = map[string]any{}
-					p.root["$defs"] = defs
+					p.resRoot["$defs"] = defs
 				}
 				name := "_mcpx_projection"
 				for i := 1; ; i++ {
@@ -580,11 +841,11 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 					name = fmt.Sprintf("_mcpx_projection_%d", i)
 				}
 				projected := "#/$defs/" + name
-				p.refs[ref] = projected // register before recursion, including cycles
-				copy := cloneSchemaValue(tm).(map[string]any)
-				defs[name] = copy
+				p.refs[resKey] = projected // register before recursion, including cycles
+				clone := cloneSchemaValue(tm).(map[string]any)
+				defs[name] = clone
 				m["$ref"] = projected
-				p.hidePropsAtScope(copy)
+				p.hidePropsAtPath(clone, p.resPath+"/$defs/"+escapePointerSegment(name))
 			}
 		}
 	}

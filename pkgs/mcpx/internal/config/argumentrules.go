@@ -907,7 +907,7 @@ func conjoinRefProjection(target, siblings any) any {
 // only through a reference must not survive the projection
 // unexamined (Codex P2 on PR #2976).
 func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) any {
-	return stripPinnedScopeRes(v, pinned, pinVals, root, root, resolving)
+	return stripPinnedScopeResAt(v, pinned, pinVals, root, root, resolving, true)
 }
 
 // stripPinnedScopeRes is stripPinnedScope with the enclosing
@@ -919,12 +919,35 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 // rule document's root for the dialect and verdict helpers, which
 // decline $id-carrying shapes on their own.
 func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resRoot map[string]any, resolving map[string]bool) any {
+	return stripPinnedScopeResAt(v, pinned, pinVals, root, resRoot, resolving, false)
+}
+
+// stripPinnedScopeResAt adds vIsResRoot: whether v is the root of
+// its own schema resource (the document root, or a subschema whose
+// $id makes it one). Only at a resource root do fragment references
+// like "#/properties/<name>" point at this scope's own properties,
+// so only there can dropping a pinned declaration strand one.
+func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resRoot map[string]any, resolving map[string]bool, vIsResRoot bool) any {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return v
 	}
+	atResRoot := vIsResRoot
 	if id, isStr := m["$id"].(string); isStr && id != "" {
 		resRoot = m
+		atResRoot = true
+	}
+	// Verdicts about subschemas of this scope evaluate references
+	// against the current resource (verdictRoot) while preserving
+	// the rule document's dialect: a combinator inside an $id
+	// resource must not have its branches decided against the outer
+	// document's definitions (Codex P2 on PR #2976).
+	verdictRoot := make(map[string]any, len(resRoot)+1)
+	for key, value := range resRoot {
+		verdictRoot[key] = value
+	}
+	if dialect, ok := root["$schema"]; ok {
+		verdictRoot["$schema"] = dialect
 	}
 	resKey := func(ref string) string {
 		if id, isStr := resRoot["$id"].(string); isStr && id != "" {
@@ -1025,7 +1048,7 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 	// pin first -- does not (Codex P2 on PR #2976). Fold the decided
 	// branch in as an unconditional conjunct instead.
 	if _, hasIf := m["if"]; hasIf {
-		if branch, decided := pinDecidedBranch(m, pinned, pinVals, root, resolving); decided {
+		if branch, decided := pinDecidedBranch(m, pinned, pinVals, verdictRoot, resolving); decided {
 			folded := make(map[string]any, len(m))
 			for k, val := range m {
 				if k != "if" && k != "then" && k != "else" {
@@ -1042,9 +1065,22 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 			m = folded
 		}
 	}
+	// pinnedDeclared counts the pinned properties this scope itself
+	// declares: enforcement counts them in every merged instance, so
+	// the scope's property-count constraints are projected by that
+	// many (Codex P2 on PR #2976).
+	pinnedDeclared := 0
+	if props, ok := m["properties"].(map[string]any); ok {
+		for name := range props {
+			if pinned[name] {
+				pinnedDeclared++
+			}
+		}
+	}
 	out := make(map[string]any, len(m))
 	var promoted []string
 	var promotedSubs []any
+	var preserved map[string]any
 	var unsatisfiable bool
 	for k, val := range m {
 		switch k {
@@ -1055,21 +1091,26 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 				continue
 			}
 			kept := make(map[string]any, len(props))
-			// Resolve references at the current resource boundary but
-			// evaluate using the rule document's dialect.
-			verdictRoot := make(map[string]any, len(resRoot)+1)
-			for key, value := range resRoot {
-				verdictRoot[key] = value
-			}
-			if dialect, ok := root["$schema"]; ok {
-				verdictRoot["$schema"] = dialect
-			}
 			for name, sub := range props {
 				if pinned[name] {
 					predicate := map[string]any{"properties": map[string]any{name: sub}}
 					if valid, decided := pinnedSchemaVerdict(predicate, pinned, pinVals, verdictRoot, resolving); decided {
 						if !valid {
 							unsatisfiable = true
+						} else if atResRoot && schemaPointerReferenced(m, "#/properties/"+escapePointerSegment(name)) {
+							// Another schema in this resource
+							// references this declaration (a
+							// property whose schema is a $ref to
+							// it): dropping it would leave the
+							// advertised schema with an
+							// unresolved reference, so the
+							// declaration is preserved under
+							// $defs below (Codex P2 on
+							// PR #2976).
+							if preserved == nil {
+								preserved = map[string]any{}
+							}
+							preserved[name] = sub
 						}
 						continue
 					}
@@ -1144,7 +1185,7 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 			kept := make([]any, 0, len(subs))
 			decidedValid := 0
 			for _, sub := range subs {
-				if valid, decided := pinnedSchemaVerdict(sub, pinned, pinVals, root, resolving); decided {
+				if valid, decided := pinnedSchemaVerdict(sub, pinned, pinVals, verdictRoot, resolving); decided {
 					if valid {
 						decidedValid++
 					} else if k == "allOf" {
@@ -1187,6 +1228,32 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 					out[k] = kept
 				}
 			}
+		case "minProperties", "maxProperties":
+			if pinnedDeclared == 0 {
+				out[k] = val
+				continue
+			}
+			n, ok := schemaCountValue(val)
+			if !ok {
+				out[k] = val
+				continue
+			}
+			n -= int64(pinnedDeclared)
+			if k == "minProperties" {
+				// A min that reaches zero is no constraint and
+				// is dropped.
+				if n > 0 {
+					out[k] = json.Number(strconv.FormatInt(n, 10))
+				}
+				continue
+			}
+			if n < 0 {
+				// The pins alone exceed the maximum: no caller
+				// input can satisfy this scope.
+				unsatisfiable = true
+				n = 0
+			}
+			out[k] = json.Number(strconv.FormatInt(n, 10))
 		case "not":
 			// A negation inverts the effect of the schemas inside
 			// it: stripping a pinned requirement there does not
@@ -1200,7 +1267,7 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 			// always passes, keep it as not:true when it always
 			// fails. When the pins do not decide it, project the
 			// inner schema (below) rather than keeping it verbatim.
-			if valid, decided := pinnedSchemaVerdict(val, pinned, pinVals, root, resolving); decided {
+			if valid, decided := pinnedSchemaVerdict(val, pinned, pinVals, verdictRoot, resolving); decided {
 				if valid {
 					out[k] = true
 				}
@@ -1357,6 +1424,47 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 			out["allOf"] = append(wrapped, promotedSubs...)
 		}
 	}
+	if len(preserved) > 0 {
+		defs := map[string]any{}
+		usable := true
+		if existing, present := out["$defs"]; present {
+			em, isMap := existing.(map[string]any)
+			if !isMap {
+				usable = false
+			} else {
+				for k2, v2 := range em {
+					defs[k2] = v2
+				}
+			}
+		}
+		if usable {
+			names := make([]string, 0, len(preserved))
+			for name := range preserved {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			type refRewrite struct{ oldRef, newRef string }
+			var rewrites []refRewrite
+			for _, name := range names {
+				defName := "_mcpx_pinned_" + name
+				for i := 1; ; i++ {
+					if _, exists := defs[defName]; !exists {
+						break
+					}
+					defName = fmt.Sprintf("_mcpx_pinned_%s_%d", name, i)
+				}
+				defs[defName] = preserved[name]
+				rewrites = append(rewrites, refRewrite{
+					"#/properties/" + escapePointerSegment(name),
+					"#/$defs/" + escapePointerSegment(defName),
+				})
+			}
+			out["$defs"] = defs
+			for _, rw := range rewrites {
+				rewriteArgumentRefs(out, true, rw.oldRef, rw.newRef)
+			}
+		}
+	}
 	if unsatisfiable {
 		// A pin-decided branch already settles this schema against
 		// every caller: advertise that verdict directly instead of
@@ -1364,6 +1472,87 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 		out["not"] = true
 	}
 	return out
+}
+
+// schemaCountValue reads a property-count keyword value as written:
+// the rule decoder produces json.Number, and a float64 from a
+// hand-built document is accepted too.
+func schemaCountValue(v any) (int64, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	case float64:
+		return int64(n), true
+	}
+	return 0, false
+}
+
+func escapePointerSegment(s string) string {
+	s = strings.ReplaceAll(s, "~", "~0")
+	return strings.ReplaceAll(s, "/", "~1")
+}
+
+// schemaPointerReferenced reports whether the resource rooted at m
+// contains a local reference pointing at or below pointer. Nested
+// resources are not entered: their fragments resolve against
+// themselves.
+func schemaPointerReferenced(m map[string]any, pointer string) bool {
+	return schemaPointerReferencedAt(m, pointer, true)
+}
+
+func schemaPointerReferencedAt(v any, pointer string, isResourceRoot bool) bool {
+	switch v := v.(type) {
+	case map[string]any:
+		if !isResourceRoot {
+			if id, ok := v["$id"].(string); ok && id != "" {
+				return false
+			}
+		}
+		if ref, ok := v["$ref"].(string); ok && (ref == pointer || strings.HasPrefix(ref, pointer+"/")) {
+			return true
+		}
+		for _, val := range v {
+			if schemaPointerReferencedAt(val, pointer, false) {
+				return true
+			}
+		}
+	case []any:
+		for _, val := range v {
+			if schemaPointerReferencedAt(val, pointer, false) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rewriteArgumentRefs rewrites every local reference in the
+// resource rooted at v that points at or below oldRef so it points
+// at or below newRef instead. Nested resources are not entered.
+func rewriteArgumentRefs(v any, isResourceRoot bool, oldRef, newRef string) {
+	switch v := v.(type) {
+	case map[string]any:
+		if !isResourceRoot {
+			if id, ok := v["$id"].(string); ok && id != "" {
+				return
+			}
+		}
+		if ref, ok := v["$ref"].(string); ok {
+			if ref == oldRef {
+				v["$ref"] = newRef
+			} else if strings.HasPrefix(ref, oldRef+"/") {
+				v["$ref"] = newRef + ref[len(oldRef):]
+			}
+		}
+		for _, val := range v {
+			rewriteArgumentRefs(val, false, oldRef, newRef)
+		}
+	case []any:
+		for _, val := range v {
+			rewriteArgumentRefs(val, false, oldRef, newRef)
+		}
+	}
 }
 
 // pinDecidedBranch reports whether the map's "if" condition is

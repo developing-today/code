@@ -544,3 +544,119 @@ func TestHideSchemaPropsSharedDefRootAndNested(t *testing.T) {
 		}
 	}
 }
+
+// Codex P2 on PR #2976 (2026-11-01 re-review): the upstream projector
+// recursed into allOf but left disjunctive applicators untouched, so
+// an anyOf branch requiring the hidden property survived while its
+// declaration was deleted -- against additionalProperties:false the
+// advertised schema is one no caller can satisfy, even though calls
+// succeed once the pin merges.
+func TestHideSchemaPropsProjectsAnyOfRequirements(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{}},"additionalProperties":false,"anyOf":[{"required":["tailnet"]}]}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err != nil {
+		t.Errorf("empty caller args must validate once the pin merges: %v (%s)", err, out)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"other":1}`)); err == nil {
+		t.Errorf("undeclared caller properties must stay rejected: %s", out)
+	}
+}
+
+func TestHideSchemaPropsProjectsOneOfRequirements(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{},"limit":{}},"additionalProperties":false,"oneOf":[{"required":["tailnet"]},{"required":["limit"]}]}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	// The merged instance always matches the tailnet branch, so the
+	// caller matches exactly that branch alone: {} passes, supplying
+	// limit matches both branches and fails.
+	if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err != nil {
+		t.Errorf("empty caller args must validate: %v (%s)", err, out)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"limit":1}`)); err == nil {
+		t.Errorf("caller supplying limit matches both oneOf branches after the pin merges: %s", out)
+	}
+}
+
+// Codex P2 on PR #2976 (2026-11-01 re-review): the upstream projector
+// left dependentRequired / dependentSchemas entries triggered by a
+// hidden property conditional on a property the caller can no longer
+// supply, while enforcement merges the pin and always fires them.
+func TestHideSchemaPropsPromotesHiddenPinDependencies(t *testing.T) {
+	for _, tc := range []struct{ name, schema string }{
+		{"dependentRequired", `{"type":"object","properties":{"tailnet":{},"limit":{}},"additionalProperties":false,"dependentRequired":{"tailnet":["limit"]}}`},
+		{"dependentSchemas", `{"type":"object","properties":{"tailnet":{},"limit":{}},"additionalProperties":false,"dependentSchemas":{"tailnet":{"required":["limit"]}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := hideSchemaProps(json.RawMessage(tc.schema), []string{"tailnet"})
+			compiled, err := schemaval.Compile(out)
+			if err != nil {
+				t.Fatalf("compile %s: %v", out, err)
+			}
+			if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err == nil {
+				t.Errorf("the pin always triggers the dependency, so {} must be rejected: %s", out)
+			}
+			if err := compiled.ValidateJSON(json.RawMessage(`{"limit":1}`)); err != nil {
+				t.Errorf("supplying the promoted dependency must validate: %v (%s)", err, out)
+			}
+		})
+	}
+}
+
+// Codex P2 on PR #2976 (2026-11-01 re-review): another property's
+// schema may reference a hidden property's declaration
+// (#/properties/tailnet); deleting the declaration leaves the
+// advertised schema with an unresolved reference. The referenced
+// schema must be preserved in a definition container and the
+// reference rewritten before the declaration is removed.
+func TestHideSchemaPropsPreservesReferencedHiddenProperty(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"cursor":{"$ref":"#/properties/tailnet"}},"required":["tailnet"]}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("advertised schema must compile (no dangling reference): %v (%s)", err, out)
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"cursor":"x"}`, true},
+		{`{"cursor":1}`, false},
+	} {
+		err := compiled.ValidateJSON(json.RawMessage(tc.input))
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: valid=%v err=%v schema=%s", tc.input, tc.valid, err, out)
+		}
+	}
+}
+
+// Codex P2 on PR #2976 (2026-11-01 re-review): an upstream allOf
+// member declaring its own $id is a separate schema resource: its
+// fragment references resolve against its own definitions and any
+// projected copy must live inside that resource, not the outer
+// document's $defs.
+func TestHideSchemaPropsRespectsResourceBoundaries(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"$defs":{"need":{"required":["limit"]}},"allOf":[{"$id":"https://example.test/res","$defs":{"need":{"required":["tailnet"]}},"$ref":"#/$defs/need"}]}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("advertised schema must compile (references stay inside their resource): %v (%s)", err, out)
+	}
+	// The member's own need requires only the hidden pin, which the
+	// merged instance always supplies: the member constrains the
+	// caller not at all. Resolving the reference against the OUTER
+	// need (which requires limit) would wrongly demand limit.
+	if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err != nil {
+		t.Errorf("member resource requirement is satisfied by the pin: %v (%s)", err, out)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"limit":1}`)); err != nil {
+		t.Errorf("visible property must still validate: %v (%s)", err, out)
+	}
+}
