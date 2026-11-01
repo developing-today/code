@@ -1374,55 +1374,78 @@ const GROUP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_se
 /// every group is observed as client-made. Member counts come from the fold.
 ///
 /// Group events carry no timestamps, so churn cannot be reconstructed from
-/// the log for time before serve started. Instead the watcher derives re-adds
-/// from what it observes between evaluations: a device that is authorized,
-/// later unauthorized, and then authorized again is a re-add, stamped with
-/// the time of the evaluation that first sees it back.
+/// the log for time before serve started. Instead the watcher counts re-adds
+/// from the log events folded since its previous evaluation (#1847): a
+/// device authorization that takes effect for a device the watcher has seen
+/// authorized before, and that is not authorized at that point in the event
+/// stream, is a re-add, stamped with the time of the evaluation that folds
+/// it. Counting from the event stream — not from the net device set — means
+/// a revoke + re-add cycle that completes inside one evaluation interval
+/// still counts. The first evaluation only establishes the baseline (the
+/// devices the fold already shows), so history from before serve started
+/// never counts.
 struct GroupWarningWatcher {
     evaluator: Evaluator,
-    /// The devices authorized per group at the previous evaluation.
-    devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
+    /// The devices authorized per group at the last event the watcher has
+    /// folded, tracked through the event stream, not just at evaluations.
+    authorized: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
     /// Every device ever seen authorized per group.
     seen_devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
     /// The re-add times per group, as observed by this watcher.
     readds: std::collections::BTreeMap<Hash, Vec<u64>>,
+    /// How many log events the watcher has folded, or `None` before the
+    /// first evaluation establishes the baseline.
+    events_seen: Option<usize>,
 }
 
 impl GroupWarningWatcher {
     fn new() -> Self {
         Self {
             evaluator: Evaluator::default(),
-            devices: std::collections::BTreeMap::new(),
+            authorized: std::collections::BTreeMap::new(),
             seen_devices: std::collections::BTreeMap::new(),
             readds: std::collections::BTreeMap::new(),
+            events_seen: None,
         }
     }
 
     /// Evaluates every active group in `projection` at `now` (Unix seconds).
     /// Returns the warnings this evaluation adds, and writes each of them to
     /// the server log through the warnings module.
-    fn evaluate(&mut self, projection: &Projection, now: u64) -> Vec<(Hash, Warning)> {
+    fn evaluate(
+        &mut self,
+        projection: &Projection,
+        events: &[crate::groups::Event],
+        now: u64,
+    ) -> Vec<(Hash, Warning)> {
+        let delta_readds = self.fold_new_events(projection, events);
         let mut fired = Vec::new();
         for (group, view) in projection.groups() {
             if !view.is_active() {
                 continue;
             }
+            // Keep the event-tracked authorization in step with the fold:
+            // a device can leave or rejoin the active set without a device
+            // event of its own (its account was removed or re-added). Such
+            // a change is not a re-add — only a device event counts — but
+            // the tracked set must match the fold, or a later genuine
+            // re-add would be missed or counted twice.
             let current = projection.group_active_devices(group);
-            let mut new_readds = 0_usize;
             {
+                let authorized = self.authorized.entry(*group).or_default();
+                authorized.retain(|device| current.contains(device));
                 let seen = self.seen_devices.entry(*group).or_default();
-                let previous = self.devices.entry(*group).or_default();
                 for device in &current {
-                    if !previous.contains(device) && seen.contains(device) {
-                        new_readds += 1;
+                    if !authorized.contains(device) {
+                        authorized.insert(*device);
+                        seen.insert(*device);
                     }
                 }
-                seen.extend(current.iter().copied());
-                *previous = current;
             }
-            if new_readds > 0 {
+            let fresh_readds = delta_readds.get(group).copied().unwrap_or(0);
+            if fresh_readds > 0 {
                 let times = self.readds.entry(*group).or_default();
-                for _ in 0..new_readds {
+                for _ in 0..fresh_readds {
                     times.push(now);
                 }
                 times.retain(|at| {
@@ -1443,6 +1466,79 @@ impl GroupWarningWatcher {
             }
         }
         fired
+    }
+
+    /// Folds the log events recorded since the previous evaluation and
+    /// counts the re-adds among them, per group. Only events the fold
+    /// applied count: a refused authorization authorizes nothing, and a
+    /// refused revocation revokes nothing.
+    ///
+    /// The first call only establishes the baseline — it adopts the fold's
+    /// current devices and counts nothing — because events carry no
+    /// timestamps and churn from before serve started must not be
+    /// reconstructed. A log that shrank since the previous evaluation (it
+    /// was replaced) likewise re-baselines instead of counting.
+    fn fold_new_events(
+        &mut self,
+        projection: &Projection,
+        events: &[crate::groups::Event],
+    ) -> std::collections::BTreeMap<Hash, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        let Some(cursor) = self.events_seen else {
+            self.baseline(projection);
+            self.events_seen = Some(events.len());
+            return counts;
+        };
+        if cursor > events.len() {
+            self.baseline(projection);
+            self.events_seen = Some(events.len());
+            return counts;
+        }
+        for event in &events[cursor..] {
+            let Some(group) = event.group else {
+                continue;
+            };
+            let crate::groups::Body::Device(op) = &event.body else {
+                continue;
+            };
+            if projection.outcome(&event.id) != Some(&crate::groups::Outcome::Applied) {
+                continue;
+            }
+            match op {
+                crate::groups::DeviceOp::Add { device, .. } => {
+                    let seen = self.seen_devices.entry(group).or_default();
+                    let was_seen = seen.contains(device);
+                    seen.insert(*device);
+                    let authorized = self.authorized.entry(group).or_default();
+                    if !authorized.contains(device) {
+                        authorized.insert(*device);
+                        if was_seen {
+                            *counts.entry(group).or_default() += 1;
+                        }
+                    }
+                }
+                crate::groups::DeviceOp::Revoke { device } => {
+                    if let Some(authorized) = self.authorized.get_mut(&group) {
+                        authorized.remove(device);
+                    }
+                }
+            }
+        }
+        self.events_seen = Some(events.len());
+        counts
+    }
+
+    /// Adopts the fold's current devices as the watcher's tracked state,
+    /// counting nothing: the state before the baseline is history the
+    /// watcher did not observe.
+    fn baseline(&mut self, projection: &Projection) {
+        self.authorized.clear();
+        self.seen_devices.clear();
+        for (group, _view) in projection.groups() {
+            let current = projection.group_active_devices(group);
+            self.seen_devices.insert(*group, current.clone());
+            self.authorized.insert(*group, current);
+        }
     }
 }
 
@@ -1472,7 +1568,7 @@ fn evaluate_group_warnings(
             return Vec::new();
         }
     };
-    watcher.evaluate(&projection, now)
+    watcher.evaluate(&projection, log.events(), now)
 }
 
 /// The current time as Unix seconds, for the warning evaluator's clock.
@@ -1858,6 +1954,39 @@ mod tests {
                 assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_group_warnings_fire_on_intra_interval_readd_churn() {
+        use crate::groups::Role;
+
+        // #1847 regression: revoke + re-add cycles that complete inside
+        // one evaluation interval are invisible to a net-set comparison.
+        // Four cycles written to the group log with no evaluation in
+        // between must still count four re-adds at the next evaluation.
+        let dir = serve_test_dir("churn-intra-interval");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // The first authorization is not a re-add, and warns about nothing.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Four revoke + re-authorize cycles, all inside one interval:
+        // no evaluation runs until every cycle is already in the log.
+        for _ in 0..4 {
+            log.device_revoke(author, group, device).unwrap();
+            log.device_add(author, group, device, Role::Read).unwrap();
+        }
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_001);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
