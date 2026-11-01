@@ -1111,6 +1111,12 @@ in
   # doc/2026-10-26T21-18-21Z_feature_t3code-v2-integration/ for the
   # coexistence line with OpenChamber.
   #
+  # --tailscale-serve-port 8443 is load-bearing (dezren39/nix#1279): without
+  # it t3 configures Tailscale Serve on the default HTTPS port 443, which on
+  # this host belongs to the PM stack aggregator (127.0.0.1:4870) -- every
+  # t3code (re)start stole :443 back (hit twice on 2026-10-31). 8443 is
+  # T3 Code's tailnet port; :443 must stay with the aggregator.
+  #
   # --tailscale-serve is a first-class upstream flag ("Configure Tailscale Serve
   # to expose this backend over HTTPS on the Tailnet"), so no tunnel, no
   # reverse proxy and no public exposure: the listener stays on loopback and
@@ -1133,7 +1139,7 @@ in
     Service = {
       # `serve` rather than `start`: start opens a browser, which is meaningless
       # for a background unit.
-      ExecStart = "${latestCli.t3}/bin/t3 serve --tailscale-serve --no-browser";
+      ExecStart = "${latestCli.t3}/bin/t3 serve --tailscale-serve --tailscale-serve-port 8443 --no-browser";
       Restart = "on-failure";
       RestartSec = 5;
       # t3 keeps runtime state under T3CODE_HOME (equivalently --base-dir).
