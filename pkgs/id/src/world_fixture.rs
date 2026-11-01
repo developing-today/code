@@ -1188,6 +1188,73 @@ mod tests {
         }
 
         #[test]
+        fn checked_in_session_snapshot_hashes_are_stable() {
+            const EXPECTED_SNAPSHOTS: &[(u64, &str)] = &[
+                (
+                    3,
+                    "df60a55b4fe5303e1a769073e78e0fdb3febf9771a3d54ca8867fea5dcfa85fb",
+                ),
+                (
+                    4,
+                    "106ec01c72ca951854c493419f42d63123a041ffb90bb88d15487d33aa587c34",
+                ),
+                (
+                    5,
+                    "5f1a21e7982fcedda44d4fd00a59607179d123bcc5d1ae834067db61b568c119",
+                ),
+                (
+                    6,
+                    "9d47f9be7afe3d2a965992b49c38e8e30b8217adfd5c18c76904d0ecd193abb5",
+                ),
+                (
+                    7,
+                    "c95eed39e456d648b240018390710c9221a9f823fe5c98e0521b53fafcbe31f2",
+                ),
+            ];
+
+            let fixture_text = include_str!("../tests/fixtures/tic-tac-toe-determinism.jsonl");
+            let fixture = decode(fixture_text).unwrap();
+            check_module(&fixture.header, TIC_TAC_TOE).unwrap();
+            let runner = Sandbox::compile(TIC_TAC_TOE, SandboxLimits::default()).unwrap();
+            let start = replay_start(&fixture.events).unwrap();
+            let mut world = runner.instantiate(7).unwrap();
+
+            let mut snapshots = 0;
+            for event in &fixture.events[start..] {
+                let Some(world_event) = replay_event(event) else {
+                    continue;
+                };
+                WorldProgram::update(&mut world, &world_event).unwrap();
+                let snapshot = world.snapshot().unwrap().unwrap();
+                let actual = blake3::hash(&snapshot).to_hex().to_string();
+                let Some(expected) = EXPECTED_SNAPSHOTS.get(snapshots) else {
+                    panic!(
+                        "snapshot digest mismatch at sequence {}: expected no further snapshot, actual {}",
+                        world_event.sequence, actual
+                    );
+                };
+                assert_eq!(
+                    world_event.sequence, expected.0,
+                    "snapshot sequence differs from the checked-in session"
+                );
+                assert_eq!(
+                    actual, expected.1,
+                    "snapshot digest mismatch at sequence {}: expected {}, actual {}",
+                    world_event.sequence, expected.1, actual
+                );
+                snapshots += 1;
+            }
+            if let Some((sequence, expected)) = EXPECTED_SNAPSHOTS.get(snapshots) {
+                panic!(
+                    "snapshot digest mismatch at sequence {sequence}: expected {expected}, actual <missing>"
+                );
+            }
+
+            let replayed = replay(&runner, 7, &fixture, false).unwrap();
+            assert_eq!(replayed.verdict, Verdict::Match);
+        }
+
+        #[test]
         fn a_nondeterministic_guest_fails_verify() {
             // The sandbox gives a guest no nondeterminism channel: it receives
             // no imports (no clock, no random source; see sandbox.rs), so no
