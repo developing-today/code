@@ -134,6 +134,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	inSingleLineComment := false
 	inMultiLineComment := false
 	blockCommentStart := -1
+	lineCommentStart := -1
 	var blockComments []blockCommentRange
 	inString := rune(0)
 	isEscaped := false
@@ -494,7 +495,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// 'async' modifier that itself follows 'extends'
 					// (class extends async function(){} {}: the
 					// intervening 'async' must not hide the heritage
-					// position, Codex P2 on #3354) —
+					// position, Codex P2 on #3354) — or behind the
+					// 'new' of a constructor call (class extends
+					// {x:[class extends new async function(){} {} / 2]}.x:
+					// a 'new' callee is an expression in any context,
+					// so no heritage requirement there, Codex P2 on
+					// #3354) —
 					// heads a heritage operand: always an expression,
 					// never a declaration, so it takes a pending
 					// frame even though 'extends' is not an
@@ -503,7 +509,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// expression's frame (Codex P2 on #3354:
 					// class C extends {x:[class extends class {}
 					// {} / 2]}.x {} and the function permutation).
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) {
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
@@ -541,6 +547,21 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if ch == '\n' {
 			line++
 			lineBreakPending = true
+			if inSingleLineComment && lineCommentStart >= 0 {
+				// Record the line comment's range alongside the
+				// block comments: the numeric-token guard must
+				// skip it the same way, or a digit at the end
+				// of a line comment (f // 1\n<number>) is
+				// mistaken for the preceding token (Codex P2
+				// on #3354). A trailing '\r' is the CRLF
+				// terminator, not comment text.
+				end := i
+				if end > lineCommentStart && chars[end-1] == '\r' {
+					end--
+				}
+				blockComments = append(blockComments, blockCommentRange{start: lineCommentStart, end: end})
+				lineCommentStart = -1
+			}
 			inSingleLineComment = false
 			if moduleSpecClosed {
 				// A static import/export declaration ended at
@@ -739,6 +760,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if ch == '/' && i+1 < n {
 			if chars[i+1] == '/' {
 				inSingleLineComment = true
+				lineCommentStart = i
 				if brokeLine {
 					lineBreakPending = true
 				}
@@ -1458,7 +1480,7 @@ func isIdentExceptionRune(ch rune) bool {
 func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool {
 	end := lt
 	// Skip trailing trivia — whitespace, line terminators and
-	// block comments — the way the scanner's prevChar already
+	// comments (block and line ranges are both recorded) — the way the scanner's prevChar already
 	// does: in "1 < x" the character before '<' is a space, but
 	// the token is "1", and a newline before '<' does not change
 	// the token either ("1\n< x").
