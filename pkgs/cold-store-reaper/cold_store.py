@@ -1036,31 +1036,45 @@ class ColdStore:
         for db in dbs:
             folder_id = self._folder_id(f"db-backups/{db}")
             q = f"'{folder_id}' in parents and trashed = false"
-            url = (
-                self.drive_base
-                + "/files?"
-                + urllib.parse.urlencode(
-                    {
-                        "q": q,
-                        "fields": "files(id,name,size,createdTime)",
-                        "orderBy": "createdTime desc",
-                        "pageSize": 1000,
-                    }
+            page_token = None
+            seen_tokens = set()
+            while True:
+                params = {
+                    "q": q,
+                    "fields": "nextPageToken,files(id,name,size,createdTime)",
+                    "orderBy": "createdTime desc",
+                    "pageSize": 1000,
+                }
+                if page_token is not None:
+                    params["pageToken"] = page_token
+                url = self.drive_base + "/files?" + urllib.parse.urlencode(params)
+                status, _h, resp = http_request(
+                    "GET", url, headers=self._auth_headers()
                 )
-            )
-            status, _h, resp = http_request("GET", url, headers=self._auth_headers())
-            if status != 200:
-                raise ColdStoreError(f"files.list for backups failed (HTTP {status})")
-            for f in json.loads(resp).get("files", []):
-                out.append(
-                    {
-                        "db": db,
-                        "id": f["id"],
-                        "name": f["name"],
-                        "size": int(f.get("size") or 0),
-                        "created_time": f.get("createdTime", ""),
-                    }
-                )
+                if status != 200:
+                    raise ColdStoreError(
+                        f"files.list for backups failed (HTTP {status})"
+                    )
+                page = json.loads(resp)
+                for f in page.get("files", []):
+                    out.append(
+                        {
+                            "db": db,
+                            "id": f["id"],
+                            "name": f["name"],
+                            "size": int(f.get("size") or 0),
+                            "created_time": f.get("createdTime", ""),
+                        }
+                    )
+                next_page_token = page.get("nextPageToken")
+                if not next_page_token:
+                    break
+                if next_page_token in seen_tokens:
+                    raise ColdStoreError(
+                        "files.list for backups repeated nextPageToken"
+                    )
+                seen_tokens.add(next_page_token)
+                page_token = next_page_token
         # Drive was asked for createdTime desc; sort again so the merged
         # multi-db listing is deterministic even if a backend ignores it.
         out.sort(key=lambda r: r["created_time"], reverse=True)
