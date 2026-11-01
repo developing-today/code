@@ -824,11 +824,25 @@ impl BoardGraph {
     /// is the outermost applicable one: board, then host, then personal.
     /// Superseded versions are not hidden and not shown — a projection
     /// shows the replacement; the history stays in the graph.
+    ///
+    /// Two enforcement duties the substrate deliberately delegates to
+    /// this layer (see [`BoardGraph::has_role`]) are discharged here:
+    /// a moderation record has an effect only while its author holds
+    /// authority — the board owner, or a moderator whose grant is on
+    /// the current attestation frontier (a grant superseded by a
+    /// revocation no longer empowers; the frontier follows the signed
+    /// `supersedes` links, not arrival order) — and a superseded
+    /// moderation or tombstone record has no effect. Revoked or
+    /// superseded records stay in the public moderation log either
+    /// way. The board's theme is itself subject to the host and
+    /// personal layers: a suppressed theme is not returned, and the
+    /// suppression is reported in `hidden` like any other.
     pub fn compose_view(&self, board: &ArtifactHash, layers: &ViewLayers) -> Result<BoardView> {
         let root = self.require_board(board)?;
         let BoardObject::Board(root_body) = &root.object else {
             unreachable!("require_board checked board kind")
         };
+        let mut theme_hidden = None;
         let theme = match &root_body.theme_ref {
             Some(reference) => {
                 let theme_object = self
@@ -838,9 +852,75 @@ impl BoardGraph {
                 let BoardObject::Theme(theme) = &theme_object.object else {
                     bail!("board theme reference is not a theme object")
                 };
-                Some(theme.clone())
+                if layers.host_hidden.contains(reference) {
+                    theme_hidden = Some(HiddenObject {
+                        object: reference.clone(),
+                        layer: ViewLayer::Host,
+                        action: None,
+                        reason: None,
+                    });
+                    None
+                } else if layers.personal_hidden.contains(reference)
+                    || layers.muted_authors.contains(&theme_object.artifact.author)
+                {
+                    theme_hidden = Some(HiddenObject {
+                        object: reference.clone(),
+                        layer: ViewLayer::Personal,
+                        action: None,
+                        reason: None,
+                    });
+                    None
+                } else {
+                    Some(theme.clone())
+                }
             }
             None => None,
+        };
+
+        // Supersede relations first: a superseded record (a moderation
+        // action, a tombstone, any content object) has no effect in the
+        // projection, whatever it once said.
+        let mut superseded: BTreeSet<ArtifactHash> = BTreeSet::new();
+        for signed in self.objects.values() {
+            if let BoardObject::Supersede(value) = &signed.object {
+                if &value.board == board {
+                    superseded.insert(value.previous.clone());
+                }
+            }
+        }
+
+        // Current moderator frontier: a role attestation that another
+        // attestation supersedes is history, not authority. Following
+        // the signed supersedes links (never arrival order) keeps this
+        // identical on every peer holding the same set.
+        let mut attestation_superseded: BTreeSet<ArtifactHash> = BTreeSet::new();
+        for signed in self.objects.values() {
+            if let BoardObject::RoleAttestation(value) = &signed.object {
+                if &value.board == board {
+                    if let Some(previous) = &value.supersedes {
+                        attestation_superseded.insert(previous.clone());
+                    }
+                }
+            }
+        }
+        let current_moderators: BTreeSet<String> = self
+            .objects
+            .iter()
+            .filter(|(hash, _)| !attestation_superseded.contains(hash))
+            .filter_map(|(_, signed)| match &signed.object {
+                BoardObject::RoleAttestation(value)
+                    if &value.board == board
+                        && value.role == BoardRole::Moderator
+                        && value.granted =>
+                {
+                    Some(value.member.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let owner = root.artifact.author.as_str();
+        let has_authority = |author: &str| {
+            author == owner || current_moderators.contains(author)
         };
 
         // Board layer facts, gathered in deterministic (content-hash)
@@ -849,12 +929,21 @@ impl BoardGraph {
         let mut hide_balance: BTreeMap<ArtifactHash, i64> = BTreeMap::new();
         let mut hide_source: BTreeMap<ArtifactHash, (ArtifactHash, Option<String>)> =
             BTreeMap::new();
-        let mut tombstones: BTreeMap<ArtifactHash, ArtifactHash> = BTreeMap::new();
-        let mut superseded: BTreeSet<ArtifactHash> = BTreeSet::new();
+        let mut tombstones: BTreeMap<ArtifactHash, (ArtifactHash, Option<String>)> =
+            BTreeMap::new();
         for (hash, signed) in &self.objects {
             match &signed.object {
                 BoardObject::ModerationAction(value) if &value.board == board => {
+                    // The log is public and complete: every action is
+                    // listed, including ones that no longer (or never
+                    // did) carry authority. Only empowered, current
+                    // records change the projection.
                     moderation_log.push(hash.clone());
+                    if superseded.contains(hash)
+                        || !has_authority(signed.artifact.author.as_str())
+                    {
+                        continue;
+                    }
                     match value.action {
                         ModerationActionKind::Hide => {
                             *hide_balance.entry(value.target.clone()).or_default() += 1;
@@ -869,10 +958,11 @@ impl BoardGraph {
                     }
                 }
                 BoardObject::Tombstone(value) if &value.board == board => {
-                    tombstones.entry(value.target.clone()).or_insert_with(|| hash.clone());
-                }
-                BoardObject::Supersede(value) if &value.board == board => {
-                    superseded.insert(value.previous.clone());
+                    if !superseded.contains(hash) {
+                        tombstones
+                            .entry(value.target.clone())
+                            .or_insert_with(|| (hash.clone(), value.reason.clone()));
+                    }
                 }
                 _ => {}
             }
@@ -880,6 +970,9 @@ impl BoardGraph {
 
         let mut objects = Vec::new();
         let mut hidden = Vec::new();
+        if let Some(entry) = theme_hidden {
+            hidden.push(entry);
+        }
         for (hash, signed) in &self.objects {
             if hash != board && signed.object.board_ref() != Some(board) {
                 continue;
@@ -908,7 +1001,9 @@ impl BoardGraph {
                         .unwrap_or((hash.clone(), None));
                     (Some(action), reason)
                 } else {
-                    (tombstone.cloned(), Some("author tombstone".to_owned()))
+                    let (action, reason) =
+                        tombstone.cloned().unwrap_or((hash.clone(), None));
+                    (Some(action), reason)
                 };
                 hidden.push(HiddenObject {
                     object: hash.clone(),
@@ -1730,6 +1825,138 @@ mod tests {
         assert!(view.objects.contains(&alice_post));
         assert!(view.objects.contains(&bob_post));
         assert!(view.hidden.is_empty());
+    }
+
+    #[test]
+    fn view_enforces_moderator_revocation_but_keeps_the_public_log() {
+        let owner = key(30);
+        let moderator = key(31);
+        let author = key(32);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&owner)).unwrap();
+        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let post_hash = graph
+            .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
+            .unwrap();
+        let grant = SignedBoardObject::sign(
+            &owner,
+            2,
+            "",
+            BoardObject::RoleAttestation(RoleAttestation {
+                board: root_hash.clone(),
+                member: hex_encode(&moderator.verifying_key().to_bytes()),
+                role: BoardRole::Moderator,
+                granted: true,
+                supersedes: None,
+            }),
+        )
+        .unwrap();
+        let grant_hash = graph.insert(grant).unwrap();
+        let hide_hash = graph
+            .insert(moderation(
+                &moderator,
+                1,
+                root_hash.clone(),
+                post_hash.clone(),
+                ModerationActionKind::Hide,
+                Some("spam"),
+            ))
+            .unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert_eq!(view.hidden.len(), 1);
+        assert_eq!(view.hidden[0].object, post_hash);
+
+        let revoke = SignedBoardObject::sign(
+            &owner,
+            3,
+            "",
+            BoardObject::RoleAttestation(RoleAttestation {
+                board: root_hash.clone(),
+                member: hex_encode(&moderator.verifying_key().to_bytes()),
+                role: BoardRole::Moderator,
+                granted: false,
+                supersedes: Some(grant_hash),
+            }),
+        )
+        .unwrap();
+        graph.insert(revoke).unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        // The revoked moderator's hide no longer has an effect...
+        assert!(view.objects.contains(&post_hash));
+        assert!(view.hidden.is_empty());
+        // ...but it stays in the public moderation log.
+        assert_eq!(view.moderation_log, vec![hide_hash]);
+    }
+
+    #[test]
+    fn superseded_tombstone_loses_effect_and_keeps_its_signed_reason() {
+        let owner = key(33);
+        let author = key(34);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&owner)).unwrap();
+        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let first = graph
+            .insert(post(&author, root_hash.clone(), thread_hash.clone(), "first"))
+            .unwrap();
+        let second = graph
+            .insert(post(&author, root_hash.clone(), thread_hash, "second"))
+            .unwrap();
+        let tombstone = |target: ArtifactHash, reason: &str| {
+            SignedBoardObject::sign(
+                &author,
+                2,
+                "",
+                BoardObject::Tombstone(Tombstone {
+                    board: root_hash.clone(),
+                    target,
+                    reason: Some(reason.to_owned()),
+                }),
+            )
+            .unwrap()
+        };
+        let first_tombstone = graph.insert(tombstone(first.clone(), "wrong thread")).unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert_eq!(view.hidden.len(), 1);
+        assert_eq!(view.hidden[0].object, first);
+        assert_eq!(view.hidden[0].reason.as_deref(), Some("wrong thread"));
+
+        let second_tombstone =
+            graph.insert(tombstone(second.clone(), "duplicate")).unwrap();
+        let supersede = SignedBoardObject::sign(
+            &author,
+            3,
+            "",
+            BoardObject::Supersede(Supersede {
+                board: root_hash.clone(),
+                previous: first_tombstone,
+                replacement: second_tombstone,
+            }),
+        )
+        .unwrap();
+        graph.insert(supersede).unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert!(view.objects.contains(&first));
+        assert_eq!(view.hidden.len(), 1);
+        assert_eq!(view.hidden[0].object, second);
+        assert_eq!(view.hidden[0].reason.as_deref(), Some("duplicate"));
+    }
+
+    #[test]
+    fn host_layer_can_suppress_the_board_theme() {
+        let author = key(35);
+        let mut graph = BoardGraph::default();
+        let theme_hash = graph.insert(theme(&author, 1, None)).unwrap();
+        let root_hash = graph.insert(themed_board(&author, theme_hash.clone())).unwrap();
+
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert!(view.theme.is_some());
+
+        let mut layers = ViewLayers::default();
+        layers.host_hidden.insert(theme_hash);
+        let view = graph.compose_view(&root_hash, &layers).unwrap();
+        assert!(view.theme.is_none());
+        assert_eq!(view.hidden.len(), 1);
+        assert_eq!(view.hidden[0].layer, ViewLayer::Host);
     }
 
 }
