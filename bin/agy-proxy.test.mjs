@@ -19,7 +19,7 @@
 // 'stop' (in stream mode always, in non-stream mode also when the run
 // produced partial output first).
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -131,6 +131,46 @@ const post = (port, body, headers = {}) => fetch(`http://127.0.0.1:${port}/v1/ch
   method: 'POST',
   headers: { 'Content-Type': 'application/json', ...headers },
   body: JSON.stringify(body)
+});
+
+test('invalid numeric AGY_PROXY settings fail startup with the variable and value (#2096)', () => {
+  const cases = [
+    ['AGY_PROXY_MODELS_TTL_MS', ['abc', '-1', '1.5', '0', '2147483648']],
+    ['AGY_PROXY_TURN_TIMEOUT_MS', ['abc', '-1', '1.5', '0', '2147483648']],
+    ['AGY_PROXY_SESSION_TTL_MS', ['abc', '-1', '1.5', '0', '2147483648']],
+    ['AGY_PROXY_MAX_LIVE_WORKERS', ['abc', '-1', '1.5', '0', '10001']]
+  ];
+  const defaults = {
+    AGY_PROXY_MODELS_TTL_MS: '',
+    AGY_PROXY_TURN_TIMEOUT_MS: '',
+    AGY_PROXY_SESSION_TTL_MS: '',
+    AGY_PROXY_MAX_LIVE_WORKERS: ''
+  };
+  for (const [name, values] of cases) {
+    for (const value of values) {
+      const result = spawnSync(process.execPath, [path.join(binDir, 'agy-proxy.mjs')], {
+        encoding: 'utf8',
+        timeout: 5000,
+        env: {
+          ...process.env,
+          ...defaults,
+          AGY_PROXY_PORT: '18743',
+          AGY_PROXY_WARM_SPARES: '0',
+          [name]: value
+        }
+      });
+      assert.equal(result.status, 1, `${name}=${JSON.stringify(value)} should fail startup: ${result.stderr}`);
+      assert.ok(result.stderr.includes(`${name}="${value}"`), `startup error should identify ${name} and value`);
+    }
+  }
+});
+
+test('first session request safely checks eviction with no live workers (#2096)', async (t) => {
+  const { port, stop } = await startProxy({ AGY_PROXY_MAX_LIVE_WORKERS: '1' });
+  t.after(stop);
+  const res = await post(port, { messages: [{ role: 'user', content: 'empty eviction list' }] }, { 'x-session-id': 'empty-list-guard' });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
 });
 
 const parseSse = (sse) => {
