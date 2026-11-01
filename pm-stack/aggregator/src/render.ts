@@ -323,6 +323,8 @@ body.xp-plan .xpl-costcol { display: none; }
   .banner { color: #9a6700; }
   .banner.drew { color: #cf222e; }
   .chips a, .fchip, .qchip, .hchip, .xchip { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
+  /* The tray chip background lightens above, so its restore (x) button must drop its dark-surface foreground too (Codex P2 on PR #3308). */
+  .hchip button { color: #1f2328; }
   .chips a.active { color: #0969da; }
   .fchip.stale, .fchip.absent, .qblock .qremaining { color: #9a6700; }
   .fchip.invalid, .cform .err, .aform .err { color: #cf222e; }

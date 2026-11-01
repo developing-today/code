@@ -98,6 +98,13 @@ describe("the emitted explorer script stays valid (#1215, Codex P1 on PR #3308)"
     expect(scripts[0]).toContain('scope=\\"row\\"');
   });
 
+  test("hidden-configuration restore buttons are themed in the light theme (Codex P2 on PR #3308)", () => {
+    const light = renderSource.slice(
+      renderSource.indexOf("@media (prefers-color-scheme: light)"),
+    );
+    expect(light).toContain(".hchip button { color: #1f2328;");
+  });
+
   test("charts keep their dark surface in the light theme (Codex P2 on PR #3308)", () => {
     const light = renderSource.slice(
       renderSource.indexOf("@media (prefers-color-scheme: light)"),
