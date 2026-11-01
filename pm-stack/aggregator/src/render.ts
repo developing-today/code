@@ -2611,10 +2611,11 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
   // instead of appending duplicates. Any change to the picks or the
   // action controls after review invalidates the snapshot.
   var snapshot = null;
+  var submitting = false;
   function picks() { return Array.prototype.slice.call(document.querySelectorAll("input.bulkpick:checked:not(:disabled)")); }
   function bar() { return document.getElementById("bulkbar"); }
   function invalidate() {
-    if (!snapshot) return;
+    if (submitting || !snapshot) return;
     snapshot = null;
     var b = bar(); if (!b) return;
     b.querySelector(".bulkreview").hidden = true;
@@ -2658,6 +2659,7 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
     if (!t || !t.classList) return;
     var b = bar(); if (!b) return;
     if (t.classList.contains("bulk-review-btn")) {
+      if (submitting) return;
       var sel = picks(); if (!sel.length) return;
       var verb = b.querySelector("select[name=bulkVerb]").value;
       var authorRaw = String((b.querySelector("select[name=author]") || {}).value || "drew|drew|");
@@ -2696,19 +2698,35 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       b.querySelector(".bulkreview").hidden = true;
     }
     if (t.classList.contains("bulk-confirm-btn")) {
-      if (!snapshot) return;
+      if (submitting || !snapshot) return;
       var batch = snapshot;
+      submitting = true;
       t.disabled = true;
+      b.querySelector(".bulk-review-btn").disabled = true;
       var resultsEl = b.querySelector(".bulkresults");
       resultsEl.replaceChildren();
       var allResults = [];
       try {
-        // The endpoint accepts at most 100 actions per request
-        // (server.ts); larger reviewed batches go in slices of the
-        // SAME snapshot, results aggregated across slices.
-        for (var off = 0; off < batch.actions.length; off += 100) {
-          var chunk = batch.actions.slice(off, off + 100);
-          var res = await fetch("/api/actions/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actions: chunk }) });
+        // The endpoint accepts at most 100 actions per request and
+        // readJsonBody rejects bodies over 100,000 chars (server.ts),
+        // so the SAME snapshot is packed greedily under BOTH limits
+        // and the slices' per-item results are aggregated.
+        var chunks = [];
+        var cur = [];
+        var curLen = 16; // the {"actions":[]} envelope
+        batch.actions.forEach(function (a) {
+          var len = JSON.stringify(a).length + 1;
+          if (cur.length && (cur.length >= 100 || curLen + len > 90000)) {
+            chunks.push(cur);
+            cur = [];
+            curLen = 16;
+          }
+          cur.push(a);
+          curLen += len;
+        });
+        if (cur.length) chunks.push(cur);
+        for (var ci = 0; ci < chunks.length; ci++) {
+          var res = await fetch("/api/actions/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actions: chunks[ci] }) });
           var body = await res.json().catch(function () { return {}; });
           if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
           (body.results || []).forEach(function (r) { allResults.push(r); });
@@ -2718,12 +2736,15 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
         // is kept, so Submit retries the identical envelope and the
         // endpoint dedupes anything a lost response had recorded.
         b.querySelector(".bulkerr").textContent = "Batch result unknown: " + e.message + " \u2014 the reviewed batch is unchanged; Submit retries it exactly, and already-recorded items dedupe by client token.";
+        submitting = false;
         t.disabled = false;
+        b.querySelector(".bulk-review-btn").disabled = picks().length === 0;
         return;
       }
       // Definitive results: the snapshot is spent. A further batch
       // needs a fresh review, which mints fresh tokens.
       snapshot = null;
+      submitting = false;
       var failedRefs = {};
       var recorded = 0;
       allResults.forEach(function (r) {
