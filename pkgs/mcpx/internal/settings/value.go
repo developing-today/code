@@ -497,8 +497,15 @@ func Validate(set Setting, raw string) error {
 			return fmt.Errorf("want a whole number of at least %d, got %q", set.Floor, raw)
 		}
 	case KindDuration:
-		if _, err := time.ParseDuration(raw); err != nil {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
 			return fmt.Errorf("want a duration like 30s or 5m, got %q", raw)
+		}
+		if set.Path == "protoTasks.maxTTL" && d > 0 && d < time.Millisecond {
+			// Store.Start clamps in whole milliseconds; a positive
+			// sub-millisecond max would truncate to 0 and delete every
+			// new task at once (#2498).
+			return fmt.Errorf("protoTasks.maxTTL must be at least 1ms, got %q", raw)
 		}
 	case KindBytes:
 		if _, err := ParseBytes(raw); err != nil {

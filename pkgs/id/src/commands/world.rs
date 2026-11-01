@@ -1940,7 +1940,12 @@ mod tests {
             assert!(calls[kind]["fuel_max"].as_u64().unwrap() > 0, "{kind}");
         }
         assert!(calls.get("restore").is_none(), "{report}");
-        assert!(report["worst_call_percent_of_limit"].as_f64().unwrap() < 1.0);
+        // The worst call is layout, rendering the pf.Screen frame. Its
+        // ceiling is the largest per-call budget FUEL_BUDGETS allows this
+        // module (500_000 of the 10_000_000 limit), so the report must stay
+        // under 5 percent; before the Screen migration the bare-text view
+        // stayed under 1.
+        assert!(report["worst_call_percent_of_limit"].as_f64().unwrap() < 5.0);
 
         // Without a viewport there is no layout call; bad hex is refused
         // before the module runs.

@@ -19,6 +19,7 @@ import {
   type UnmatchedCharge,
 } from "./charges-match.ts";
 import type { ChargeRow } from "./model.ts";
+import { PROVIDER_ALIASES } from "./charges-catalog.ts";
 
 /**
  * Structural validation of the producer's candidates file. Accepts
@@ -71,13 +72,36 @@ function daysBetween(a: string, b: string): number {
  * METAPAY). Conservative: a hand-fed row is only dropped when an
  * auto row plausibly IS that charge.
  */
+/**
+ * Every squashed spelling a label answers to: its own, plus the
+ * canonical provider name and merchant aliases of its alias group
+ * when the label names one of them. Canonicalizing a matched label
+ * (the charge catalog's "Meta Model API" for a METAPAY charge) must
+ * not break deduplication against hand-fed rows written under the
+ * merchant spelling ("Meta PAYG spill" squashes around METAPAY, an
+ * alias of the canonical name) -- without the group expansion the
+ * same charge lands in the feed twice (Codex review, PR #3168).
+ */
+function labelSquashes(label: string): string[] {
+  const base = squash(normalizeMerchantName(label));
+  if (!base) return [];
+  const out = new Set<string>([base]);
+  for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
+    const group = [canonical, ...aliases].map((n) => squash(normalizeMerchantName(n)));
+    if (group.includes(base)) {
+      for (const g of group) out.add(g);
+    }
+  }
+  return [...out];
+}
+
 function sameCharge(handFed: ChargeRow, auto: ChargeRow): boolean {
   if (handFed.amountUsd !== auto.amountUsd) return false;
   if (daysBetween(handFed.at, auto.at) > DEDUPE_WINDOW_DAYS) return false;
-  const a = squash(normalizeMerchantName(handFed.label));
-  const b = squash(normalizeMerchantName(auto.label));
-  if (!a || !b) return false;
-  return a.includes(b) || b.includes(a);
+  const aSet = labelSquashes(handFed.label);
+  const bSet = labelSquashes(auto.label);
+  if (!aSet.length || !bSet.length) return false;
+  return aSet.some((a) => bSet.some((b) => a.includes(b) || b.includes(a)));
 }
 
 /**

@@ -19,6 +19,7 @@
 import { appendFile, link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SnapshotRecord, UsageSourceClass } from "./model.ts";
+import { isFiniteNumber, isIsoDate, isNonEmptyString, isNonNegative } from "./validate.ts";
 
 const SOURCES: ReadonlySet<string> = new Set(["api", "console", "manual", "estimate", "invoice"]);
 const UNITS: ReadonlySet<string> = new Set(["pct", "usd", "cny", "count", "gb", "tokens", "usd-est", "minutes", "hours", "gb-hours"]);
@@ -295,29 +296,31 @@ export function snapshotFileFor(ts: string): string {
 export function isSnapshotRecord(v: unknown): v is SnapshotRecord {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SnapshotRecord>;
-  if (typeof r.ts !== "string" || Number.isNaN(Date.parse(r.ts))) return false;
+  // Real calendar dates only (#2264/#2483): Date.parse rolls
+  // 2026-02-30 into March, so the strict primitive is the gate.
+  if (!isIsoDate(r.ts)) return false;
   // The store routes by ts.slice(0, 7) and readAll only reads
   // usage-YYYY-MM.jsonl (or rollups): a ts that does not route to such
   // a file would be written where readAll can never return it.
   if (!FILE_RE.test(snapshotFileFor(r.ts))) return false;
-  if (typeof r.serviceId !== "string" || r.serviceId === "") return false;
-  if (typeof r.metricId !== "string" || r.metricId === "") return false;
+  if (!isNonEmptyString(r.serviceId)) return false;
+  if (!isNonEmptyString(r.metricId)) return false;
   if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
   if (typeof r.source !== "string" || !SOURCES.has(r.source)) return false;
-  if (typeof r.observedBy !== "string" || r.observedBy === "") return false;
-  if (typeof r.value === "number") return Number.isFinite(r.value);
+  if (!isNonEmptyString(r.observedBy)) return false;
+  // Optional hub fields (#2483): when present and non-null they are
+  // dereferenced downstream (pct-of-limit, reset comparisons), so a
+  // non-finite/negative limit or an impossible resetsAt date must
+  // refuse the record here, at the boundary.
+  if (r.limit !== undefined && r.limit !== null && !isNonNegative(r.limit)) return false;
+  if (r.resetsAt !== undefined && r.resetsAt !== null && !isIsoDate(r.resetsAt)) return false;
+  if (typeof r.value === "number") return isFiniteNumber(r.value);
   if (typeof r.value === "object" && r.value !== null) {
     const p = r.value as { low?: unknown; high?: unknown };
     // Pairs must round-trip: non-finite endpoints serialize to null
     // and readAll drops them, and an inverted pair is never produced
     // by the writers — mirror the scalar branch's finiteness.
-    return (
-      typeof p.low === "number" &&
-      typeof p.high === "number" &&
-      Number.isFinite(p.low) &&
-      Number.isFinite(p.high) &&
-      p.low <= p.high
-    );
+    return isFiniteNumber(p.low) && isFiniteNumber(p.high) && p.low <= p.high;
   }
   return false;
 }
@@ -609,6 +612,14 @@ export class SnapshotStore {
     const seen = new Set((await this.readAll()).map(snapshotKey));
     for (const k of await this.rollupKeys()) seen.add(k);
     const fresh = valid.filter((r) => {
+      // Readback refusal (#1540): a record the store could not read
+      // back - its JSON round-trip fails isSnapshotRecord - is a
+      // record it must not accept, however it validated in memory.
+      try {
+        if (!isSnapshotRecord(JSON.parse(JSON.stringify(r)))) return false;
+      } catch {
+        return false;
+      }
       const k = snapshotKey(r);
       if (seen.has(k)) return false; // stored already, or earlier in this batch
       seen.add(k);

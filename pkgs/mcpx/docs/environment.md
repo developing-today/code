@@ -45,7 +45,11 @@ The table below is generated from `settings.ScriptEnv()` in
 ## This table is what mcpx adds, not all a child gets
 
 Every one of these is _added to_ the environment mcpx itself was started with.
-A child gets the parent's environment entire, and then these on top:
+A child gets the parent's environment entire, and then these on top — unless its
+shebang replaces part of it: `env -i` starts the child from an empty
+environment, and `env -u NAME` removes just that name (both then get these on
+top). Both the dispatched path and the JavaScript path apply what the shebang
+asked for:
 
 - `internal/runner/runner.go:359` — `cmd.Env = append(os.Environ(), …)`, every
   script the runner starts
@@ -114,7 +118,8 @@ and read by name for that reason.
 | `MCPX_CONFIG_PATH` | `mcpx exec` / `mcpx run` | always | the nearest configuration file in effect, empty when there is none | the generated client (paths.config) |
 | `MCPX_SCRIPT_DIRS` | `mcpx exec` / `mcpx run` | always | the directories searched for named scripts, nearest first, colon-separated | the generated client (paths.scriptDirs) |
 | `MCPX_API_DECLARATION_SHA256` | `mcpx exec` / `mcpx run` | always | the fingerprint of a declared API's declaration, set on the child a declared API launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one | the pool, as a pool identity input (api serve: PoolID hashes the server environment) |
-| `MCPX_RUNTIME` | the runner, for every script | always | deno, bun or node | the generated client |
+| `MCPX_RUNTIME` | the runner, for every script | always | deno, bun or node; on a dispatched run, the interpreter's name (sh, python3) | the generated client; on a dispatched run, the script itself |
+| `MCPX_DISPATCH` | the runner, for every script | only on a dispatched (non-JavaScript) run | how the interpreter was chosen: shebang or interpreter (script.interpreter) | the script itself, and anyone reading its environment |
 | `MCPX_ALLOW_READ` | the runner, for every script | only when the permissions allow reading files | 1: the client's file helpers may read. Without it they refuse, naming the permission, rather than leaving it to the sandbox | the generated client |
 | `MCPX_LOG_LEVEL` | `mcpx exec` / `mcpx run` | always | the lowest level the script's log keeps | the generated client; `mcpx` run inside the script or shell reads it as logging.level; also the setting `logging.level` |
 | `MCPX_LOG_SOURCE` | `mcpx exec` / `mcpx run` | always | which levels record a call site: a level name for that level and above, 0 for none | the generated client |

@@ -1,14 +1,18 @@
 // Tests for clef-proxy's request-error handling (#690).
 // Run: node --test bin/clef-proxy.test.mjs
 //
-// The proxy forwards valid requests to the Cloudflare AI gateway, which
-// these tests never reach: they cover the paths that answer locally —
-// health, a malformed client body (400, not the pre-fix 500 from the
-// shared upstream try/catch), and a missing inference token (401, with
-// HOME pointed at an empty dir and no token in the environment).
+// The local tests cover the paths that answer locally — health, a
+// malformed client body (400, not the pre-fix 500 from the shared
+// upstream try/catch), and a missing inference token (401, with HOME
+// pointed at an empty dir and no token in the environment). The
+// upstream tests below reach a stub gateway instead, via the
+// CLEF_PROXY_GATEWAY_BASE seam (#692): they pin the #690 upstream
+// guard — a non-JSON, null, or scalar gateway answer is an upstream
+// failure preserving the upstream status, never a 500.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,11 +30,12 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const startProxy = async () => {
+const startProxy = async (extraEnv = {}) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'clef-proxy-test-'));
   const port = await freePort();
-  const env = { ...process.env, HOME: tmp, CLEF_PROXY_PORT: String(port), XDG_STATE_HOME: path.join(tmp, 'state') };
+  const env = { ...process.env, HOME: tmp, CLEF_PROXY_PORT: String(port), XDG_STATE_HOME: path.join(tmp, 'state'), ...extraEnv };
   delete env.CLOUDFLARE_API_TOKEN;
+  if (!extraEnv.CLEF_PROXY_GATEWAY_BASE) delete env.CLEF_PROXY_GATEWAY_BASE;
   const child = spawn(process.execPath, [path.join(binDir, 'clef-proxy.mjs')], {
     env,
     stdio: ['ignore', 'pipe', 'pipe']
@@ -44,7 +49,7 @@ const startProxy = async () => {
     if (Date.now() > deadline) throw new Error(`proxy did not start: ${log}`);
     await new Promise(r => setTimeout(r, 50));
   }
-  return { child, base: `http://127.0.0.1:${port}` };
+  return { child, base: `http://127.0.0.1:${port}`, tmp };
 };
 
 test('clef-proxy local error handling', async (t) => {
@@ -85,5 +90,143 @@ test('clef-proxy local error handling', async (t) => {
       body: JSON.stringify({ state: {}, questions: {} })
     });
     assert.equal(res.status, 401);
+  });
+});
+
+test('clef-proxy upstream guard (#690/#692)', async (t) => {
+  let stubBehavior = () => {};
+  const stubPaths = [];
+  const stub = http.createServer((req, res) => {
+    stubPaths.push(req.url);
+    stubBehavior(req, res);
+  });
+  const stubPort = await freePort();
+  await new Promise((resolve) => stub.listen(stubPort, '127.0.0.1', resolve));
+  t.after(() => { stub.close(); });
+
+  const { child, base } = await startProxy({
+    CLEF_PROXY_GATEWAY_BASE: `http://127.0.0.1:${stubPort}/v1`,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost'
+  });
+  t.after(() => { child.kill('SIGTERM'); });
+
+  const ask = () => fetch(`${base}/v1/systemone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-token' },
+    body: JSON.stringify({ state: {}, questions: { q1: 'question one' } })
+  });
+
+  await t.test('non-JSON upstream 502 stays a 502, not a 500', async () => {
+    stubBehavior = (req, res) => {
+      res.writeHead(502, { 'Content-Type': 'text/html' });
+      res.end('<html>bad gateway</html>');
+    };
+    const res = await ask();
+    assert.equal(res.status, 502);
+    const data = await res.json();
+    assert.match(data.error, /Cloudflare Workers AI Clef execution failed/);
+  });
+
+  await t.test('JSON null upstream 200 is a 502', async () => {
+    stubBehavior = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('null');
+    };
+    const res = await ask();
+    assert.equal(res.status, 502);
+  });
+
+  await t.test('scalar upstream 200 is a 502', async () => {
+    stubBehavior = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('"just a string"');
+    };
+    const res = await ask();
+    assert.equal(res.status, 502);
+  });
+
+  await t.test('happy path: stub success shape answers 200 with the answers', async () => {
+    stubBehavior = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, result: { answers: { q1: 'answer one' } } }));
+    };
+    const res = await ask();
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.deepEqual(data.answers, { q1: 'answer one' });
+    assert.match(stubPaths.at(-1), /\/workers-ai\/run\//);
+  });
+});
+
+// The mtime credential cache (#768, contract per #782): config files
+// are re-read only when their mtime changes. The token reaches the
+// stub gateway as the Authorization header, so the stub sees exactly
+// which token each request presented. No Authorization header is sent
+// by the client here: the file is the only token source.
+test('clef-proxy config cache contract (#782)', async (t) => {
+  const seenAuth = [];
+  const stub = http.createServer((req, res) => {
+    seenAuth.push(req.headers.authorization || '');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, result: { answers: { q1: 'ok' } } }));
+  });
+  const stubPort = await freePort();
+  await new Promise((resolve) => stub.listen(stubPort, '127.0.0.1', resolve));
+  t.after(() => { stub.close(); });
+
+  const { child, base, tmp } = await startProxy({
+    CLEF_PROXY_GATEWAY_BASE: `http://127.0.0.1:${stubPort}/v1`,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost'
+  });
+  t.after(() => { child.kill('SIGTERM'); });
+
+  const cfgDir = path.join(tmp, '.config', 'cloudflare');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  const tokenFile = path.join(cfgDir, 'ai-inference-token');
+  // Controlled mtimes (fs.utimesSync) — no reliance on wall-clock
+  // mtime granularity when the file is rewritten.
+  const T1 = new Date('2026-01-01T00:00:00.000Z');
+  const T2 = new Date('2026-01-02T00:00:00.000Z');
+  const writeToken = (value, mtime) => {
+    fs.writeFileSync(tokenFile, value);
+    fs.utimesSync(tokenFile, mtime, mtime);
+  };
+  const ask = () => fetch(`${base}/v1/systemone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state: {}, questions: { q1: 'question one' } })
+  });
+
+  await t.test('first request reads the token from the config file', async () => {
+    writeToken('token-one', T1);
+    const res = await ask();
+    assert.equal(res.status, 200);
+    assert.equal(seenAuth.at(-1), 'Bearer token-one');
+  });
+
+  await t.test('changed contents with an unchanged mtime are not re-read', async () => {
+    writeToken('token-two', T1);
+    const res = await ask();
+    assert.equal(res.status, 200);
+    // The cache serves the value keyed to T1: a re-read would have
+    // presented token-two.
+    assert.equal(seenAuth.at(-1), 'Bearer token-one');
+  });
+
+  await t.test('changed contents with a new mtime are re-read (rotation picked up)', async () => {
+    writeToken('token-three', T2);
+    const res = await ask();
+    assert.equal(res.status, 200);
+    assert.equal(seenAuth.at(-1), 'Bearer token-three');
+  });
+
+  await t.test('a missing token file yields the fallback (401, gateway not called)', async () => {
+    fs.unlinkSync(tokenFile);
+    const callsBefore = seenAuth.length;
+    const res = await ask();
+    assert.equal(res.status, 401);
+    assert.equal(seenAuth.length, callsBefore);
   });
 });

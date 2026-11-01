@@ -28,6 +28,16 @@ pub enum ConfigError {
     /// A key names two users, two groups, or a user and a group.
     #[error("key `{0}` is declared more than once; keys are unique within the config")]
     DuplicateKey(String),
+    /// Two user keys name the same public key, so the two declared users are one account.
+    #[error(
+        "users `{first}` and `{second}` name the same id; each user key must name a different id"
+    )]
+    DuplicateId {
+        /// The first key that named the ID.
+        first: String,
+        /// The later key that named the same ID.
+        second: String,
+    },
     /// A reference names no key of the kind it needs.
     #[error("unknown {kind} key `{key}` in {place}")]
     UnknownKey {
@@ -169,9 +179,17 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
     let mut aliases = BTreeMap::new();
 
     let mut users = Vec::with_capacity(raw.users.len());
+    let mut user_ids: BTreeMap<Key, String> = BTreeMap::new();
     for user in &raw.users {
         let id = parse_id(&user.key, &user.id)?;
         claim(&mut names, &user.key, Object::User(id))?;
+        if let Some(first) = user_ids.get(&id) {
+            return Err(ConfigError::DuplicateId {
+                first: first.clone(),
+                second: user.key.clone(),
+            });
+        }
+        user_ids.insert(id, user.key.clone());
         record_alias(
             &mut aliases,
             &user.key,
@@ -522,6 +540,50 @@ mod tests {
             config(&again),
             Err(ConfigError::DuplicateKey("ann".to_owned()))
         );
+    }
+
+    #[test]
+    fn test_two_user_keys_naming_the_same_id_are_refused_naming_both() {
+        let text = format!(
+            "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n",
+            hex(1),
+            hex(1)
+        );
+        assert_eq!(
+            ServerConfig::parse(&text),
+            Err(ConfigError::DuplicateId {
+                first: "ann".to_owned(),
+                second: "bo".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_the_same_id_in_a_different_case_is_still_a_duplicate() {
+        let text = format!(
+            "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n",
+            hex(1),
+            hex(1).to_ascii_uppercase()
+        );
+        assert_eq!(
+            ServerConfig::parse(&text),
+            Err(ConfigError::DuplicateId {
+                first: "ann".to_owned(),
+                second: "bo".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_two_users_with_distinct_ids_may_share_an_alias_text() {
+        let text = format!(
+            "[[users]]\nkey = \"ann\"\nid = \"{}\"\nalias = \"Pal\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\nalias = \"Pal\"\n",
+            hex(1),
+            hex(2)
+        );
+        let config = ServerConfig::parse(&text).unwrap();
+        assert_eq!(config.user_id("ann"), Some(key(1)));
+        assert_eq!(config.user_id("bo"), Some(key(2)));
     }
 
     #[test]

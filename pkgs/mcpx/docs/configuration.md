@@ -356,6 +356,21 @@ field. This is deliberately not a setting: it is how `mcpx init` wrote
 `"mode": "session"` into every new config for months without anyone noticing,
 and a switch to turn the report off would have kept it quiet.
 
+A script whose first line names its interpreter (`#!`) runs under that
+interpreter, ahead of every setting below: a `-S`/`--split-string`
+payload is re-split with shell quoting rules (so `-S sh -c "printf
+hello"` keeps `printf hello` one argument; an unterminated quote fails
+the run), `VAR=value` assignments reach the child even when the value
+contains `/`, `env -u`/`env -i` apply (the child starts from the parent's
+environment minus what they remove, or from an empty one), and
+`env -C`/`env --chdir` moves the run, beating `script.cwd` the way the
+interpreter choice beats `script.runtime`. An env option mcpx does not
+implement fails the run rather than being dropped. A dispatched run
+never inherits `MCPX_CLIENT`, `MCPX_RUNTIME`, `MCPX_ENTRY` or
+`MCPX_DISPATCH` from an outer run, and its notice names anything else it
+goes without (no generated client, no enforced permission profiles,
+skipped launcher phases).
+
 <!-- BEGIN GENERATED: settings.Registry(); `go test ./internal/settings -run TestTheDocumentationListsEverySetting -update` -->
 
 ### artifacts
@@ -367,8 +382,10 @@ and a switch to turn the report off would have kept it quiet.
 | `artifacts.dir` | string | *(empty)* | call | yes | `--artifacts-dir` | `MCPX_ARTIFACTS_DIR` | write this run's artifacts here |
 | `artifacts.enabled` | bool | `true` | daemon | no | `--artifacts-enabled` | `MCPX_ARTIFACTS_ENABLED` | whether the daemon keeps files scripts produce |
 | `artifacts.gcInterval` | duration | `10m` | daemon | no | `--artifacts-gc-interval` | `MCPX_ARTIFACTS_GC_INTERVAL` | *(plumbing)* how often expired artifacts are swept |
+| `artifacts.idleTtl` | duration | `0s` | daemon | no | `--artifacts-idle-ttl` | `MCPX_ARTIFACTS_IDLE_TTL` | when set, reading an artifact renews it for this long; off keeps absolute expiry |
 | `artifacts.inlineMaxBytes` | bytes | `1MiB` | call | yes | `--artifacts-inline-max-bytes` | `MCPX_ARTIFACTS_INLINE_MAX_BYTES` | the largest artifact that may be base64'd into a result |
 | `artifacts.interceptImages` | bool | `true` | call | yes | `--artifacts-intercept-images` | `MCPX_ARTIFACTS_INTERCEPT_IMAGES` | turn image and audio content in a result into artifact references |
+| `artifacts.maxAge` | duration | `168h` | daemon | no | `--artifacts-max-age` | `MCPX_ARTIFACTS_MAX_AGE` | the absolute ceiling on a renewed artifact's life, however often it is read |
 | `artifacts.maxBytes` | bytes | `64MiB` | daemon | no | `--artifacts-max-bytes` | `MCPX_ARTIFACTS_MAX_BYTES` | the largest single artifact that may be stored |
 | `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold |
 | `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected |
@@ -488,6 +505,7 @@ and a switch to turn the report off would have kept it quiet.
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `exec.maxOutputBytes` | bytes | `64KiB` | call | yes | `--exec-max-output-bytes` | `MCPX_EXEC_MAX_OUTPUT_BYTES` | cap the stdout a run returns, with a truncation marker |
 | `exec.output` | enum | `text` | call | yes | `--exec-output`, `--output` | `MCPX_EXEC_OUTPUT` | text for a terminal, structured for one document, stream for frames |
 | `exec.timeout` | duration | `120s` | call | yes | `--exec-timeout` | `MCPX_EXEC_TIMEOUT` | kill a script after this long |
 | `exec.where` | enum | `auto` | call | yes | `--exec-where` | `MCPX_EXEC_WHERE` | in this process, or on the daemon |
@@ -681,6 +699,9 @@ and a switch to turn the report off would have kept it quiet.
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `protoTasks.maxPerRequestor` | int | `32` | daemon | no | `--proto-tasks-max-per-requestor` | `MCPX_PROTO_TASKS_MAX_PER_REQUESTOR` | how many non-terminal tasks one requestor may hold at once |
+| `protoTasks.maxTTL` | duration | `1h0m0s` | daemon | no | `--proto-tasks-max-ttl` | `MCPX_PROTO_TASKS_MAX_TTL` | the longest TTL a task may ask for; longer requests are clamped |
+| `protoTasks.perMinute` | int | `120` | daemon | no | `--proto-tasks-per-minute` | `MCPX_PROTO_TASKS_PER_MINUTE` | the tasks/* admission window per requestor; 0 disables it |
 | `protoTasks.pollInterval` | duration | `1s` | daemon | no | `--proto-tasks-poll-interval` | `MCPX_PROTO_TASKS_POLL_INTERVAL` | the pollInterval every task carries |
 
 ### recipes
@@ -720,9 +741,11 @@ and a switch to turn the report off would have kept it quiet.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed |
 | `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log |
+| `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
 | `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
 | `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it |
 | `script.importsOnDynamic` | enum | `warn` | client | no | `--script-imports-on-dynamic` | `MCPX_SCRIPT_IMPORTS_ON_DYNAMIC` | what to do about an import() whose specifier is computed |
+| `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime |
 | `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely |
 | `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates |
 | `script.onSuccess` | source | *(empty)* | client | no | `--script-on-success` | `MCPX_SCRIPT_ON_SUCCESS` | runs when the script returns without throwing |

@@ -208,6 +208,12 @@ type Server struct {
 	// ExtrasOnly is set: they describe the meta-tools, which are absent.
 	OwnInstructions string
 
+	// Instance is this server process's unique instance identity,
+	// reported to clients as serverInfo.instance (#1877). Empty means
+	// no identity is reported -- the zero value every test server and
+	// ExtrasOnly adapter keeps, so nothing about their surface changes.
+	Instance string
+
 	// PageSize caps how many items a list reply carries.
 	PageSize int
 
@@ -353,6 +359,7 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		Ask:                s.Ask,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
+		Instance:           s.Instance,
 		Reactive:           s.Reactive,
 		PinnedTools:        s.PinnedTools,
 		ReactiveWorkingSet: s.ReactiveWorkingSet,
@@ -769,9 +776,20 @@ func (s *Server) envelope(req request, result any) any {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	meta[MetaServerInfo] = map[string]any{"name": s.name, "version": s.version}
+	meta[MetaServerInfo] = s.serverInfo()
 	m["_meta"] = meta
 	return m
+}
+
+// serverInfo is the identity this server reports, in initialize and in
+// the modern _meta alike: name and version, plus the process instance
+// identity when one is set (#1877).
+func (s *Server) serverInfo() map[string]any {
+	info := map[string]any{"name": s.name, "version": s.version}
+	if s.Instance != "" {
+		info["instance"] = s.Instance
+	}
+	return info
 }
 
 func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
@@ -865,7 +883,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		var call struct {
 			Name string `json:"name"`
 		}
-		ctx = s.withPass(ctx)
+		ctx = s.withRaw(s.withPass(ctx))
 		if json.Unmarshal(req.Params, &call) == nil && call.Name != "" {
 			found, err := s.hasTool(ctx, call.Name)
 			if err == nil && !found {
@@ -909,7 +927,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		return reply(map[string]any{
 			"protocolVersion": version,
 			"capabilities":    caps,
-			"serverInfo":      map[string]any{"name": s.name, "version": s.version},
+			"serverInfo":      s.serverInfo(),
 			"instructions":    s.instructions(),
 		})
 
@@ -1826,7 +1844,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 			// it, because what it settles governs every later reply.
 			resp := s.HandleOn(base, c, req)
 			if req.Method == "initialize" && resp != nil && resp.Error == nil {
-				s.startListChanged(c)
+				s.startListChanged(base, c)
 			}
 			// Never a reply to a notification, not even an error: JSON-RPC
 			// forbids it, and a client would have nothing to match it to.
@@ -1952,6 +1970,12 @@ func (s *Server) RESTHandler(tool string) http.HandlerFunc {
 // initialize, a GET notification stream, batches for 2025-03-26, and
 // responses to questions mcpx asked.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// ?codemode=false asks for raw tools instead of the code-mode
+	// surface (codemode.go). It is on the URL, so it is read here, once,
+	// and rides the request context every later stage already derives
+	// from r.Context(). Any other value -- and its absence -- is the
+	// surface as it has always been.
+	r = r.WithContext(withCodemode(r.Context(), r.URL.Query().Get("codemode") == "false"))
 	if !s.originAllowed(r.Header.Get("Origin")) {
 		writeJSON(w, http.StatusForbidden, response{JSONRPC: "2.0", Error: &rpcError{
 			Code: codeInvalidRequest, Message: "Origin " + r.Header.Get("Origin") + " is not allowed"}})
@@ -2524,7 +2548,7 @@ func (s *Server) capabilities(ctx context.Context, version string, c *Conn) map[
 		// is the upstreams' list and changes when theirs does. It used to
 		// be declared for the fixed list too, and a client re-listed on
 		// every upstream change and got the same ten tools back.
-		"tools":     map[string]any{"listChanged": push && s.toolsVary()},
+		"tools":     map[string]any{"listChanged": push && s.toolsListChangedFor(ctx)},
 		"resources": map[string]any{"subscribe": push, "listChanged": push},
 		"prompts":   map[string]any{"listChanged": push},
 	}
@@ -2830,6 +2854,16 @@ func (s *Server) invoke(ctx context.Context, name string, args json.RawMessage) 
 		}
 	} else if s.ReactiveWorkingSet != nil {
 		s.ReactiveWorkingSet.Touch("", name)
+	}
+	if rawToolsRequested(ctx) {
+		nt, isRaw, err := s.rawOwner(ctx, name)
+		if err != nil {
+			return "", err
+		}
+		if !isRaw {
+			return "", fmt.Errorf("no tool named %q on the raw surface (codemode=false)", name)
+		}
+		return s.backend.Call(ctx, nt.Namespace, nt.Tool.Name, args)
 	}
 	if name == "request_tools" {
 		return s.executeRequestTools(ctx, args)

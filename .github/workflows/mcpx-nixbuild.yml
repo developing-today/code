@@ -59,3 +59,8 @@ jobs:
 
       - name: Nix build
         run: nix build .#packages.x86_64-linux.mcpx --print-build-logs
+
+      # Packaging test (#1981): building the package proves it
+      # compiles; this runs the built artifact the way a user does.
+      - name: Packaging test
+        run: nix build .#checks.x86_64-linux.mcpx-packaging --print-build-logs

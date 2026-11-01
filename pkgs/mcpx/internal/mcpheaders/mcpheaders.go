@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -230,10 +231,12 @@ func Check(params []Param, args json.RawMessage, header func(string) (string, bo
 			continue
 		}
 		// Integers compare numerically: 42.0 in a header is 42.
+		// The comparison is exact: a float64 round-trip would call
+		// 9007199254740990.5 equal to 9007199254740990.
 		if _, isNum := lookupNumber(root, p.Path); isNum {
-			hf, herr := strconv.ParseFloat(got, 64)
-			bf, berr := strconv.ParseFloat(body, 64)
-			if herr == nil && berr == nil && hf == bf {
+			hf, hok := exactNumber(got)
+			bf, bok := exactNumber(body)
+			if hok && bok && hf.Cmp(bf) == 0 {
 				continue
 			}
 		}
@@ -290,16 +293,243 @@ func plain(root any, p Param) (string, bool, error) {
 	case bool:
 		return strconv.FormatBool(x), true, nil
 	case json.Number:
-		i, err := strconv.ParseInt(x.String(), 10, 64)
-		if err != nil {
+		// A whole-valued number written in float form (42.0, 42.00,
+		// 4.2e1, -0.0) is an integer for comparison purposes: JSON
+		// Schema's integer type accepts it and the spec says integers
+		// compare numerically. Rejecting it here, before Check's
+		// numeric fallback can run, made the forgiveness one-sided —
+		// it only ever applied to the header's form (#1665). The
+		// verdict is computed on the exact decimal value: a float64
+		// round-trip rounds 9007199254740990.5 to an integer and
+		// underflows 1e-400 to 0.
+		i, verdict := exactInteger(x.String())
+		switch verdict {
+		case integerNotWhole:
 			return "", false, fmt.Errorf("%s: %s is not an integer", strings.Join(p.Path, "."), x)
-		}
-		if i > maxSafeInt || i < -maxSafeInt {
-			return "", false, fmt.Errorf("%s: %d is outside the JavaScript safe-integer range", strings.Join(p.Path, "."), i)
+		case integerOutOfRange:
+			return "", false, fmt.Errorf("%s: %s is outside the JavaScript safe-integer range", strings.Join(p.Path, "."), x)
 		}
 		return strconv.FormatInt(i, 10), true, nil
 	}
 	return "", false, fmt.Errorf("%s: a %T cannot be mirrored into a header", strings.Join(p.Path, "."), v)
+}
+
+type integerVerdict int
+
+const (
+	integerOK integerVerdict = iota
+	integerNotWhole
+	integerOutOfRange
+)
+
+// exactInteger judges a JSON number literal on its exact decimal
+// value: whether it is a whole number, and if so whether it lies
+// inside the JavaScript safe-integer range.
+func exactInteger(s string) (int64, integerVerdict) {
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if i > maxSafeInt || i < -maxSafeInt {
+			return 0, integerOutOfRange
+		}
+		return i, integerOK
+	}
+	d, ok := parseDecimal(s)
+	if d.digits == "" {
+		// Zero in any form (-0.0, 0e5), or no literal at all; the
+		// ParseInt path above already took plain "0", so this is the
+		// float/exponent spellings of zero.
+		if ok {
+			return 0, integerOK
+		}
+		return 0, integerNotWhole
+	}
+	if !ok {
+		// Grammar was valid but the literal is beyond the processing
+		// bounds (thousands of significant digits or an enormous
+		// effective scale). After normalisation scale < 0 means the
+		// last significant digit sits below the units place, so the
+		// value is a nonzero fraction; scale >= 0 makes it an integer
+		// with thousands of digits, far outside the safe range.
+		if d.scale < 0 {
+			return 0, integerNotWhole
+		}
+		return 0, integerOutOfRange
+	}
+	if d.scale < 0 {
+		return 0, integerNotWhole
+	}
+	// Whole: the integer has len(digits)+scale digits. More than 16
+	// cannot fit the safe range (which tops out at 9007199254740991).
+	if len(d.digits)+d.scale > 16 {
+		return 0, integerOutOfRange
+	}
+	v, err := strconv.ParseInt(d.digits+strings.Repeat("0", d.scale), 10, 64)
+	if err != nil {
+		return 0, integerOutOfRange
+	}
+	if d.neg {
+		v = -v
+	}
+	if v > maxSafeInt || v < -maxSafeInt {
+		return 0, integerOutOfRange
+	}
+	return v, integerOK
+}
+
+// exactNumber parses a strict JSON number literal into its exact
+// rational value, for Check's numeric comparison. A header string is
+// sender-controlled, so the whole string must be the literal --
+// quoted strings, trailing brackets and other junk are not numbers
+// (Codex review on PR 2955).
+func exactNumber(s string) (*big.Rat, bool) {
+	d, ok := parseDecimal(s)
+	if !ok {
+		return nil, false
+	}
+	if d.digits == "" {
+		return new(big.Rat), true
+	}
+	num, _ := new(big.Int).SetString(d.digits, 10)
+	r := new(big.Rat).SetInt(num)
+	if d.scale != 0 {
+		n := d.scale
+		if n < 0 {
+			n = -n
+		}
+		pow := new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil))
+		if d.scale > 0 {
+			r.Mul(r, pow)
+		} else {
+			r.Quo(r, pow)
+		}
+	}
+	if d.neg {
+		r.Neg(r)
+	}
+	return r, true
+}
+
+// maxDecimalDigits bounds the significant digits (and the effective
+// scale) one literal may carry into exact arithmetic. Without it, a
+// sender-supplied literal with a million digits -- or an exponent
+// that only cancels after materialising one -- would make the exact
+// comparison allocate in proportion to the attacker's text, or
+// worse, to their exponent (Codex review on PR 2955).
+const maxDecimalDigits = 4096
+
+// decimal is a JSON number literal in normalised form:
+//
+//	value = (neg ? -1 : 1) * digits * 10^scale
+//
+// digits carries no leading or trailing zeros, so scale < 0 exactly
+// when the value is a nonzero fraction. digits == "" is exactly zero,
+// at any exponent. Normalising BEFORE any bound is applied is what
+// lets 1000...0e-513 (514-digit mantissa, exponent -513) be judged
+// as the small integer it is, instead of being refused for its raw
+// exponent.
+type decimal struct {
+	neg    bool
+	digits string
+	scale  int
+}
+
+// parseDecimal validates s as one strict JSON number literal -- the
+// whole string, JSON grammar: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+// -- and normalises it. ok is false when the grammar fails, or when
+// the normalised literal exceeds maxDecimalDigits; in the bounds
+// case the returned decimal still describes the literal (with the
+// exponent clamped) so callers can classify it.
+func parseDecimal(s string) (decimal, bool) {
+	i := 0
+	neg := false
+	if i < len(s) && s[i] == '-' {
+		neg = true
+		i++
+	}
+	if i >= len(s) {
+		return decimal{}, false
+	}
+	intStart := i
+	if s[i] == '0' {
+		i++
+	} else if s[i] >= '1' && s[i] <= '9' {
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+	} else {
+		return decimal{}, false
+	}
+	intPart := s[intStart:i]
+	fracPart := ""
+	if i < len(s) && s[i] == '.' {
+		i++
+		fs := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i == fs {
+			return decimal{}, false
+		}
+		fracPart = s[fs:i]
+	}
+	exp := 0
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		sign := 1
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			if s[i] == '-' {
+				sign = -1
+			}
+			i++
+		}
+		es := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i == es {
+			return decimal{}, false
+		}
+		// The exponent text itself is attacker-controlled length,
+		// so it is parsed exactly only up to a saturation bound --
+		// and the bound is tied to the input length, not fixed.
+		// Mantissa normalisation can shift the scale by at most
+		// len(s) (every input byte is at most one mantissa digit
+		// or cancelling zero), so an exponent beyond
+		// len(s)+maxDecimalDigits can never be cancelled back
+		// into the processing bounds, while every exponent up to
+		// it keeps its exact value and classification (Codex
+		// review on PR 2955: a fixed sentinel of 4096000 was
+		// exactly cancelled by a mantissa carrying that many
+		// zeros, resurrecting 10^3096000 -- and a tiny fraction
+		// -- as the integer 1).
+		et := strings.TrimLeft(s[es:i], "0")
+		if et != "" {
+			sat := len(s) + maxDecimalDigits + 1
+			if len(et) > 9 {
+				exp = sign * sat
+			} else if e, _ := strconv.Atoi(et); e > sat {
+				exp = sign * sat
+			} else {
+				exp = sign * e
+			}
+		}
+	}
+	if i != len(s) {
+		return decimal{}, false
+	}
+	digits := intPart + fracPart
+	scale := exp - len(fracPart)
+	digits = strings.TrimLeft(digits, "0")
+	trimmed := strings.TrimRight(digits, "0")
+	scale += len(digits) - len(trimmed)
+	digits = trimmed
+	if digits == "" {
+		return decimal{}, true
+	}
+	d := decimal{neg: neg, digits: digits, scale: scale}
+	if len(digits) > maxDecimalDigits || scale > maxDecimalDigits || scale < -maxDecimalDigits {
+		return d, false
+	}
+	return d, true
 }
 
 // maxSafeInt is 2^53-1, JavaScript's Number.MAX_SAFE_INTEGER.
