@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
+import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { arrayOf, isFiniteNumber, isIsoDate, isRecord, isStringArray, isTimestampNotFuture } from "./validate.ts";
 import type {
   AaFeedSection,
@@ -76,6 +77,11 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
+  /** Project #4 coverage census (#1220): per-repo open-issue and
+   * gate-label counts from the collector's Search API reads, embedded
+   * beside the projects section. Absent when the collector had no
+   * GitHub token or the census failed. */
+  coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA workbook) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
@@ -251,6 +257,17 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) return [];
   return raw.filter(isProjectPoolItem);
+}
+
+/** Fail-soft read of the coverage census from a parsed feed: absent
+ * or malformed sections yield null (the panel then renders backlog
+ * counts as unavailable), malformed rows drop individually. */
+export function coverageFromFeed(feed: Partial<FleetFeed> | null | undefined): RepoCensus[] | null {
+  const raw = feed?.coverage;
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) return null;
+  const rows = raw.filter(isRepoCensus);
+  return rows.length ? rows : null;
 }
 
 /** One quota window as the renderers dereference it (#2429): `limit`

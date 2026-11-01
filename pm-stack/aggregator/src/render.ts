@@ -21,6 +21,7 @@ import {
   windowPercent,
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
@@ -4839,6 +4840,33 @@ ${commentThreadHtml(objectRef, comments, opts)}`;
 // derived state (see src/projects.ts derivedProjectState) disagree,
 // BOTH are shown — neither side is silently preferred.
 
+/** #1220: the coverage panel — Project #4 pool vs backlog reality per
+ * repo (open issues and gate labels from the feed, pool size and unset
+ * Status/Area from the pool), with the week-over-week delta against the
+ * stored baseline in parentheses when a baseline exists. */
+function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined): string {
+  if (!coverage) return "";
+  const { current, baseline } = coverage;
+  const delta = diffCoverage(current, baseline);
+  const cell = (repo: string, v: number | null, key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea"): string => {
+    if (v === null) return "—";
+    const d = delta.get(repo)?.[key];
+    return d === undefined || d === null || d === 0 ? `${v}` : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
+  };
+  const rows = current.repos
+    .map(
+      (r) =>
+        `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td></tr>`,
+    )
+    .join("");
+  const note = baseline
+    ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
+    : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
+  return `<h2>Coverage — pool vs backlog (#1220)</h2>
+<table><thead><tr><th>Repo</th><th>Open issues</th><th>now gate</th><th>next gate</th><th>Pool items</th><th>Unset Status</th><th>Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
+<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed (— = census unavailable for that repo); pool counts from Project #4. The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
+}
+
 export function renderProjects(
   pool: ProjectPoolItem[],
   provenance: Provenance,
@@ -4848,6 +4876,7 @@ export function renderProjects(
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
+    coverage?: CoverageSnapshotFile | null;
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
@@ -4874,7 +4903,7 @@ export function renderProjects(
   if (!pool.length) {
     return layout(
       "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks()
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
         .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
         .join(" · ")}</p>`,
       provenance,
@@ -4918,6 +4947,7 @@ export function renderProjects(
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+${coverageSectionHtml(opts.coverage)}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()

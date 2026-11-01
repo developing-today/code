@@ -34,6 +34,7 @@ export interface Config {
   /** The quota gatherer's latest-state file (#1151), written into the
    * aggregator's own data dir by scripts/gather-quota.ts. */
   quotaCurrentFile: string;
+  coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
   kaneo: {
@@ -92,6 +93,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
