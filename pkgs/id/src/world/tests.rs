@@ -6,6 +6,25 @@ use std::sync::Arc;
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    #[derive(Debug)]
+    struct SplitClock {
+        wall_ms: AtomicU64,
+        monotonic_ms: AtomicU64,
+        monotonic_origin: Instant,
+    }
+
+    impl Clock for SplitClock {
+        fn now_ms(&self) -> u64 {
+            self.wall_ms.load(Ordering::SeqCst)
+        }
+
+        fn now_instant(&self) -> Instant {
+            self.monotonic_origin + Duration::from_millis(self.monotonic_ms.load(Ordering::SeqCst))
+        }
+    }
 
     fn world(retained_events: usize) -> WorldCore {
         WorldCore::new(
@@ -1386,6 +1405,32 @@ mod tests {
         }
         assert!(core.chat(&token, "one too many").is_err());
         assert_eq!(core.current_sequence(), u64::from(CHAT_RATE_BURST));
+    }
+
+    #[test]
+    fn chat_refill_uses_monotonic_time_not_wall_clock_corrections() {
+        let clock = Arc::new(SplitClock {
+            wall_ms: AtomicU64::new(100_000),
+            monotonic_ms: AtomicU64::new(0),
+            monotonic_origin: Instant::now(),
+        });
+        let mut core =
+            WorldCore::new_with_clock("test-world", WorldLimits::default(), clock.clone()).unwrap();
+        let (_, token) = join(&mut core, "Guest");
+        for index in 0..CHAT_RATE_BURST {
+            core.chat(&token, &format!("message {index}")).unwrap();
+        }
+        assert!(core.chat(&token, "exhausted").is_err());
+
+        // A forward wall-clock correction does not refill the bucket.
+        clock.wall_ms.store(10_000_000, Ordering::SeqCst);
+        assert!(core.chat(&token, "still exhausted").is_err());
+
+        // A backward wall-clock correction cannot prevent a real ten-second
+        // monotonic interval from refilling it.
+        clock.wall_ms.store(1, Ordering::SeqCst);
+        clock.monotonic_ms.store(10_000, Ordering::SeqCst);
+        assert!(core.chat(&token, "refilled").is_ok());
     }
 
     fn in_an_hour() -> u64 {

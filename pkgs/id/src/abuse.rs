@@ -190,6 +190,13 @@ impl TokenBucket {
         }
     }
 
+    /// Refill and check whether `cost` whole tokens are available
+    /// without consuming them.
+    fn can_take(&mut self, cost: u64, now_ms: u64) -> bool {
+        self.refill(now_ms);
+        self.tokens_milli >= cost.saturating_mul(1_000)
+    }
+
     /// Milliseconds until `cost` tokens are available (0 if now).
     fn retry_after_ms(&mut self, cost: u64, now_ms: u64) -> u64 {
         self.refill(now_ms);
@@ -472,7 +479,8 @@ impl AbuseEvaluator {
             &mut state.preauth_frames
         };
         if bucket.try_take(1, now_ms) {
-            self.registry.record(self.local_node, endpoint, 1, 0, now_ms);
+            self.registry
+                .record(self.local_node, endpoint, 1, 0, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(1, now_ms);
@@ -503,12 +511,68 @@ impl AbuseEvaluator {
             &mut state.preauth_bytes
         };
         if bucket.try_take(bytes, now_ms) {
-            self.registry.record(self.local_node, endpoint, 0, bytes, now_ms);
+            self.registry
+                .record(self.local_node, endpoint, 0, bytes, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(bytes, now_ms);
             Err(Refusal::new(RefusalReason::BudgetExhausted, retry))
         }
+    }
+
+    /// Atomically admits one frame and its byte cost. Neither bucket
+    /// is charged, and no counter is recorded, unless both budgets
+    /// can admit the frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns the frame-rate refusal first when both budgets are
+    /// exhausted; otherwise returns the byte-budget refusal.
+    pub fn check_frame_and_bytes(
+        &mut self,
+        endpoint: EndpointId,
+        authorized: bool,
+        bytes: u64,
+        now_ms: u64,
+    ) -> Result<(), Refusal> {
+        let (frame_retry, byte_retry) = {
+            let state = self.state(endpoint, now_ms);
+            let (frames, byte_bucket) = if authorized {
+                (&mut state.authorized_frames, &mut state.authorized_bytes)
+            } else {
+                (&mut state.preauth_frames, &mut state.preauth_bytes)
+            };
+            let frame_retry =
+                (!frames.can_take(1, now_ms)).then(|| frames.retry_after_ms(1, now_ms));
+            let byte_retry = (!byte_bucket.can_take(bytes, now_ms))
+                .then(|| byte_bucket.retry_after_ms(bytes, now_ms));
+            (frame_retry, byte_retry)
+        };
+
+        if let Some(retry) = frame_retry {
+            return Err(Refusal::new(RefusalReason::RateLimited, retry));
+        }
+        if let Some(retry) = byte_retry {
+            return Err(Refusal::new(RefusalReason::BudgetExhausted, retry));
+        }
+
+        {
+            let state = self.state(endpoint, now_ms);
+            let (frames, byte_bucket) = if authorized {
+                (&mut state.authorized_frames, &mut state.authorized_bytes)
+            } else {
+                (&mut state.preauth_frames, &mut state.preauth_bytes)
+            };
+            // No other operation can mutate these buckets between the
+            // checks above and these debits: the evaluator is mutably
+            // borrowed for this whole call.
+            let frame_taken = frames.try_take(1, now_ms);
+            let bytes_taken = byte_bucket.try_take(bytes, now_ms);
+            debug_assert!(frame_taken && bytes_taken);
+        }
+        self.registry
+            .record(self.local_node, endpoint, 1, bytes, now_ms);
+        Ok(())
     }
 
     /// The counter registry this evaluator records into.

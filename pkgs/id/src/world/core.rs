@@ -39,6 +39,8 @@ pub struct WorldCore {
     /// participant-derived endpoint id), with the historical chat caps
     /// — a burst of `CHAT_RATE_BURST` refilling over `CHAT_RATE_WINDOW`.
     pub(crate) chat_abuse: crate::abuse::AbuseEvaluator,
+    /// Monotonic origin used for chat bucket refill timestamps.
+    pub(crate) chat_epoch: std::time::Instant,
     pub(crate) events: VecDeque<WorldEvent>,
     pub(crate) directory: crate::directory::Directory,
     pub(crate) petnames: crate::petname::Petnames,
@@ -115,6 +117,7 @@ impl WorldCore {
         crate::world_caps::validate_ceiling_names(&server_caps)
             .context("server capability ceiling")?;
         let grant_on_use = limits.grant_on_use;
+        let chat_epoch = clock.now_instant();
         let mut core = Self {
             world_id,
             limits,
@@ -136,6 +139,7 @@ impl WorldCore {
             since_checkpoint: 0,
             capabilities: HashMap::new(),
             chat_abuse: crate::abuse::AbuseEvaluator::new(chat_abuse_policy(), [0; 32]),
+            chat_epoch,
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
@@ -1123,12 +1127,17 @@ impl WorldCore {
         // Consume one token from the participant's shared-bucket frame
         // allowance; a refusal is the structured #2244 refusal (reason +
         // bounded retry value), not prose.
+        let now_ms = u64::try_from(
+            self.clock()
+                .now_instant()
+                .saturating_duration_since(self.chat_epoch)
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
+        self.chat_abuse.prune_idle_endpoints(now_ms);
+        self.chat_abuse.prune_counters(now_ms, 60 * 60 * 1_000);
         self.chat_abuse
-            .check_frame(
-                chat_endpoint(participant_id),
-                true,
-                self.clock().now_ms(),
-            )
+            .check_frame(chat_endpoint(participant_id), true, now_ms)
             .map_err(crate::abuse::RefusalError::from)?;
         let event = self.commit(participant_id, WorldEventKind::Chat(text))?;
         Ok(event)

@@ -161,9 +161,9 @@ pub fn charge_frame(
     payload_len: usize,
     now_ms: u64,
 ) -> Result<(), RefusalError> {
-    abuse.check_frame(endpoint, authorized, now_ms)?;
-    abuse.check_bytes(endpoint, authorized, payload_len as u64, now_ms)?;
-    Ok(())
+    abuse
+        .check_frame_and_bytes(endpoint, authorized, payload_len as u64, now_ms)
+        .map_err(RefusalError::from)
 }
 
 /// Read the length prefix of one frame from an Iroh stream.
@@ -350,6 +350,39 @@ mod tests {
         // with a machine-readable retry value.
         let refusal = charge_frame(&mut abuse, endpoint, true, 1, 0).unwrap_err();
         assert!(refusal.0.retry_after_ms.is_some());
+    }
+
+    #[test]
+    fn byte_refusal_does_not_spend_a_frame_token_or_increment_counters() {
+        use crate::abuse::{AbusePolicy, BucketLimits};
+        let policy = AbusePolicy {
+            authorized: BucketLimits {
+                frames_per_sec: 1,
+                frame_burst: 2,
+                bytes_per_sec: 1,
+                byte_burst: 4,
+            },
+            ..AbusePolicy::default()
+        };
+        let endpoint = [8; 32];
+        let mut abuse = AbuseEvaluator::new(policy, [9; 32]);
+
+        let refusal = charge_frame(&mut abuse, endpoint, true, 5, 0).unwrap_err();
+        assert_eq!(
+            refusal.0.reason,
+            crate::abuse::RefusalReason::BudgetExhausted
+        );
+        assert!(abuse.counters().get(&[9; 32], &endpoint).is_none());
+
+        // The refused frame did not consume the frame allowance.
+        charge_frame(&mut abuse, endpoint, true, 4, 0).unwrap();
+        assert_eq!(
+            abuse.counters().get(&[9; 32], &endpoint),
+            Some(crate::abuse::Counters {
+                frames: 1,
+                bytes: 4,
+            })
+        );
     }
 
     #[test]
