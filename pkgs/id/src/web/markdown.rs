@@ -1638,6 +1638,11 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     // touches out of their wrappers, before rendering (see
     // `hoist_delimiter_edge_spaces`).
     hoist_delimiter_edge_spaces(&arena, root);
+    // #1496: force info-less code blocks inside blockquotes onto the
+    // renderer's fenced branch via a placeholder info string, stripped
+    // from the rendered output below (see
+    // `force_fenced_code_blocks_in_blockquotes`).
+    let fence_tokens = force_fenced_code_blocks_in_blockquotes(root);
     // #1019: comrak's renderer percent-encodes a space in a link/image
     // destination (`my notes.md` -> `my%20notes.md`) instead of emitting
     // the <...> angle form, silently breaking relative file links and
@@ -1652,6 +1657,9 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     format_commonmark(root, &commonmark_options(), &mut output)?;
     for (placeholder, raw) in substitutions {
         output = output.replace(&placeholder, &format!("<{raw}>"));
+    }
+    for token in fence_tokens {
+        output = strip_fence_placeholder(&output, &token);
     }
     Ok(output)
 }
@@ -1859,6 +1867,72 @@ fn hoist_delimiter_edge_spaces<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) 
         hoist_one_edge(arena, wrapper, true);
         hoist_one_edge(arena, wrapper, false);
     }
+}
+
+/// #1496: comrak's CommonMark renderer emits an info-less code block
+/// as an INDENTED block whenever it can (its fenced branch requires a
+/// non-empty info string, the global `prefer_fenced` option, or a few
+/// literal edge cases). Inside a blockquote the indented form drops
+/// the quote prefix for every following sibling, so the saved file
+/// reparses as two blockquotes and everything after the code block
+/// leaves the quote. Give each info-less code block inside a
+/// blockquote a placeholder info string so the renderer takes the
+/// fenced branch, and return the placeholders for stripping from the
+/// rendered output — the same placeholder-and-restore pattern as
+/// `substitute_spaced_destinations`. Code blocks outside blockquotes
+/// keep the renderer's own spelling (the lone-block fence/indent
+/// choice is #954's territory, deliberately untouched here).
+fn force_fenced_code_blocks_in_blockquotes<'a>(root: &'a AstNode<'a>) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut stack: Vec<(&AstNode<'a>, bool)> = vec![(root, false)];
+    while let Some((node, ancestor_is_blockquote)) = stack.pop() {
+        let in_blockquote = ancestor_is_blockquote
+            || matches!(node.data.borrow().value, NodeValue::BlockQuote);
+        for child in node.children() {
+            stack.push((child, in_blockquote));
+        }
+        if !in_blockquote {
+            continue;
+        }
+        let mut data = node.data.borrow_mut();
+        if let NodeValue::CodeBlock(code_block) = &mut data.value
+            && code_block.info.is_empty()
+        {
+            // The trailing `-end` keeps placeholders prefix-free
+            // (`-1-end` is not a prefix of `-10-end`); restoration is
+            // positional regardless (see `strip_fence_placeholder`).
+            let token = format!("idweb-blockquote-fence-{}-end", tokens.len());
+            code_block.info.clone_from(&token);
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+/// Remove a #1496 fence placeholder from rendered output — ONLY at
+/// its generated fence-info position: a run of >= 3 backticks
+/// immediately before the placeholder and a newline immediately after
+/// it (the renderer's fence line shape). A plain `str::replace` would
+/// also strip the placeholder text anywhere else it occurs (user prose,
+/// code content) and, with prefix-sharing placeholders, corrupt
+/// neighbouring blocks' info strings (Codex review on PR #3770).
+fn strip_fence_placeholder(output: &str, token: &str) -> String {
+    let mut result = String::with_capacity(output.len());
+    let mut rest = output;
+    while let Some(pos) = rest.find(token) {
+        let before = &rest[..pos];
+        let after = &rest[pos + token.len()..];
+        let fence_run = before.chars().rev().take_while(|c| *c == '`').count();
+        if fence_run >= 3 && after.starts_with('\n') {
+            result.push_str(before);
+            rest = after;
+        } else {
+            result.push_str(&rest[..pos + token.len()]);
+            rest = after;
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 /// Replace every link/image destination containing whitespace (space,
@@ -3116,6 +3190,84 @@ mod tests {
 
         assert_eq!(content[0]["type"], "blockquote");
         assert_eq!(content[0]["content"][0]["type"], "paragraph");
+    }
+
+    #[test]
+    fn test_info_less_code_block_keeps_following_paragraph_in_blockquote() {
+        let original = "> ```\n> code\n> ```\n>\n> trailing paragraph\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(original),
+            "saving and reopening must keep all blocks inside one blockquote: {saved:?}"
+        );
+    }
+
+    #[test]
+    fn test_info_less_fence_in_blockquote_trailing_content_round_trips() {
+        // #1496 acceptance cases: a no-info fence inside a blockquote
+        // followed by each kind of trailing quoted content must reopen
+        // as ONE blockquote holding every block. Controls (info fence,
+        // fence last, table / thematic break mid-quote) pin the shapes
+        // that already round-tripped before the fix.
+        for original in [
+            // (a) paragraph
+            "> ```\n> code\n> ```\n>\n> trailing paragraph\n",
+            // (b) list
+            "> ```\n> code\n> ```\n>\n> - one\n> - two\n",
+            // (c) heading
+            "> ```\n> code\n> ```\n>\n> # Head\n",
+            // (d) second code block
+            "> ```\n> code\n> ```\n>\n> ```\n> more\n> ```\n",
+            // (e) two paragraphs
+            "> ```\n> code\n> ```\n>\n> para one\n>\n> para two\n",
+            // control: ```rust mid-quote
+            "> ```rust\n> code\n> ```\n>\n> trailing paragraph\n",
+            // control: fence as the quote's last block
+            "> para\n>\n> ```\n> code\n> ```\n",
+            // control: table mid-quote after the fence
+            "> ```\n> code\n> ```\n>\n> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+            // control: thematic break mid-quote after the fence
+            "> ```\n> code\n> ```\n>\n> ---\n>\n> after\n",
+        ] {
+            let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+            assert_eq!(
+                markdown_to_prosemirror(&saved),
+                markdown_to_prosemirror(original),
+                "round trip changed the structure for {original:?}: saved as {saved:?}"
+            );
+            let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+            assert_eq!(resaved, saved, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_blockquote_fence_placeholders_do_not_collide_or_eat_text() {
+        // PR #3770 Codex finding: with >= 11 placeholder blocks,
+        // `...-1` is a prefix of `...-10`, and an unrestricted replace
+        // would corrupt that block's info string; placeholder-shaped
+        // user text elsewhere must also survive a save untouched.
+        let mut original = String::new();
+        for i in 0..12 {
+            original.push_str(&format!("> ```\n> code {i}\n> ```\n>\n"));
+        }
+        original.push_str("> trailing\n");
+        original.push_str("\nmention idweb-blockquote-fence-0-end in prose\n");
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(&original)).unwrap();
+        assert!(
+            saved.contains("idweb-blockquote-fence-0-end in prose"),
+            "placeholder-shaped user text was stripped: {saved:?}"
+        );
+        assert!(
+            !saved.contains("```idweb"),
+            "a generated placeholder leaked into the output: {saved:?}"
+        );
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(&original),
+            "12-block quote changed structure: {saved:?}"
+        );
     }
 
     #[test]
