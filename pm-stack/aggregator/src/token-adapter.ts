@@ -56,7 +56,7 @@ export function validateCredentialRef(ref: unknown): CredentialRef {
   }
   const record = ref as Record<string, unknown>;
   for (const key of VALUE_BEARING_KEYS) {
-    if (key in record) {
+    if (Object.hasOwn(record, key)) {
       throw new AdapterError(
         "fetch-failed",
         `credential ref: carries a credential value under "${key}" — references only, never values`,
