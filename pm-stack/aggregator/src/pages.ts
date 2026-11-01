@@ -47,6 +47,7 @@ export const PAGES: PageDef[] = [
     route: "/",
     api: "/api/overview.json",
     blurb: "The stack front door (#1134): needs-you, projects, quotas, and health at a glance.",
+    group: "overview",
   },
   {
     id: "today",
@@ -67,7 +68,7 @@ export const PAGES: PageDef[] = [
   {
     id: "board",
     title: "Board",
-    route: "/",
+    route: "/board",
     api: "/api/board.json",
     blurb: "The curated cross-repo WIP board.",
     group: "overview",
