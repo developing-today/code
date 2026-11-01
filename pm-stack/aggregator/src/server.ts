@@ -754,7 +754,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov()));
+    return html(renderAa(await source.aa(), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
     const section = await source.aa();
