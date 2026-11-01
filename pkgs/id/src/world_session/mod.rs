@@ -1061,12 +1061,23 @@ pub(crate) fn moderation_authority(
 /// Serve one session against its resolved world, starting from its first frame.
 async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, frame: ClientFrame) {
     match frame {
-        ClientFrame::Join { capability, after } => {
+        ClientFrame::Join {
+            capability,
+            after,
+            screen_patches,
+        } => {
             if capability.len() > MAX_CAPABILITY_BYTES {
                 let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
                 return;
             }
-            joined(service, io, JoinCapability::from_wire(capability), after).await;
+            joined(
+                service,
+                io,
+                JoinCapability::from_wire(capability),
+                after,
+                screen_patches,
+            )
+            .await;
         }
         ClientFrame::Invite {
             admin_token,
@@ -1443,12 +1454,23 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             },
         };
         match frame {
-            ClientFrame::Join { capability, after } => {
+            ClientFrame::Join {
+                capability,
+                after,
+                screen_patches,
+            } => {
                 if capability.len() > MAX_CAPABILITY_BYTES {
                     let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
                     return;
                 }
-                joined(service, io, JoinCapability::from_wire(capability), after).await;
+                joined(
+                    service,
+                    io,
+                    JoinCapability::from_wire(capability),
+                    after,
+                    screen_patches,
+                )
+                .await;
                 return;
             }
             ClientFrame::Info { capability } => {
@@ -1851,6 +1873,7 @@ async fn joined<I: SessionIo>(
     io: &mut I,
     token: JoinCapability,
     after: Option<u64>,
+    screen_patches: bool,
 ) {
     let world = service.world();
     // Subscribe before taking the snapshot so no event can fall in the gap;
@@ -1867,6 +1890,7 @@ async fn joined<I: SessionIo>(
     };
     let mut cursor = snapshot.current_sequence;
     let mut viewport = None;
+    let mut view_state = ViewRevisionState::default();
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {
@@ -1897,6 +1921,8 @@ async fn joined<I: SessionIo>(
                         &token,
                         event.sequence,
                         viewport,
+                        &mut view_state,
+                        screen_patches,
                     )
                     .await
                     {
@@ -1920,7 +1946,18 @@ async fn joined<I: SessionIo>(
     {
         return;
     }
-    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
+    if !send_view(
+        service.frame_meter(),
+        world,
+        io,
+        &token,
+        cursor,
+        viewport,
+        &mut view_state,
+        screen_patches,
+    )
+    .await
+    {
         return;
     }
 
@@ -1946,7 +1983,7 @@ async fn joined<I: SessionIo>(
                 }
             } => {
                 pending_view_deadline = None;
-                if !send_view(service.frame_meter(), world, io, &token, pending_view_sequence, viewport).await {
+                if !send_view(service.frame_meter(), world, io, &token, pending_view_sequence, viewport, &mut view_state, screen_patches).await {
                     break;
                 }
             },
@@ -1959,6 +1996,8 @@ async fn joined<I: SessionIo>(
                         &text,
                         &mut viewport,
                         cursor,
+                        &mut view_state,
+                        screen_patches,
                         &mut pending_view_deadline,
                     ).await {
                         break;
@@ -1986,7 +2025,11 @@ async fn joined<I: SessionIo>(
                             if !send_json(service.frame_meter(), io, &ServerFrame::ProgramChanged {
                                 module_hash,
                                 sequence: cursor,
-                            }).await || !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
+                            }).await {
+                                break;
+                            }
+                            view_state.reset();
+                            if !send_view(service.frame_meter(), world, io, &token, cursor, viewport, &mut view_state, screen_patches).await {
                                 break;
                             }
                         }
@@ -2020,7 +2063,8 @@ async fn joined<I: SessionIo>(
                         break;
                     }
                     cursor = snapshot.current_sequence;
-                    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
+                    view_state.reset();
+                    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport, &mut view_state, screen_patches).await {
                         break;
                     }
                 }
@@ -2062,6 +2106,18 @@ impl Drop for PresenceGuard {
     }
 }
 
+#[derive(Default)]
+struct ViewRevisionState {
+    next_revision: u64,
+    screen: Option<(u64, crate::world_presentation::ScreenSurface)>,
+}
+
+impl ViewRevisionState {
+    fn reset(&mut self) {
+        self.screen = None;
+    }
+}
+
 async fn send_view<I: SessionIo>(
     meter: &WorldMetrics,
     world: &WorldHandle,
@@ -2069,6 +2125,8 @@ async fn send_view<I: SessionIo>(
     token: &JoinCapability,
     sequence: u64,
     viewport: Option<Viewport>,
+    view_state: &mut ViewRevisionState,
+    screen_patches: bool,
 ) -> bool {
     let view = match viewport {
         Some(viewport) => {
@@ -2093,18 +2151,66 @@ async fn send_view<I: SessionIo>(
                 Ok(surface) => surface,
                 Err(_) => return send_error(meter, io, "invalid world screen presentation").await,
             };
-            send_json(
-                meter,
-                io,
-                &ServerFrame::View {
-                    sequence,
-                    data: &data,
-                    surface: surface.as_ref(),
-                },
-            )
-            .await
+            let view_revision = view_state.next_revision;
+            view_state.next_revision = view_state.next_revision.saturating_add(1);
+            let screen = match surface.as_ref() {
+                Some(crate::world_presentation::WorldSurface::Screen(screen)) => Some(screen),
+                _ => None,
+            };
+
+            if let (true, Some(screen), Some((base_view_revision, previous))) =
+                (screen_patches, screen, view_state.screen.as_ref())
+            {
+                if let Some(patch) = crate::world_presentation::ScreenPatch::diff(previous, screen)
+                {
+                    let delta_frame = ServerFrame::View {
+                        sequence,
+                        data: "",
+                        surface: None,
+                        view_revision,
+                        base_view_revision: Some(*base_view_revision),
+                        patch: Some(&patch),
+                    };
+                    let full_frame = ServerFrame::View {
+                        sequence,
+                        data: &data,
+                        surface: surface.as_ref(),
+                        view_revision,
+                        base_view_revision: None,
+                        patch: None,
+                    };
+                    let delta_size = serde_json::to_vec(&delta_frame).map(|bytes| bytes.len());
+                    let full_size = serde_json::to_vec(&full_frame).map(|bytes| bytes.len());
+                    if matches!((delta_size, full_size), (Ok(delta), Ok(full)) if delta < full) {
+                        let sent = send_json(meter, io, &delta_frame).await;
+                        if sent {
+                            view_state.screen = Some((view_revision, screen.clone()));
+                        }
+                        return sent;
+                    }
+                }
+            }
+
+            let full_frame = ServerFrame::View {
+                sequence,
+                data: &data,
+                surface: surface.as_ref(),
+                view_revision,
+                base_view_revision: None,
+                patch: None,
+            };
+            let sent = send_json(meter, io, &full_frame).await;
+            if sent && screen_patches {
+                view_state.screen = screen.map(|screen| (view_revision, screen.clone()));
+            } else {
+                view_state.reset();
+            }
+            sent
         }
-        Ok(None) => true,
+        Ok(None) => {
+            view_state.reset();
+            true
+        }
         Err(_) => false,
     }
 }
@@ -2161,6 +2267,8 @@ async fn handle_client_frame<I: SessionIo>(
     text: &str,
     viewport: &mut Option<Viewport>,
     sequence: u64,
+    view_state: &mut ViewRevisionState,
+    screen_patches: bool,
     pending_view_deadline: &mut Option<tokio::time::Instant>,
 ) -> bool {
     let world = service.world();
@@ -2227,7 +2335,18 @@ async fn handle_client_frame<I: SessionIo>(
             // The immediate viewport-specific view includes the latest state,
             // so it supersedes any coalesced redraw already pending.
             *pending_view_deadline = None;
-            return send_view(service.frame_meter(), world, io, token, sequence, *viewport).await;
+            view_state.reset();
+            return send_view(
+                service.frame_meter(),
+                world,
+                io,
+                token,
+                sequence,
+                *viewport,
+                view_state,
+                screen_patches,
+            )
+            .await;
         }
         ClientFrame::Paste { text } => {
             let Ok(bytes) = normalize_paste(&text) else {

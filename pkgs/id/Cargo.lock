@@ -3082,6 +3082,7 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width",
+ "vt100",
 ]
 
 [[package]]
