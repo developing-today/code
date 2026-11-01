@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ActionsStore, latestInFamily, validateNewAction, type DashAction, type NewAction } from "../src/actions.ts";
+import { cardState } from "../src/card-state.ts";
 import { buildAttention } from "../src/derive.ts";
 import type { OrchestrationSection, ProjectPoolItem, SessionRecord, TierItem } from "../src/model.ts";
 import { STANDING_IDENTITIES } from "../src/registry.ts";
@@ -99,6 +100,62 @@ describe("dashboard actions store", () => {
         "snooze",
       )?.id,
     ).toBe(unsnooze.action.id);
+  });
+
+  test("drops malformed payload records on load and cardState ignores malformed answer shapes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-actions-payload-"));
+    const file = join(dir, "actions.json");
+    const rawAction = (id: string, payload: unknown) => ({
+      id,
+      clientToken: `ct-${id}`,
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:payload-test",
+      payload,
+      author: drew,
+      createdAt: iso(NOW),
+      state: "new",
+    });
+    const malformedPayload = rawAction("payload-null", null);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        actions: [
+          malformedPayload,
+          rawAction("payload-missing", undefined),
+          rawAction("payload-array", []),
+          rawAction("answers-null-entry", { answers: [null], optionId: 42 }),
+          rawAction("answers-object", { answers: { questionId: "bad", value: "bad" } }),
+          rawAction("answers-string", { answers: "not answers" }),
+          rawAction("valid", { answers: [{ questionId: "q1", value: "good" }], optionId: "choice-1" }),
+        ],
+      }),
+    );
+
+    const store = new ActionsStore(file);
+    const loaded = await store.all();
+    expect(loaded.map((a) => a.id)).toEqual([
+      "answers-null-entry",
+      "answers-object",
+      "answers-string",
+      "valid",
+    ]);
+    expect(() => cardState(loaded, NOW)).not.toThrow();
+    const state = cardState(loaded, NOW);
+    expect([...state.answered]).toEqual([["q1", "good"]]);
+    expect(state.answeredOptionId).toBe("choice-1");
+    const malformedOnly = loaded.filter((a) => a.id !== "valid");
+    expect(cardState(malformedOnly, NOW).answered).toEqual(new Map());
+    expect(cardState(malformedOnly, NOW).answeredOptionId).toBeUndefined();
+    const nullPayloadState = cardState([malformedPayload as unknown as DashAction], NOW);
+    expect(nullPayloadState.answered).toEqual(new Map());
+    const malformedSnooze = { ...rawAction("snooze-until-number", { until: 123 }), verb: "snooze" };
+    expect(cardState([malformedSnooze as unknown as DashAction], NOW).suppressed).toBeNull();
+
+    await store.add(newAction({ objectRef: "orch:payload-test" }));
+    const persisted = JSON.parse(readFileSync(file, "utf8")) as { actions: { id: string }[] };
+    expect(persisted.actions.map((a) => a.id)).not.toContain("payload-null");
   });
 });
 
