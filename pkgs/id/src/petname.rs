@@ -303,16 +303,19 @@ pub fn fold(name: &str) -> String {
 }
 
 /// The name with look-alike characters mapped to one form, so `PayPa1` and
-/// `PayPal` compare equal.
+/// `PayPal` compare equal. The fold lowercases first, so capital `I` lands
+/// in the `i` class and maps to `l` with `1` and `|` (#2069); `8` maps to
+/// `b`, symmetric with the other mapped digits.
 #[must_use]
 pub fn skeleton(name: &str) -> String {
     let mapped: String = fold(name)
         .chars()
         .map(|c| match c {
             '0' => 'o',
-            '1' | '|' => 'l',
+            '1' | '|' | 'i' => 'l',
             '3' => 'e',
             '5' | '$' => 's',
+            '8' => 'b',
             '@' => 'a',
             other => other,
         })
@@ -373,18 +376,19 @@ pub fn fingerprint(id: &str) -> String {
 }
 
 /// How each contact is shown: its petname if it has one, otherwise its
-/// alleged name marked unverified. Petnames that collide after folding get a
-/// fingerprint on both contacts.
+/// alleged name marked unverified. Petnames that collide by skeleton
+/// (look-alike) comparison get a fingerprint on both contacts, so a legacy
+/// stored name that `set` would now refuse still renders distinctly (#2069).
 #[must_use]
 pub fn labels(contacts: &[Contact<'_>]) -> Vec<Label> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for petname in contacts.iter().filter_map(|contact| contact.petname) {
-        *counts.entry(fold(petname)).or_default() += 1;
+        *counts.entry(skeleton(petname)).or_default() += 1;
     }
     contacts
         .iter()
         .map(|contact| match contact.petname {
-            Some(petname) if counts.get(&fold(petname)).copied().unwrap_or(0) > 1 => {
+            Some(petname) if counts.get(&skeleton(petname)).copied().unwrap_or(0) > 1 => {
                 Label::SharedPetname {
                     name: petname.to_owned(),
                     fingerprint: fingerprint(contact.id),
@@ -438,6 +442,26 @@ mod tests {
         let mut store = Petnames::new();
         let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
         let error = store.set(OWNER, CAROL, "PayPa1", alleged).unwrap_err();
+        assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
+        assert!(store.get(OWNER, CAROL).is_none());
+    }
+
+    #[test]
+    fn a_capital_i_confusable_name_is_refused() {
+        // #2069: PayPaI must be refused exactly like PayPa1.
+        let mut store = Petnames::new();
+        let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
+        let error = store.set(OWNER, CAROL, "PayPaI", alleged).unwrap_err();
+        assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
+        assert!(store.get(OWNER, CAROL).is_none());
+    }
+
+    #[test]
+    fn an_eight_confusable_name_is_refused() {
+        // #2069: 8ob must be refused exactly like B0b.
+        let mut store = Petnames::new();
+        let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
+        let error = store.set(OWNER, CAROL, "8ob", alleged).unwrap_err();
         assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
         assert!(store.get(OWNER, CAROL).is_none());
     }
@@ -621,6 +645,50 @@ mod tests {
         assert_eq!(skeleton("PayPa1"), skeleton("PayPal"));
         assert_eq!(skeleton("Rnoon"), skeleton("moon"));
         assert_ne!(skeleton("Carol"), skeleton("Bob"));
+    }
+
+    #[test]
+    fn the_skeleton_maps_capital_i_and_eight_together() {
+        // #2069: fold() lowercases I to i before the map, so the i class
+        // must land on l or PayPaI slips past the guard that refuses
+        // PayPa1; 8 maps to b like the other mapped digits.
+        assert_eq!(skeleton("PayPaI"), skeleton("PayPal"));
+        assert_eq!(skeleton("AIice"), skeleton("Alice"));
+        assert_eq!(skeleton("8ob"), skeleton("Bob"));
+    }
+
+    #[test]
+    fn skeleton_colliding_petnames_both_get_a_fingerprint() {
+        // #2069: labels() keys collisions on skeleton(), so stored
+        // petnames that differ only by a look-alike (PayPal vs PayPaI)
+        // render with fingerprints instead of identically.
+        let contacts = [
+            Contact {
+                id: ALICE,
+                alleged: "Alice",
+                petname: Some("PayPal"),
+            },
+            Contact {
+                id: BOB,
+                alleged: "Bob",
+                petname: Some("PayPaI"),
+            },
+            Contact {
+                id: CAROL,
+                alleged: "Carol",
+                petname: Some("Dana"),
+            },
+        ];
+        let shown = labels(&contacts);
+        assert_eq!(
+            shown[0],
+            Label::SharedPetname {
+                name: "PayPal".to_owned(),
+                fingerprint: "aa11aa".to_owned(),
+            }
+        );
+        assert_eq!(shown[1].text(), "PayPaI bb22bb");
+        assert_eq!(shown[2], Label::Petname("Dana".to_owned()));
     }
 
     #[test]
