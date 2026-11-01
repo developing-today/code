@@ -239,6 +239,15 @@ export interface QuotaWindow {
   percent?: number;
 }
 
+/** Result of the quota-view pattern extraction, separate from live quota state. */
+export interface ExtractionHealth {
+  status: "matched" | "gap" | "intentional" | "unavailable";
+  matched: boolean | null;
+  reason?: "section-missing" | "extractor-null" | "extractor-threw" | "uninstrumented" | "not-recorded";
+  /** Number of windows/metrics extracted when matched. */
+  count: number;
+}
+
 /** One pool (plan + identity) with its windows and live burn. */
 export interface QuotaPool {
   id: string;
@@ -254,6 +263,8 @@ export interface QuotaPool {
   burnTokensPerMin?: number;
   /** Sessions currently burning this pool, with cumulative tokens. */
   activeSessions?: { session: string; model: string; tokens: number }[];
+  /** Pattern-extraction health; absent on older fleet feeds. */
+  extractionHealth?: ExtractionHealth;
   /** Gatherer freshness for this pool (#1151), set when
    * quota-current.json carried an entry for it. */
   freshness?: PoolFreshness;
@@ -1228,6 +1239,8 @@ export interface SaasService {
   reads: DatedRead[];
   /** The section's usage prose, trimmed (detail view + shell cards). */
   usageNote?: string;
+  /** Pattern-extraction health; absent on older fleet feeds. */
+  extractionHealth?: ExtractionHealth;
 }
 
 /** One line of the PAYG dollars card (§1.2). */

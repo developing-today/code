@@ -2077,7 +2077,10 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     ? ` <a class="badge conflict" href="/quota/service/${esc(svc.id)}" title="Sources disagree — the dated history is on the detail page">conflict</a>`
     : "";
   const pace = paceLineHtml(svc.id, history);
-  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+  const extractionGap = svc.extractionHealth?.status === "gap"
+    ? ` <span class="badge blocked" title="${esc(svc.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+    : "";
+  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}${extractionGap}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
 }
 
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
@@ -2141,7 +2144,10 @@ export function renderQuota(
       const fresh = p.freshness
         ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
-      return `<div class="card pool"><div><strong>${esc(p.provider)}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      const extractionGap = p.extractionHealth?.status === "gap"
+        ? ` <span class="badge blocked" title="${esc(p.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
+        : "";
+      return `<div class="card pool"><div><strong>${esc(p.provider)}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
