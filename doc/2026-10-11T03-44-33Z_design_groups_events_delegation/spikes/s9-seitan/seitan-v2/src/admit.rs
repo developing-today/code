@@ -73,7 +73,9 @@ impl std::error::Error for Reject {}
 
 impl Invite {
     /// Creates a Seitan V2 invite. The admin derives the public half from the token and keeps only the
-    /// ID and the public key. Keybase's Seitan is single use, so Seitan invites use `max_uses = 1`.
+    /// ID and the public key. The normal sequential Keybase V2 flow records completion in team-chain state; this
+    /// spike models the same outcome locally with `max_uses = 1` (not Keybase's mechanism; see the follow-up in
+    /// `pkgs/id/src/seitan/mod.rs`).
     ///
     /// # Panics
     /// If `max_uses` is 0.
