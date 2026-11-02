@@ -15,6 +15,21 @@ use anyhow::{Result, ensure};
 /// (#3447): `world_session` re-exports it at its historical path.
 pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
 
+/// Default server hard ceiling for one world's total logical memory
+/// budget (64 MiB, #557 Phase 1).
+///
+/// This is a proposed policy value, not a measured result (design
+/// `doc/2026-11-01_design_id557.md`, Q1): four times the default Wasm
+/// linear-memory ceiling, leaving 48 MiB of logical-charge room for the
+/// module and other charges. The budget is a deterministic logical-charge
+/// ceiling over allocations owned by one world — program reservation,
+/// persistent logical state, session/queued charges, and transient
+/// persistence peaks — never an RSS guarantee: allocator metadata,
+/// thread stacks, and process-shared runtime caches are outside the
+/// accounting model. Enforcement charge sites land in later phases; this
+/// phase establishes the validated, persisted contract only.
+pub const DEFAULT_WORLD_TOTAL_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Resource bounds applied to each guest invocation.
 ///
 /// The definition lives here since the Phase 1 crate split (#3447):
@@ -88,6 +103,8 @@ pub trait WorldLimitArgs {
     fn world_native_cpu_secs(&self) -> u64;
     /// Wall-clock budget for one native worker call, in milliseconds.
     fn world_native_deadline_ms(&self) -> u64;
+    /// Total per-world logical memory budget, in MiB.
+    fn world_total_memory_mib(&self) -> u64;
 }
 
 const KIB: u64 = 1024;
@@ -101,6 +118,10 @@ pub struct RuntimeLimits {
     pub sandbox: SandboxLimits,
     /// Bounds for a native worker: address space, CPU and call deadline.
     pub native: NativeLimits,
+    /// Server hard ceiling for one world's total logical memory budget, in
+    /// bytes (#557 Phase 1). A per-world request can only lower it, via
+    /// [`WorldExecutionProfile::total_memory_bytes`].
+    pub total_memory_bytes: u64,
 }
 
 /// Per-world resource limits requested beneath the server's hard ceilings.
@@ -129,6 +150,12 @@ pub struct WorldExecutionProfile {
     /// Requested native per-call wall-clock deadline in milliseconds; `None` inherits the server ceiling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_call_deadline_ms: Option<u64>,
+    /// Requested total per-world logical memory budget in bytes; `None`
+    /// inherits the server ceiling (#557 Phase 1). The budget is a
+    /// deterministic logical-charge ceiling, not an RSS cap; see
+    /// [`DEFAULT_WORLD_TOTAL_MEMORY_BYTES`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_memory_bytes: Option<u64>,
 }
 
 impl WorldExecutionProfile {
@@ -176,12 +203,24 @@ impl WorldExecutionProfile {
             self.native_call_deadline_ms != Some(0),
             "world native call deadline must be nonzero"
         );
+        ensure!(
+            self.total_memory_bytes != Some(0),
+            "world total memory budget must be nonzero"
+        );
         Ok(())
     }
 
     pub fn resolve(self, hard: RuntimeLimits) -> Result<RuntimeLimits> {
         self.validate()?;
 
+        // Phase 1 (#557): resolve the total budget only. Program ceilings
+        // keep their existing beneath-the-server-ceiling semantics; clamping
+        // them beneath the budget lands with the enforcement charge sites
+        // (Phase 3), so a configured budget never silently shrinks guest
+        // limits before the ledger exists to account for it.
+        let total_memory_bytes = self.total_memory_bytes.map_or(hard.total_memory_bytes, |value| {
+            value.min(hard.total_memory_bytes)
+        });
         #[cfg(feature = "sandbox")]
         let sandbox = {
             let hard_memory = u64::try_from(hard.sandbox.memory_bytes)?;
@@ -224,6 +263,7 @@ impl WorldExecutionProfile {
             #[cfg(feature = "sandbox")]
             sandbox,
             native,
+            total_memory_bytes,
         })
     }
 }
@@ -237,6 +277,7 @@ impl Default for RuntimeLimits {
                 ..SandboxLimits::default()
             },
             native: NativeLimits::default(),
+            total_memory_bytes: DEFAULT_WORLD_TOTAL_MEMORY_BYTES,
         }
     }
 }
@@ -265,6 +306,10 @@ impl RuntimeLimits {
             args.world_native_deadline_ms() > 0,
             "--world-native-deadline-ms must be at least 1"
         );
+        ensure!(
+            (1..=65_536).contains(&args.world_total_memory_mib()),
+            "--world-total-memory-mib must be 1..=65536"
+        );
         Ok(Self {
             #[cfg(feature = "sandbox")]
             sandbox: SandboxLimits {
@@ -278,6 +323,7 @@ impl RuntimeLimits {
                 cpu_seconds: args.world_native_cpu_secs(),
                 call_deadline: Duration::from_millis(args.world_native_deadline_ms()),
             },
+            total_memory_bytes: args.world_total_memory_mib() * MIB,
         })
     }
 }
@@ -368,6 +414,106 @@ mod tests {
             assert_eq!(effective.sandbox.message_bytes, hard.sandbox.message_bytes);
             assert_eq!(effective.sandbox.module_bytes, hard.sandbox.module_bytes);
         }
+    }
+
+    #[test]
+    fn a_zero_total_budget_request_is_refused() {
+        assert!(
+            WorldExecutionProfile {
+                total_memory_bytes: Some(0),
+                ..Default::default()
+            }
+            .resolve(RuntimeLimits::default())
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_default_server_ceiling_is_the_proposed_64mib_budget() {
+        assert_eq!(
+            RuntimeLimits::default().total_memory_bytes,
+            DEFAULT_WORLD_TOTAL_MEMORY_BYTES
+        );
+        assert_eq!(
+            DEFAULT_WORLD_TOTAL_MEMORY_BYTES,
+            64 * 1024 * 1024,
+            "the 64 MiB default is the design's proposed policy value (Q1)"
+        );
+    }
+
+    #[test]
+    fn an_empty_profile_inherits_the_server_total_budget() {
+        let hard = RuntimeLimits::default();
+        let effective = WorldExecutionProfile::default().resolve(hard).unwrap();
+        assert_eq!(
+            effective.total_memory_bytes,
+            hard.total_memory_bytes
+        );
+    }
+
+    #[test]
+    fn a_total_budget_request_can_lower_but_never_raise_the_ceiling() {
+        let hard = RuntimeLimits::default();
+        let lowered = WorldExecutionProfile {
+            total_memory_bytes: Some(hard.total_memory_bytes / 2),
+            ..Default::default()
+        }
+        .resolve(hard)
+        .unwrap();
+        assert_eq!(
+            lowered.total_memory_bytes,
+            hard.total_memory_bytes / 2
+        );
+        let raised = WorldExecutionProfile {
+            total_memory_bytes: Some(u64::MAX),
+            ..Default::default()
+        }
+        .resolve(hard)
+        .unwrap();
+        assert_eq!(raised.total_memory_bytes, hard.total_memory_bytes);
+    }
+
+    #[test]
+    fn a_budget_request_leaves_program_ceilings_untouched_in_phase_1() {
+        // Phase 1 establishes the validated contract only: no charge site
+        // may claim enforcement yet, so program ceilings keep their
+        // beneath-the-server-ceiling semantics until Phase 3.
+        let hard = RuntimeLimits::default();
+        let effective = WorldExecutionProfile {
+            total_memory_bytes: Some(hard.total_memory_bytes / 2),
+            ..Default::default()
+        }
+        .resolve(hard)
+        .unwrap();
+        assert_eq!(effective.native.memory_bytes, hard.native.memory_bytes);
+        assert_eq!(effective.native.cpu_seconds, hard.native.cpu_seconds);
+        assert_eq!(effective.native.call_deadline, hard.native.call_deadline);
+        #[cfg(feature = "sandbox")]
+        {
+            assert_eq!(effective.sandbox.fuel, hard.sandbox.fuel);
+            assert_eq!(
+                effective.sandbox.memory_bytes,
+                hard.sandbox.memory_bytes
+            );
+            assert_eq!(
+                effective.sandbox.message_bytes,
+                hard.sandbox.message_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn the_total_budget_round_trips_and_stays_absent_when_unset() {
+        let profile = WorldExecutionProfile {
+            total_memory_bytes: Some(32 * 1024 * 1024),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(json.contains("total_memory_bytes"));
+        let back: WorldExecutionProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, profile);
+        let inherited: WorldExecutionProfile = serde_json::from_str("{}").unwrap();
+        assert_eq!(inherited.total_memory_bytes, None);
     }
 
     #[test]

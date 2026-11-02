@@ -345,6 +345,93 @@ mod tests {
     }
 
     #[test]
+    fn budget_entries_require_journal_version_4_while_budgetless_ones_do_not() {
+        // #557 Phase 1: a persisted total budget is the first fact a
+        // version-3 binary would parse yet silently ignore, so it pins the
+        // header to version 4. Profiles without a budget keep version 2.
+        let plain_profile = JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile {
+                wasm_fuel: Some(1234),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_profile),
+            JOURNAL_VERSION_EXECUTION_PROFILE
+        );
+        let budget_profile = JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile {
+                total_memory_bytes: Some(32 * 1024 * 1024),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&budget_profile),
+            JOURNAL_VERSION_WORLD_BUDGET
+        );
+        // A budget checkpoint requires version 4 even with no handoff
+        // content; the handoff version never outranks the budget version.
+        let budget_checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: Some(crate::world_limits::WorldExecutionProfile {
+                total_memory_bytes: Some(32 * 1024 * 1024),
+                ..Default::default()
+            }),
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![],
+        };
+        assert_eq!(
+            journal_version_required_by(&budget_checkpoint),
+            JOURNAL_VERSION_WORLD_BUDGET
+        );
+        let plain_checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![],
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_checkpoint),
+            JOURNAL_VERSION
+        );
+    }
+
+    #[test]
+    fn budget_checkpoint_compacts_to_version_4_and_restores() {
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(32 * 1024 * 1024),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // The compacted journal carries the budget, so its header must
+        // refuse binaries that predate the budget version (#227).
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_WORLD_BUDGET,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.execution_profile(), profile);
+    }
+
+    #[test]
     fn recorded_provenance_survives_checkpoint_compaction_and_restore() {
         let provenance = sample_source_provenance();
         let mut core = world(8);
