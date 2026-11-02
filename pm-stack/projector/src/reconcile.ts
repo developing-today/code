@@ -48,18 +48,39 @@ async function reconcileStream(
     return null;
   };
 
-  if (stream === "issues" || stream === "prs") {
+  if (stream === "issues") {
     const path = `repos/${repo}/issues?${q}&filter=all`;
     const rows = await listResource<Record<string, any>>(auth, path, fetchFn);
     let cursor: string | null = null;
     for (const obj of rows) {
-      const isPr = Boolean(obj.pull_request);
-      if (stream === "prs" && !isPr) continue;
-      if (stream === "issues" && isPr) continue;
-      const row = fromIssueOrPr(repo, obj, isPr ? "pr" : "issue");
+      if (Boolean(obj.pull_request)) continue;
+      const row = fromIssueOrPr(repo, obj, "issue");
       await store.upsertItem(db, row);
       await mark(1);
       const u = obj.updated_at ?? obj.created_at;
+      if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
+    }
+    return { repo, stream, written: written.n, cursor };
+  }
+
+  if (stream === "prs") {
+    // The issues endpoint never returns draft/merged/merged_at for its
+    // pull_request-link objects, so sourcing PR upserts from it stores
+    // false defaults on first sight (#4528). The pulls endpoint is
+    // pulls-shaped — it carries all three — so the prs stream reads it
+    // instead; non-null merge fields also heal previously materialized
+    // false-default rows via the store's null-preserving update.
+    // NB: unlike the issues endpoint, pulls does not accept `filter`.
+    const pq = since
+      ? `since=${encodeURIComponent(since)}&per_page=100&state=all`
+      : "per_page=100&state=all";
+    const prs = await listResource<Record<string, any>>(auth, `repos/${repo}/pulls?${pq}`, fetchFn);
+    let cursor: string | null = null;
+    for (const pr of prs) {
+      const row = fromIssueOrPr(repo, pr, "pr");
+      await store.upsertItem(db, row);
+      await mark(1);
+      const u = pr.updated_at ?? pr.created_at;
       if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
     }
     return { repo, stream, written: written.n, cursor };

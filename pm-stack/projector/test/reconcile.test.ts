@@ -167,3 +167,84 @@ describe("reconcileRepos reviews stream per-PR guard (#2745)", () => {
     expect(await getSyncCursor(db, repo, "reviews")).toBe("2026-10-06T00:00:00Z");
   });
 });
+
+describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
+  const repo = "developing-today/prs-pulls-shape";
+  // Pulls LIST objects carry draft + merged_at but no `merged` boolean.
+  const pullsPr = (n: number, shape: { draft: boolean; merged_at: string | null; updated: string }) => ({
+    number: n,
+    html_url: `https://github.com/${repo}/pull/${n}`,
+    url: `https://api.github.com/repos/${repo}/pulls/${n}`,
+    title: `pr ${n}`,
+    state: shape.merged_at ? "closed" : "open",
+    user: { login: "drew" },
+    labels: [],
+    assignees: [],
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: shape.updated,
+    closed_at: shape.merged_at,
+    draft: shape.draft,
+    merged_at: shape.merged_at,
+  });
+  const fetchFnFor = (prs: Record<string, any>[]) =>
+    (async (url: string) => {
+      if (url.includes("/pulls?")) return jsonRes(prs);
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+
+  test("draft-first-sight stores draft=1, merged-first-sight stores merged=1 + merged_at", async () => {
+    const result = await reconcileRepos(
+      db,
+      { PM_REPOS: repo, GITHUB_TOKEN: "test-token" },
+      fetchFnFor([
+        pullsPr(7, { draft: true, merged_at: null, updated: "2026-10-02T00:00:00Z" }),
+        pullsPr(8, { draft: false, merged_at: "2026-10-03T00:00:00Z", updated: "2026-10-03T00:00:00Z" }),
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    const prs = (result.streams as Record<string, any>[]).find((s) => s.stream === "prs");
+    expect(prs?.error).toBeUndefined();
+    expect(prs?.written).toBe(2);
+    const items = await getItems(db, [`${repo}#7`, `${repo}#8`]);
+    const byNumber = Object.fromEntries(items.map((i) => [i.number, i]));
+    expect(byNumber[7].draft).toBe(1);
+    expect(byNumber[7].merged).toBe(0);
+    expect(byNumber[7].merged_at).toBeNull();
+    expect(byNumber[8].draft).toBe(0);
+    expect(byNumber[8].merged).toBe(1);
+    expect(byNumber[8].merged_at).toBe("2026-10-03T00:00:00Z");
+  });
+
+  test("heal-after-gap: false-default row is corrected on a later pulls pass", async () => {
+    // Simulate the old behavior: an issue-shaped PR object (no merge keys)
+    // materialized draft=0/merged=0/merged_at=null on first sight.
+    const issueShaped = {
+      number: 9,
+      html_url: `https://github.com/${repo}/pull/9`,
+      url: `https://api.github.com/repos/${repo}/issues/9`,
+      title: "pr 9",
+      state: "closed",
+      user: { login: "drew" },
+      labels: [],
+      assignees: [],
+      pull_request: { url: `https://api.github.com/repos/${repo}/pulls/9` },
+      created_at: "2026-10-01T00:00:00Z",
+      updated_at: "2026-10-02T00:00:00Z",
+    };
+    const { fromIssueOrPr } = await import("../src/projector");
+    const { upsertItem } = await import("../src/store");
+    await upsertItem(db, fromIssueOrPr(repo, issueShaped, "pr"));
+    const before = (await getItems(db, [`${repo}#9`]))[0];
+    expect([before.draft, before.merged, before.merged_at]).toEqual([0, 0, null]);
+
+    await reconcileRepos(
+      db,
+      { PM_REPOS: repo, GITHUB_TOKEN: "test-token" },
+      fetchFnFor([pullsPr(9, { draft: false, merged_at: "2026-10-04T00:00:00Z", updated: "2026-10-04T00:00:00Z" })]),
+    );
+    const after = (await getItems(db, [`${repo}#9`]))[0];
+    expect(after.draft).toBe(0);
+    expect(after.merged).toBe(1);
+    expect(after.merged_at).toBe("2026-10-04T00:00:00Z");
+  });
+});
