@@ -4301,10 +4301,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "paragraph" => NodeValue::Paragraph,
 
         "heading" => {
-            #[allow(clippy::cast_possible_truncation)] // level is clamped to 1-6
-            let level = json["attrs"]["level"].as_u64().unwrap_or(1) as u8;
+            let level = json["attrs"]["level"].as_u64().unwrap_or(1).clamp(1, 6);
+            #[allow(clippy::cast_possible_truncation)] // level is clamped to 1-6 before narrowing
+            let level = level as u8;
             NodeValue::Heading(comrak::nodes::NodeHeading {
-                level: level.clamp(1, 6),
+                level,
                 setext: false,
                 closed: false,
             })
@@ -5192,6 +5193,48 @@ mod tests {
 
         assert_eq!(content[1]["type"], "heading");
         assert_eq!(content[1]["attrs"]["level"], 2);
+    }
+
+    #[test]
+    fn test_heading_levels_are_clamped_before_u8_cast_on_save() {
+        let cases: &[(Option<u64>, u8)] = &[
+            (None, 1),
+            (Some(0), 1),
+            (Some(1), 1),
+            (Some(2), 2),
+            (Some(3), 3),
+            (Some(4), 4),
+            (Some(5), 5),
+            (Some(6), 6),
+            (Some(7), 6),
+            (Some(255), 6),
+            (Some(256), 6),
+            (Some(261), 6),
+            (Some(1_000), 6),
+            (Some(u64::MAX), 6),
+        ];
+
+        for (level, expected_level) in cases {
+            let heading = match level {
+                Some(level) => json!({
+                    "type": "heading",
+                    "attrs": {"level": level},
+                    "content": [{"type": "text", "text": "Heading"}]
+                }),
+                None => json!({
+                    "type": "heading",
+                    "content": [{"type": "text", "text": "Heading"}]
+                }),
+            };
+            let doc = json!({"type": "doc", "content": [heading]});
+            let expected = format!("{} Heading\n", "#".repeat(usize::from(*expected_level)));
+
+            assert_eq!(
+                prosemirror_to_markdown(&doc).unwrap(),
+                expected,
+                "heading level {level:?}"
+            );
+        }
     }
 
     #[test]
