@@ -8,7 +8,8 @@ export interface EpicIssue {
   projectItems?: unknown[];
 }
 
-const labelNames = (labels: Label[]): string[] => labels.map((label) => (typeof label === "string" ? label : label.name));
+const labelNames = (labels: Label[]): string[] =>
+  labels.map((label) => (typeof label === "string" ? label : label.name));
 
 export function isEpicCandidate(issue: Pick<EpicIssue, "title" | "labels">): boolean {
   return labelNames(issue.labels).includes("epic") || /^epic(?:\s|\(|:)/i.test(issue.title.trim());
@@ -60,7 +61,16 @@ function ghJson<T>(args: string[]): T {
 }
 
 export function runLiveAudit(): number {
-  const common = ["--repo", "developing-today/code", "--state", "open", "--limit", "500", "--json", "number,title,body,labels"];
+  const common = [
+    "--repo",
+    "developing-today/code",
+    "--state",
+    "open",
+    "--limit",
+    "500",
+    "--json",
+    "number,title,body,labels",
+  ];
   const labelled = ghJson<EpicIssue[]>(["issue", "list", ...common, "--label", "epic"]);
   const titled = ghJson<EpicIssue[]>(["issue", "list", ...common, "--search", "epic in:title"]);
   const candidates = new Map<number, EpicIssue>();
@@ -85,7 +95,13 @@ export function runLiveAudit(): number {
   for (const issue of [...candidates.values()].sort((a, b) => a.number - b.number)) {
     const project = canReadProjects
       ? ghJson<{ projectItems: unknown[] }>([
-          "issue", "view", String(issue.number), "--repo", "developing-today/code", "--json", "projectItems",
+          "issue",
+          "view",
+          String(issue.number),
+          "--repo",
+          "developing-today/code",
+          "--json",
+          "projectItems",
         ])
       : undefined;
     const findings = epicConformanceFindings({ ...issue, projectItems: project?.projectItems }, { canReadProjects });
@@ -94,7 +110,9 @@ export function runLiveAudit(): number {
       console.log(`#${issue.number} ${issue.title} — ${findings.join("; ")}`);
     }
   }
-  console.log(`Epic conformance: ${candidates.size - nonconforming}/${candidates.size} conforming; ${nonconforming} need attention.`);
+  console.log(
+    `Epic conformance: ${candidates.size - nonconforming}/${candidates.size} conforming; ${nonconforming} need attention.`,
+  );
   return nonconforming;
 }
 

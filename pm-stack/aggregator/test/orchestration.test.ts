@@ -184,9 +184,7 @@ describe("orchestration section validation", () => {
     expect(isOrchestrationSection(noSummary)).toBe(false);
     const good = {
       ...SECTION,
-      actions: [
-        { at: "2026-10-25T17:20:00.000Z", kind: "nudge", target: "task 1", summary: "Nudged it." },
-      ],
+      actions: [{ at: "2026-10-25T17:20:00.000Z", kind: "nudge", target: "task 1", summary: "Nudged it." }],
     };
     expect(isOrchestrationSection(good)).toBe(true);
   });

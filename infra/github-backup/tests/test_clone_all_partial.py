@@ -66,8 +66,7 @@ class FakeSubprocess:
                     cmd,
                     128,
                     "",
-                    "fatal: detected dubious ownership in repository at "
-                    f"'{cmd[2]}'",
+                    f"fatal: detected dubious ownership in repository at '{cmd[2]}'",
                 )
             return REAL_RUN(cmd, capture_output=True, text=True)
         assert cmd[:2] == ["git", "clone"], f"unexpected command: {cmd}"
@@ -139,7 +138,9 @@ class Harness:
 
     def seed_valid_mirror(self):
         os.makedirs(os.path.dirname(self.dest), exist_ok=True)
-        r = REAL_RUN(["git", "init", "--bare", self.dest], capture_output=True, text=True)
+        r = REAL_RUN(
+            ["git", "init", "--bare", self.dest], capture_output=True, text=True
+        )
         assert r.returncode == 0, r.stderr
         with open(os.path.join(self.dest, "marker.txt"), "w") as f:
             f.write("do not touch")
@@ -149,7 +150,11 @@ FAILURES = []
 
 
 def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" — {detail}" if detail and not cond else ""))
+    print(
+        ("PASS " if cond else "FAIL ")
+        + name
+        + (f" — {detail}" if detail and not cond else "")
+    )
     if not cond:
         FAILURES.append(name)
 

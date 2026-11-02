@@ -35,6 +35,7 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+mod replication;
 pub mod signed;
 mod util;
 
@@ -46,6 +47,13 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use replication::{
+    AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
+    REPLICATION_ENVELOPE_VERSION, REPLICATION_FRAME_MAGIC, ReplicationCursor, ReplicationEnvelope,
+    ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
+    SignedReplicationEnvelope, advance_cursor, chain_base_cursor, chain_payload, frame_digest,
+    journal_entry_line, payload_digest, split_entry_payload,
+};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
     constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,

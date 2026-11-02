@@ -197,7 +197,6 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     let mut discovery = AppDiscovery::default();
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return discovery,
         Err(error) => {
             discovery
                 .errors
@@ -274,6 +273,7 @@ fn is_kebab_id(id: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -383,6 +383,18 @@ commands = ["play"]
         // A 64-digit hex hash is accepted.
         assert!(parse_app_manifest(&with_hash(&"a".repeat(64)), "tic-tac-toe").is_ok());
         assert!(parse_app_manifest(&with_hash("0123456789abcdef"), "tic-tac-toe").is_ok());
+    }
+
+    #[test]
+    fn discovery_reports_missing_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let missing_root = parent.path().join("missing-apps-root");
+
+        let discovery = discover_apps(&missing_root);
+
+        assert!(discovery.apps.is_empty());
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains(&missing_root.display().to_string()));
     }
 
     #[test]

@@ -476,7 +476,8 @@ export function entryFromTurso(
     return entry;
   }
   const periodEnd = sub?.current_billing_period_end ?? sub?.current_period_end ?? sub?.period_end ?? sub?.ends_at;
-  const periodStart = sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
+  const periodStart =
+    sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
   const resetsAt = normalizeResetAt(periodEnd);
   const startMs = typeof periodStart === "string" ? Date.parse(periodStart) : Number.NaN;
   const endMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : Number.NaN;

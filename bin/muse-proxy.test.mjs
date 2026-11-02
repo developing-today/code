@@ -601,6 +601,31 @@ const startMetaStub = async (mode) => {
           res.end(JSON.stringify({ received: JSON.parse(body || '{}'), authorization: req.headers.authorization }));
           return;
         }
+        if (mode === 'failed-empty' || mode === 'failed-partial') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'resp_failed',
+            object: 'response',
+            status: 'failed',
+            error: { message: 'stub upstream boom', type: 'server_error' },
+            output: mode === 'failed-partial'
+              ? [{ type: 'message', id: 'msg_p', role: 'assistant', content: [{ type: 'output_text', text: 'partial text that must not mask the failure' }] }]
+              : []
+          }));
+          return;
+        }
+        if (mode === 'incomplete-filter' || mode === 'incomplete-max') {
+          const reason = mode === 'incomplete-max' ? 'max_output_tokens' : 'content_filter';
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: 'resp_incomplete',
+            object: 'response',
+            status: 'incomplete',
+            incomplete_details: { reason },
+            output: [{ type: 'message', id: 'msg_i', role: 'assistant', content: [{ type: 'output_text', text: 'cut off but usable' }] }]
+          }));
+          return;
+        }
         let parsed = {};
         try { parsed = JSON.parse(body || '{}'); } catch { /* keep empty */ }
         if (parsed.stream) {
@@ -726,6 +751,44 @@ test('direct mode: one exchange mints the key, chat is translated to Responses a
   assert.equal(health.direct.mintedKeyCached, true);
   assert.equal(health.direct.subsTier, 'Muse Code High Usage');
   assert.equal(health.direct.subsActive, true);
+});
+
+test('direct mode: failed/incomplete upstream bodies are 500 errors, never a 200 stop (#2780)', async (t) => {
+  const postChat = (port) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'muse-spark-1.3', messages: [{ role: 'user', content: 'hi' }] })
+  });
+  for (const [mode, match] of [
+    ['failed-empty', /stub upstream boom/],
+    ['failed-partial', /stub upstream boom/],
+    ['incomplete-filter', /incomplete: content_filter/],
+  ]) {
+    const meta = await startMetaStub(mode);
+    const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+    try {
+      writeStubAuth(home);
+      const plainRes = await postChat(port);
+      assert.equal(plainRes.status, 500, `${mode}: non-stream must be a 500, not a 200 'stop'`);
+      const plainBody = JSON.parse(await plainRes.text());
+      assert.match(plainBody.error.message, match, `${mode}: error must carry the upstream cause`);
+      assert.ok(!('choices' in plainBody), `${mode}: no masked completion may be present`);
+    } finally {
+      stop();
+      meta.close();
+    }
+  }
+
+  const meta = await startMetaStub('incomplete-max');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+  const maxRes = await postChat(port);
+  assert.equal(maxRes.status, 200, 'incomplete/max_output_tokens stays a 200');
+  const maxBody = JSON.parse(await maxRes.text());
+  assert.equal(maxBody.choices[0].finish_reason, 'length');
+  assert.equal(maxBody.choices[0].message.content, 'cut off but usable');
 });
 
 test('direct mode: Responses SSE is translated into chat chunks with tool calls (#2753)', async (t) => {

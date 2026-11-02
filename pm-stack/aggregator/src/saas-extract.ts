@@ -314,7 +314,12 @@ const cloudflareMetrics: MetricExtractor = (section) => {
   const counts = /([\d,]+) Workers, ([\d,]+) R2 buckets[^;]*; ([\d,]+) D1, ([\d,]+) KV, ([\d,]+) Queues/.exec(usage);
   if (counts) {
     out.push(
-      metric({ id: "workers-count", label: "Workers deployed", unit: "count", used: Number(counts[1].replace(/,/g, "")) }),
+      metric({
+        id: "workers-count",
+        label: "Workers deployed",
+        unit: "count",
+        used: Number(counts[1].replace(/,/g, "")),
+      }),
       metric({ id: "r2-buckets", label: "R2 buckets", unit: "count", used: Number(counts[2].replace(/,/g, "")) }),
       metric({ id: "d1-count", label: "D1 databases", unit: "count", used: Number(counts[3].replace(/,/g, "")) }),
       metric({ id: "kv-count", label: "KV namespaces", unit: "count", used: Number(counts[4].replace(/,/g, "")) }),

@@ -159,6 +159,25 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
     assert.match(stubPaths.at(-1), /\/workers-ai\/run\//);
   });
 
+  await t.test('array body is a 400 and never reaches the stub upstream (#2938)', async () => {
+    stubBehavior = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, result: { answers: { q1: 'answer one' } } }));
+    };
+    const hitsBefore = stubPaths.length;
+    for (const raw of ['[]', '[1,2]']) {
+      const res = await fetch(`${base}/v1/systemone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+        body: raw
+      });
+      assert.equal(res.status, 400);
+      const data = await res.json();
+      assert.equal(data.error, 'Invalid JSON body: expected an object');
+    }
+    assert.equal(stubPaths.length, hitsBefore);
+  });
+
   await t.test('upstream that never sends headers returns a 504', async () => {
     stubBehavior = () => {};
     const res = await ask();

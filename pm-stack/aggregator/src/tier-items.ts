@@ -15,6 +15,7 @@
  * shape and stays untouched.
  */
 import type { DashAction, NewAction } from "./actions.ts";
+import { parseIsoDate } from "./validate.ts";
 import type {
   DelegationMode,
   OrchestrationSection,
@@ -66,7 +67,14 @@ function optionalBounded(v: unknown, max: number): string | undefined {
 }
 
 function isIso(v: unknown): v is string {
-  return typeof v === "string" && v.includes("T") && !Number.isNaN(Date.parse(v));
+  // #3396: Date.parse alone normalizes impossible calendar days
+  // (2026-02-30 -> Mar 2) instead of refusing them, so a delegation
+  // timestamp could name a day that never existed — and proposalExpired
+  // then clocked the 48h TTL from that phantom day. parseIsoDate (the
+  // strict in-package primitive validate.ts already enforces at ingest)
+  // re-checks the calendar day; the existing shape gates stay, so
+  // accepted formats are unchanged apart from the impossible-date rule.
+  return typeof v === "string" && v.includes("T") && !Number.isNaN(Date.parse(v)) && parseIsoDate(v) !== null;
 }
 
 function sanitizeOptions(raw: unknown): TierItemOption[] | undefined {
@@ -350,13 +358,19 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
       const qs = item.questions ?? [];
       if (!qs.length) return "this item has no survey questions to answer";
       const byId = new Map(qs.map((q) => [q.id, q]));
+      const seenAnswers = new Set<string>();
       for (const a of p.answers) {
+        // #4291: a duplicate questionId in one submit is rejected
+        // even when validateNewAction was bypassed — the item-side
+        // boundary does not merge or guess between the two values.
+        if (seenAnswers.has(a.questionId))
+          return `question "${a.questionId}" is answered more than once in this submit`;
+        seenAnswers.add(a.questionId);
         const q = byId.get(a.questionId);
         if (!q) return `unknown question id "${a.questionId}" for this item`;
         switch (q.type) {
           case "yesno":
-            if (a.value !== "yes" && a.value !== "no")
-              return `answer for "${q.id}" must be "yes" or "no"`;
+            if (a.value !== "yes" && a.value !== "no") return `answer for "${q.id}" must be "yes" or "no"`;
             break;
           case "single":
             if (typeof a.value !== "string" || !q.options?.some((o) => o.id === a.value))

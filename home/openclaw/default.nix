@@ -407,7 +407,10 @@ in
             # with args [ "acp" ] restores the private-server path.
             agents.opencode = {
               command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
-              args = [ "--server" "http://127.0.0.1:13420" ];
+              args = [
+                "--server"
+                "http://127.0.0.1:13420"
+              ];
             };
             agents.claude = {
               command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";

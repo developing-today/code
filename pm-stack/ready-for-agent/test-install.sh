@@ -23,33 +23,33 @@ run_case() {
   cp "${REPO_ROOT}/pm-stack/ready-for-agent/install.sh" "${deploy}/install.sh"
   cp "${REPO_ROOT}/pm-stack/ready-for-agent/systemd/ready-for-agent.service" \
     "${deploy}/systemd/ready-for-agent.service"
-  if [[ "${unit_matches}" == true ]]; then
+  if [[ ${unit_matches} == true ]]; then
     cp "${deploy}/systemd/ready-for-agent.service" "${home}/.config/systemd/user/ready-for-agent.service"
-  elif [[ "${unit_matches}" == false ]]; then
-    echo 'stale unit' > "${home}/.config/systemd/user/ready-for-agent.service"
+  elif [[ ${unit_matches} == false ]]; then
+    echo 'stale unit' >"${home}/.config/systemd/user/ready-for-agent.service"
   fi
 
-  if [[ "${initial_version}" != missing ]]; then
-    printf '%s\n' "${initial_version}" > "${home}/.ready-agent-version"
-    cat > "${home}/.local/bin/ready-for-agent" <<'LAUNCHER'
+  if [[ ${initial_version} != missing ]]; then
+    printf '%s\n' "${initial_version}" >"${home}/.ready-agent-version"
+    cat >"${home}/.local/bin/ready-for-agent" <<'LAUNCHER'
 #!/usr/bin/env bash
 printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
 LAUNCHER
     chmod +x "${home}/.local/bin/ready-for-agent"
   fi
 
-  if [[ "${active}" == active ]]; then
-    printf 'active\n' > "${state}/active"
-    printf '100\n' > "${state}/pid"
-    printf '1000\n' > "${state}/start"
+  if [[ ${active} == active ]]; then
+    printf 'active\n' >"${state}/active"
+    printf '100\n' >"${state}/pid"
+    printf '1000\n' >"${state}/start"
   else
-    printf 'inactive\n' > "${state}/active"
-    printf '0\n' > "${state}/pid"
-    printf '0\n' > "${state}/start"
+    printf 'inactive\n' >"${state}/active"
+    printf '0\n' >"${state}/pid"
+    printf '0\n' >"${state}/start"
   fi
-  : > "${log}"
+  : >"${log}"
 
-  cat > "${stub_bin}/systemctl" <<'SYSTEMCTL'
+  cat >"${stub_bin}/systemctl" <<'SYSTEMCTL'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${1:-} == --user ]] || exit 2
@@ -90,7 +90,7 @@ case "${command}" in
 esac
 SYSTEMCTL
 
-  cat > "${stub_bin}/npm" <<'NPM'
+  cat >"${stub_bin}/npm" <<'NPM'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'npm install\n' >> "${STUB_LOG}"
@@ -101,11 +101,11 @@ printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
 LAUNCHER
 chmod +x "${HOME}/.local/bin/ready-for-agent"
 NPM
-  cat > "${stub_bin}/curl" <<'CURL'
+  cat >"${stub_bin}/curl" <<'CURL'
 #!/usr/bin/env bash
 exit 0
 CURL
-  cat > "${stub_bin}/sleep" <<'SLEEP'
+  cat >"${stub_bin}/sleep" <<'SLEEP'
 #!/usr/bin/env bash
 exit 0
 SLEEP
@@ -119,30 +119,30 @@ SLEEP
 
   printf '%s\n' "${output}" | grep -Fq 'ready-for-agent@1.1.0'
   case "${name}" in
-    package-change-active)
-      grep -Fxq restart "${log}" || fail "${name}: expected restart"
-      grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
-      ;;
-    unit-change-active)
-      grep -Fxq restart "${log}" || fail "${name}: expected restart"
-      grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
-      ;;
-    unchanged-active)
-      ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
-      ! grep -Fxq start "${log}" || fail "${name}: unexpectedly started"
-      printf '%s\n' "${output}" | grep -Fq 'no restart' || fail "${name}: missing no-op report"
-      ;;
-    inactive)
-      grep -Fxq start "${log}" || fail "${name}: expected start"
-      ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
-      ;;
-    first-install)
-      grep -Fxq start "${log}" || fail "${name}: expected start"
-      grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
-      grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
-      ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
-      ;;
-    *) fail "unknown test case: ${name}" ;;
+  package-change-active)
+    grep -Fxq restart "${log}" || fail "${name}: expected restart"
+    grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
+    ;;
+  unit-change-active)
+    grep -Fxq restart "${log}" || fail "${name}: expected restart"
+    grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
+    ;;
+  unchanged-active)
+    ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
+    ! grep -Fxq start "${log}" || fail "${name}: unexpectedly started"
+    printf '%s\n' "${output}" | grep -Fq 'no restart' || fail "${name}: missing no-op report"
+    ;;
+  inactive)
+    grep -Fxq start "${log}" || fail "${name}: expected start"
+    ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
+    ;;
+  first-install)
+    grep -Fxq start "${log}" || fail "${name}: expected start"
+    grep -Fxq daemon-reload "${log}" || fail "${name}: expected daemon-reload"
+    grep -Fxq 'npm install' "${log}" || fail "${name}: expected package install"
+    ! grep -Fxq restart "${log}" || fail "${name}: unexpectedly restarted"
+    ;;
+  *) fail "unknown test case: ${name}" ;;
   esac
   echo "PASS: ${name}"
 }

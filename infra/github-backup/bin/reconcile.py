@@ -165,9 +165,7 @@ def main():
     if clone_rc is None:
         lines.append("- clone pass: not run (no mirrors missing)")
     elif clone_rc == 0:
-        lines.append(
-            f"- clone pass: succeeded ({len(missing)} mirrors attempted)"
-        )
+        lines.append(f"- clone pass: succeeded ({len(missing)} mirrors attempted)")
     else:
         lines.append(
             f"- clone pass: FAILED (clone_all exit {clone_rc}; "

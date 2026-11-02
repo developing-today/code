@@ -255,7 +255,7 @@ describe("end-to-end webhook + read model", () => {
     await migrate(db);
     const retried = await sendFixture(db, env, "01-push.json", delivery);
     expect(retried.status).toBe(200);
-    expect((await retried.json() as any).status).toBe("applied");
+    expect(((await retried.json()) as any).status).toBe("applied");
     const currentDelivery = await db.execute({
       sql: "SELECT outcome FROM pmp_deliveries WHERE delivery_id = ?",
       args: [delivery],

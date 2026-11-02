@@ -133,9 +133,7 @@ beforeAll(() => {
       const m = /^\/api\/session\/([^/]+)\/message$/.exec(url.pathname);
       if (m) {
         const bySession = overrides.messages as Record<string, unknown> | undefined;
-        const response = bySession && Object.hasOwn(bySession, m[1])
-          ? bySession[m[1]]
-          : { data: messages[m[1]] ?? [] };
+        const response = bySession && Object.hasOwn(bySession, m[1]) ? bySession[m[1]] : { data: messages[m[1]] ?? [] };
         return Response.json(response);
       }
       const f = /^\/api\/session\/([^/]+)\/form$/.exec(url.pathname);
@@ -238,9 +236,9 @@ describe("opencode v2 mapper", () => {
 
     expect(mapped).not.toBeNull();
     expect(mapped!.entries.map((entry) => entry.sessionId).sort()).toEqual(["ses_broken", "ses_valid_sibling"]);
-    expect(
-      mapped!.entries.every((entry) => typeof entry.sessionId === "string" && entry.sessionId.length > 0),
-    ).toBe(true);
+    expect(mapped!.entries.every((entry) => typeof entry.sessionId === "string" && entry.sessionId.length > 0)).toBe(
+      true,
+    );
     expect(mapped!.tokensBySession.has("undefined")).toBe(false);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_broken")?.messageCount).toBe(0);
     expect(mapped!.entries.find((entry) => entry.sessionId === "ses_valid_sibling")?.messageCount).toBe(2);

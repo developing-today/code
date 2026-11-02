@@ -22,7 +22,13 @@ import type { SnapshotRollup } from "../src/snapshots.ts";
 
 const NOW = new Date("2026-10-29T12:00:00Z"); // cutoff month: 2025-09
 
-function rec(ts: string, serviceId: string, metricId: string, value: number, extra: Partial<SnapshotRecord> = {}): SnapshotRecord {
+function rec(
+  ts: string,
+  serviceId: string,
+  metricId: string,
+  value: number,
+  extra: Partial<SnapshotRecord> = {},
+): SnapshotRecord {
   return {
     ts,
     serviceId,
@@ -156,8 +162,24 @@ describe("compactRecordsToRollups / expandRollup", () => {
 
   test("estimate pairs compact by low/high and expand back to pairs", () => {
     const records: SnapshotRecord[] = [
-      { ts: "2025-06-02T12:00:00Z", serviceId: "svc-c", metricId: "payg-estimate", value: { low: 1, high: 5 }, unit: "usd-est", source: "estimate", observedBy: "test" },
-      { ts: "2025-06-12T12:00:00Z", serviceId: "svc-c", metricId: "payg-estimate", value: { low: 3, high: 4 }, unit: "usd-est", source: "estimate", observedBy: "test" },
+      {
+        ts: "2025-06-02T12:00:00Z",
+        serviceId: "svc-c",
+        metricId: "payg-estimate",
+        value: { low: 1, high: 5 },
+        unit: "usd-est",
+        source: "estimate",
+        observedBy: "test",
+      },
+      {
+        ts: "2025-06-12T12:00:00Z",
+        serviceId: "svc-c",
+        metricId: "payg-estimate",
+        value: { low: 3, high: 4 },
+        unit: "usd-est",
+        source: "estimate",
+        observedBy: "test",
+      },
     ];
     const [r] = compactRecordsToRollups("2025-06", records);
     expect(r.valueMin).toEqual({ low: 1, high: 5 });
@@ -172,9 +194,7 @@ describe("SnapshotStore prototype-spelled service ids", () => {
     const serviceIds = ["__proto__", "constructor", "toString"];
     try {
       await mkdir(dir, { recursive: true });
-      const records = serviceIds.map((serviceId) =>
-        rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40),
-      );
+      const records = serviceIds.map((serviceId) => rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40));
       await writeFile(join(dir, "usage-2025-06.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
       const grouped = await new SnapshotStore(dir).byService();
@@ -202,9 +222,7 @@ describe("SnapshotStore prototype-spelled service ids", () => {
 
     try {
       await mkdir(dir, { recursive: true });
-      const records = serviceIds.map((serviceId) =>
-        rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40),
-      );
+      const records = serviceIds.map((serviceId) => rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40));
       await writeFile(join(dir, "usage-2025-06.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
       const report = await new SnapshotStore(dir).compact({ now: NOW, dryRun: true });
@@ -255,11 +273,7 @@ describe("SnapshotStore.compact", () => {
       const report = await store.compact({ now: NOW });
       expect(report.months).toHaveLength(2);
       const names = (await readdir(dir)).sort();
-      expect(names).toEqual([
-        rollupFileFor("2025-06"),
-        rollupFileFor("2025-09"),
-        "usage-2025-10.jsonl",
-      ]);
+      expect(names).toEqual([rollupFileFor("2025-06"), rollupFileFor("2025-09"), "usage-2025-10.jsonl"]);
 
       // The existing reading path reads the compacted store: svc-a's
       // last June value and its resetsAt survive, the max is visible,
@@ -351,9 +365,7 @@ describe("Codex review regressions (PR #2379)", () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
     try {
       const store = new SnapshotStore(dir);
-      const batch = [1, 2, 3, 4].map((v, i) =>
-        rec(`2025-06-0${i + 2}T12:00:00Z`, "svc-a", "weekly", v),
-      );
+      const batch = [1, 2, 3, 4].map((v, i) => rec(`2025-06-0${i + 2}T12:00:00Z`, "svc-a", "weekly", v));
       expect(await store.append(batch)).toBe(4);
       await store.compact({ now: NOW });
       // The batch's non-extreme observations (2, 3) are no longer in
@@ -432,9 +444,7 @@ describe("Codex review regressions (PR #2379)", () => {
     try {
       const a = new SnapshotStore(dir);
       const b = new SnapshotStore(dir);
-      const batches = Array.from({ length: 6 }, (_, i) => [
-        rec(`2025-06-1${i}T12:00:00Z`, "svc-a", "weekly", i + 1),
-      ]);
+      const batches = Array.from({ length: 6 }, (_, i) => [rec(`2025-06-1${i}T12:00:00Z`, "svc-a", "weekly", i + 1)]);
       await Promise.all([
         (async () => {
           for (const batch of batches) await a.append(batch);
@@ -448,6 +458,60 @@ describe("Codex review regressions (PR #2379)", () => {
       expect((await b.rollupKeys()).length).toBe(6);
       const rollupText = await readFile(join(dir, rollupFileFor("2025-06")), "utf8");
       expect(JSON.parse(rollupText).count).toBe(6);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isSnapshotRollup count gate (#3443)", () => {
+  function validRollup(count: unknown): Record<string, unknown> {
+    return {
+      kind: "snapshot-rollup/v1",
+      month: "2025-06",
+      serviceId: "svc-a",
+      metricId: "weekly",
+      unit: "pct",
+      source: "api",
+      observedBy: "test",
+      count,
+      firstTs: "2025-06-03T12:00:00Z",
+      lastTs: "2025-06-20T12:00:00Z",
+      valueMin: 10,
+      minTs: "2025-06-20T12:00:00Z",
+      valueMax: 85,
+      maxTs: "2025-06-10T12:00:00Z",
+      valueLast: 10,
+      keys: [],
+    };
+  }
+
+  test("accepts positive integer counts", () => {
+    expect(isSnapshotRollup(validRollup(3))).toBe(true);
+    expect(isSnapshotRollup(validRollup(1))).toBe(true);
+  });
+
+  test("rejects fractional, infinite, and NaN counts", () => {
+    for (const bad of [1.5, Number.POSITIVE_INFINITY, JSON.parse("1e999"), Number.NaN, 0, -2]) {
+      expect(isSnapshotRollup(validRollup(bad))).toBe(false);
+    }
+  });
+
+  test("stored rollup lines with fractional or 1e999 counts are dropped by readAll and rollupKeys", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      const fractional = JSON.stringify(validRollup(1.5));
+      const infinite = JSON.stringify(validRollup(3)).replace('"count":3', '"count":1e999');
+      await writeFile(join(dir, rollupFileFor("2025-06")), fractional + "\n" + infinite + "\n");
+      await writeFile(
+        join(dir, "usage-2026-10.jsonl"),
+        JSON.stringify(rec("2026-10-05T12:00:00Z", "svc-a", "weekly", 12)) + "\n",
+      );
+      const store = new SnapshotStore(dir);
+      const all = await store.readAll();
+      expect(all).toHaveLength(1);
+      expect(all[0].value).toBe(12);
+      expect(await store.rollupKeys()).toHaveLength(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

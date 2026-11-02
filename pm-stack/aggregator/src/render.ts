@@ -1696,7 +1696,10 @@ export function renderBoardBody(
         .map((item) => {
           const repo = item.repo ? `<span class="muted">${esc(item.repo)}</span><br>` : "";
           const cmt = counts ? commentBadge(item.id, counts) : "";
-          const briefs = briefPanelsForRefs(item.links.map((link) => link.ref), act?.briefs);
+          const briefs = briefPanelsForRefs(
+            item.links.map((link) => link.ref),
+            act?.briefs,
+          );
           if (item.source === "orchestrator") {
             // Synthetic in-flight entry: visibly not a Kaneo card. Its
             // GitHub refs link directly (no execution strip — the
@@ -2042,9 +2045,10 @@ export function renderItem(
           : `<p class="muted">No dashboard comments yet — notes are read when this is picked up; messages are triaged by the orchestrator.</p>`
       }${commentFormHtml(extras.formRef, extras.formOpts)}`
     : "";
-  const roadmapAnnotationSection = extras?.roadmapAnnotations !== undefined
-    ? `<section class="roadmap-annotation-section"><h2>Roadmap annotations</h2>${extras.roadmapAnnotations.length ? extras.roadmapAnnotations.map(roadmapAnnotationHtml).join("") : '<p class="muted">No roadmap annotations yet.</p>'}${roadmapAnnotationFormHtml(extras.formRef, extras.formOpts.identities)}</section>`
-    : "";
+  const roadmapAnnotationSection =
+    extras?.roadmapAnnotations !== undefined
+      ? `<section class="roadmap-annotation-section"><h2>Roadmap annotations</h2>${extras.roadmapAnnotations.length ? extras.roadmapAnnotations.map(roadmapAnnotationHtml).join("") : '<p class="muted">No roadmap annotations yet.</p>'}${roadmapAnnotationFormHtml(extras.formRef, extras.formOpts.identities)}</section>`
+      : "";
   const sessionSection =
     extras && extras.sessions.length
       ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
@@ -2060,14 +2064,23 @@ export function renderItem(
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
-${extras?.briefs ? briefPanelsForRefs(links.map((link) => link.ref), extras.briefs) : ""}
+${
+  extras?.briefs
+    ? briefPanelsForRefs(
+        links.map((link) => link.ref),
+        extras.briefs,
+      )
+    : ""
+}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 <h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
 ${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
     extras
-      ? COMMENT_SCRIPT + (extras.roadmapAnnotations !== undefined ? ROADMAP_ANNOTATION_SCRIPT : "") + (extras.statusRequest ? ACTION_SCRIPT : "")
+      ? COMMENT_SCRIPT +
+          (extras.roadmapAnnotations !== undefined ? ROADMAP_ANNOTATION_SCRIPT : "") +
+          (extras.statusRequest ? ACTION_SCRIPT : "")
       : "",
   );
 }
@@ -2387,9 +2400,7 @@ function snapshotFreshnessStamp(history: SnapshotRecord[], cadenceDays: number, 
   const measuredAt = latest.ts.slice(0, 10);
   const f = freshness(measuredAt, cadenceDays, now);
   const age = f.ageDays == null ? " · age unknown" : f.ageDays === 0 ? " · today" : ` · ${f.ageDays}d ago`;
-  const state = f.stale
-    ? '<span class="badge stale">stale</span>'
-    : '<span class="badge src">within cadence</span>';
+  const state = f.stale ? '<span class="badge stale">stale</span>' : '<span class="badge src">within cadence</span>';
   return `<p class="muted">Latest stored snapshot: <time datetime="${esc(latest.ts)}">${esc(measuredAt)}</time>${age} · ${cadenceDays}-day expected cadence · ${state}</p>`;
 }
 
@@ -2678,7 +2689,6 @@ function needsOrderHtml(act: AttentionAct | undefined): string {
   });
   return `<div class="orderctl">Needs-you list order: <strong>${esc(labels[order])}</strong>${actboxHtml({ identities: act.identities }, form)}</div>`;
 }
-
 
 /** #1277: the per-card bulk-triage pick for one queue card. Renders
  * only when the action surface is up (identities present); a card
@@ -3145,7 +3155,9 @@ export function attentionSections(
     const objectRef = sessionObjectRef(e.sessionId);
     const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
-    orchCardsList.push(bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct));
+    orchCardsList.push(
+      bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct),
+    );
   }
   for (const item of view.orchestratorExtra) {
     const objectRef = tierItemObjectRef(item);
@@ -3243,9 +3255,10 @@ ${attentionFragment("sessions", skel("sessions"))}`;
 
 function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnavailable: boolean): string {
   const compactAge = (ageMs: number) => ageMsText(ageMs).replace(/ old$/, "");
-  const stackServices = health?.services.filter((service) =>
-    service.def.probe !== "feed" && service.def.probe !== "section" && service.def.probe !== "off",
-  ) ?? [];
+  const stackServices =
+    health?.services.filter(
+      (service) => service.def.probe !== "feed" && service.def.probe !== "section" && service.def.probe !== "off",
+    ) ?? [];
   const stackUp = stackServices.filter((service) => service.ok === true).length;
   const stackDown = stackServices.filter((service) => service.ok === false);
   const stackUnknown = stackServices.filter((service) => service.ok === null);
@@ -3253,15 +3266,23 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
     !health || health.mode !== "live" || stackServices.length === 0
       ? "stack unknown"
       : `stack ${stackUp}/${stackServices.length} up${stackDown.length ? ` · ${stackDown.map((service) => service.def.name).join(", ")} down` : ""}${stackUnknown.length ? ` · unknown: ${stackUnknown.map((service) => service.def.name).join(", ")}` : ""}`;
-  const stackState = !health || health.mode !== "live" || stackServices.length === 0 ? "unknown" : stackDown.length ? "warn" : stackUnknown.length ? "unknown" : "ok";
+  const stackState =
+    !health || health.mode !== "live" || stackServices.length === 0
+      ? "unknown"
+      : stackDown.length
+        ? "warn"
+        : stackUnknown.length
+          ? "unknown"
+          : "ok";
 
   const feedAge = health?.feed.ageMs;
   const feedDown = health?.services.some((service) => service.def.id === "fleet-feed" && service.ok === false) ?? false;
-  const feedState = feedDown || (feedAge !== null && feedAge !== undefined && feedAge > 15 * 60_000)
-    ? "warn"
-    : feedAge === null || feedAge === undefined
-      ? "unknown"
-      : "ok";
+  const feedState =
+    feedDown || (feedAge !== null && feedAge !== undefined && feedAge > 15 * 60_000)
+      ? "warn"
+      : feedAge === null || feedAge === undefined
+        ? "unknown"
+        : "ok";
   const feedText = feedAge === null || feedAge === undefined ? "feed unknown" : `feed ${compactAge(feedAge)}`;
 
   const orchestration = health?.jobs.orchestration;
@@ -3283,14 +3304,22 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
   const quotaErrors = quota.gatherer
     ? quota.gatherer.providers.filter((provider) => provider.state === "error").length
     : quota.pools.filter((pool) => pool.state === "error" || pool.freshness?.state === "error").length;
-  const quotaState = quotaUnavailable || (!quota.gatherer && quota.pools.length === 0) ? "unknown" : quotaErrors ? "warn" : quota.gatherer?.ok === false ? "unknown" : "ok";
-  const quotaText = quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
-    ? "quota unknown"
-    : quotaErrors
-      ? `quota errors ${quotaErrors}`
-      : quota.gatherer?.ok === false
-        ? "quota reads unknown"
-        : "quota reads OK";
+  const quotaState =
+    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
+      ? "unknown"
+      : quotaErrors
+        ? "warn"
+        : quota.gatherer?.ok === false
+          ? "unknown"
+          : "ok";
+  const quotaText =
+    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
+      ? "quota unknown"
+      : quotaErrors
+        ? `quota errors ${quotaErrors}`
+        : quota.gatherer?.ok === false
+          ? "quota reads unknown"
+          : "quota reads OK";
 
   const items = [
     { text: stackText, state: stackState, href: "/health", title: "Stack service health" },
@@ -3417,20 +3446,33 @@ export function renderTodayShell(
 
 function queueRows(rows: QueueRow[], empty: string): string {
   if (!rows.length) return `<p class="muted">${esc(empty)}</p>`;
-  return `<div class="board">${rows.map((item) => {
-    const area = item.area ? `${item.area} · ${item.repo}` : item.repo;
-    const blocked = item.status.toLowerCase().includes("block");
-    const age = item.ageDays === undefined
-      ? blocked ? "block age unknown" : "age unknown"
-      : blocked ? `block state last updated ${item.ageDays}d ago` : item.ageDays === 0 ? "updated today" : `${item.ageDays}d since update`;
-    const blockers = item.blockedBy?.length ? `<br><strong>Blocked by:</strong> ${item.blockedBy.map(esc).join("; ")}` : "";
-    const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
-    const epic = item.epic ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>` : "";
-    const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
-    const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
-    const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
-    return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${epic}${why}${blockers}${worker}</article>`;
-  }).join("")}</div>`;
+  return `<div class="board">${rows
+    .map((item) => {
+      const area = item.area ? `${item.area} · ${item.repo}` : item.repo;
+      const blocked = item.status.toLowerCase().includes("block");
+      const age =
+        item.ageDays === undefined
+          ? blocked
+            ? "block age unknown"
+            : "age unknown"
+          : blocked
+            ? `block state last updated ${item.ageDays}d ago`
+            : item.ageDays === 0
+              ? "updated today"
+              : `${item.ageDays}d since update`;
+      const blockers = item.blockedBy?.length
+        ? `<br><strong>Blocked by:</strong> ${item.blockedBy.map(esc).join("; ")}`
+        : "";
+      const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
+      const epic = item.epic
+        ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+        : "";
+      const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
+      const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
+      const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${epic}${why}${blockers}${worker}</article>`;
+    })
+    .join("")}</div>`;
 }
 
 /** The queue page body is also the Datastar fragment and JSON's source view. */
@@ -3443,7 +3485,14 @@ export function renderQueueBody(view: QueueView): string {
 }
 
 export function renderQueue(view: QueueView, provenance: Provenance, detail?: ProvenanceDetail): string {
-  return layout("Queue", `<h1>Queue visibility</h1>${renderQueueBody(view)}`, provenance, "/queue", "", detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "");
+  return layout(
+    "Queue",
+    `<h1>Queue visibility</h1>${renderQueueBody(view)}`,
+    provenance,
+    "/queue",
+    "",
+    detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "",
+  );
 }
 
 export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
@@ -3506,13 +3555,16 @@ export interface OverviewSummary {
 
 function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
   const poolByRef = new Map(data.pool.map((item) => [item.ref, item]));
-  const rows = new Map<RefKey, {
-    ref: RefKey;
-    title: string;
-    repo: string;
-    url: string;
-    signals: Set<OverviewInProgressSignal>;
-  }>();
+  const rows = new Map<
+    RefKey,
+    {
+      ref: RefKey;
+      title: string;
+      repo: string;
+      url: string;
+      signals: Set<OverviewInProgressSignal>;
+    }
+  >();
   const ensure = (ref: RefKey, title?: string, repo?: string, url?: string) => {
     const project = poolByRef.get(ref);
     const item = data.items?.get(ref);
@@ -3522,7 +3574,7 @@ function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
     const row = {
       ref,
       title: project?.title ?? item?.title ?? title ?? ref,
-      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : repo ?? ""),
+      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : (repo ?? "")),
       url: project?.issueUrl ?? item?.url ?? url ?? refUrl(ref),
       signals: new Set<OverviewInProgressSignal>(),
     };
@@ -3535,7 +3587,8 @@ function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
 
   for (const item of data.pool) {
     if (item.status === "In Progress") signal(item.ref, "project-status", item.title, item.repo, item.issueUrl);
-    if (item.contentKind === "pr" && item.state === "open") signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
+    if (item.contentKind === "pr" && item.state === "open")
+      signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
   }
   for (const goal of data.orchestration?.goals ?? []) {
     for (const task of goal.linedUp) {
@@ -3575,9 +3628,7 @@ function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
   return [...rows.values()]
     .map((row) => {
       const project = poolByRef.get(row.ref);
-      const disagreement = project
-        ? projectDisagreement(project, data.orchestration, additionalInProgressRefs)
-        : null;
+      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
       return {
         ref: row.ref,
         title: row.title,
@@ -3690,15 +3741,20 @@ export function renderOverviewBody(summary: OverviewSummary): string {
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
       : `<p class="muted">${empty}</p>`;
   const inProgressItems = summary.inProgress.length
-    ? `<ul>${summary.inProgress.map((item) => {
-        const signals = item.signals
-          .map((signal) => `<span class="badge ${signal === "open-pr" ? "open" : signal === "active-session" ? "orch" : "src"}">${signal === "project-status" ? "Project Status" : signal === "active-session" ? "Active session" : "Open PR"}</span>`)
-          .join(" ");
-        const clash = item.disagreement
-          ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(item.disagreement.project)} · derived: ${esc(item.disagreement.derived)}</span>`
-          : "";
-        return `<li><a href="${esc(item.url)}">${esc(item.title)}</a> <span class="muted">${esc(item.repo)}</span> ${signals}${clash}</li>`;
-      }).join("")}</ul>`
+    ? `<ul>${summary.inProgress
+        .map((item) => {
+          const signals = item.signals
+            .map(
+              (signal) =>
+                `<span class="badge ${signal === "open-pr" ? "open" : signal === "active-session" ? "orch" : "src"}">${signal === "project-status" ? "Project Status" : signal === "active-session" ? "Active session" : "Open PR"}</span>`,
+            )
+            .join(" ");
+          const clash = item.disagreement
+            ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(item.disagreement.project)} · derived: ${esc(item.disagreement.derived)}</span>`
+            : "";
+          return `<li><a href="${esc(item.url)}">${esc(item.title)}</a> <span class="muted">${esc(item.repo)}</span> ${signals}${clash}</li>`;
+        })
+        .join("")}</ul>`
     : `<p class="muted">Nothing in progress from the Project, active-session, or open-PR signals.</p>`;
   return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
 <h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
@@ -5769,11 +5825,11 @@ const AA_COLLECTOR_CADENCE_MS = 5 * 60_000;
 function aaFreshnessChips(detail: ProvenanceDetail | undefined, section: AaFeedSection | null): string {
   if (!detail) return "";
   const aaFacet = detail.aa;
-  const olderThanOneCycle = aaFacet.state === "live" && aaFacet.ageMs !== undefined && aaFacet.ageMs > AA_COLLECTOR_CADENCE_MS;
+  const olderThanOneCycle =
+    aaFacet.state === "live" && aaFacet.ageMs !== undefined && aaFacet.ageMs > AA_COLLECTOR_CADENCE_MS;
   const retainedAfterFailure = section?.status === "ok" && section.stale === true;
-  const chipDetail: ProvenanceDetail = olderThanOneCycle || retainedAfterFailure
-    ? { ...detail, aa: { ...aaFacet, state: "stale" } }
-    : detail;
+  const chipDetail: ProvenanceDetail =
+    olderThanOneCycle || retainedAfterFailure ? { ...detail, aa: { ...aaFacet, state: "stale" } } : detail;
   return freshnessChips(chipDetail, ["aa"]);
 }
 
@@ -5818,9 +5874,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
     : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
   const catalog = s.catalog;
   const feedAge = detail?.aa.ageMs === undefined ? "unavailable" : ageMsText(detail.aa.ageMs);
-  const aaTabAge = detail
-    ? `<p class="muted" data-aa-age>AA data age: ${esc(feedAge)} (fleet-feed age).</p>`
-    : "";
+  const aaTabAge = detail ? `<p class="muted" data-aa-age>AA data age: ${esc(feedAge)} (fleet-feed age).</p>` : "";
   const catalogTabAge = detail
     ? catalog
       ? `<p class="muted" data-catalog-age>Model catalog age: ${esc(feedAge)} (fleet-feed age; catalog and AA are read in the same collector run; no separate catalog timestamp is carried).</p>`

@@ -10,17 +10,12 @@ import { join } from "node:path";
 
 const script = join(import.meta.dir, "../scripts/record-claude-launch.ts");
 
-async function runScript(
-  args: string[],
-): Promise<{ code: number; stderr: string; stdout: string }> {
+async function runScript(args: string[]): Promise<{ code: number; stderr: string; stdout: string }> {
   const proc = Bun.spawn([process.execPath, script, ...args], {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   return { code: await proc.exited, stdout, stderr };
 }
 
@@ -58,12 +53,18 @@ describe("record-claude-launch flag-as-value refusal (#3415)", () => {
     try {
       const out = join(dir, "records.jsonl");
       const { code } = await runScript([
-        "--file", out,
-        "--label", "Slice 3 builder",
-        "--id", "claude-ctl",
-        "--task", "developing-today/code#123",
-        "--task", "developing-today/code#456",
-        "--model", "claude-x",
+        "--file",
+        out,
+        "--label",
+        "Slice 3 builder",
+        "--id",
+        "claude-ctl",
+        "--task",
+        "developing-today/code#123",
+        "--task",
+        "developing-today/code#456",
+        "--model",
+        "claude-x",
       ]);
       expect(code).toBe(0);
       const lines = (await readFile(out, "utf8")).trim().split("\n");

@@ -93,6 +93,7 @@ import {
   getAlertsStore,
   sendTestPush,
   startAlertEngine,
+  toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
 } from "./alerts.ts";
@@ -564,7 +565,6 @@ async function overviewContext() {
   return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
 }
 
-
 // -- Saved views (#1276) -------------------------------------------------
 // A request names a view three ways, in precedence order: explicit
 // vf.* filter params (the shareable-URL form — reproduces the view for
@@ -875,7 +875,11 @@ async function handler(req: Request): Promise<Response> {
           continue;
         }
         if (parsed.value.kind === "triage" && section) {
-          const problem = checkActionAgainstItem(parsed.value, findTierItem(section, parsed.value.objectRef), Date.now());
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
           if (problem) {
             results.push({ index, objectRef, ok: false, error: problem });
             continue;
@@ -970,7 +974,11 @@ async function handler(req: Request): Promise<Response> {
     const { board, items, counts, act } = await boardRender();
     const resolved = await resolveView(url);
     if (!resolved) {
-      return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
+      return html(
+        renderBoard(board, items, prov(), counts, provDetail(), act, {
+          showAllDone: url.searchParams.get("done") === "all",
+        }),
+      );
     }
     const poolByRef = act.poolByRef;
     const keptBoard = board.filter((b) =>
@@ -978,8 +986,16 @@ async function handler(req: Request): Promise<Response> {
     );
     const keptRefs = new Set<string>();
     for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map([...items].filter(([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters)));
-    return html(renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
+    const keptItems = new Map(
+      [...items].filter(
+        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
+      ),
+    );
+    return html(
+      renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
+        showAllDone: url.searchParams.get("done") === "all",
+      }),
+    );
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
@@ -1016,9 +1032,7 @@ async function handler(req: Request): Promise<Response> {
     const orchestration = await source.orchestration().catch(() => null);
     const orchestrationStatus = source.diagnostics?.().orchestration.state;
     const poolRefs = new Set(pool.map((item) => item.ref));
-    const briefRefs = [
-      ...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref)))),
-    ];
+    const briefRefs = [...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref))))];
     const briefs = buildBriefs(pool, {
       comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
       orchestration,
@@ -1036,16 +1050,36 @@ async function handler(req: Request): Promise<Response> {
     const viewQuery = viewParams.toString();
     const annotationsFor = async (rs: typeof rows) =>
       new Map(
-        await Promise.all(rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
+        await Promise.all(
+          rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const),
+        ),
       );
     if (!resolved) {
       return html(
-        renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(rows), viewQuery, briefs),
+        renderRoadmap(
+          rows,
+          items,
+          prov(),
+          grain,
+          await commentsStore.countsDetailed(),
+          provDetail(),
+          reconciliation,
+          drill,
+          await annotationsFor(rows),
+          viewQuery,
+          briefs,
+        ),
       );
     }
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     const keptRows = rows.filter((r) =>
-      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
+      linkedLike(
+        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
+        r.links,
+        items,
+        poolByRef,
+        resolved.filters,
+      ),
     );
     // Codex P2, PR #4013: items linked from a KEPT row keep their
     // metadata (links/badges in roadmapCard) even when they fail the
@@ -1058,7 +1092,19 @@ async function handler(req: Request): Promise<Response> {
       ),
     );
     return html(
-      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(keptRows), viewQuery, briefs),
+      renderRoadmap(
+        keptRows,
+        keptItems,
+        prov(),
+        grain,
+        await commentsStore.countsDetailed(),
+        provDetail(),
+        reconciliation,
+        drill,
+        await annotationsFor(keptRows),
+        viewQuery,
+        briefs,
+      ),
     );
   }
 
@@ -1325,7 +1371,9 @@ async function handler(req: Request): Promise<Response> {
     const keptBoard = board.filter((b) =>
       linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
     );
-    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
+    const keptItems = [...items.values()].filter((it) =>
+      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
+    );
     return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
@@ -1345,9 +1393,17 @@ async function handler(req: Request): Promise<Response> {
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     const keptRows = rows.filter((r) =>
-      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
+      linkedLike(
+        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
+        r.links,
+        items,
+        poolByRef,
+        resolved.filters,
+      ),
     );
-    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
+    const keptItems = [...items.values()].filter((it) =>
+      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
+    );
     const annotatedKeptRows = await Promise.all(
       keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
@@ -1464,12 +1520,12 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/push/subscriptions") {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
-    if (req.method === "GET") return json({ subscriptions: await store.listSubscriptions() });
+    if (req.method === "GET") return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: await store.upsertSubscription(parsed.value) }, 201);
+        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
@@ -1602,16 +1658,17 @@ async function handler(req: Request): Promise<Response> {
       const title = subject.title;
       const links = subject.links;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] = await Promise.all([
-        source.items(refs).catch(() => new Map()),
-        source.comments(refs).catch(() => []),
-        commentsStore.all(),
-        source.registry().catch(() => []),
-        source.projects().catch(() => []),
-        source.orchestration().catch(() => null),
-        actionsStore.all(),
-        roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
-      ]);
+      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] =
+        await Promise.all([
+          source.items(refs).catch(() => new Map()),
+          source.comments(refs).catch(() => []),
+          commentsStore.all(),
+          source.registry().catch(() => []),
+          source.projects().catch(() => []),
+          source.orchestration().catch(() => null),
+          actionsStore.all(),
+          roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
+        ]);
       const briefRefs = refs.filter((ref) => pool.some((item) => item.ref === ref));
       const briefComments = briefRefs.length ? await briefCommentsFor(briefRefs) : [];
       const briefs = buildBriefs(pool, {
@@ -1650,7 +1707,10 @@ async function handler(req: Request): Promise<Response> {
       };
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
-    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
+    return html(
+      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`,
+      404,
+    );
   }
 
   return notFoundResponse(path);

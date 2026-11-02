@@ -102,7 +102,7 @@ export function buildQueueView(input: QueueViewInput): QueueView {
   }): QueueRow => {
     const projectItem = args.ref ? poolByRef.get(args.ref) : undefined;
     const ghItem = args.ref ? itemByRef.get(args.ref) : undefined;
-    const repo = projectItem?.repo ?? (args.ref ? repoForRef(args.ref, args.repo) : args.repo ?? "unknown");
+    const repo = projectItem?.repo ?? (args.ref ? repoForRef(args.ref, args.repo) : (args.repo ?? "unknown"));
     const updatedAt = args.updatedAt ?? projectItem?.updatedAt ?? ghItem?.updatedAt;
     const age = updatedAt ? Date.parse(updatedAt) : NaN;
     const parent = epicFor(projectItem);
@@ -110,11 +110,7 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       id: args.id ?? (args.ref ? `gh:${args.ref}` : `${repo}:${args.title}`),
       title: args.title,
       ...(args.ref ? { ref: args.ref } : {}),
-      url:
-        projectItem?.issueUrl ??
-        ghItem?.url ??
-        args.url ??
-        (args.ref ? refUrl(args.ref, ghItem?.kind) : undefined),
+      url: projectItem?.issueUrl ?? ghItem?.url ?? args.url ?? (args.ref ? refUrl(args.ref, ghItem?.kind) : undefined),
       repo,
       ...(projectItem?.area ? { area: projectItem.area } : {}),
       ...(parent ? { epic: parent } : {}),
@@ -155,78 +151,146 @@ export function buildQueueView(input: QueueViewInput): QueueView {
 
   const inProgress = unique([
     ...input.board
-      .filter((item) => item.status === "in-progress" || item.status === "in-review" ||
-        (item.status === "in-flight" && item.orchStatus === "in-progress"))
-      .map((item) => row({
-        ref: item.links[0]?.ref,
-        title: item.title,
-        repo: item.repo,
-        status: item.orchStatus ?? item.status,
-        updatedAt: item.updatedAt,
-        blockedBy: item.blockedBy,
-        source: item.source,
-        id: item.id,
-        url: item.kaneoUrl,
-      })),
+      .filter(
+        (item) =>
+          item.status === "in-progress" ||
+          item.status === "in-review" ||
+          (item.status === "in-flight" && item.orchStatus === "in-progress"),
+      )
+      .map((item) =>
+        row({
+          ref: item.links[0]?.ref,
+          title: item.title,
+          repo: item.repo,
+          status: item.orchStatus ?? item.status,
+          updatedAt: item.updatedAt,
+          blockedBy: item.blockedBy,
+          source: item.source,
+          id: item.id,
+          url: item.kaneoUrl,
+        }),
+      ),
     ...input.pool
       .filter((item) => {
         const labels = [...(item.labels ?? []), ...(itemByRef.get(item.ref)?.labels ?? [])].map(norm);
-        return statusMatches(item.status, ["in-progress", "in-review", "in-flight"]) ||
-          labels.includes("status/in-progress") || labels.includes("status/in-review");
+        return (
+          statusMatches(item.status, ["in-progress", "in-review", "in-flight"]) ||
+          labels.includes("status/in-progress") ||
+          labels.includes("status/in-review")
+        );
       })
-      .map((item) => row({ ref: item.ref, title: item.title, repo: item.repo, status: item.status ?? "in-progress", updatedAt: item.updatedAt, source: "project-pool", id: item.id })),
+      .map((item) =>
+        row({
+          ref: item.ref,
+          title: item.title,
+          repo: item.repo,
+          status: item.status ?? "in-progress",
+          updatedAt: item.updatedAt,
+          source: "project-pool",
+          id: item.id,
+        }),
+      ),
   ]);
 
   const blocked = unique([
     ...input.board
       .filter((item) => item.orchStatus === "blocked" || item.blockedBy?.length || item.status === "blocked")
-      .map((item) => row({
-        ref: item.links[0]?.ref,
-        title: item.title,
-        repo: item.repo,
-        status: item.orchStatus ?? item.status,
-        updatedAt: item.updatedAt ?? input.orchestration?.generatedAt,
-        blockedBy: item.blockedBy,
-        source: item.source,
-        id: item.id,
-        url: item.kaneoUrl,
-      })),
+      .map((item) =>
+        row({
+          ref: item.links[0]?.ref,
+          title: item.title,
+          repo: item.repo,
+          status: item.orchStatus ?? item.status,
+          updatedAt: item.updatedAt ?? input.orchestration?.generatedAt,
+          blockedBy: item.blockedBy,
+          source: item.source,
+          id: item.id,
+          url: item.kaneoUrl,
+        }),
+      ),
     ...input.pool
       .filter((item) => item.blockedBy?.length || statusMatches(item.status, ["blocked"]))
-      .map((item) => row({
-        ref: item.ref,
-        title: item.title,
-        repo: item.repo,
-        status: item.status ?? "blocked",
-        updatedAt: item.updatedAt,
-        blockedBy: blockersForRefs(item.blockedBy),
-        source: "project-pool",
-        id: item.id,
-      })),
-    ...(input.orchestration ? input.orchestration.goals.flatMap((goal) => goal.linedUp
-      .filter((task) => task.status === "blocked")
-      .map((task) => row({
-        ref: task.ref,
-        title: task.title,
-        repo: repoForRef(task.ref),
-        status: "blocked",
-        updatedAt: input.orchestration?.generatedAt,
-        blockedBy: task.blockedBy?.map((dependency) => `${dependency.task} (${dependency.status})`),
-        worker: task.blockedBy?.map((dependency) => dependency.workerLabel).filter(Boolean).join(", ") || undefined,
-        source: "orchestration",
-      }))) : []),
+      .map((item) =>
+        row({
+          ref: item.ref,
+          title: item.title,
+          repo: item.repo,
+          status: item.status ?? "blocked",
+          updatedAt: item.updatedAt,
+          blockedBy: blockersForRefs(item.blockedBy),
+          source: "project-pool",
+          id: item.id,
+        }),
+      ),
+    ...(input.orchestration
+      ? input.orchestration.goals.flatMap((goal) =>
+          goal.linedUp
+            .filter((task) => task.status === "blocked")
+            .map((task) =>
+              row({
+                ref: task.ref,
+                title: task.title,
+                repo: repoForRef(task.ref),
+                status: "blocked",
+                updatedAt: input.orchestration?.generatedAt,
+                blockedBy: task.blockedBy?.map((dependency) => `${dependency.task} (${dependency.status})`),
+                worker:
+                  task.blockedBy
+                    ?.map((dependency) => dependency.workerLabel)
+                    .filter(Boolean)
+                    .join(", ") || undefined,
+                source: "orchestration",
+              }),
+            ),
+        )
+      : []),
   ]);
 
   const doneRecently = unique([
     ...input.board
       .filter((item) => item.status === "done" && !isRetiredDoneTableTitle(item.title) && recent(item.updatedAt, nowMs))
-      .map((item) => row({ ref: item.links[0]?.ref, title: item.title, repo: item.repo, status: "done", updatedAt: item.updatedAt, source: item.source, id: item.id, url: item.kaneoUrl })),
+      .map((item) =>
+        row({
+          ref: item.links[0]?.ref,
+          title: item.title,
+          repo: item.repo,
+          status: "done",
+          updatedAt: item.updatedAt,
+          source: item.source,
+          id: item.id,
+          url: item.kaneoUrl,
+        }),
+      ),
     ...input.pool
-      .filter((item) => item.contentKind === "pr" && item.state === "merged" && !isRetiredDoneTableTitle(item.title) && recent(item.updatedAt, nowMs))
-      .map((item) => row({ ref: item.ref, title: item.title, repo: item.repo, status: "merged", updatedAt: item.updatedAt, source: "project-pool", id: item.id })),
+      .filter(
+        (item) =>
+          item.contentKind === "pr" &&
+          item.state === "merged" &&
+          !isRetiredDoneTableTitle(item.title) &&
+          recent(item.updatedAt, nowMs),
+      )
+      .map((item) =>
+        row({
+          ref: item.ref,
+          title: item.title,
+          repo: item.repo,
+          status: "merged",
+          updatedAt: item.updatedAt,
+          source: "project-pool",
+          id: item.id,
+        }),
+      ),
     ...[...itemByRef.values()]
-      .filter((item) => item.kind === "pr" && item.state === "merged" && !isRetiredDoneTableTitle(item.title) && recent(item.updatedAt, nowMs))
-      .map((item) => row({ ref: item.ref, title: item.title, status: "merged", updatedAt: item.updatedAt, source: "github" })),
+      .filter(
+        (item) =>
+          item.kind === "pr" &&
+          item.state === "merged" &&
+          !isRetiredDoneTableTitle(item.title) &&
+          recent(item.updatedAt, nowMs),
+      )
+      .map((item) =>
+        row({ ref: item.ref, title: item.title, status: "merged", updatedAt: item.updatedAt, source: "github" }),
+      ),
   ]);
 
   const nextCandidates: { row: QueueRow; horizonRank: number; priorityRank: number; sequence: number }[] = [];
@@ -243,32 +307,42 @@ export function buildQueueView(input: QueueViewInput): QueueView {
   for (const goal of input.orchestration?.goals ?? []) {
     for (const task of goal.linedUp) {
       if (task.status !== "queued") continue;
-      addNext({
-        ref: task.ref,
-        title: task.title,
-        repo: repoForRef(task.ref),
-        status: "queued",
-        updatedAt: input.orchestration?.generatedAt,
-        blockedBy: task.blockedBy?.map((dependency) => `${dependency.task} (${dependency.status})`),
-        worker: task.blockedBy?.map((dependency) => dependency.workerLabel).filter(Boolean).join(", ") || undefined,
-        why: task.horizonWhy,
-        source: "orchestration",
-      }, task.horizon);
+      addNext(
+        {
+          ref: task.ref,
+          title: task.title,
+          repo: repoForRef(task.ref),
+          status: "queued",
+          updatedAt: input.orchestration?.generatedAt,
+          blockedBy: task.blockedBy?.map((dependency) => `${dependency.task} (${dependency.status})`),
+          worker:
+            task.blockedBy
+              ?.map((dependency) => dependency.workerLabel)
+              .filter(Boolean)
+              .join(", ") || undefined,
+          why: task.horizonWhy,
+          source: "orchestration",
+        },
+        task.horizon,
+      );
     }
   }
   for (const item of input.pool) {
     if (!statusMatches(item.status, ["queued", "next", "to-do", "todo"])) continue;
-    addNext({
-      ref: item.ref,
-      title: item.title,
-      repo: item.repo,
-      status: item.status ?? "queued",
-      updatedAt: item.updatedAt,
-      blockedBy: blockersForRefs(item.blockedBy),
-      why: item.horizon ? `Project horizon: ${item.horizon}` : "Queued in the Project pool",
-      source: "project-pool",
-      id: item.id,
-    }, item.horizon ?? undefined);
+    addNext(
+      {
+        ref: item.ref,
+        title: item.title,
+        repo: item.repo,
+        status: item.status ?? "queued",
+        updatedAt: item.updatedAt,
+        blockedBy: blockersForRefs(item.blockedBy),
+        why: item.horizon ? `Project horizon: ${item.horizon}` : "Queued in the Project pool",
+        source: "project-pool",
+        id: item.id,
+      },
+      item.horizon ?? undefined,
+    );
   }
   for (const item of input.board) {
     if (item.status !== "in-flight" || item.orchStatus !== "queued") continue;
@@ -285,9 +359,11 @@ export function buildQueueView(input: QueueViewInput): QueueView {
       url: item.kaneoUrl,
     });
   }
-  const nextUp = unique(nextCandidates
-    .sort((a, b) => a.horizonRank - b.horizonRank || a.priorityRank - b.priorityRank || a.sequence - b.sequence)
-    .map((candidate) => candidate.row));
+  const nextUp = unique(
+    nextCandidates
+      .sort((a, b) => a.horizonRank - b.horizonRank || a.priorityRank - b.priorityRank || a.sequence - b.sequence)
+      .map((candidate) => candidate.row),
+  );
 
   return {
     generatedAt: now.toISOString(),

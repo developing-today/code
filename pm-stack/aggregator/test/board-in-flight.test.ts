@@ -144,18 +144,14 @@ describe("inFlightBoardItems", () => {
       ]),
       existing,
     );
-    expect(out.map((i) => i.title)).toEqual([
-      "code #944 fix - PR #985 opened",
-      "code #968 - queue task 1116 revived",
-    ]);
+    expect(out.map((i) => i.title)).toEqual(["code #944 fix - PR #985 opened", "code #968 - queue task 1116 revived"]);
     expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/code#985"]);
   });
 
   test("removes only refs already represented on Kaneo cards", () => {
-    const out = inFlightBoardItems(
-      section([task("code #944 and openchamber #492 implementation", "in-progress")]),
-      [kaneoCard("Some finished card", ["developing-today/code#944"])],
-    );
+    const out = inFlightBoardItems(section([task("code #944 and openchamber #492 implementation", "in-progress")]), [
+      kaneoCard("Some finished card", ["developing-today/code#944"]),
+    ]);
 
     expect(out).toHaveLength(1);
     expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/openchamber#492"]);

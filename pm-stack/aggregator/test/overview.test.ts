@@ -123,8 +123,24 @@ const data: OverviewData = {
   },
   health,
   board: [
-    { id: "gh:a", title: "Shipped thing", repo: "developing-today/code", source: "github", status: "done", links: [], updatedAt: "2026-10-29T01:00:00Z" },
-    { id: "gh:b", title: "Older done thing", repo: "developing-today/code", source: "github", status: "done", links: [], updatedAt: "2026-10-28T01:00:00Z" },
+    {
+      id: "gh:a",
+      title: "Shipped thing",
+      repo: "developing-today/code",
+      source: "github",
+      status: "done",
+      links: [],
+      updatedAt: "2026-10-29T01:00:00Z",
+    },
+    {
+      id: "gh:b",
+      title: "Older done thing",
+      repo: "developing-today/code",
+      source: "github",
+      status: "done",
+      links: [],
+      updatedAt: "2026-10-28T01:00:00Z",
+    },
     { id: "gh:c", title: "Moving thing", repo: "dezren39/nix", source: "github", status: "in-progress", links: [] },
   ],
 };
@@ -243,16 +259,18 @@ describe("overview reconciled in-progress set (#1162)", () => {
       provenance: { sources: [] },
       tiers: { needsDrew: [], needsOrchestrator: [] },
       dependencies: [],
-      goals: [{
-        goalId: null,
-        goal: "test goal",
-        momentum: "moving",
-        summary: "test",
-        linedUp: [{ title: "Four", ref: issueRef, status: "in-progress", horizon: "today", horizonWhy: "test" }],
-        progressedSinceLastRun: [],
-        stalled: [],
-        gaps: [],
-      }],
+      goals: [
+        {
+          goalId: null,
+          goal: "test goal",
+          momentum: "moving",
+          summary: "test",
+          linedUp: [{ title: "Four", ref: issueRef, status: "in-progress", horizon: "today", horizonWhy: "test" }],
+          progressedSinceLastRun: [],
+          stalled: [],
+          gaps: [],
+        },
+      ],
       actions: [],
     } as OrchestrationSection,
   };
@@ -289,8 +307,17 @@ describe("overview Codex fixes (PR 2424 review)", () => {
     expect(summary.needsYou.tierState).toBe("absent");
     expect(summary.needsYou.top).toEqual([]);
     const html = renderOverview(absent, {
-      board: "x", roadmap: "x", items: "x", comments: "x", quota: "x", usage: "x",
-      attention: "x", orchestration: "x", dns: "x", registry: "x", aa: "x",
+      board: "x",
+      roadmap: "x",
+      items: "x",
+      comments: "x",
+      quota: "x",
+      usage: "x",
+      attention: "x",
+      orchestration: "x",
+      dns: "x",
+      registry: "x",
+      aa: "x",
     });
     expect(html).toContain("Needs you (unknown)");
     expect(html).not.toContain("Nothing needs you right now.");

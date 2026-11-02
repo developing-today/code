@@ -1040,9 +1040,15 @@ impl std::str::FromStr for SshTarget {
     fn from_str(text: &str) -> anyhow::Result<Self> {
         let (user, rest) = text.rsplit_once('@').unwrap_or(("id", text));
         let port = |digits: &str| {
-            digits
+            anyhow::ensure!(
+                digits.bytes().all(|byte| byte.is_ascii_digit()),
+                "`{digits}` is not a port"
+            );
+            let port = digits
                 .parse::<u16>()
-                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))
+                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))?;
+            anyhow::ensure!(port != 0, "`{digits}` is not a port");
+            Ok(port)
         };
         let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
             let Some((host, tail)) = inner.split_once(']') else {
@@ -1786,10 +1792,15 @@ impl Typing {
 }
 
 /// Terminal text from the world: control characters are dropped, so text from
-/// one participant cannot drive another participant's terminal.
+/// one participant cannot drive another participant's terminal. Unicode
+/// format characters (Cf, per the shared `crate::is_format_char` set) are
+/// dropped for the same reason: a bidi override or zero-width character in
+/// one participant's text could otherwise reorder or falsify the terminal
+/// output around it (design #3455). The accepted cost is that `ZWJ`-joined
+/// emoji render as separate glyphs here; the stored text is untouched.
 fn terminal_text(data: &str) -> String {
     data.chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
         .collect::<String>()
         .replace('\n', "\r\n")
 }
@@ -2462,7 +2473,20 @@ mod tests {
             parse("me@[2001:db8::1]:2222").unwrap(),
             target("me", "2001:db8::1", 2222)
         );
-        for bad in ["", "host:", "host:99999", "::1", "[::1", "@host", "[::1]x"] {
+        for bad in [
+            "",
+            "host:",
+            "host:0",
+            "[::1]:0",
+            "host:+22",
+            "host:-22",
+            "host:٢٢",
+            "host:99999",
+            "::1",
+            "[::1",
+            "@host",
+            "[::1]x",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         // #3267: whitespace, control characters, and `/` in the user or
@@ -2934,6 +2958,21 @@ mod tests {
             terminal_text("a\x1b]52;c;AAAA\x07b\r\nc\td"),
             "a]52;c;AAAAb\r\nc\td"
         );
+    }
+
+    #[test]
+    fn terminal_text_drops_format_characters_but_keeps_layout() {
+        // Bidi overrides and zero-width characters never reach the terminal,
+        // even without any control character present (#3455 Phase 3b).
+        assert_eq!(terminal_text("a\u{202e}b"), "ab");
+        assert_eq!(terminal_text("a\u{200b}b"), "ab");
+        assert_eq!(terminal_text("a\u{feff}b"), "ab");
+        // The shared Cf set is the gate, not a bidi-only subset.
+        assert!(!terminal_text("\u{00ad}").chars().any(|c| c == '\u{00ad}'));
+        // Layout survivors are unchanged: LF/TAB are kept (as CRLF/TAB).
+        assert_eq!(terminal_text("a\nb\tc"), "a\r\nb\tc");
+        // Ordinary text, including non-joiner emoji bases, is byte-identical.
+        assert_eq!(terminal_text("naïve-✦サーバー"), "naïve-✦サーバー");
     }
 
     #[test]

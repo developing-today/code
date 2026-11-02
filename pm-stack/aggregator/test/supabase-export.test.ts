@@ -37,9 +37,33 @@ function freshDoc(overrides: Partial<SupabaseExportDoc> = {}): SupabaseExportDoc
     project: "muse-dev",
     ref: "nltgxorqwxhgfzseiirt",
     metrics: [
-      { id: "db-size", label: "Database size", used: 1.154, limit: 0.5, unit: "gb", source: "management-api:/database/query pg_database_size", flag: "approaching-paid-trigger" },
-      { id: "egress", label: "Egress (cycle)", used: null, limit: 5, unit: "gb", source: "none", detail: "No Management API endpoint reports egress bytes." },
-      { id: "storage", label: "File storage", used: 0, limit: 1, unit: "gb", source: "management-api:/storage/buckets", detail: "0 buckets on the project" },
+      {
+        id: "db-size",
+        label: "Database size",
+        used: 1.154,
+        limit: 0.5,
+        unit: "gb",
+        source: "management-api:/database/query pg_database_size",
+        flag: "approaching-paid-trigger",
+      },
+      {
+        id: "egress",
+        label: "Egress (cycle)",
+        used: null,
+        limit: 5,
+        unit: "gb",
+        source: "none",
+        detail: "No Management API endpoint reports egress bytes.",
+      },
+      {
+        id: "storage",
+        label: "File storage",
+        used: 0,
+        limit: 1,
+        unit: "gb",
+        source: "management-api:/storage/buckets",
+        detail: "0 buckets on the project",
+      },
     ],
     billing: { plan: "free", billedUsd: 0, measured: true, source: "management-api:/billing/addons" },
     scope: [
@@ -83,13 +107,21 @@ describe("applySupabaseExport", () => {
   });
 
   test("billed is the export's measured addon read, not the hardcoded 0", () => {
-    const out = applySupabaseExport(extractSaasServices(VIEW), freshDoc({ billing: { plan: "free", billedUsd: 25, measured: true } }), NOW);
+    const out = applySupabaseExport(
+      extractSaasServices(VIEW),
+      freshDoc({ billing: { plan: "free", billedUsd: 25, measured: true } }),
+      NOW,
+    );
     expect(supabaseCard(out).billedUsd).toBe(25);
     expect(supabaseCard(out).plan).toContain("measured 2026-10-29T14:55:00Z");
   });
 
   test("an accepted export without a valid billing measurement clears billed to unknown", () => {
-    const noBilling = applySupabaseExport(extractSaasServices(VIEW), freshDoc({ billing: null as unknown as SupabaseExportDoc["billing"] }), NOW);
+    const noBilling = applySupabaseExport(
+      extractSaasServices(VIEW),
+      freshDoc({ billing: null as unknown as SupabaseExportDoc["billing"] }),
+      NOW,
+    );
     expect(supabaseCard(noBilling).billedUsd).toBeNull();
     expect(supabaseCard(noBilling).sourceClass).toBe("api"); // the rest of the overlay still applied
     expect(metricOf(noBilling, "db-size").used).toBe(1.154);
@@ -111,11 +143,7 @@ describe("applySupabaseExport", () => {
   test("a non-string measuredAt is a no-op before Date.parse coercion", () => {
     const base = extractSaasServices(VIEW);
     const expected = structuredClone(base);
-    const out = applySupabaseExport(
-      base,
-      freshDoc({ measuredAt: ["2026-10-29T14:55:00Z"] as unknown as string }),
-      NOW,
-    );
+    const out = applySupabaseExport(base, freshDoc({ measuredAt: ["2026-10-29T14:55:00Z"] as unknown as string }), NOW);
     expect(out).toEqual(expected);
   });
 
@@ -139,11 +167,7 @@ describe("applySupabaseExport", () => {
   test("a negative limit leaves that metric at its recorded fallback", () => {
     const base = extractSaasServices(VIEW);
     const recordedDb = structuredClone(metricOf(base, "db-size"));
-    const out = applySupabaseExport(
-      base,
-      freshDoc({ metrics: [{ id: "db-size", used: 0.25, limit: -0.5 }] }),
-      NOW,
-    );
+    const out = applySupabaseExport(base, freshDoc({ metrics: [{ id: "db-size", used: 0.25, limit: -0.5 }] }), NOW);
     expect(metricOf(out, "db-size")).toEqual(recordedDb);
   });
 

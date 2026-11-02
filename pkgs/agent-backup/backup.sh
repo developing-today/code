@@ -35,7 +35,7 @@ DEST="$ROOT/$STAMP"
 # cleanup below is then limited to a directory this invocation created.
 suffix=0
 while ! mkdir -m 700 -- "$DEST" 2>/dev/null; do
-  if [[ ! -e "${DEST}" ]] && [[ ! -L "${DEST}" ]]; then
+  if [[ ! -e ${DEST} ]] && [[ ! -L ${DEST} ]]; then
     echo "agent-backup: cannot create snapshot directory ${DEST}" >&2
     exit 1
   fi

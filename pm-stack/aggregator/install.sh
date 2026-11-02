@@ -91,39 +91,39 @@ elif [ "$SRC_HASH" = "$DEPLOYED_TREE_HASH" ] && [ "$SRC_INPUTS" != "$DEPLOYED_IN
 fi
 
 if [ "$CHANGED" -eq 1 ]; then
-# Service env and runtime data paths. The old ~/pm-stack/aggregator
-# symlink is neither replaced nor removed here; older sandbox feed
-# deployments can keep using it until their update and delivery are
-# verified.
-umask 077
-ENV_FILE="$STATE_DIR/.env"
-{
-  echo "PM_AGG_BUILD_VERSION=${BUILD_VERSION}"
-  echo "PM_AGG_SOURCE=live"
-  echo "PM_AGG_HOSTS=127.0.0.1,${TAILNET_IP}"
-  echo "PM_AGG_FEED_FILE=${STATE_DIR}/fleet-feed.json"
-  echo "PM_AGG_COMMENTS_FILE=${STATE_DIR}/comments.json"
-  echo "PM_AGG_ACTIONS_FILE=${STATE_DIR}/actions.json"
-  echo "PM_AGG_REGISTRY_FILE=${STATE_DIR}/registry.json"
-  echo "PM_AGG_SNAPSHOTS_DIR=${STATE_DIR}/snapshots"
-  echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
-  echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
-  echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
-  for key in kaneo_admin_email:KANEO_ADMIN_EMAIL kaneo_admin_password:KANEO_ADMIN_PASSWORD grist_api_key:GRIST_API_KEY; do
-    sops_key="${key%%:*}"
-    env_name="${key##*:}"
-    value="$(sops -d --extract "[\"${sops_key}\"]" "$SOPS")"
-    echo "${env_name}=${value}"
-  done
-} >"$ENV_FILE"
-chmod 600 "$ENV_FILE"
+  # Service env and runtime data paths. The old ~/pm-stack/aggregator
+  # symlink is neither replaced nor removed here; older sandbox feed
+  # deployments can keep using it until their update and delivery are
+  # verified.
+  umask 077
+  ENV_FILE="$STATE_DIR/.env"
+  {
+    echo "PM_AGG_BUILD_VERSION=${BUILD_VERSION}"
+    echo "PM_AGG_SOURCE=live"
+    echo "PM_AGG_HOSTS=127.0.0.1,${TAILNET_IP}"
+    echo "PM_AGG_FEED_FILE=${STATE_DIR}/fleet-feed.json"
+    echo "PM_AGG_COMMENTS_FILE=${STATE_DIR}/comments.json"
+    echo "PM_AGG_ACTIONS_FILE=${STATE_DIR}/actions.json"
+    echo "PM_AGG_REGISTRY_FILE=${STATE_DIR}/registry.json"
+    echo "PM_AGG_SNAPSHOTS_DIR=${STATE_DIR}/snapshots"
+    echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
+    echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
+    echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
+    for key in kaneo_admin_email:KANEO_ADMIN_EMAIL kaneo_admin_password:KANEO_ADMIN_PASSWORD grist_api_key:GRIST_API_KEY; do
+      sops_key="${key%%:*}"
+      env_name="${key##*:}"
+      value="$(sops -d --extract "[\"${sops_key}\"]" "$SOPS")"
+      echo "${env_name}=${value}"
+    done
+  } >"$ENV_FILE"
+  chmod 600 "$ENV_FILE"
 
-cp "$UNIT_SRC" "$UNIT_DST"
+  cp "$UNIT_SRC" "$UNIT_DST"
 
-cd "$SRC"
-bun install --silent
-echo "$SRC_HASH" > "$STATE_DIR/.deploy-tree-hash"
-echo "$SRC_INPUTS" > "$STATE_DIR/.deploy-inputs-hash"
+  cd "$SRC"
+  bun install --silent
+  echo "$SRC_HASH" >"$STATE_DIR/.deploy-tree-hash"
+  echo "$SRC_INPUTS" >"$STATE_DIR/.deploy-inputs-hash"
 fi
 
 systemctl --user daemon-reload
