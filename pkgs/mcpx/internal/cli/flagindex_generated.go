@@ -27,6 +27,9 @@ var handFlagIndex = map[string][]HandFlag{
 		{Name: "exclude", Usage: "drop operations matching these words"},
 		{Name: "methods", Usage: "HTTP methods to expose; 'all' for every one (default: read-only)"},
 		{Name: "deprecated", Usage: "include operations the document marks deprecated"},
+		{Name: "description", Usage: "one line shown beside the namespace"},
+		{Name: "header", Usage: "a header sent with every operation call, as KEY=VALUE (repeatable)"},
+		{Name: "replace", Usage: "overwrite a declaration of the same name"},
 	},
 	"batch": {
 		{Name: "session", Usage: "session key for stateful servers"},

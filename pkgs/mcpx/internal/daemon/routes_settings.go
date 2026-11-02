@@ -42,6 +42,8 @@ func (s *Server) routesSettings(mux *http.ServeMux) {
 	s.route(mux, "DELETE /v1/servers/{name}", s.handleServersRemove)
 	s.route(mux, "POST /v1/adapters", s.handleAdaptersAdd)
 	s.route(mux, "DELETE /v1/adapters/{name}", s.handleAdaptersRemove)
+	s.route(mux, "POST /v1/apis", s.handleAPIsAdd)
+	s.route(mux, "DELETE /v1/apis/{name}", s.handleAPIsRemove)
 }
 
 // Settings exposes the daemon's resolved configuration.
@@ -989,6 +991,183 @@ func (s *Server) handleAdaptersRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := config.RemoveAdapterEntry(path, name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	added, removed, rerr := s.reloadConfig()
+	if rerr != nil {
+		writeErr(w, http.StatusInternalServerError, rerr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "written": path, "added": added, "removed": removed,
+	})
+}
+
+// ---- live API add/remove (#2118) ----
+//
+// The same persist + reload shape as adapters, for the declarations
+// paths.apis names: a declaration written to the first file paths.apis
+// names is one the reload finds, so the API is callable immediately and
+// still there after a restart. The declaration type lives here rather
+// than in internal/cli (whose APISpec it mirrors field for field)
+// because the CLI imports the daemon, so the daemon cannot import the
+// CLI back; the file shape is the contract both sides share, pinned by
+// the loadAPIFiles bare-array and {"apis": [...]} cases.
+
+// apiDeclaration is one entry of a paths.apis file, as the live-add
+// request carries it.
+type apiDeclaration struct {
+	Name              string            `json:"name"`
+	Spec              string            `json:"spec"`
+	BaseURL           string            `json:"baseUrl,omitempty"`
+	Include           []string          `json:"include,omitempty"`
+	Exclude           []string          `json:"exclude,omitempty"`
+	Methods           []string          `json:"methods,omitempty"`
+	IncludeDeprecated bool              `json:"includeDeprecated,omitempty"`
+	Headers           map[string]string `json:"headers,omitempty"`
+	Description       string            `json:"description,omitempty"`
+}
+
+// Validate checks a declaration before anything persists it.
+//
+// Only presence is checked here, the way adapters check the command's
+// presence rather than probing it: whether the document loads and the
+// operations answer is the call's question, not the declaration's.
+func (d apiDeclaration) Validate() error {
+	if strings.TrimSpace(d.Name) == "" {
+		return fmt.Errorf("an API declaration needs a name")
+	}
+	if strings.TrimSpace(d.Spec) == "" {
+		return fmt.Errorf("%s: no spec: an OpenAPI document path or URL", d.Name)
+	}
+	return nil
+}
+
+type addAPIReq struct {
+	apiDeclaration
+	Replace bool `json:"replace"`
+}
+
+func (s *Server) apiFiles() []string {
+	var out []string
+	for _, p := range splitPathList(s.set.String("paths.apis")) {
+		if p != "" && p != settings.NullMarker {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *Server) handleAPIsAdd(w http.ResponseWriter, r *http.Request) {
+	var req addAPIReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body,
+		s.set.Bytes("http.bodyLimit"))).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := req.apiDeclaration.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// The same transaction rule as adapters: lookup, write and reload
+	// under reloadMu, so two racing live changes cannot read the same
+	// declarations and overwrite each other's file edit.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	files := s.apiFiles()
+	if len(files) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf(
+			"no apis file is configured: set paths.apis to a declaration file first "+
+				"(for example `mcpx settings set paths.apis .mcpx/apis.json`), "+
+				"so the declaration written here is one a reload will find"))
+		return
+	}
+	raw, err := json.Marshal(req.apiDeclaration)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	// The name is looked up across every configured file, not just the
+	// destination: augmentAPIs refuses a name two files declare when the
+	// reload re-runs it, so writing a second definition into the first
+	// file would persist a duplicate the next reload rejects. A
+	// replacement edits the file that defines the API, like remove does.
+	path := files[0]
+	if existing, found, err := config.APIDefinedIn(files, req.Name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	} else if found {
+		if !req.Replace {
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"%s already declares API %q; remove it first or pick another name",
+				existing, req.Name))
+			return
+		}
+		path = existing
+	}
+	// The name must not collide with a server namespace that is not this
+	// API: augmentAPIs refuses to load an API whose name a configured
+	// server or adapter already owns, so persisting one would return 500
+	// on the reload while leaving a declaration that breaks every later
+	// reload and daemon start. API-generated servers carry the
+	// declaration fingerprint in their environment; one of those under
+	// this name is this API itself (a replace), anything else -- a
+	// configured server, an adapter -- is a collision.
+	if cfg := s.currentConfig(); cfg != nil {
+		want := config.SanitizeNamespace(req.Name)
+		for name, srv := range cfg.MCPServers {
+			if srv == nil || config.SanitizeNamespace(name) != want {
+				continue
+			}
+			if name == req.Name {
+				if _, isAPI := srv.Env["MCPX_API_DECLARATION_SHA256"]; isAPI {
+					continue
+				}
+			}
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"%q resolves to namespace %q, already used by configured server %q; pick another API name",
+				req.Name, want, name))
+			return
+		}
+	}
+	if err := config.AddAPIEntry(path, entry, req.Replace); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	added, removed, rerr := s.reloadConfig()
+	if rerr != nil {
+		writeErr(w, http.StatusInternalServerError, rerr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": req.Name, "written": path, "added": added, "removed": removed,
+	})
+}
+
+func (s *Server) handleAPIsRemove(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	// Same transaction rule as add: lookup, write and reload under
+	// reloadMu, so a concurrent add cannot resurrect what this removes
+	// (or be discarded by it).
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	path, found, err := config.APIDefinedIn(s.apiFiles(), name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf(
+			"no configured apis file declares %q", name))
+		return
+	}
+	if _, err := config.RemoveAPIEntry(path, name); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
