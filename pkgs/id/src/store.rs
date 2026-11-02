@@ -45,7 +45,7 @@
 //! # }
 //! ```
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use iroh_base::SecretKey;
 use iroh_blobs::{
     api::Store,
