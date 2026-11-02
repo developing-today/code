@@ -605,7 +605,10 @@ mod tests {
     fn test_causal_order_places_a_long_chain_in_order() {
         let nodes: Vec<Node> = (0..64u8)
             .rev()
-            .map(|n| node(n, if n == 0 { &[][..] } else { &[n - 1][..] }))
+            .map(|n| {
+                let after: Vec<u8> = if n == 0 { Vec::new() } else { vec![n - 1] };
+                node(n, &after)
+            })
             .collect();
         let position: HashMap<Hash, usize> = nodes
             .iter()
