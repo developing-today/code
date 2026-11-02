@@ -11,6 +11,7 @@ import {
   sanitizeCollectionError,
   sanitizeQuotaView,
   sanitizeFeedMetadata,
+  sanitizeRegistry,
   sanitizeSubscriptions,
 } from "../src/feed.ts";
 import { renderQuota } from "../src/render.ts";
@@ -332,6 +333,50 @@ describe("feed subscriptions sanitization (#2446)", () => {
     const clean = await loadWithSubs([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptionsDropped).toBeUndefined();
+  });
+});
+
+describe("feed registry sanitization (#2539)", () => {
+  const RECORD = { id: "ses-1", source: "claude-code", label: "Muse run" };
+  const feedWithRegistry = (registry: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    registry,
+  });
+  const loadWithRegistry = async (registry: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-registry-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithRegistry(registry)));
+    return loadFeed(file);
+  };
+
+  test("preserves an absent section and a well-formed registry", async () => {
+    expect(sanitizeRegistry(undefined)).toEqual({ dropped: 0 });
+    const absent = await loadWithRegistry(undefined);
+    expect(absent?.registry).toBeUndefined();
+    expect(absent?.registryDropped).toBeUndefined();
+
+    expect(sanitizeRegistry([RECORD])).toEqual({ rows: [RECORD], dropped: 0 });
+    const clean = await loadWithRegistry([RECORD]);
+    expect(clean?.registry).toEqual([RECORD]);
+    expect(clean?.registryDropped).toBeUndefined();
+    expect(clean?.quota.pools).toEqual([]);
+  });
+
+  test("drops malformed containers and rows without rejecting the feed", async () => {
+    for (const malformed of ["bad", { registry: "bad" }, 42, [null, RECORD]]) {
+      const loaded = await loadWithRegistry(malformed);
+      expect(loaded).not.toBeNull();
+      expect(loaded?.registry).toEqual(Array.isArray(malformed) ? [RECORD] : []);
+      expect(loaded?.registryDropped).toBe(1);
+      expect(loaded?.quota.pools).toEqual([]);
+    }
+    expect(sanitizeRegistry("bad")).toEqual({ rows: [], dropped: 1 });
+    expect(sanitizeRegistry({ registry: "bad" })).toEqual({ rows: [], dropped: 1 });
+    expect(sanitizeRegistry(42)).toEqual({ rows: [], dropped: 1 });
+    expect(sanitizeRegistry([null])).toEqual({ rows: [], dropped: 1 });
   });
 });
 describe("isChargeRow + loadFeed charges sanitization (#2445)", () => {
