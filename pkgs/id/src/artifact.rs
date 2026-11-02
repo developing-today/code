@@ -34,6 +34,7 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use unicode_normalization::is_nfc;
 
 use crate::connectivity::{DIAL_TIMEOUT, connect, within};
 use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
@@ -362,6 +363,9 @@ impl SignedArtifact {
                 if body.media_type.is_empty() || body.media_type.len() > 128 {
                     return Err(forbidden("a document names its media type"));
                 }
+                if !is_nfc(&body.media_type) {
+                    return Err(forbidden("a document's media type is not NFC"));
+                }
                 let size = serde_json::to_vec(&body.content)
                     .map_err(|error| forbidden(format!("{error}")))?
                     .len();
@@ -380,8 +384,14 @@ impl SignedArtifact {
                 if body.name.is_empty() || body.name.len() > 64 {
                     return Err(forbidden("a tag's name is 1 to 64 bytes"));
                 }
+                if !is_nfc(&body.name) {
+                    return Err(forbidden("a tag's name is not NFC"));
+                }
                 if body.value.as_ref().is_some_and(|value| value.len() > 256) {
                     return Err(forbidden("a tag's value is at most 256 bytes"));
+                }
+                if body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
+                    return Err(forbidden("a tag's value is not NFC"));
                 }
                 Ok(Some(Kind::Tag(body)))
             }
@@ -1798,6 +1808,71 @@ mod tests {
             .unwrap();
         assert_eq!(stored, Stored::New);
         assert_eq!(directory.artifacts().head_seq(&public(1)), 1);
+    }
+
+    #[test]
+    fn parsed_document_media_type_must_be_nfc() {
+        let nfc = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Document(Document {
+                    media_type: "application/json".to_owned(),
+                    content: json!({ "text": "ok" }),
+                }),
+            )
+            .unwrap();
+        assert!(matches!(nfc.parsed(), Ok(Some(Kind::Document(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Document(Document {
+                    media_type: "application/jso\u{301}n".to_owned(),
+                    content: json!({ "text": "ok" }),
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
+    }
+
+    #[test]
+    fn parsed_tag_name_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Tag(Tag {
+                    subject: public(2),
+                    name: "e\u{301}".to_owned(),
+                    value: None,
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
+    }
+
+    #[test]
+    fn parsed_tag_value_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Tag(Tag {
+                    subject: public(2),
+                    name: "author".to_owned(),
+                    value: Some("e\u{301}".to_owned()),
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
     }
 
     #[tokio::test]
