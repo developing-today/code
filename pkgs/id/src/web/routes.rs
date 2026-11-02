@@ -2522,6 +2522,42 @@ mod upload_router_tests {
         (create_router(state.clone()), state, dir, endpoint, docs)
     }
 
+    #[tokio::test]
+    async fn public_entry_point_honours_a_configured_binding() {
+        // A host that has already read its app manifest selects the
+        // binding through the public API alone (Codex P2 on PR #3894):
+        // parse [interfaces.web] with the re-exported parser and build
+        // the app router with the re-exported constructor.
+        let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let interface = crate::web::web_interface_from_app_toml(
+            "[interfaces.web]\nmode = \"adapter\"\nroute = \"/arena\"\nsocket = \"/ws/arena\"\n",
+        )
+        .unwrap()
+        .unwrap();
+        let app = crate::web::create_router_for_app(state, &interface);
+        let arena = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/arena")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(arena.status(), axum::http::StatusCode::NOT_FOUND);
+        let world = app
+            .oneshot(
+                Request::builder()
+                    .uri("/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(world.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
     fn multipart_body(file_bytes: &[u8]) -> Vec<u8> {
         multipart_body_named("photo.png", "image/png", file_bytes)
     }

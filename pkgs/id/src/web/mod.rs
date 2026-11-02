@@ -79,7 +79,8 @@ pub use collab::CollabState;
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
-pub use routes::create_router;
+pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
+pub use routes::{create_router, create_router_for_app};
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
