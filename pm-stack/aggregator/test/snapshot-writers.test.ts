@@ -292,6 +292,41 @@ describe("DeepSeek CNY balance (#1052)", () => {
     expect(recordsFromDeepseekBalance("### DeepSeek\n- balance: ¥44.63\n", "b")).toEqual([]);
   });
 
+  test("an impossible on-line day falls back to Last checked and passes the gate (#3379)", () => {
+    const doc = `# Quota view
+
+### DeepSeek
+- **PAYG balance:** ¥44.63 (2026-02-30 read), parked.
+- **Last checked:** 2026-10-30 refresh
+`;
+    const recs = recordsFromDeepseekBalance(doc, "b");
+    expect(recs).toHaveLength(1);
+    expect(recs[0].ts).toBe(dayTs("2026-10-30"));
+    expect(isSnapshotRecord(recs[0])).toBe(true);
+  });
+
+  test("an impossible on-line month falls back to Last checked and passes the gate (#3379)", () => {
+    const doc = `# Quota view
+
+### DeepSeek
+- **PAYG balance:** ¥44.63 (2026-13-01 read), parked.
+- **Last checked:** 2026-10-30 refresh
+`;
+    const recs = recordsFromDeepseekBalance(doc, "b");
+    expect(recs).toHaveLength(1);
+    expect(recs[0].ts).toBe(dayTs("2026-10-30"));
+    expect(isSnapshotRecord(recs[0])).toBe(true);
+  });
+
+  test("an impossible on-line date with no other valid date yields no record (#3379)", () => {
+    expect(recordsFromDeepseekBalance("### DeepSeek\n- **PAYG balance:** ¥44.63 (2026-02-30 read)\n", "b")).toEqual(
+      [],
+    );
+    expect(recordsFromDeepseekBalance("### DeepSeek\n- **PAYG balance:** ¥44.63 (2026-13-01 read)\n", "b")).toEqual(
+      [],
+    );
+  });
+
   test("a cny record validates, round-trips the store, and no DeepSeek record is usd", async () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-cny-"));
     try {
