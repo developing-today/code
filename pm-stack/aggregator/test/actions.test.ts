@@ -331,6 +331,26 @@ describe("attention action controls (#1152/#1156)", () => {
     expect(html).toContain("/api/actions"); // ACTION_SCRIPT is on the page
   });
 
+  test("bulk triage (#1277): queue cards carry picks and the bulk bar posts to /api/actions/batch", async () => {
+    const src = fixtureSource();
+    const view = buildAttention(await src.attention(), SECTION, NOW);
+    const html = renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
+      identities,
+      actionsByObject: new Map(),
+    });
+    expect(html).toContain('id="bulkbar"');
+    expect(html).toContain('class="bulkpick"');
+    expect(html).toContain('data-object="orch:goal_plaid"');
+    expect(html).toContain("Review batch");
+    expect(html).toContain("/api/actions/batch"); // BULK_SCRIPT is on the page
+    // Without identities there is no action surface \u2014 and no bulk bar.
+    const anon = renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
+      actionsByObject: new Map(),
+    });
+    expect(anon).not.toContain('id="bulkbar"');
+    expect(anon).not.toContain('class="bulkpick"');
+  });
+
   test("stale tier source: section-item controls disabled with reason; session items stay enabled", async () => {
     const src = fixtureSource();
     // A stale section still serves its last-published items — exactly
@@ -591,5 +611,63 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
     };
     expect(list.actions.length).toBeGreaterThanOrEqual(1);
     expect(list.pending).toEqual({ triage: 0, statusRequests: 0, session: 0, preference: 0 });
+  });
+
+  test("POST /api/actions/batch: mixed batch records valid items individually, reports failures by ref (#1277)", async () => {
+    const mk = (clientToken: string, over: Record<string, unknown> = {}) => ({
+      clientToken,
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef: "orch:bulk-ok",
+      author: drew,
+      payload: {},
+      ...over,
+    });
+    const res = await post("/api/actions/batch", {
+      actions: [
+        mk("ct-batch-ok-1"),
+        mk("ct-batch-ok-2", { objectRef: "orch:bulk-ok-2" }),
+        mk("ct-batch-bad-1", { objectRef: "orch:bulk-bad", verb: "snooze", payload: {} }), // snooze without until
+        mk("ct-batch-bad-2", { objectRef: "orch:bulk-bad-2", verb: "explode" }),
+      ],
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      results: { index: number; objectRef: string | null; ok: boolean; action?: DashAction; error?: string }[];
+      recorded: number;
+      failed: number;
+    };
+    expect(body.recorded).toBe(2);
+    expect(body.failed).toBe(2);
+    expect(body.results.map((r) => r.ok)).toEqual([true, true, false, false]);
+    expect(body.results[2].objectRef).toBe("orch:bulk-bad");
+    expect(body.results[2].error).toContain("until");
+    expect(body.results[3].error).toContain("verb");
+    // Each accepted item is its OWN store entry (no opaque batch record).
+    const ids = body.results.filter((r) => r.ok).map((r) => r.action!.id);
+    expect(new Set(ids).size).toBe(2);
+    const stored = (await (await fetch(`http://127.0.0.1:${port}/api/actions.json?kind=triage`)).json()) as {
+      actions: DashAction[];
+    };
+    expect(stored.actions.filter((a) => a.objectRef === "orch:bulk-ok").length).toBe(1);
+    expect(stored.actions.filter((a) => a.objectRef === "orch:bulk-ok-2").length).toBe(1);
+    // Failed items appended nothing \u2014 they remain in Needs-you.
+    expect(stored.actions.some((a) => a.objectRef === "orch:bulk-bad")).toBe(false);
+    expect(stored.actions.some((a) => a.objectRef === "orch:bulk-bad-2")).toBe(false);
+    // A repost of the same clientToken dedupes per item, not per batch.
+    const repost = await post("/api/actions/batch", { actions: [mk("ct-batch-ok-1")] });
+    const repostBody = (await repost.json()) as { results: { ok: boolean; deduped?: boolean }[]; recorded: number };
+    expect(repostBody.recorded).toBe(1);
+    expect(repostBody.results[0].deduped).toBe(true);
+    const after = (await (await fetch(`http://127.0.0.1:${port}/api/actions.json?kind=triage`)).json()) as {
+      actions: DashAction[];
+    };
+    expect(after.actions.filter((a) => a.objectRef === "orch:bulk-ok").length).toBe(1);
+  });
+
+  test("POST /api/actions/batch rejects malformed envelopes with 400", async () => {
+    expect((await post("/api/actions/batch", {})).status).toBe(400);
+    expect((await post("/api/actions/batch", { actions: [] })).status).toBe(400);
+    expect((await post("/api/actions/batch", { actions: "nope" })).status).toBe(400);
   });
 });

@@ -139,6 +139,11 @@ in
             Environment = [
               "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}"
               "PM_AGG_COVERAGE_SNAPSHOT_FILE=${aggState}/coverage-snapshot.json"
+              # Roadmap annotations (#1284) are runtime state too: the
+              # first annotation would otherwise create
+              # roadmap-annotations.json inside this checkout and block
+              # pm-git-sync the same way (Codex P1 on PR #4054).
+              "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${aggState}/roadmap-annotations.json"
             ];
             Restart = "on-failure";
             RestartSec = 5;

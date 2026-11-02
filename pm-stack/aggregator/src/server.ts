@@ -11,9 +11,10 @@ import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
-import { CommentsStore, validateNewComment } from "./comments.ts";
+import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -69,6 +70,7 @@ import {
   renderOverview,
   renderOverviewBody,
   renderOverviewShell,
+  renderCommentsQueue,
   renderPages,
   renderProgram,
   renderProgramProject,
@@ -101,6 +103,7 @@ import { liveSource } from "./sources/live.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
+const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 
 /** #1220: the coverage snapshot behind the /projects panel — computed
@@ -454,7 +457,7 @@ async function boardRender() {
     source.projects().catch(() => []),
     commentFormOpts(),
     actionsStore.byObject(),
-    commentsStore.counts(),
+    commentsStore.countsDetailed(),
   ]);
   const act = {
     actionsByObject,
@@ -473,7 +476,7 @@ async function attentionRender() {
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.byObject(),
-    commentsStore.counts(),
+    commentsStore.countsDetailed(),
     actionsStore.all(),
   ]);
   const order = effectiveNeedsOrder(allActions);
@@ -641,6 +644,44 @@ async function handler(req: Request): Promise<Response> {
   }
 
   // --- Dashboard comment writes (#906 §2) --------------------------------
+  if (req.method === "POST" && path === "/api/roadmap/annotations") {
+    try {
+      const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const rows = await source.roadmap().catch(() => []);
+      if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
+        return json({ error: "objectRef is not a current roadmap row" }, 404);
+      }
+      try {
+        const annotation = await roadmapAnnotationsStore.add(parsed.value);
+        return json({ annotation }, 201);
+      } catch (err) {
+        return json({ error: `annotation persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+    } catch (err) {
+      return json({ error: `invalid annotation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/roadmap/annotations/alias") {
+    try {
+      const body = (await readJsonBody(req)) as { aliasRef?: unknown; stableRef?: unknown };
+      if (typeof body.aliasRef !== "string" || typeof body.stableRef !== "string") {
+        return json({ error: "aliasRef and stableRef are required" }, 400);
+      }
+      const rows = await source.roadmap().catch(() => []);
+      if (!rows.some((row) => row.subject === body.aliasRef)) {
+        return json({ error: "aliasRef is not a current roadmap row" }, 404);
+      }
+      if (!(await roadmapAnnotationsStore.forObject(body.stableRef)).length) {
+        return json({ error: "stableRef has no existing annotation history" }, 404);
+      }
+      await roadmapAnnotationsStore.addAlias(body.aliasRef, body.stableRef);
+      return json({ aliases: await roadmapAnnotationsStore.aliasEntries() });
+    } catch (err) {
+      return json({ error: `invalid annotation alias: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+
   if (req.method === "POST" && path === "/api/comments") {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
@@ -746,6 +787,70 @@ async function handler(req: Request): Promise<Response> {
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // #1277: bulk triage — one mediated batch, validated and appended
+  // item by item under the exact single-action rules above. Every
+  // accepted item becomes its OWN attributed audit entry (never one
+  // opaque batch record), so the batch is recoverable from the
+  // entries themselves; every rejected item is reported by ref with
+  // its error and appends nothing, so a partial batch never silently
+  // drops work — the failed items simply remain in Needs-you.
+  if (req.method === "POST" && path === "/api/actions/batch") {
+    try {
+      const body = (await readJsonBody(req)) as { actions?: unknown };
+      if (!Array.isArray(body.actions) || body.actions.length === 0 || body.actions.length > 100) {
+        return json({ error: "actions must be an array of 1-100 action objects" }, 400);
+      }
+      const entries: unknown[] = body.actions;
+      // The published-item checks (#1291/#1293) need the section once,
+      // not once per item.
+      const section = entries.some(
+        (a) => typeof a === "object" && a !== null && (a as { kind?: unknown }).kind === "triage",
+      )
+        ? await source.orchestration().catch(() => null)
+        : null;
+      const results: {
+        index: number;
+        objectRef: string | null;
+        ok: boolean;
+        action?: unknown;
+        deduped?: boolean;
+        error?: string;
+      }[] = [];
+      for (const [index, raw] of entries.entries()) {
+        const objectRef =
+          typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
+            ? (raw as { objectRef: string }).objectRef
+            : null;
+        const parsed = validateNewAction(raw);
+        if (!parsed.ok) {
+          results.push({ index, objectRef, ok: false, error: parsed.error });
+          continue;
+        }
+        if (parsed.value.kind === "triage" && section) {
+          const problem = checkActionAgainstItem(parsed.value, findTierItem(section, parsed.value.objectRef), Date.now());
+          if (problem) {
+            results.push({ index, objectRef, ok: false, error: problem });
+            continue;
+          }
+        }
+        try {
+          const { action, created } = await actionsStore.add(parsed.value);
+          results.push({ index, objectRef, ok: true, action, ...(created ? {} : { deduped: true }) });
+        } catch (err) {
+          results.push({
+            index,
+            objectRef,
+            ok: false,
+            error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+          });
+        }
+      }
+      const recorded = results.filter((r) => r.ok).length;
+      return json({ results, recorded, failed: results.length - recorded }, 200);
+    } catch (err) {
+      return json({ error: `invalid batch: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
   if (req.method === "POST" && path === "/api/actions/result") {
@@ -861,9 +966,13 @@ async function handler(req: Request): Promise<Response> {
       if (k === "view" || k === "viewer" || k.startsWith("vf.")) viewParams.set(k, v);
     }
     const viewQuery = viewParams.toString();
+    const annotationsFor = async (rs: typeof rows) =>
+      new Map(
+        await Promise.all(rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
+      );
     if (!resolved) {
       return html(
-        renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill, viewQuery),
+        renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(rows), viewQuery),
       );
     }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
@@ -882,7 +991,7 @@ async function handler(req: Request): Promise<Response> {
       ),
     );
     return html(
-      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill, viewQuery),
+      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(keptRows), viewQuery),
     );
   }
 
@@ -1091,6 +1200,15 @@ async function handler(req: Request): Promise<Response> {
     return html(renderPages(prov(), pageRenderHealth()));
   }
 
+  if (path === "/comments") {
+    return html(renderCommentsQueue(await commentsStore.all(), prov()));
+  }
+
+  if (path === "/api/comments/queue.json") {
+    const all = await commentsStore.all();
+    return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
+  }
+
   const discussMatch = /^\/discuss\/(.+)$/.exec(path);
   if (discussMatch) {
     // #2748: a malformed percent-encoding is a JSON 400, never a raw
@@ -1122,14 +1240,33 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
     const resolved = await resolveView(url);
-    if (!resolved) return json({ rows, items: [...items.values()], drift: roadmapDriftReport(reconciliation) });
+    if (!resolved) {
+      const annotatedRows = await Promise.all(
+        rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+      );
+      return json({
+        rows: annotatedRows,
+        items: [...items.values()],
+        drift: roadmapDriftReport(reconciliation),
+        annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
+      });
+    }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     const keptRows = rows.filter((r) =>
       linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
     );
     const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
-    return json({ rows: keptRows, items: keptItems, drift: roadmapDriftReport(reconciliation), view: resolved.view?.id ?? null });
+    const annotatedKeptRows = await Promise.all(
+      keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+    );
+    return json({
+      rows: annotatedKeptRows,
+      items: keptItems,
+      drift: roadmapDriftReport(reconciliation),
+      annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
+      view: resolved.view?.id ?? null,
+    });
   }
   if (path === "/api/quota.json") {
     // Extended in place for the hub (design §1.1): the pools/burn/choices
@@ -1365,19 +1502,21 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
     }
     const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
-    const subject = board.find((b) => b.id === id) ?? rows.find((r) => r.subject === id);
+    const roadmapRow = rows.find((r) => r.subject === id);
+    const subject = board.find((b) => b.id === id) ?? roadmapRow;
     if (subject) {
       const title = subject.title;
       const links = subject.links;
       const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records, pool, allActions] = await Promise.all([
+      const [items, comments, allComments, records, pool, allActions, roadmapAnnotations] = await Promise.all([
         source.items(refs).catch(() => new Map()),
         source.comments(refs).catch(() => []),
         commentsStore.all(),
         source.registry().catch(() => []),
         source.projects().catch(() => []),
         actionsStore.all(),
+        roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
       ]);
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
@@ -1390,6 +1529,7 @@ async function handler(req: Request): Promise<Response> {
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
       const extras = {
         dashComments,
+        ...(roadmapRow ? { roadmapAnnotations } : {}),
         formRef: id,
         serviceLinks: itemServiceLinks(subject),
         formOpts: await commentFormOpts(refs),
