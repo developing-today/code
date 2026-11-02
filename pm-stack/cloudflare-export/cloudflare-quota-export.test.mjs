@@ -384,13 +384,24 @@ test("aiNeuronsDayAlerts: saturation is flagged, never silently truncated (#2287
   assert.equal("alerts" in doc, false);
 });
 
-test("aiNeuronsDayAlertThreshold: env override with honest fallback (#2287)", () => {
+test("aiNeuronsDayAlertThreshold: requires positivity and pins numeric spellings (#2287, #4381)", () => {
   assert.equal(AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT, 50000);
   assert.equal(aiNeuronsDayAlertThreshold({}), 50000);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "12345" }), 12345);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "" }), 50000);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "abc" }), 50000);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "-5" }), 50000);
+  for (const value of ["0", "-0", "0.0", " 0 "]) {
+    assert.equal(
+      aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: value }),
+      AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT,
+      `${JSON.stringify(value)} must not zero the alert threshold`,
+    );
+  }
+  // Preserve Number() parsing for positive finite overrides: fractions and
+  // JavaScript numeric spellings (including hexadecimal) remain accepted.
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0.5" }), 0.5);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0x10" }), 16);
   // A custom threshold actually gates the alert through parseGraphqlUsage.
   const parsed = parseGraphqlUsage(ACCOUNT, { now: NOW, cycleStart: START, aiThreshold: 4000000 });
   assert.deepEqual(parsed.aiNeurons.alerts, []);
