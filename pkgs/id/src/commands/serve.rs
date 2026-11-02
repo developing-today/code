@@ -343,6 +343,8 @@ pub struct ServeOptions {
     pub world_native: bool,
     /// Accept program changes only through server-side Roc compilation.
     pub world_source_only: bool,
+    /// Ed25519 public keys authorized to sign module artifacts (hex).
+    pub world_module_trust_keys: Vec<String>,
     /// Execution bounds for world programs.
     pub world_runtime: crate::cli::WorldRuntimeArgs,
     /// Nodes allowed to modify the store.
@@ -516,6 +518,7 @@ struct ServeWorlds {
     compiler: Option<crate::world_compile::Compiler>,
     native: bool,
     source_only: bool,
+    trusted_module_keys: Vec<[u8; 32]>,
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
 }
@@ -574,11 +577,13 @@ impl ServeWorlds {
             let blobs = self.blobs.clone();
             let mail = self.mail.clone();
             let source_only = self.source_only;
+            let trusted_module_keys = self.trusted_module_keys.clone();
             move |handle| {
                 let service = WorldService::new(handle, admin_token)
                     .with_blob_store(blobs)
                     .with_runtime_limits(runtime)
-                    .with_source_only(source_only);
+                    .with_source_only(source_only)
+                    .with_module_trust_keys(trusted_module_keys);
                 match &mail {
                     Some(sink) => service.with_mail(Arc::clone(sink)),
                     None => service,
@@ -766,6 +771,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         roc_platform,
         world_native,
         world_source_only,
+        world_module_trust_keys,
         world_ssh_port,
         world_runtime,
         allow_node,
@@ -790,7 +796,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         warn!(%error, "serve: app discovery failed");
     }
     #[cfg(not(feature = "world"))]
-    let _ = &world_allowed_caps;
+    let _ = (&world_allowed_caps, &world_module_trust_keys);
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -904,6 +910,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let runtime = crate::world_limits::RuntimeLimits::from_args(&world_runtime)?;
         let server_caps = allowed_caps(world_allowed_caps.as_deref())?;
         let compiler = resolve_compiler(roc_bin, roc_platform)?;
+        let trusted_module_keys = world_module_trust_keys
+            .iter()
+            .map(|encoded| {
+                let bytes = crate::world_session::decode_hex(encoded).ok_or_else(|| {
+                    anyhow::anyhow!("--world-module-trust-key must be 32-byte hex")
+                })?;
+                <[u8; 32]>::try_from(bytes.as_slice())
+                    .map_err(|_| anyhow::anyhow!("--world-module-trust-key must be 32-byte hex"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            trusted_module_keys.is_empty() || world_module.is_none(),
+            "--world-module-trust-key cannot be combined with --world-module: \
+             startup modules cannot carry a signature yet — remove one of the \
+             two, or install the module over the session protocol with a signature"
+        );
         ensure!(
             !world_source_only || compiler.is_some(),
             "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
@@ -921,6 +943,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             compiler,
             native: world_native,
             source_only: world_source_only,
+            trusted_module_keys,
             runtime,
             mail: mail_sink(
                 world_mail_outbox,
