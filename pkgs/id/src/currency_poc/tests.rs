@@ -321,6 +321,44 @@ fn insufficient_lp_inventory_fails_preflight() {
 }
 
 #[test]
+fn duplicate_t1_and_fee_transfer_ids_fail_preflight_before_persisting_intent() {
+    let mut executor = executor();
+    let mut duplicate = request();
+    duplicate.transfer_ids = vec![601, 601, 603];
+
+    let error = executor
+        .prepare(&duplicate)
+        .expect_err("T1 and fee must not share a transfer ID");
+    assert!(error.to_string().contains("duplicate transfer ID 601"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn duplicate_t1_and_t3_transfer_ids_fail_preflight_before_persisting_intent() {
+    let mut executor = executor();
+    let mut duplicate = request();
+    duplicate.transfer_ids = vec![601, 602, 601];
+
+    let error = executor
+        .prepare(&duplicate)
+        .expect_err("T1 and T3 must not share a transfer ID");
+    assert!(error.to_string().contains("duplicate transfer ID 601"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
 fn file_intent_store_write_ahead_survives_reopen() {
     // The write-ahead record is the crash-recovery contract: prepare
     // with a file store, drop everything, reopen, and reconcile.
