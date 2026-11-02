@@ -207,41 +207,73 @@ impl WorldCore {
         limits: WorldLimits,
         entries: impl IntoIterator<Item = JournalEntry>,
     ) -> Result<RestoredWorld> {
+        Self::restore_with_runtime(
+            world_id,
+            limits,
+            crate::world_limits::RuntimeLimits::default(),
+            entries,
+        )
+    }
+
+    /// Rebuild a world from its journal, resolving the persisted
+    /// per-world total memory budget against the server ceiling the
+    /// process is currently configured with (`runtime`), not the
+    /// ceiling in force when the journal was written.
+    ///
+    /// # Errors
+    ///
+    /// Same refusal contract as [`Self::restore`].
+    pub fn restore_with_runtime(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
         let mut core = Self::new(world_id, limits)?;
         let mut program = None;
         let mut replay = Vec::new();
         let mut present: BTreeMap<u64, u64> = BTreeMap::new();
         let entries: Vec<JournalEntry> = entries.into_iter().collect();
         // #557 Phase 2: enforce the per-world total memory budget at
-        // restore. The effective limit is the last total budget the
-        // journal persists (an execution-profile entry or a
-        // checkpoint's profile — both were clamped beneath the server
-        // ceiling when resolved and written), or the default ceiling
-        // when the journal carries none. Charge the fixed core charge
-        // plus each materialized entry (serialized length + structural
-        // allowance) BEFORE applying any entry: an over-budget journal
-        // is refused whole with a typed
+        // restore. The effective limit resolves the journal's FINAL
+        // persisted profile against the CURRENT server ceiling
+        // (`runtime.total_memory_bytes`): replay replaces the whole
+        // execution profile, so a later profile whose budget is unset
+        // resets an earlier one — an unset budget inherits the current
+        // ceiling, and a set budget is clamped beneath it. The
+        // persisted request cannot be trusted to already be clamped:
+        // `set_execution_profile` journals the unclamped request, so
+        // resolving here is what makes lowering the server ceiling
+        // constrain restore and raising it reopen a budgetless journal
+        // written under a smaller ceiling. Charge the fixed core
+        // charge plus each materialized entry (serialized length +
+        // structural allowance) BEFORE applying any entry: an
+        // over-budget journal is refused whole with a typed
         // [`crate::world_limits::WorldMemoryBudgetRefusal`], no state
         // is partially applied, and the durable journal is never
         // modified by a restore, so the same journal reopens unchanged
         // once the configured budget allows it. This charges the
         // restore/materialization seam only; runtime growth, program
         // reservations, and transient peaks are later #557 phases.
-        let mut limit = crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES;
+        let mut persisted_total: Option<u64> = None;
         for entry in &entries {
-            let persisted = match entry {
-                JournalEntry::ExecutionProfile { profile } => profile.total_memory_bytes,
+            match entry {
+                JournalEntry::ExecutionProfile { profile } => {
+                    persisted_total = profile.total_memory_bytes;
+                }
                 JournalEntry::Checkpoint {
                     execution_profile, ..
-                } => execution_profile
-                    .as_ref()
-                    .and_then(|profile| profile.total_memory_bytes),
-                _ => None,
-            };
-            if let Some(total) = persisted {
-                limit = total;
+                } => {
+                    persisted_total = execution_profile
+                        .as_ref()
+                        .and_then(|profile| profile.total_memory_bytes);
+                }
+                _ => {}
             }
         }
+        let limit = persisted_total.map_or(runtime.total_memory_bytes, |total| {
+            total.min(runtime.total_memory_bytes)
+        });
         let mut memory_budget = crate::world_limits::WorldMemoryBudget::new(limit);
         memory_budget.try_charge(crate::world_limits::WORLD_MEMORY_BASE_BYTES)?;
         for entry in &entries {
@@ -400,7 +432,7 @@ impl WorldCore {
                 }
                 JournalEntry::ExecutionProfile { profile } => {
                     profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in journal")?;
                     core.execution_profile = profile;
                 }
@@ -625,7 +657,7 @@ impl WorldCore {
                     core.active_seed = seed;
                     let execution_profile = execution_profile.unwrap_or_default();
                     execution_profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in checkpoint")?;
                     core.execution_profile = execution_profile;
                     // Absent means the whole catalog: older checkpoints and

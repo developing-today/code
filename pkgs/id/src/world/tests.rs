@@ -447,6 +447,79 @@ mod tests {
     }
 
     #[test]
+    fn restore_resolves_the_persisted_budget_against_the_current_server_ceiling() {
+        // Codex P1 on PR #4628: restore must enforce the CURRENT server
+        // ceiling, not the persisted request or the default. A journal
+        // persisting an unclamped (over-ceiling) request is charged
+        // against the lowered ceiling and refused with that limit.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(u64::MAX),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let lowered = journal_charge(&entries) - 1;
+        let runtime = crate::world_limits::RuntimeLimits {
+            total_memory_bytes: lowered,
+            ..Default::default()
+        };
+        let error = WorldCore::restore_with_runtime(
+            "test-world",
+            WorldLimits::default(),
+            runtime,
+            entries.clone(),
+        )
+        .unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::world_limits::WorldMemoryBudgetRefusal>()
+            .expect("restore over the current ceiling must fail with the typed refusal");
+        assert_eq!(refusal.limit_bytes, lowered);
+        // A budgetless journal inherits the CURRENT ceiling: raising it
+        // reopens a journal the default ceiling would refuse, and the
+        // restored budget reports the raised limit.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let raised = journal_charge(&entries) + 1024;
+        let runtime = crate::world_limits::RuntimeLimits {
+            total_memory_bytes: raised,
+            ..Default::default()
+        };
+        let restored =
+            WorldCore::restore_with_runtime("test-world", WorldLimits::default(), runtime, entries)
+                .unwrap();
+        assert_eq!(restored.core.memory_budget().limit_bytes(), raised);
+    }
+
+    #[test]
+    fn restore_tracks_the_final_profile_including_a_budget_reset() {
+        // Codex P2 on PR #4628: replay replaces the whole execution
+        // profile, so a later profile with an unset budget resets an
+        // earlier persisted budget instead of leaving it enforced.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(1),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let mut entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // Sanity: the persisted Some(1) budget alone refuses restore.
+        assert!(WorldCore::restore("test-world", WorldLimits::default(), entries.clone()).is_err());
+        entries.push(JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile::default(),
+        });
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.memory_budget().limit_bytes(),
+            crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES
+        );
+        assert_eq!(restored.core.execution_profile().total_memory_bytes, None);
+    }
+
+    #[test]
     fn budget_entries_require_journal_version_4_while_budgetless_ones_do_not() {
         // #557 Phase 1: a persisted total budget is the first fact a
         // version-3 binary would parse yet silently ignore, so it pins the

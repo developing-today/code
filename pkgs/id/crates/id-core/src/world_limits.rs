@@ -576,6 +576,7 @@ mod tests {
             native_call_deadline_ms: Some(
                 u64::try_from(hard.native.call_deadline.as_millis() / 2).unwrap(),
             ),
+            total_memory_bytes: None,
         }
         .resolve(hard)
         .unwrap();
@@ -608,6 +609,7 @@ mod tests {
             native_memory_bytes: Some(u64::MAX),
             native_cpu_seconds: Some(u64::MAX),
             native_call_deadline_ms: Some(u64::MAX),
+            total_memory_bytes: None,
         }
         .resolve(hard)
         .unwrap();
