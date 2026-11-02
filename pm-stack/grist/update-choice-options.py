@@ -36,7 +36,10 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
+
+API_TIMEOUT_SECONDS = 30
 
 
 def merge_choices(widget_options: dict, additions: list[str]) -> tuple[dict, list[str]]:
@@ -64,8 +67,21 @@ def api(base: str, key: str, method: str, path: str, body: dict | None = None) -
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req) as resp:  # noqa: S310 - operator-supplied base URL
-        raw = resp.read().decode()
+    try:
+        with urllib.request.urlopen(
+            req, timeout=API_TIMEOUT_SECONDS
+        ) as resp:
+            raw = resp.read().decode()
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise TimeoutError(
+                f"API request timed out after {API_TIMEOUT_SECONDS}s ({method} {path})"
+            ) from exc
+        raise
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"API request timed out after {API_TIMEOUT_SECONDS}s ({method} {path})"
+        ) from exc
     return json.loads(raw) if raw and raw != "null" else None
 
 
@@ -120,5 +136,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def run(argv: list[str] | None = None) -> int:
+    try:
+        return main(argv)
+    except TimeoutError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run())
