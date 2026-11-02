@@ -76,6 +76,26 @@ describe("titleRefs", () => {
     expect(titleRefs("queue task 1116 revived, items 3/4/5 picked")).toEqual([]);
     expect(titleRefs("Daily morning readout")).toEqual([]);
   });
+
+  test("does not re-attribute an explicit non-fleet ref as nearby shorthand", () => {
+    expect(titleRefs("code #811 blocked on developing-today/kaneo#42")).toEqual([
+      "developing-today/kaneo#42",
+      "developing-today/code#811",
+    ]);
+  });
+
+  test("keeps mixed shorthand and explicit refs, including GitHub URL refs", () => {
+    expect(
+      titleRefs(
+        "nix #889 blocked on developing-today/kaneo#42; openchamber #492 mirrors https://github.com/developing-today/opencode/issues/927",
+      ),
+    ).toEqual([
+      "developing-today/opencode#927",
+      "developing-today/kaneo#42",
+      "dezren39/nix#889",
+      "developing-today/openchamber#492",
+    ]);
+  });
 });
 
 describe("inFlightBoardItems", () => {

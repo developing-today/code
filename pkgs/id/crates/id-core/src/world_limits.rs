@@ -141,7 +141,19 @@ impl WorldExecutionProfile {
     ///
     /// A requested bound of zero or a value that cannot be represented on
     /// this host.
-    pub fn resolve(self, hard: RuntimeLimits) -> Result<RuntimeLimits> {
+    /// Validate the requested bounds on their own: every bound that is set
+    /// must be positive and at or above its floor.  inherits the
+    /// server ceiling and is always valid.
+    ///
+    /// This is the single source of truth for the bound checks: []
+    /// runs it against the live profile at apply time, and the world
+    /// manifest validator runs it at parse time, so a manifest can never
+    /// accept bounds that apply would later refuse (#3015).
+    ///
+    /// # Errors
+    ///
+    /// Names the first offending bound.
+    pub fn validate(&self) -> Result<()> {
         ensure!(self.wasm_fuel != Some(0), "world Wasm fuel must be nonzero");
         ensure!(
             self.wasm_memory_bytes.is_none_or(|bytes| bytes >= 64 * KIB),
@@ -164,6 +176,11 @@ impl WorldExecutionProfile {
             self.native_call_deadline_ms != Some(0),
             "world native call deadline must be nonzero"
         );
+        Ok(())
+    }
+
+    pub fn resolve(self, hard: RuntimeLimits) -> Result<RuntimeLimits> {
+        self.validate()?;
 
         #[cfg(feature = "sandbox")]
         let sandbox = {

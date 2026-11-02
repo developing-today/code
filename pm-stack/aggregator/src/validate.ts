@@ -79,7 +79,12 @@ export function parseIsoDate(v: unknown): Date | null {
   const second = m[6] === undefined ? 0 : Number(m[6]);
   if (hour > 23 || minute > 59 || second > 59) return null;
   const fracMs = m[7] === undefined ? 0 : Number((m[7] + "000").slice(0, 3));
-  let ms = Date.UTC(year, month - 1, day, hour, minute, second, fracMs);
+  // Date.UTC maps years 0-99 to 1900-1999. Build from the epoch and set
+  // the literal UTC year instead, preserving the accepted four-digit year.
+  const utcDate = new Date(0);
+  utcDate.setUTCFullYear(year, month - 1, day);
+  utcDate.setUTCHours(hour, minute, second, fracMs);
+  let ms = utcDate.getTime();
   const offset = m[8];
   if (offset !== undefined && offset !== "Z") {
     const sign = offset.startsWith("+") ? 1 : -1;
@@ -89,7 +94,7 @@ export function parseIsoDate(v: unknown): Date | null {
     ms -= sign * (offH * 3_600_000 + offM * 60_000);
   }
   const d = new Date(ms);
-  // Re-check: Date.UTC rolls overflow components into neighbouring
+  // Re-check: Date setters normalize overflow components into neighbouring
   // months/years, so the round trip must reproduce the UTC components
   // exactly for offset-free forms (an explicit offset legitimately
   // shifts the UTC clock reading, so only the instant is checked there

@@ -58,8 +58,8 @@ use sha2::Sha256;
 use tokio::sync::RwLock;
 use tokio::sync::watch;
 
-/// Maximum allowed display name length (bytes).
-const MAX_NAME_LENGTH: usize = 64;
+/// Maximum allowed display name length (Unicode scalar values).
+const MAX_NAME_LENGTH: usize = 48;
 
 /// Maximum token age before it's considered expired (30 days in seconds).
 const TOKEN_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
@@ -408,22 +408,28 @@ fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
-/// Sanitize a display name: trim whitespace, enforce max length, return `None` if empty.
-fn sanitize_name(name: Option<String>) -> Option<String> {
-    name.map(|n| n.trim().to_owned())
-        .filter(|n| !n.is_empty())
-        .map(|n| {
-            if n.len() > MAX_NAME_LENGTH {
-                // Truncate at char boundary
-                let mut end = MAX_NAME_LENGTH;
-                while !n.is_char_boundary(end) && end > 0 {
-                    end -= 1;
-                }
-                n[..end].to_owned()
-            } else {
-                n
-            }
-        })
+/// Sanitize a display name consistently for identities and cursor frames.
+pub(super) fn sanitize_name(name: Option<String>) -> Option<String> {
+    name.map(|name| {
+        name.chars()
+            .filter(|ch| !ch.is_control() && !is_bidi_override_or_isolate(*ch))
+            .take(MAX_NAME_LENGTH)
+            .collect::<String>()
+            .trim()
+            .to_owned()
+    })
+    .filter(|name| !name.is_empty())
+}
+
+fn is_bidi_override_or_isolate(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Create a short display ID from a `client_id` (first 6 chars).
@@ -871,10 +877,26 @@ mod tests {
             Some("Bob".to_owned())
         );
 
-        // Long name truncation
-        let long_name = "a".repeat(100);
+        assert_eq!(
+            sanitize_name(Some("A\n\t\u{001b}\u{202e}lice".to_owned())),
+            Some("Alice".to_owned())
+        );
+        assert_eq!(
+            sanitize_name(Some("A\u{061c}\u{200e}\u{200f}\u{202a}\u{202d}\u{202e}\u{2066}\u{2067}\u{2068}\u{2069}B".to_owned())),
+            Some("AB".to_owned())
+        );
+        assert_eq!(
+            sanitize_name(Some("a\u{200d}b\u{200c}c".to_owned())),
+            Some("a\u{200d}b\u{200c}c".to_owned())
+        );
+        assert_eq!(
+            sanitize_name(Some("こんにちは世界".to_owned())),
+            Some("こんにちは世界".to_owned())
+        );
+
+        let long_name = "界".repeat(50);
         let sanitized = sanitize_name(Some(long_name)).unwrap();
-        assert!(sanitized.len() <= MAX_NAME_LENGTH);
+        assert_eq!(sanitized.chars().count(), MAX_NAME_LENGTH);
     }
 
     #[test]

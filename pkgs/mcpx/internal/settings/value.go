@@ -519,6 +519,16 @@ func Validate(set Setting, raw string) error {
 		if set.Floor > 0 && n < set.Floor {
 			return fmt.Errorf("want a whole number of at least %d, got %q", set.Floor, raw)
 		}
+		if set.Ceiling > 0 && (n < set.Floor || n > set.Ceiling) {
+			// A declared ceiling is a range whose lower bound is the
+			// setting's Floor (0 when unset): daemon.port accepts
+			// 0-65535 and refuses -1 as firmly as 65536, here at the
+			// shared choke point, instead of dying later at net.Listen
+			// with an error naming neither the setting nor its
+			// source (#3648). The error names the setting and the
+			// refused value.
+			return fmt.Errorf("%s must be a whole number between %d and %d, got %q", set.Path, set.Floor, set.Ceiling, raw)
+		}
 	case KindDuration:
 		d, err := time.ParseDuration(raw)
 		if err != nil {

@@ -1098,6 +1098,7 @@ mod tests {
             document: None,
             removes: None,
             note: None,
+            link: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1661,6 +1662,7 @@ mod tests {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1694,6 +1696,7 @@ mod tests {
             document: None,
             removes: None,
             note: None,
+            link: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)

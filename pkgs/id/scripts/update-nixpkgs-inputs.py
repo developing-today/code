@@ -22,7 +22,6 @@ Examples:
 """
 
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -97,7 +96,8 @@ def discover_inputs(lock_data, ref):
         # Match by URL: github:NixOS/nixpkgs
         if original.get("type", "").lower() != "github":
             continue
-        if not re.match(r"[Nn]ix[Oo][Ss]", original.get("owner", "")):
+        owner = original.get("owner")
+        if not isinstance(owner, str) or owner.lower() != "nixos":
             continue
         if original.get("repo", "") != "nixpkgs":
             continue

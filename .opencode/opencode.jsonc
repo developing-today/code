@@ -130,6 +130,9 @@
   // Drew: disable the provider, do NOT change the routes - every
   // seat and definition stays in place per the switchboard rule.
   // To re-enable after the pool resets: delete this one line.
+  // REVERSED 2026-11-02 (Drew, direct order): "muse-direct" leaves
+  // the list. The Meta pool reset at 2026-11-02T00:00:00Z and reads
+  // fresh 0% with 100 pts headroom; the door is back in service.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -154,8 +157,7 @@
     "muse",
     "antigravity-ls",
     "antigravity-agy",
-    "commandcode",
-    "muse-direct"
+    "commandcode"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
@@ -6738,6 +6740,14 @@
         // main the reserve) at the pair's previous combined weight
         // (1.5 + 1 = 2.5). The Go burn-by-expiry weights (3/2) above
         // are untouched.
+        // 2026-11-02 (Drew, refinement): the full plan pool is
+        // restored. The workhorse rule (Luna only from the OpenAI
+        // plans, the doors with no DeepSeek) is applied at the
+        // workhorse-primary seat, which now addresses
+        // openai-plan/gpt-6-luna#xhigh directly; this route keeps
+        // every Luna plan door for its other callers (small-100k)
+        // and for deliberate use. The same-day trim of this route
+        // is reverted - it had blast radius beyond workhorse.
         "targets": [
           "openai-plan/gpt-6-luna",
           {
@@ -7111,7 +7121,7 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex only: Luna",
+        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor)",
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
@@ -7196,13 +7206,42 @@
         // (antigravity-ls/gemini-3.8-flash -- the tool-capable Gemini
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
+        // 2026-11-02 (Drew, direct order): Meta joins as CO-PRIMARY
+        // alongside Codex. muse-direct/muse-spark-1.3-contributor
+        // takes a primary seat at weight 2, equal with luna-plan's
+        // 2 — round-robin co-primaries. Why now: the Meta pool reset
+        // 2026-11-02T00:00:00Z fresh at 0% (100 pts, required
+        // ~14.9/day to land at reset) while Codex projects
+        // exhaustion tonight; muse-direct was re-enabled this
+        // morning after its 2026-11-01 park. Spark ALSO keeps its
+        // workhorse-weighted seat (spark-plan#xhigh) — this seat is
+        // additive, the same shape as the 2026-10-29 wrapper.
+        // 2026-11-02 (effort audit, Drew asked): the Spark leg takes its
+        // #xhigh pin, matching every other Spark seat in the fleet
+        // (workhorse-weighted relief, specialist, speed) and the
+        // price-per-point rulings behind them: AA/workbook Spark
+        // xhigh II 45 @ $1.37/task = $0.030/pt beats max II 48 @
+        // $1.60 = $0.033/pt, and Drew dropped specialist Spark
+        // max -> xhigh 2026-11-01 on the same math. The Luna leg
+        // was already correct: luna-plan#xhigh at $0.114 per 100
+        // score pts (AA v5) is the Luna elbow - max jumps to $0.184
+        // for its 38-pt ceiling. The bare Spark seat was the only
+        // unpinned effort in the tier (ledger: variant NULL).
+        // 2026-11-02 (Drew, refinement): the Luna leg seats the
+        // openai-plan leaf directly (openai-plan/gpt-6-luna#xhigh)
+        // instead of routing through luna-plan: the workhorse-only
+        // rule - Luna only from the OpenAI plans, the doors with no
+        // DeepSeek - belongs to this seat, not to the shared plan
+        // route. luna-plan keeps its full pool (see its own note).
         "targets": [
-          "opencode-route/luna-plan#xhigh"
+          "openai-plan/gpt-6-luna#xhigh",
+          "muse-direct/muse-spark-1.3-contributor#xhigh"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/luna-plan": 2
+          "openai-plan/gpt-6-luna": 2,
+          "muse-direct/muse-spark-1.3-contributor": 2
         }
       },
       "workhorse": {

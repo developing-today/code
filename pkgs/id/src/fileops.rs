@@ -29,6 +29,8 @@ use thiserror::Error;
 
 use crate::tags::{TagStore, now_unix};
 
+const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 3] = [b"name", b"file", b"path"];
+
 /// Errors from file operations, distinguishable so callers can map them to
 /// protocol errors or HTTP status codes.
 #[derive(Debug, Error)]
@@ -242,6 +244,19 @@ impl<'a> FileOps<'a> {
         let archive = claim_archive_name(self.store, name, ts, existing.hash)
             .await
             .with_context(|| format!("archiving replaced file {name}"))?;
+        self.tags
+            .transfer_all_tags_except(
+                &self.tags.global,
+                name.as_bytes(),
+                archive.as_bytes(),
+                &ARCHIVE_IDENTITY_TAG_KEYS,
+            )
+            .await
+            .with_context(|| format!("moving metadata for archived file {name}"))?;
+        self.tags
+            .refresh_identity_tags(&self.tags.global, archive.as_bytes())
+            .await
+            .with_context(|| format!("refreshing identity for archive {archive}"))?;
         Ok(Some(archive))
     }
 
@@ -511,6 +526,17 @@ impl<'a> FileOps<'a> {
                 Ok(_) => archives_removed += 1,
                 Err(e) => tracing::warn!("failed to delete archive tag {tag}: {e}"),
             }
+            // Archives created by rename/copy carry the replaced file's
+            // metadata (archive_existing moves it onto the archive subject);
+            // remove it too, or it stays searchable after the archive blob
+            // tag is gone.
+            if let Err(e) = self
+                .tags
+                .del_all_tags(&self.tags.global, tag.as_bytes())
+                .await
+            {
+                tracing::warn!("failed to delete metadata for archive {tag}: {e:#}");
+            }
         }
 
         Ok(DeleteOutcome {
@@ -624,6 +650,316 @@ mod archive_name_tests {
             store.tags().get(&name).await.unwrap().unwrap().hash,
             hash(7)
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod replacement_metadata_tests {
+    use crate::local::LocalNode;
+    use crate::tags::Tag;
+
+    use super::*;
+
+    async fn put(node: &LocalNode, name: &str, content: &[u8]) {
+        let guard = node
+            .blobs()
+            .add_bytes(content.to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.ops().put(name, guard.hash()).await.unwrap();
+    }
+
+    async fn set_tag(node: &LocalNode, subject: &str, key: &str, value: &str) {
+        node.tags()
+            .set_tag(
+                &node.tags().global,
+                subject.as_bytes(),
+                key.as_bytes(),
+                Some(value.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn set_singleton(node: &LocalNode, subject: &str, key: &str, value: &str) {
+        node.tags()
+            .set_singleton(
+                &node.tags().global,
+                subject.as_bytes(),
+                key.as_bytes(),
+                Some(value.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn tags_of(node: &LocalNode, subject: &str) -> Vec<Tag> {
+        node.tags()
+            .get_tags(&node.tags().global, subject.as_bytes())
+            .await
+            .unwrap()
+    }
+
+    fn values(tags: &[Tag], key: &str) -> Vec<Vec<u8>> {
+        tags.iter()
+            .filter(|tag| tag.key.as_bytes() == key.as_bytes())
+            .filter_map(|tag| tag.value.as_ref().map(|value| value.as_bytes().to_vec()))
+            .collect()
+    }
+
+    fn has_tag(tags: &[Tag], key: &str, value: &str) -> bool {
+        values(tags, key)
+            .iter()
+            .any(|found| found == value.as_bytes())
+    }
+
+    fn assert_single_value(tags: &[Tag], key: &str, value: &str) {
+        assert_eq!(
+            values(tags, key),
+            vec![value.as_bytes().to_vec()],
+            "{tags:?}"
+        );
+    }
+
+    fn assert_archive_identity(tags: &[Tag], archive: &str) {
+        assert_single_value(tags, "name", archive);
+        assert_single_value(tags, "file", archive.rsplit('/').next().unwrap_or(archive));
+        assert!(
+            values(tags, "path").is_empty(),
+            "archive inherited path: {tags:?}"
+        );
+    }
+
+    async fn seed_replacement_pair(node: &LocalNode) {
+        put(node, "source.txt", b"new content").await;
+        put(node, "destination.txt", b"replaced content").await;
+
+        set_tag(node, "source.txt", "shared", "source-value").await;
+        set_tag(node, "source.txt", "source-only", "source-metadata").await;
+        set_singleton(node, "source.txt", "created", "source-created").await;
+        set_singleton(node, "source.txt", "modified", "source-modified").await;
+
+        set_tag(node, "destination.txt", "shared", "replaced-value").await;
+        set_tag(
+            node,
+            "destination.txt",
+            "replaced-only",
+            "replaced-metadata",
+        )
+        .await;
+        set_tag(
+            node,
+            "destination.txt",
+            "archive.previous",
+            "earlier.archive.7",
+        )
+        .await;
+        set_tag(node, "destination.txt", "path", "old/source/path.txt").await;
+        set_singleton(node, "destination.txt", "created", "replaced-created").await;
+        set_singleton(node, "destination.txt", "modified", "replaced-modified").await;
+    }
+
+    fn assert_replaced_metadata_on_archive(tags: &[Tag], archive: &str) {
+        assert!(has_tag(tags, "shared", "replaced-value"), "{tags:?}");
+        assert!(
+            has_tag(tags, "replaced-only", "replaced-metadata"),
+            "{tags:?}"
+        );
+        assert!(
+            has_tag(tags, "archive.previous", "earlier.archive.7"),
+            "{tags:?}"
+        );
+        assert_single_value(tags, "created", "replaced-created");
+        assert_single_value(tags, "modified", "replaced-modified");
+        assert_archive_identity(tags, archive);
+        assert!(!has_tag(tags, "name", "destination.txt"), "{tags:?}");
+        assert!(!has_tag(tags, "file", "destination.txt"), "{tags:?}");
+    }
+
+    #[tokio::test]
+    async fn rename_onto_existing_moves_replaced_metadata_and_refreshes_archive_identity() {
+        let node = LocalNode::open(true).await.unwrap();
+        seed_replacement_pair(&node).await;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+
+        let archived = tags_of(&node, &archive).await;
+        assert_replaced_metadata_on_archive(&archived, &archive);
+
+        let destination = tags_of(&node, "destination.txt").await;
+        assert!(
+            has_tag(&destination, "shared", "source-value"),
+            "{destination:?}"
+        );
+        assert!(
+            has_tag(&destination, "source-only", "source-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "shared", "replaced-value"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "replaced-only", "replaced-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "archive.previous", "earlier.archive.7"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "path", "old/source/path.txt"),
+            "{destination:?}"
+        );
+        assert_single_value(&destination, "created", "source-created");
+        assert_single_value(&destination, "modified", "source-modified");
+        assert_single_value(&destination, "name", "destination.txt");
+        assert_single_value(&destination, "file", "destination.txt");
+        assert!(
+            has_tag(&destination, "archive.replace", &archive),
+            "{destination:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn copy_onto_existing_moves_replaced_metadata_and_keeps_single_fresh_stamps() {
+        let node = LocalNode::open(true).await.unwrap();
+        seed_replacement_pair(&node).await;
+
+        let outcome = node
+            .ops()
+            .copy("source.txt", "destination.txt")
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+
+        let archived = tags_of(&node, &archive).await;
+        assert_replaced_metadata_on_archive(&archived, &archive);
+
+        let destination = tags_of(&node, "destination.txt").await;
+        assert!(
+            has_tag(&destination, "shared", "source-value"),
+            "{destination:?}"
+        );
+        assert!(
+            has_tag(&destination, "source-only", "source-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "shared", "replaced-value"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "replaced-only", "replaced-metadata"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "archive.previous", "earlier.archive.7"),
+            "{destination:?}"
+        );
+        assert!(
+            !has_tag(&destination, "path", "old/source/path.txt"),
+            "{destination:?}"
+        );
+        assert_eq!(values(&destination, "created").len(), 1, "{destination:?}");
+        assert_eq!(values(&destination, "modified").len(), 1, "{destination:?}");
+        assert_single_value(&destination, "name", "destination.txt");
+        assert_single_value(&destination, "file", "destination.txt");
+        assert!(
+            has_tag(&destination, "archive.replace", &archive),
+            "{destination:?}"
+        );
+
+        let source = tags_of(&node, "source.txt").await;
+        assert!(has_tag(&source, "shared", "source-value"), "{source:?}");
+        assert!(
+            has_tag(&source, "source-only", "source-metadata"),
+            "{source:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_onto_existing_preserves_replaced_tag_payloads() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source.txt", b"new content").await;
+        put(&node, "destination.txt", b"replaced content").await;
+
+        // A tag with a non-empty entry payload, as written for legacy
+        // links by migrate_legacy_meta (payload carries the link target).
+        let payload: &[u8] = b"hash:0123abcd";
+        node.tags()
+            .set_tag(
+                &node.tags().global,
+                b"destination.txt",
+                b"link",
+                Some(b"target"),
+                payload,
+            )
+            .await
+            .unwrap();
+        let before = tags_of(&node, "destination.txt").await;
+        let before = before
+            .iter()
+            .find(|tag| tag.key.as_bytes() == b"link")
+            .expect("link tag seeded");
+        assert_eq!(before.len as usize, payload.len(), "{before:?}");
+        let before_hash = before.hash;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+
+        let archived = tags_of(&node, &archive).await;
+        let moved = archived
+            .iter()
+            .find(|tag| tag.key.as_bytes() == b"link")
+            .expect("link tag moved to archive");
+        assert_eq!(moved.hash, before_hash, "{moved:?}");
+        assert_eq!(moved.len as usize, payload.len(), "{moved:?}");
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_removes_archived_replaced_metadata() {
+        let node = LocalNode::open(true).await.unwrap();
+        seed_replacement_pair(&node).await;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+        assert!(
+            !tags_of(&node, &archive).await.is_empty(),
+            "archive carries the replaced file's metadata before delete"
+        );
+
+        let deleted = node.ops().delete("destination.txt").await.unwrap();
+        assert_eq!(deleted.archives_removed, 1);
+        assert!(
+            tags_of(&node, &archive).await.is_empty(),
+            "archive metadata removed with the archive"
+        );
+
+        node.shutdown().await.unwrap();
     }
 }
 

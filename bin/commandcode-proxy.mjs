@@ -54,6 +54,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('COMMANDCODE_PROXY_PORT', 18748);
 const HOST = process.env.COMMANDCODE_PROXY_HOST || '127.0.0.1';
@@ -587,14 +589,16 @@ const acp = {
     console.log(`[commandcode-proxy] ACP resident process started (pid ${child.pid}, start #${this.starts})`);
 
     let lineBuffer = '';
+    const stdoutDecoder = createStreamDecoder();
+    const stderrDecoder = createStreamDecoder();
     child.stdout.on('data', chunk => {
-      lineBuffer += chunk.toString('utf-8');
+      lineBuffer += stdoutDecoder.push(chunk);
       const lines = lineBuffer.split('\n');
       lineBuffer = lines.pop();
       for (const line of lines) this.handleLine(line);
     });
     child.stderr.on('data', chunk => {
-      const msg = chunk.toString('utf-8');
+      const msg = stderrDecoder.push(chunk);
       if (msg.trim().length > 0) console.warn(`[acp stderr] ${msg.trim().slice(0, 500)}`);
     });
     child.on('error', err => console.error(`[commandcode-proxy] ACP process error: ${err.message}`));
@@ -896,10 +900,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -907,6 +911,8 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
@@ -1059,6 +1065,8 @@ const server = http.createServer((req, res) => {
         timer.unref();
 
         let lineBuffer = '';
+        const stdoutDecoder = createStreamDecoder();
+        const stderrDecoder = createStreamDecoder();
         let fullContent = '';
         let finalText = null;
         let promptTokens = Math.max(1, Math.ceil(attempt.prompt.length / 4));
@@ -1139,7 +1147,7 @@ const server = http.createServer((req, res) => {
         };
 
         child.stdout.on('data', chunk => {
-          lineBuffer += chunk.toString('utf-8');
+          lineBuffer += stdoutDecoder.push(chunk);
           const lines = lineBuffer.split('\n');
           lineBuffer = lines.pop(); // remainder
           for (const line of lines) {
@@ -1148,7 +1156,7 @@ const server = http.createServer((req, res) => {
         });
 
         child.stderr.on('data', chunk => {
-          const msg = chunk.toString('utf-8');
+          const msg = stderrDecoder.push(chunk);
           stderrTail = (stderrTail + msg).slice(-2000);
           if (msg.trim().length > 0) {
             console.warn(`[commandcode-proxy stderr] ${msg.trim()}`);

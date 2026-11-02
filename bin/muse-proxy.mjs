@@ -31,6 +31,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 // Default port 18747: 18746 is claimed by design-code-proxy
 // (DESIGN_CODE_PROXY_PORT) in this repo's config, so muse-proxy takes the
@@ -239,8 +241,10 @@ const probeCliFlags = (subcommand) => new Promise((resolve) => {
   const timer = setTimeout(() => {
     try { child.kill('SIGKILL'); } catch { /* already gone */ }
   }, 10000);
-  child.stdout.on('data', c => { out += c.toString('utf-8'); });
-  child.stderr.on('data', c => { out += c.toString('utf-8'); });
+  const flagScanDecoder = createStreamDecoder();
+  child.stdout.on('data', c => { out += flagScanDecoder.push(c); });
+  const flagScanStderrDecoder = createStreamDecoder();
+  child.stderr.on('data', c => { out += flagScanStderrDecoder.push(c); });
   child.on('error', () => { clearTimeout(timer); resolve(null); });
   child.on('close', () => {
     clearTimeout(timer);
@@ -459,14 +463,16 @@ const warmHost = {
     this.child = child;
     this.stderrTail = '';
     let lineBuffer = '';
+    const stdoutDecoder = createStreamDecoder();
+    const stderrDecoder = createStreamDecoder();
     child.stdout.on('data', chunk => {
-      lineBuffer += chunk.toString('utf-8');
+      lineBuffer += stdoutDecoder.push(chunk);
       const lines = lineBuffer.split('\n');
       lineBuffer = lines.pop();
       for (const line of lines) this._onLine(line);
     });
     child.stderr.on('data', chunk => {
-      const msg = chunk.toString('utf-8');
+      const msg = stderrDecoder.push(chunk);
       this.stderrTail = (this.stderrTail + msg).slice(-2000);
       if (msg.trim().length > 0) console.warn(`[muse-proxy warm stderr] ${msg.trim()}`);
     });
@@ -1483,16 +1489,18 @@ const server = http.createServer((req, res) => {
   // HTTP response is piped through as-is. Without direct credentials the
   // route is not offered (404, as before direct mode existed).
   if (req.method === 'POST' && (pathname === '/v1/responses' || pathname === '/responses')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
       }
     });
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       const keyResult = await getDirectKey();
       if (keyResult.status === 'disabled' || keyResult.status === 'none') {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1581,10 +1589,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -1592,6 +1600,8 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
@@ -1707,6 +1717,8 @@ const server = http.createServer((req, res) => {
       }
 
       let lineBuffer = '';
+      const stdoutDecoder = createStreamDecoder();
+      const stderrDecoder = createStreamDecoder();
       let fullContent = '';
       let promptTokens = Math.max(1, Math.ceil(prompt.length / 4));
       let completionTokens = 0;
@@ -1766,7 +1778,7 @@ const server = http.createServer((req, res) => {
       };
 
       child.stdout.on('data', chunk => {
-        lineBuffer += chunk.toString('utf-8');
+        lineBuffer += stdoutDecoder.push(chunk);
         const lines = lineBuffer.split('\n');
         lineBuffer = lines.pop(); // remainder
         for (const line of lines) {
@@ -1775,7 +1787,7 @@ const server = http.createServer((req, res) => {
       });
 
       child.stderr.on('data', chunk => {
-        const msg = chunk.toString('utf-8');
+        const msg = stderrDecoder.push(chunk);
         stderrTail = (stderrTail + msg).slice(-2000);
         if (msg.trim().length > 0) {
           console.warn(`[muse-proxy stderr] ${msg.trim()}`);

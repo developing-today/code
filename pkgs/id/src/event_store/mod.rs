@@ -587,6 +587,26 @@ impl EventStore {
                     parents.push(*note);
                     parents.extend(note_parents.iter().copied());
                 }
+                // A note link's references live in its link operation, not in the after field:
+                // the source note, the asserting revision, the target note, and the
+                // optional pinned revision are dependencies too, so a surviving link
+                // keeps them alive through a prune; otherwise rebuilding the link
+                // projection after the prune would fail with UnknownTarget (#3816).
+                if let Some(crate::note_links::NoteLinkOp::Assert {
+                    source,
+                    revision,
+                    target,
+                    pin,
+                    ..
+                }) = &event.header.extensions.link
+                {
+                    parents.push(*source);
+                    parents.push(*revision);
+                    parents.push(*target);
+                    if let Some(pin) = pin {
+                        parents.push(*pin);
+                    }
+                }
                 let has_action = actions_table.get(event.id.as_bytes().as_slice())?.is_some();
                 events_by_id.insert(
                     event.id,
@@ -1363,6 +1383,7 @@ mod tests {
             document: None,
             removes: None,
             note: None,
+            link: None,
         }
     }
 

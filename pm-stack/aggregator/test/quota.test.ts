@@ -44,6 +44,34 @@ describe("quota extractors", () => {
     expect(p.state).toBe("healthy");
   });
 
+  test("claude and meta invalid reset captures yield resetsAt null and preserve the read (#2470)", () => {
+    const invalidResets = ["2026-13-28 14:00", "2026-02-30 14:00", "2026-10-39 14:00", "2026-10-28 99:99"];
+    for (const reset of invalidResets) {
+      const claudeView = `\n### Claude\n- weekly 68% used, weekly reset Wed ${reset} CDT\n`;
+      const claude = extractQuotaPools(claudeView, NOW).find((p) => p.id === "anthropic:claude-pro")!;
+      expect(claude.windows).toHaveLength(1);
+      expect(claude.windows[0].percent).toBe(68);
+      expect(claude.windows[0].resetsAt).toBeNull();
+
+      const metaView = `\n### Meta Model API\n- weekly quota 46% used at 03:20 CDT. Weekly reset today ${reset} CDT.\n`;
+      const meta = extractQuotaPools(metaView, NOW).find((p) => p.id === "meta:high-usage")!;
+      expect(meta.windows).toHaveLength(1);
+      expect(meta.windows[0].percent).toBe(46);
+      expect(meta.windows[0].resetsAt).toBeNull();
+      expect(meta.wallLiftsAt).toBeUndefined();
+    }
+  });
+
+  test("meta feb-30 reset neither discards the read nor invents a wall lift (#2470)", () => {
+    const burnedView = `\n### Meta Model API\n- weekly quota 46% used at 03:20 CDT, then burned to empty by morning sessions. Weekly reset today 2026-02-30 19:00 CDT.\n`;
+    const meta = extractQuotaPools(burnedView, NOW).find((p) => p.id === "meta:high-usage")!;
+    expect(meta.windows).toHaveLength(1);
+    expect(meta.windows[0].percent).toBe(46);
+    expect(meta.windows[0].resetsAt).toBeNull();
+    expect(meta.wallLiftsAt).toBeUndefined();
+    expect(meta.state).toBe("healthy");
+  });
+
   test("codex 7-day read", () => {
     const p = byId.get("openai:codex")!;
     expect(p.windows[0].percent).toBe(11);
@@ -264,6 +292,44 @@ describe("quota extractors", () => {
       expect(p.windows).toEqual([]);
       expect(p.note).toBeTruthy();
     }
+  });
+});
+
+describe("America/Chicago dated reads", () => {
+  const extractClaudeReset = (date: string, time: string) =>
+    extractQuotaPools(`### Claude\nweekly 68% used; weekly reset Wed ${date} ${time} CDT`).find(
+      (pool) => pool.id === "anthropic:claude-pro",
+    )!.windows[0].resetsAt;
+
+  test("CST-month reads use UTC-6", () => {
+    expect(extractClaudeReset("2026-12-16", "14:00")).toBe("2026-12-16T14:00:00-06:00");
+    expect(Date.parse(extractClaudeReset("2026-12-16", "14:00")!)).toBe(Date.parse("2026-12-16T20:00:00.000Z"));
+  });
+
+  test("CDT-month reads keep UTC-5", () => {
+    expect(extractClaudeReset("2026-07-16", "14:00")).toBe("2026-07-16T14:00:00-05:00");
+    expect(Date.parse(extractClaudeReset("2026-07-16", "14:00")!)).toBe(Date.parse("2026-07-16T19:00:00.000Z"));
+  });
+
+  test("a fall-back transition date uses the post-transition offset", () => {
+    expect(extractClaudeReset("2026-11-01", "03:30")).toBe("2026-11-01T03:30:00-06:00");
+    expect(Date.parse(extractClaudeReset("2026-11-01", "03:30")!)).toBe(Date.parse("2026-11-01T09:30:00.000Z"));
+  });
+
+  test("Meta does not treat a winter reset as passed an hour early", () => {
+    const view = `### Meta Model API\nweekly quota 46% used at 03:20 CDT, then burned to empty. Weekly reset today 2026-12-16 14:00 CDT.`;
+    const pool = extractQuotaPools(view, new Date("2026-12-16T19:30:00.000Z")).find(
+      (candidate) => candidate.id === "meta:high-usage",
+    )!;
+    expect(pool.state).toBe("walled");
+    expect(pool.wallLiftsAt).toBe("2026-12-16T14:00:00-06:00");
+  });
+
+  test("ClinePass relative windows anchor to a winter read in CST", () => {
+    const view = `### ClinePass\nMeasured 2026-12-16 ~14:00 CDT: 5-hour **0%** used; weekly **26%** used (resets in 0d 1h); monthly **69%** used (resets in 0d 2h).`;
+    const pool = extractQuotaPools(view).find((candidate) => candidate.id === "cline-pass:cline-pass")!;
+    expect(pool.windows[1].resetsAt).toBe("2026-12-16T21:00:00.000Z");
+    expect(pool.windows[2].resetsAt).toBe("2026-12-16T22:00:00.000Z");
   });
 });
 

@@ -86,6 +86,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
@@ -1623,6 +1624,14 @@ function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): strin
   return `<div class="strip">${parts.join(" ")}</div>`;
 }
 
+function briefPanelsForRefs(refs: RefKey[], briefs?: Map<RefKey, ItemBrief>): string {
+  return [...new Set(refs)]
+    .map((ref) => briefs?.get(ref))
+    .filter((brief): brief is ItemBrief => Boolean(brief))
+    .map(briefPanelHtml)
+    .join("");
+}
+
 // --- Board view -----------------------------------------------------------
 
 /** The board's card grid alone (#1444 fragment payload). */
@@ -1634,6 +1643,7 @@ export function renderBoardBody(
     actionsByObject?: Map<string, DashAction[]>;
     poolByRef?: Map<RefKey, ProjectPoolItem>;
     identities?: AuthorIdentity[];
+    briefs?: Map<RefKey, ItemBrief>;
   },
   renderOpts?: { showAllDone?: boolean },
 ): string {
@@ -1675,6 +1685,7 @@ export function renderBoardBody(
         .map((item) => {
           const repo = item.repo ? `<span class="muted">${esc(item.repo)}</span><br>` : "";
           const cmt = counts ? commentBadge(item.id, counts) : "";
+          const briefs = briefPanelsForRefs(item.links.map((link) => link.ref), act?.briefs);
           if (item.source === "orchestrator") {
             // Synthetic in-flight entry: visibly not a Kaneo card. Its
             // GitHub refs link directly (no execution strip — the
@@ -1687,7 +1698,7 @@ export function renderBoardBody(
             const refs = item.links.length
               ? `<div class="strip">${item.links.map((l) => `<a class="badge open" href="${esc(refUrl(l.ref))}">${esc(l.ref)}</a>`).join(" ")}</div>`
               : "";
-            return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}</div>`;
+            return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}${briefs}</div>`;
           }
           const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
           // #1154: a card whose linked issue sits in the Project pool
@@ -1701,7 +1712,7 @@ export function renderBoardBody(
             }
           }
           const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}</div>`;
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1732,6 +1743,7 @@ export function renderBoard(
     actionsByObject?: Map<string, DashAction[]>;
     poolByRef?: Map<RefKey, ProjectPoolItem>;
     identities?: AuthorIdentity[];
+    briefs?: Map<RefKey, ItemBrief>;
   },
   renderOpts?: { showAllDone?: boolean },
 ): string {
@@ -1841,6 +1853,7 @@ function roadmapCard(
   counts?: Map<string, number | CommentKindCounts>,
   drill?: RoadmapDrill,
   annotations?: Map<string, RoadmapAnnotation[]>,
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1855,7 +1868,8 @@ function roadmapCard(
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
     : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}</div>`;
+  const briefPanels = briefPanelsForRefs(refs, briefs);
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1868,6 +1882,7 @@ function timelineTable(
   counts?: Map<string, number | CommentKindCounts>,
   drill?: Map<string, RoadmapDrill>,
   annotations?: Map<string, RoadmapAnnotation[]>,
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1875,7 +1890,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
@@ -1895,6 +1910,7 @@ export function renderRoadmap(
   drill?: Map<string, RoadmapDrill>,
   annotations?: Map<string, RoadmapAnnotation[]>,
   viewQuery = "",
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1911,15 +1927,15 @@ export function renderRoadmap(
   ).join("");
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const sections = dg.lanes
       .map(
         (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
+          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
       )
       .join("");
     const notes: string[] = [];
@@ -1961,6 +1977,8 @@ export interface ItemExtras {
   serviceLinks?: ItemServiceLink[];
   /** Present when this item's Project-pool entry is an epic. */
   epicRollup?: EpicRollup;
+  /** Project-pool briefs for linked refs (#1279). */
+  briefs?: Map<RefKey, ItemBrief>;
 }
 
 function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
@@ -2033,6 +2051,7 @@ export function renderItem(
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
+${extras?.briefs ? briefPanelsForRefs(links.map((link) => link.ref), extras.briefs) : ""}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
@@ -2054,9 +2073,16 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const refs = r.taskRefs.length
-    ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
-    : "";
+  const renderedRefs = r.taskRefs.flatMap((ref) => {
+    try {
+      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
+    } catch {
+      // A malformed ref may still exist in an older or ungated in-memory
+      // record. Keep the session visible and omit only the invalid link.
+      return [];
+    }
+  });
+  const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
   // registry identity; historical records render no controls.
   const badges = actionBadgesHtml(act?.actions);
@@ -2939,8 +2965,9 @@ export function renderAttention(
   counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   act?: AttentionAct,
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
-  const sections = attentionSections(view, coverage, counts, act);
+  const sections = attentionSections(view, coverage, counts, act, briefs);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
@@ -2964,6 +2991,7 @@ export function attentionSections(
   coverage: SourceCoverage[],
   counts?: Map<string, number | CommentKindCounts>,
   act?: AttentionAct,
+  briefs?: Map<RefKey, ItemBrief>,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -3066,7 +3094,10 @@ export function attentionSections(
     if (cs.suppressed) continue;
     const drewAct = tierAct(item);
     drewCardsList.push({
-      html: bulkPickHtml(objectRef, item.title, act, drewAct.disabledReason) + tierItemCard(item, "Why you", counts, drewAct),
+      html:
+        bulkPickHtml(objectRef, item.title, act, drewAct.disabledReason) +
+        tierItemCard(item, "Why you", counts, drewAct) +
+        (item.ref ? briefPanelsForRefs([item.ref], briefs) : ""),
       sinceMs: Date.parse(item.since) || 0,
       seenMs: Date.parse(item.lastSeenAt) || 0,
       rank: item.horizon ? (HORIZON_RANK[item.horizon] ?? 5) : 5,
@@ -3095,7 +3126,11 @@ export function attentionSections(
     const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
     const orchAct = tierAct(item);
-    orchCardsList.push(bulkPickHtml(objectRef, item.title, act, orchAct.disabledReason) + tierItemCard(item, "Why the fleet", counts, orchAct));
+    orchCardsList.push(
+      bulkPickHtml(objectRef, item.title, act, orchAct.disabledReason) +
+        tierItemCard(item, "Why the fleet", counts, orchAct) +
+        (item.ref ? briefPanelsForRefs([item.ref], briefs) : ""),
+    );
   }
   // Store-only suppressed refs: items the publisher no longer lists
   // (their dismissal was applied and they left the tiers) stay visible
@@ -3460,15 +3495,49 @@ export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceD
 
 // --- DNS register page (#906 §1, data from #902) -----------------------------
 
-function dnsTable(entries: DnsEntry[]): string {
+function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>, nextRenewal?: DnsEntry | null): string {
   const rows = entries
     .map(
       (e) =>
-        `<tr><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
+        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Domain register</caption><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table id="dns-register-table"><caption>Domain register</caption><thead><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</tbody></table></div>`;
 }
+
+const DNS_FILTER_SCRIPT = `<script>
+(function () {
+  var buttons = document.querySelectorAll("[data-dns-filter]");
+  var rows = document.querySelectorAll("[data-dns-row]");
+  buttons.forEach(function (button) {
+    button.addEventListener("click", function () {
+      var filter = button.getAttribute("data-dns-filter");
+      buttons.forEach(function (candidate) {
+        var selected = candidate === button;
+        candidate.classList.toggle("primary", selected);
+        candidate.setAttribute("aria-pressed", String(selected));
+      });
+      rows.forEach(function (row) {
+        var matches = filter === "all" || (filter === "renewing-soon"
+          ? row.getAttribute("data-dns-renewing-soon") === "true"
+          : row.getAttribute("data-dns-status") === filter);
+        row.hidden = !matches;
+      });
+    });
+  });
+  var nextLink = document.querySelector("[data-dns-next-link]");
+  if (nextLink) {
+    nextLink.addEventListener("click", function () {
+      buttons.forEach(function (candidate) {
+        var selected = candidate.getAttribute("data-dns-filter") === "all";
+        candidate.classList.toggle("primary", selected);
+        candidate.setAttribute("aria-pressed", String(selected));
+      });
+      rows.forEach(function (row) { row.hidden = false; });
+    });
+  }
+})();
+</script>`;
 
 export function renderDns(section: DnsSection | null, provenance: Provenance, detail?: ProvenanceDetail): string {
   const chips = detail ? freshnessChips(detail, ["dns"]) : "";
@@ -3485,23 +3554,36 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
   const s = summarizeDns(section);
   const next = s.nextRenewal;
   const soonTotal = Math.round(s.renewingSoon.reduce((sum, e) => sum + (e.priceUsd ?? 0), 0) * 100) / 100;
+  const renewingSoon = new Set(s.renewingSoon);
+  const filters = [
+    ["all", "All", section.entries.length],
+    ["active", "Active", s.active.length],
+    ["earmarked", "Earmarked", s.earmarked.length],
+    ["unused", "Unused", s.unused.length],
+    ["renewing-soon", "Renewing soon", s.renewingSoon.length],
+  ] as const;
+  const filterChips = filters
+    .map(
+      ([filter, label, count], index) =>
+        `<button type="button" class="qchip dns-filter${index === 0 ? " primary" : ""}" data-dns-filter="${filter}" aria-pressed="${index === 0}">${label} (${count})</button>`,
+    )
+    .join("");
   const body = `<h1>DNS / domain register</h1>
 <p class="muted">${section.entries.length} domains · $${section.totalAnnualListUsd.toFixed(2)}/yr at list renewal prices · register parsed ${fmtDate(section.generatedAt)} (${esc(section.source)}). The register is maintained by the #902 pipeline — this page renders it, never edits it. Machine-first: <a href="/api/dns.json">/api/dns.json</a>.</p>
 <div class="board">
 <div class="card"><strong>Next renewal</strong><br>${
     next
-      ? `<strong>${esc(next.domain)}</strong> — ${esc(next.renewal)}${next.priceUsd != null ? ` ($${next.priceUsd.toFixed(2)})` : ""}<br><span class="muted">${esc(next.plan)}</span>`
+      ? `${esc(next.renewal)}${next.priceUsd != null ? ` · $${next.priceUsd.toFixed(2)}` : ""}<br><span class="muted">See <a href="#dns-next-renewal" data-dns-next-link>its row in the renewal-sorted register</a>.</span>`
       : "—"
   }</div>
-<div class="card"><strong>Renewing in 45 days</strong><br>${s.renewingSoon.length} domain${s.renewingSoon.length === 1 ? "" : "s"} · $${soonTotal.toFixed(2)}<br><span class="muted">Auto-renew is ON across the account portfolio — this is upcoming spend, not lapse risk.</span></div>
+<div class="card"><strong>Renewing in 45 days</strong><br>${s.renewingSoon.length} domain${s.renewingSoon.length === 1 ? "" : "s"} · $${soonTotal.toFixed(2)} at list price</div>
+<div class="card"><strong>Auto-renew</strong><br>${s.autoRenew.on} ON · ${s.autoRenew.off} OFF · ${s.autoRenew.unknown} unknown</div>
 <div class="card"><strong>Portfolio shape</strong><br>${s.active.length} in use · ${s.earmarked.length} unused but earmarked · ${s.unused.length} completely unused</div>
 </div>
-<h2>Next renewals</h2>${dnsTable(section.entries.slice(0, 10))}
-<h2>In use (${s.active.length})</h2>${dnsTable(s.active)}
-<h2>Unused but earmarked (${s.earmarked.length})</h2><p class="muted">No public-facing use, but the name or plan ties them to a project family (earmark as recorded in the register).</p>${dnsTable(s.earmarked)}
-<h2>Completely unused (${s.unused.length})</h2><p class="muted">Nothing but registrar defaults — each still auto-renews until someone decides otherwise.</p>${dnsTable(s.unused)}
-<details><summary>Full register (${section.entries.length})</summary>${dnsTable(section.entries)}</details>`;
-  return layout("DNS register", body, provenance, "/dns", "", chips);
+<h2>Domain register (${section.entries.length})</h2>
+<div class="chips" role="group" aria-label="Filter domains by status">${filterChips}</div>
+${dnsTable(section.entries, renewingSoon, next)}`;
+  return layout("DNS register", body, provenance, "/dns", DNS_FILTER_SCRIPT, chips);
 }
 
 // --- AA cost explorer page (ainventory import data via the fleet feed) -----
@@ -5834,6 +5916,20 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
 /** The Projects pool body (cards, chips, coverage) without the page
  * shell — rendered standalone by renderProjects and, since the #1497
  * merge, as the pool section of /program. */
+/** The per-item brief panel (#1279): visibly labelled as derived, every
+ * line carrying its evidence link. The identical brief object ships in
+ * the JSON twin (/api/projects.json `briefs`). */
+export function briefPanelHtml(brief: ItemBrief): string {
+  const ev = (e: { text: string; url: string }) => `<a href="${esc(e.url)}">${esc(e.text)}</a>`;
+  const activity = brief.lastActivity.evidence
+    ? `${esc(brief.lastActivity.text)} Evidence: ${ev(brief.lastActivity.evidence)}.`
+    : esc(brief.lastActivity.text);
+  const clash = brief.disagreement
+    ? `<br><span>⚠ ${esc(brief.disagreement.text)} Evidence: ${ev(brief.disagreement.evidence)}.</span>`
+    : "";
+  return `<div class="brief" style="border-left:3px solid #888;padding-left:0.6em;margin-top:0.4em"><strong>Derived brief</strong> <span class="muted">(derived from the projection — not authored)</span><br><span>State: ${esc(brief.state.text)} Evidence: ${ev(brief.state.evidence)}.</span><br><span>Blocker: ${esc(brief.blocker.text)} Evidence: ${ev(brief.blocker.evidence)}.</span><br><span>${activity}</span><br><span>Next: ${esc(brief.nextAction.text)} Evidence: ${ev(brief.nextAction.evidence)}.</span>${clash}</div>`;
+}
+
 export function projectsBodyHtml(
   pool: ProjectPoolItem[],
   opts: {
@@ -5845,6 +5941,9 @@ export function projectsBodyHtml(
     coverage?: CoverageSnapshotFile | null;
     /** Where the area chips point: /projects standalone, /program once merged (#1497). */
     basePath?: string;
+    /** Prebuilt briefs (#1279), e.g. with comment activity folded in.
+     * Absent: briefs are built here from the pool + orchestration only. */
+    briefs?: Map<RefKey, ItemBrief>;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -5907,7 +6006,8 @@ export function projectsBodyHtml(
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}</div>`;
+      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
@@ -6031,12 +6131,14 @@ export function renderProgram(
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
+    /** Prebuilt briefs (#1279), e.g. with comment activity folded in. */
+    briefs?: Map<RefKey, ItemBrief>;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program" })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];

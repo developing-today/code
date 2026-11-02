@@ -331,6 +331,7 @@ pub fn sign_authorisation(
             document: None,
             removes: None,
             note: None,
+            link: None,
         },
     )?)
 }
@@ -361,6 +362,7 @@ pub fn sign_revoke(
             document: None,
             removes: None,
             note: None,
+            link: None,
         },
     )?)
 }
