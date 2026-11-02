@@ -85,6 +85,7 @@ fn commonmark_options() -> Options<'static> {
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
     options.extension.table = true;
+    options.extension.autolink = true; // #998: bare URLs/emails become links
     options.extension.footnotes = true;
     options.extension.front_matter_delimiter = Some("---".to_owned());
     options.parse.smart = false; // Don't convert quotes/dashes
@@ -5473,6 +5474,73 @@ mod tests {
             assert_eq!(first, original, "first save for {original:?}");
             assert_eq!(first, second, "no fixpoint for {original:?}");
         }
+    }
+
+    #[test]
+    fn test_bare_url_becomes_link_mark() {
+        // #998: with the autolink extension enabled, a bare URL parses
+        // to a text node carrying a link mark, like the angle form.
+        let doc = markdown_to_prosemirror("visit https://example.com/path?a=1 now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare URL has no link mark");
+        let link_mark = link_text.unwrap()["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(
+            link_mark["attrs"]["href"],
+            "https://example.com/path?a=1"
+        );
+    }
+
+    #[test]
+    fn test_bare_email_becomes_link_mark() {
+        // #998: a bare email address autolinks with a mailto: href.
+        let doc = markdown_to_prosemirror("mail me@example.com today");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare email has no link mark");
+        let link = link_text.unwrap();
+        assert_eq!(link["text"], "me@example.com");
+        let link_mark = link["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(link_mark["attrs"]["href"], "mailto:me@example.com");
+    }
+
+    #[test]
+    fn test_bare_url_fixpoint_and_code_span_negative() {
+        // #998: a bare URL round-trips to a stable fixpoint, and a URL
+        // inside a code span stays literal text with no link mark.
+        let (first, second) = two_saves("visit https://example.com/path?a=1 now\n");
+        assert_eq!(first, second, "no fixpoint for bare URL");
+        assert!(
+            first.contains("https://example.com/path?a=1"),
+            "URL lost in save: {first:?}"
+        );
+
+        let doc = markdown_to_prosemirror("run `https://example.com` now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let has_link = para_content.iter().any(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(!has_link, "code-span URL must not carry a link mark");
     }
 
     #[test]
