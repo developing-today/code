@@ -7208,9 +7208,20 @@
         // morning after its 2026-11-01 park. Spark ALSO keeps its
         // workhorse-weighted seat (spark-plan#xhigh) — this seat is
         // additive, the same shape as the 2026-10-29 wrapper.
+        // 2026-11-02 (effort audit, Drew asked): the Spark leg takes its
+        // #xhigh pin, matching every other Spark seat in the fleet
+        // (workhorse-weighted relief, specialist, speed) and the
+        // price-per-point rulings behind them: AA/workbook Spark
+        // xhigh II 45 @ $1.37/task = $0.030/pt beats max II 48 @
+        // $1.60 = $0.033/pt, and Drew dropped specialist Spark
+        // max -> xhigh 2026-11-01 on the same math. The Luna leg
+        // was already correct: luna-plan#xhigh at $0.114 per 100
+        // score pts (AA v5) is the Luna elbow - max jumps to $0.184
+        // for its 38-pt ceiling. The bare Spark seat was the only
+        // unpinned effort in the tier (ledger: variant NULL).
         "targets": [
           "opencode-route/luna-plan#xhigh",
-          "muse-direct/muse-spark-1.3-contributor"
+          "muse-direct/muse-spark-1.3-contributor#xhigh"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
