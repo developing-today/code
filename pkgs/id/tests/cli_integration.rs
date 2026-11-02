@@ -3633,20 +3633,16 @@ mod serve_tests {
         assert_ne!(second.port(), 0);
         assert_ne!(first.port(), second.port());
         for addr in [first, second] {
-            let mut stream =
-                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5))
-                    .unwrap();
+            let mut stream = StdTcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
             stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            std::io::Write::write_all(
-                &mut stream,
-                b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-            )
-            .unwrap();
-            let mut reader = std::io::BufReader::new(stream);
+            stream
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut reader = BufReader::new(stream);
             let mut status_line = Vec::new();
-            std::io::BufRead::read_until(&mut reader, b'\n', &mut status_line).unwrap();
+            reader.read_until(b'\n', &mut status_line).unwrap();
             assert!(
                 status_line.starts_with(b"HTTP/1.1 200"),
                 "listener {addr} should answer HTTP 200, got {:?}",
