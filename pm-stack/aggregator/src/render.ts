@@ -3467,11 +3467,11 @@ export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceD
 
 // --- DNS register page (#906 §1, data from #902) -----------------------------
 
-function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>): string {
+function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>, nextRenewal?: DnsEntry | null): string {
   const rows = entries
     .map(
       (e) =>
-        `<tr data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
+        `<tr${e === nextRenewal ? ' id="dns-next-renewal"' : ""} data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
   return `<div class="tblwrap"><table id="dns-register-table"><caption>Domain register</caption><thead><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</tbody></table></div>`;
@@ -3497,6 +3497,17 @@ const DNS_FILTER_SCRIPT = `<script>
       });
     });
   });
+  var nextLink = document.querySelector("[data-dns-next-link]");
+  if (nextLink) {
+    nextLink.addEventListener("click", function () {
+      buttons.forEach(function (candidate) {
+        var selected = candidate.getAttribute("data-dns-filter") === "all";
+        candidate.classList.toggle("primary", selected);
+        candidate.setAttribute("aria-pressed", String(selected));
+      });
+      rows.forEach(function (row) { row.hidden = false; });
+    });
+  }
 })();
 </script>`;
 
@@ -3534,7 +3545,7 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
 <div class="board">
 <div class="card"><strong>Next renewal</strong><br>${
     next
-      ? `${esc(next.renewal)}${next.priceUsd != null ? ` · $${next.priceUsd.toFixed(2)}` : ""}<br><span class="muted">See the first row in the renewal-sorted register.</span>`
+      ? `${esc(next.renewal)}${next.priceUsd != null ? ` · $${next.priceUsd.toFixed(2)}` : ""}<br><span class="muted">See <a href="#dns-next-renewal" data-dns-next-link>its row in the renewal-sorted register</a>.</span>`
       : "—"
   }</div>
 <div class="card"><strong>Renewing in 45 days</strong><br>${s.renewingSoon.length} domain${s.renewingSoon.length === 1 ? "" : "s"} · $${soonTotal.toFixed(2)} at list price</div>
@@ -3543,7 +3554,7 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
 </div>
 <h2>Domain register (${section.entries.length})</h2>
 <div class="chips" role="group" aria-label="Filter domains by status">${filterChips}</div>
-${dnsTable(section.entries, renewingSoon)}`;
+${dnsTable(section.entries, renewingSoon, next)}`;
   return layout("DNS register", body, provenance, "/dns", DNS_FILTER_SCRIPT, chips);
 }
 

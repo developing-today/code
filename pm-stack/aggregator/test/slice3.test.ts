@@ -449,6 +449,18 @@ describe("pages manifest + slice-3 renders", () => {
     expect(html).not.toContain("<details><summary>Full register");
   });
 
+  test("dns next-renewal card links to the actual next-renewal row, not the first row", () => {
+    const past = { ...FIXTURE_DNS.entries[0], domain: "past.example", renewal: "2020-01-01" };
+    const upcoming = { ...FIXTURE_DNS.entries[0], domain: "upcoming.example", renewal: "2999-01-01" };
+    const section = { ...FIXTURE_DNS, entries: [past, upcoming] };
+    const html = renderDns(section, fixtureSource().provenance());
+    expect(html).not.toContain("See the first row");
+    expect(html).toContain('href="#dns-next-renewal"');
+    const rowStart = html.indexOf('id="dns-next-renewal"');
+    expect(rowStart).toBeGreaterThan(-1);
+    expect(html.slice(rowStart, rowStart + 500)).toContain("upcoming.example");
+  });
+
   test("dns page without a section says so honestly", () => {
     const html = renderDns(null, fixtureSource().provenance());
     expect(html).toContain("has not reached the dashboard yet");
