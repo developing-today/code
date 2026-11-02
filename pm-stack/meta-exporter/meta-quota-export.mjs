@@ -205,37 +205,130 @@ export function failureDocument({ attemptedAt, status, detail }) {
 
 // ---------- CDP plumbing (only used by the main run) ----------
 
-async function httpJson(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  return res.json();
+const DEFAULT_TIMEOUTS = Object.freeze({
+  httpMs: 10_000,
+  websocketOpenMs: 10_000,
+  commandMs: 30_000,
+});
+
+async function httpJson(url, timeoutMs = DEFAULT_TIMEOUTS.httpMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return await res.json();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`HTTP request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
-function connectWs(wsUrl) {
+export function connectWs(
+  wsUrl,
+  {
+    openTimeoutMs = DEFAULT_TIMEOUTS.websocketOpenMs,
+    commandTimeoutMs = DEFAULT_TIMEOUTS.commandMs,
+    WebSocketImpl = WebSocket,
+  } = {},
+) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocketImpl(wsUrl);
     const pending = new Map();
     let id = 0;
-    ws.onmessage = (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.id && pending.has(m.id)) {
-        const p = pending.get(m.id);
-        pending.delete(m.id);
-        if (m.error) p.reject(new Error(JSON.stringify(m.error)));
-        else p.resolve(m.result);
+    let state = "connecting";
+
+    const rejectPending = (error) => {
+      for (const [pendingId, call] of pending) {
+        clearTimeout(call.timer);
+        pending.delete(pendingId);
+        call.reject(error);
       }
     };
-    ws.onopen = () =>
+    const closeSocket = () => {
+      try {
+        ws.close();
+      } catch {
+        // Closing a socket that is already closing is harmless.
+      }
+    };
+    const fail = (error) => {
+      if (state === "connecting") {
+        state = "closed";
+        clearTimeout(openTimer);
+        reject(error);
+      } else if (state === "open") {
+        state = "closed";
+        rejectPending(error);
+      }
+    };
+    const openTimer = setTimeout(() => {
+      fail(new Error(`websocket open timed out after ${openTimeoutMs}ms`));
+      closeSocket();
+    }, openTimeoutMs);
+
+    ws.onmessage = (ev) => {
+      let message;
+      try {
+        message = JSON.parse(ev.data);
+      } catch (error) {
+        fail(new Error(`invalid websocket response: ${error.message}`));
+        closeSocket();
+        return;
+      }
+      if (message.id != null && pending.has(message.id)) {
+        const call = pending.get(message.id);
+        pending.delete(message.id);
+        clearTimeout(call.timer);
+        if (message.error) call.reject(new Error(JSON.stringify(message.error)));
+        else call.resolve(message.result);
+      }
+    };
+    ws.onopen = () => {
+      if (state !== "connecting") return;
+      state = "open";
+      clearTimeout(openTimer);
       resolve({
         send: (method, params = {}) =>
           new Promise((res, rej) => {
-            const i = ++id;
-            pending.set(i, { resolve: res, reject: rej });
-            ws.send(JSON.stringify({ id: i, method, params }));
+            if (state !== "open") {
+              rej(new Error("websocket is not open"));
+              return;
+            }
+            const requestId = ++id;
+            const timer = setTimeout(() => {
+              pending.delete(requestId);
+              rej(new Error(`websocket ${method} timed out after ${commandTimeoutMs}ms`));
+            }, commandTimeoutMs);
+            pending.set(requestId, { resolve: res, reject: rej, timer });
+            try {
+              ws.send(JSON.stringify({ id: requestId, method, params }));
+            } catch (error) {
+              pending.delete(requestId);
+              clearTimeout(timer);
+              rej(error);
+            }
           }),
-        close: () => ws.close(),
+        close: () => {
+          if (state === "open") {
+            state = "closed";
+            rejectPending(new Error("websocket closed by client"));
+          }
+          closeSocket();
+        },
       });
-    ws.onerror = (e) => reject(new Error(`websocket error: ${e.message ?? "unknown"}`));
+    };
+    ws.onerror = (event) => {
+      fail(new Error(`websocket error: ${event.message ?? "unknown"}`));
+      closeSocket();
+    };
+    ws.onclose = () => {
+      fail(new Error("websocket closed before response"));
+    };
   });
 }
 
@@ -304,14 +397,18 @@ async function fetchQuotaPayloads(client, teamId) {
 
 /** Best-effort PAYG balance from the billing iframe's DOM text.
  * Absence is reported as null, never invented. */
-async function fetchPaygBalance(cdpBase) {
+async function fetchPaygBalance(cdpBase, { timeouts, WebSocketImpl } = {}) {
   try {
-    const targets = await httpJson(`${cdpBase}/json/list`);
+    const targets = await httpJson(`${cdpBase}/json/list`, timeouts.httpMs);
     const frame = targets.find(
       (t) => t.type === "iframe" && typeof t.url === "string" && t.url.includes("billing.dev.meta.ai"),
     );
     if (!frame?.webSocketDebuggerUrl) return null;
-    const client = await connectWs(frame.webSocketDebuggerUrl);
+    const client = await connectWs(frame.webSocketDebuggerUrl, {
+      openTimeoutMs: timeouts.websocketOpenMs,
+      commandTimeoutMs: timeouts.commandMs,
+      WebSocketImpl,
+    });
     try {
       const text = await evaluate(client, "document.body ? document.body.innerText : ''");
       return parsePaygBalance(text);
@@ -332,12 +429,45 @@ async function writeOutputs(outDir, doc) {
   await appendFile(join(outDir, "history.jsonl"), `${JSON.stringify(doc)}\n`, "utf8");
 }
 
-export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID } = {}) {
+/** Run one export and always write either its success or failure document. */
+export async function exportAndWrite({ outDir, ...runOptions } = {}) {
+  try {
+    const doc = await run(runOptions);
+    await writeOutputs(outDir, doc);
+    return { doc, exitCode: 0, error: null, outputError: null };
+  } catch (error) {
+    const err =
+      error instanceof ExportError
+        ? error
+        : new ExportError("fetch-failed", 7, `unexpected: ${error.message ?? String(error)}`);
+    const doc = failureDocument({
+      attemptedAt: new Date().toISOString(),
+      status: err.status,
+      detail: err.message,
+    });
+    let outputError = null;
+    try {
+      await writeOutputs(outDir, doc);
+    } catch (writeError) {
+      outputError = writeError;
+    }
+    return { doc, exitCode: err.exitCode, error: err, outputError };
+  }
+}
+
+export async function run({
+  cdpPort = 19222,
+  outDir,
+  teamId = DEFAULT_TEAM_ID,
+  timeouts = {},
+  WebSocketImpl = WebSocket,
+} = {}) {
+  const deadlines = { ...DEFAULT_TIMEOUTS, ...timeouts };
   const attemptedAt = new Date().toISOString();
   const cdpBase = `http://127.0.0.1:${cdpPort}`;
   let targets;
   try {
-    targets = await httpJson(`${cdpBase}/json/list`);
+    targets = await httpJson(`${cdpBase}/json/list`, deadlines.httpMs);
   } catch (e) {
     throw new ExportError("cdp-unavailable", 4, `CDP ${cdpBase}/json/list unreachable: ${e.message}`);
   }
@@ -349,7 +479,11 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID } 
   }
   const effectiveTeam =
     new URL(page.url).searchParams.get("team_id") ?? teamId;
-  const client = await connectWs(page.webSocketDebuggerUrl);
+  const client = await connectWs(page.webSocketDebuggerUrl, {
+    openTimeoutMs: deadlines.websocketOpenMs,
+    commandTimeoutMs: deadlines.commandMs,
+    WebSocketImpl,
+  });
   let bodies;
   try {
     bodies = await fetchQuotaPayloads(client, effectiveTeam);
@@ -358,7 +492,10 @@ export async function run({ cdpPort = 19222, outDir, teamId = DEFAULT_TEAM_ID } 
   }
   const parsed = parseSubscriptionQuota(bodies.quota);
   const freeCreditsUsd = parseBillingBanner(bodies.banner);
-  const paygBalanceUsd = await fetchPaygBalance(cdpBase);
+  const paygBalanceUsd = await fetchPaygBalance(cdpBase, {
+    timeouts: deadlines,
+    WebSocketImpl,
+  });
   return successDocument({
     measuredAt: new Date().toISOString(),
     parsed,
@@ -376,28 +513,17 @@ async function main() {
   const outDir = opt("--out-dir", join(homedir(), "atlas", "meta-quota-export"));
   const cdpPort = Number(opt("--cdp-port", "19222"));
   const teamId = opt("--team-id", process.env.META_TEAM_ID ?? DEFAULT_TEAM_ID);
-  try {
-    const doc = await run({ cdpPort, outDir, teamId });
-    await writeOutputs(outDir, doc);
+  const outcome = await exportAndWrite({ cdpPort, outDir, teamId });
+  if (outcome.exitCode === 0) {
+    const { doc } = outcome;
     console.log(JSON.stringify({ status: doc.status, measuredAt: doc.measuredAt, outDir }));
-  } catch (e) {
-    const err =
-      e instanceof ExportError
-        ? e
-        : new ExportError("fetch-failed", 7, `unexpected: ${e.message ?? String(e)}`);
-    const doc = failureDocument({
-      attemptedAt: new Date().toISOString(),
-      status: err.status,
-      detail: err.message,
-    });
-    try {
-      await writeOutputs(outDir, doc);
-    } catch (writeErr) {
-      console.error(`meta-quota-export: could not write outputs: ${writeErr.message}`);
-    }
-    console.error(`meta-quota-export: ${err.status}: ${err.message}`);
-    process.exit(err.exitCode);
+    return;
   }
+  if (outcome.outputError) {
+    console.error(`meta-quota-export: could not write outputs: ${outcome.outputError.message}`);
+  }
+  console.error(`meta-quota-export: ${outcome.error.status}: ${outcome.error.message}`);
+  process.exit(outcome.exitCode);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

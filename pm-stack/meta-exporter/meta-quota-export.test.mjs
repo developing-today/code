@@ -1,9 +1,16 @@
-// Tests for the pure parsing core of meta-quota-export.mjs.
+// Tests for the parser and bounded transport paths of meta-quota-export.mjs.
 // Run: node --test pm-stack/meta-exporter/
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
+  connectWs,
   ExportError,
+  exportAndWrite,
   failureDocument,
   parseBillingBanner,
   parsePaygBalance,
@@ -266,5 +273,139 @@ test("parseSubscriptionQuota: epoch window endpoints are inclusive", () => {
     const payload = structuredClone(QUOTA);
     payload.subscription_quota.as_of = epoch;
     assert.equal(parseSubscriptionQuota(payload).consoleAsOf, expected);
+  }
+});
+
+async function listen(server) {
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return server.address().port;
+}
+
+async function closeServer(server) {
+  server.closeAllConnections();
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+test("a non-answering CDP HTTP endpoint writes bounded failure documents", async () => {
+  const server = createServer(() => {});
+  const port = await listen(server);
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-http-timeout-"));
+  try {
+    const result = await exportAndWrite({
+      cdpPort: port,
+      outDir,
+      timeouts: { httpMs: 30 },
+    });
+
+    assert.equal(result.exitCode, 4);
+    assert.equal(result.doc.status, "cdp-unavailable");
+    assert.match(result.doc.detail, /timed out/i);
+    assert.equal("windows" in result.doc, false);
+
+    const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+    const history = (await readFile(join(outDir, "history.jsonl"), "utf8")).trim().split("\n");
+    assert.deepEqual(latest, result.doc);
+    assert.equal(history.length, 1);
+    assert.deepEqual(JSON.parse(history[0]), result.doc);
+  } finally {
+    await closeServer(server);
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("a non-answering CDP command writes fetch-failed output within its deadline", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify([
+      {
+        type: "page",
+        url: "https://dev.meta.ai/",
+        webSocketDebuggerUrl: "ws://fake-cdp/",
+      },
+    ]));
+  });
+  const port = await listen(server);
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-ws-timeout-"));
+  class SilentWebSocket {
+    constructor() {
+      queueMicrotask(() => this.onopen?.({}));
+    }
+    send() {}
+    close() {
+      this.onclose?.({});
+    }
+  }
+
+  try {
+    const result = await exportAndWrite({
+      cdpPort: port,
+      outDir,
+      WebSocketImpl: SilentWebSocket,
+      timeouts: { httpMs: 100, websocketOpenMs: 100, commandMs: 30 },
+    });
+
+    assert.equal(result.exitCode, 7);
+    assert.equal(result.doc.status, "fetch-failed");
+    assert.match(result.doc.detail, /timed out/i);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(outDir, "latest.json"), "utf8")),
+      result.doc,
+    );
+    const history = (await readFile(join(outDir, "history.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(history.length, 1);
+    assert.deepEqual(JSON.parse(history[0]), result.doc);
+  } finally {
+    await closeServer(server);
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("connectWs bounds open and rejects every pending command on close or error", async () => {
+  let unopenedSocket;
+  class NeverOpenWebSocket {
+    constructor() {
+      unopenedSocket = this;
+    }
+    close() {
+      this.closed = true;
+    }
+  }
+
+  await assert.rejects(
+    connectWs("ws://fake-cdp/", {
+      WebSocketImpl: NeverOpenWebSocket,
+      openTimeoutMs: 10,
+      commandTimeoutMs: 20,
+    }),
+    /timed out/i,
+  );
+  assert.equal(unopenedSocket.closed, true);
+
+  for (const [event, emit] of [
+    ["close", (socket) => socket.onclose?.({})],
+    ["error", (socket) => socket.onerror?.({ message: "test socket failure" })],
+  ]) {
+    class DisruptedWebSocket {
+      constructor() {
+        queueMicrotask(() => this.onopen?.({}));
+      }
+      send() {
+        queueMicrotask(() => emit(this));
+      }
+      close() {}
+    }
+    const client = await connectWs("ws://fake-cdp/", {
+      WebSocketImpl: DisruptedWebSocket,
+      openTimeoutMs: 100,
+      commandTimeoutMs: 100,
+    });
+    const pending = [client.send("one"), client.send("two")];
+    const results = await Promise.allSettled(pending);
+    assert.equal(results.length, 2, `${event} should settle both requests`);
+    assert.ok(results.every((result) => result.status === "rejected"));
+    assert.ok(results.every((result) => /(closed|failure)/i.test(result.reason.message)));
   }
 });
