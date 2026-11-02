@@ -431,12 +431,12 @@ mod tests {
     use super::resolve_log_level;
 
     #[test]
-    fn log_level_defaults_to_warn_without_flags_or_env() {
+    fn test_log_level_defaults_to_warn_without_flags_or_env() {
         assert_eq!(resolve_log_level(false, None, None, None, None), "warn");
     }
 
     #[test]
-    fn log_level_debug_flag_wins_over_everything() {
+    fn test_log_level_debug_flag_wins_over_everything() {
         assert_eq!(
             resolve_log_level(true, Some("error"), Some("info"), Some("info"), None),
             "debug"
@@ -444,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn log_level_flag_beats_env() {
+    fn test_log_level_flag_beats_env() {
         assert_eq!(
             resolve_log_level(false, Some("error"), Some("info"), Some("info"), Some("1")),
             "error"
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn log_level_rust_log_presence_signals_env_filter() {
+    fn test_log_level_rust_log_presence_signals_env_filter() {
         // Present (even empty) RUST_LOG yields the empty sentinel; the
         // caller then uses the RUST_LOG value itself as the base filter.
         assert_eq!(
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn log_level_log_level_env_beats_debug_env() {
+    fn test_log_level_log_level_env_beats_debug_env() {
         assert_eq!(
             resolve_log_level(false, None, None, Some("info"), Some("1")),
             "info"
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn log_level_debug_env_truthy_values() {
+    fn test_log_level_debug_env_truthy_values() {
         for value in ["1", "true", "TRUE", "yes"] {
             assert_eq!(
                 resolve_log_level(false, None, None, None, Some(value)),
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn log_level_debug_env_falsey_values_fall_through_to_warn() {
+    fn test_log_level_debug_env_falsey_values_fall_through_to_warn() {
         for value in ["", "0", "false", "FALSE"] {
             assert_eq!(
                 resolve_log_level(false, None, None, None, Some(value)),
