@@ -787,6 +787,87 @@ describe("feed chargesAttention gate + sanitization (#2439)", () => {
   });
 });
 
+describe("charge gates reject impossible rows (#3458)", () => {
+  const CHOICES = { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] };
+  const ROW = {
+    at: "2026-10-30",
+    label: "Mystery AI Inc",
+    amountUsd: 42.5,
+    method: "Visa …7535",
+    source: "plaid",
+  };
+  const UNMATCHED = {
+    merchant: "Mystery AI Inc",
+    normalized: "mystery ai",
+    amountUsd: 42.5,
+    at: "2026-10-30",
+    source: "plaid",
+  };
+  const baseFeed = (extra: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: CHOICES },
+    attention: [],
+    ...(extra as Record<string, unknown>),
+  });
+  const load = async (feed: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-3458-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feed));
+    return loadFeed(file);
+  };
+
+  test("isChargeRow rejects non-positive amounts and non-calendar dates, accepts a valid row", () => {
+    expect(isChargeRow(ROW)).toBe(true);
+    expect(isChargeRow({ ...ROW, amountUsd: -1 })).toBe(false);
+    expect(isChargeRow({ ...ROW, amountUsd: 0 })).toBe(false);
+    expect(isChargeRow({ ...ROW, at: "banana" })).toBe(false);
+    expect(isChargeRow({ ...ROW, at: "2026-02-30" })).toBe(false);
+  });
+
+  test("isUnmatchedCharge rejects non-positive amounts and non-calendar dates, accepts a valid row", () => {
+    expect(isUnmatchedCharge(UNMATCHED)).toBe(true);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: -5 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: 0 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: "banana" })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: "2026-02-30" })).toBe(false);
+  });
+
+  test("loadFeed drops impossible charges individually and surfaces chargesDropped", async () => {
+    const loaded = await load(
+      baseFeed({
+        charges: [
+          ROW,
+          { ...ROW, amountUsd: -1 },
+          { ...ROW, amountUsd: 0 },
+          { ...ROW, at: "banana" },
+          { ...ROW, at: "2026-02-30" },
+        ],
+      }),
+    );
+    expect(loaded).not.toBeNull();
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBe(4);
+  });
+
+  test("loadFeed drops impossible chargesAttention individually and surfaces chargesAttentionDropped", async () => {
+    const loaded = await load(
+      baseFeed({
+        chargesAttention: [
+          UNMATCHED,
+          { ...UNMATCHED, amountUsd: -1 },
+          { ...UNMATCHED, amountUsd: 0 },
+          { ...UNMATCHED, at: "banana" },
+          { ...UNMATCHED, at: "2026-02-30" },
+        ],
+      }),
+    );
+    expect(loaded).not.toBeNull();
+    expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
+    expect(loaded?.chargesAttentionDropped).toBe(4);
+  });
+});
+
 describe("collector section metadata (#1178)", () => {
   const baseFeed = () => ({
     version: 1,

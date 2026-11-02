@@ -232,7 +232,7 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: `Invalid JSON body: ${err.message}` }));
         return;
       }
-      if (!body || typeof body !== 'object') {
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON body: expected an object' }));
         return;

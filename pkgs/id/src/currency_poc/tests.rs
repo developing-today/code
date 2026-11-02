@@ -10,7 +10,7 @@
 //! test.
 
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
-use super::intent::{FileIntentStore, InMemoryIntentStore, IntentState, IntentStore};
+use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
     Account, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer, TransferError,
 };
@@ -507,4 +507,68 @@ fn recovery_scan_continues_after_a_rejected_resubmission() {
     assert!(outcomes.contains(&(777, ReconcileOutcome::ResubmissionRejected)));
     assert!(outcomes.contains(&(888, ReconcileOutcome::Resubmitted)));
     assert_eq!(executor.backend.transfers_with_user_data_128(888).len(), 3);
+}
+
+/// A bare `Recorded` intent with the given legs, bypassing the
+/// executor's preflight so malformed leg vectors (#4133) can be
+/// persisted the way a corrupt or legacy record would present them.
+fn bare_record(conversion_id: u128, legs: Vec<Transfer>) -> IntentRecord {
+    IntentRecord {
+        conversion_id,
+        legs,
+        user_source: USER_SRC,
+        lp_source: LP_SRC,
+        fee_account: None,
+        lp_dest: LP_DST,
+        user_dest: USER_DST,
+        source_ledger: SRC,
+        dest_ledger: DST,
+        amount_in: 0,
+        amount_out: 0,
+        fee_amount: 0,
+        authorisation_id: "auth-bare".to_string(),
+        state: IntentState::Recorded,
+    }
+}
+
+#[test]
+fn recovery_rejects_empty_leg_vector() {
+    // An empty leg list satisfies the naive matched == len check
+    // vacuously (0 == 0); it must never become Posted/AlreadyPosted
+    // under either policy, and the record stays unresolved.
+    let mut backend = funded_ledger();
+    let mut store = InMemoryIntentStore::new();
+    store.put(&bare_record(999, Vec::new())).unwrap();
+
+    for policy in [RecoveryPolicy::Resubmit, RecoveryPolicy::Abandon] {
+        let outcomes = reconcile(&mut backend, &mut store, policy).expect("reconcile");
+        assert_eq!(outcomes, vec![(999, ReconcileOutcome::Inconsistent)]);
+        assert_eq!(
+            store.get(999).unwrap().unwrap().state,
+            IntentState::Recorded,
+            "an empty-leg record stays unresolved"
+        );
+    }
+}
+
+#[test]
+fn recovery_rejects_duplicate_leg_ids_backed_by_one_transfer() {
+    // The same leg twice, with only the one distinct transfer in the
+    // ledger: per-entry counting would report 2 matched of 2 and mark
+    // the record Posted off a single posting.
+    let leg = funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC);
+    let mut backend = funded_ledger();
+    let mut store = InMemoryIntentStore::new();
+    store
+        .put(&bare_record(998, vec![leg.clone(), leg]))
+        .expect("persist duplicate-leg record");
+
+    let outcomes =
+        reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit).expect("reconcile");
+    assert_eq!(outcomes, vec![(998, ReconcileOutcome::Inconsistent)]);
+    assert_eq!(
+        store.get(998).unwrap().unwrap().state,
+        IntentState::Recorded,
+        "a duplicate-leg record stays unresolved"
+    );
 }
