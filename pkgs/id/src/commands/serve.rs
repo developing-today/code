@@ -921,6 +921,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?;
         ensure!(
+            trusted_module_keys.is_empty() || world_module.is_none(),
+            "--world-module-trust-key cannot be combined with --world-module: \
+             startup modules cannot carry a signature yet — remove one of the \
+             two, or install the module over the session protocol with a signature"
+        );
+        ensure!(
             !world_source_only || compiler.is_some(),
             "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
         );

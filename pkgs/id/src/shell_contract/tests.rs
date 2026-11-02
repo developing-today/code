@@ -410,6 +410,15 @@ fn a_transcript_follows_the_session_phases() {
     assert_eq!(check.phase(), Phase::Closed);
     assert!(check.violations().is_empty(), "{:?}", check.violations());
 
+    // A signed upload: the optional signature object is part of the contract.
+    let mut check = Conformance::new(contract);
+    check.client(&json!({"type": "install_begin", "admin_token": "a", "total_bytes": 2, "seed": 1, "signature": {"public_key": "ab", "signature": "cd"}}));
+    assert_eq!(check.phase(), Phase::Install);
+    check.server(&json!({"type": "upload_ready", "chunk_bytes": 6144}));
+    check.client(&json!({"type": "install_chunk", "offset": 0, "data_hex": "0000"}));
+    check.client(&json!({"type": "install_end"}));
+    assert!(check.violations().is_empty(), "{:?}", check.violations());
+
     assert!(check_transcript(contract, "not json").is_err());
     assert!(check_transcript(contract, r#"{"from": "peer", "frame": {}}"#).is_err());
 }

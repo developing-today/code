@@ -565,7 +565,14 @@ impl WorldService {
         if claimed_hash != module_hash {
             return Err(InstallError::InvalidUpload);
         }
-        verify_module_signature(&self.trusted_module_keys, &wasm, signature)?;
+        // The trust gate governs uploaded artifacts. A module the server
+        // compiled itself from source (`compiled_from_source`) never crosses
+        // the upload path, so it needs no publisher signature — requiring one
+        // would disable source-only program updates entirely (Codex review
+        // on PR #4088).
+        if !compiled_from_source {
+            verify_module_signature(&self.trusted_module_keys, &wasm, signature)?;
+        }
         let is_native = crate::world_native::is_native_module(&wasm);
         if is_native && !self.native {
             return Err(InstallError::InvalidModule);
