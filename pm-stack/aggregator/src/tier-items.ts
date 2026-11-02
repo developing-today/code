@@ -340,6 +340,11 @@ export function findTierItem(section: OrchestrationSection, objectRef: string): 
 export function checkActionAgainstItem(input: NewAction, item: TierItem | undefined, nowMs: number): string | null {
   const p = input.payload ?? {};
   if (input.verb === "answer") {
+    if (p.optionId !== undefined) {
+      if (!item) return "this item is no longer on the published Needs User tier — refresh and try again";
+      if (!(item.options ?? []).some((o) => o.id === p.optionId))
+        return `option "${p.optionId}" is not one of this item's published options`;
+    }
     if (p.answers && p.answers.length) {
       if (!item) return "this item is no longer on the published Needs User tier — refresh and try again";
       const qs = item.questions ?? [];
@@ -365,10 +370,6 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
       // questions remain open. Membership and value checks above still
       // reject anything the item never asked. (Before #1451 this point
       // rejected a submit missing required answers outright.)
-    } else if (p.optionId) {
-      if (!item) return "this item is no longer on the published Needs User tier — refresh and try again";
-      if (!(item.options ?? []).some((o) => o.id === p.optionId))
-        return `option "${p.optionId}" is not one of this item's published options`;
     } else if (p.text) {
       const required = (item?.questions ?? []).filter((q) => q.required).map((q) => q.id);
       if (required.length)
