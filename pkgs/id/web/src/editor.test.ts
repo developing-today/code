@@ -301,6 +301,63 @@ describe("ordered_list start parsing (#2005)", () => {
   });
 });
 
+// ============================================================================
+// #4100: task_list parseDOM start parsing -- the <ol> rule reads its start
+// through parseOrderedListStart, like ordered_list (#2005): only plain
+// non-negative safe integers survive; everything else falls back to 1
+// instead of reaching the u64 markdown codec as a fraction/negative or a
+// reinterpreted hex/scientific value.
+// ============================================================================
+
+describe("task_list start parsing (#4100)", () => {
+  const olGetAttrs = () => {
+    const rules = richSchema.nodes.task_list.spec.parseDOM ?? [];
+    const rule = rules.find((r) => r.tag === "ol");
+    if (!rule || !("getAttrs" in rule) || typeof rule.getAttrs !== "function") {
+      throw new Error("task_list parseDOM has no ol getAttrs rule");
+    }
+    return rule.getAttrs;
+  };
+
+  it.each([
+    ["5", 5],
+    ["0", 0],
+    ["42", 42],
+  ])("preserves valid start=%s as order %i", (raw, expected) => {
+    const el = document.createElement("ol");
+    el.classList.add("contains-task-list");
+    el.setAttribute("start", raw);
+    expect(olGetAttrs()(el)).toEqual({ order: expected });
+  });
+
+  it.each(["abc", "2.5", "0x10", "1e3", "", "-3", "9007199254740993"])(
+    "falls back to 1 for invalid start=%s",
+    (raw) => {
+      const el = document.createElement("ol");
+      el.classList.add("contains-task-list");
+      el.setAttribute("start", raw);
+      expect(olGetAttrs()(el)).toEqual({ order: 1 });
+    },
+  );
+
+  it("defaults order to 1 without a start attribute", () => {
+    const el = document.createElement("ol");
+    el.classList.add("contains-task-list");
+    expect(olGetAttrs()(el)).toEqual({ order: 1 });
+  });
+
+  it("validates the start of a checkbox-detected ordered task list too", () => {
+    const el = document.createElement("ol");
+    el.setAttribute("start", "2.5");
+    const li = document.createElement("li");
+    const checkbox = document.createElement("input");
+    checkbox.setAttribute("type", "checkbox");
+    li.appendChild(checkbox);
+    el.appendChild(li);
+    expect(olGetAttrs()(el)).toEqual({ order: 1 });
+  });
+});
+
 describe("rawSchema", () => {
   it("has doc node type", () => {
     expect(rawSchema.nodes.doc).toBeDefined();
