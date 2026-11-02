@@ -415,7 +415,8 @@ function setJsoncPath(text, keys, value) {
 }
 
 // Removes the member at `keys` by deleting its lines (and its comma). Comments
-// on other lines are kept.
+// on other lines are kept; an inline comment on the removed member is refused
+// rather than silently discarded.
 function removeJsoncPath(text, keys) {
   let object = parseJsoncTree(text);
   for (const key of keys.slice(0, -1)) {
@@ -427,6 +428,16 @@ function removeJsoncPath(text, keys) {
   const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
   if (text.slice(lineStart, member.keyStart).trim() !== '') {
     throw new Error(`cannot remove ${keys.join('/')}: it shares a line with other JSON`);
+  }
+  const lineEnd = text.indexOf('\n', member.value.end);
+  const memberLineEnd = lineEnd < 0 ? text.length : lineEnd;
+  const trailing = text.slice(member.value.end, memberLineEnd);
+  if (trailing.includes('//') || trailing.includes('/*')) {
+    const error = new Error(
+      `cannot remove ${keys.join('/')}: inline comment on the member line would be lost`,
+    );
+    error.name = 'JsoncCommentRemovalError';
+    throw error;
   }
   let end = member.value.end;
   while (text[end] === ' ' || text[end] === '\t') end++;
