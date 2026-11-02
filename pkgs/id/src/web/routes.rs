@@ -2590,6 +2590,38 @@ mod upload_router_tests {
     }
 
     #[tokio::test]
+    async fn collab_route_decodes_encoded_slash_as_one_doc_id_segment() {
+        let router = Router::new().route(
+            "/ws/collab/{doc_id}",
+            get(|Path(doc_id): Path<String>| async move { doc_id }),
+        );
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/ws/collab/folder%2Fnote.md")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(String::from_utf8(body.to_vec()).unwrap(), "folder/note.md");
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/ws/collab/folder/note.md")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn concurrent_uploads_keep_names_and_metadata_consistent() {
         let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
         // Hold the same lock used at the resolve/claim boundary while both
