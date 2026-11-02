@@ -1600,7 +1600,6 @@ async function handler(req: Request): Promise<Response> {
     if (subject) {
       const title = subject.title;
       const links = subject.links;
-      const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
       const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] = await Promise.all([
         source.items(refs).catch(() => new Map()),
@@ -1648,7 +1647,7 @@ async function handler(req: Request): Promise<Response> {
         ...(epicRollup ? { epicRollup } : {}),
         briefs,
       };
-      return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
+      return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
     return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
   }

@@ -279,7 +279,6 @@ describe("render smoke (fixtures)", () => {
       item.title,
       item.id,
       item.links,
-      item.notes,
       await src.items(refs),
       await src.comments(refs),
       src.provenance(),
@@ -287,6 +286,8 @@ describe("render smoke (fixtures)", () => {
     expect(html).toContain("Linked issues / PRs");
     expect(html).toContain("Activity stream");
     expect(html).toContain("developing-today/openchamber#210");
+    expect(html).not.toContain("Planning notes");
+    expect(html).not.toContain("PM-stack design & phase plan");
   });
   test("quota view renders pools and model-choice guidance", async () => {
     const src = fixtureSource();
