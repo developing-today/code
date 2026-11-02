@@ -401,23 +401,49 @@ fn content_applies(
 /// The node indices in an order where every dependency comes first. A node that names an absent
 /// dependency is placed only when it is excluded, since its dependencies are then dropped.
 fn causal_order(nodes: &[Node], position: &HashMap<Hash, usize>) -> Result<Vec<usize>, StoreError> {
-    let mut placed = vec![false; nodes.len()];
-    let mut order = Vec::with_capacity(nodes.len());
-    let mut progress = true;
-    while progress {
-        progress = false;
-        for (index, node) in nodes.iter().enumerate() {
-            if placed[index] {
-                continue;
+    // Causal order with the canonical tie-break: among the nodes whose dependencies are all
+    // placed, the smallest event ID goes first -- the groups fold's rule. The membership
+    // layer is fed in this order, so it crowns the same winner for concurrent creates of one
+    // group as the fold does, whatever order the events were stored in.
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    // Dependency counts and child adjacency lists (as in the groups fold) enqueue each node
+    // exactly when its last dependency is placed, so ordering a history is linear in its
+    // size instead of rescanning every node after each placement.
+    let mut waiting = vec![0usize; nodes.len()];
+    let mut blocked = vec![false; nodes.len()];
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut ready: BinaryHeap<Reverse<(Hash, usize)>> = BinaryHeap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let after: HashSet<&Hash> = node.after.iter().collect();
+        let mut dependencies: HashSet<usize> = HashSet::new();
+        for dep in &after {
+            match position.get(dep) {
+                Some(&other) => {
+                    dependencies.insert(other);
+                }
+                // An absent dependency is dropped only for an excluded node; any other
+                // node naming one can never be placed, as before.
+                None if !node.excluded => blocked[index] = true,
+                None => {}
             }
-            let ready = node.after.iter().all(|dep| match position.get(dep) {
-                Some(&other) => placed[other],
-                None => node.excluded,
-            });
-            if ready {
-                placed[index] = true;
-                order.push(index);
-                progress = true;
+        }
+        waiting[index] = dependencies.len();
+        for other in dependencies {
+            children.entry(other).or_default().push(index);
+        }
+        if waiting[index] == 0 && !blocked[index] {
+            ready.push(Reverse((node.id, index)));
+        }
+    }
+    let mut order = Vec::with_capacity(nodes.len());
+    while let Some(Reverse((_, index))) = ready.pop() {
+        order.push(index);
+        for child in children.remove(&index).unwrap_or_default() {
+            waiting[child] -= 1;
+            if waiting[child] == 0 && !blocked[child] {
+                ready.push(Reverse((nodes[child].id, child)));
             }
         }
     }
@@ -513,3 +539,83 @@ pub(super) fn roster_of(resolved: &Resolved, group: &Hash) -> Vec<AuthorKey> {
     keys.sort_unstable();
     keys
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn node(n: u8, after: &[u8]) -> Node {
+        Node {
+            id: Hash::digest([n]),
+            author: [0; 32],
+            group: None,
+            after: after.iter().map(|a| Hash::digest([*a])).collect(),
+            action: None,
+            excluded: false,
+        }
+    }
+
+    /// The order is a function of the node set: permuting the stored positions changes
+    /// nothing, and concurrent nodes are ordered by event ID, not by stored position.
+    #[test]
+    fn test_causal_order_is_canonical_under_permutation() {
+        // Events 11 and 12 are concurrent roots; event 13 follows 11.
+        let base = [node(11, &[]), node(12, &[]), node(13, &[11])];
+        let mut reference: Option<Vec<Hash>> = None;
+        for perm in [[0, 1, 2], [2, 1, 0], [1, 2, 0], [2, 0, 1]] {
+            let nodes: Vec<Node> = perm
+                .iter()
+                .map(|&i| Node {
+                    id: base[i].id,
+                    author: [0; 32],
+                    group: None,
+                    after: base[i].after.clone(),
+                    action: None,
+                    excluded: false,
+                })
+                .collect();
+            let position: HashMap<Hash, usize> = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.id, index))
+                .collect();
+            let order = causal_order(&nodes, &position).unwrap();
+            let ids: Vec<Hash> = order.iter().map(|&index| nodes[index].id).collect();
+            // Causal order holds: 13 comes after 11.
+            assert!(
+                ids.iter().position(|id| *id == Hash::digest([11]))
+                    < ids.iter().position(|id| *id == Hash::digest([13]))
+            );
+            match &reference {
+                None => reference = Some(ids),
+                Some(expected) => assert_eq!(&ids, expected),
+            }
+        }
+        // The concurrent roots come out smallest-ID first.
+        let ids = reference.unwrap();
+        let smaller_first = (Hash::digest([11]) < Hash::digest([12]))
+            == (ids[0] == Hash::digest([11]));
+        assert!(smaller_first);
+    }
+
+    /// A long chain stored newest-first comes out oldest-first: each node is enqueued by
+    /// its parent's placement through the adjacency lists, with no rescan.
+    #[test]
+    fn test_causal_order_places_a_long_chain_in_order() {
+        let nodes: Vec<Node> = (0..64u8)
+            .rev()
+            .map(|n| node(n, if n == 0 { &[][..] } else { &[n - 1][..] }))
+            .collect();
+        let position: HashMap<Hash, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id, index))
+            .collect();
+        let order = causal_order(&nodes, &position).unwrap();
+        let ids: Vec<Hash> = order.iter().map(|&index| nodes[index].id).collect();
+        let expected: Vec<Hash> = (0..64u8).map(|n| Hash::digest([n])).collect();
+        assert_eq!(ids, expected);
+    }
+}
+
