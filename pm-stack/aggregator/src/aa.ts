@@ -21,6 +21,7 @@ import type {
   AaTestRun,
   AaThreshold,
 } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 // --- scalar coercion ---------------------------------------------------------
 // The Supabase Management API serializes numeric columns as JSON
@@ -1117,13 +1118,10 @@ export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<AaSection> & Partial<AaAbsentSection>;
   if (s.status === "absent")
-    return (
-      typeof s.reason === "string" && typeof s.generatedAt === "string" && Number.isFinite(Date.parse(s.generatedAt))
-    );
+    return typeof s.reason === "string" && isIsoDate(s.generatedAt);
   if (s.status !== "ok") return false;
   return (
-    typeof s.generatedAt === "string" &&
-    Number.isFinite(Date.parse(s.generatedAt)) &&
+    isIsoDate(s.generatedAt) &&
     typeof s.batch === "string" &&
     Array.isArray(s.rankings) &&
     s.rankings.length > 0 &&
