@@ -86,6 +86,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
@@ -5636,6 +5637,20 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
 /** The Projects pool body (cards, chips, coverage) without the page
  * shell — rendered standalone by renderProjects and, since the #1497
  * merge, as the pool section of /program. */
+/** The per-item brief panel (#1279): visibly labelled as derived, every
+ * line carrying its evidence link. The identical brief object ships in
+ * the JSON twin (/api/projects.json `briefs`). */
+export function briefPanelHtml(brief: ItemBrief): string {
+  const ev = (e: { text: string; url: string }) => `<a href="${esc(e.url)}">${esc(e.text)}</a>`;
+  const activity = brief.lastActivity.evidence
+    ? `${esc(brief.lastActivity.text)} Evidence: ${ev(brief.lastActivity.evidence)}.`
+    : esc(brief.lastActivity.text);
+  const clash = brief.disagreement
+    ? `<br><span>⚠ ${esc(brief.disagreement.text)} Evidence: ${ev(brief.disagreement.evidence)}.</span>`
+    : "";
+  return `<div class="brief" style="border-left:3px solid #888;padding-left:0.6em;margin-top:0.4em"><strong>Derived brief</strong> <span class="muted">(derived from the projection — not authored)</span><br><span>State: ${esc(brief.state.text)} Evidence: ${ev(brief.state.evidence)}.</span><br><span>Blocker: ${esc(brief.blocker.text)} Evidence: ${ev(brief.blocker.evidence)}.</span><br><span>${activity}</span><br><span>Next: ${esc(brief.nextAction.text)} Evidence: ${ev(brief.nextAction.evidence)}.</span>${clash}</div>`;
+}
+
 export function projectsBodyHtml(
   pool: ProjectPoolItem[],
   opts: {
@@ -5647,6 +5662,9 @@ export function projectsBodyHtml(
     coverage?: CoverageSnapshotFile | null;
     /** Where the area chips point: /projects standalone, /program once merged (#1497). */
     basePath?: string;
+    /** Prebuilt briefs (#1279), e.g. with comment activity folded in.
+     * Absent: briefs are built here from the pool + orchestration only. */
+    briefs?: Map<RefKey, ItemBrief>;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -5709,7 +5727,8 @@ export function projectsBodyHtml(
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}</div>`;
+      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
