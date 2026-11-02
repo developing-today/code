@@ -313,6 +313,14 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
     expect(checkActionAgainstItem(actionInput({ payload: { optionId: "csv" } }), item, NOW)).toBeNull();
   });
 
+  test("answers do not shield a present optionId from membership checking", () => {
+    const answers = [{ questionId: "notes", value: "hi" }];
+    expect(
+      checkActionAgainstItem(actionInput({ payload: { answers, optionId: "yaml" } }), item, NOW),
+    ).toContain("not one of this item's published options");
+    expect(checkActionAgainstItem(actionInput({ payload: { answers, optionId: "csv" } }), item, NOW)).toBeNull();
+  });
+
   test("survey answers: unknown ids and bad values are legible 400s; partial submits are accepted (#1451)", () => {
     expect(
       checkActionAgainstItem(actionInput({ payload: { answers: [{ questionId: "nope", value: "x" }] } }), item, NOW),
