@@ -101,10 +101,11 @@ func Validate(src string, cat *diagnose.Catalog) ValidationResult {
 }
 
 type delimToken struct {
-	char      rune
-	line      int
-	exprAfter bool
-	heritage  bool
+	char         rune
+	line         int
+	exprAfter    bool
+	heritage     bool
+	templateExpr bool
 	// heritageOwnsFloor marks a heritage brace that pushed a
 	// pending-body snapshot (heritageFloorStack): its closing '}'
 	// restores the snapshot it displaced.
@@ -138,7 +139,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	var blockComments []blockCommentRange
 	inString := rune(0)
 	isEscaped := false
-	templateIsTagged := false
+	var templateTaggedStack []bool
 	inRegex := false
 	inCharClass := false
 	regexEscaped := false
@@ -169,6 +170,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// the identifier async plus a function declaration, by ASI).
 	curIdentBrokeLine := false
 	lastIdent := ""
+	lastIdentBrokeLine := false
 	prevChar := rune(0)
 	// identPrev is the last significant character before the
 	// identifier currently being accumulated started, and
@@ -188,6 +190,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// spots expression keywords in front of function/class
 	// (return function() {} / 2 divides after the body closure).
 	prevIdent := ""
+	prevIdentBrokeLine := false
 	// prevIdentPrev is the significant character before prevIdent
 	// started (mirroring lastIdentPrev for lastIdent): it tells
 	// whether prevIdent was reached through member access, in
@@ -413,6 +416,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevPrevIdentPrev = prevIdentPrev
 					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
+					prevIdentBrokeLine = lastIdentBrokeLine
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
 					prevIdentEnd = lastIdentEnd
@@ -449,6 +453,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevPrevIdentPrev = prevIdentPrev
 					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
+					prevIdentBrokeLine = lastIdentBrokeLine
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
 					prevIdentEnd = lastIdentEnd
@@ -457,6 +462,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				curIdent = append(curIdent, ch)
 			} else if len(curIdent) > 0 {
 				lastIdent = string(curIdent)
+				lastIdentBrokeLine = curIdentBrokeLine
 				lastIdentPrev = identPrev
 				lastIdentDotRun = identDotRun
 				lastIdentEnd = i
@@ -539,7 +545,17 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// class C extends {x:[class extends class {}
 					// {} / 2]}.x {} and the function permutation).
 					asyncFunctionModifier := lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && onlyTriviaBetween(chars, prevIdentEnd, identStart)
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || (asyncFunctionModifier && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)) {
+					asyncFunctionExprPosition := asyncFunctionModifier && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)
+					if asyncFunctionExprPosition && prevIdentBrokeLine && prevPrevIdent == "return" && prevPrevIdentPrev != '.' && prevPrevIdentPrev != '#' {
+						// A line break before `async` ends a preceding
+						// return statement by ASI. The function is then
+						// a declaration in the new statement, not an
+						// expression inherited from `return` (Codex P2
+						// on #3354). Expression position from an operator
+						// still applies across the line break.
+						asyncFunctionExprPosition = false
+					}
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || asyncFunctionExprPosition {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
@@ -575,6 +591,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		}
 
 		if isLineTerminator(ch) {
+			if inString == '`' && isEscaped {
+				// A backslash escapes a template line terminator as a
+				// continuation. Consume CRLF as one line and clear the
+				// escape so the closing backtick remains structural
+				// (Codex P2 on #3354).
+				isEscaped = false
+				line++
+				if ch == '\r' && i+1 < n && chars[i+1] == '\n' {
+					i++
+				}
+				continue
+			}
 			if inString == '\'' || inString == '"' {
 				if isEscaped {
 					// A backslash before a line terminator inside
@@ -735,8 +763,43 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				isEscaped = true
 				continue
 			}
+			if inString == '`' && ch == '$' && i+1 < n && chars[i+1] == '{' {
+				// A template interpolation is JavaScript expression
+				// context until its matching brace. Mark that brace so
+				// nested templates can return to this template's text
+				// without losing the outer tag classification.
+				inString = 0
+				stack = append(stack, delimToken{char: '{', line: line, templateExpr: true})
+				prevSig = 'o'
+				prevChar = '{'
+				dotRun = 0
+				prevTokenArrow = false
+				closedExprAfter = false
+				curIdent = nil
+				curIdentBrokeLine = false
+				lastIdent = ""
+				lastIdentPrev = 0
+				lastIdentDotRun = 0
+				lastIdentEnd = -1
+				lastIdentBrokeLine = false
+				prevIdent = ""
+				prevIdentPrev = 0
+				prevIdentDotRun = 0
+				prevIdentEnd = -1
+				prevIdentBrokeLine = false
+				prevPrevIdent = ""
+				prevPrevIdentPrev = 0
+				prevPrevIdentDotRun = 0
+				i++
+				continue
+			}
 			if ch == inString {
-				wasTaggedTemplate := inString == '`' && templateIsTagged
+				wasTaggedTemplate := false
+				if inString == '`' && len(templateTaggedStack) > 0 {
+					top := len(templateTaggedStack) - 1
+					wasTaggedTemplate = templateTaggedStack[top]
+					templateTaggedStack = templateTaggedStack[:top]
+				}
 				inString = rune(0)
 				prevSig = 'x'
 				// The closing quote is the previous significant
@@ -752,7 +815,6 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// instantiation can bind to it (`tag`x`<T>`).
 					prevChar = 'x'
 				}
-				templateIsTagged = false
 				if stringIsModuleSpec {
 					moduleSpecClosed = true
 					stringIsModuleSpec = false
@@ -897,7 +959,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 
 		// String starts
 		if ch == '\'' || ch == '"' || ch == '`' {
-			templateIsTagged = ch == '`' && prevSig == 'x'
+			if ch == '`' {
+				templateTaggedStack = append(templateTaggedStack, prevSig == 'x')
+			}
 			inString = ch
 			// Literal tokens interrupt a preceding spread token.
 			dotRun = 0
@@ -1120,6 +1184,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				expectDeclParenDepth--
 			}
 			closedExprAfter = top.exprAfter
+			if ch == '}' && top.templateExpr {
+				// The interpolation is complete; resume the surrounding
+				// template as opaque text. Nested literals have popped
+				// their own tag frames, leaving this one intact.
+				inString = '`'
+			}
 			if !matchesDelim(top.char, ch) {
 				diags = append(diags, diagnose.Diagnostic{
 					Kind:    diagnose.Kind("syntax-error"),
