@@ -22,6 +22,7 @@ impl WorldCommand {
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
             Self::Snapshot { .. } => "Snapshot",
+            Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
             Self::ProjectEvent { .. } => "ProjectEvent",
             Self::View { .. } => "View",
@@ -105,6 +106,12 @@ pub(crate) enum WorldCommand {
     Snapshot {
         token: JoinCapability,
         reply: oneshot::Sender<Result<WorldSnapshot>>,
+    },
+    /// Admin-authorized web rendering; the caller must validate the admin
+    /// secret before requesting this view. The synthetic viewer is not a
+    /// registered participant and never receives presence or event rights.
+    HostView {
+        reply: oneshot::Sender<Result<(WorldSnapshot, Option<String>)>>,
     },
     EventsAfter {
         token: JoinCapability,
@@ -1172,6 +1179,32 @@ impl WorldActor {
             }
             WorldCommand::Snapshot { token, reply } => {
                 let _ = reply.send(self.core.snapshot(&token));
+            }
+            WorldCommand::HostView { reply } => {
+                let result = if self.program_healthy {
+                    let viewer = Participant {
+                        id: 0,
+                        display_name: "Host".to_owned(),
+                    };
+                    self.program.view(&viewer).and_then(|view| {
+                        if view
+                            .as_ref()
+                            .is_some_and(|text| text.len() > self.core.limits.presentation_bytes)
+                        {
+                            self.view_failures = self.view_failures.saturating_add(1);
+                            anyhow::bail!(
+                                "world presentation exceeds {} bytes",
+                                self.core.limits.presentation_bytes
+                            );
+                        }
+                        Ok((self.core.snapshot_unchecked(WorldScopes::ALL), view))
+                    })
+                } else {
+                    Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    ))
+                };
+                let _ = reply.send(result);
             }
             WorldCommand::EventsAfter {
                 token,
