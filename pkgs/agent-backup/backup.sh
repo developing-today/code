@@ -25,8 +25,24 @@ ROOT="${AGENT_BACKUP_DIR:-$HOME/.local/share/agent-backups}"
 mkdir -p "$ROOT"
 chmod 700 "$ROOT"
 
-STAMP="$(date -u +%Y-%m-%dT%H-%M-%S)"
+BASE_STAMP="$(date -u +%Y-%m-%dT%H-%M-%S)"
+STAMP="$BASE_STAMP"
 DEST="$ROOT/$STAMP"
+
+# Reserve the destination atomically before copying. Two invocations can
+# receive the same second-resolution timestamp; only one may own the bare
+# timestamp, and later invocations get deterministic suffixes. The no-change
+# cleanup below is then limited to a directory this invocation created.
+suffix=0
+while ! mkdir -m 700 -- "$DEST" 2>/dev/null; do
+  if [[ ! -e "${DEST}" ]] && [[ ! -L "${DEST}" ]]; then
+    echo "agent-backup: cannot create snapshot directory ${DEST}" >&2
+    exit 1
+  fi
+  suffix=$((suffix + 1))
+  STAMP="${BASE_STAMP}-$(printf '%010d' "${suffix}")"
+  DEST="$ROOT/$STAMP"
+done
 
 # Small, irreplaceable things only. Missing paths are skipped silently -- not
 # every agent is signed in on every machine.
