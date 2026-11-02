@@ -82,6 +82,7 @@ import {
   renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
+import { buildBriefs } from "./brief.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
@@ -919,9 +920,17 @@ async function handler(req: Request): Promise<Response> {
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    // #1279: the JSON twin of the brief panels on the pool cards — the
+    // identical brief objects, built with comment activity folded in.
+    const [briefComments, orchestration] = await Promise.all([
+      pool.length ? source.comments(pool.map((p) => p.ref)).catch(() => []) : Promise.resolve([]),
+      source.orchestration().catch(() => null),
+    ]);
+    const briefs = buildBriefs(pool, { comments: briefComments, orchestration });
     return json({
       project: "developing-today#4",
       items: pool,
+      briefs: Object.fromEntries(briefs),
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
