@@ -133,6 +133,39 @@ function initWorld(): void {
     status.dataset.state = state;
   };
 
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const isFiniteNumber = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value);
+  const isWorldSnapshot = (value: unknown): value is NonNullable<WorldFrame["snapshot"]> =>
+    isRecord(value) &&
+    typeof value.world_id === "string" &&
+    isFiniteNumber(value.current_sequence) &&
+    Array.isArray(value.participants) &&
+    value.participants.every(
+      (participant) =>
+        isRecord(participant) && isFiniteNumber(participant.id) && typeof participant.display_name === "string",
+    );
+  const isWorldEvent = (value: unknown): value is NonNullable<WorldFrame["event"]> => {
+    if (
+      !isRecord(value) ||
+      !isFiniteNumber(value.sequence) ||
+      !isFiniteNumber(value.participant_id) ||
+      !isRecord(value.kind)
+    ) {
+      return false;
+    }
+    if (value.kind.kind === "chat") return typeof value.kind.data === "string";
+    if (value.kind.kind === "input") {
+      return Array.isArray(value.kind.data) && value.kind.data.every(isFiniteNumber);
+    }
+    return false;
+  };
+  const rejectFrame = () => {
+    setStatus("Received an invalid world frame", "error");
+    appendLine(log, "error: invalid world frame");
+  };
+
   const showCapability = (value: string) => {
     capability.value = value;
     sessionStorage.setItem(storageKey, value);
@@ -140,33 +173,45 @@ function initWorld(): void {
   };
 
   const receive = (raw: string) => {
-    let frame: WorldFrame;
+    let parsed: unknown;
     try {
-      frame = JSON.parse(raw) as WorldFrame;
+      parsed = JSON.parse(raw) as unknown;
     } catch {
-      setStatus("Received an invalid world frame", "error");
+      rejectFrame();
       return;
     }
+    if (!isRecord(parsed) || typeof parsed.type !== "string") {
+      rejectFrame();
+      return;
+    }
+    const frame = parsed as WorldFrame;
     switch (frame.type) {
       case "snapshot": {
-        if (!frame.snapshot) return;
-        cursor = frame.snapshot.current_sequence;
+        const snapshot = frame.snapshot;
+        if (!isWorldSnapshot(snapshot)) {
+          rejectFrame();
+          return;
+        }
+        cursor = snapshot.current_sequence;
         participants.replaceChildren();
-        for (const participant of frame.snapshot.participants) {
+        for (const participant of snapshot.participants) {
           const tag = document.createElement("span");
           tag.className = "badge badge-outline mr-2";
           tag.dataset.participant = String(participant.id);
           tag.textContent = participant.display_name;
           participants.append(tag);
         }
-        appendLine(log, `Connected to ${frame.snapshot.world_id} at event ${cursor}`);
+        appendLine(log, `Connected to ${snapshot.world_id} at event ${cursor}`);
         setStatus("Connected", "good");
         requestRecords();
         break;
       }
       case "event": {
         const event = frame.event;
-        if (!event) return;
+        if (!isWorldEvent(event)) {
+          rejectFrame();
+          return;
+        }
         cursor = Math.max(cursor, event.sequence);
         if (event.kind.kind === "chat") {
           const who = participants.querySelector<HTMLElement>(`[data-participant="${event.participant_id}"]`);
