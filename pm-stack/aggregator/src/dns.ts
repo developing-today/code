@@ -1,11 +1,14 @@
-// The DNS/domain register (#902) as data. The register of record is a
-// Markdown file produced by the #902 pipeline (a table sorted by next
-// renewal); the collector parses it into a DnsSection for the fleet
-// feed and the aggregator renders that — the page never edits the
-// register. The parser keys off the register table's header row, so a
-// re-worded prose section elsewhere in the file cannot corrupt it;
-// if #902's job ever emits register.json, this parser is the fallback,
-// not the competitor.
+// The DNS/domain register (#902) as data. The register of record is
+// produced by the #902 pipeline in two forms: register.json (slice 2 —
+// the authoritative source for the fields it carries: domain,
+// registrar, DNS host, next renewal, auto-renew, list price) and the
+// register Markdown table, which still carries the editorial columns
+// the JSON does not (prior-year cost, where-used, plan/status, review)
+// and is the fallback when register.json is missing or malformed.
+// The collector builds the DnsSection the fleet feed carries and the
+// aggregator renders — the page never edits the register. The Markdown
+// parser keys off the register table's header row, so a re-worded
+// prose section elsewhere in the file cannot corrupt it.
 import { addDaysYmd, chicagoYmd } from "./derive.ts";
 import type { DnsEntry, DnsSection } from "./model.ts";
 
@@ -66,6 +69,77 @@ export function parseDnsRegister(md: string): DnsEntry[] {
 export function dnsSectionFromRegister(md: string, generatedAt: string, source: string): DnsSection | null {
   const entries = parseDnsRegister(md);
   if (entries.length === 0) return null;
+  const totalAnnualListUsd = Math.round(entries.reduce((sum, e) => sum + (e.priceUsd ?? 0), 0) * 100) / 100;
+  return { generatedAt, source, totalAnnualListUsd, entries };
+}
+
+/** One domain row of register.json as the #902 job emits it. */
+export interface DnsRegisterJsonDomain {
+  domain: string;
+  registrar: string;
+  dns_hosted_at: string;
+  next_renewal: string;
+  auto_renew: boolean | null;
+  renewal_price_usd: number | null;
+  source?: string;
+}
+
+/**
+ * Assemble the feed section from register.json (slice 2 of #902).
+ * The JSON is authoritative for the fields it carries; the editorial
+ * columns it does not carry (prior-year cost, where-used, plan/status,
+ * review) come from the Markdown parse (`mdEntries`, keyed by domain)
+ * so the rendered page is unchanged for current register data. A
+ * domain with no Markdown row renders with an empty plan, i.e.
+ * classified unused. Returns null on ANY malformation — unparseable
+ * JSON, a missing/empty domains list, a duplicate domain, or a row
+ * whose core fields are mistyped — so the caller falls back to the
+ * Markdown parse instead of serving a half-invented register.
+ */
+export function dnsSectionFromRegisterJson(
+  jsonText: string,
+  generatedAt: string,
+  source: string,
+  mdEntries: DnsEntry[] = [],
+): DnsSection | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const domains = (parsed as { domains?: unknown }).domains;
+  if (!Array.isArray(domains) || domains.length === 0) return null;
+  const mdByDomain = new Map(mdEntries.map((e) => [e.domain, e]));
+  const seen = new Set<string>();
+  const entries: DnsEntry[] = [];
+  for (const raw of domains as Partial<DnsRegisterJsonDomain>[]) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const { domain, registrar, dns_hosted_at: dnsHost, next_renewal: renewal, auto_renew: autoRenew, renewal_price_usd: price } = raw;
+    if (typeof domain !== "string" || domain.length === 0 || seen.has(domain)) return null;
+    if (typeof registrar !== "string" || typeof dnsHost !== "string") return null;
+    if (typeof renewal !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(renewal)) return null;
+    if (price !== null && price !== undefined && (typeof price !== "number" || !Number.isFinite(price))) return null;
+    if (autoRenew !== null && autoRenew !== undefined && typeof autoRenew !== "boolean") return null;
+    seen.add(domain);
+    const md = mdByDomain.get(domain);
+    const plan = md?.plan ?? "";
+    entries.push({
+      domain,
+      registrar,
+      dnsHost,
+      renewal,
+      autoRenew: autoRenew === true ? "ON" : autoRenew === false ? "OFF" : "unknown",
+      priceUsd: price ?? null,
+      priorYearCost: md?.priorYearCost ?? "",
+      used: md?.used ?? "",
+      plan,
+      review: md?.review ?? "",
+      status: classifyDnsStatus(plan),
+    });
+  }
+  entries.sort((a, b) => a.renewal.localeCompare(b.renewal) || a.domain.localeCompare(b.domain));
   const totalAnnualListUsd = Math.round(entries.reduce((sum, e) => sum + (e.priceUsd ?? 0), 0) * 100) / 100;
   return { generatedAt, source, totalAnnualListUsd, entries };
 }
