@@ -245,6 +245,32 @@ func TestByteSizesAcceptBothDecimalAndBinarySuffixes(t *testing.T) {
 	}
 }
 
+// #1697: negative and int64-overflowing sizes are refused, with the
+// offending value named, so no layer (file/env/flag/preset/runtime) can
+// admit one and crash a consumer spending it as a slice capacity.
+func TestParseBytesRefusesNegativeAndOverflowingSizes(t *testing.T) {
+	for _, in := range []string{"-1", "-5MB", "-1KiB", "999999999999999999999999TB", "9223372036854775808"} {
+		got, err := settings.ParseBytes(in)
+		if err == nil {
+			t.Errorf("ParseBytes(%q) = %d, nil; want an error", in, got)
+		} else if !strings.Contains(err.Error(), in) {
+			t.Errorf("ParseBytes(%q) error %q does not name the offending value", in, err)
+		}
+	}
+	if got, err := settings.ParseBytes("0"); err != nil || got != 0 {
+		t.Errorf("ParseBytes(\"0\") = %d, %v; want 0, nil (zero keeps its documented meaning)", got, err)
+	}
+	set := settings.Setting{Path: "http.streamBufferInit", Kind: settings.KindBytes}
+	for _, in := range []string{"-1", "-5MB", "999999999999999999999999TB"} {
+		if err := settings.Validate(set, in); err == nil {
+			t.Errorf("Validate(KindBytes, %q) = nil; want an error", in)
+		}
+	}
+	if err := settings.Validate(set, "16MB"); err != nil {
+		t.Errorf("Validate(KindBytes, \"16MB\") = %v; want nil", err)
+	}
+}
+
 func TestRequirementsCatchASettingThatWouldBeSilentlyInert(t *testing.T) {
 	s, err := settings.New([]settings.Setting{
 		{Path: "a.on", Kind: settings.KindBool, Default: "false", Name: "A", Short: "a"},

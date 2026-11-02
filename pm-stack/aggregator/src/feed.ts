@@ -350,12 +350,19 @@ export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefine
 
 /** Fail-soft read of the coverage census from a parsed feed: absent
  * or malformed sections yield null (the panel then renders backlog
- * counts as unavailable), malformed rows drop individually. */
+ * counts as unavailable), malformed rows drop individually. A duplicate
+ * repo makes the census ambiguous, so refuse that optional section
+ * rather than letting array order choose the persisted count. */
 export function coverageFromFeed(feed: Partial<FleetFeed> | null | undefined): RepoCensus[] | null {
   const raw = feed?.coverage;
   if (raw === undefined) return null;
   if (!Array.isArray(raw)) return null;
   const rows = raw.filter(isRepoCensus);
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.repo)) return null;
+    seen.add(row.repo);
+  }
   return rows.length ? rows : null;
 }
 

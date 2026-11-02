@@ -138,6 +138,16 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "comments-queue",
+    title: "Comments queue",
+    route: "/comments",
+    api: "/api/comments/queue.json",
+    blurb:
+      "Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "program",
     title: "Program status",
     route: "/program",

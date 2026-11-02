@@ -21,6 +21,7 @@ import {
   windowPercent,
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
 import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
@@ -34,7 +35,7 @@ import {
   proposalIdentity,
   type NeedsOrder,
 } from "./tier-items.ts";
-import { githubCommentUrl } from "./comments.ts";
+import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
@@ -192,6 +193,12 @@ meter { width: 140px; height: 14px; }
 .cform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
 .cform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
 .cform textarea, .cform select, .cform input[type="text"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
+.raform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
+.raform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
+.raform textarea, .raform select, .raform input[type="date"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
+.raform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
+.raform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
+.roadmap-annotation { border-left: 3px solid #bc8cff; padding: 5px 8px; margin: 5px 0; background: #161b22; border-radius: 0 6px 6px 0; overflow-wrap: anywhere; }
 .cform .kinds { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
 .cform .kinds label { display: inline-flex; gap: 5px; align-items: center; margin: 0; font-size: 13px; color: #e6edf3; }
 .cform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
@@ -248,6 +255,13 @@ details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
 .qblock .qremaining { color: #e3b341; font-size: 12px; }
 .skel { border: 1px dashed #30363d; border-radius: 8px; padding: 14px 12px; margin: 8px 0; color: #8b949e; background: #0d1117; }
 .orderctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 12.5px; color: #8b949e; }
+.bulkbar { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bulkbar select, .bulkbar input[type="text"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
+.bulkpickline { margin: 8px 0 -4px; font-size: 12.5px; color: #8b949e; }
+.bulkpickline input { width: 18px; height: 18px; vertical-align: -3px; }
+.bulkreview { flex-basis: 100%; border-top: 1px dashed #30363d; padding-top: 8px; }
+.bulkreview ul { margin: 6px 0; padding-left: 20px; max-height: 240px; overflow: auto; }
+.bulkresults { flex-basis: 100%; font-size: 13px; }
 .orderctl .aform { margin: 0; }
 .stripcard .restore-note { font-size: 12.5px; }
 .badge.stale { background: #d2992233; border-color: #d29922; color: #e3b341; }
@@ -349,7 +363,7 @@ body.xp-plan .xpl-costcol { display: none; }
   .chart .muted { color: #8b949e; }
   .chart .xpl-ctl button, .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
   .chart .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-  .cform textarea, .cform select, .cform input[type="text"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
+  .cform textarea, .cform select, .cform input[type="text"], .raform textarea, .raform select, .raform input[type="date"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
   .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
   .cform .kinds label { color: #1f2328; }
   .aform button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
@@ -498,6 +512,36 @@ document.addEventListener("change", (ev) => {
   const form = t.closest(".cform");
   const wrap = form && form.querySelector(".ghtarget");
   if (wrap) wrap.style.display = t.value === "github" && t.checked ? "" : "none";
+});
+</script>`;
+
+const ROADMAP_ANNOTATION_SCRIPT = `<script>${DASH_AFTER_JS}
+document.addEventListener("submit", async (ev) => {
+  const form = ev.target;
+  if (!(form instanceof HTMLFormElement) || !form.classList.contains("raform")) return;
+  ev.preventDefault();
+  const err = form.querySelector(".err");
+  const data = new FormData(form);
+  const raw = String(data.get("author") || "drew|drew|");
+  const [kind, id, sessionId] = raw.split("|");
+  const option = form.querySelector('option[value="' + CSS.escape(raw) + '"]');
+  const payload = {
+    objectRef: form.dataset.object,
+    kind: String(data.get("kind") || "context"),
+    date: String(data.get("date") || ""),
+    author: { kind, id, label: option ? option.textContent : id, ...(sessionId ? { sessionId } : {}) },
+    body: String(data.get("body") || "")
+  };
+  const button = form.querySelector("button[type=submit]");
+  if (button) button.disabled = true;
+  try {
+    const res = await fetch("/api/roadmap/annotations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.error || ("HTTP " + res.status)); }
+    window.location.reload();
+  } catch (e) {
+    if (err) err.textContent = "Not saved: " + e.message;
+    if (button) button.disabled = false;
+  }
 });
 </script>`;
 
@@ -697,9 +741,19 @@ export function tierItemObjectRef(item: TierItem): string {
 }
 
 /** A 💬 link to an object's comment thread, with its comment count. */
-export function commentBadge(objectRef: string, counts?: Map<string, number>): string {
-  const n = counts?.get(objectRef) ?? 0;
-  return ` <a class="badge" href="/discuss/${encodeURIComponent(objectRef)}" title="Dashboard comments on this item">💬${n ? ` ${n}` : ""}</a>`;
+export function commentBadge(objectRef: string, counts?: Map<string, number | CommentKindCounts>): string {
+  // #1210: a detailed count distinguishes notes from actionable
+  // comments (awaiting triage / to post / failed) in the badge itself;
+  // a plain number count keeps the original rendering.
+  const v = counts?.get(objectRef) as number | CommentKindCounts | undefined;
+  const n = typeof v === "number" ? v : (v?.total ?? 0);
+  const actionable = typeof v === "object" && v !== null ? v.actionable : 0;
+  const title =
+    typeof v === "object" && v !== null
+      ? `Dashboard comments on this item: ${v.total} total — ${v.notes} notes, ${v.messagesNew} messages awaiting triage, ${v.githubPending} GitHub comments to post, ${v.githubFailed} failed to post`
+      : "Dashboard comments on this item";
+  const queued = actionable ? ` · ${actionable} queued` : "";
+  return ` <a class="badge" href="/discuss/${encodeURIComponent(objectRef)}" title="${esc(title)}">💬${n ? ` ${n}` : ""}${queued}</a>`;
 }
 
 export function authorBadge(a: DashAuthor): string {
@@ -719,7 +773,7 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
             c.githubState === "posted"
               ? `posted${c.githubUrl ? ` — <a href="${esc(c.githubUrl)}">view</a>` : ""}`
               : c.githubState === "failed"
-                ? "posting failed — a fleet poster will retry"
+                ? `posting failed ${relTime(c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
                 : `pending — will post to ${esc(c.githubRef ?? "")}`
           }</span>`
         : `<span class="badge">note</span>`;
@@ -1568,7 +1622,7 @@ function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): strin
 export function renderBoardBody(
   board: BoardItem[],
   items: Map<RefKey, GhItem>,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: {
     actionsByObject?: Map<string, DashAction[]>;
     poolByRef?: Map<RefKey, ProjectPoolItem>;
@@ -1665,7 +1719,7 @@ export function renderBoard(
   board: BoardItem[],
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   act?: {
     actionsByObject?: Map<string, DashAction[]>;
@@ -1777,8 +1831,9 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
 function roadmapCard(
   row: RoadmapRow,
   items: Map<RefKey, GhItem>,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   drill?: RoadmapDrill,
+  annotations?: Map<string, RoadmapAnnotation[]>,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1789,14 +1844,23 @@ function roadmapCard(
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row) : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${expansion}</div>`;
+  const notes = annotations?.get(row.subject) ?? [];
+  const annotationHtml = notes.length
+    ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
+    : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}</div>`;
+}
+
+function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
+  return `<div class="roadmap-annotation"><span class="muted">${esc(annotation.date)}</span> <span class="badge">${esc(annotation.kind)}</span> ${authorBadge(annotation.author)}<br>${esc(annotation.body)}</div>`;
 }
 
 function timelineTable(
   tl: ReturnType<typeof buildTimeline>,
   items: Map<RefKey, GhItem>,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   drill?: Map<string, RoadmapDrill>,
+  annotations?: Map<string, RoadmapAnnotation[]>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1804,7 +1868,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("")}</td>`;
+           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
@@ -1818,10 +1882,12 @@ export function renderRoadmap(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   grain: RoadmapGrain = "quarter",
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   reconciliation?: RoadmapReconciliation,
   drill?: Map<string, RoadmapDrill>,
+  annotations?: Map<string, RoadmapAnnotation[]>,
+  viewQuery = "",
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1833,19 +1899,20 @@ export function renderRoadmap(
         ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
         : "";
   const chips = GRAINS.map(
-    ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
+    ([g, label]) =>
+      `<a href="/roadmap?h=${g}${viewQuery ? `&${viewQuery}` : ""}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const sections = dg.lanes
       .map(
         (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
+          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
       )
       .join("");
     const notes: string[] = [];
@@ -1872,6 +1939,8 @@ export function renderRoadmap(
 export interface ItemExtras {
   /** Dashboard comments (#906 §2) across this item's object refs. */
   dashComments: DashComment[];
+  /** Present only on roadmap rows; undefined on ordinary board items. */
+  roadmapAnnotations?: RoadmapAnnotation[];
   /** The object ref the inline form posts to (the item's subject). */
   formRef: string;
   formOpts: CommentFormOpts;
@@ -1885,6 +1954,15 @@ export interface ItemExtras {
   serviceLinks?: ItemServiceLink[];
   /** Present when this item's Project-pool entry is an epic. */
   epicRollup?: EpicRollup;
+}
+
+function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
+  return `<form class="raform" data-object="${esc(objectRef)}">
+<label>Annotation kind</label><select name="kind"><option value="decision">Decision</option><option value="outcome">Outcome</option><option value="context" selected>Context</option></select>
+<label>Date</label><input type="date" name="date" required>
+<label>Author</label><select name="author" data-author-picker>${authorOptionsHtml(identities)}</select>
+<label>Annotation</label><textarea name="body" rows="3" required placeholder="Why did this change, slip, or get dropped?"></textarea>
+<button type="submit">Add annotation</button><div class="err"></div></form>`;
 }
 
 function epicRollupHtml(rollup: EpicRollup): string {
@@ -1930,6 +2008,9 @@ export function renderItem(
           : `<p class="muted">No dashboard comments yet — notes are read when this is picked up; messages are triaged by the orchestrator.</p>`
       }${commentFormHtml(extras.formRef, extras.formOpts)}`
     : "";
+  const roadmapAnnotationSection = extras?.roadmapAnnotations !== undefined
+    ? `<section class="roadmap-annotation-section"><h2>Roadmap annotations</h2>${extras.roadmapAnnotations.length ? extras.roadmapAnnotations.map(roadmapAnnotationHtml).join("") : '<p class="muted">No roadmap annotations yet.</p>'}${roadmapAnnotationFormHtml(extras.formRef, extras.formOpts.identities)}</section>`
+    : "";
   const sessionSection =
     extras && extras.sessions.length
       ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
@@ -1948,10 +2029,12 @@ export function renderItem(
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
-${sessionSection}${statusSection}${dashSection}`,
+${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
-    extras ? COMMENT_SCRIPT + (extras.statusRequest ? ACTION_SCRIPT : "") : "",
+    extras
+      ? COMMENT_SCRIPT + (extras.roadmapAnnotations !== undefined ? ROADMAP_ANNOTATION_SCRIPT : "") + (extras.statusRequest ? ACTION_SCRIPT : "")
+      : "",
   );
 }
 
@@ -2318,7 +2401,7 @@ function sessionCard(
   e: TieredEntry,
   children: Map<string, TieredEntry[]>,
   depth = 0,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: {
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
@@ -2378,7 +2461,7 @@ function sessionCard(
 function tierItemCard(
   item: TierItem,
   whyLabel: string,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: {
     actions?: DashAction[];
     identities?: AuthorIdentity[];
@@ -2537,11 +2620,315 @@ function needsOrderHtml(act: AttentionAct | undefined): string {
   return `<div class="orderctl">Needs-you list order: <strong>${esc(labels[order])}</strong>${actboxHtml({ identities: act.identities }, form)}</div>`;
 }
 
+
+/** #1277: the per-card bulk-triage pick for one queue card. Renders
+ * only when the action surface is up (identities present); a card
+ * whose own controls are disabled (stale tier source) gets a disabled
+ * pick, so it cannot be submitted against an unconfirmed item. */
+function bulkPickHtml(
+  objectRef: string,
+  title: string,
+  act: AttentionAct | undefined,
+  disabledReason?: string,
+): string {
+  if (!act?.identities) return "";
+  return `<div class="bulkpickline"><label><input type="checkbox" class="bulkpick" data-object="${esc(objectRef)}" data-title="${esc(title)}"${disabledReason ? " disabled" : ""}> Select for bulk triage</label></div>`;
+}
+
+function bulkSnoozeOptions(): string {
+  const now = new Date();
+  const tonight = new Date(now);
+  tonight.setHours(23, 59, 0, 0);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(9, 0, 0, 0);
+  const nextWeek = new Date(now);
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  nextWeek.setHours(9, 0, 0, 0);
+  return `<option value="${tonight.toISOString()}">until tonight</option><option value="${tomorrow.toISOString()}">until tomorrow 9:00</option><option value="${nextWeek.toISOString()}">until next week</option>`;
+}
+
+/** #1277: the bulk triage bar for the Needs-you queues — one verb
+ * applied to every picked card, with a review step that lists every
+ * selected item + the chosen action before anything is submitted.
+ * Submission goes to POST /api/actions/batch (BULK_SCRIPT below);
+ * each item lands as its own attributed action record. */
+function bulkBarHtml(act: AttentionAct | undefined): string {
+  if (!act?.identities) return "";
+  return `<div class="bulkbar" id="bulkbar"><strong>Bulk triage</strong>${authorSelectHtml(act.identities)}<label>Action <select name="bulkVerb"><option value="acknowledge">acknowledge</option><option value="snooze">snooze</option><option value="escalate">escalate</option><option value="delegate">delegate</option></select></label><span class="bulk-snooze-fields" hidden><label>Snooze <select name="bulkUntil">${bulkSnoozeOptions()}</select></label></span><span class="bulk-tier-fields" hidden><label>Move to <select name="bulkTier"><option value="needs-drew">Needs User</option><option value="needs-orchestrator">Needs Orchestrator</option></select></label></span><span class="bulk-mode-fields" hidden><label>Delegation <select name="bulkMode"><option value="first-pass">first-pass</option><option value="auto">auto</option><option value="user">user (take it back)</option></select></label></span><label>Reason (optional) <input type="text" name="bulkReason"></label><label><input type="checkbox" class="bulk-all"> Select all visible</label><span class="bulkcount">0 selected</span><button type="button" class="bulk-review-btn" disabled>Review batch</button><div class="bulkreview" hidden><p class="bulkreview-summary"></p><ul class="bulkreview-list"></ul><button type="button" class="bulk-confirm-btn">Submit batch</button> <button type="button" class="bulk-cancel-btn">Back</button><div class="bulkresults"></div><div class="err bulkerr"></div></div></div>`;
+}
+
+/**
+ * The client side of bulk triage (#1277): delegated listeners in the
+ * COMMENT_SCRIPT/ACTION_SCRIPT pattern, so Datastar fragment swaps
+ * keep working. Review builds nothing server-side; confirm POSTs one
+ * action object per picked card to /api/actions/batch and renders
+ * the per-item results — succeeded picks clear, failed picks stay
+ * checked (their items remain in Needs-you) with the error named.
+ */
+const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
+(function () {
+  if (window.__dashBulk) return;
+  window.__dashBulk = true;
+  // The reviewed batch, snapshotted at Review time (Codex review on
+  // PR #4053): Submit sends exactly this envelope — never a reread of
+  // live controls — and its per-item client tokens survive a lost
+  // response, so a retry dedupes against anything already recorded
+  // instead of appending duplicates. Any change to the picks or the
+  // action controls after review invalidates the snapshot.
+  var snapshot = null;
+  var submitting = false;
+  var boundBar = null;
+  function picks() { return Array.prototype.slice.call(document.querySelectorAll("input.bulkpick:checked:not(:disabled)")); }
+  function bar() { return document.getElementById("bulkbar"); }
+  function invalidate() {
+    if (submitting || !snapshot) return;
+    snapshot = null;
+    var b = bar(); if (!b) return;
+    b.querySelector(".bulkreview").hidden = true;
+    b.querySelector(".bulkerr").textContent = "Selection or action changed after review \u2014 review the batch again before submitting.";
+  }
+  function showReview(b, opts) {
+    if (!snapshot) return;
+    boundBar = b;
+    var list = b.querySelector(".bulkreview-list");
+    list.replaceChildren();
+    snapshot.items.forEach(function (it) {
+      var li = document.createElement("li");
+      li.textContent = it.title + " \u2014 " + it.object;
+      list.appendChild(li);
+    });
+    // Re-check the reviewed picks on the live cards (a fragment
+    // refresh re-renders them unchecked; the snapshot is the truth).
+    snapshot.items.forEach(function (it) {
+      var pk = document.querySelector('input.bulkpick[data-object="' + CSS.escape(it.object) + '"]');
+      if (pk && !pk.disabled) pk.checked = true;
+    });
+    var summary = b.querySelector(".bulkreview-summary");
+    if (submitting) summary.textContent = "Submitting \u201c" + snapshot.text + "\u201d for " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + " \u2014 waiting for the result\u2026";
+    else if (opts && opts.restored) summary.textContent = "Review restored after a page refresh: \u201c" + snapshot.text + "\u201d for " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + ". Submit retries exactly this reviewed batch.";
+    else summary.textContent = "Apply \u201c" + snapshot.text + "\u201d to " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + "? Nothing is submitted yet \u2014 Submit sends exactly this reviewed list.";
+    if (!opts || !opts.keepResults) b.querySelector(".bulkresults").replaceChildren();
+    if (!opts || !opts.restored) b.querySelector(".bulkerr").textContent = "";
+    b.querySelector(".bulk-confirm-btn").disabled = submitting;
+    b.querySelector(".bulkreview").hidden = false;
+    syncBar();
+  }
+  function syncBar() {
+    var b = bar(); if (!b) return;
+    var n = picks().length;
+    b.querySelector(".bulkcount").textContent = n + " selected";
+    b.querySelector(".bulk-review-btn").disabled = submitting || n === 0;
+    var verb = b.querySelector("select[name=bulkVerb]").value;
+    b.querySelector(".bulk-snooze-fields").hidden = verb !== "snooze";
+    b.querySelector(".bulk-tier-fields").hidden = verb !== "escalate";
+    b.querySelector(".bulk-mode-fields").hidden = verb !== "delegate";
+  }
+  document.addEventListener("change", function (ev) {
+    var t = ev.target;
+    if (!t || !t.classList) return;
+    if (t.classList.contains("bulk-all")) {
+      invalidate();
+      document.querySelectorAll("input.bulkpick:not(:disabled)").forEach(function (pk) { pk.checked = t.checked; });
+      syncBar();
+    } else if (t.classList.contains("bulkpick") || t.name === "bulkVerb" || t.name === "bulkUntil" || t.name === "bulkTier" || t.name === "bulkMode") {
+      invalidate();
+      syncBar();
+    }
+  });
+  document.addEventListener("input", function (ev) {
+    var t = ev.target;
+    if (t && t.name === "bulkReason") invalidate();
+  });
+  function describeAction(b) {
+    var verb = b.querySelector("select[name=bulkVerb]").value;
+    if (verb === "snooze") return "snooze until " + new Date(b.querySelector("select[name=bulkUntil]").value).toLocaleString();
+    if (verb === "escalate") return "escalate to " + b.querySelector("select[name=bulkTier]").value;
+    if (verb === "delegate") return "delegate (" + b.querySelector("select[name=bulkMode]").value + ")";
+    return verb;
+  }
+  document.addEventListener("click", async function (ev) {
+    var t = ev.target;
+    if (!t || !t.classList) return;
+    var b = bar(); if (!b) return;
+    if (t.classList.contains("bulk-review-btn")) {
+      if (submitting) return;
+      var sel = picks(); if (!sel.length) return;
+      var verb = b.querySelector("select[name=bulkVerb]").value;
+      var authorRaw = String((b.querySelector("select[name=author]") || {}).value || "drew|drew|");
+      var parts = authorRaw.split("|");
+      var labelEl = b.querySelector('option[value="' + CSS.escape(authorRaw) + '"]');
+      var author = { kind: parts[0], id: parts[1], label: labelEl ? labelEl.textContent : parts[1] };
+      if (parts[2]) author.sessionId = parts[2];
+      var payload = {};
+      if (verb === "snooze") payload.until = b.querySelector("select[name=bulkUntil]").value;
+      if (verb === "escalate") payload.tier = b.querySelector("select[name=bulkTier]").value;
+      if (verb === "delegate") payload.mode = b.querySelector("select[name=bulkMode]").value;
+      var reason = b.querySelector("input[name=bulkReason]").value.trim();
+      if (reason) payload.reason = reason;
+      var stamp = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+      var actions = sel.map(function (pk, i) {
+        var a = { clientToken: "ct-bulk-" + stamp + "-" + i, kind: "triage", verb: verb, objectRef: pk.dataset.object, author: author, payload: payload };
+        if (pk.dataset.object.indexOf("gh:") === 0) a.targetRef = pk.dataset.object.slice(3);
+        return a;
+      });
+      snapshot = {
+        actions: actions,
+        text: describeAction(b),
+        items: sel.map(function (pk) { return { object: pk.dataset.object, title: pk.dataset.title || pk.dataset.object }; }),
+      };
+      showReview(b, {});
+    }
+    if (t.classList.contains("bulk-cancel-btn")) {
+      if (submitting) return;
+      snapshot = null;
+      b.querySelector(".bulkreview").hidden = true;
+    }
+    if (t.classList.contains("bulk-confirm-btn")) {
+      if (submitting || !snapshot) return;
+      var batch = snapshot;
+      submitting = true;
+      t.disabled = true;
+      b.querySelector(".bulk-review-btn").disabled = true;
+      var resultsEl = b.querySelector(".bulkresults");
+      resultsEl.replaceChildren();
+      var allResults = [];
+      try {
+        // The endpoint accepts at most 100 actions per request and
+        // readJsonBody rejects bodies over 100,000 chars (server.ts),
+        // so the SAME snapshot is packed greedily under BOTH limits
+        // and the slices' per-item results are aggregated.
+        var chunks = [];
+        var cur = [];
+        var curLen = 16; // the {"actions":[]} envelope
+        batch.actions.forEach(function (a) {
+          var len = JSON.stringify(a).length + 1;
+          if (cur.length && (cur.length >= 100 || curLen + len > 90000)) {
+            chunks.push(cur);
+            cur = [];
+            curLen = 16;
+          }
+          cur.push(a);
+          curLen += len;
+        });
+        if (cur.length) chunks.push(cur);
+        for (var ci = 0; ci < chunks.length; ci++) {
+          var res = await fetch("/api/actions/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actions: chunks[ci] }) });
+          var body;
+          try {
+            body = await res.json();
+          } catch (e) {
+            // A 200 whose body never finished is an UNKNOWN outcome,
+            // not an empty success: rethrow so the outer handler
+            // keeps the snapshot (and its tokens) for an exact retry.
+            if (res.ok) throw e;
+            body = {};
+          }
+          if (!res.ok) throw new Error((body && body.error) || ("HTTP " + res.status));
+          if (!body || !Array.isArray(body.results) || body.results.length !== chunks[ci].length) {
+            throw new Error("batch response did not include per-item results for every action");
+          }
+          body.results.forEach(function (r) { allResults.push(r); });
+        }
+      } catch (e) {
+        // No definitive result: the snapshot (and its client tokens)
+        // is kept, so Submit retries the identical envelope and the
+        // endpoint dedupes anything a lost response had recorded. If
+        // a fragment refresh swapped the bar mid-flight, restore the
+        // review UI on the LIVE bar first \u2014 the retry must never
+        // be stranded on a detached element.
+        var bLive = bar();
+        if (bLive && bLive !== b) {
+          showReview(bLive, { restored: true, keepResults: true });
+          b = bLive;
+        }
+        submitting = false;
+        b.querySelector(".bulkreview-summary").textContent = "Batch result unknown for \u201c" + batch.text + "\u201d \u2014 Submit retries exactly this reviewed batch.";
+        b.querySelector(".bulkerr").textContent = "Batch result unknown: " + e.message + " \u2014 the reviewed batch is unchanged; Submit retries it exactly, and already-recorded items dedupe by client token.";
+        var cf = b.querySelector(".bulk-confirm-btn");
+        if (cf) cf.disabled = false;
+        b.querySelector(".bulk-review-btn").disabled = picks().length === 0;
+        return;
+      }
+      // Definitive results: the snapshot is spent. A further batch
+      // needs a fresh review, which mints fresh tokens.
+      snapshot = null;
+      submitting = false;
+      var bNow = bar();
+      if (bNow && bNow !== b) {
+        // The queues fragment was re-rendered mid-flight (e.g. a
+        // single-card action refreshed it): write the results into
+        // the LIVE bar, not the detached one.
+        b = bNow;
+        boundBar = bNow;
+        resultsEl = b.querySelector(".bulkresults");
+        resultsEl.replaceChildren();
+        b.querySelector(".bulkreview").hidden = false;
+        var cf2 = b.querySelector(".bulk-confirm-btn");
+        if (cf2) cf2.disabled = true;
+      }
+      var failedRefs = {};
+      var recorded = 0;
+      var verb0 = batch.actions.length ? batch.actions[0].verb : "";
+      allResults.forEach(function (r) {
+        var line = document.createElement("div");
+        if (r.ok) {
+          recorded++;
+          line.textContent = "\u2713 " + r.objectRef + " \u2014 recorded";
+          // Update the accepted card in place (the __dashAfter
+          // pattern): uncheck its pick, stamp the sent line, and
+          // tombstone it for a snooze. This runs even when other
+          // items failed \u2014 a partial batch gets no fragment
+          // refresh, so failed picks and errors below stay put.
+          var pk = document.querySelector('input.bulkpick[data-object="' + CSS.escape(r.objectRef) + '"]');
+          if (pk) {
+            pk.checked = false;
+            var pickLine = pk.closest(".bulkpickline");
+            var card = pickLine ? pickLine.nextElementSibling : null;
+            if (card && card.classList.contains("card")) {
+              var sent = document.createElement("div");
+              sent.className = "sentline";
+              sent.textContent = "\u2713 " + verb0 + " sent \u00b7 pending \u2014 the fleet applies it on its next pass";
+              card.appendChild(sent);
+              if (verb0 === "snooze") card.classList.add("tombstone");
+            }
+          }
+        } else {
+          line.textContent = "\u2717 " + (r.objectRef || "(unknown ref)") + " \u2014 " + r.error + " (still in Needs-you)";
+          failedRefs[r.objectRef] = true;
+        }
+        resultsEl.appendChild(line);
+      });
+      var failed = allResults.length - recorded;
+      b.querySelector(".bulkreview-summary").textContent = "Batch submitted: " + recorded + " recorded, " + failed + " failed. Change the selection and Review again for another batch.";
+      syncBar();
+      if (!failed) {
+        window.dispatchEvent(new CustomEvent("dashrefresh"));
+        if (!document.querySelector("[data-frag]")) location.reload();
+      }
+    }
+  });
+  // A queue fragment refresh (a Datastar swap \u2014 e.g. a single-card
+  // action while a bulk batch is in flight or awaiting retry)
+  // replaces #bulkbar wholesale. When a reviewed snapshot exists,
+  // rebuild its review UI on the new bar, so the batch and its exact
+  // retry survive the refresh instead of stranding on detached nodes.
+  boundBar = bar();
+  new MutationObserver(function () {
+    var bNow2 = bar();
+    if (!bNow2 || bNow2 === boundBar) return;
+    boundBar = bNow2;
+    if (snapshot) showReview(bNow2, { restored: true, keepResults: true });
+    else syncBar();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+})();
+</script>`;
+
 export function renderAttention(
   view: AttentionView,
   coverage: SourceCoverage[],
   provenance: Provenance,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   act?: AttentionAct,
 ): string {
@@ -2552,7 +2939,7 @@ export function renderAttention(
 ${sections.header}${sections.queues}${sections.sessions}`,
     provenance,
     "/attention",
-    act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT : "",
+    act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -2567,7 +2954,7 @@ ${sections.header}${sections.queues}${sections.sessions}`,
 export function attentionSections(
   view: AttentionView,
   coverage: SourceCoverage[],
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: AttentionAct,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
@@ -2659,7 +3046,7 @@ export function attentionSections(
     const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
     drewCardsList.push({
-      html: sessionCard(e, children, 0, counts, sessionAct),
+      html: bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct),
       sinceMs: Date.parse(e.lastActivityAt ?? "") || 0,
       seenMs: Date.parse(e.lastActivityAt ?? "") || 0,
       rank: 5,
@@ -2669,8 +3056,9 @@ export function attentionSections(
     const objectRef = tierItemObjectRef(item);
     const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
+    const drewAct = tierAct(item);
     drewCardsList.push({
-      html: tierItemCard(item, "Why you", counts, tierAct(item)),
+      html: bulkPickHtml(objectRef, item.title, act, drewAct.disabledReason) + tierItemCard(item, "Why you", counts, drewAct),
       sinceMs: Date.parse(item.since) || 0,
       seenMs: Date.parse(item.lastSeenAt) || 0,
       rank: item.horizon ? (HORIZON_RANK[item.horizon] ?? 5) : 5,
@@ -2692,13 +3080,14 @@ export function attentionSections(
     const objectRef = sessionObjectRef(e.sessionId);
     const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
-    orchCardsList.push(sessionCard(e, children, 0, counts, sessionAct));
+    orchCardsList.push(bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct));
   }
   for (const item of view.orchestratorExtra) {
     const objectRef = tierItemObjectRef(item);
     const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
-    orchCardsList.push(tierItemCard(item, "Why the fleet", counts, tierAct(item)));
+    const orchAct = tierAct(item);
+    orchCardsList.push(bulkPickHtml(objectRef, item.title, act, orchAct.disabledReason) + tierItemCard(item, "Why the fleet", counts, orchAct));
   }
   // Store-only suppressed refs: items the publisher no longer lists
   // (their dismissal was applied and they left the tiers) stay visible
@@ -2743,7 +3132,7 @@ ${delegationDefault}`;
   const hiddenStrip = hiddenList.length
     ? `<details class="hiddenstrip"><summary><strong>Dismissed / done by you (${hiddenList.length})</strong> — hidden from the queues; restore any of them to re-review or add a note</summary>${hiddenList.map((e) => stripCardHtml(e, act?.identities)).join("")}</details>`
     : "";
-  const queues = `${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
+  const queues = `${bulkBarHtml(act)}${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
 ${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}`;
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children, 0, counts, sessionAct)).join("")
@@ -2776,7 +3165,7 @@ ${attentionFragment("sessions", skel("sessions"))}`;
     body,
     provenance,
     "/attention",
-    ACTION_SCRIPT + COMMENT_SCRIPT,
+    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -5180,6 +5569,31 @@ export function renderDiscuss(
   }</p>
 ${commentThreadHtml(objectRef, comments, opts)}`;
   return layout(title, body, provenance, "", COMMENT_SCRIPT);
+}
+
+// --- Comments queue page (#1210) ------------------------------------------
+
+/** The queue view: every comment still waiting on a loop — messages
+ *  awaiting triage and GitHub comments pending/failed to post — with
+ *  kind/state counts. Terminal comments (triaged/posted) and notes
+ *  are not queued and never render here. */
+export function renderCommentsQueue(comments: DashComment[], provenance: Provenance): string {
+  const queued = queuedComments(comments);
+  const k = commentKindCounts(comments);
+  const summary = `${queued.length} queued — ${k.messagesNew} messages awaiting triage · ${k.githubPending} GitHub comments to post · ${k.githubFailed} failed to post <span class="muted">(of ${k.total} comments total: ${k.notes} notes, ${k.messages} messages, ${k.github} GitHub)</span>`;
+  const list = queued.length
+    ? queued
+        .map(
+          (c) =>
+            `${dashCommentHtml(c, true)}\n<p class="muted"><a href="/discuss/${encodeURIComponent(c.objectRef)}">open the thread</a></p>`,
+        )
+        .join("\n")
+    : `<p class="muted">Nothing is queued — every message is triaged and every GitHub comment is posted.</p>`;
+  const body = `<h1>Comments queue</h1>
+<p class="muted">Every dashboard comment still waiting on a loop (#1210), oldest first. A <strong>note</strong> is never queued: it is read when its item is next picked up. Machine-first: <a href="/api/comments/queue.json">/api/comments/queue.json</a>.</p>
+<p>${summary}</p>
+${list}`;
+  return layout("Comments queue", body, provenance, "/comments");
 }
 
 // --- Projects page (#910 stage 5: the live GitHub Project pool) ------------

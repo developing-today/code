@@ -202,10 +202,15 @@ export function matchCharges(candidates: ChargeCandidate[], services: ChargeServ
   );
   for (const candidate of ordered) {
     const normalized = normalizeMerchantName(candidate.merchant);
+    // Only pair observations from different sources. When normalization
+    // removes every token, also require the raw descriptor to agree so
+    // unrelated numeric merchant IDs cannot collapse into one charge.
     const existing = clusters.find(
       (cl) =>
         cl.amountUsd === candidate.amountUsd &&
         cl.normalized === normalized &&
+        (candidate.source === "plaid" ? !cl.plaid : !cl.gmail) &&
+        (normalized !== "" || cl.first.merchant.trim().toUpperCase() === candidate.merchant.trim().toUpperCase()) &&
         daysBetween(cl.first.at, candidate.at) <= DEDUPE_WINDOW_DAYS,
     );
     if (existing) {

@@ -1307,6 +1307,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fileops_reject_unsafe_names_without_mutating_files() {
+        let node = LocalNode::open(true).await.unwrap();
+        let source_hash = put(&node, "source.txt", b"source").await;
+        let upload = node
+            .blobs()
+            .add_bytes(b"candidate".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        let put_hash = upload.hash();
+        let invalid_names = [
+            "../escape.txt",
+            "nested/../escape.txt",
+            "./dot.txt",
+            "/rooted.txt",
+            r"..\escape.txt",
+            r"nested\..\escape.txt",
+            r"\rooted.txt",
+            r"\\server\share.txt",
+            r"C:\rooted.txt",
+            "C:/rooted.txt",
+            "C:relative.txt",
+        ];
+
+        for invalid in invalid_names {
+            let put_response = node
+                .request(MetaRequest::Put {
+                    filename: invalid.to_owned(),
+                    hash: put_hash,
+                })
+                .await;
+            assert!(
+                put_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
+                "put accepted unsafe name {invalid:?}: {put_response:?}"
+            );
+
+            let rename_response = node
+                .request(MetaRequest::Rename {
+                    from: "source.txt".to_owned(),
+                    to: invalid.to_owned(),
+                })
+                .await;
+            assert!(
+                rename_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
+                "rename accepted unsafe name {invalid:?}: {rename_response:?}"
+            );
+
+            let copy_response = node
+                .request(MetaRequest::Copy {
+                    from: "source.txt".to_owned(),
+                    to: invalid.to_owned(),
+                })
+                .await;
+            assert!(
+                copy_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
+                "copy accepted unsafe name {invalid:?}: {copy_response:?}"
+            );
+
+            assert_eq!(names(&node).await, vec!["source.txt".to_owned()]);
+            assert!(tags_of(&node, invalid).await.is_empty());
+            assert!(matches!(
+                node.request(MetaRequest::Get {
+                    filename: "source.txt".to_owned(),
+                })
+                .await,
+                MetaResponse::Get { hash: Some(hash) } if hash == source_hash
+            ));
+        }
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fileops_accept_safe_nested_names_for_rename_and_copy() {
+        let node = LocalNode::open(true).await.unwrap();
+        let hash = put(&node, "dir/a.txt", b"hello").await;
+
+        assert!(matches!(
+            node.request(MetaRequest::Rename {
+                from: "dir/a.txt".to_owned(),
+                to: "renamed/deep.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Rename { success: true }
+        ));
+        assert!(matches!(
+            node.request(MetaRequest::Copy {
+                from: "renamed/deep.txt".to_owned(),
+                to: "copies/copy.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Copy { success: true }
+        ));
+
+        assert!(matches!(
+            node.request(MetaRequest::Get {
+                filename: "renamed/deep.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Get { hash: Some(found) } if found == hash
+        ));
+        assert!(matches!(
+            node.request(MetaRequest::Get {
+                filename: "copies/copy.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Get { hash: Some(found) } if found == hash
+        ));
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn deltag_without_value_deletes_every_value_of_the_key() {
         // Regression: the handler used to treat `None` as "the key-only tag",
         // so `id tag del FILE KEY` reported success and deleted nothing.
