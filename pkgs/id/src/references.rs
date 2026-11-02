@@ -58,7 +58,7 @@ impl Sigil {
 
 /// A store's identity, as a locator hint and as candidate provenance. The PoC has exactly one
 /// local store; the type is the spec's, so a v2 fan-out can name more.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StoreId(pub String);
 
 impl StoreId {
@@ -121,7 +121,7 @@ impl Reference {
                 }
                 ']' if chars.next() == Some('(') => {
                     let rest: String = chars.collect();
-                    break rest.strip_prefix("id://")?.strip_suffix(')')?;
+                    break rest.strip_prefix("id://")?.strip_suffix(')')?.to_owned();
                 }
                 chr => surface.push(chr),
             }
