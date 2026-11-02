@@ -4,7 +4,7 @@ import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommentsStore, validateNewComment } from "../src/comments.ts";
-import { dnsSectionFromRegister, isDnsSection, parseDnsRegister, summarizeDns } from "../src/dns.ts";
+import { dnsSectionFromRegister, dnsSectionFromRegisterJson, isDnsSection, parseDnsRegister, summarizeDns } from "../src/dns.ts";
 import type { SessionFeedEntry } from "../src/model.ts";
 import { PAGES } from "../src/pages.ts";
 import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
@@ -116,6 +116,49 @@ describe("dns register parser", () => {
   test("a file without the register table parses to nothing (fail-soft)", () => {
     expect(parseDnsRegister("# nothing here\n")).toEqual([]);
     expect(dnsSectionFromRegister("# nothing\n", "2026-10-25T00:00:00Z", "test")).toBeNull();
+  });
+
+  test("register.json section: JSON fields win, Markdown supplies editorial columns (#902 slice 2)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const json = JSON.stringify({
+      generated_at: "2026-11-01T16:26:34Z",
+      domains: [
+        { domain: "first.de", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-02-09", auto_renew: true, renewal_price_usd: 4.07, source: "porkbun-api" },
+        { domain: "active.example", registrar: "Porkbun", dns_hosted_at: "Cloudflare", next_renewal: "2027-02-24", auto_renew: false, renewal_price_usd: 29.35, source: "porkbun-api" },
+        { domain: "jsononly.example", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-03-01", auto_renew: null, renewal_price_usd: null, source: "register-markdown" },
+      ],
+    });
+    const section = dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "test-json", mdEntries);
+    expect(section).not.toBeNull();
+    // JSON is authoritative and complete: a domain absent from the
+    // Markdown still renders; a Markdown-only domain does not.
+    expect(section?.entries.map((e) => e.domain)).toEqual(["first.de", "active.example", "jsononly.example"]);
+    expect(section?.totalAnnualListUsd).toBe(33.42);
+    const active = section?.entries.find((e) => e.domain === "active.example");
+    expect(active?.priceUsd).toBe(29.35);
+    expect(active?.autoRenew).toBe("OFF");
+    // Editorial columns come from the Markdown row for the same domain.
+    expect(active?.plan).toBe("Active — fleet infrastructure");
+    expect(active?.status).toBe("active");
+    const jsonOnly = section?.entries.find((e) => e.domain === "jsononly.example");
+    expect(jsonOnly?.autoRenew).toBe("unknown");
+    expect(jsonOnly?.priceUsd).toBeNull();
+    expect(jsonOnly?.status).toBe("unused");
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("register.json section: missing/malformed JSON yields null so the caller falls back (#902 slice 2)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    expect(dnsSectionFromRegisterJson("{not json", "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    expect(dnsSectionFromRegisterJson('{"domains":[]}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    expect(dnsSectionFromRegisterJson('{"generated_at":"x"}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    const badRow = JSON.stringify({ domains: [{ domain: "x.dev", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "soon", auto_renew: true, renewal_price_usd: 1 }] });
+    expect(dnsSectionFromRegisterJson(badRow, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    const dup = JSON.stringify({ domains: [
+      { domain: "x.dev", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-01-01", auto_renew: true, renewal_price_usd: 1 },
+      { domain: "x.dev", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-01-02", auto_renew: true, renewal_price_usd: 2 },
+    ] });
+    expect(dnsSectionFromRegisterJson(dup, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
   });
 
   test("isDnsSection owns the finite-number + status rules (#2412)", () => {
