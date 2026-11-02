@@ -47,6 +47,14 @@ const startStub = (name) => new Promise((resolve) => {
     req.on('end', () => {
       stub.calls += 1;
       stub.remotePorts.push(req.socket.remotePort);
+      if (stub.mode === 'stall-status') {
+        // Flush a 429 head and then leave the body open forever (#2097 /
+        // PR #4204 Codex P2): the proxy falls back at the head, and the
+        // stalled body must not be able to hurt the fallback afterwards.
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.flushHeaders();
+        return;
+      }
       if (stub.mode === 'hang') {
         // Accept the request and never respond (#2097): the wedged-backend
         // case. The socket is left open; the proxy's backend timeout is
@@ -394,4 +402,18 @@ test('slow but actively streaming primary is not killed by the backend timeout (
   assert.match(text, /\[DONE\]/);
   assert.equal(primary.calls, 1);
   assert.equal(fallback.calls, 0);
+});
+
+test('a retired primary with a stalled 429 body cannot truncate the fallback stream (#2097, PR #4204 Codex P2)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy({ backendTimeoutMs: 400 });
+  t.after(stop);
+  primary.mode = 'stall-status';
+  fallback.mode = 'slow-stream';
+  const res = await post(port, { stream: true });
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /hello from fallback/);
+  assert.match(text, /\[DONE\]/);
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 1);
 });

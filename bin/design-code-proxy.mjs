@@ -317,6 +317,12 @@ const dispatchWithFallback = (body, clientRes) => {
       failSettled = true;
       onFailRaw(err);
     };
+    // A target that has failed is retired: the fallback (or the final 502)
+    // owns the client response from that moment, and nothing the retired
+    // target does afterwards — a late response error, a timeout firing on
+    // a body still being drained — may touch the client response (Codex
+    // P2 on PR #4204).
+    const targetRetired = () => failSettled;
     const stream = Boolean(body.stream);
     const payload = JSON.stringify({
       ...body,
@@ -342,6 +348,7 @@ const dispatchWithFallback = (body, clientRes) => {
       // pooled socket is released instead of stalling half-open.
       localRes.on('error', err => {
         console.warn(`[design-code-proxy] Error reading response from 127.0.0.1:${target.port}: ${err.message}`);
+        if (targetRetired()) return; // fallback owns the client response now
         if (!clientRes.headersSent) onFail(err);
         else clientRes.destroy();
       });
@@ -350,7 +357,13 @@ const dispatchWithFallback = (body, clientRes) => {
       if (localRes.statusCode === 429 || localRes.statusCode >= 500) {
         console.warn(`[design-code-proxy] Target 127.0.0.1:${target.port} returned ${localRes.statusCode}`);
         localRes.resume(); // discard response
-        return onFail(new Error(`HTTP ${localRes.statusCode}`));
+        onFail(new Error(`HTTP ${localRes.statusCode}`));
+        // Retire the failed target immediately instead of draining a body
+        // that may never end: its socket is freed now, and the retired
+        // guard above keeps any resulting error away from the fallback's
+        // client response.
+        localReq.destroy();
+        return;
       }
 
       // The head is written up front only for streaming. For a buffered
