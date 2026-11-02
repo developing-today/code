@@ -107,7 +107,18 @@ export const parseLoose = (raw) => {
       } catch {
         // Keep the verbatim string; normalisation happens later.
       }
-      fields[key] = value;
+      // Define semantics, not assignment (#2828): assigning a
+      // '__proto__' key would invoke the prototype setter — a string
+      // value is silently dropped and an object value would replace
+      // this object's prototype — while the JSON input path preserves
+      // the field. Defining makes every accepted key an own data
+      // property, so no supplied field is ever lost.
+      Object.defineProperty(fields, key, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true
+      });
       keyed += 1;
     } else if (segment.trim() !== '') {
       unkeyed.push(segment.trim());
