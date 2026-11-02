@@ -77,6 +77,25 @@ describe("views store (#1276)", () => {
     expect((await reloaded.all()).map((v) => v.name).sort()).toEqual(["B renamed", "C"]);
   });
 
+  test("a failed set-default preserves the current default, even after a later persist", async () => {
+    const { file, store } = tmpStore();
+    const a = await store.save({ owner: drewKey, name: "A", filters: { repo: "dezren39/nix" } });
+    await store.save({ owner: ownerKey(claude), name: "C", filters: { repo: "dezren39/nix" } });
+    const c = (await store.forOwner(ownerKey(claude)))[0];
+    await store.setDefault(a.id, drewKey);
+    expect((await store.defaultFor(drewKey))?.id).toBe(a.id);
+    // Rejected set-default calls (unknown id, another owner's view)
+    // must not clear the existing default — not even in memory, where
+    // a later persist would write the unintended clear to disk
+    // (Codex P2, PR #4013).
+    expect(await store.setDefault("vw-missing", drewKey)).toBeNull();
+    expect(await store.setDefault(c.id, drewKey)).toBeNull();
+    expect((await store.defaultFor(drewKey))?.id).toBe(a.id);
+    await store.save({ owner: drewKey, name: "B", filters: { horizon: "Now" } });
+    const reloaded = new ViewsStore(file);
+    expect((await reloaded.defaultFor(drewKey))?.id).toBe(a.id);
+  });
+
   test("corrupt views file is quarantined with bytes preserved, never silently overwritten", async () => {
     const { dir, file, store } = tmpStore();
     writeFileSync(file, '{"version":1,"views":[{"id":"vw-1"');

@@ -854,9 +854,16 @@ async function handler(req: Request): Promise<Response> {
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
+    // Codex P2, PR #4013: grain links inside renderRoadmap must keep
+    // the active view parameters, or switching grain drops the view.
+    const viewParams = new URLSearchParams();
+    for (const [k, v] of url.searchParams) {
+      if (k === "view" || k === "viewer" || k.startsWith("vf.")) viewParams.set(k, v);
+    }
+    const viewQuery = viewParams.toString();
     if (!resolved) {
       return html(
-        renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill),
+        renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill, viewQuery),
       );
     }
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
@@ -864,11 +871,18 @@ async function handler(req: Request): Promise<Response> {
     const keptRows = rows.filter((r) =>
       linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
     );
+    // Codex P2, PR #4013: items linked from a KEPT row keep their
+    // metadata (links/badges in roadmapCard) even when they fail the
+    // item filter themselves — same rule the board handler applies.
+    const keptRefs = new Set<string>();
+    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
     const keptItems = new Map(
-      [...items].filter(([ref, it]) => itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters)),
+      [...items].filter(
+        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
+      ),
     );
     return html(
-      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill),
+      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill, viewQuery),
     );
   }
 
@@ -1015,15 +1029,22 @@ async function handler(req: Request): Promise<Response> {
       source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
+    // #1276 (Codex P2, PR #4013): /projects redirects here with the
+    // view parameters preserved, but this handler never resolved the
+    // view — apply it to the pool before rendering, exactly as
+    // /api/projects.json does, so shared/default views filter the
+    // HTML page (and its JSON twin) too.
+    const resolved = await resolveView(url);
+    const viewPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const data = {
-      ...buildProgramData(items, pool, orchestration),
-      projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
+      ...buildProgramData(items, viewPool, orchestration),
+      projects: buildProjectSummaries(PROJECT_CONFIGS, viewPool, rows),
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
     return html(
       renderProgram(data, items, prov(), provDetail(), {
-        pool,
+        pool: viewPool,
         area: url.searchParams.get("area"),
         orchestration,
         coverage,

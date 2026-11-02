@@ -298,13 +298,20 @@ export class ViewsStore {
    *  owner); id null clears the owner's default. */
   async setDefault(id: string | null, owner: string): Promise<SavedView | null> {
     await this.load();
+    // Validate the requested target BEFORE mutating any isDefault
+    // flags (Codex P2, PR #4013): clearing first and only then
+    // discovering the target is unknown or another owner's left the
+    // in-memory default cleared, and a later persist wrote that
+    // unintended clear to disk even though this call rejected.
     let target: SavedView | null = null;
+    if (id !== null) {
+      target = this.views.find((v) => v.owner === owner && v.id === id) ?? null;
+      if (!target) return null;
+    }
     for (const v of this.views) {
       if (v.owner !== owner) continue;
-      v.isDefault = id !== null && v.id === id;
-      if (v.isDefault) target = v;
+      v.isDefault = target !== null && v.id === target.id;
     }
-    if (id !== null && !target) return null;
     await this.persist();
     return target;
   }
