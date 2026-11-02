@@ -10,7 +10,7 @@
 //! test.
 
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
-use super::intent::{FileIntentStore, InMemoryIntentStore, IntentState, IntentStore};
+use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
     Account, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer, TransferError,
 };
@@ -228,6 +228,86 @@ fn linked_chain_failure_marks_other_legs_linked_event_failed() {
     assert_eq!(results[0], Err(TransferError::LinkedEventFailed));
     assert_eq!(results[1], Err(TransferError::DebitsMustNotExceedCredits));
     assert!(ledger.transfers_with_user_data_128(42).is_empty());
+}
+
+#[test]
+fn single_unterminated_linked_transfer_rejected() {
+    // #4121: a lone transfer with `linked: true` promises a following
+    // leg; the batch ending there leaves the chain open, so nothing
+    // posts and no balance moves.
+    let mut ledger = funded_ledger();
+    let before = ledger.account_balance(USER_SRC).unwrap();
+    let open = Transfer {
+        linked: true,
+        ..funding_transfer(700, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let results = ledger.create_transfers(&[open]);
+    assert_eq!(results, vec![Err(TransferError::LinkedEventChainOpen)]);
+    assert!(ledger.lookup_transfer(700).is_none());
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), before);
+}
+
+#[test]
+fn multi_leg_unterminated_chain_rejected_atomically() {
+    // #4121: every leg of an open chain reports an error — the final
+    // leg `LinkedEventChainOpen`, the earlier legs
+    // `LinkedEventFailed` — and no leg is stored.
+    let mut ledger = funded_ledger();
+    let before_user = ledger.account_balance(USER_SRC).unwrap();
+    let before_lp = ledger.account_balance(LP_SRC).unwrap();
+    let chain = vec![
+        Transfer {
+            linked: true,
+            ..funding_transfer(710, USER_SRC, LP_SRC, 100, SRC)
+        },
+        Transfer {
+            linked: true,
+            ..funding_transfer(711, USER_SRC, LP_SRC, 200, SRC)
+        },
+    ];
+    let results = ledger.create_transfers(&chain);
+    assert_eq!(
+        results,
+        vec![
+            Err(TransferError::LinkedEventFailed),
+            Err(TransferError::LinkedEventChainOpen),
+        ]
+    );
+    assert!(ledger.lookup_transfer(710).is_none());
+    assert!(ledger.lookup_transfer(711).is_none());
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), before_user);
+    assert_eq!(ledger.account_balance(LP_SRC).unwrap(), before_lp);
+}
+
+#[test]
+fn unterminated_chain_does_not_block_terminated_chains() {
+    // #4121: the rejection is per-chain. A terminated chain earlier in
+    // the same batch still posts, and a properly terminated chain
+    // submitted in a later batch posts normally — including one that
+    // reuses the rejected open chain's transfers, terminated.
+    let mut ledger = funded_ledger();
+    let batch = vec![
+        Transfer {
+            linked: true,
+            ..funding_transfer(720, USER_SRC, LP_SRC, 100, SRC)
+        },
+        funding_transfer(721, USER_SRC, LP_SRC, 50, SRC),
+        Transfer {
+            linked: true,
+            ..funding_transfer(722, USER_SRC, LP_SRC, 200, SRC)
+        },
+    ];
+    let results = ledger.create_transfers(&batch);
+    assert_eq!(results[0], Ok(()));
+    assert_eq!(results[1], Ok(()));
+    assert_eq!(results[2], Err(TransferError::LinkedEventChainOpen));
+    assert!(ledger.lookup_transfer(720).is_some());
+    assert!(ledger.lookup_transfer(721).is_some());
+    assert!(ledger.lookup_transfer(722).is_none());
+
+    let retry = ledger.create_transfers(&[funding_transfer(722, USER_SRC, LP_SRC, 200, SRC)]);
+    assert_eq!(retry, vec![Ok(())]);
+    assert!(ledger.lookup_transfer(722).is_some());
 }
 
 #[test]
@@ -507,4 +587,133 @@ fn recovery_scan_continues_after_a_rejected_resubmission() {
     assert!(outcomes.contains(&(777, ReconcileOutcome::ResubmissionRejected)));
     assert!(outcomes.contains(&(888, ReconcileOutcome::Resubmitted)));
     assert_eq!(executor.backend.transfers_with_user_data_128(888).len(), 3);
+}
+
+/// A bare `Recorded` intent with the given legs, bypassing the
+/// executor's preflight so malformed leg vectors (#4133) can be
+/// persisted the way a corrupt or legacy record would present them.
+fn bare_record(conversion_id: u128, legs: Vec<Transfer>) -> IntentRecord {
+    IntentRecord {
+        conversion_id,
+        legs,
+        user_source: USER_SRC,
+        lp_source: LP_SRC,
+        fee_account: None,
+        lp_dest: LP_DST,
+        user_dest: USER_DST,
+        source_ledger: SRC,
+        dest_ledger: DST,
+        amount_in: 0,
+        amount_out: 0,
+        fee_amount: 0,
+        authorisation_id: "auth-bare".to_string(),
+        state: IntentState::Recorded,
+    }
+}
+
+#[test]
+fn recovery_rejects_empty_leg_vector() {
+    // An empty leg list satisfies the naive matched == len check
+    // vacuously (0 == 0); it must never become Posted/AlreadyPosted
+    // under either policy, and the record stays unresolved.
+    let mut backend = funded_ledger();
+    let mut store = InMemoryIntentStore::new();
+    store.put(&bare_record(999, Vec::new())).unwrap();
+
+    for policy in [RecoveryPolicy::Resubmit, RecoveryPolicy::Abandon] {
+        let outcomes = reconcile(&mut backend, &mut store, policy).expect("reconcile");
+        assert_eq!(outcomes, vec![(999, ReconcileOutcome::Inconsistent)]);
+        assert_eq!(
+            store.get(999).unwrap().unwrap().state,
+            IntentState::Recorded,
+            "an empty-leg record stays unresolved"
+        );
+    }
+}
+
+#[test]
+fn recovery_rejects_duplicate_leg_ids_backed_by_one_transfer() {
+    // The same leg twice, with only the one distinct transfer in the
+    // ledger: per-entry counting would report 2 matched of 2 and mark
+    // the record Posted off a single posting.
+    let leg = funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC);
+    let mut backend = funded_ledger();
+    let mut store = InMemoryIntentStore::new();
+    store
+        .put(&bare_record(998, vec![leg.clone(), leg]))
+        .expect("persist duplicate-leg record");
+
+    let outcomes =
+        reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit).expect("reconcile");
+    assert_eq!(outcomes, vec![(998, ReconcileOutcome::Inconsistent)]);
+    assert_eq!(
+        store.get(998).unwrap().unwrap().state,
+        IntentState::Recorded,
+        "a duplicate-leg record stays unresolved"
+    );
+}
+
+// --- #4125: one corrupt or foreign entry must not abort recovery ---
+
+/// Seed a file store holding the standard Recorded intent (777) the
+/// way the write-ahead test does, in a fresh temp directory.
+fn file_store_with_recorded_intent(
+    tag: &str,
+) -> (PathBufForTests, FileIntentStore, InMemoryLedger) {
+    let dir = std::env::temp_dir().join(format!(
+        "id-currency-poc-intents-{tag}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = FileIntentStore::open(dir.clone()).expect("open store");
+    let mut executor = ConversionExecutor::new(funded_ledger(), store);
+    let record = executor.prepare(&request()).expect("intent prepared");
+    assert_eq!(record.state, IntentState::Recorded);
+    let backend = funded_ledger();
+    let store = executor.store;
+    (dir, store, backend)
+}
+
+type PathBufForTests = std::path::PathBuf;
+
+#[test]
+fn recovery_continues_past_a_corrupt_sibling_file() {
+    let (dir, mut store, mut backend) = file_store_with_recorded_intent("corrupt");
+    let corrupt = dir.join("deadbeef.json");
+    std::fs::write(&corrupt, b"{not json").expect("write corrupt sibling");
+
+    // The listing itself no longer aborts, and reports the bad entry.
+    let listed = store.unresolved().expect("listing skips the corrupt file");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].conversion_id, 777);
+    let unreadable = store.unreadable_entries();
+    assert_eq!(unreadable.len(), 1);
+    assert_eq!(unreadable[0].path, corrupt);
+
+    let outcomes = reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit)
+        .expect("reconcile past the corrupt sibling");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
+    assert_eq!(backend.transfers_with_user_data_128(777).len(), 3);
+    assert!(
+        corrupt.exists(),
+        "the scanner must not delete the corrupt entry an operator still needs to see"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recovery_continues_past_a_json_named_subdirectory() {
+    let (dir, mut store, mut backend) = file_store_with_recorded_intent("subdir");
+    let subdir = dir.join("cafe.json");
+    std::fs::create_dir(&subdir).expect("create *.json subdirectory");
+
+    let outcomes = reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit)
+        .expect("reconcile past the *.json subdirectory");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
+    assert_eq!(backend.transfers_with_user_data_128(777).len(), 3);
+    let unreadable = store.unreadable_entries();
+    assert_eq!(unreadable.len(), 1);
+    assert_eq!(unreadable[0].path, subdir);
+    assert!(subdir.is_dir(), "the subdirectory stays in place");
+    let _ = std::fs::remove_dir_all(&dir);
 }

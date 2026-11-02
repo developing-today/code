@@ -203,10 +203,7 @@ export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCurso
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
  * the collector can fail-soft and omit the section. Never logs the token. */
-export async function fetchProjectPool(
-  token: string,
-  fetchFn: typeof fetch = fetch,
-): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
@@ -250,6 +247,8 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     typeof p.ref === "string" &&
     typeof p.repo === "string" &&
     typeof p.number === "number" &&
+    Number.isInteger(p.number) &&
+    p.number > 0 &&
     typeof p.issueUrl === "string" &&
     typeof p.title === "string" &&
     // url/projectUrl/contentKind and the Project single-select fields are
@@ -311,9 +310,13 @@ export type DerivedProjectState = "Todo" | "In Progress" | "Done";
  * therefore disagrees with an "In Progress" derivation, and the
  * /projects page shows that disagreement rather than hiding it.
  */
-export function derivedProjectState(p: ProjectPoolItem, section?: OrchestrationSection | null): DerivedProjectState {
+export function derivedProjectState(
+  p: ProjectPoolItem,
+  section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
+): DerivedProjectState {
   if (p.state === "closed" || p.state === "merged") return "Done";
-  if (section && refInOrchestration(p.ref, section)) return "In Progress";
+  if ((section && refInOrchestration(p.ref, section)) || additionalInProgressRefs?.has(p.ref)) return "In Progress";
   return "Todo";
 }
 
@@ -335,8 +338,9 @@ function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean
 export function projectDisagreement(
   p: ProjectPoolItem,
   section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
 ): { project: string; derived: DerivedProjectState } | null {
   if (!p.status) return null;
-  const derived = derivedProjectState(p, section);
+  const derived = derivedProjectState(p, section, additionalInProgressRefs);
   return p.status === derived ? null : { project: p.status, derived };
 }

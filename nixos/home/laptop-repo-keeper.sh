@@ -13,6 +13,12 @@
 #     Untracked files are only counted here; the daily
 #     laptop-untracked-review classifies them (oversized ones belong
 #     to the backup scripts)
+#     A snapshot is only ever committed on an up-to-date base: if
+#     the primary is behind origin, committing would put it ahead
+#     AND behind at once (diverged), after which this keeper can
+#     only report it and pm-git-sync can no longer fast-forward —
+#     the 2026-11-02 code#4464 divergence. Behind + dirty is
+#     reported loudly and left uncommitted for reconciliation.
 #   - pulls fast-forward when behind, pushes when ahead; never
 #     force-pushes, never merges, never rebases
 # Worktrees are counted for the report but never touched: they are
@@ -95,6 +101,13 @@ for d in "${REPOS[@]}"; do
     [ -n "$big" ] && say "- $name: LARGE TRACKED FILES: $big"
   fi
   wt="$(g worktree list | wc -l)"
+  # Ahead/behind is needed BEFORE the snapshot step (see header):
+  # the counts are recomputed after it for the pull/push steps.
+  counts="0 0"
+  if [ "$has_origin" -eq 1 ]; then
+    counts="$(g rev-list --left-right --count "$db...origin/$db" 2>/dev/null || echo '0 0')"
+  fi
+  read -r ahead behind <<<"$counts"
   if [ "$br" != "$db" ]; then
     if [ "$dirty" -eq 0 ]; then
       if g checkout -q "$db"; then
@@ -111,7 +124,9 @@ for d in "${REPOS[@]}"; do
   fi
   if [ "$dirty" -gt 0 ]; then
     residue="$(g ls-files | grep -Ei "$RESIDUE_RE" || true)"
-    if [ -n "$residue" ]; then
+    if [ "${behind:-0}" -gt 0 ]; then
+      say "- $name: DIRTY ($dirty tracked entries) NOT committed — $behind commit(s) behind origin/$db; a snapshot on a stale base would diverge the primary (code#4464) — reconcile first"
+    elif [ -n "$residue" ]; then
       residue_list="$(printf '%s' "$residue" | tr '\n' ' ')"
       say "- $name: TRACKED RESIDUE NOT committed — move these paths to a dated residue directory first: $residue_list"
     elif g status --porcelain | grep -v '^??' | grep -Eiq "$SECRET_RE"; then

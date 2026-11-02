@@ -136,19 +136,22 @@ for ((i = 1; i <= 30; i++)); do
       process_verified=true
     fi
   fi
-  if [[ ${process_verified} == true ]] \
-    && systemctl --user is-active --quiet ready-for-agent.service \
-    && curl --fail --silent http://127.0.0.1:6056/ >/dev/null; then
+  if [[ ${process_verified} == true ]] &&
+    systemctl --user is-active --quiet ready-for-agent.service &&
+    curl --fail --silent http://127.0.0.1:6056/ >/dev/null; then
     running_version="$("${HOME}/.local/bin/ready-for-agent" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
     if [[ ${running_version} != "${PINNED_VERSION}" ]]; then
       echo "ERROR: service restarted, but installed ready-for-agent version is '${running_version:-unknown}', expected '${PINNED_VERSION}'" >&2
       exit 1
     fi
     case "${service_action}" in
-      restarted) echo "ready-for-agent@${running_version} is running after restart: http://127.0.0.1:6056" ;;
-      started) echo "ready-for-agent@${running_version} is running after start: http://127.0.0.1:6056" ;;
-      unchanged) echo "ready-for-agent@${running_version} is already running (no restart): http://127.0.0.1:6056" ;;
-      *) echo "ERROR: unknown service action '${service_action}'" >&2; exit 1 ;;
+    restarted) echo "ready-for-agent@${running_version} is running after restart: http://127.0.0.1:6056" ;;
+    started) echo "ready-for-agent@${running_version} is running after start: http://127.0.0.1:6056" ;;
+    unchanged) echo "ready-for-agent@${running_version} is already running (no restart): http://127.0.0.1:6056" ;;
+    *)
+      echo "ERROR: unknown service action '${service_action}'" >&2
+      exit 1
+      ;;
     esac
     systemctl --user --no-pager status ready-for-agent.service | head -5
     exit 0

@@ -14,6 +14,7 @@
 //! - `blockquote`: Block quote containing blocks
 //! - `code_block`: Code block with optional `params` attribute
 //! - `horizontal_rule`: Thematic break
+//! - `front_matter`: YAML front matter block with `text` attribute (legal only as first child of `doc`)
 //! - `bullet_list`: Unordered list with `tight` attribute
 //! - `ordered_list`: Ordered list with `order` and `tight` attributes
 //! - `list_item`: List item containing blocks
@@ -85,6 +86,7 @@ fn commonmark_options() -> Options<'static> {
     options.extension.tasklist = true;
     options.extension.table = true;
     options.extension.footnotes = true;
+    options.extension.front_matter_delimiter = Some("---".to_owned());
     options.parse.smart = false; // Don't convert quotes/dashes
     options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
     options
@@ -2285,10 +2287,13 @@ fn synthesize_footnote_definitions(
 /// (`](<...>)` inline, `]: <...>` reference definition) with a token
 /// comrak keeps verbatim in the parsed URL, returning the protected
 /// source and the token used (`None` when no destination needed
-/// protection). Fenced code blocks are skipped — a destination-shaped
-/// string inside a fence is literal text, not a link. A candidate
-/// destination that hits a blank line or another `<` before its
-/// closing `>` is not a destination and is left alone.
+/// protection). Literal contexts are skipped — a destination-shaped
+/// string inside a fenced code block, an inline code span, or an
+/// indented code block is literal text, not a link (#1707). Fence
+/// tracking respects the opening fence's character and length. A
+/// candidate destination that hits a blank line — including a
+/// whitespace-only one — or another `<` before its closing `>` is
+/// not a destination and is left alone.
 fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     if !markdown.contains('\n') {
         return (markdown.to_string(), None);
@@ -2300,31 +2305,67 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
         token = format!("idweb-newline-{counter}-token");
     }
     let bytes = markdown.as_bytes();
-    let fence = "`".repeat(3);
-    let tilde_fence = "~".repeat(3);
     let mut out = String::with_capacity(markdown.len());
     let mut i = 0;
-    let mut in_fence = false;
+    // The open fence, when inside one: its character and run length.
+    // A closing fence must use the same character and be at least as
+    // long as the opener — a shorter fence line inside a longer
+    // fence is literal content, not the end of the block (#1707).
+    let mut fence: Option<(u8, usize)> = None;
+    // The open inline code span's backtick run length, when inside
+    // one: span content is literal text, so a destination-shaped
+    // string inside it must not be protected (#1707).
+    let mut span: Option<usize> = None;
+    // Whether the current line is an indented code block line
+    // (4+ space indent at the start of a block): literal text too.
+    let mut in_indented = false;
+    let mut prev_line_blank = true;
+    let mut prev_line_indented = false;
     let mut protected_any = false;
     while i < bytes.len() {
-        // Fence tracking is line-based: a line whose first non-space
-        // characters (up to 3 spaces) are ``` or ~~~ toggles fence state.
+        // Line-start classification: fences, indented code blocks.
         if i == 0 || bytes[i - 1] == b'\n' {
             let mut j = i;
-            while j < bytes.len() && bytes[j] == b' ' && j - i < 3 {
+            while j < bytes.len() && bytes[j] == b' ' {
                 j += 1;
             }
-            if markdown[j..].starts_with(&fence) || markdown[j..].starts_with(&tilde_fence) {
-                in_fence = !in_fence;
+            let indent = j - i;
+            let line_blank = j >= bytes.len() || bytes[j] == b'\n';
+            // Fences are recognised at up to 3 spaces of indent.
+            let fence_run = if indent <= 3 && j < bytes.len() && (bytes[j] == b'`' || bytes[j] == b'~') {
+                let ch = bytes[j];
+                let mut n = 0;
+                while j + n < bytes.len() && bytes[j + n] == ch {
+                    n += 1;
+                }
+                if n >= 3 { Some((ch, n)) } else { None }
+            } else {
+                None
+            };
+            match (fence, fence_run) {
+                (None, Some(open)) => fence = Some(open),
+                (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
+                _ => {}
             }
+            // An indented code block starts on a 4+ indented line
+            // after a blank line (or at the start, or continuing an
+            // indented block); a 4+ indented line inside a paragraph
+            // is a lazy continuation, not code.
+            in_indented = indent >= 4 && fence.is_none() && (prev_line_blank || prev_line_indented);
+            prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
+            prev_line_blank = line_blank;
         }
-        if !in_fence && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
+        let literal_line = fence.is_some() || in_indented;
+        if !literal_line && span.is_none() && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
             let lt = if markdown[i..].starts_with("](<") {
                 i + 2
             } else {
                 i + 3
             };
-            // Find the closing '>' before any blank line or nested '<'.
+            // Find the closing '>' before any blank line (a line of
+            // only spaces/tabs between the newlines is blank too —
+            // the paragraph break ends any destination, #1707) or a
+            // nested '<'.
             let mut end = None;
             let mut k = lt + 1;
             while k < bytes.len() {
@@ -2334,7 +2375,16 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
                         break;
                     }
                     b'<' => break,
-                    b'\n' if k + 1 < bytes.len() && bytes[k + 1] == b'\n' => break,
+                    b'\n' => {
+                        let mut m = k + 1;
+                        while m < bytes.len() && (bytes[m] == b' ' || bytes[m] == b'\t' || bytes[m] == b'\r') {
+                            m += 1;
+                        }
+                        if m >= bytes.len() || bytes[m] == b'\n' {
+                            break;
+                        }
+                        k += 1;
+                    }
                     _ => k += 1,
                 }
             }
@@ -2348,6 +2398,27 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
                     continue;
                 }
             }
+        }
+        // Inline code span tracking (#1707): a run of backticks
+        // outside fences/indented code opens a span closed by a run
+        // of the same length; everything between is literal. Fence
+        // lines were already classified at line start, so a run seen
+        // here at a line start is a span only when it did not form a
+        // fence (shorter than 3, or inside a fence — but fence lines
+        // never reach here as non-literal).
+        if !literal_line && bytes[i] == b'`' {
+            let mut n = 0;
+            while i + n < bytes.len() && bytes[i + n] == b'`' {
+                n += 1;
+            }
+            match span {
+                None => span = Some(n),
+                Some(open) if n == open => span = None,
+                _ => {}
+            }
+            out.push_str(&markdown[i..i + n]);
+            i += n;
+            continue;
         }
         let Some(ch) = markdown[i..].chars().next() else {
             break;
@@ -2674,6 +2745,15 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         NodeValue::ThematicBreak => {
             json!({"type": "horizontal_rule"})
+        }
+
+        NodeValue::FrontMatter(text) => {
+            json!({
+                "type": "front_matter",
+                "attrs": {
+                    "text": text,
+                }
+            })
         }
 
         NodeValue::List(_) => {
@@ -3715,6 +3795,8 @@ fn parse_linked_img_tag(html: &str) -> Option<Value> {
 /// Placement categories for the #1043 validation walk. A node whose type
 /// is not listed here is left to `json_to_ast`, which reports it as
 /// `ConversionError::UnknownType` — validation never masks that error.
+/// (`front_matter` is intentionally unlisted: its doc-first-child rule
+/// needs the child index, so `validate_placement` checks it directly.)
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Placement {
     /// Block-level node (`paragraph`, `table`, lists, …).
@@ -3788,13 +3870,27 @@ fn placement_allowed(parent: &str, child: Placement) -> bool {
 /// markdown in release builds. Reject those documents up front with
 /// `ConversionError::MisplacedNode` instead.
 fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
-    fn walk(node: &Value, parent: Option<&str>) -> Result<(), ConversionError> {
+    fn walk(
+        node: &Value,
+        parent: Option<&str>,
+        index_in_parent: Option<usize>,
+    ) -> Result<(), ConversionError> {
         let Some(node_type) = node["type"].as_str() else {
             // Missing type: json_to_ast reports MissingType; keep that
             // error's precedence.
             return Ok(());
         };
-        if let Some(parent_type) = parent
+        // #1369: `front_matter` is legal only as the first child of `doc`
+        // (comrak only parses it there). Anything else is misplaced.
+        if node_type == "front_matter" {
+            let first_child_of_doc = parent == Some("doc") && index_in_parent == Some(0);
+            if !first_child_of_doc {
+                return Err(ConversionError::MisplacedNode {
+                    parent: parent.unwrap_or("<root>").to_owned(),
+                    child: node_type.to_owned(),
+                });
+            }
+        } else if let Some(parent_type) = parent
             && let Some(category) = placement_of(node_type)
             && !placement_allowed(parent_type, category)
         {
@@ -3817,14 +3913,25 @@ fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
             }
             return Ok(());
         }
+        // front_matter carries no PM child content (its payload is the
+        // `text` attr); nothing to recurse into.
+        if node_type == "front_matter" {
+            if node["content"].as_array().is_some_and(|c| !c.is_empty()) {
+                return Err(ConversionError::MisplacedNode {
+                    parent: node_type.to_owned(),
+                    child: "<content>".to_owned(),
+                });
+            }
+            return Ok(());
+        }
         if let Some(content) = node["content"].as_array() {
-            for child in content {
-                walk(child, Some(node_type))?;
+            for (idx, child) in content.iter().enumerate() {
+                walk(child, Some(node_type), Some(idx))?;
             }
         }
         Ok(())
     }
-    walk(doc, None)
+    walk(doc, None, None)
 }
 
 /// Convert `ProseMirror` JSON document to markdown text.
@@ -4200,6 +4307,7 @@ fn is_block_node(node: &AstNode<'_>) -> bool {
             | NodeValue::CodeBlock(_)
             | NodeValue::HtmlBlock(_)
             | NodeValue::ThematicBreak
+            | NodeValue::FrontMatter(_)
             | NodeValue::Table(_)
             | NodeValue::FootnoteDefinition(_)
     )
@@ -4351,6 +4459,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
 
         "horizontal_rule" => NodeValue::ThematicBreak,
+
+        // #1369: YAML front matter (`---` delimiter only; comrak has no
+        // TOML `+++` support) carried verbatim in the `text` attr.
+        "front_matter" => NodeValue::FrontMatter(
+            json["attrs"]["text"].as_str().unwrap_or("").to_owned(),
+        ),
 
         "bullet_list" => {
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
@@ -4568,6 +4682,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         if let Some(content) = json["content"].as_array() {
             for (idx, child_json) in content.iter().enumerate() {
                 if child_json["type"].as_str() == Some("paragraph") {
+                    // GFM cells cannot contain block breaks. Preserve word
+                    // boundaries when adjacent paragraphs are flattened.
+                    if idx > 0 && content[idx - 1]["type"].as_str() == Some("paragraph") {
+                        ast_node.append(arena.alloc(AstNode::from(NodeValue::Text(" ".into()))));
+                    }
                     // Unwrap: add paragraph's inline children directly to cell
                     if let Some(para_content) = child_json["content"].as_array() {
                         for (inline_idx, _inline_json) in para_content.iter().enumerate() {
@@ -4623,8 +4742,10 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         return Ok(ast_node);
     }
 
-    // Process children (except for code_block which stores content in literal, not as children)
+    // Process children (except for code_block which stores content in literal, not as children;
+    // front_matter likewise stores its payload in the `text` attr, #1369)
     if node_type != "code_block"
+        && node_type != "front_matter"
         && let Some(content) = json["content"].as_array()
     {
         // #1032: coalesce consecutive bullet_list siblings into the first
@@ -6059,6 +6180,59 @@ mod tests {
         assert_eq!(
             doc["content"][0]["content"][0]["attrs"]["src"], "a\nb.png",
             "PM src unmutated (newline)"
+        );
+    }
+
+    #[test]
+    fn test_newline_destination_protection_skips_literal_contexts() {
+        // #1707: protect_newline_destinations must leave
+        // destination-shaped strings in literal contexts untouched
+        // and must stop the destination scan at whitespace-only
+        // blank lines.
+        for literal in [
+            // Inline code span.
+            "`[x](<a\nb>)`\n",
+            // Indented code block.
+            "para\n\n    [x](<a\nb>)\n",
+            // A shorter fence line inside a longer fence does not
+            // end the literal block.
+            "````\n```\n[x](<a\nb>)\n````\n",
+            // Plain fenced block (pre-existing behaviour).
+            "```\n[x](<a\nb>)\n```\n",
+        ] {
+            let (protected, token) = protect_newline_destinations(literal);
+            assert_eq!(protected, literal, "literal context rewritten: {literal:?}");
+            assert!(token.is_none(), "no token for literal context: {literal:?}");
+            // End to end: no converted node may carry the token.
+            let doc = markdown_to_prosemirror(literal);
+            assert!(
+                !doc.to_string().contains("idweb-newline"),
+                "token leaked into converted doc for {literal:?}: {doc}"
+            );
+        }
+        // A whitespace-only blank line ends the destination: the
+        // shape is not a link, so nothing is protected and comrak
+        // keeps it literal text (no link mark is invented).
+        let broken = "[x](<a\n \nb>)\n";
+        let (protected, token) = protect_newline_destinations(broken);
+        assert_eq!(protected, broken, "scan crossed a whitespace-only blank line");
+        assert!(token.is_none());
+        let doc = markdown_to_prosemirror(broken);
+        assert!(
+            !doc.to_string().contains("\"link\""),
+            "paragraph-broken destination became a link: {doc}"
+        );
+        // Controls: a genuine newline destination is still
+        // protected, and a genuine one after a literal block is too.
+        let (protected, token) = protect_newline_destinations("[x](<a\nb>)\n");
+        assert!(token.is_some(), "genuine destination unprotected");
+        assert!(protected.contains("idweb-newline"), "genuine destination not tokenised: {protected:?}");
+        let mixed = "```\n[x](<a\nb>)\n```\n\n[y](<c\nd>)\n";
+        let (protected, token) = protect_newline_destinations(mixed);
+        assert!(token.is_some(), "destination after fence unprotected");
+        assert!(
+            protected.starts_with("```\n[x](<a\nb>)\n```\n"),
+            "fenced literal rewritten in mixed doc: {protected:?}"
         );
     }
 
@@ -8863,6 +9037,24 @@ Some text
     }
 
     #[test]
+    fn test_table_cell_paragraphs_keep_word_boundaries() {
+        let para =
+            |text: &str| json!({"type": "paragraph", "content": [{"type": "text", "text": text}]});
+        let pm = json!({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "table_row", "content": [{"type": "table_header", "content": [para("head"), para("tail")]}]},
+            {"type": "table_row", "content": [{"type": "table_cell", "content": [para("first"), para("second"), para("third")]}]},
+            {"type": "table_row", "content": [{"type": "table_cell", "content": [para("single")]}]}
+        ]}]});
+        let md = prosemirror_to_markdown(&pm).unwrap();
+        assert_eq!(
+            md,
+            "| head tail |\n| --- |\n| first second third |\n| single |\n"
+        );
+        let reparsed = markdown_to_prosemirror(&md);
+        assert_eq!(prosemirror_to_markdown(&reparsed).unwrap(), md);
+    }
+
+    #[test]
     fn test_pm_to_md_table_without_header_row_is_promoted() {
         // #1044: a PM table whose rows are all table_cell (schema-legal)
         // must save as a table: the first row is promoted to a header
@@ -9741,6 +9933,113 @@ Some text
             markdown_to_prosemirror(&first),
             markdown_to_prosemirror("[<b>x</b>](/y)\n"),
             "same PM structure for single-run form"
+        );
+    }
+
+    #[test]
+    fn test_front_matter_roundtrip_fixpoint() {
+        // #1369: YAML front matter (`---` delimiter only; TOML `+++`
+        // is out of scope) survives open->save verbatim with a
+        // multi-key block, and the second save is a fixpoint.
+        for original in [
+            "---\ntitle: Hello\ntags: [a, b]\n---\n\nBody text.\n",
+            "---\ntitle: Hello\n---\n\n# Heading\n",
+            "---\ntitle: Hello\n---\n\nJust a paragraph.\n",
+            // Blank line inside the block is preserved verbatim.
+            "---\ntitle: Hello\n\ndraft: true\n---\n\nBody.\n",
+        ] {
+            let doc = markdown_to_prosemirror(original);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(
+                content[0]["type"], "front_matter",
+                "first child for {original:?}: {doc}"
+            );
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "round-trip for {original:?}");
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                doc,
+                "stable PM for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_front_matter_mid_doc_dashes_stay_horizontal_rule() {
+        // #1369 control: `---` after a paragraph is a thematic break,
+        // not front matter.
+        let original = "Para one.\n\n---\n\nPara two.\n";
+        let doc = markdown_to_prosemirror(original);
+        let content = doc["content"].as_array().unwrap();
+        assert!(
+            content.iter().all(|n| n["type"] != "front_matter"),
+            "no front_matter mid-doc: {doc}"
+        );
+        assert!(
+            content.iter().any(|n| n["type"] == "horizontal_rule"),
+            "thematic break kept: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        // Thematic breaks normalize to comrak's `-----` spelling; what
+        // matters is the node type survives and the save is a fixpoint.
+        assert!(first.contains("-----"), "break kept: {first:?}");
+        assert_eq!(first, second, "fixpoint: {first:?}");
+    }
+
+    #[test]
+    fn test_front_matter_unclosed_leading_dashes_stay_break() {
+        // #1369 control: an unclosed leading `---` is a thematic break.
+        let original = "---\n\nBody.\n";
+        let doc = markdown_to_prosemirror(original);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "horizontal_rule", "no FM: {doc}");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("-----"), "break kept: {first:?}");
+        assert_eq!(first, second, "fixpoint: {first:?}");
+    }
+
+    #[test]
+    fn test_front_matter_misplaced_is_rejected() {
+        // #1369: `front_matter` is legal only as the first child of
+        // `doc`; anywhere else is a MisplacedNode.
+        let fm =
+            || json!({"type": "front_matter", "attrs": {"text": "---\na: b\n---\n"}});
+        let para =
+            || json!({"type": "paragraph", "content": [{"type": "text", "text": "x"}]});
+        let cases: &[(&str, Value)] = &[
+            (
+                "second child of doc",
+                json!({"type": "doc", "content": [para(), fm()]}),
+            ),
+            (
+                "inside blockquote",
+                json!({"type": "doc", "content": [{"type": "blockquote", "content": [fm()]}]}),
+            ),
+            (
+                "inside paragraph",
+                json!({"type": "doc", "content": [{"type": "paragraph", "content": [fm()]}]}),
+            ),
+            (
+                "content children inside front_matter",
+                json!({"type": "doc", "content": [{"type": "front_matter", "attrs": {"text": "---\na: b\n---\n"}, "content": [para()]}]}),
+            ),
+        ];
+        for (name, doc) in cases {
+            assert!(
+                matches!(
+                    prosemirror_to_markdown(doc),
+                    Err(ConversionError::MisplacedNode { .. })
+                ),
+                "{name}: expected MisplacedNode, got {:?}",
+                prosemirror_to_markdown(doc)
+            );
+        }
+        // First child of doc saves verbatim.
+        let ok = json!({"type": "doc", "content": [fm(), para()]});
+        assert_eq!(
+            prosemirror_to_markdown(&ok).unwrap(),
+            "---\na: b\n---\nx\n"
         );
     }
 }

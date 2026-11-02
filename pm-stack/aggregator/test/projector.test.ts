@@ -194,7 +194,7 @@ describe("projector latest-comment reads (#1279 truncation)", () => {
           const limit = Number(url.searchParams.get("limit") ?? 500);
           const mine = rows
             .filter((r) => refs.includes(r.ref as string))
-            .sort((x, y) => (x.created_at as string) < (y.created_at as string) ? 1 : -1)
+            .sort((x, y) => ((x.created_at as string) < (y.created_at as string) ? 1 : -1))
             .slice(0, limit);
           return Response.json({ comments: mine });
         }

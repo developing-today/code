@@ -195,7 +195,12 @@ describe("card-state derivation (#1443/#1450)", () => {
   });
   test("depth-2 chain with a NEW first restore and an APPLIED second restore also revives the dismissal (#4310)", () => {
     const dismiss = mkAction({ id: "da-dismiss", verb: "dismiss", state: "applied", payload: { reason: "x" } });
-    const restore1 = mkAction({ id: "da-restore-1", verb: "restore", supersedes: "da-dismiss", createdAt: iso(NOW - 60_000) });
+    const restore1 = mkAction({
+      id: "da-restore-1",
+      verb: "restore",
+      supersedes: "da-dismiss",
+      createdAt: iso(NOW - 60_000),
+    });
     const restore2 = mkAction({
       id: "da-restore-2",
       verb: "restore",

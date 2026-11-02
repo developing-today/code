@@ -3,7 +3,8 @@
 //   (a) the fleet-feed collector derives records from the hub sections
 //       of the feed it is about to publish (SaaS services, PAYG lines,
 //       the DNS register totals) and embeds them in the feed; the
-//       laptop aggregator ingests them into its local store.
+//       laptop aggregator's background writer tick lands them in its
+//       local store (never a page/read path).
 //   (b) stewardship-cycle, after a quota-view refresh, runs
 //       scripts/append-usage-snapshots.ts, which derives records from
 //       the same extractors (pools included) into the outbox the
@@ -18,14 +19,7 @@
 // identical record and appends nothing.
 import { POOL_SPECS, sectionOf } from "./quota-extract.ts";
 import { parseIsoDate } from "./validate.ts";
-import type {
-  DnsSection,
-  PaygLine,
-  QuotaPool,
-  SaasService,
-  SnapshotRecord,
-  UsageUnit,
-} from "./model.ts";
+import type { DnsSection, PaygLine, QuotaPool, SaasService, SnapshotRecord, UsageUnit } from "./model.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
@@ -43,7 +37,10 @@ export function tsFor(measuredAt: string): string {
  * dates compete (#2264): an impossible date like 2026-02-30 or
  * 2026-13-01 in prose must not win the freshness comparison. */
 export function freshestDate(text: string): string | null {
-  const ds = [...text.matchAll(DATE_RE)].map((m) => m[0]).filter((d) => parseIsoDate(d) !== null).sort();
+  const ds = [...text.matchAll(DATE_RE)]
+    .map((m) => m[0])
+    .filter((d) => parseIsoDate(d) !== null)
+    .sort();
   return ds.length ? ds[ds.length - 1] : null;
 }
 
@@ -179,7 +176,9 @@ export function recordsFromDeepseekBalance(quotaViewText: string, observedBy: st
   if (!amount) return [];
   const value = Number(amount[1].replace(/,/g, ""));
   if (!Number.isFinite(value)) return [];
-  const date = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? lastCheckedDate(section) ?? freshestDate(section);
+  const raw = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? null;
+  const onLine = raw !== null && parseIsoDate(raw) !== null ? raw : null;
+  const date = onLine ?? lastCheckedDate(section) ?? freshestDate(section);
   if (!date) return [];
   return [
     {
@@ -302,7 +301,8 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
       !Number.isFinite(win.used_percent) ||
       win.used_percent < 0 ||
       win.used_percent > 100
-    ) return;
+    )
+      return;
     const metricId =
       win.limit_window_seconds === 604_800 ? "7-day" : win.limit_window_seconds === 18_000 ? "5-hour" : null;
     if (!metricId) return;

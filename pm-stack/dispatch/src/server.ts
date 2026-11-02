@@ -121,32 +121,28 @@ async function launchSession(
     model: req.model,
   });
   const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
-  await withCreatedSession(
-    session.id,
-    failureContext,
-    async () => {
-      await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
+  await withCreatedSession(session.id, failureContext, async () => {
+    await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
-      // Assign immediately: PATCH the exact row the enqueue created (the
-      // claim RPC claims the next task in a queue, not a specific one). The
-      // worker identity must exist in agent.workers first (worker_id is an
-      // FK), so register it idempotently.
-      await requireQueue().ensureWorker();
-      const now = new Date();
-      await requireQueue().patchTask(task.id, {
-        status: "claimed",
-        worker_id: "dispatch-opencode",
-        claimed_at: now.toISOString(),
-        lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
-        progress: {
-          lane: "opencode",
-          session_id: session.id,
-          issue_number: issue?.number ?? null,
-          launched_by: caller,
-        },
-      });
-    },
-  );
+    // Assign immediately: PATCH the exact row the enqueue created (the
+    // claim RPC claims the next task in a queue, not a specific one). The
+    // worker identity must exist in agent.workers first (worker_id is an
+    // FK), so register it idempotently.
+    await requireQueue().ensureWorker();
+    const now = new Date();
+    await requireQueue().patchTask(task.id, {
+      status: "claimed",
+      worker_id: "dispatch-opencode",
+      claimed_at: now.toISOString(),
+      lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
+      progress: {
+        lane: "opencode",
+        session_id: session.id,
+        issue_number: issue?.number ?? null,
+        launched_by: caller,
+      },
+    });
+  });
 
   // Lane ledger: the same assignment the queue workers record after a
   // claim, so a later completion can record the executed lane. The

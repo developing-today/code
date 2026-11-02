@@ -35,6 +35,7 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+mod replication;
 pub mod signed;
 mod util;
 
@@ -46,6 +47,13 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use replication::{
+    AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
+    REPLICATION_ENVELOPE_VERSION, REPLICATION_FRAME_MAGIC, ReplicationCursor, ReplicationEnvelope,
+    ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
+    SignedReplicationEnvelope, advance_cursor, chain_base_cursor, chain_payload, frame_digest,
+    journal_entry_line, payload_digest, split_entry_payload,
+};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
     constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
@@ -1015,6 +1023,19 @@ pub trait WorldJournal: Send + 'static {
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
 
+    /// Capture the exact durable journal bytes and their header version.
+    /// Implementations that do not own a readable journal may leave this
+    /// unsupported; the replication feed is available only for durable
+    /// journals that can provide an atomic snapshot from the world actor.
+    fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+        bail!("this journal cannot provide a replication snapshot")
+    }
+
+    /// Current journal header version, when the implementation can report it.
+    fn replication_header_version(&self) -> Option<u32> {
+        None
+    }
+
     /// Atomically replace the whole journal with `entries` (a header, the
     /// participants and a [`JournalEntry::Checkpoint`]). Either the old or
     /// the new journal survives a crash, never a mixture.
@@ -1026,6 +1047,31 @@ pub trait WorldJournal: Send + 'static {
     fn compact(&mut self, _entries: &[JournalEntry]) -> Result<()> {
         bail!("this journal cannot be compacted")
     }
+}
+
+/// A byte-exact, newline-terminated journal image captured by the actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalSnapshot {
+    /// Version in the journal's `Created` header.
+    pub header_version: u32,
+    /// Exact JSONL bytes, including every entry's newline.
+    pub bytes: Vec<u8>,
+}
+
+/// A durable change delivered to replication subscribers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplicationUpdate {
+    /// One entry appended and fsynced after the subscriber's snapshot.
+    Append {
+        /// Header version the appended entry is encoded under.
+        header_version: u32,
+        /// Exact serialized JSONL entry bytes, including its newline.
+        entry: Vec<u8>,
+    },
+    /// The journal was compacted or its header version changed.
+    Reset(JournalSnapshot),
+    /// A reset became necessary but the journal image could not be captured.
+    ResetFailed,
 }
 
 /// The program a journal says was running, and where to resume it from.

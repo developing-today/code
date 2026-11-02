@@ -9,9 +9,7 @@ function parseAggregatorPort(value: string | undefined): number {
   const normalized = s(value, "4870");
   const port = Number(normalized);
   if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
-    throw new Error(
-      `Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`,
-    );
+    throw new Error(`Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
   }
   return port;
 }
@@ -69,6 +67,9 @@ export interface Config {
     origin: string;
     email: string | null;
     password: string | null;
+    /** Authoritative project slug -> repo registry (#1201):
+     * pm-stack/kaneo-projects.json. Unknown slugs stay unmapped. */
+    projectsFile: string;
   };
   grist: {
     baseUrl: string;
@@ -136,6 +137,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       origin: s(env.KANEO_ORIGIN, s(env.KANEO_CLIENT_URL, "https://kaneo.security.cab")),
       email: env.KANEO_ADMIN_EMAIL ?? null,
       password: env.KANEO_ADMIN_PASSWORD ?? null,
+      // The registry is authoritative for slug -> repo (#1201); the reader
+      // runs with cwd=pm-stack/aggregator, hence the sibling path.
+      projectsFile: s(env.PM_KANEO_PROJECTS_FILE, join(process.cwd(), "..", "kaneo-projects.json")),
     },
     grist: {
       baseUrl: s(env.GRIST_URL, "http://127.0.0.1:8484"),

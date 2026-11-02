@@ -1098,9 +1098,7 @@ class ColdStore:
             status, _h, _resp = http_request(
                 "PATCH",
                 self.drive_base + f"/files/{file_id}",
-                headers=self._auth_headers(
-                    {"Content-Type": "application/json"}
-                ),
+                headers=self._auth_headers({"Content-Type": "application/json"}),
                 data=json.dumps({"trashed": True}).encode(),
             )
             if status != 200:

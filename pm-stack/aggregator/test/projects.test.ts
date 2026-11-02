@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import { derivedProjectState, fetchProjectPool, isProjectPoolItem, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
+import {
+  derivedProjectState,
+  fetchProjectPool,
+  isProjectPoolItem,
+  parseProjectItems,
+  poolItemToGhItem,
+  projectDisagreement,
+  PROJECT_QUERY,
+  resolveEpicRefs,
+} from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 

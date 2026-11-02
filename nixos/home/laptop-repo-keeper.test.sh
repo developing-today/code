@@ -13,7 +13,10 @@ SCRIPT="$SELF_DIR/laptop-repo-keeper.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 failures=0
-fail() { echo "FAIL: $1" >&2; failures=$((failures + 1)); }
+fail() {
+  echo "FAIL: $1" >&2
+  failures=$((failures + 1))
+}
 check() {
   if [ "$2" != "$3" ]; then fail "$1 — expected [$2], got [$3]"; fi
 }
@@ -78,6 +81,45 @@ run_keeper "$H2" "$TMP_ROOT/clean.log"
 check 'clean case: tracked snapshot committed' '2' "$(git -C "$R2" rev-list --count HEAD)"
 grep -Fq -- 'committed 1 tracked entries on main' "$TMP_ROOT/clean.log" ||
   fail 'clean case: report missing successful snapshot'
+
+# A dirty primary that is BEHIND origin must not be snapshot-committed:
+# the commit would land on a stale base, putting the primary ahead AND
+# behind (diverged) at once, after which neither the keeper nor
+# pm-git-sync can move it (code#4464).
+ORIGIN_BARE="$TMP_ROOT/origin.git"
+git init -q --bare -b main "$ORIGIN_BARE"
+ADV="$TMP_ROOT/advancer"
+git clone -q "$ORIGIN_BARE" "$ADV"
+printf 'before\n' >"$ADV/tracked.txt"
+git -C "$ADV" add -- tracked.txt
+git -C "$ADV" commit -q -m initial
+git -C "$ADV" push -q origin main
+
+H3="$TMP_ROOT/behind-home"
+R3="$H3/code"
+git clone -q "$ORIGIN_BARE" "$R3"
+printf 'upstream\n' >>"$ADV/tracked.txt"
+git -C "$ADV" commit -q -am upstream
+git -C "$ADV" push -q origin main
+printf 'local edit\n' >>"$R3/tracked.txt"
+run_keeper "$H3" "$TMP_ROOT/behind.log"
+check 'behind case: no snapshot commit on stale base' '1' "$(git -C "$R3" rev-list --count HEAD)"
+check 'behind case: tracked edit remains dirty' \
+  'tracked.txt' "$(git -C "$R3" diff --name-only)"
+grep -Fq -- 'NOT committed' "$TMP_ROOT/behind.log" ||
+  fail 'behind case: report missing stale-base refusal'
+grep -Fq -- 'behind origin/main' "$TMP_ROOT/behind.log" ||
+  fail 'behind case: report missing behind count'
+
+# The same dirty tree on an up-to-date base still snapshots and pushes.
+H4="$TMP_ROOT/current-home"
+R4="$H4/code"
+git clone -q "$ORIGIN_BARE" "$R4"
+printf 'local edit\n' >>"$R4/tracked.txt"
+run_keeper "$H4" "$TMP_ROOT/current.log"
+check 'current case: snapshot committed on up-to-date base' '3' "$(git -C "$R4" rev-list --count HEAD)"
+check 'current case: snapshot pushed to origin' \
+  "$(git -C "$R4" rev-parse HEAD)" "$(git --git-dir="$ORIGIN_BARE" rev-parse main)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2

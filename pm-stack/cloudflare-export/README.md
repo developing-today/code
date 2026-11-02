@@ -19,16 +19,16 @@ and Bun connect fine).
 
 One GraphQL analytics POST (`/client/v4/graphql`) plus REST probes:
 
-| metric id | dataset |
-| --- | --- |
-| `workers-requests`, `workers-cpu-ms` | `workersInvocationsAdaptive` sum (requests, cpuTimeUs ÷ 1000) |
-| `kv-reads`, `kv-writes` | `kvOperationsAdaptiveGroups` by actionType (writes+deletes+lists fold, the card's grouping) |
-| `d1-rows-read`, `d1-rows-written` | `d1AnalyticsAdaptiveGroups` sum |
-| `queues-ops` | `queueMessageOperationsAdaptiveGroups` sum billableOperations |
-| `r2-class-a`, `r2-class-b` | `r2OperationsAdaptiveGroups` by actionType, classified per Cloudflare's published pricing classes (deletes free; unknown actions reported in `r2UnclassifiedActions`, never guessed) |
-| `r2-storage` | `r2StorageAdaptiveGroups` max payloadSize → GB; bucket names enumerated directly via `GET /accounts/{id}/r2/buckets` |
-| `workers-ai-neurons` | `aiInferenceAdaptiveGroups` sum totalNeurons, as a per-day average over the cycle to date (cycle total in the metric's `detail`) |
-| neurons/day alert | `aiInferenceAdaptiveGroups` grouped by `date` + `modelId` (limit 10000, sized for cycle-days × models) — see the alert section below |
+| metric id                            | dataset                                                                                                                                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `workers-requests`, `workers-cpu-ms` | `workersInvocationsAdaptive` sum (requests, cpuTimeUs ÷ 1000)                                                                                                                        |
+| `kv-reads`, `kv-writes`              | `kvOperationsAdaptiveGroups` by actionType (writes+deletes+lists fold, the card's grouping)                                                                                          |
+| `d1-rows-read`, `d1-rows-written`    | `d1AnalyticsAdaptiveGroups` sum                                                                                                                                                      |
+| `queues-ops`                         | `queueMessageOperationsAdaptiveGroups` sum billableOperations                                                                                                                        |
+| `r2-class-a`, `r2-class-b`           | `r2OperationsAdaptiveGroups` by actionType, classified per Cloudflare's published pricing classes (deletes free; unknown actions reported in `r2UnclassifiedActions`, never guessed) |
+| `r2-storage`                         | `r2StorageAdaptiveGroups` max payloadSize → GB; bucket names enumerated directly via `GET /accounts/{id}/r2/buckets`                                                                 |
+| `workers-ai-neurons`                 | `aiInferenceAdaptiveGroups` sum totalNeurons, as a per-day average over the cycle to date (cycle total in the metric's `detail`)                                                     |
+| neurons/day alert                    | `aiInferenceAdaptiveGroups` grouped by `date` + `modelId` (limit 10000, sized for cycle-days × models) — see the alert section below                                                 |
 
 Metric ids match the aggregator's Cloudflare card
 (`pm-stack/aggregator/src/saas-extract.ts`), which prefers a fresh
@@ -69,6 +69,7 @@ per-day/per-model query and evaluates a threshold rule on every tick
   Cloudflare card's `sourceNote`. `history.jsonl` already persists
   every tick's document, so firings are auditable after the fact. A
   document without `alerts` renders exactly as before.
+
 - **Saturation:** the grouped query's limit is 10000 (cycle-days ×
   models). If a result ever hits it, day totals are lower bounds:
   alerts carry `lowerBound: true` and the document carries
@@ -114,12 +115,12 @@ append-only `history.jsonl`:
 A failed tick writes a failure document with `status`,
 `attemptedAt`, `detail`, `measuredAt: null`, and **no** metrics:
 
-| status | meaning | exit |
-| --- | --- | --- |
-| `no-token` | token not in environment (wrapper/bws problem) | 2 |
-| `token-scope` | API answered 401/403; `missingScopes` names the scopes needed | 3 |
-| `unparseable` | an endpoint answered an unrecognised shape | 6 |
-| `fetch-failed` | network/other error | 7 |
+| status         | meaning                                                       | exit |
+| -------------- | ------------------------------------------------------------- | ---- |
+| `no-token`     | token not in environment (wrapper/bws problem)                | 2    |
+| `token-scope`  | API answered 401/403; `missingScopes` names the scopes needed | 3    |
+| `unparseable`  | an endpoint answered an unrecognised shape                    | 6    |
+| `fetch-failed` | network/other error                                           | 7    |
 
 ## Install / schedule (laptop)
 

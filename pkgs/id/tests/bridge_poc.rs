@@ -164,6 +164,7 @@ impl Author {
             document: None,
             removes: None,
             note: None,
+            link: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
@@ -195,6 +196,7 @@ impl Author {
             document: None,
             removes: None,
             note: None,
+            link: None,
         };
         sign(&self.key, seq, backlink, Some(b"rival"), ext).unwrap()
     }

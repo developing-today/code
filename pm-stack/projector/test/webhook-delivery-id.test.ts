@@ -48,11 +48,7 @@ async function sendFixture(file: string, event: string, deliveryId?: string): Pr
   });
   if (deliveryId !== undefined) headers.set("x-github-delivery", deliveryId);
 
-  return handleRequest(
-    new Request("http://127.0.0.1/github/webhook", { method: "POST", headers, body }),
-    db,
-    env,
-  );
+  return handleRequest(new Request("http://127.0.0.1/github/webhook", { method: "POST", headers, body }), db, env);
 }
 
 async function rowCount(table: "pmp_deliveries" | "pmp_items" | "pmp_push_events" | "pmp_comments") {
@@ -61,12 +57,14 @@ async function rowCount(table: "pmp_deliveries" | "pmp_items" | "pmp_push_events
 }
 
 async function expectNoAppliedOrRecordedData() {
-  await expect(Promise.all([
-    rowCount("pmp_deliveries"),
-    rowCount("pmp_items"),
-    rowCount("pmp_push_events"),
-    rowCount("pmp_comments"),
-  ])).resolves.toEqual([0, 0, 0, 0]);
+  await expect(
+    Promise.all([
+      rowCount("pmp_deliveries"),
+      rowCount("pmp_items"),
+      rowCount("pmp_push_events"),
+      rowCount("pmp_comments"),
+    ]),
+  ).resolves.toEqual([0, 0, 0, 0]);
 }
 
 beforeAll(async () => {

@@ -72,13 +72,18 @@ describe("mergeChargeRows canonical-label dedupe", () => {
     expect(mergeChargeRows(auto, handFed)).toEqual(auto);
   });
 
-  for (const [handFedLabel, autoLabel] of [["Meta", "METAMUCIL"], ["AI", "RAILWAY"]]) {
+  for (const [handFedLabel, autoLabel] of [
+    ["Meta", "METAMUCIL"],
+    ["AI", "RAILWAY"],
+  ]) {
     test(`a short label does not match inside unrelated merchant token ${autoLabel}`, () => {
       const auto = [{ at: "2026-10-01", label: autoLabel, amountUsd: 20 }];
       const handFed = [{ at: "2026-10-01", label: handFedLabel, amountUsd: 20 }];
-      expect(mergeChargeRows(auto, handFed).map((row) => row.label).sort()).toEqual(
-        [autoLabel, handFedLabel].sort(),
-      );
+      expect(
+        mergeChargeRows(auto, handFed)
+          .map((row) => row.label)
+          .sort(),
+      ).toEqual([autoLabel, handFedLabel].sort());
     });
   }
 

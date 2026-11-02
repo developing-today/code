@@ -41,6 +41,7 @@ import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
+import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
@@ -80,6 +81,7 @@ import {
   SAAS_GROUP_LABELS,
   SESSION_SOURCE_LABELS,
   countedEstimate,
+  refsInText,
   refUrl,
 } from "./model.ts";
 import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
@@ -88,7 +90,7 @@ import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./pro
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
-import { buildEpicRollups, type EpicRollup } from "./epics.ts";
+import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
@@ -116,11 +118,12 @@ const CSS = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
+[id] { scroll-margin-top: 96px; }
 nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
 .navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
 .navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
 .navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
-nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; }
+nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; display: inline-flex; align-items: center; min-height: 40px; }
 nav a.active, nav a:hover { background: #21262d; }
 nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
 .navgroup[data-current="true"] .navlabel { color: #58a6ff; }
@@ -167,7 +170,7 @@ th { background: #161b22; }
 .pool { display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; }
 meter { width: 140px; height: 14px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
-.chips a { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; text-decoration: none; color: #e6edf3; background: #161b22; }
+.chips a { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; text-decoration: none; color: #e6edf3; background: #161b22; display: inline-flex; align-items: center; min-height: 40px; }
 .chips a.active { border-color: #1f6feb; background: #1f6feb33; color: #58a6ff; }
 .fchip { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; color: #e6edf3; background: #161b22; font-size: 12.5px; }
 .fchip.live { border-color: #2ea04388; }
@@ -236,7 +239,7 @@ meter { width: 140px; height: 14px; }
 .unablebox { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
 .qblock { border-top: 1px solid #21262d; padding: 6px 0 2px; margin-top: 6px; }
 .qblock .qopts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0; }
-.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 32px; }
+.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 40px; }
 .optform .effect { color: #8b949e; font-size: 12px; flex-basis: 100%; }
 nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
 .foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
@@ -250,9 +253,10 @@ details.carddetail dl { display: grid; grid-template-columns: 110px 1fr; gap: 2p
 details.carddetail dt { color: #8b949e; }
 details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
 .histline { font-size: 12.5px; margin: 3px 0; }
+pre { max-width: 100%; overflow-x: auto; }
 .quickbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
 .quickbar .qlabel { font-size: 12px; color: #8b949e; flex-basis: 100%; }
-.qchip { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; min-height: 36px; }
+.qchip { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; min-height: 40px; }
 .qchip.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 .qchip:disabled { opacity: .45; cursor: not-allowed; }
 .aform.qform { display: inline-flex; margin: 0; }
@@ -285,7 +289,7 @@ details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
 .xpl-filters { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
 .xpl-filters input[type="search"], .xpl-filters select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; }
 .xpl-filters input[type="search"] { min-width: 220px; flex: 1; }
-.xchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; border-radius: 999px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; font: inherit; }
+.xchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; min-height: 40px; border-radius: 999px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; font: inherit; }
 .xchip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .xchip.off { opacity: .38; text-decoration: line-through; }
 .xp-seg { display: inline-flex; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
@@ -312,8 +316,8 @@ body.xp-plan .xpl-costcol { display: none; }
 .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
 .xpl-ctl select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; }
 .chart h3 { display: inline-block; margin: 2px 10px 2px 0; font-size: 13.5px; }
-.hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
-.hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 2px 4px; }
+.hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; min-height: 40px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
+.hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 10px 8px; }
 .xpl-ctl-btn { margin-top: 6px; border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px; }
 /* Non-colour cues (#1215): state badges also differ by icon prefix and
    status dots by shape, so colour is never the only signal. */
@@ -1692,7 +1696,10 @@ export function renderBoardBody(
         .map((item) => {
           const repo = item.repo ? `<span class="muted">${esc(item.repo)}</span><br>` : "";
           const cmt = counts ? commentBadge(item.id, counts) : "";
-          const briefs = briefPanelsForRefs(item.links.map((link) => link.ref), act?.briefs);
+          const briefs = briefPanelsForRefs(
+            item.links.map((link) => link.ref),
+            act?.briefs,
+          );
           if (item.source === "orchestrator") {
             // Synthetic in-flight entry: visibly not a Kaneo card. Its
             // GitHub refs link directly (no execution strip — the
@@ -1834,7 +1841,7 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
     if (drill.children.length === 0) {
       parts.push(`<p class="muted">No child issues in the Project pool for this epic yet.</p>`);
     } else {
-      const done = drill.children.filter((c) => c.state === "closed" || c.state === "merged").length;
+      const done = drill.children.filter(isEpicChildDone).length;
       const total = drill.children.length;
       const pct = Math.round((done / total) * 100);
       parts.push(
@@ -2011,7 +2018,6 @@ export function renderItem(
   title: string,
   subject: string,
   links: BoardItem["links"],
-  notes: BoardItem["notes"],
   items: Map<RefKey, GhItem>,
   comments: Comment[],
   provenance: Provenance,
@@ -2032,7 +2038,6 @@ export function renderItem(
         `<tr><td class="muted">${fmtDate(c.createdAt)}</td><td><span class="badge ${esc(c.kind)}">${esc(c.kind)}</span></td><td>${esc(c.author)}</td><td>${esc(c.body)}${c.path ? ` <span class="muted">(${esc(c.path)}${c.line ? `:${c.line}` : ""})</span>` : ""}</td></tr>`,
     )
     .join("");
-  const noteList = (notes ?? []).map((n) => `<li><a href="${esc(n.url)}">${esc(n.title)}</a></li>`).join("");
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
         extras.dashComments.length
@@ -2040,9 +2045,10 @@ export function renderItem(
           : `<p class="muted">No dashboard comments yet — notes are read when this is picked up; messages are triaged by the orchestrator.</p>`
       }${commentFormHtml(extras.formRef, extras.formOpts)}`
     : "";
-  const roadmapAnnotationSection = extras?.roadmapAnnotations !== undefined
-    ? `<section class="roadmap-annotation-section"><h2>Roadmap annotations</h2>${extras.roadmapAnnotations.length ? extras.roadmapAnnotations.map(roadmapAnnotationHtml).join("") : '<p class="muted">No roadmap annotations yet.</p>'}${roadmapAnnotationFormHtml(extras.formRef, extras.formOpts.identities)}</section>`
-    : "";
+  const roadmapAnnotationSection =
+    extras?.roadmapAnnotations !== undefined
+      ? `<section class="roadmap-annotation-section"><h2>Roadmap annotations</h2>${extras.roadmapAnnotations.length ? extras.roadmapAnnotations.map(roadmapAnnotationHtml).join("") : '<p class="muted">No roadmap annotations yet.</p>'}${roadmapAnnotationFormHtml(extras.formRef, extras.formOpts.identities)}</section>`
+      : "";
   const sessionSection =
     extras && extras.sessions.length
       ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
@@ -2058,15 +2064,23 @@ export function renderItem(
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
-${extras?.briefs ? briefPanelsForRefs(links.map((link) => link.ref), extras.briefs) : ""}
+${
+  extras?.briefs
+    ? briefPanelsForRefs(
+        links.map((link) => link.ref),
+        extras.briefs,
+      )
+    : ""
+}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
-${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
 ${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
     extras
-      ? COMMENT_SCRIPT + (extras.roadmapAnnotations !== undefined ? ROADMAP_ANNOTATION_SCRIPT : "") + (extras.statusRequest ? ACTION_SCRIPT : "")
+      ? COMMENT_SCRIPT +
+          (extras.roadmapAnnotations !== undefined ? ROADMAP_ANNOTATION_SCRIPT : "") +
+          (extras.statusRequest ? ACTION_SCRIPT : "")
       : "",
   );
 }
@@ -2375,11 +2389,27 @@ export function historyChartHtml(records: SnapshotRecord[], metricId: string): s
   return `<div class="chart"><div class="muted">${esc(metricId)} · ${recs.length} snapshot${recs.length === 1 ? "" : "s"} · ${esc(first.ts.slice(0, 10))} → ${esc(last.ts.slice(0, 10))} · dashed amber = window reset, red = limit</div><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="history chart for ${esc(metricId)}">${markers}${limitLine}<path d="${line}" fill="none" stroke="#58a6ff" stroke-width="1.5"></path>${points}</svg></div>`;
 }
 
+function snapshotFreshnessStamp(history: SnapshotRecord[], cadenceDays: number, now: Date): string {
+  const latest = history.reduce<SnapshotRecord | null>(
+    (current, record) => (!current || Date.parse(record.ts) > Date.parse(current.ts) ? record : current),
+    null,
+  );
+  if (!latest) {
+    return '<p class="muted">No snapshot writer has landed a record for this service yet. The feed-ingest tick is the normal landing path; the §4 backfill is a one-shot recovery, not normal history startup.</p>';
+  }
+  const measuredAt = latest.ts.slice(0, 10);
+  const f = freshness(measuredAt, cadenceDays, now);
+  const age = f.ageDays == null ? " · age unknown" : f.ageDays === 0 ? " · today" : ` · ${f.ageDays}d ago`;
+  const state = f.stale ? '<span class="badge stale">stale</span>' : '<span class="badge src">within cadence</span>';
+  return `<p class="muted">Latest stored snapshot: <time datetime="${esc(latest.ts)}">${esc(measuredAt)}</time>${age} · ${cadenceDays}-day expected cadence · ${state}</p>`;
+}
+
 export function renderServiceDetail(
   svc: SaasService,
   history: SnapshotRecord[],
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  now = new Date(),
 ): string {
   const f = freshness(svc.measuredAt, svc.cadenceDays);
   const metricRows = svc.metrics.length
@@ -2420,7 +2450,7 @@ export function renderServiceDetail(
 <h2>Sources</h2><div class="card">${svc.sources ? `<div>quota-view section: <code>${esc(svc.sources.quotaViewSection)}</code> in <code>quota-view.md</code> Part (b)</div><div>tracker row: ${svc.sources.trackerRow ? `<code>Summary (b) — ${esc(svc.sources.trackerRow)}</code>` : (svc.status === "candidate" || svc.status === "no-account") ? "none — no Summary (b) row; candidate / not held (§1.4)" : "none — no Summary (b) row"}</div><div>evidence baseline: <code>${esc(svc.sources.baselineDoc)}</code></div>` : `<div class="muted">source: ${esc(svc.sourceNote)}</div>`}</div>
 <h2>All metrics</h2><div class="tblwrap"><table><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
 ${payg}
-<h2>Snapshot history</h2>${charts || '<p class="muted">No snapshots in the store for this service yet — history starts with the §4 backfill and accumulates as writers append.</p>'}
+<h2>Snapshot history</h2>${snapshotFreshnessStamp(history, svc.cadenceDays, now)}${charts || ""}
 ${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
 ${conflicts}
 <h2>Dated source reads</h2>${reads}
@@ -2659,7 +2689,6 @@ function needsOrderHtml(act: AttentionAct | undefined): string {
   });
   return `<div class="orderctl">Needs-you list order: <strong>${esc(labels[order])}</strong>${actboxHtml({ identities: act.identities }, form)}</div>`;
 }
-
 
 /** #1277: the per-card bulk-triage pick for one queue card. Renders
  * only when the action surface is up (identities present); a card
@@ -3126,7 +3155,9 @@ export function attentionSections(
     const objectRef = sessionObjectRef(e.sessionId);
     const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
-    orchCardsList.push(bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct));
+    orchCardsList.push(
+      bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct),
+    );
   }
   for (const item of view.orchestratorExtra) {
     const objectRef = tierItemObjectRef(item);
@@ -3224,9 +3255,10 @@ ${attentionFragment("sessions", skel("sessions"))}`;
 
 function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnavailable: boolean): string {
   const compactAge = (ageMs: number) => ageMsText(ageMs).replace(/ old$/, "");
-  const stackServices = health?.services.filter((service) =>
-    service.def.probe !== "feed" && service.def.probe !== "section" && service.def.probe !== "off",
-  ) ?? [];
+  const stackServices =
+    health?.services.filter(
+      (service) => service.def.probe !== "feed" && service.def.probe !== "section" && service.def.probe !== "off",
+    ) ?? [];
   const stackUp = stackServices.filter((service) => service.ok === true).length;
   const stackDown = stackServices.filter((service) => service.ok === false);
   const stackUnknown = stackServices.filter((service) => service.ok === null);
@@ -3234,15 +3266,23 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
     !health || health.mode !== "live" || stackServices.length === 0
       ? "stack unknown"
       : `stack ${stackUp}/${stackServices.length} up${stackDown.length ? ` · ${stackDown.map((service) => service.def.name).join(", ")} down` : ""}${stackUnknown.length ? ` · unknown: ${stackUnknown.map((service) => service.def.name).join(", ")}` : ""}`;
-  const stackState = !health || health.mode !== "live" || stackServices.length === 0 ? "unknown" : stackDown.length ? "warn" : stackUnknown.length ? "unknown" : "ok";
+  const stackState =
+    !health || health.mode !== "live" || stackServices.length === 0
+      ? "unknown"
+      : stackDown.length
+        ? "warn"
+        : stackUnknown.length
+          ? "unknown"
+          : "ok";
 
   const feedAge = health?.feed.ageMs;
   const feedDown = health?.services.some((service) => service.def.id === "fleet-feed" && service.ok === false) ?? false;
-  const feedState = feedDown || (feedAge !== null && feedAge !== undefined && feedAge > 15 * 60_000)
-    ? "warn"
-    : feedAge === null || feedAge === undefined
-      ? "unknown"
-      : "ok";
+  const feedState =
+    feedDown || (feedAge !== null && feedAge !== undefined && feedAge > 15 * 60_000)
+      ? "warn"
+      : feedAge === null || feedAge === undefined
+        ? "unknown"
+        : "ok";
   const feedText = feedAge === null || feedAge === undefined ? "feed unknown" : `feed ${compactAge(feedAge)}`;
 
   const orchestration = health?.jobs.orchestration;
@@ -3264,14 +3304,22 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
   const quotaErrors = quota.gatherer
     ? quota.gatherer.providers.filter((provider) => provider.state === "error").length
     : quota.pools.filter((pool) => pool.state === "error" || pool.freshness?.state === "error").length;
-  const quotaState = quotaUnavailable || (!quota.gatherer && quota.pools.length === 0) ? "unknown" : quotaErrors ? "warn" : quota.gatherer?.ok === false ? "unknown" : "ok";
-  const quotaText = quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
-    ? "quota unknown"
-    : quotaErrors
-      ? `quota errors ${quotaErrors}`
-      : quota.gatherer?.ok === false
-        ? "quota reads unknown"
-        : "quota reads OK";
+  const quotaState =
+    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
+      ? "unknown"
+      : quotaErrors
+        ? "warn"
+        : quota.gatherer?.ok === false
+          ? "unknown"
+          : "ok";
+  const quotaText =
+    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
+      ? "quota unknown"
+      : quotaErrors
+        ? `quota errors ${quotaErrors}`
+        : quota.gatherer?.ok === false
+          ? "quota reads unknown"
+          : "quota reads OK";
 
   const items = [
     { text: stackText, state: stackState, href: "/health", title: "Stack service health" },
@@ -3394,6 +3442,70 @@ export function renderTodayShell(
   );
 }
 
+// --- Queue visibility (#1160) -----------------------------------------------
+
+function queueRows(rows: QueueRow[], empty: string): string {
+  if (!rows.length) return `<p class="muted">${esc(empty)}</p>`;
+  return `<div class="board">${rows
+    .map((item) => {
+      const area = item.area ? `${item.area} · ${item.repo}` : item.repo;
+      const blocked = item.status.toLowerCase().includes("block");
+      const age =
+        item.ageDays === undefined
+          ? blocked
+            ? "block age unknown"
+            : "age unknown"
+          : blocked
+            ? `block state last updated ${item.ageDays}d ago`
+            : item.ageDays === 0
+              ? "updated today"
+              : `${item.ageDays}d since update`;
+      const blockers = item.blockedBy?.length
+        ? `<br><strong>Blocked by:</strong> ${item.blockedBy.map(esc).join("; ")}`
+        : "";
+      const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
+      const epic = item.epic
+        ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>`
+        : "";
+      const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
+      const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
+      const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
+      return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${epic}${why}${blockers}${worker}</article>`;
+    })
+    .join("")}</div>`;
+}
+
+/** The queue page body is also the Datastar fragment and JSON's source view. */
+export function renderQueueBody(view: QueueView): string {
+  return `<p class="muted">Cross-project work, reconciled from the existing board, Project pool, and orchestration inputs. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
+<h2>In progress <span class="badge">${view.inProgress.length}</span></h2>${queueRows(view.inProgress, "Nothing is in progress.")}
+<h2>Blocked <span class="badge">${view.blocked.length}</span></h2>${queueRows(view.blocked, "Nothing is blocked.")}
+<h2>Done recently <span class="badge">${view.doneRecently.length}</span></h2><p class="muted">Completed or merged in the last 7 days; retired bookkeeping cards are excluded.</p>${queueRows(view.doneRecently, "Nothing completed in the last 7 days.")}
+<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
+}
+
+export function renderQueue(view: QueueView, provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Queue",
+    `<h1>Queue visibility</h1>${renderQueueBody(view)}`,
+    provenance,
+    "/queue",
+    "",
+    detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "",
+  );
+}
+
+export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Queue",
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    provenance,
+    "/queue",
+    "",
+    detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "",
+  );
+}
+
 // --- Overview / front door (#1134) -------------------------------------------
 // "/" is the stack front door: one glance at what needs Drew, what is
 // moving, what is broken, and where the quotas sit. Every number here
@@ -3409,10 +3521,25 @@ export interface OverviewData {
   quota: QuotaView;
   health: HealthView;
   board: BoardItem[];
+  /** Resolved board refs, used to distinguish open linked PRs. */
+  items?: Map<RefKey, GhItem>;
+  /** The same line-up source used by /projects for disagreement badges. */
+  orchestration?: OrchestrationSection | null;
   /** Dashboard actions by object ref, so the needs-you summary applies
    *  the same render-time suppression as /attention (Codex review on
    *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
   actionsByObject?: Map<string, DashAction[]>;
+}
+
+export type OverviewInProgressSignal = "project-status" | "active-session" | "open-pr";
+
+export interface OverviewInProgressItem {
+  ref: RefKey;
+  title: string;
+  repo: string;
+  url: string;
+  signals: OverviewInProgressSignal[];
+  disagreement: { project: string; derived: string } | null;
 }
 
 export interface OverviewSummary {
@@ -3423,7 +3550,95 @@ export interface OverviewSummary {
   quota: { provider: string; plan: string; state: QuotaState; worstPercent: number | null }[];
   health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
   recentDone: { title: string; repo: string }[];
-  inProgress: { title: string; repo: string }[];
+  inProgress: OverviewInProgressItem[];
+}
+
+function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
+  const poolByRef = new Map(data.pool.map((item) => [item.ref, item]));
+  const rows = new Map<
+    RefKey,
+    {
+      ref: RefKey;
+      title: string;
+      repo: string;
+      url: string;
+      signals: Set<OverviewInProgressSignal>;
+    }
+  >();
+  const ensure = (ref: RefKey, title?: string, repo?: string, url?: string) => {
+    const project = poolByRef.get(ref);
+    const item = data.items?.get(ref);
+    const existing = rows.get(ref);
+    if (existing) return existing;
+    const hashAt = ref.lastIndexOf("#");
+    const row = {
+      ref,
+      title: project?.title ?? item?.title ?? title ?? ref,
+      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : (repo ?? "")),
+      url: project?.issueUrl ?? item?.url ?? url ?? refUrl(ref),
+      signals: new Set<OverviewInProgressSignal>(),
+    };
+    rows.set(ref, row);
+    return row;
+  };
+  const signal = (ref: RefKey, kind: OverviewInProgressSignal, title?: string, repo?: string, url?: string) => {
+    ensure(ref, title, repo, url).signals.add(kind);
+  };
+
+  for (const item of data.pool) {
+    if (item.status === "In Progress") signal(item.ref, "project-status", item.title, item.repo, item.issueUrl);
+    if (item.contentKind === "pr" && item.state === "open")
+      signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
+  }
+  for (const goal of data.orchestration?.goals ?? []) {
+    for (const task of goal.linedUp) {
+      if (task.status !== "in-progress") continue;
+      if (task.ref) {
+        signal(task.ref, "active-session", task.title);
+        continue;
+      }
+      for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
+      for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
+        signal(`${match[1]}#${match[2]}`, "active-session", task.title);
+      }
+    }
+  }
+  for (const boardItem of data.board) {
+    const openPr = boardItem.links.some((link) => {
+      const item = data.items?.get(link.ref);
+      return item?.kind === "pr" && item.state === "open";
+    });
+    for (const link of boardItem.links) {
+      const item = data.items?.get(link.ref);
+      const title = item?.title ?? boardItem.title;
+      const repo = item?.ref.slice(0, link.ref.lastIndexOf("#")) ?? boardItem.repo;
+      if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
+        signal(link.ref, "active-session", title, repo, item?.url);
+      }
+      // A board card ties its linked issue and PR to the same work item.
+      if (openPr) signal(link.ref, "open-pr", title, repo, item?.url);
+    }
+  }
+
+  const additionalInProgressRefs = new Set<RefKey>();
+  for (const row of rows.values()) {
+    if (row.signals.has("active-session") || row.signals.has("open-pr")) additionalInProgressRefs.add(row.ref);
+  }
+  const signalOrder: OverviewInProgressSignal[] = ["project-status", "active-session", "open-pr"];
+  return [...rows.values()]
+    .map((row) => {
+      const project = poolByRef.get(row.ref);
+      const disagreement = project ? projectDisagreement(project, data.orchestration, additionalInProgressRefs) : null;
+      return {
+        ref: row.ref,
+        title: row.title,
+        repo: row.repo,
+        url: row.url,
+        signals: signalOrder.filter((item) => row.signals.has(item)),
+        disagreement,
+      };
+    })
+    .sort((a, b) => a.repo.localeCompare(b.repo) || a.title.localeCompare(b.title) || a.ref.localeCompare(b.ref));
 }
 
 export function deriveOverview(data: OverviewData): OverviewSummary {
@@ -3487,18 +3702,7 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
       .sort(byRecency)
       .slice(0, 5)
       .map((b) => ({ title: b.title, repo: b.repo })),
-    // In-flight board entries carry their real status in orchStatus
-    // (in-progress | queued | blocked): only the running ones belong
-    // under "In progress" — queued/blocked entries must not fill the
-    // list ahead of running work (Codex review on PR 2424).
-    inProgress: data.board
-      .filter(
-        (b) =>
-          b.status === "in-progress" ||
-          (b.status === "in-flight" && (b.orchStatus === undefined || b.orchStatus === "in-progress")),
-      )
-      .slice(0, 5)
-      .map((b) => ({ title: b.title, repo: b.repo })),
+    inProgress: reconciledInProgress(data),
   };
 }
 
@@ -3536,14 +3740,30 @@ export function renderOverviewBody(summary: OverviewSummary): string {
     items.length
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
       : `<p class="muted">${empty}</p>`;
+  const inProgressItems = summary.inProgress.length
+    ? `<ul>${summary.inProgress
+        .map((item) => {
+          const signals = item.signals
+            .map(
+              (signal) =>
+                `<span class="badge ${signal === "open-pr" ? "open" : signal === "active-session" ? "orch" : "src"}">${signal === "project-status" ? "Project Status" : signal === "active-session" ? "Active session" : "Open PR"}</span>`,
+            )
+            .join(" ");
+          const clash = item.disagreement
+            ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(item.disagreement.project)} · derived: ${esc(item.disagreement.derived)}</span>`
+            : "";
+          return `<li><a href="${esc(item.url)}">${esc(item.title)}</a> <span class="muted">${esc(item.repo)}</span> ${signals}${clash}</li>`;
+        })
+        .join("")}</ul>`
+    : `<p class="muted">Nothing in progress from the Project, active-session, or open-PR signals.</p>`;
   return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
 <h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${healthStrip}
-<h2>In progress</h2>${itemList(summary.inProgress, "Nothing in progress on the board.")}
+<h2>In progress</h2>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
-<p class="muted">In progress + recently done are the board's lanes — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
+<p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
 }
 
 /** The overview page (#1134): full server render. */
@@ -5605,11 +5825,11 @@ const AA_COLLECTOR_CADENCE_MS = 5 * 60_000;
 function aaFreshnessChips(detail: ProvenanceDetail | undefined, section: AaFeedSection | null): string {
   if (!detail) return "";
   const aaFacet = detail.aa;
-  const olderThanOneCycle = aaFacet.state === "live" && aaFacet.ageMs !== undefined && aaFacet.ageMs > AA_COLLECTOR_CADENCE_MS;
+  const olderThanOneCycle =
+    aaFacet.state === "live" && aaFacet.ageMs !== undefined && aaFacet.ageMs > AA_COLLECTOR_CADENCE_MS;
   const retainedAfterFailure = section?.status === "ok" && section.stale === true;
-  const chipDetail: ProvenanceDetail = olderThanOneCycle || retainedAfterFailure
-    ? { ...detail, aa: { ...aaFacet, state: "stale" } }
-    : detail;
+  const chipDetail: ProvenanceDetail =
+    olderThanOneCycle || retainedAfterFailure ? { ...detail, aa: { ...aaFacet, state: "stale" } } : detail;
   return freshnessChips(chipDetail, ["aa"]);
 }
 
@@ -5654,9 +5874,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
     : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
   const catalog = s.catalog;
   const feedAge = detail?.aa.ageMs === undefined ? "unavailable" : ageMsText(detail.aa.ageMs);
-  const aaTabAge = detail
-    ? `<p class="muted" data-aa-age>AA data age: ${esc(feedAge)} (fleet-feed age).</p>`
-    : "";
+  const aaTabAge = detail ? `<p class="muted" data-aa-age>AA data age: ${esc(feedAge)} (fleet-feed age).</p>` : "";
   const catalogTabAge = detail
     ? catalog
       ? `<p class="muted" data-catalog-age>Model catalog age: ${esc(feedAge)} (fleet-feed age; catalog and AA are read in the same collector run; no separate catalog timestamp is carried).</p>`

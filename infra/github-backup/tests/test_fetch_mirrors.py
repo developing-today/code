@@ -57,7 +57,9 @@ class FetchMirrorsFailureStreakTests(unittest.TestCase):
             ):
                 for date, _ in sequence:
                     day[0] = date
-                    exit_codes.append(fetch_mirrors.main(["fetch_mirrors.py", "owner/repo"]))
+                    exit_codes.append(
+                        fetch_mirrors.main(["fetch_mirrors.py", "owner/repo"])
+                    )
 
             with open(os.path.join(root, "state.json")) as state_file:
                 state = json.load(state_file)
@@ -147,7 +149,11 @@ class FetchMirrorsFailureStreakTests(unittest.TestCase):
             with (
                 patch.object(fetch_mirrors, "load_config", return_value={}),
                 patch.object(fetch_mirrors, "backup_root", return_value=root),
-                patch.object(fetch_mirrors, "mirror_path", side_effect=lambda _root, repo: f"/mirror/{repo}"),
+                patch.object(
+                    fetch_mirrors,
+                    "mirror_path",
+                    side_effect=lambda _root, repo: f"/mirror/{repo}",
+                ),
                 patch.object(fetch_mirrors, "valid_mirror", return_value=True),
                 patch.object(fetch_mirrors.manifest_mod, "build") as build_manifest,
                 patch.object(fetch_mirrors.time, "strftime", side_effect=fake_strftime),

@@ -45,6 +45,7 @@ impl WorldCommand {
             Self::SetFileScope { .. } => "SetFileScope",
             Self::PolicyInfo { .. } => "PolicyInfo",
             Self::Metrics { .. } => "Metrics",
+            Self::ReplicationFeed { .. } => "ReplicationFeed",
             Self::Shutdown { .. } => "Shutdown",
         }
     }
@@ -240,6 +241,16 @@ pub(crate) enum WorldCommand {
     Metrics {
         reply: oneshot::Sender<MetricsSnapshot>,
     },
+    /// Atomically capture the journal and subscribe to subsequent durable changes.
+    ReplicationFeed {
+        reply: oneshot::Sender<
+            Result<(
+                String,
+                JournalSnapshot,
+                broadcast::Receiver<ReplicationUpdate>,
+            )>,
+        >,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -287,6 +298,7 @@ pub(crate) struct WorldActor {
     pub(crate) event_sender: broadcast::Sender<WorldEvent>,
     pub(crate) revocation_sender: broadcast::Sender<u64>,
     pub(crate) records_sender: watch::Sender<(u64, Arc<Records>)>,
+    pub(crate) replication_sender: broadcast::Sender<ReplicationUpdate>,
     pub(crate) view_changed: watch::Sender<u64>,
     /// Live sessions per participant: presence is refcounted.
     pub(crate) presence: HashMap<u64, usize>,
@@ -399,16 +411,38 @@ impl WorldActor {
             !self.storage_failed,
             "world storage failed; the world is read-only"
         );
+        let world_id = self.core.world_id().to_owned();
+        let replication_sender = self.replication_sender.clone();
         if let Some(journal) = self.journal.as_mut() {
             // The append includes its fsync, so this is the full durable
             // cost of the entry (F11.7 journal append + fsync latency).
             let started = std::time::Instant::now();
+            let version_before = journal.replication_header_version();
             if let Err(error) = journal.append(&entry) {
                 self.storage_failed = true;
                 tracing::error!("world journal append failed: {error:#}");
                 return Err(error.context("world storage failed; the world is read-only"));
             }
             self.metrics.record_journal_append(started.elapsed());
+            if let Some(header_version) = journal.replication_header_version() {
+                if version_before != Some(header_version) {
+                    let update = journal
+                        .replication_snapshot()
+                        .map(ReplicationUpdate::Reset)
+                        .unwrap_or_else(|error| {
+                            tracing::error!(
+                                "world {world_id}: replication reset snapshot failed: {error:#}"
+                            );
+                            ReplicationUpdate::ResetFailed
+                        });
+                    let _ = replication_sender.send(update);
+                } else {
+                    let _ = replication_sender.send(ReplicationUpdate::Append {
+                        header_version,
+                        entry: journal_entry_line(&entry),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -1540,6 +1574,20 @@ impl WorldActor {
                 let sessions = self.presence.values().sum::<usize>() as u64;
                 let _ = reply.send(self.metrics.snapshot(sessions));
             }
+            WorldCommand::ReplicationFeed { reply } => {
+                // Subscribe before capturing the image. The actor is the only
+                // journal owner and processes commands serially, so no durable
+                // append can fall between these two operations.
+                let updates = self.replication_sender.subscribe();
+                let world_id = self.core.world_id().to_owned();
+                let result = self
+                    .journal
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
+                    .and_then(|journal| journal.replication_snapshot())
+                    .map(|snapshot| (world_id, snapshot, updates));
+                let _ = reply.send(result);
+            }
             WorldCommand::CapsInfo { reply } => {
                 let _ = reply.send(self.caps_report());
             }
@@ -1557,12 +1605,18 @@ impl WorldActor {
         {
             return;
         }
-        let Some(journal) = self.journal.as_mut() else {
-            return;
-        };
         let started = std::time::Instant::now();
-        match compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut()) {
-            Ok(true) => self.metrics.record_checkpoint(started.elapsed()),
+        let compacted = match self.journal.as_mut() {
+            Some(journal) => {
+                compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut())
+            }
+            None => return,
+        };
+        match compacted {
+            Ok(true) => {
+                self.metrics.record_checkpoint(started.elapsed());
+                self.publish_replication_reset();
+            }
             Ok(false) => self.compaction_off = true,
             Err(error) => {
                 // The journal is still complete; just do not retry until
@@ -1571,6 +1625,126 @@ impl WorldActor {
                 self.compaction_off = true;
             }
         }
+    }
+
+    fn publish_replication_reset(&mut self) {
+        let Some(journal) = self.journal.as_mut() else {
+            return;
+        };
+        let update = journal
+            .replication_snapshot()
+            .map(ReplicationUpdate::Reset)
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    "world {}: replication reset snapshot failed: {error:#}",
+                    self.core.world_id()
+                );
+                ReplicationUpdate::ResetFailed
+            });
+        let _ = self.replication_sender.send(update);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod replication_feed_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    struct SnapshotProgram;
+
+    impl WorldProgram for SnapshotProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            Ok(Some("{}".to_owned()))
+        }
+    }
+
+    struct BumpingJournal {
+        version: u32,
+        entries: Vec<JournalEntry>,
+    }
+
+    impl WorldJournal for BumpingJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            self.version = 2;
+            if let Some(JournalEntry::Created { version, .. }) = self.entries.first_mut() {
+                *version = self.version;
+            }
+            self.entries.push(entry.clone());
+            Ok(())
+        }
+
+        fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+            Ok(JournalSnapshot {
+                header_version: self.version,
+                bytes: self.entries.iter().flat_map(journal_entry_line).collect(),
+            })
+        }
+
+        fn replication_header_version(&self) -> Option<u32> {
+            Some(self.version)
+        }
+    }
+
+    #[test]
+    fn header_bump_publishes_a_reset_instead_of_a_tail() {
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let journal = BumpingJournal {
+            version: 1,
+            entries: vec![JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            }],
+        };
+        let mut actor =
+            WorldActor::for_test(core, Box::new(SnapshotProgram), Some(Box::new(journal)));
+        let mut updates = actor.replication_sender.subscribe();
+
+        actor
+            .persist(JournalEntry::Isolation {
+                isolation: Isolation::Unisolated,
+            })
+            .unwrap();
+
+        let ReplicationUpdate::Reset(snapshot) = updates.try_recv().unwrap() else {
+            panic!("header bump must publish a reset snapshot");
+        };
+        assert_eq!(snapshot.header_version, 2);
+        let header = snapshot
+            .bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .next()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<JournalEntry>(header).unwrap(),
+            JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 2,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn journal_compaction_publishes_a_reset_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let mut limits = WorldLimits::default();
+        limits.checkpoint_every = 1;
+        let core = WorldCore::new("lobby", limits).unwrap();
+        let (journal, _) = crate::world_store::FileJournal::open(&path, "lobby").unwrap();
+        let mut actor =
+            WorldActor::for_test(core, Box::new(SnapshotProgram), Some(Box::new(journal)));
+        actor.core.active_module_hash = Some("test-module-hash".to_owned());
+        actor.core.since_checkpoint = 1;
+        let mut updates = actor.replication_sender.subscribe();
+
+        actor.compact_if_due().await;
+
+        let ReplicationUpdate::Reset(snapshot) = updates.recv().await.unwrap() else {
+            panic!("compaction must publish a reset snapshot");
+        };
+        assert_eq!(snapshot.bytes, std::fs::read(path).unwrap());
+        assert!(snapshot.bytes.ends_with(b"\n"));
     }
 }
 
@@ -1586,6 +1760,7 @@ impl WorldActor {
     ) -> Self {
         let (events, _) = broadcast::channel(256);
         let (revocations, _) = broadcast::channel(256);
+        let (replication_sender, _) = broadcast::channel(256);
         let (view_changed, _) = watch::channel(core.sequence);
         let mut program_healthy = true;
         let initial = match program_records(program.as_mut()) {
@@ -1615,6 +1790,7 @@ impl WorldActor {
             event_sender: events,
             revocation_sender: revocations,
             records_sender,
+            replication_sender,
             view_changed,
             presence: HashMap::new(),
             active_subs: BTreeSet::new(),

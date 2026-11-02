@@ -19,6 +19,10 @@ import {
   catalogSyncBranch,
   assertNotDefaultBranch,
   openPrCommands,
+  runSync,
+  resolveConfigPath,
+  deepMergeProviders,
+  SYNC_OWNED_PROVIDERS,
 } from './provider-catalog-sync.mjs';
 
 const FIXTURE = `{
@@ -53,6 +57,26 @@ test('parseJsonc strips comments and trailing commas', () => {
   const cfg = parseJsonc(FIXTURE);
   assert.deepEqual(Object.keys(cfg.provider), ['proxy-a', 'name-only-b']);
   assert.equal(cfg.provider['proxy-a'].models['gpt-1-sol'].limit.context, 1000);
+});
+
+test('parseJsonc preserves commas before brackets inside strings (#3430)', () => {
+  assert.equal(parseJsonc('{ "note": "x,}", "n": 1 }').note, 'x,}');
+  assert.equal(parseJsonc('{ "note": "a,]", "n": 1 }').note, 'a,]');
+  assert.equal(parseJsonc('{ "note": "a, }", "n": 1 }').note, 'a, }');
+  assert.equal(parseJsonc('{ "list": ["x, ]", "y"] }').list[0], 'x, ]');
+  const nested = parseJsonc(
+    '{ "provider": { "p": { "models": { "m": { "variants": { "v": { "headers": "a,}" } } } } } } }',
+  );
+  assert.equal(nested.provider.p.models.m.variants.v.headers, 'a,}');
+});
+
+test('parseJsonc still removes real trailing commas and strips comments (#3430)', () => {
+  assert.deepEqual(parseJsonc('{ "a": 1, }'), { a: 1 });
+  assert.deepEqual(parseJsonc('// hi\n{ "a": [1, 2,], "b": { "c": 3, } }'), {
+    a: [1, 2],
+    b: { c: 3 },
+  });
+  assert.equal(parseJsonc('{ "url": "https://example.com//x" }').url, 'https://example.com//x');
 });
 
 test('findModelsSpan locates the models object per provider', () => {
@@ -264,7 +288,9 @@ test('parseArgs accepts the documented controls', () => {
 
 function runCli(args, env = {}) {
   const clean = { ...process.env, ...env };
-  delete clean.OPENCODE_CONFIG_PATH;
+  // Scrub the ambient overlay variable unless a test passes it explicitly
+  // (#4588: the explicit-pass case is the regression under test).
+  if (!Object.hasOwn(env, 'OPENCODE_CONFIG_PATH')) delete clean.OPENCODE_CONFIG_PATH;
   return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: clean });
 }
 
@@ -314,4 +340,100 @@ test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes',
   const applied = runCli([...base, '--apply']);
   assert.equal(applied.status, 0, `apply: ${applied.stdout} ${applied.stderr}`);
   assert.ok(fs.readFileSync(configPath, 'utf8').includes('acme-2'));
+});
+
+// ---------------------------------------------------------------------------
+// #4588: config resolution — OPENCODE_CONFIG_PATH names the runtime overlay
+// since #4544 and must never become this tool's target
+// ---------------------------------------------------------------------------
+
+test('resolveConfigPath: --config beats env, catalog env beats default, OPENCODE_CONFIG_PATH ignored (#4588)', () => {
+  const root = '/repo';
+  const overlay = '/state/opencode-runtime.jsonc';
+  const dflt = path.join(root, '.opencode', 'opencode.jsonc');
+  // Explicit flag wins over every env var.
+  assert.equal(
+    resolveConfigPath({ options: { '--config': '/flag.jsonc' }, env: { OPENCODE_CONFIG_PATH: overlay, OPENCODE_CATALOG_SYNC_CONFIG: '/env.jsonc' }, root }),
+    '/flag.jsonc',
+  );
+  // Catalog-sync-specific env is the only env override.
+  assert.equal(
+    resolveConfigPath({ options: {}, env: { OPENCODE_CONFIG_PATH: overlay, OPENCODE_CATALOG_SYNC_CONFIG: '/env.jsonc' }, root }),
+    '/env.jsonc',
+  );
+  // OPENCODE_CONFIG_PATH alone changes nothing: tracked default.
+  assert.equal(resolveConfigPath({ options: {}, env: { OPENCODE_CONFIG_PATH: overlay }, root }), dflt);
+  assert.equal(resolveConfigPath({ options: {}, env: {}, root }), dflt);
+});
+
+test('CLI: OPENCODE_CONFIG_PATH pointing at the overlay does not redirect the target (#4588)', () => {
+  const { configPath, sourceDir, modelsDev } = controlFixture();
+  const dir = path.dirname(configPath);
+  const overlayPath = path.join(dir, 'opencode-runtime.jsonc');
+  fs.writeFileSync(overlayPath, JSON.stringify({ provider: { openai: { models: { 'g-1': {} } } } }));
+  const r = runCli(
+    ['--config', configPath, '--runtime-config', overlayPath, '--models-dev', modelsDev, '--source-dir', sourceDir, '--json'],
+    { OPENCODE_CONFIG_PATH: overlayPath },
+  );
+  // The tracked file carries commandcode/acme-1 and the snapshot adds acme-2:
+  // a run against the tracked default reports the validated addition (exit 3).
+  // Against the overlay (the bug) it would report config=overlay and exit 0.
+  assert.equal(r.status, 3, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.config, configPath);
+  assert.equal(report.runtime_overlay, overlayPath);
+  assert.ok(report.providers.commandcode, `providers: ${Object.keys(report.providers)}`);
+});
+
+// ---------------------------------------------------------------------------
+// #4544: runtime overlay (sync-models-owned catalogs outside the tracked
+// configured default)
+// ---------------------------------------------------------------------------
+
+test('SYNC_OWNED_PROVIDERS names exactly the five sync-models-owned providers (#4544)', () => {
+  assert.deepEqual(
+    [...SYNC_OWNED_PROVIDERS].sort(),
+    ['antigravity-direct', 'cloudflare-gateway', 'google', 'openai', 'openai-codex'],
+  );
+});
+
+test('deepMergeProviders merges catalogs per model, overlay wins on conflict (#4544)', () => {
+  const base = { google: { models: { a: { name: 'A' }, b: { name: 'B', limit: { context: 1 } } } }, x: { models: { m: {} } } };
+  const over = { google: { models: { b: { name: 'B2' }, c: { name: 'C' } } } };
+  const merged = deepMergeProviders(base, over);
+  assert.deepEqual(Object.keys(merged.google.models).sort(), ['a', 'b', 'c']);
+  assert.equal(merged.google.models.b.name, 'B2');
+  assert.equal(merged.google.models.a.name, 'A');
+  assert.deepEqual(Object.keys(merged.x.models), ['m']);
+});
+
+test('runSync diffs the merged effective config when a runtime overlay exists (#4544)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-sync-overlay-'));
+  const configPath = path.join(dir, 'opencode.jsonc');
+  // Tracked default post-split: no google block at all (it was models-only).
+  fs.writeFileSync(configPath, '{ "provider": { "deepseek": { "models": { "ds-1": {} } } } }');
+  const overlayPath = path.join(dir, 'opencode-runtime.jsonc');
+  fs.writeFileSync(
+    overlayPath,
+    JSON.stringify({ provider: { google: { models: { 'gem-a': {}, 'gem-b': {} } } } }),
+  );
+  const modelsDev = path.join(dir, 'models-dev.json');
+  fs.writeFileSync(modelsDev, '{}');
+  const { report } = await runSync({
+    configPath,
+    modelsDevSpec: modelsDev,
+    sourceDir: null,
+    runtimeConfigPath: overlayPath,
+  });
+  assert.equal(report.runtime_overlay, overlayPath);
+  assert.equal(report.providers.google.config_count, 2);
+  // Without the overlay the same tracked file has no google provider at all.
+  const bare = await runSync({
+    configPath,
+    modelsDevSpec: modelsDev,
+    sourceDir: null,
+    runtimeConfigPath: path.join(dir, 'absent.jsonc'),
+  });
+  assert.equal(bare.report.runtime_overlay, null);
+  assert.equal(bare.report.providers.google, undefined);
 });

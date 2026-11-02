@@ -24,9 +24,15 @@ LOG="$STATE_DIR/password-sync.log"
 mkdir -p "$STATE_DIR"
 ts() { date -Is; }
 log() { echo "$(ts) $*" >>"$LOG"; }
-if [ ! -f "$JSON" ]; then log "no service file at $JSON; skipping"; exit 0; fi
+if [ ! -f "$JSON" ]; then
+  log "no service file at $JSON; skipping"
+  exit 0
+fi
 NEW=$(OCF="$JSON" python3 -c 'import json,os; print(json.load(open(os.environ["OCF"]))["password"])' 2>/dev/null)
-if [ -z "${NEW:-}" ]; then log "could not parse password from $JSON; skipping"; exit 0; fi
+if [ -z "${NEW:-}" ]; then
+  log "could not parse password from $JSON; skipping"
+  exit 0
+fi
 NEWHASH=$(printf %s "$NEW" | sha256sum | cut -d" " -f1)
 # Current password: what the running OpenChamber process holds.
 CUR=""
@@ -35,20 +41,38 @@ if [ "${PID:-0}" -gt 0 ] && [ -r "/proc/$PID/environ" ]; then
   CUR=$(tr "\0" "\n" <"/proc/$PID/environ" | sed -n "s/^OPENCODE_PASSWORD=//p" | head -1)
 fi
 if [ -n "$CUR" ]; then
-  if [ "$NEW" = "$CUR" ]; then printf %s "$NEWHASH" >"$STATE"; log "in sync; no action"; exit 0; fi
+  if [ "$NEW" = "$CUR" ]; then
+    printf %s "$NEWHASH" >"$STATE"
+    log "in sync; no action"
+    exit 0
+  fi
 else
   # No live reading (OpenChamber down): compare against last-synced hash.
   LAST=$(cat "$STATE" 2>/dev/null || true)
-  if [ "$NEWHASH" = "$LAST" ]; then log "in sync (state); openchamber not running; no action"; exit 0; fi
+  if [ "$NEWHASH" = "$LAST" ]; then
+    log "in sync (state); openchamber not running; no action"
+    exit 0
+  fi
 fi
-if [ "${OC_DRY_RUN:-0}" = "1" ]; then log "DRY RUN: drift detected; would restart openchamber.service"; echo "drift detected (dry run)"; exit 0; fi
-if ! systemctl --user restart openchamber.service; then log "restart FAILED"; exit 1; fi
+if [ "${OC_DRY_RUN:-0}" = "1" ]; then
+  log "DRY RUN: drift detected; would restart openchamber.service"
+  echo "drift detected (dry run)"
+  exit 0
+fi
+if ! systemctl --user restart openchamber.service; then
+  log "restart FAILED"
+  exit 1
+fi
 # Verify: the restarted process must hold the new password.
 for i in $(seq 1 30); do
   PID=$(systemctl --user show openchamber.service -p MainPID --value 2>/dev/null || echo 0)
   if [ "${PID:-0}" -gt 0 ] && [ -r "/proc/$PID/environ" ]; then
     CUR=$(tr "\0" "\n" <"/proc/$PID/environ" | sed -n "s/^OPENCODE_PASSWORD=//p" | head -1)
-    if [ "$NEW" = "$CUR" ]; then printf %s "$NEWHASH" >"$STATE"; log "drift corrected; openchamber.service restarted, password verified in new process"; exit 0; fi
+    if [ "$NEW" = "$CUR" ]; then
+      printf %s "$NEWHASH" >"$STATE"
+      log "drift corrected; openchamber.service restarted, password verified in new process"
+      exit 0
+    fi
   fi
   sleep 1
 done

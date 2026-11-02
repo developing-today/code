@@ -1,3 +1,12 @@
+//! Durable world reconstruction and authority-bearing core state.
+//!
+//! Reconstruction is admission: validate each journal entry against the
+//! verifier's state rebuilt from earlier admitted entries. Refuse the whole
+//! restore on invalid input; never partially apply or silently repair it.
+//! Guest snapshots contain program-owned state, not host authority: the host
+//! capability ledger is reconstructed and checked separately, and guest
+//! requests remain subject to that ledger.
+
 use super::*;
 
 use anyhow::{Context, Result, ensure};
@@ -449,7 +458,7 @@ impl WorldCore {
                         "journal import event claims a sequence"
                     );
                     ensure!(
-                        new_owner_epoch == prior_owner_epoch + 1,
+                        prior_owner_epoch.checked_add(1) == Some(new_owner_epoch),
                         "journal import for handoff {handoff_id:?} does not advance the owner epoch"
                     );
                     ensure!(
