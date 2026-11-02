@@ -125,6 +125,54 @@ configuration file _and_ apply at once where the setting allows it -- a change
 written to a file but not applied would leave `mcpx settings get` answering
 with the old value, which reads as the write having failed.
 
+## Local-model controls by surface
+
+These are independent controls, not one fleet-wide Qwen switch. In particular,
+parking hosted chat-model listings does not disable embeddings or an interpreter.
+The checked-in state below is from this repository's main configuration, not a
+guarantee about a running process: nearer files, environment, flags and runtime
+overrides can change it. See [#2218](https://github.com/developing-today/code/issues/2218)
+for the remaining single-switch work.
+
+| Surface | Control and checked-in state | What it does not control |
+| --- | --- | --- |
+| mcpx catalog embeddings | `embeddings.backend` defaults to `auto`; `.mcpx.json` sets no `embeddings` block. With no URL or WASM path configured there, the cascade reaches the built-in pure-Go subword engine, not a Qwen model. `local` forces that engine. | Prompt generation, OpenCode messaging and provider listings. `auto` can use a configured remote or WASM model; it is not a global local-model off switch. |
+| mcpx prompt generation | `prompt.sample` defaults to `never`; `model.provider` defaults to `none`. Neither is set in `.mcpx.json`. The file does contain a legacy `repair` block naming `opencode` and `claude-code/claude-haiku-5-5`, not Qwen. | Embeddings or arbitrary models chosen by a caller or external OpenCode. |
+| OpenCode messaging embeddings | `.opencode/opencode.jsonc` sets `messaging.embedding` to `"off"`. Removing that setting restores the OpenCode default, which starts its Qwen3-Embedding local server. | Chat provider listings or mcpx embeddings. |
+| OpenCode chat provider listings | Qwen definitions for `cline-pass` and `commandcode` are parked as comments; other Qwen/Llama listings are under disabled providers or commented blocks. | Messaging embeddings. Restoring the parked blocks requires editing them: there is not yet a single switch restoring all listings. |
+| OpenChamber route interpreter | The separate local route-interpreter stage is controlled in OpenChamber Settings; its Qwen2.5 model requires a download and was reported absent on the laptop in the #2218 audit. | OpenCode provider listings and mcpx. This is a separate cross-repository remainder, not inherited state. |
+
+For catalog embeddings, `auto` tries the configured `embeddings.url` remote
+endpoint, then a successfully loaded `embeddings.wasmPath`, then the subword
+engine. `remote` and `wasm` each fall back to subword on failure; `local` uses
+subword directly. A remote endpoint may itself be local (for example Ollama):
+the backend name does not say where the model runs. `embeddings.model` names
+the remote model, not a local download. These settings select an embedder; they
+do not switch semantic search itself off.
+
+For prompt generation, `prompt.sample: never` prevents an unmatched-recipe
+request from asking a model by default; `ask` allows it. An explicit request
+provider or model, or a non-`none` `model.provider`, also opts in even when
+`prompt.sample` is `never`. `model.provider` selects the newer
+model layer (`none`, `auto`, `sampling`, `plugin`, `openai`, `anthropic`, or
+`google`), with `model.baseURL` and `model.default` for a configured endpoint
+and model. An OpenAI-compatible local endpoint can serve Qwen, but it must be
+configured separately. `model.provider: none` alone is not a universal veto:
+the legacy scripting provider can resolve an explicit request, environment or
+installed CLI when generation is allowed. The legacy `repair.provider` and
+`repair.model` keys in the fleet file are not registered settings in this
+version, so do not assume that block selects the effective provider. Per-request
+`mcpx prompt --provider` / `--model` can also select a provider. None of these
+controls constrain independent callers of external services.
+
+Use `mcpx settings get embeddings.backend --daemon`, `mcpx settings get
+prompt.sample --daemon`, and `mcpx settings get model.provider --daemon` to
+inspect the daemon's resolved settings; check `mcpx config --sources` and the
+daemon environment as well. Embedding backends are constructed when settings
+are installed, so verify the running daemon after changing configuration rather
+than assuming an existing index or embedder has switched. Model provider and
+prompt sampling settings are daemon-scoped and cold.
+
 ## Servers
 
 Servers are configuration too, and until now adding one meant an editor and a
