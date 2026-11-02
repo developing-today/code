@@ -93,9 +93,15 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    d. Send the worker prompt to the bound session: the queue runbook
    for its queue with the task id, issue, and packet inlined,
    instructing it to work THAT task (it is already claimed and
-   lane-bound; it must not claim another) and to finish with the
-   helper terminal verbs (complete / park / block / fail) carrying
-   `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`.
+   lane-bound; it must not claim another). The claim belongs to the
+   queue's repo worker (the candidate record's `worker_id` from
+   poll.py), NOT to you: instruct the worker to pass
+   `--worker <worker_id>` on EVERY helper verb it uses (heartbeat,
+   checkpoint, and the terminal verbs), to heartbeat while it works
+   so the claim's lease stays alive, and to finish with the helper
+   terminal verbs (complete / park / block / fail) carrying
+   `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`
+   with the SAME session id you bound in step c.
    e. Post the launch agent-note on the issue (agent-note:v1,
    state=handed off) naming task id + session id.
 5. Terminal states are recorded by the worker session itself via the
