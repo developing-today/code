@@ -166,14 +166,18 @@ async function ensureEventStream(timeoutMs = 5000) {
 // would have; if the status cannot be read at all, fail the pending
 // prompts explicitly rather than leaving them hanging.
 async function reconcilePendingPrompts() {
-  if (pendingPrompts.size === 0) return;
+  const pendingAtRequest = [...pendingPrompts.entries()];
+  if (pendingAtRequest.length === 0) return;
   let status = null;
   try {
     status = await serveJson('/session/status');
   } catch (err) {
     debug(`reconcile after reconnect: GET /session/status failed: ${err.message}`);
   }
-  for (const sessionId of [...pendingPrompts.keys()]) {
+  for (const [sessionId, pending] of pendingAtRequest) {
+    // The status snapshot may have been taken before a prompt started after
+    // this reconciliation began. Only finish the exact prompt we observed.
+    if (pendingPrompts.get(sessionId) !== pending) continue;
     if (!status) {
       finishPrompt(
         sessionId,

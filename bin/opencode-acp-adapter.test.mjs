@@ -28,6 +28,8 @@ function startStubServe(script) {
   const calls = [];
   const sseClients = new Set();
   let sessionStatus = {};
+  let statusResponseDelay = 0;
+  let onStatusRequest = null;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -35,6 +37,12 @@ function startStubServe(script) {
   const serveControls = {
     setStatus: (status) => {
       sessionStatus = status;
+    },
+    setStatusResponseDelay: (ms) => {
+      statusResponseDelay = ms;
+    },
+    onStatusRequest: (handler) => {
+      onStatusRequest = handler;
     },
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
@@ -60,8 +68,14 @@ function startStubServe(script) {
         return;
       }
       if (req.method === 'GET' && url.pathname === '/session/status') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(sessionStatus));
+        const statusSnapshot = sessionStatus;
+        onStatusRequest?.();
+        const sendStatus = () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(statusSnapshot));
+        };
+        if (statusResponseDelay) setTimeout(sendStatus, statusResponseDelay);
+        else sendStatus();
         return;
       }
       if (req.method === 'POST' && url.pathname === '/session') {
@@ -310,4 +324,45 @@ test('prompt completed during an event-stream drop is reconciled on reconnect (#
     prompt: [{ type: 'text', text: 'again' }],
   });
   assert.equal(second.stopReason, 'end_turn');
+});
+
+test('reconciliation does not finish a newer prompt using a stale status snapshot', async (t) => {
+  let promptCount = 0;
+  let secondPromptIdleEmitted = false;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({});
+      serve.setStatusResponseDelay(500);
+      // Deliver the first prompt's completion over the reconnected stream
+      // while the status response is delayed. The client will start another
+      // prompt before the stale snapshot arrives.
+      serve.onStatusRequest(() => {
+        emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+      });
+      setTimeout(() => serve.dropEventStreams(), 50);
+      return;
+    }
+    serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+    setTimeout(() => {
+      secondPromptIdleEmitted = true;
+      serve.setStatus({});
+      emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+    }, 1000);
+  };
+  const { acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first task' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second task' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+  assert.equal(secondPromptIdleEmitted, true, 'new prompt waited for its own idle event');
 });
