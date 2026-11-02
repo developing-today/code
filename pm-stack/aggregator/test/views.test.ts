@@ -5,7 +5,7 @@
 // the identical set), the shareable-URL encode/parse round-trip, and
 // the mediated preference verbs that mutate the store.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateNewAction } from "../src/actions.ts";
@@ -105,6 +105,35 @@ describe("views store (#1276)", () => {
     await store.save({ owner: drewKey, name: "Fresh", filters: { state: "open" } });
     expect(existsSync(file)).toBe(true);
     expect(readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"))).toHaveLength(1);
+  });
+
+  test("well-formed JSON with a row missing its name is quarantined before later saves", async () => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [{ id: "vw-1", owner: drewKey, filters: { repo: "a/b" }, isDefault: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+    });
+    writeFileSync(file, raw);
+
+    expect(await store.all()).toEqual([]);
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
+    await expect(store.save({ owner: drewKey, name: "Fresh", filters: { state: "open" } })).resolves.toMatchObject({ name: "Fresh" });
+  });
+
+  test("malformed default filters are quarantined instead of becoming a match-all view", async () => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [{ id: "vw-1", name: "Default", owner: drewKey, filters: "repo:other/repo", isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }],
+    });
+    writeFileSync(file, raw);
+
+    expect(await store.defaultFor(drewKey)).toBeNull();
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
   });
 });
 
