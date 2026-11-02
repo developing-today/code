@@ -666,16 +666,26 @@ fn settle(
             Settled::Refused(refusal)
         }
         Decision::Wait(deps) => {
-            if let Some(action) = action {
-                store_action(m.txn, &id, action)?;
+            let hold = m.hold(event, deps, false, now)?;
+            if hold == Hold::Held {
+                // #2916: the action is written only once the event is
+                // actually held. Writing it before the hold persisted the
+                // refused event's action whenever the same call committed
+                // for an unrelated reason (e.g. an expiry).
+                if let Some(action) = action {
+                    store_action(m.txn, &id, action)?;
+                }
             }
-            held(m.hold(event, deps, false, now)?)
+            held(hold)
         }
         Decision::Park => {
-            if let Some(action) = action {
-                store_action(m.txn, &id, action)?;
+            let hold = m.hold(event, Vec::new(), true, now)?;
+            if hold == Hold::Held {
+                if let Some(action) = action {
+                    store_action(m.txn, &id, action)?;
+                }
             }
-            held(m.hold(event, Vec::new(), true, now)?)
+            held(hold)
         }
     };
     Ok(settled)
@@ -2602,6 +2612,98 @@ mod tests {
         let store = reopen(&dir, limits, 0);
         assert_eq!(store.waiting_ids().unwrap(), vec![events[1].id]);
         assert!(!store.is_waiting(&events[2].id));
+    }
+
+    /// The action keys in the actions table, read straight from the db.
+    fn action_keys(store: &EventStore) -> Vec<Vec<u8>> {
+        let txn = store.db.begin_read().unwrap();
+        txn.open_table(ACTIONS)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|row| row.unwrap().0.value().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn test_a_waiting_full_refusal_persists_no_action_even_when_the_call_expires() {
+        // #2916 probe, as a regression: per-author cap 1, max age 1s.
+        // B's seq-1 event is held at t=0 (due at t=1000); A's seq-2 event is
+        // held at t=500, putting A at cap. A's seq-3 group event must wait
+        // behind the held seq-2, so the pool refuses it WaitingFull. Run the
+        // refusal twice: once with nothing due (control), and once at t=1000
+        // where the same call expires B's event and so commits.
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(&key(52)), p2panda_auth::Access::manage())],
+        };
+        for now in [500, 1_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let limits = WaitingLimits::new(1, 1_000);
+            let b_events = chain_of(&key(51), 2);
+            let a_events = chain_of(&key(52), 4);
+            let refused_id = a_events[3].id;
+            {
+                let mut store = reopen(&dir, limits, 0);
+                assert_eq!(
+                    store.ingest(&b_events[1].bytes, 0).unwrap(),
+                    Ingest::Waiting { id: b_events[1].id }
+                );
+                assert_eq!(
+                    store.ingest(&a_events[2].bytes, 500).unwrap(),
+                    Ingest::Waiting { id: a_events[2].id }
+                );
+                assert_eq!(
+                    store
+                        .ingest_with_action(&a_events[3].bytes, Some(&create), now)
+                        .unwrap(),
+                    Ingest::Refused(Refusal::WaitingFull)
+                );
+                assert!(!store.is_waiting(&refused_id));
+            }
+            // After reopening, the refused event left no action row behind,
+            // whichever way its call ended.
+            let store = reopen(&dir, limits, 0);
+            assert!(
+                !store.is_waiting(&refused_id),
+                "the refused event is not waiting at t={now}"
+            );
+            assert_eq!(
+                action_keys(&store),
+                Vec::<Vec<u8>>::new(),
+                "no actions row persists for the refused event at t={now}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_a_held_group_event_keeps_its_action() {
+        // The other half of the #2916 contract: an event the pool does hold
+        // keeps its action, so a later release reads it back.
+        let dir = tempfile::tempdir().unwrap();
+        let limits = WaitingLimits::new(2, WEEK_MS);
+        let a_events = chain_of(&key(52), 4);
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(&key(52)), p2panda_auth::Access::manage())],
+        };
+        {
+            let mut store = reopen(&dir, limits, 0);
+            assert_eq!(
+                store.ingest(&a_events[2].bytes, 0).unwrap(),
+                Ingest::Waiting { id: a_events[2].id }
+            );
+            assert_eq!(
+                store
+                    .ingest_with_action(&a_events[3].bytes, Some(&create), 0)
+                    .unwrap(),
+                Ingest::Waiting { id: a_events[3].id }
+            );
+        }
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(
+            action_keys(&store),
+            vec![a_events[3].id.as_bytes().to_vec()],
+            "the held event's action survives a reopen"
+        );
     }
 
     #[test]
