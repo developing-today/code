@@ -12,6 +12,7 @@ import {
   SnapshotStore,
   compactRecordsToRollups,
   expandRollup,
+  isSnapshotRollup,
   rollupFileFor,
   shiftMonth,
   withSnapshotStoreLock,
@@ -381,6 +382,60 @@ describe("Codex review regressions (PR #2379)", () => {
       expect((await b.rollupKeys()).length).toBe(6);
       const rollupText = await readFile(join(dir, rollupFileFor("2025-06")), "utf8");
       expect(JSON.parse(rollupText).count).toBe(6);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isSnapshotRollup count gate (#3443)", () => {
+  function validRollup(count: unknown): Record<string, unknown> {
+    return {
+      kind: "snapshot-rollup/v1",
+      month: "2025-06",
+      serviceId: "svc-a",
+      metricId: "weekly",
+      unit: "pct",
+      source: "api",
+      observedBy: "test",
+      count,
+      firstTs: "2025-06-03T12:00:00Z",
+      lastTs: "2025-06-20T12:00:00Z",
+      valueMin: 10,
+      minTs: "2025-06-20T12:00:00Z",
+      valueMax: 85,
+      maxTs: "2025-06-10T12:00:00Z",
+      valueLast: 10,
+      keys: [],
+    };
+  }
+
+  test("accepts positive integer counts", () => {
+    expect(isSnapshotRollup(validRollup(3))).toBe(true);
+    expect(isSnapshotRollup(validRollup(1))).toBe(true);
+  });
+
+  test("rejects fractional, infinite, and NaN counts", () => {
+    for (const bad of [1.5, Number.POSITIVE_INFINITY, JSON.parse("1e999"), Number.NaN, 0, -2]) {
+      expect(isSnapshotRollup(validRollup(bad))).toBe(false);
+    }
+  });
+
+  test("stored rollup lines with fractional or 1e999 counts are dropped by readAll and rollupKeys", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      const fractional = JSON.stringify(validRollup(1.5));
+      const infinite = JSON.stringify(validRollup(3)).replace('"count":3', '"count":1e999');
+      await writeFile(join(dir, rollupFileFor("2025-06")), fractional + "\n" + infinite + "\n");
+      await writeFile(
+        join(dir, "usage-2026-10.jsonl"),
+        JSON.stringify(rec("2026-10-05T12:00:00Z", "svc-a", "weekly", 12)) + "\n",
+      );
+      const store = new SnapshotStore(dir);
+      const all = await store.readAll();
+      expect(all).toHaveLength(1);
+      expect(all[0].value).toBe(12);
+      expect(await store.rollupKeys()).toHaveLength(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
