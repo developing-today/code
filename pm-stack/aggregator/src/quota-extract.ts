@@ -35,11 +35,21 @@ const MONTHS: Record<string, number> = {
 };
 
 /** "Oct 30" + "18:01" UTC -> ISO. Year = now's; rolls forward if past. */
-function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string {
+function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string | null {
+  const normalizedMonth = `${mon.slice(0, 1).toUpperCase()}${mon.slice(1).toLowerCase()}`;
+  const month = MONTHS[normalizedMonth];
+  if (month === undefined) return null;
+
   const [h, m] = hhmm.split(":").map(Number);
-  let d = new Date(Date.UTC(now.getUTCFullYear(), MONTHS[mon], Number(day), h, m));
+  const dayNumber = Number(day);
+  const dateInYear = (year: number) => new Date(Date.UTC(year, month, dayNumber, h, m));
+  const isRequestedDate = (date: Date) => date.getUTCMonth() === month && date.getUTCDate() === dayNumber;
+
+  let d = dateInYear(now.getUTCFullYear());
+  if (!isRequestedDate(d)) return null;
   if (d.getTime() < now.getTime() - 30 * 86_400_000) {
-    d = new Date(Date.UTC(now.getUTCFullYear() + 1, MONTHS[mon], Number(day), h, m));
+    d = dateInYear(now.getUTCFullYear() + 1);
+    if (!isRequestedDate(d)) return null;
   }
   return d.toISOString();
 }
