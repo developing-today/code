@@ -10,10 +10,6 @@
 name: pm-aggregator tests
 
 on:
-  pull_request:
-    paths:
-      - "pm-stack/**"
-      - ".github/workflows/pm-aggregator-tests.yml"
   push:
     branches: [main]
     paths:

@@ -27,15 +27,6 @@ on:
       - "pkgs/mcpx/**"
       - "!pkgs/mcpx/testdata/seeds/**"
       - ".github/workflows/mcpx-test.yml"
-  pull_request:
-    # ready_for_review is explicit: the default activity types
-    # (opened/synchronize/reopened) would leave a draft-turned-ready
-    # PR with every job draft-skipped and no run at all (Codex P2).
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".github/workflows/mcpx-test.yml"
   workflow_dispatch:
 
 concurrency:
