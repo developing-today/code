@@ -107,9 +107,50 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
         folder_name
     );
     ensure!(
+        !manifest.app.name.trim().is_empty(),
+        "app.name must not be empty"
+    );
+    ensure!(
+        !manifest.app.version.trim().is_empty(),
+        "app.version must not be empty"
+    );
+    ensure!(
         manifest.interfaces.cli.is_some() || manifest.interfaces.web.is_some(),
         "at least one [interfaces.cli] or [interfaces.web] section is required"
     );
+    if let Some(cli) = &manifest.interfaces.cli {
+        ensure!(
+            !cli.commands.is_empty(),
+            "interfaces.cli.commands must list at least one command"
+        );
+        ensure!(
+            cli.commands
+                .iter()
+                .all(|command| !command.trim().is_empty()),
+            "interfaces.cli.commands must not contain empty command names"
+        );
+    }
+    if let Some(capabilities) = &manifest.capabilities {
+        ensure!(
+            capabilities
+                .request
+                .iter()
+                .all(|capability| !capability.trim().is_empty()),
+            "capabilities.request must not contain empty entries"
+        );
+        // Duplicate requests are rejected, not deduplicated: the manifest is
+        // the strict record of what an app asks for, and a repeated entry is
+        // an authoring mistake the gate should name rather than silently
+        // absorb. (Rule pinned by rejects_blank_and_duplicate_capability_requests.)
+        let mut seen = std::collections::HashSet::new();
+        ensure!(
+            capabilities
+                .request
+                .iter()
+                .all(|capability| seen.insert(capability)),
+            "capabilities.request must not contain duplicates"
+        );
+    }
     if let Some(program) = &manifest.program {
         ensure!(
             !program.kind.trim().is_empty(),
@@ -129,10 +170,12 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             );
         }
         if let Some(hash) = &program.module_hash {
-            ensure!(
-                !hash.trim().is_empty(),
-                "program.module_hash must not be empty"
-            );
+            // Same shape as the world-apply manifest's module_hash
+            // (world_manifest.rs): 1 to 64 plain hex digits.
+            let valid = !hash.is_empty()
+                && hash.len() <= 64
+                && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+            ensure!(valid, "program.module_hash must be 1 to 64 hex digits");
         }
     }
     if let Some(web) = &manifest.interfaces.web {
@@ -278,6 +321,68 @@ route = "/tic-tac-toe"
         assert!(parse_app_manifest(MANIFEST, "other-app").is_err());
         let unsafe_source = MANIFEST.replace("program/", "../outside");
         assert!(parse_app_manifest(&unsafe_source, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn rejects_blank_name_and_version() {
+        let blank_name = MANIFEST.replace("name = \"Tic Tac Toe\"", "name = \"  \"");
+        assert!(parse_app_manifest(&blank_name, "tic-tac-toe").is_err());
+        let blank_version = MANIFEST.replace("version = \"0.1.0\"", "version = \"\"");
+        assert!(parse_app_manifest(&blank_version, "tic-tac-toe").is_err());
+    }
+
+    const CLI_MANIFEST: &str = r#"
+[app]
+id = "tic-tac-toe"
+name = "Tic Tac Toe"
+version = "0.1.0"
+
+[interfaces.cli]
+commands = ["play"]
+"#;
+
+    #[test]
+    fn cli_interface_must_offer_a_real_command() {
+        // A valid CLI-only manifest parses.
+        assert!(parse_app_manifest(CLI_MANIFEST, "tic-tac-toe").is_ok());
+        // Zero commands do not satisfy the at-least-one-interface rule.
+        let no_commands = CLI_MANIFEST.replace("commands = [\"play\"]", "commands = []");
+        assert!(parse_app_manifest(&no_commands, "tic-tac-toe").is_err());
+        // Blank command names are rejected.
+        let blank_command =
+            CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \"  \"]");
+        assert!(parse_app_manifest(&blank_command, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn rejects_blank_and_duplicate_capability_requests() {
+        // Duplicate rule: duplicates are REJECTED, not deduplicated — a
+        // repeated request entry is an authoring mistake the gate names.
+        let valid = format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\"]\n");
+        assert!(parse_app_manifest(&valid, "tic-tac-toe").is_ok());
+        let blank = format!("{MANIFEST}\n[capabilities]\nrequest = [\"\", \"store.read\"]\n");
+        assert!(parse_app_manifest(&blank, "tic-tac-toe").is_err());
+        let duplicate =
+            format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\", \"store.read\"]\n");
+        assert!(parse_app_manifest(&duplicate, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn module_hash_must_be_bounded_plain_hex() {
+        let with_hash = |hash: &str| {
+            MANIFEST.replace(
+                "source = \"program/\"",
+                &format!("module_hash = \"{hash}\""),
+            )
+        };
+        // Non-hex text is not a hash.
+        assert!(parse_app_manifest(&with_hash("not-a-hash"), "tic-tac-toe").is_err());
+        // Empty and over-64-digit hashes are rejected (world-apply rule).
+        assert!(parse_app_manifest(&with_hash(""), "tic-tac-toe").is_err());
+        assert!(parse_app_manifest(&with_hash(&"a".repeat(65)), "tic-tac-toe").is_err());
+        // A 64-digit hex hash is accepted.
+        assert!(parse_app_manifest(&with_hash(&"a".repeat(64)), "tic-tac-toe").is_ok());
+        assert!(parse_app_manifest(&with_hash("0123456789abcdef"), "tic-tac-toe").is_ok());
     }
 
     #[test]
