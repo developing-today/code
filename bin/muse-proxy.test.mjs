@@ -99,6 +99,24 @@ if (args[0] === 'serve') {
   let prompt = '';
   try { prompt = fs.readFileSync(promptFile, 'utf-8'); } catch {}
   const line = (o) => console.log(JSON.stringify(o));
+  if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, 'EXECPID ' + process.pid + String.fromCharCode(10));
+  if (prompt.includes('HANGAFTERDONE')) {
+    line({ payload_type: 'run.output.delta', payload: { text: 'Hel' } });
+    line({ payload_type: 'run.terminal.completed', payload: { terminal: 'completed', text: 'Hello world' } });
+    setInterval(() => {}, 1000);
+    return;
+  }
+  if (prompt.includes('HANGTERMI')) { process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); return; }
+  if (prompt.includes('HANGME')) { setInterval(() => {}, 1000); return; }
+  if (prompt.includes('HANGDESCENDANT')) {
+    // A descendant that inherits our stdout/stderr and outlives us: the
+    // proxy's child 'close' event waits on those pipes, so killing this
+    // process alone never settles the request (Codex P2 on PR #4242).
+    const descendant = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+    if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, 'DESCPID ' + descendant.pid + String.fromCharCode(10));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (prompt.includes('FAILME')) { console.error('stub muse: auth expired'); process.exit(3); }
   if (prompt.includes('FAILPARTIAL')) {
     line({ payload_type: 'run.output.delta', payload: { text: 'partial answer' } });
@@ -999,4 +1017,140 @@ test('warm chain map self-deletes settled entries; same-key turns stay ordered (
   const turns = log.filter(l => l.startsWith('TURN')).map(l => l.slice(5));
   assert.deepEqual(turns.slice(-2), ['order one', 'order two'], 'same-key turns must run in enqueue order');
   await waitChainsEmpty();
+});
+
+// ---------------------------------------------------------------------------
+// Exec-fallback turn deadline (#2159): a hung muse exec child must be
+// killed (SIGTERM, then SIGKILL after the grace), the request must
+// settle with the existing error shape, and the timeout must never be
+// reported as a silent successful stop.
+// ---------------------------------------------------------------------------
+
+const postChat = (port, body, signal) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+  signal
+});
+
+const waitForCondition = async (fn, timeoutMs = 10000) => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error('waitForCondition timed out');
+    await new Promise(r => setTimeout(r, 50));
+  }
+};
+
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+const stubExecPid = (logFile) => {
+  try {
+    const m = fs.readFileSync(logFile, 'utf-8').match(/EXECPID (\d+)/);
+    return m ? Number(m[1]) : null;
+  } catch { return null; }
+};
+
+const stubPromptFile = (logFile) => {
+  const m = fs.readFileSync(logFile, 'utf-8').match(/--prompt-file (\S+)/);
+  return m ? m[1] : null;
+};
+
+test('exec deadline: never-exiting child is killed, request 500s with the timeout, prompt file removed (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGME now' }] });
+  assert.equal(res.status, 500);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+  const pid = stubExecPid(logFile);
+  assert.ok(pid, 'stub exec pid recorded');
+  await waitForCondition(() => !pidAlive(pid));
+  const promptFile = stubPromptFile(logFile);
+  assert.ok(promptFile, 'prompt file path recorded in stub argv log');
+  assert.equal(fs.existsSync(promptFile), false, 'prompt file must be unlinked on the deadline path');
+});
+
+test('exec deadline: request settles at deadline+grace even when a descendant holds the stdio pipes (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const started = Date.now();
+  let res = null;
+  try {
+    res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGDESCENDANT now' }] }, AbortSignal.timeout(20000));
+  } catch { /* aborted: settlement was not bounded */ }
+  assert.ok(res, 'request must settle at deadline + kill grace, not when the descendant exits');
+  assert.equal(res.status, 500);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+  assert.ok(Date.now() - started < 15000, 'settlement must be bounded independently of the descendant lifetime');
+  const pid = stubExecPid(logFile);
+  assert.ok(pid, 'stub exec pid recorded');
+  await waitForCondition(() => !pidAlive(pid));
+  const promptFile = stubPromptFile(logFile);
+  assert.ok(promptFile, 'prompt file path recorded in stub argv log');
+  assert.equal(fs.existsSync(promptFile), false, 'prompt file must be unlinked on the independent settle path');
+  const dm = fs.readFileSync(logFile, 'utf-8').match(/DESCPID (\d+)/);
+  assert.ok(dm, 'descendant pid recorded');
+  try { process.kill(Number(dm[1]), 'SIGKILL'); } catch { /* already gone */ }
+});
+
+test('exec deadline: streaming request gets an SSE-framed timeout error + [DONE] (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGME now' }], stream: true });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.match(sse, /muse exec turn timed out after 300ms/);
+  assert.ok(sse.trimEnd().endsWith('data: [DONE]'), `stream must end with [DONE], got: ${JSON.stringify(sse)}`);
+});
+
+test('exec deadline: SIGTERM-ignoring child is SIGKILLed after the grace (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const started = Date.now();
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGTERMI now' }] });
+  assert.equal(res.status, 500);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+  assert.ok(Date.now() - started >= 3000, 'SIGKILL escalation must wait the 3000ms grace');
+  const pid = stubExecPid(logFile);
+  assert.ok(pid && !pidAlive(pid), 'SIGTERM-ignoring child must be dead after the grace');
+});
+
+test('exec deadline: completed-then-hangs child is a timeout failure, not a stop (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGAFTERDONE now' }] });
+  assert.equal(res.status, 500, 'a completed terminal event must not mask the deadline');
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+});
+
+test('exec deadline: a normal child inside the deadline is unaffected (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '5000' });
+  t.after(stop);
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world');
+});
+
+test('exec deadline: an override above Node timer limit falls back to the default, not a ~1ms timeout (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '2147483648' });
+  t.after(stop);
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world');
+});
+
+test('exec disconnect: client disconnect kills the child via the shared helper (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy();
+  t.after(stop);
+  const ac = new AbortController();
+  const pending = postChat(port, { messages: [{ role: 'user', content: 'please HANGME now' }] }, ac.signal)
+    .catch(() => null);
+  const pid = await waitForCondition(() => stubExecPid(logFile));
+  assert.ok(pidAlive(pid), 'child runs while the request is open');
+  ac.abort();
+  await pending;
+  await waitForCondition(() => !pidAlive(pid));
 });
