@@ -264,7 +264,11 @@ func NewServer(opts Options) (*Server, error) {
 			opts.Settings.Duration("elicit.maxAge"))
 	}
 	reg.UseSettings(opts.Settings)
-	reg.InstallHooks(srv.Events, broker, nil)
+	roots, err := rootsFromPaths(opts.Settings.List("daemon.roots"))
+	if err != nil {
+		return nil, err
+	}
+	reg.InstallHooks(srv.Events, broker, roots)
 	if raw := opts.Settings.String("hooks"); raw != "" {
 		declared, herr := hooks.Parse(raw, opts.Settings.Duration("hooks.timeout"))
 		if herr != nil {
