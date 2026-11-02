@@ -131,6 +131,11 @@ function initWorld(): void {
   let reconnects = 0;
   let intentionalClose = false;
   let hostMode = false;
+  // Bumped when a host-view load starts and when the user leaves host
+  // mode (Join world): a host response that lands after a mode switch is
+  // stale and must not overwrite the guest session (same discipline as
+  // the #1461 socket identity guard, for the HTTP path).
+  let hostViewGeneration = 0;
   let refreshHostView: () => Promise<void> = async () => {};
 
   const setStatus = (text: string, state: "idle" | "good" | "error" = "idle") => {
@@ -345,6 +350,7 @@ function initWorld(): void {
       socket = null;
       retired.close();
     }
+    const generation = ++hostViewGeneration;
     hostMode = true;
     chatForm.hidden = true;
     inputForm.hidden = true;
@@ -372,6 +378,7 @@ function initWorld(): void {
             response.status === 401 ? "Host authorization denied" : "Host view unavailable",
           );
         }
+        if (generation !== hostViewGeneration || !hostMode) return;
         const result = (await response.json()) as {
           snapshot?: NonNullable<WorldFrame["snapshot"]>;
           view?: string | null;
@@ -413,7 +420,9 @@ function initWorld(): void {
       recordsView.textContent = JSON.stringify(allRecords, null, 2);
       setStatus("Read-only host view", "good");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Host view unavailable", "error");
+      if (generation === hostViewGeneration && hostMode) {
+        setStatus(error instanceof Error ? error.message : "Host view unavailable", "error");
+      }
     } finally {
       hostViewButton.disabled = false;
     }
@@ -699,6 +708,7 @@ function initWorld(): void {
   });
 
   joinButton.addEventListener("click", () => {
+    hostViewGeneration += 1;
     hostMode = false;
     chatForm.hidden = false;
     inputForm.hidden = false;

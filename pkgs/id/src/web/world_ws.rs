@@ -78,6 +78,23 @@ struct HostViewResponse {
     next_after: Option<String>,
 }
 
+/// A revision identifying the exact records snapshot, for the host view's
+/// cross-page consistency check. The watch channel's event sequence cannot
+/// serve: host-originated record changes republish records under an
+/// unchanged event sequence (`WorldActor::deliver`), so pages validated
+/// against it could silently mix snapshots. FNV-1a over the canonical
+/// (BTreeMap-ordered) JSON encoding, folded to 53 bits so the value
+/// survives JSON number round-trips in the browser exactly.
+fn records_revision(records: &crate::world::Records) -> u64 {
+    let bytes = serde_json::to_vec(records).unwrap_or_default();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash & ((1 << 53) - 1)
+}
+
 /// The host view uses the existing admin secret, not a guest capability. It
 /// is deliberately an HTTP read so the shared shell frame protocol is unchanged.
 async fn host_view_handler(
@@ -115,7 +132,8 @@ async fn host_view_handler(
     } else {
         (None, None)
     };
-    let (records_sequence, current_records) = world.records();
+    let (_, current_records) = world.records();
+    let records_sequence = records_revision(&current_records);
     let mut records = crate::world::Records::new();
     let mut used = 0usize;
     let mut last_included = None;
