@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
@@ -69,6 +70,10 @@ func (p *Pool) checkExec() {
 	if !p.cfg.Stdio() {
 		return
 	}
+	if p.cfg.ExecUsesScopeRoot() {
+		p.checkScopedExec()
+		return
+	}
 	st, found := p.cfg.ExecStamp()
 
 	p.execMu.Lock()
@@ -114,6 +119,94 @@ func (p *Pool) checkExec() {
 		"oldIdentity": old, "newIdentity": id,
 	})
 	p.replaceChildren()
+}
+
+// checkScopedExec watches each instance against the executable resolved from
+// its effective spawn cwd. A pool-wide check against the daemon cwd could miss
+// the executable actually serving a workspace or restart it because an
+// unrelated ./server changed in the daemon directory.
+func (p *Pool) checkScopedExec() {
+	p.mu.Lock()
+	instances := append([]*Instance(nil), p.instances...)
+	p.mu.Unlock()
+	for _, in := range instances {
+		p.checkInstanceExec(in)
+	}
+}
+
+func (p *Pool) checkInstanceExec(in *Instance) {
+	p.mu.Lock()
+	if p.closed || in.retiring {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+
+	cwd, _ := SpawnCwd(p.cfg.Cwd, in.root)
+	st, found := p.cfg.ExecStampAt(cwd)
+	if !found {
+		p.markInstanceExecMissing(in, p.cfg.Command)
+		return
+	}
+	id, err := st.Identity()
+	if err != nil {
+		p.markInstanceExecMissing(in, st.Path)
+		return
+	}
+
+	p.execMu.Lock()
+	unchanged := st == in.execStamp
+	wasMissing := in.execMissing
+	old := in.execIdentity
+	in.execStamp = st
+	in.execIdentity = id
+	in.execMissing = false
+	if in.root == "" {
+		// The daemon-cwd instance is the pool's configured executable identity.
+		p.exec = id
+		p.execStamp = st
+		p.execMissing = false
+	}
+	p.execMu.Unlock()
+	if unchanged {
+		return
+	}
+	if id == old {
+		if wasMissing {
+			lifecycle("server.exec", map[string]any{
+				"server": p.cfg.Name, "instance": in.ID, "state": "restored",
+				"path": st.Path, "identity": id, "restarted": false,
+			})
+		}
+		return
+	}
+	lifecycle("server.restart", map[string]any{
+		"server": p.cfg.Name, "instance": in.ID, "reason": "executable changed",
+		"path": st.Path, "oldIdentity": old, "newIdentity": id,
+	})
+	p.mu.Lock()
+	if p.closed || in.retiring {
+		p.mu.Unlock()
+		return
+	}
+	in.retiring = true
+	p.reserveSlotLocked(in)
+	p.mu.Unlock()
+	p.replaceChild(in)
+}
+
+func (p *Pool) markInstanceExecMissing(in *Instance, path string) {
+	p.execMu.Lock()
+	first := !in.execMissing
+	in.execMissing = true
+	p.execMu.Unlock()
+	if first {
+		lifecycle("server.warning", map[string]any{
+			"server": p.cfg.Name, "instance": in.ID,
+			"reason": "executable missing; keeping the running child and checking again",
+			"path":   path,
+		})
+	}
 }
 
 // execGone records that the executable cannot be read. The running child is
@@ -192,7 +285,7 @@ func (p *Pool) replaceChild(in *Instance) {
 		p.mu.Unlock()
 		return
 	}
-	repl, err := p.startLane(context.Background(), in.legacyLane)
+	repl, err := p.startLane(context.Background(), in.legacyLane, config.ResolvedScope{Key: in.key, Root: in.root})
 
 	p.mu.Lock()
 	p.releaseSlotLocked(in)

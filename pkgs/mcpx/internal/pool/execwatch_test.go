@@ -70,7 +70,7 @@ func childPIDs(p *pool.Pool) []int {
 // servedPID asks the pool which child answers, through a real call.
 func servedPID(t *testing.T, p *pool.Pool) int {
 	t.Helper()
-	res, err := p.Call(context.Background(), "global", "state", map[string]any{})
+	res, err := p.Call(context.Background(), config.ResolvedScope{Key: "global"}, "state", map[string]any{})
 	if err != nil {
 		t.Fatalf("state: %v", err)
 	}
@@ -113,7 +113,7 @@ func inFlight(t *testing.T, p *pool.Pool, ms int) <-chan struct {
 		err error
 	}, 1)
 	go func() {
-		raw, err := p.Call(context.Background(), "global", "slow", map[string]any{"ms": ms})
+		raw, err := p.Call(context.Background(), config.ResolvedScope{Key: "global"}, "slow", map[string]any{"ms": ms})
 		done <- struct {
 			raw json.RawMessage
 			err error
@@ -251,4 +251,60 @@ func TestExecCheckKeepsAChildWhenALinkIsRePointedAtIdenticalBytes(t *testing.T) 
 
 	repoint(other)
 	awaitReplacement(t, p, pid)
+}
+
+func TestExecCheckUsesEachScopeRootForRelativeCommand(t *testing.T) {
+	setExecWatch(t, execTick, 10*time.Second)
+	fake := testsupport.FakeMCPBinary(t)
+	rootA, rootB := t.TempDir(), t.TempDir()
+	binA, binB := filepath.Join(rootA, "server"), filepath.Join(rootB, "server")
+	writeExecWrapper(t, fake, binA, "root A initial")
+	writeExecWrapper(t, fake, binB, "root B initial")
+
+	p := pool.New(resolved(t, "./server", &config.Extras{
+		Sharing: config.SharingShared,
+		Scope:   config.ScopeWorktree,
+		Max:     4,
+	}))
+	defer p.Close()
+	leaseA, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "worktree:" + rootA, Root: rootA})
+	if err != nil {
+		t.Fatalf("acquire root A: %v", err)
+	}
+	defer leaseA.Release()
+	leaseB, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "worktree:" + rootB, Root: rootB})
+	if err != nil {
+		t.Fatalf("acquire root B: %v", err)
+	}
+	defer leaseB.Release()
+
+	pidForRoot := func(root string) int {
+		t.Helper()
+		for _, in := range p.Status().Instances {
+			if in.Root == root {
+				return in.PID
+			}
+		}
+		return 0
+	}
+	oldA, oldB := pidForRoot(rootA), pidForRoot(rootB)
+	if oldA == 0 || oldB == 0 || oldA == oldB {
+		t.Fatalf("expected distinct rooted children, got A=%d B=%d", oldA, oldB)
+	}
+	leaseA.Release()
+	leaseB.Release()
+
+	writeExecWrapper(t, fake, binA, "root A changed")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		newA, stillB := pidForRoot(rootA), pidForRoot(rootB)
+		if newA != 0 && newA != oldA {
+			if stillB != oldB {
+				t.Fatalf("changing root A's executable also replaced root B: %d -> %d", oldB, stillB)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("root A's changed executable was not replaced (pid stayed %d)", oldA)
 }

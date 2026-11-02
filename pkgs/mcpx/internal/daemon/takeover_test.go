@@ -166,7 +166,7 @@ func TestRegistryHandoffThatIsNotCommittedRestoresTheChild(t *testing.T) {
 	if got := childPID(t, pa); got != pid {
 		t.Fatalf("a restored child has pid %d, want %d", got, pid)
 	}
-	lease, err := pa.Acquire(context.Background(), "global")
+	lease, err := pa.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatalf("the restored pool does not serve: %v", err)
 	}

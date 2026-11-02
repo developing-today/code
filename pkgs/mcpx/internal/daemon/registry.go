@@ -1222,12 +1222,12 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
-	defer r.joinAsk(ctx, server, key)()
-	res, err := p.Call(withRequestedCallTimeout(ctx), key, tool, args)
+	defer r.joinAsk(ctx, server, rs.Key)()
+	res, err := p.Call(withRequestedCallTimeout(ctx), rs, tool, args)
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
@@ -1238,38 +1238,38 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 // consumer policies. Every path that calls a tool goes through it: the ask
 // path once skipped both, so a destructive-tool guard was off for exactly the
 // clients that declared they could answer it.
-func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (string, error) {
+func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (config.ResolvedScope, error) {
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
 		// Before the child is touched: a server waiting for a secret is not
 		// started just to fail.
 		if err := r.refuseBlocked(server); err != nil {
-			return "", err
+			return config.ResolvedScope{}, err
 		}
 		if !view.VisibleTool(tool) {
 			if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
-				return "", fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+				return config.ResolvedScope{}, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
 			}
-			return "", HiddenTool{Server: server, Tool: tool}
+			return config.ResolvedScope{}, HiddenTool{Server: server, Tool: tool}
 		}
 	}
-	key := r.keyFor(p, cc)
+	rs := r.resolvedFor(p, cc)
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
-	key = r.disambiguate(ctx, p, cc, key)
+	rs = r.disambiguate(ctx, p, cc, rs)
 	asked, err := r.applyWritePolicy(ctx, p, server, tool, cc, args)
 	if err != nil {
-		return "", err
+		return config.ResolvedScope{}, err
 	}
 	if !asked {
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
 		if err := r.confirmDestructive(ctx, p, tool, cc); err != nil {
-			return "", err
+			return config.ResolvedScope{}, err
 		}
 	}
-	return key, nil
+	return rs, nil
 }
 
 // ReadResource dispatches a resource read.
@@ -1281,10 +1281,10 @@ func (r *Registry) ReadResource(ctx context.Context, server, uri string, cc conf
 	if err := r.refuseBlocked(server); err != nil {
 		return nil, err
 	}
-	key := r.keyFor(p, cc)
+	rs := r.resolvedFor(p, cc)
 	// The listing drops a leading '/', so mcpx://ns/abs/doc names /abs/doc;
 	// the server only knows its own spelling.
-	return p.ReadResource(ctx, key, upstreamResourceURI(ctx, p, uri))
+	return p.ReadResource(ctx, rs, upstreamResourceURI(ctx, p, uri))
 }
 
 // PromptInfo is one prompt, with the namespace it came from.
@@ -1424,14 +1424,21 @@ func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[
 	if err := r.refuseBlocked(server); err != nil {
 		return nil, err
 	}
-	return p.GetPrompt(ctx, r.keyFor(p, cc), name, args)
+	return p.GetPrompt(ctx, r.resolvedFor(p, cc), name, args)
 }
 
-// keyFor resolves a server's scope and records the association so the caller
-// can later release exactly what it created.
+// keyFor resolves a server's scope key; resolvedFor is the full
+// resolution, for callers that also pass the root to the pool.
 func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
+	return r.resolvedFor(p, cc).Key
+}
+
+// resolvedFor resolves a server's scope and records the association so
+// the caller can later release exactly what it created.
+func (r *Registry) resolvedFor(p *pool.Pool, cc config.CallContext) config.ResolvedScope {
 	scope := p.Config().Scope
-	key, degraded := scope.Key(cc)
+	rs := scope.Resolve(cc)
+	key, degraded := rs.Key, rs.Degraded
 	if degraded != "" {
 		r.warnDegraded(p.Name(), scope, key, degraded)
 	}
@@ -1448,7 +1455,7 @@ func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
 		}
 		r.sessMu.Unlock()
 	}
-	return key
+	return rs
 }
 
 // warnDegraded reports a scope that could not be resolved as configured, once

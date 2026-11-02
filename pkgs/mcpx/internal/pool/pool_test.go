@@ -40,7 +40,7 @@ func key(t *testing.T, r *config.Resolved, cc config.CallContext) string {
 // call resolves the key for a call context and dispatches.
 func call(t *testing.T, p *pool.Pool, r *config.Resolved, cc config.CallContext, tool string, args any) (json.RawMessage, error) {
 	t.Helper()
-	return p.Call(context.Background(), key(t, r, cc), tool, args)
+	return p.Call(context.Background(), config.ResolvedScope{Key: key(t, r, cc)}, tool, args)
 }
 
 // textOf pulls the single text block out of a CallToolResult.
@@ -105,7 +105,7 @@ func barrier(t *testing.T, p *pool.Pool, key string, n int) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			res[i], errs[i] = p.Call(context.Background(), key, "slow",
+			res[i], errs[i] = p.Call(context.Background(), config.ResolvedScope{Key: key}, "slow",
 				map[string]any{"ms": 10000, "barrier": n})
 		}(i)
 	}
@@ -183,11 +183,11 @@ func TestSessionModeReusesTheSameInstanceWithinASession(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 4; i++ {
-		if _, err := p.Call(ctx, "sticky", "open", map[string]any{"value": fmt.Sprint(i)}); err != nil {
+		if _, err := p.Call(ctx, config.ResolvedScope{Key: "sticky"}, "open", map[string]any{"value": fmt.Sprint(i)}); err != nil {
 			t.Fatalf("open %d: %v", i, err)
 		}
 	}
-	res, err := p.Call(ctx, "sticky", "state", map[string]any{})
+	res, err := p.Call(ctx, config.ResolvedScope{Key: "sticky"}, "state", map[string]any{})
 	if err != nil {
 		t.Fatalf("state: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestSessionModeRespectsMaxAndQueues(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			session := fmt.Sprintf("s%d", i)
-			_, errs[i] = p.Call(ctx, session, "slow", map[string]any{"ms": 100})
+			_, errs[i] = p.Call(ctx, config.ResolvedScope{Key: session}, "slow", map[string]any{"ms": 100})
 			p.ReleaseKey(session)
 		}(i)
 	}
@@ -240,7 +240,7 @@ func TestReleaseSessionStopsTheInstance(t *testing.T) {
 	defer p.Close()
 
 	ctx := context.Background()
-	if _, err := p.Call(ctx, "s1", "echo", map[string]any{"message": "hi"}); err != nil {
+	if _, err := p.Call(ctx, config.ResolvedScope{Key: "s1"}, "echo", map[string]any{"message": "hi"}); err != nil {
 		t.Fatal(err)
 	}
 	if st := p.Status(); st.Live != 1 {
@@ -264,7 +264,7 @@ func TestPooledModeRecyclesInstances(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 6; i++ {
 		k := fmt.Sprintf("call:c%d", i)
-		if _, err := p.Call(ctx, k, "echo", map[string]any{"message": "x"}); err != nil {
+		if _, err := p.Call(ctx, config.ResolvedScope{Key: k}, "echo", map[string]any{"message": "x"}); err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
 		if st := p.Status(); st.Live > 2 {
@@ -280,7 +280,7 @@ func TestStartFailureIsReportedWithStderr(t *testing.T) {
 	p := pool.New(r)
 	defer p.Close()
 
-	_, err := p.Call(context.Background(), "", "echo", map[string]any{"message": "x"})
+	_, err := p.Call(context.Background(), config.ResolvedScope{Key: ""}, "echo", map[string]any{"message": "x"})
 	if err == nil {
 		t.Fatal("expected an error when the server refuses to start")
 	}
@@ -297,10 +297,10 @@ func TestStartFailureEntersCooldown(t *testing.T) {
 	defer p.Close()
 
 	ctx := context.Background()
-	if _, err := p.Call(ctx, "", "echo", map[string]any{}); err == nil {
+	if _, err := p.Call(ctx, config.ResolvedScope{Key: ""}, "echo", map[string]any{}); err == nil {
 		t.Fatal("first call should fail")
 	}
-	_, err := p.Call(ctx, "", "echo", map[string]any{})
+	_, err := p.Call(ctx, config.ResolvedScope{Key: ""}, "echo", map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "cooldown") {
 		t.Fatalf("second call should be short-circuited by cooldown, got: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestToolErrorsPropagate(t *testing.T) {
 	p := pool.New(resolved(t, bin, &config.Extras{Sharing: config.SharingShared, Scope: config.ScopeGlobal}))
 	defer p.Close()
 
-	res, err := p.Call(context.Background(), "", "boom", map[string]any{})
+	res, err := p.Call(context.Background(), config.ResolvedScope{Key: ""}, "boom", map[string]any{})
 	if err != nil {
 		t.Fatalf("a tool-level error is a valid result, not a transport error: %v", err)
 	}
@@ -383,10 +383,10 @@ func TestRestartStopsEverything(t *testing.T) {
 	defer p.Close()
 
 	ctx := context.Background()
-	if _, err := p.Call(ctx, "a", "open", map[string]any{"value": "1"}); err != nil {
+	if _, err := p.Call(ctx, config.ResolvedScope{Key: "a"}, "open", map[string]any{"value": "1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Call(ctx, "b", "open", map[string]any{"value": "2"}); err != nil {
+	if _, err := p.Call(ctx, config.ResolvedScope{Key: "b"}, "open", map[string]any{"value": "2"}); err != nil {
 		t.Fatal(err)
 	}
 	if n := p.Restart(ctx, true).Stopped; n != 2 {
@@ -397,7 +397,7 @@ func TestRestartStopsEverything(t *testing.T) {
 		t.Fatalf("%d instances survived restart", st.Live)
 	}
 	// A fresh instance must have no memory of the old state.
-	res, err := p.Call(ctx, "a", "state", map[string]any{})
+	res, err := p.Call(ctx, config.ResolvedScope{Key: "a"}, "state", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestRestartReplacesEachInstanceUnderItsKey(t *testing.T) {
 
 	ctx := context.Background()
 	for _, k := range []string{"session:a", "session:b"} {
-		if _, err := p.Call(ctx, k, "open", map[string]any{"value": "1"}); err != nil {
+		if _, err := p.Call(ctx, config.ResolvedScope{Key: k}, "open", map[string]any{"value": "1"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -437,7 +437,7 @@ func TestRestartReplacesEachInstanceUnderItsKey(t *testing.T) {
 			t.Fatalf("instance %+v is not a fresh replacement for a previous key (before %v)", in, before)
 		}
 	}
-	got, err := p.Call(ctx, "session:a", "state", map[string]any{})
+	got, err := p.Call(ctx, config.ResolvedScope{Key: "session:a"}, "state", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +497,7 @@ func TestCallTimeoutIsEnforced(t *testing.T) {
 	}))
 	defer p.Close()
 
-	_, err := p.Call(context.Background(), "", "slow", map[string]any{"ms": 3000})
+	_, err := p.Call(context.Background(), config.ResolvedScope{Key: ""}, "slow", map[string]any{"ms": 3000})
 	if err == nil {
 		t.Fatal("expected a timeout")
 	}
@@ -513,7 +513,7 @@ func TestIdleReaperStopsUnusedInstances(t *testing.T) {
 	}))
 	defer p.Close()
 
-	if _, err := p.Call(context.Background(), "s", "echo", map[string]any{"message": "x"}); err != nil {
+	if _, err := p.Call(context.Background(), config.ResolvedScope{Key: "s"}, "echo", map[string]any{"message": "x"}); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -552,7 +552,7 @@ func TestExclusiveSharingSerialisesOneKey(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = p.Call(context.Background(), "session:one", "slow", map[string]any{"ms": 150})
+			_, _ = p.Call(context.Background(), config.ResolvedScope{Key: "session:one"}, "slow", map[string]any{"ms": 150})
 		}()
 	}
 	wg.Wait()
@@ -576,10 +576,10 @@ func TestDistinctKeysGetDistinctProcesses(t *testing.T) {
 	ctx := context.Background()
 	pids := map[string]bool{}
 	for _, k := range []string{"session:a", "session:b", "session:c"} {
-		if _, err := p.Call(ctx, k, "open", map[string]any{"value": k}); err != nil {
+		if _, err := p.Call(ctx, config.ResolvedScope{Key: k}, "open", map[string]any{"value": k}); err != nil {
 			t.Fatal(err)
 		}
-		res, err := p.Call(ctx, k, "state", map[string]any{})
+		res, err := p.Call(ctx, config.ResolvedScope{Key: k}, "state", map[string]any{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -615,7 +615,7 @@ func TestPidScopedInstanceIsReapedWhenThePidExits(t *testing.T) {
 	}
 	deadPID := dead.Process.Pid
 
-	if _, err := p.Call(context.Background(), fmt.Sprintf("pid:%d", deadPID), "echo",
+	if _, err := p.Call(context.Background(), config.ResolvedScope{Key: fmt.Sprintf("pid:%d", deadPID)}, "echo",
 		map[string]any{"message": "x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +635,7 @@ func TestPidScopedInstanceSurvivesWhileThePidLives(t *testing.T) {
 	}))
 	defer p.Close()
 
-	if _, err := p.Call(context.Background(), fmt.Sprintf("pid:%d", os.Getpid()), "echo",
+	if _, err := p.Call(context.Background(), config.ResolvedScope{Key: fmt.Sprintf("pid:%d", os.Getpid())}, "echo",
 		map[string]any{"message": "x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -653,7 +653,7 @@ func TestReleaseKeyStopsOnlyThatKey(t *testing.T) {
 
 	ctx := context.Background()
 	for _, k := range []string{"session:a", "session:b"} {
-		if _, err := p.Call(ctx, k, "echo", map[string]any{"message": "x"}); err != nil {
+		if _, err := p.Call(ctx, config.ResolvedScope{Key: k}, "echo", map[string]any{"message": "x"}); err != nil {
 			t.Fatal(err)
 		}
 	}
