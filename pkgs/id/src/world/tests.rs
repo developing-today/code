@@ -922,7 +922,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "deny");
@@ -946,7 +946,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no answer recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1001,7 +1001,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "no history answer recorded: {report:?}"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1059,7 +1059,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1096,7 +1096,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "no allowed use recorded"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1110,7 +1110,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "never granted");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "grant-on-use");
@@ -1331,7 +1331,27 @@ mod tests {
             .await
             .unwrap();
         world.input(token, b"3".to_vec()).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait deterministically for the host's chat line to be journaled
+        // instead of settling for a fixed delay: it is the last artifact
+        // this test asserts on, and the actor journals it before the
+        // shutdown below can be observed.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let journaled = {
+                let entries = captured.0.lock().unwrap();
+                entries.iter().any(|entry| {
+                    matches!(entry, JournalEntry::Committed { event } if matches!(&event.kind, WorldEventKind::Chat(text) if text == "hello from the program"))
+                })
+            };
+            if journaled {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the host chat line was never journaled"
+            );
+            tokio::task::yield_now().await;
+        }
         world.shutdown().await.unwrap();
         let entries = captured.0.lock().unwrap().clone();
         assert!(
@@ -3365,7 +3385,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
 
         // Granted: the program reads its own published `count` record.
@@ -3383,7 +3403,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "the program never read its record: {record:?}"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
