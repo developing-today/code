@@ -19,6 +19,14 @@ test('daemon URL defaults to the codedb serve origin and rejects non-origins', (
   assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/explore'), /CODEDB_DAEMON_URL/);
 });
 
+test('daemon URL rejects query, fragment and userinfo by name instead of silently stripping them (#4198)', () => {
+  assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/?token=secret'), /CODEDB_DAEMON_URL.*query/);
+  assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/?next=/explore/tree'), /CODEDB_DAEMON_URL.*query/);
+  assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/#frag'), /CODEDB_DAEMON_URL.*fragment/);
+  assert.throws(() => parseDaemonUrl('http://user:pass@127.0.0.1:7719/'), /CODEDB_DAEMON_URL.*userinfo/);
+  assert.throws(() => parseDaemonUrl('http://user@127.0.0.1:7719'), /CODEDB_DAEMON_URL.*userinfo/);
+});
+
 test('every advertised tool maps to a verified daemon route', () => {
   const args = {
     codedb_tree: {},

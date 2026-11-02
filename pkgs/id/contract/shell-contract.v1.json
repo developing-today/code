@@ -215,6 +215,7 @@
         "admin_token": "string",
         "total_bytes": { "type": "u64", "min": 1, "max": 16777216 },
         "module_hash": "string?",
+        "signature": "object?",
         "seed": "u64"
       }
     },

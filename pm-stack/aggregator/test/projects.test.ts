@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
+import { derivedProjectState, isProjectPoolItem, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -99,6 +99,17 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(epic.issueUrl).toBe("https://github.com/dezren39/nix/issues/508");
     expect(epic.url).toBe("https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=111");
     expect(pool[1].state).toBe("closed");
+  });
+
+  test("a null GraphQL databaseId normalizes to absent and the item stays in the pool", () => {
+    const clone = structuredClone(GQL);
+    clone.data.node.items.nodes[0].databaseId = null;
+    const pool = parseProjectItems(clone);
+    expect(pool.length).toBe(2);
+    expect(pool[0].databaseId).toBeUndefined();
+    // projectItemUrl falls back to the bare board URL without an item id.
+    expect(pool[0].url).toBe("https://github.com/orgs/developing-today/projects/4");
+    expect(isProjectPoolItem(pool[0])).toBe(true);
   });
 
   test("derived state + disagreement", () => {
