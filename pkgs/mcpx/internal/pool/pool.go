@@ -38,6 +38,8 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
+const maxSchemaTTL = 24 * time.Hour
+
 // Version reported to MCP servers during initialize.
 var Version = "dev"
 
@@ -1103,8 +1105,10 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	// deadline is the earliest among the lists actually fetched in this
 	// refresh: a list that declared no ttlMs -- or 0, or a negative --
 	// makes the catalogue stale immediately; an unfetched kind (or one
-	// whose list error was swallowed) contributes nothing. Legacy
-	// refreshes keep a zero deadline: their cache never expires.
+	// whose list error was swallowed) contributes nothing. Positive modern
+	// hints are capped before duration conversion to bound freshness and
+	// prevent overflow. Legacy refreshes keep a zero deadline: their cache
+	// never expires.
 	fetchedAt := time.Now()
 	var deadline time.Time
 	var private bool
@@ -1129,6 +1133,9 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 		}
 		if minTTL < 0 {
 			minTTL = 0
+		}
+		if maxTTL := maxSchemaTTL.Milliseconds(); minTTL > maxTTL {
+			minTTL = maxTTL
 		}
 		deadline = fetchedAt.Add(time.Duration(minTTL) * time.Millisecond)
 	}
@@ -1172,16 +1179,29 @@ func (p *Pool) schemaKey() string {
 
 // SetSchemas seeds the cache from disk so the daemon can answer discovery
 // queries without starting a single child process. The deadline and
-// scope are the ones the persisted entry carried (#1603): the deadline
-// is absolute, so a seed whose deadline has already passed starts
-// expired and the first Schemas call re-reads instead of serving it as
-// fresh.
+// scope are the ones the persisted entry carried (#1603), except that an
+// overlong deadline is bounded to 24 hours after the fetch time. The
+// deadline is absolute, so a seed whose deadline has already passed
+// starts expired and the first Schemas call re-reads instead of serving
+// it as fresh.
 func (p *Pool) SetSchemas(tools []mcpclient.Tool, resources []mcpclient.Resource, prompts []mcpclient.Prompt, instructions string, at time.Time, deadline time.Time, private bool) {
+	deadline = boundedSchemaDeadline(at, deadline)
 	p.schemaMu.Lock()
 	p.tools, p.resources, p.prompts = tools, resources, prompts
 	p.instructions, p.schemaAt, p.schemaErr = instructions, at, nil
 	p.schemaDeadline, p.schemaPrivate = deadline, private
 	p.schemaMu.Unlock()
+}
+
+// boundedSchemaDeadline keeps disk-seeded caches under the same freshness
+// ceiling as deadlines computed from modern upstream ttlMs hints. Older
+// cache files may already contain an unbounded deadline; zero (legacy) and
+// already-earlier deadlines retain their existing semantics.
+func boundedSchemaDeadline(at, deadline time.Time) time.Time {
+	if !at.IsZero() && !deadline.IsZero() && deadline.After(at.Add(maxSchemaTTL)) {
+		return at.Add(maxSchemaTTL)
+	}
+	return deadline
 }
 
 // Instructions returns the server's own guidance, cached from initialize.
