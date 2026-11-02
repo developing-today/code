@@ -234,9 +234,11 @@ export const richSchema = new Schema({
               // reflection admits fractional/negative/hex starts the u64
               // markdown codec cannot represent).
               const el = dom as HTMLOListElement;
-              if (el.classList.contains("contains-task-list")) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (el.classList.contains("contains-task-list"))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               const firstLi = el.querySelector("li");
-              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (firstLi?.querySelector('input[type="checkbox"]'))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               return false;
             },
           },

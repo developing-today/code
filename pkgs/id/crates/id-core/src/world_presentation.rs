@@ -454,7 +454,7 @@ impl ScreenSurface {
     /// leave a stale continuation cell behind. `None` means the caller must
     /// use a full repaint (invalid screen or changed dimensions/version).
     #[must_use]
-    pub(crate) fn render_ansi_diff(&self, previous: &Self) -> Option<String> {
+    pub fn render_ansi_diff(&self, previous: &Self) -> Option<String> {
         if !self.is_valid()
             || !previous.is_valid()
             || self.version != previous.version
