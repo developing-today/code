@@ -55,6 +55,21 @@ describe("dns register parser", () => {
     expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["first.de"]);
   });
 
+  test("auto-renew summary counts ON, OFF, and unknown values from entries", () => {
+    const missingAutoRenew = {
+      ...FIXTURE_DNS.entries[0],
+      autoRenew: undefined as unknown as string,
+    };
+    const entries = [
+      { ...FIXTURE_DNS.entries[0], autoRenew: "ON" },
+      { ...FIXTURE_DNS.entries[1], autoRenew: "OFF" },
+      { ...FIXTURE_DNS.entries[2], autoRenew: "unknown" },
+      missingAutoRenew,
+    ];
+    const summary = summarizeDns({ ...FIXTURE_DNS, entries }, new Date("2026-12-28T00:00:00Z"));
+    expect(summary.autoRenew).toEqual({ on: 1, off: 1, unknown: 2 });
+  });
+
   test("summary ages renewals by the Chicago day, not UTC (#1684)", () => {
     // 2026-10-31T01:30:00Z is 20:30 CDT on 2026-10-30 in Chicago:
     // the UTC day has already rolled over, the Chicago day has not.
@@ -419,14 +434,31 @@ describe("pages manifest + slice-3 renders", () => {
     expect(html).toContain("DNS register");
   });
 
-  test("dns page renders the three views + next renewal", () => {
+  test("dns page renders each domain once with status filters and data-derived auto-renew counts", () => {
     const html = renderDns(FIXTURE_DNS, fixtureSource().provenance());
     expect(html).toContain("Next renewal");
-    expect(html).toContain("1110x.de");
-    expect(html).toContain("Unused but earmarked");
-    expect(html).toContain("Completely unused");
-    expect(html).toContain("grandnag.us");
-    expect(html).toContain("security.cab");
+    for (const entry of FIXTURE_DNS.entries) {
+      expect(html.split(entry.domain).length - 1).toBe(1);
+    }
+    expect(html).toContain('data-dns-filter="active"');
+    expect(html).toContain('data-dns-filter="earmarked"');
+    expect(html).toContain('data-dns-filter="unused"');
+    expect(html).toContain('data-dns-filter="renewing-soon"');
+    expect(html).toContain("Auto-renew</strong><br>3 ON · 0 OFF · 1 unknown");
+    expect(html).not.toContain("Auto-renew is ON across the account portfolio");
+    expect(html).not.toContain("<details><summary>Full register");
+  });
+
+  test("dns next-renewal card links to the actual next-renewal row, not the first row", () => {
+    const past = { ...FIXTURE_DNS.entries[0], domain: "past.example", renewal: "2020-01-01" };
+    const upcoming = { ...FIXTURE_DNS.entries[0], domain: "upcoming.example", renewal: "2999-01-01" };
+    const section = { ...FIXTURE_DNS, entries: [past, upcoming] };
+    const html = renderDns(section, fixtureSource().provenance());
+    expect(html).not.toContain("See the first row");
+    expect(html).toContain('href="#dns-next-renewal"');
+    const rowStart = html.indexOf('id="dns-next-renewal"');
+    expect(rowStart).toBeGreaterThan(-1);
+    expect(html.slice(rowStart, rowStart + 500)).toContain("upcoming.example");
   });
 
   test("dns page without a section says so honestly", () => {

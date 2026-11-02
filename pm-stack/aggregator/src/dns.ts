@@ -112,6 +112,8 @@ export interface DnsSummary {
   unused: DnsEntry[];
   /** Entries renewing within `days` of `now` (spend horizon). */
   renewingSoon: DnsEntry[];
+  /** Counts derived from the register's per-entry auto-renew values. */
+  autoRenew: { on: number; off: number; unknown: number };
 }
 
 export function summarizeDns(section: DnsSection, now = new Date(), soonDays = 45): DnsSummary {
@@ -123,11 +125,22 @@ export function summarizeDns(section: DnsSection, now = new Date(), soonDays = 4
   // vanished from nextRenewal and renewingSoon (#1684).
   const today = chicagoYmd(now);
   const cutoff = addDaysYmd(today, soonDays);
+  const autoRenew = entries.reduce(
+    (counts, entry) => {
+      const value = typeof entry.autoRenew === "string" ? entry.autoRenew.trim().toLowerCase() : "";
+      if (value === "on") counts.on++;
+      else if (value === "off") counts.off++;
+      else counts.unknown++;
+      return counts;
+    },
+    { on: 0, off: 0, unknown: 0 },
+  );
   return {
     nextRenewal: entries.find((e) => e.renewal >= today) ?? entries[0] ?? null,
     active: entries.filter((e) => e.status === "active"),
     earmarked: entries.filter((e) => e.status === "earmarked"),
     unused: entries.filter((e) => e.status === "unused"),
     renewingSoon: entries.filter((e) => e.renewal >= today && e.renewal <= cutoff),
+    autoRenew,
   };
 }
