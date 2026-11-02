@@ -26,6 +26,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
 import { refUrl } from "./model.ts";
+import { archiveStoreBytes, quarantineUnreadableStore, quarantineWholeStore, type InvalidStoreRecord, type StoreArchive } from "./store-recovery.ts";
+import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
 
 export interface CommentsFile {
   version: 1;
@@ -33,6 +35,42 @@ export interface CommentsFile {
 }
 
 const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
+const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
+
+function commentRecordProblem(value: unknown): string | null {
+  if (!isRecord(value)) return "record must be an object";
+  if (!isNonEmptyString(value.id)) return "id must be a non-empty string";
+  if (!isObjectRef(value.objectRef)) return "objectRef must be a non-empty ref string";
+  if (typeof value.kind !== "string" || !COMMENT_KINDS.has(value.kind as DashCommentKind)) {
+    return "kind must be message, note, or github";
+  }
+  if (parseIsoDate(value.createdAt) === null) return "createdAt must be a valid ISO date/time string";
+  if (!validateAuthor(value.author)) return "author must have a supported kind, id, and label";
+  if (typeof value.body !== "string") return "body must be a string";
+  if (
+    value.kind === "message" &&
+    value.triageState !== undefined &&
+    value.triageState !== "new" &&
+    value.triageState !== "triaged"
+  ) {
+    return "message triageState must be new or triaged";
+  }
+  if (value.kind === "github") {
+    if (value.githubRef !== undefined && (typeof value.githubRef !== "string" || !GH_REF.test(value.githubRef))) {
+      return "githubRef must be owner/repo#N";
+    }
+    if (
+      value.githubState !== undefined &&
+      value.githubState !== "pending" &&
+      value.githubState !== "posted" &&
+      value.githubState !== "failed"
+    ) {
+      return "githubState must be pending, posted, or failed";
+    }
+    if (value.githubState === "pending" && value.githubRef === undefined) return "pending github comments require githubRef";
+  }
+  return null;
+}
 
 export function isObjectRef(s: unknown): s is string {
   return typeof s === "string" && s.length > 0 && s.length <= 300 && !/\s/.test(s);
@@ -96,11 +134,15 @@ export function newCommentId(now = new Date()): string {
 
 export class CommentsStore {
   private comments: DashComment[] = [];
+  private fileExtras: Record<string, unknown> = {};
   private loadPromise: Promise<void> | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    private readonly archive: StoreArchive = archiveStoreBytes,
+  ) {}
 
   // The load is memoized as a single promise (#1509): the old
   // loaded-flag version let concurrent first callers proceed before
@@ -118,12 +160,13 @@ export class CommentsStore {
     // original bytes to <file>.corrupt-<timestamp>, start empty, and
     // log loudly — the next persist then writes a fresh valid file and
     // never touches the quarantined copy.
-    let raw: string;
+    let raw: Buffer;
     try {
-      raw = await readFile(this.file, "utf8");
+      raw = await readFile(this.file);
     } catch (err) {
       if ((err as { code?: unknown })?.code === "ENOENT") {
         this.comments = []; // no store yet — the first write creates it
+        this.fileExtras = {};
         return;
       }
       // #2980: a non-ENOENT read failure (EACCES, a transient I/O error,
@@ -132,49 +175,60 @@ export class CommentsStore {
       // like the corrupt case below — quarantine the original bytes
       // before starting empty, and log loudly — so the next persist
       // cannot silently overwrite history the read never saw.
-      this.comments = [];
-      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      let quarantined: string;
       try {
-        await rename(this.file, quarantined);
-        console.error(
-          `[comments] WARNING: comments store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
-            `quarantined the original bytes to ${quarantined} and started empty. ` +
-            `The quarantined file holds the prior audit history — do not delete it.`,
-        );
+        quarantined = await quarantineUnreadableStore(this.file);
       } catch (renameErr) {
-        console.error(
-          `[comments] WARNING: comments store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}) ` +
-            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
-            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        throw new Error(
+          `[comments] refusing to continue because ${this.file} could not be read or quarantined: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`,
+          { cause: err },
         );
       }
+      this.comments = [];
+      this.fileExtras = {};
+      console.error(
+        `[comments] WARNING: comments store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+          `quarantined the original to ${quarantined} and started empty. The quarantined item holds the prior audit history — do not delete it.`,
+      );
       return;
     }
+
+    let parsed: unknown;
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as CommentsFile).comments)) {
-        throw new Error("store file does not have the expected { comments: [...] } shape");
-      }
-      this.comments = (parsed as CommentsFile).comments.filter(
-        (c) => typeof c === "object" && c !== null && typeof (c as DashComment).id === "string",
-      );
+      parsed = JSON.parse(raw.toString("utf8"));
     } catch (err) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.comments = [];
-      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-      try {
-        await rename(this.file, quarantined);
-        console.error(
-          `[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); ` +
-            `quarantined the original bytes to ${quarantined} and started empty. ` +
-            `The quarantined file holds the prior audit history — do not delete it.`,
-        );
-      } catch (renameErr) {
-        console.error(
-          `[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}) ` +
-            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
-            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
-        );
-      }
+      this.fileExtras = {};
+      console.error(`[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`);
+      return;
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.comments)) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
+      this.comments = [];
+      this.fileExtras = {};
+      console.error(`[comments] WARNING: comments store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`);
+      return;
+    }
+
+    this.fileExtras = Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== "version" && key !== "comments"));
+    const valid: DashComment[] = [];
+    const invalid: InvalidStoreRecord[] = [];
+    parsed.comments.forEach((comment, index) => {
+      const reason = commentRecordProblem(comment);
+      if (reason) invalid.push({ index, reason });
+      else valid.push(comment as DashComment);
+    });
+    this.comments = valid;
+    if (invalid.length > 0) {
+      const quarantined = await this.archive(this.file, raw, invalid);
+      console.error(
+        `[comments] WARNING: quarantined ${invalid.length} malformed record(s) from ${this.file}; ` +
+          `original bytes: ${quarantined}; index/reason diagnostics: ${quarantined}.diagnostics.json.`,
+      );
+      // The exact source bytes and diagnostics are durable before this
+      // atomic rewrite removes malformed rows from the active store.
+      await this.persist();
     }
   }
 
@@ -188,7 +242,7 @@ export class CommentsStore {
   // does not poison the chain for later writes.
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
-      const data: CommentsFile = { version: 1, comments: this.comments };
+      const data = { ...this.fileExtras, version: 1 as const, comments: this.comments };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
       await writeFile(tmp, JSON.stringify(data, null, 2));
