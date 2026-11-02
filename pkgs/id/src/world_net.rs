@@ -1470,7 +1470,7 @@ impl WorldSessions {
     }
 
     fn key(addr: &EndpointAddr, world: Option<&str>) -> (String, String) {
-        (addr.id().to_string(), world.unwrap_or_default().to_owned())
+        (addr.id.to_string(), world.unwrap_or_default().to_owned())
     }
 
     /// Open the session for (`addr`, `world`), or return the live one.
@@ -2679,7 +2679,7 @@ mod tests {
         // wait until the close has landed.
         let conn = sessions
             .roots
-            .get(&host.addr.id().to_string())
+            .get(&host.addr.id.to_string())
             .unwrap()
             .conn
             .clone();
