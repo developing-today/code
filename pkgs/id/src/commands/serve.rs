@@ -51,7 +51,7 @@
 //! ```
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -83,6 +83,7 @@ use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
+use crate::waiting::AuthorKey;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
 /// Print a status line to stdout **without panicking** if stdout is gone.
@@ -887,6 +888,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
+    // Resolved early (not at the group-warning block below) so the gossip
+    // receive task can fold the same log for receipt-side membership scoping
+    // (#4363): a channel the receiver holds no fold for scopes to empty.
+    let groups_log = serve_groups_log_path(groups_log);
     validate_world_options(
         world,
         world_admin_token.as_deref(),
@@ -1250,6 +1255,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
         let gossip_chat_presence = chat_presence.clone();
+        let gossip_groups_log = groups_log.clone();
         let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
@@ -1261,6 +1267,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 receiver,
                 gossip_peer_discovery,
                 gossip_chat_presence,
+                gossip_groups_log,
                 gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
@@ -1504,7 +1511,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // the CLI status output at startup; the spawned task then re-evaluates
     // as membership changes and writes fired warnings to the server log.
     let mut group_watcher = GroupWarningWatcher::new();
-    let groups_log = serve_groups_log_path(groups_log);
     for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
         status!("group warning: {}", warning.message());
     }
@@ -1824,6 +1830,57 @@ fn unix_now() -> u64 {
 
 const MAX_STALE_PROBES_PER_PASS: usize = 4;
 
+/// Verifies an incoming presence heartbeat and stores only the channels whose
+/// folded group membership contains the sender (#4363). Membership comes from
+/// the receiver's own group fold for the channel (the `GroupView` member
+/// set); a channel the receiver holds no fold for scopes to empty, because
+/// membership the receiver cannot see cannot be confirmed. If the local group
+/// log cannot be read or folded, the heartbeat is refused rather than
+/// accepted without its scope check. Signature verification is unchanged: a
+/// heartbeat whose signature by its claimed node does not verify is dropped.
+fn receive_presence_heartbeat(
+    table: &PresenceTable,
+    heartbeat: PresenceHeartbeat,
+    groups_log: &Path,
+) -> bool {
+    if !heartbeat.verify() {
+        debug!("presence heartbeat failed signature verification, dropped");
+        return false;
+    }
+
+    let log = match GroupLog::open(groups_log) {
+        Ok(log) => log,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot open groups log: {error}");
+            return false;
+        }
+    };
+    let projection = match log.projection() {
+        Ok(projection) => projection,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot fold groups log: {error}");
+            return false;
+        }
+    };
+
+    let node = heartbeat.node;
+    let channels = heartbeat.channels.len();
+    let accepted = table.update_scoped(heartbeat, &|sender: &AuthorKey, group: &Hash| {
+        projection
+            .group(group)
+            .is_some_and(|view| view.members.contains_key(sender))
+    });
+    if accepted {
+        debug!(
+            "presence heartbeat from {}: {channels} claimed channel(s)",
+            node.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
+    accepted
+}
+
 /// Background loop for gossip-based peer discovery.
 ///
 /// Runs three concurrent tasks:
@@ -1839,6 +1896,7 @@ async fn run_gossip_loop(
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
     chat_presence: PresenceTable,
+    groups_log: PathBuf,
     signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
@@ -1916,6 +1974,7 @@ async fn run_gossip_loop(
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
     let recv_presence = chat_presence.clone();
+    let recv_groups_log = groups_log;
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
@@ -1928,16 +1987,10 @@ async fn run_gossip_loop(
                             // heartbeat's signature by its claimed node
                             // verifies, so nobody can forge or suppress
                             // another node's presence (#2809 Codex review).
-                            if heartbeat.verify() {
-                                debug!(
-                                    "presence heartbeat from {}: {} channel(s)",
-                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                                    heartbeat.channels.len()
-                                );
-                                recv_presence.update(heartbeat);
-                            } else {
-                                debug!("presence heartbeat failed signature verification, dropped");
-                            }
+                            // The accepted heartbeat is then scoped to the
+                            // sender's membership in the receiver's group
+                            // fold (#4363).
+                            receive_presence_heartbeat(&recv_presence, heartbeat, &recv_groups_log);
                         } else if let Some(announcement) =
                             SignedPeerAnnouncement::decode_frame(&msg.content)
                         {
@@ -2158,6 +2211,53 @@ mod tests {
             log.add(author, created.group, member, Role::Read).unwrap();
         }
         created.group
+    }
+
+    #[test]
+    fn received_presence_keeps_only_channels_the_sender_belongs_to() {
+        // #4363: the serve receipt path must scope an incoming heartbeat to
+        // the sender's membership in the receiver's group fold, not store the
+        // claimed channels unscoped.
+        use ed25519_dalek::SigningKey;
+
+        use crate::chat_presence::Liveness;
+        use crate::groups::Role;
+
+        let dir = serve_test_dir("presence-membership");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let member_channel = group_log_with_members_at(&path, 1);
+        let outsider_channel = Hash::digest(b"not-a-member");
+        let signing_key = SigningKey::from_bytes(&[2; 32]);
+        let node = signing_key.verifying_key().to_bytes();
+        // The sender genuinely belongs to `member_channel`: enrol the
+        // heartbeat key in the receiver's group fold. Nothing enrols it in
+        // `outsider_channel`, which the receiver holds no fold for.
+        {
+            let mut log = GroupLog::open(&path).unwrap();
+            log.add([1; 32], member_channel, node, Role::Read).unwrap();
+        }
+        let mut heartbeat = PresenceHeartbeat::new(
+            node,
+            vec![member_channel, outsider_channel],
+            vec![member_channel, outsider_channel],
+            unix_now(),
+        );
+        heartbeat.sign(&signing_key);
+        assert!(
+            heartbeat.verify(),
+            "fixture heartbeat must be authenticated"
+        );
+
+        let table = PresenceTable::new();
+        assert!(receive_presence_heartbeat(&table, heartbeat, &path));
+        assert_eq!(table.liveness(&node, &member_channel), Liveness::Live);
+        assert_eq!(table.liveness(&node, &outsider_channel), Liveness::Offline);
+        let now = unix_now();
+        let member_rows = table.roster_at(&member_channel, &[node], now);
+        assert!(member_rows.iter().any(|row| row.node == node && row.typing));
+        let outsider_rows = table.roster_at(&outsider_channel, &[node], now);
+        assert!(outsider_rows.iter().all(|row| !row.typing));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
