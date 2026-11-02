@@ -469,6 +469,38 @@ export function uploadKey(name: string, now: number, rand: string = crypto.rando
   return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
 }
 
+// Decode the path suffix before looking up an uploaded file. Keep this
+// route-specific response logic pure so malformed keys and the 404 control
+// can be covered without constructing a Worker environment.
+export async function fileResponseForKey(
+  encodedKey: string,
+  getFile: (key: string) => Promise<{
+    body: ReadableStream<Uint8Array> | null;
+    httpMetadata?: { contentType?: string };
+  } | null>,
+): Promise<Response> {
+  let key: string;
+  try {
+    key = decodeURIComponent(encodedKey);
+  } catch {
+    return new Response(JSON.stringify({ error: "bad file key encoding" }, null, 2), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const obj = await getFile(key);
+  if (!obj) {
+    return new Response(JSON.stringify({ error: "not found in R2" }, null, 2), {
+      status: 404,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  return new Response(obj.body, {
+    headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
+  });
+}
+
 // --- HTML extraction (#569) -------------------------------------------------
 // extractHtml mirrors the container crawler's Extractor (container/app.py,
 // an html.parser.HTMLParser) so the Worker fallback in index.ts and the
