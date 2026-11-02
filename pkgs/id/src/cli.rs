@@ -356,6 +356,15 @@ pub enum Command {
         /// `--web-token` when you do.
         #[arg(long, default_value = "127.0.0.1")]
         bind: std::net::IpAddr,
+        /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
+        ///
+        /// Each occurrence adds one listener; the set replaces any
+        /// `[web_bindings]` entries from `defaults.conf` entirely.
+        /// Combining `--web-listen` with an explicitly-set `--bind` or
+        /// `--port` is a startup error naming the conflict. IPv6
+        /// addresses use the bracket form, e.g. `[::1]:3001`.
+        #[arg(long = "web-listen", value_name = "IP:PORT")]
+        web_listen: Vec<SocketAddr>,
         /// Require this token to use the web interface.
         ///
         /// Open `http://host:port/?token=<TOKEN>` once; the browser keeps a
@@ -3892,6 +3901,34 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn test_cli_parse_serve_web_listen_repeatable() {
+        // #2145: --web-listen is repeatable and parses each IP:PORT.
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--web",
+            "--web-listen",
+            "127.0.0.1:4001",
+            "--web-listen",
+            "[::1]:4002",
+        ]);
+        match cli.command {
+            Some(Command::Serve { web_listen, .. }) => {
+                assert_eq!(
+                    web_listen,
+                    vec![
+                        "127.0.0.1:4001".parse::<SocketAddr>().unwrap(),
+                        "[::1]:4002".parse::<SocketAddr>().unwrap(),
+                    ]
+                );
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        // A malformed listener is a parse error, not a silent skip.
+        assert!(Cli::try_parse_from(["id", "serve", "--web-listen", "nope"]).is_err());
     }
 
     #[test]

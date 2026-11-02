@@ -74,7 +74,7 @@ use tracing::{debug, info, warn};
 use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
-    resolve_config,
+    defaults, resolve_config,
 };
 use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
 use crate::groups::warnings::{Evaluator, Observation, Warning};
@@ -137,6 +137,11 @@ pub struct ServeInfo {
     pub addrs: Vec<String>,
     /// Port for the web UI, if enabled.
     pub web_port: Option<u16>,
+    /// Every web listener as `IP:port` strings, in binding order (#2145).
+    /// `web_port` is the first listener's port, kept for back-compat.
+    /// Defaults to empty so lock files written before #2145 still parse.
+    #[serde(default)]
+    pub web_bindings: Vec<String>,
 }
 
 impl ServeInfo {
@@ -238,12 +243,14 @@ pub async fn create_serve_lock(
     node_id: &EndpointId,
     addrs: &[SocketAddr],
     web_port: Option<u16>,
+    web_bindings: Vec<String>,
 ) -> Result<()> {
     let info = ServeInfo {
         node_id: node_id.to_string(),
         pid: std::process::id(),
         addrs: addrs.iter().map(ToString::to_string).collect(),
         web_port,
+        web_bindings,
     };
     let contents = serde_json::to_string_pretty(&info)?;
     afs::write(SERVE_LOCK, contents).await?;
@@ -295,6 +302,13 @@ pub struct ServeOptions {
     pub iroh_port: u16,
     /// Address the web interface binds to.
     pub bind: std::net::IpAddr,
+    /// Repeatable `--web-listen <IP:PORT>` listeners (#2145 bindings model).
+    pub web_listen: Vec<SocketAddr>,
+    /// Whether `--bind` was explicitly set on the command line (#2145:
+    /// only an explicit `--bind`/`--port` conflicts with `--web-listen`).
+    pub bind_explicit: bool,
+    /// Whether `--port` was explicitly set on the command line (#2145).
+    pub port_explicit: bool,
     /// Token required by the web interface.
     pub web_token: Option<String>,
     /// Mark the directory explorer's session cookies `Secure` (HTTPS in front).
@@ -349,6 +363,85 @@ pub struct ServeOptions {
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
     pub open_writes: bool,
+}
+
+/// One web listener in the bindings model (#2145).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebBinding {
+    /// Address the listener binds to.
+    pub bind: std::net::IpAddr,
+    /// Port the listener binds to (0 = OS-assigned).
+    pub port: u16,
+}
+
+impl WebBinding {
+    /// The socket address this binding listens on.
+    #[must_use]
+    pub fn socket_addr(&self) -> SocketAddr {
+        SocketAddr::new(self.bind, self.port)
+    }
+}
+
+/// Resolve the effective web listener set, exactly once at startup
+/// (#2145 bindings model, designed in triage task 3155):
+///
+/// 1. `--web-listen` flags, when given at least once, win entirely.
+///    Combining them with an explicitly-set `--bind` or `--port` is an
+///    error naming the conflicting flag (clap defaults do not count).
+/// 2. Else the `[web_bindings]` section of `defaults.conf`, parsed here
+///    so a malformed line fails startup naming the line.
+/// 3. Else one binding synthesized from the legacy `--bind`/`--port`.
+///
+/// # Errors
+///
+/// Fails on the `--web-listen`/`--bind`/`--port` conflict, or on a
+/// malformed `[web_bindings]` line (named in the error).
+pub fn resolve_web_bindings(
+    web_listen: &[SocketAddr],
+    bind_explicit: bool,
+    port_explicit: bool,
+    legacy_bind: std::net::IpAddr,
+    legacy_port: u16,
+    config_bindings: &[String],
+) -> Result<Vec<WebBinding>> {
+    if !web_listen.is_empty() {
+        ensure!(
+            !bind_explicit,
+            "--web-listen cannot be combined with --bind: pass listener              addresses with --web-listen only, or use --bind/--port for a              single listener"
+        );
+        ensure!(
+            !port_explicit,
+            "--web-listen cannot be combined with --port: pass listener              addresses with --web-listen only, or use --bind/--port for a              single listener"
+        );
+        return Ok(web_listen
+            .iter()
+            .map(|addr| WebBinding {
+                bind: addr.ip(),
+                port: addr.port(),
+            })
+            .collect());
+    }
+    if !config_bindings.is_empty() {
+        return config_bindings
+            .iter()
+            .map(|line| {
+                line.parse::<SocketAddr>()
+                    .map(|addr| WebBinding {
+                        bind: addr.ip(),
+                        port: addr.port(),
+                    })
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "invalid [web_bindings] entry {line:?} in defaults.conf: {e}                              (expected IP:PORT, e.g. 127.0.0.1:3000)"
+                        )
+                    })
+            })
+            .collect();
+    }
+    Ok(vec![WebBinding {
+        bind: legacy_bind,
+        port: legacy_port,
+    }])
 }
 
 fn validate_world_options(
@@ -744,6 +837,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         dht,
         iroh_port,
         bind,
+        web_listen,
+        bind_explicit,
+        port_explicit,
         web_token,
         web_cookie_secure,
         world,
@@ -778,6 +874,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_name,
         &world_cap_policy,
         world_source_only,
+    )?;
+    // #2145: resolve the web listener set once, before any startup work,
+    // so a flag conflict or a malformed [web_bindings] line fails fast.
+    let web_bindings = resolve_web_bindings(
+        &web_listen,
+        bind_explicit,
+        port_explicit,
+        bind,
+        port,
+        &defaults().web_bindings,
     )?;
     let apps_root = std::env::var_os("ID_APPS_DIR")
         .map(PathBuf::from)
@@ -1143,24 +1249,38 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         })
         .collect();
 
-    // Bind the web server early to capture the actual port for the lock file,
-    // but don't start serving yet (spawn happens after lock file is written).
+    // Bind the web listeners early to capture the actual ports for the
+    // lock file, but don't start serving yet (spawn happens after the
+    // lock file is written). #2145: ALL resolved listeners bind here;
+    // any bind failure aborts startup naming the failing listener -- no
+    // partial start.
     #[allow(unused_mut)] // web_port is only mutated with the `web` feature
     let mut web_port: Option<u16> = None;
+    #[allow(unused_mut)] // web_binding_addrs is only mutated with the `web` feature
+    let mut web_binding_addrs: Vec<String> = Vec::new();
     #[cfg(feature = "web")]
-    let web_listener = if web {
-        info!("serve startup: binding web listener (#190 breadcrumb)");
-        let addr = SocketAddr::new(bind, port);
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        let actual_port = listener.local_addr()?.port();
-        info!(
-            port = actual_port,
-            "serve startup: web listener bound (#190 breadcrumb)"
-        );
-        web_port = Some(actual_port);
-        Some(listener)
+    let web_listeners: Vec<(std::net::IpAddr, u16, tokio::net::TcpListener)> = if web {
+        info!("serve startup: binding web listener(s) (#190 breadcrumb)");
+        let mut listeners = Vec::new();
+        for binding in &web_bindings {
+            let addr = binding.socket_addr();
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("web: failed to bind listener {addr}: {e}"))?;
+            let actual_port = listener.local_addr()?.port();
+            info!(
+                addr = %SocketAddr::new(binding.bind, actual_port),
+                "serve startup: web listener bound (#190 breadcrumb)"
+            );
+            if web_port.is_none() {
+                web_port = Some(actual_port);
+            }
+            web_binding_addrs.push(SocketAddr::new(binding.bind, actual_port).to_string());
+            listeners.push((binding.bind, actual_port, listener));
+        }
+        listeners
     } else {
-        None
+        Vec::new()
     };
 
     #[cfg(feature = "ssh")]
@@ -1192,7 +1312,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
     info!("serve startup: writing serve lock (#190 breadcrumb)");
-    create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
+    create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
     info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
@@ -1232,76 +1352,74 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         }
     }
 
-    // Start web server now that the lock file is written
+    // Start the web servers now that the lock file is written: one
+    // serve task per bound listener (#2145), every listener serving the
+    // same Explorer router with its own per-bind security.
     #[cfg(feature = "web")]
-    let _web_handle = if let Some(listener) = web_listener {
-        let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
-        let web_router = match &event_events {
-            Some(events) => {
-                crate::web::web_router_with_local_events(
-                    store_handle.clone(),
-                    Some(peer_discovery.clone()),
-                    node_id.to_string(),
-                    Arc::clone(&tag_store),
-                    key.to_bytes(),
-                    identity_db_path,
-                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-                    world_hub.clone(),
-                    web_cookie_secure,
-                    Arc::clone(events),
-                )
-                .await?
+    let _web_handles = {
+        let mut handles = Vec::new();
+        if !web_listeners.is_empty() {
+            status!("web: {} listener(s)", web_listeners.len());
+        }
+        // One shared AppState for all listeners (the identity store
+        // opens exclusively); each listener's router is finished with
+        // its own per-bind security.
+        let securities: Vec<crate::web::WebSecurity> = web_listeners
+            .iter()
+            .map(|(listener_bind, _, _)| {
+                crate::web::WebSecurity::for_bind(*listener_bind, web_token.clone(), &[])
+            })
+            .collect();
+        let web_routers = crate::web::web_routers(
+            store_handle.clone(),
+            Some(peer_discovery.clone()),
+            node_id.to_string(),
+            Arc::clone(&tag_store),
+            key.to_bytes(),
+            std::path::Path::new(KEY_FILE).with_file_name(".identity.redb"),
+            securities,
+            world_hub.clone(),
+            web_cookie_secure,
+            event_events.as_ref().map(Arc::clone),
+        )
+        .await?;
+        for ((listener_bind, actual_port, listener), web_router) in
+            web_listeners.into_iter().zip(web_routers)
+        {
+            let shown_host = if listener_bind.is_unspecified() || listener_bind.is_loopback() {
+                "localhost".to_owned()
+            } else {
+                listener_bind.to_string()
+            };
+            if web_token.is_some() {
+                status!("web: http://{shown_host}:{actual_port}/?token=<redacted>");
+            } else {
+                status!("web: http://{shown_host}:{actual_port}");
             }
-            None => {
-                crate::web::web_router(
-                    store_handle.clone(),
-                    Some(peer_discovery.clone()),
-                    node_id.to_string(),
-                    Arc::clone(&tag_store),
-                    key.to_bytes(),
-                    identity_db_path,
-                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-                    world_hub.clone(),
-                    web_cookie_secure,
-                )
-                .await?
+            #[cfg(feature = "world")]
+            if world {
+                status!("world: browser http://{shown_host}:{actual_port}/world");
             }
-        };
-        let actual_port = web_port.unwrap_or(port);
-        let shown_host = if bind.is_unspecified() || bind.is_loopback() {
-            "localhost".to_owned()
-        } else {
-            bind.to_string()
-        };
-        if let Some(t) = &web_token {
-            status!("web: http://{shown_host}:{actual_port}/?token={t}");
-        } else {
-            status!("web: http://{shown_host}:{actual_port}");
-        }
-        #[cfg(feature = "world")]
-        if world {
-            status!("world: browser http://{shown_host}:{actual_port}/world");
-        }
-        if !bind.is_loopback() && web_token.is_none() {
-            status_err!(
-                "warning: the web UI is bound to {bind} without --web-token; \
-                 anyone who can reach port {actual_port} can read and modify files"
-            );
-        }
-        if world_hub.is_some() && !bind.is_loopback() && !web_cookie_secure {
-            status_err!(
-                "warning: the admin sign-in form is served over plain HTTP on {bind}; \
-                 its token and session cookie travel in clear unless HTTPS is terminated \
-                 in front (then pass --web-cookie-secure) or the UI is bound to loopback"
-            );
-        }
-        Some(tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, web_router).await {
-                tracing::error!("web server error: {}", e);
+            if !listener_bind.is_loopback() && web_token.is_none() {
+                status_err!(
+                    "warning: the web UI is bound to {listener_bind} without --web-token; \
+                     anyone who can reach port {actual_port} can read and modify files"
+                );
             }
-        }))
-    } else {
-        None
+            if world_hub.is_some() && !listener_bind.is_loopback() && !web_cookie_secure {
+                status_err!(
+                    "warning: the admin sign-in form is served over plain HTTP on {listener_bind}; \
+                     its token and session cookie travel in clear unless HTTPS is terminated \
+                     in front (then pass --web-cookie-secure) or the UI is bound to loopback"
+                );
+            }
+            handles.push(tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, web_router).await {
+                    tracing::error!("web server error: {}", e);
+                }
+            }));
+        }
+        handles
     };
 
     #[cfg(feature = "ssh")]
@@ -1348,7 +1466,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let _ = sync_task.await;
     }
     #[cfg(feature = "web")]
-    if let Some(web_task) = _web_handle {
+    for web_task in _web_handles {
         web_task.abort();
         let _ = web_task.await;
     }
@@ -2026,6 +2144,7 @@ mod tests {
             pid: 12345,
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:8080".to_owned()],
             web_port: Some(3000),
+            web_bindings: vec!["127.0.0.1:3000".to_owned()],
         };
 
         assert_eq!(info.node_id, node_id.to_string());
@@ -2046,6 +2165,7 @@ mod tests {
             pid: 99,
             addrs: vec!["127.0.0.1:8080".to_owned()],
             web_port: None,
+            web_bindings: Vec::new(),
         };
 
         let cloned = info.clone();
@@ -2062,6 +2182,7 @@ mod tests {
             pid: 42,
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:9090".to_owned()],
             web_port: Some(3001),
+            web_bindings: vec!["127.0.0.1:3001".to_owned(), "[::1]:3001".to_owned()],
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -2079,11 +2200,87 @@ mod tests {
             pid: 100,
             addrs: vec!["127.0.0.1:5555".to_owned()],
             web_port: None,
+            web_bindings: Vec::new(),
         };
 
         let json = serde_json::to_string(&info).unwrap();
         let parsed: ServeInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.web_port, None);
+    }
+
+    #[test]
+    fn test_serve_info_json_pre_bindings_lock_still_parses() {
+        // Lock files written before #2145 have no `web_bindings` key;
+        // the serde default must keep them readable.
+        let parsed: ServeInfo = serde_json::from_str(
+            r#"{"node_id":"abc","pid":7,"addrs":["127.0.0.1:8080"],"web_port":3001}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.web_port, Some(3001));
+        assert!(parsed.web_bindings.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_legacy_fallback() {
+        let bindings = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            bindings,
+            vec![WebBinding {
+                bind: "127.0.0.1".parse().unwrap(),
+                port: 3000
+            }]
+        );
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_flags_win_over_config() {
+        let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap(), "[::1]:4002".parse().unwrap()];
+        let config = vec!["127.0.0.1:3000".to_owned()];
+        let bindings =
+            resolve_web_bindings(&flags, false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
+                .unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].socket_addr(), "127.0.0.1:4001".parse::<SocketAddr>().unwrap());
+        assert_eq!(bindings[1].socket_addr(), "[::1]:4002".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_config_only() {
+        let config = vec!["127.0.0.1:3000".to_owned(), "192.0.2.10:3001".to_owned()];
+        let bindings =
+            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 9999, &config)
+                .unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[1].port, 3001);
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_conflict_names_the_flag() {
+        let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap()];
+        let err = resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("--bind"), "{err}");
+        let err = resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("--port"), "{err}");
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_malformed_config_line_is_named() {
+        let config = vec!["127.0.0.1:3000".to_owned(), "not-an-addr".to_owned()];
+        let err =
+            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
+                .unwrap_err();
+        assert!(err.to_string().contains("not-an-addr"), "{err}");
+        assert!(err.to_string().contains("[web_bindings]"), "{err}");
     }
 
     // Integration tests for lock file functions require file system access

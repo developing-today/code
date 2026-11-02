@@ -4,7 +4,7 @@
 //! using content-addressed storage backed by Iroh.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 // Import from library
 use id::{
@@ -77,6 +77,25 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
 async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
     let cli = Cli::parse();
+
+    // #2145: `--web-listen` conflicts only with an *explicitly-set*
+    // `--bind`/`--port`; clap defaults must not count, so read the value
+    // sources from a matches pass (`Cli::parse` above already validated
+    // the arguments and would have exited on any error).
+    let (bind_explicit, port_explicit) = {
+        let matches = Cli::command().get_matches();
+        matches
+            .subcommand_matches("serve")
+            .map(|serve| {
+                (
+                    serve.value_source("bind")
+                        == Some(clap::parser::ValueSource::CommandLine),
+                    serve.value_source("port")
+                        == Some(clap::parser::ValueSource::CommandLine),
+                )
+            })
+            .unwrap_or((false, false))
+    };
 
     // Switch to the data directory if specified.
     // All data paths (.iroh-store, .iroh-key, .iroh-serve.lock) are CWD-relative,
@@ -162,6 +181,7 @@ async fn main() -> Result<()> {
             dht,
             iroh_port,
             bind,
+            web_listen,
             web_token,
             web_cookie_secure,
             world,
@@ -206,6 +226,9 @@ async fn main() -> Result<()> {
                 dht,
                 iroh_port,
                 bind,
+                web_listen,
+                bind_explicit,
+                port_explicit,
                 web_token,
                 web_cookie_secure,
                 world,

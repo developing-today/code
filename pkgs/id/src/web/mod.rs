@@ -364,6 +364,50 @@ pub async fn web_router_with_local_events(
     Ok(finish_router(state, security, world, cookie_secure))
 }
 
+/// Build one router per listener security over a SINGLE shared
+/// [`AppState`] (#2145 multi-listener serve).
+///
+/// `web_router` opens the identity store exclusively, so building one
+/// router per listener fails on the second open ("identity store …
+/// is already open"). Here the state is built once and cloned per
+/// listener; each clone is finished with that listener's own
+/// [`WebSecurity`], so per-bind host/token policy still applies.
+#[allow(clippy::too_many_arguments)]
+pub async fn web_routers(
+    store: Store,
+    peers: Option<PeerDiscovery>,
+    node_id: String,
+    tag_store: Arc<TagStore>,
+    secret_key: [u8; 32],
+    identity_db_path: std::path::PathBuf,
+    securities: Vec<WebSecurity>,
+    world: Option<crate::world_hub::WorldHub>,
+    cookie_secure: bool,
+    local_events: Option<Arc<Mutex<crate::local_events::LocalEvents>>>,
+) -> anyhow::Result<Vec<Router>> {
+    let state = match local_events {
+        Some(events) => {
+            AppState::with_local_events(
+                store,
+                peers,
+                node_id,
+                tag_store,
+                secret_key,
+                identity_db_path,
+                events,
+            )
+            .await?
+        }
+        None => {
+            AppState::new(store, peers, node_id, tag_store, secret_key, identity_db_path).await?
+        }
+    };
+    Ok(securities
+        .into_iter()
+        .map(|security| finish_router(state.clone(), security, world.clone(), cookie_secure))
+        .collect())
+}
+
 /// Applies the world/cookie settings and the security layer to a built state.
 fn finish_router(
     mut state: AppState,

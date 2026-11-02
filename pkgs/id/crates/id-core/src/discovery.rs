@@ -101,6 +101,10 @@ pub struct Defaults {
     pub topic: Option<String>,
     /// Topic secret from the `[topic_secret]` section (first non-comment line).
     pub topic_secret: Option<String>,
+    /// Web listener addresses from the `[web_bindings]` section (#2145),
+    /// kept as raw `IP:PORT` strings: parsing and validation happen at
+    /// serve startup, where a malformed line fails startup naming the line.
+    pub web_bindings: Vec<String>,
 }
 
 /// Parses a `defaults.conf`-formatted string into a [`Defaults`] struct.
@@ -136,6 +140,7 @@ pub struct Defaults {
 /// ```
 pub fn parse_defaults(conf: &str) -> Defaults {
     let mut bootstrap = Vec::new();
+    let mut web_bindings: Vec<String> = Vec::new();
     let mut topic: Option<String> = None;
     let mut topic_secret: Option<String> = None;
 
@@ -153,6 +158,7 @@ pub fn parse_defaults(conf: &str) -> Defaults {
         if trimmed.starts_with('[') && trimmed.ends_with(']') {
             current_section = Some(match &trimmed[1..trimmed.len() - 1] {
                 "bootstrap" => "bootstrap",
+                "web_bindings" => "web_bindings",
                 "topic" => "topic",
                 "topic_secret" => "topic_secret",
                 _ => "unknown",
@@ -164,6 +170,9 @@ pub fn parse_defaults(conf: &str) -> Defaults {
         match current_section {
             Some("bootstrap") => {
                 bootstrap.push(trimmed.to_owned());
+            }
+            Some("web_bindings") => {
+                web_bindings.push(trimmed.to_owned());
             }
             Some("topic") if topic.is_none() => {
                 topic = Some(trimmed.to_owned());
@@ -179,6 +188,7 @@ pub fn parse_defaults(conf: &str) -> Defaults {
         bootstrap,
         topic,
         topic_secret,
+        web_bindings,
     }
 }
 
@@ -972,6 +982,30 @@ my-secret
         assert_eq!(d.bootstrap, vec!["abc123", "def456"]);
         assert_eq!(d.topic.as_deref(), Some("my-topic"));
         assert_eq!(d.topic_secret.as_deref(), Some("my-secret"));
+    }
+
+    #[test]
+    fn test_parse_defaults_web_bindings() {
+        // #2145: [web_bindings] lines are collected raw, in order;
+        // comments and other sections do not leak in.
+        let conf = r"
+[web_bindings]
+127.0.0.1:3000
+# a comment
+192.0.2.10:3001
+
+[topic]
+my-topic
+";
+        let d = parse_defaults(conf);
+        assert_eq!(d.web_bindings, vec!["127.0.0.1:3000", "192.0.2.10:3001"]);
+        assert_eq!(d.topic.as_deref(), Some("my-topic"));
+    }
+
+    #[test]
+    fn test_parse_defaults_no_web_bindings_section() {
+        let d = parse_defaults("");
+        assert!(d.web_bindings.is_empty());
     }
 
     #[test]
