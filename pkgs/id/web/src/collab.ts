@@ -60,6 +60,53 @@ const MSG = {
 const packr = new Packr({ useRecords: false, structuredClone: true });
 const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
 
+/** Per-message step bound, mirroring the server MAX_STEPS_PER_MESSAGE
+ * (pkgs/id/src/web/collab.rs). A single editor transaction can legitimately
+ * exceed it - indenting N lines produces N steps (web/src/indent.ts) - so
+ * the client sends at most this many steps per Steps message and flushes
+ * the remainder as the server confirms each batch (see the Update handler),
+ * instead of wedging the session on a rejected oversized batch. */
+export const MAX_STEPS_PER_MESSAGE = 1000;
+
+/** Wire-size budget for one Steps message, mirroring the server frame cap
+ * MAX_FRAME_BYTES (1 MiB, pkgs/id/src/frames.rs) minus a reserve for the
+ * MessagePack envelope ([tag, version, steps, clientID]). The step-count
+ * cap alone cannot bound the wire size: 1,000 medium steps encode to far
+ * more than 1 MiB, and the server refuses an over-limit message before
+ * applying any of it (Codex P2 on PR #4051). */
+export const MAX_STEPS_MESSAGE_BYTES = 1024 * 1024 - 4096;
+
+/** Encoded size of one step on the wire (MessagePack, same Packr config
+ * as the send path). */
+export function stepWireSize(step: unknown): number {
+  return packr.pack(step).byteLength;
+}
+
+/** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE
+ * steps and at most MAX_STEPS_MESSAGE_BYTES of encoded steps, in order.
+ * Remaining steps stay unconfirmed and are sent by later flushes.
+ * Returns an empty batch when the FIRST pending step alone exceeds the
+ * byte budget: such a step can never be sent within the server cap, and
+ * splitting it into several wire steps would corrupt prosemirror-collab's
+ * count-based confirmation (the server echoes applied steps and the
+ * plugin confirms that many unconfirmed steps). Withholding it keeps the
+ * edit in the local document instead of having the server reject the
+ * message and the reconnect path re-initialize the editor from server
+ * state, silently discarding the edit. */
+export function stepBatch<T>(steps: readonly T[], sizeOf: (step: T) => number = () => 0): T[] {
+  const batch: T[] = [];
+  let bytes = 0;
+  for (const step of steps) {
+    if (batch.length >= MAX_STEPS_PER_MESSAGE) break;
+    const size = sizeOf(step);
+    if (batch.length > 0 && bytes + size > MAX_STEPS_MESSAGE_BYTES) break;
+    if (batch.length === 0 && size > MAX_STEPS_MESSAGE_BYTES) break;
+    batch.push(step);
+    bytes += size;
+  }
+  return batch;
+}
+
 export interface CollabConnection {
   ws: WebSocket;
   docId: string;
@@ -197,8 +244,29 @@ export function initCollab(
     const sendable = getSendableSteps(editorInstance.view);
     console.log("[collab] sendable:", sendable);
     if (sendable) {
-      console.log("[collab] Sending", sendable.steps.length, "steps, version:", sendable.version);
-      send(MSG.STEPS, sendable.version, sendable.steps, sendable.clientID);
+      const batch = stepBatch(sendable.steps, stepWireSize);
+      if (batch.length === 0) {
+        // The head pending step alone exceeds the wire budget (e.g. a
+        // >1 MiB paste represented as a single replace step). Do not send
+        // it: the server would refuse the message and the reconnect path
+        // would discard the edit. It stays in the local document,
+        // unconfirmed; surface the wedge instead of losing content.
+        console.error(
+          "[collab] Pending step exceeds the",
+          MAX_STEPS_MESSAGE_BYTES,
+          "byte message budget and cannot be synced; edit kept locally only.",
+        );
+        return;
+      }
+      console.log(
+        "[collab] Sending",
+        batch.length,
+        "of",
+        sendable.steps.length,
+        "steps, version:",
+        sendable.version,
+      );
+      send(MSG.STEPS, sendable.version, batch, sendable.clientID);
     }
   };
 
@@ -290,6 +358,12 @@ export function initCollab(
             const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
             editorInstance.view.dispatch(tr);
             console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
+            // If this update confirmed one of our batches and more steps are
+            // still pending (an oversized transaction chunked by stepBatch),
+            // send the next batch now - no new editor:change event fires for
+            // a confirmation, so without this the remainder would stall
+            // until the next local edit.
+            handleEditorChange();
           } catch (err) {
             // Step application failed — editor state is desynchronized.
             // Trigger reconnect to get fresh Init + catch-up from server.

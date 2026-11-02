@@ -15,8 +15,8 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 /// Largest accepted or emitted frame, in bytes (1 MiB).
 ///
-/// Both transports enforce it: the Iroh frame reader refuses longer frames
-/// and the WebSocket has `max_message_size(MAX_FRAME_BYTES)`.
+/// The Iroh frame readers refuse longer frames, and every WebSocket endpoint
+/// sets `max_message_size(MAX_FRAME_BYTES)`.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Write one frame.

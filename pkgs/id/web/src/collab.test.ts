@@ -1,6 +1,6 @@
 import { Packr, Unpackr } from "msgpackr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { initCollab } from "./collab";
+import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, initCollab, stepBatch } from "./collab";
 
 // Same MessagePack configuration as collab.ts
 const packr = new Packr({ useRecords: false, structuredClone: true });
@@ -173,5 +173,59 @@ describe("initCollab token handling (#1463)", () => {
     expect(second.sent.length).toBe(0);
 
     conn.disconnect();
+  });
+});
+
+describe("stepBatch (client side of the server step cap, #1965)", () => {
+  it("sends every step when the batch is at or under the cap", () => {
+    const steps = [1, 2, 3];
+    expect(stepBatch(steps)).toEqual([1, 2, 3]);
+    const atCap = Array.from({ length: MAX_STEPS_PER_MESSAGE }, (_, i) => i);
+    expect(stepBatch(atCap)).toHaveLength(MAX_STEPS_PER_MESSAGE);
+  });
+
+  it("chunks an oversized transaction to the cap, preserving order", () => {
+    // Indenting >1000 lines legitimately produces >1000 steps; the first
+    // message must carry only the cap and leave the rest pending, or the
+    // server rejection wedges the session (Codex P2 on PR #4051).
+    const steps = Array.from({ length: MAX_STEPS_PER_MESSAGE + 250 }, (_, i) => i);
+    const batch = stepBatch(steps);
+    expect(batch).toHaveLength(MAX_STEPS_PER_MESSAGE);
+    expect(batch[0]).toBe(0);
+    expect(batch[MAX_STEPS_PER_MESSAGE - 1]).toBe(MAX_STEPS_PER_MESSAGE - 1);
+    expect(steps).toHaveLength(MAX_STEPS_PER_MESSAGE + 250);
+  });
+
+  it("returns an empty batch for no pending steps", () => {
+    expect(stepBatch([])).toEqual([]);
+  });
+
+  it("chunks by encoded size as well as count (Codex P2 on PR #4051)", () => {
+    // 1,000 small steps fit the count cap, but medium steps can encode to
+    // far more than the 1 MiB server frame cap; the batch must stop at
+    // the byte budget and leave the remainder pending, in order.
+    const stepBytes = 4096;
+    const steps = Array.from({ length: 1000 }, (_, i) => i);
+    const batch = stepBatch(steps, () => stepBytes);
+    const expected = Math.floor(MAX_STEPS_MESSAGE_BYTES / stepBytes);
+    expect(batch).toHaveLength(expected);
+    expect(batch[0]).toBe(0);
+    expect(batch[expected - 1]).toBe(expected - 1);
+    expect(steps).toHaveLength(1000);
+  });
+
+  it("withholds a single step that alone exceeds the byte budget", () => {
+    // A >1 MiB paste can be one replace step; it can never be sent within
+    // the server cap, so the batch is empty and the caller keeps the edit
+    // local instead of triggering a server refusal + reconnect discard.
+    const steps = ["huge", "later"];
+    const batch = stepBatch(steps, (s) => (s === "huge" ? MAX_STEPS_MESSAGE_BYTES + 1 : 1));
+    expect(batch).toEqual([]);
+  });
+
+  it("includes a first step that exactly fits the byte budget", () => {
+    const steps = ["exact", "later"];
+    const batch = stepBatch(steps, (s) => (s === "exact" ? MAX_STEPS_MESSAGE_BYTES : 1));
+    expect(batch).toEqual(["exact"]);
   });
 });
