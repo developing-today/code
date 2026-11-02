@@ -6,6 +6,7 @@ import {
   type RoadmapGrain,
   type TodayView,
   allRefs,
+  buildQuotaActions,
   commentStream,
   executionStrip,
   freshness,
@@ -37,7 +38,7 @@ import {
 } from "./tier-items.ts";
 import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
-import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import { AA_PLAN_FACTS, aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
@@ -3340,6 +3341,7 @@ export function renderTodayBody(
   quotaUnavailable = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
+  const quotaActions = buildQuotaActions(quota, AA_PLAN_FACTS);
   const alerts: string[] = [];
   const drewTotal = attention.drew.length + attention.drewExtra.length;
   if (drewTotal) {
@@ -3347,9 +3349,17 @@ export function renderTodayBody(
       `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} in the user queue</strong> — <a href="/attention#drew">review them</a></div>`,
     );
   }
-  if (walled.length) {
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /attention's orchestrator tier, derived once above — never a
+  // second list. Walled pools without a typed action still banner.
+  for (const a of quotaActions) {
     alerts.push(
-      `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${p.provider} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
+      `<div class="banner"><strong>Quota action:</strong> ${esc(a.title)} — ${esc(a.detail)} <a href="${esc(a.href)}">quota</a></div>`,
+    );
+  }
+  for (const p of walled.filter((p) => !quotaActions.some((a) => a.poolId === p.id))) {
+    alerts.push(
+      `<div class="banner"><strong>Walled pools:</strong> ${esc(`${p.provider} (${p.plan})`)} — <a href="/quota">quota</a></div>`,
     );
   }
   // #1139: the derived view's banner names the section's TRUE state —
@@ -3370,8 +3380,14 @@ export function renderTodayBody(
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
-  const objectives = today.objectives.length
-    ? today.objectives
+  const quotaObjectives = quotaActions.map((a) => ({
+    title: a.title,
+    detail: a.detail,
+    chip: "quota · action",
+  }));
+  const allObjectives = [...today.objectives, ...quotaObjectives];
+  const objectives = allObjectives.length
+    ? allObjectives
         .map(
           (o, i) =>
             `<div class="card obj"><div class="n">${i + 1}</div><div><strong>${esc(o.title)}</strong> <span class="badge src">${esc(o.chip)}</span>${o.detail ? `<br><span class="muted">${esc(o.detail)}</span>` : ""}${o.ref ? `<br><a href="${esc(refUrl(o.ref))}">${esc(o.ref)}</a>` : ""}</div></div>`,

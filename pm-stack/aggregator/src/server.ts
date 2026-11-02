@@ -25,6 +25,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import { AA_PLAN_FACTS } from "./aa.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -35,7 +36,7 @@ import {
 } from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import { allRefs, buildAttention, buildQuotaActions, deriveToday, projectPace, quotaActionTierItems, type RoadmapGrain } from "./derive.ts";
 import {
   reconcileRoadmap,
   roadmapDriftReport,
@@ -434,8 +435,20 @@ async function attentionContext() {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
+  const quota = await source.quota().catch(() => null);
+  const view = buildAttention(feed, summary, Date.now(), diagnosis, watchdog);
+  // #1174: the same eligible quota actions as /quota's strip and
+  // /today, as orchestrator-tier task items — derived once here from
+  // the same pure function, so entries clear on every surface the
+  // moment their source condition no longer holds.
+  if (quota) {
+    view.orchestratorExtra = [
+      ...view.orchestratorExtra,
+      ...quotaActionTierItems(buildQuotaActions(quota, AA_PLAN_FACTS)),
+    ];
+  }
   return {
-    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    view,
     coverage,
     orchestration: summary,
     diagnosis,
