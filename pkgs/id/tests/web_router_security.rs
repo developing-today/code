@@ -196,6 +196,7 @@ async fn every_public_router_constructor_enforces_its_security_policy() {
         false,
         None,
         vec![None, Some("arena".to_owned())],
+        None,
     )
     .await
     .unwrap();
