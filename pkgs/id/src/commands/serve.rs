@@ -2416,7 +2416,7 @@ mod tests {
 
     #[cfg(feature = "world")]
     #[test]
-    fn the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
+    fn test_the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
         assert_eq!(
             allowed_caps(None).unwrap(),
             crate::world_caps::default_ceiling_names()

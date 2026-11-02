@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_entries_match_the_catalog_and_carry_explicit_defaults() {
+    fn test_catalog_entries_match_the_catalog_and_carry_explicit_defaults() {
         let entry_names: Vec<&str> = CATALOG_ENTRIES.iter().map(|entry| entry.name).collect();
         assert_eq!(entry_names, CATALOG, "every provider names its default ceiling");
         // Every provider registered today opted in explicitly, so the
@@ -996,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn a_newly_registered_excluded_provider_does_not_join_existing_ceilings() {
+    fn test_a_newly_registered_excluded_provider_does_not_join_existing_ceilings() {
         // An existing world's ceiling, snapshotted before the upgrade.
         let existing_world_ceiling = default_ceiling_names();
         // The upgrade registers two new providers: a sensitive one whose
