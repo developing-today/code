@@ -182,6 +182,40 @@ fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
     })
 }
 
+/// Plan all bulk-download destinations before creating directories or writing files.
+///
+/// Match names are deduplicated the same way as the output loops. Distinct matches
+/// that flatten to the same final-component path are rejected as a batch so a
+/// later download cannot silently overwrite an earlier one.
+fn plan_download_paths<'a>(
+    dir: &str,
+    matches: &'a [TaggedMatch],
+) -> Result<Vec<(&'a TaggedMatch, String)>> {
+    let mut seen_matches = std::collections::HashSet::new();
+    let mut destinations = std::collections::HashMap::new();
+    let mut plan = Vec::new();
+
+    for m in matches {
+        let key = format!("{}:{}", m.hash, m.name);
+        if !seen_matches.insert(key) {
+            continue;
+        }
+
+        let output_path = download_output_path(Some(dir), &m.name)?;
+        if let Some(previous_name) = destinations.insert(output_path.clone(), m.name.as_str()) {
+            bail!(
+                "refusing bulk download: destination collision between matches {:?} and {:?} at {:?}",
+                previous_name,
+                m.name,
+                output_path
+            );
+        }
+        plan.push((m, output_path));
+    }
+
+    Ok(plan)
+}
+
 /// Find files matching queries and output their content.
 ///
 /// This is the main handler for the `id find` command. It searches for blobs
@@ -262,21 +296,16 @@ pub async fn cmd_find(
     // --all mode: output all matches
     if all {
         if let Some(ref dir_path) = dir {
+            let plan = plan_download_paths(dir_path, &all_matches)?;
             std::fs::create_dir_all(dir_path)?;
-            // Deduplicate by hash+name for file output
-            let mut seen = std::collections::HashSet::new();
-            for m in &all_matches {
-                let key = format!("{}:{}", m.hash, m.name);
-                if seen.insert(key) {
-                    let output_path = download_output_path(Some(dir_path), &m.name)?;
-                    if let Some(ref node_str) = node {
-                        let node_id: EndpointId = node_str.parse()?;
-                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
-                    } else {
-                        cmd_get_one(&m.name, &output_path, false, false).await?;
-                    }
-                    print_match_cli(m, format);
+            for (m, output_path) in plan {
+                if let Some(ref node_str) = node {
+                    let node_id: EndpointId = node_str.parse()?;
+                    cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                } else {
+                    cmd_get_one(&m.name, &output_path, false, false).await?;
                 }
+                print_match_cli(m, format);
             }
         } else {
             // Output all to stdout (concatenated)
@@ -403,20 +432,16 @@ pub async fn cmd_search(
     // --all mode: output all files (like find --all)
     if all {
         if let Some(ref dir_path) = dir {
+            let plan = plan_download_paths(dir_path, &all_matches)?;
             std::fs::create_dir_all(dir_path)?;
-            let mut seen = std::collections::HashSet::new();
-            for m in &all_matches {
-                let key = format!("{}:{}", m.hash, m.name);
-                if seen.insert(key) {
-                    let output_path = download_output_path(Some(dir_path), &m.name)?;
-                    if let Some(ref node_str) = node {
-                        let node_id: EndpointId = node_str.parse()?;
-                        cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
-                    } else {
-                        cmd_get_one(&m.name, &output_path, false, false).await?;
-                    }
-                    print_match_cli(m, format);
+            for (m, output_path) in plan {
+                if let Some(ref node_str) = node {
+                    let node_id: EndpointId = node_str.parse()?;
+                    cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
+                } else {
+                    cmd_get_one(&m.name, &output_path, false, false).await?;
                 }
+                print_match_cli(m, format);
             }
         } else {
             // Output all to stdout (concatenated)
@@ -1067,6 +1092,31 @@ mod tests {
             );
             assert!(download_output_path(Some("out"), name).is_err());
         }
+    }
+
+    #[test]
+    fn test_plan_download_paths_rejects_final_component_collisions() {
+        let matches = vec![
+            TaggedMatch {
+                query: "report".to_owned(),
+                hash: Hash::from_bytes([0; 32]),
+                name: "one/report.txt".to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+            TaggedMatch {
+                query: "report".to_owned(),
+                hash: Hash::from_bytes([1; 32]),
+                name: "two/report.txt".to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+        ];
+
+        let error = plan_download_paths("out", &matches).unwrap_err().to_string();
+        assert!(error.contains("destination collision"), "{error}");
+        assert!(error.contains("one/report.txt"), "{error}");
+        assert!(error.contains("two/report.txt"), "{error}");
     }
 
     #[test]
