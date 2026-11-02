@@ -17,7 +17,9 @@ use std::path::PathBuf;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::world_caps::{MAX_NAME_BYTES, validate_ceiling_names, validate_grant_names};
+use crate::world_caps::{
+    MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, validate_ceiling_names, validate_grant_names,
+};
 use crate::world_limits::WorldExecutionProfile;
 
 /// A declarative description of a world. Fields the manifest omits are left
@@ -204,7 +206,9 @@ fn reject_unknown_profile_keys(text: &str) -> Result<()> {
 
 impl WorldManifest {
     /// Validate the manifest: grants and ceiling name only known capabilities,
-    /// schedule ids are bounded printable ASCII, and fire times are positive.
+    /// the requested profile bounds satisfy the execution-profile floors, the
+    /// schedule count is within the pending-schedule cap, schedule ids are
+    /// bounded printable ASCII, and fire times are positive.
     ///
     /// # Errors
     ///
@@ -216,7 +220,17 @@ impl WorldManifest {
         if let Some(ceiling) = &self.ceiling {
             validate_ceiling_names(ceiling)?;
         }
+        // The requested profile bounds are refused here, at parse time,
+        // with the same checks resolve() runs at apply time — an invalid
+        // manifest must never parse and plan clean, then fail partway
+        // through a live apply (#3015).
+        self.profile.validate()?;
         if let Some(schedules) = &self.schedules {
+            ensure!(
+                schedules.len() <= MAX_PENDING_SCHEDULES,
+                "too many schedules: {} exceeds the maximum of {MAX_PENDING_SCHEDULES} pending schedules",
+                schedules.len()
+            );
             for (id, at_ms) in schedules {
                 crate::world_caps::validate_schedule_id(id)?;
                 ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
@@ -535,6 +549,55 @@ wasm_fuel = 5_000_000
         // itself because the profile struct stays lenient for host JSON.
         let err = parse("[profile]\nwasm_fuell = 1").unwrap_err();
         assert!(format!("{err}").contains("wasm_fuell"), "{err}");
+    }
+
+    #[test]
+    fn invalid_profile_bounds_are_rejected() {
+        // #3015: each bound resolve() refuses at apply time must already
+        // fail parse(), with the same checks.
+        for text in [
+            "[profile]
+wasm_fuel = 0",
+            "[profile]
+wasm_memory_bytes = 1024",
+            "[profile]
+wasm_message_bytes = 0",
+            "[profile]
+native_memory_bytes = 1024",
+            "[profile]
+native_cpu_seconds = 0",
+            "[profile]
+native_call_deadline_ms = 0",
+        ] {
+            assert!(parse(text).is_err(), "parsed clean: {text}");
+        }
+    }
+
+    #[test]
+    fn minimum_profile_bounds_are_accepted() {
+        // #3015: the boundary-valid values (one Wasm page, 16 MiB native)
+        // sit exactly on the floors and must parse.
+        let manifest = parse("[profile]
+wasm_memory_bytes = 65536
+native_memory_bytes = 16777216")
+            .unwrap();
+        assert_eq!(manifest.profile.wasm_memory_bytes, Some(65_536));
+        assert_eq!(manifest.profile.native_memory_bytes, Some(16_777_216));
+    }
+
+    #[test]
+    fn schedule_count_is_capped_at_parse() {
+        // #3015: a manifest may declare at most MAX_PENDING_SCHEDULES
+        // pending schedules; one more must fail parse, not a live apply.
+        let build = |count: usize| {
+            let entries: Vec<String> = (0..count)
+                .map(|i| format!(""s{i}" = 1800000000000"))
+                .collect();
+            format!("schedules = {{ {} }}", entries.join(", "))
+        };
+        assert!(parse(&build(MAX_PENDING_SCHEDULES)).is_ok());
+        let err = parse(&build(MAX_PENDING_SCHEDULES + 1)).unwrap_err();
+        assert!(format!("{err}").contains("too many schedules"), "{err}");
     }
 
     #[test]
