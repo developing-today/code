@@ -30,6 +30,11 @@ pub struct WorldCore {
     pub(crate) active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    /// The per-world total memory budget ledger (#557): created with
+    /// the default ceiling, and replaced by [`WorldCore::restore`]
+    /// with the ledger measured over the journal (its limit is the
+    /// last persisted profile budget, or the default ceiling).
+    pub(crate) memory_budget: crate::world_limits::WorldMemoryBudget,
     /// This world's own capability ceiling. The ledger allows the intersection
     /// of this and the server's `limits.server_caps`.
     pub(crate) caps_ceiling: BTreeSet<String>,
@@ -148,6 +153,7 @@ impl WorldCore {
             active_module_provenance: None,
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
+            memory_budget: crate::world_limits::WorldMemoryBudget::default(),
             caps_ceiling: crate::world_caps::catalog_names(),
             schedules: BTreeMap::new(),
             isolation: Isolation::default(),
@@ -205,6 +211,44 @@ impl WorldCore {
         let mut program = None;
         let mut replay = Vec::new();
         let mut present: BTreeMap<u64, u64> = BTreeMap::new();
+        let entries: Vec<JournalEntry> = entries.into_iter().collect();
+        // #557 Phase 2: enforce the per-world total memory budget at
+        // restore. The effective limit is the last total budget the
+        // journal persists (an execution-profile entry or a
+        // checkpoint's profile — both were clamped beneath the server
+        // ceiling when resolved and written), or the default ceiling
+        // when the journal carries none. Charge the fixed core charge
+        // plus each materialized entry (serialized length + structural
+        // allowance) BEFORE applying any entry: an over-budget journal
+        // is refused whole with a typed
+        // [`crate::world_limits::WorldMemoryBudgetRefusal`], no state
+        // is partially applied, and the durable journal is never
+        // modified by a restore, so the same journal reopens unchanged
+        // once the configured budget allows it. This charges the
+        // restore/materialization seam only; runtime growth, program
+        // reservations, and transient peaks are later #557 phases.
+        let mut limit = crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES;
+        for entry in &entries {
+            let persisted = match entry {
+                JournalEntry::ExecutionProfile { profile } => profile.total_memory_bytes,
+                JournalEntry::Checkpoint {
+                    execution_profile, ..
+                } => execution_profile
+                    .as_ref()
+                    .and_then(|profile| profile.total_memory_bytes),
+                _ => None,
+            };
+            if let Some(total) = persisted {
+                limit = total;
+            }
+        }
+        let mut memory_budget = crate::world_limits::WorldMemoryBudget::new(limit);
+        memory_budget.try_charge(crate::world_limits::WORLD_MEMORY_BASE_BYTES)?;
+        for entry in &entries {
+            let serialized_len = serde_json::to_vec(entry).map_or(0, |bytes| bytes.len());
+            memory_budget
+                .try_charge(crate::world_limits::journal_entry_charge(serialized_len))?;
+        }
         let mut entries = entries.into_iter();
         match entries.next() {
             Some(JournalEntry::Created { world_id, version }) => {
@@ -220,6 +264,7 @@ impl WorldCore {
             }
             Some(_) => anyhow::bail!("world journal does not start with a header"),
             None => {
+                core.memory_budget = memory_budget;
                 return Ok(RestoredWorld {
                     core,
                     program,
@@ -627,6 +672,7 @@ impl WorldCore {
                 },
             });
         }
+        core.memory_budget = memory_budget;
         core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
@@ -874,6 +920,13 @@ impl WorldCore {
     }
 
     /// The per-world resource requests, independent of current server ceilings.
+    /// The world's total-memory budget ledger (#557): the effective
+    /// limit, the logical charge measured at restore, its high-water
+    /// mark, and the refusal count. Logical accounting, not RSS.
+    pub const fn memory_budget(&self) -> &crate::world_limits::WorldMemoryBudget {
+        &self.memory_budget
+    }
+
     pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
         self.execution_profile
     }

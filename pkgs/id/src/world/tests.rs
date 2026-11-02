@@ -377,6 +377,75 @@ mod tests {
         assert_eq!(restored.core.execution_profile(), profile);
     }
 
+    /// The total logical charge `WorldCore::restore` accounts for a
+    /// journal: the fixed core charge plus each entry's serialized
+    /// length and structural allowance (#557 Phase 2).
+    fn journal_charge(entries: &[JournalEntry]) -> u64 {
+        let mut total = crate::world_limits::WORLD_MEMORY_BASE_BYTES;
+        for entry in entries {
+            let len = serde_json::to_vec(entry).unwrap().len();
+            total += crate::world_limits::journal_entry_charge(len);
+        }
+        total
+    }
+
+    #[test]
+    fn restore_charges_the_journal_against_the_default_budget() {
+        // #557 Phase 2: a budgetless journal restores under the default
+        // ceiling, and the restored core reports the measured charge.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let expected_charge = journal_charge(&entries);
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        let budget = restored.core.memory_budget();
+        assert_eq!(
+            budget.limit_bytes(),
+            crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES
+        );
+        assert_eq!(budget.charged_bytes(), expected_charge);
+        assert_eq!(budget.high_water_bytes(), expected_charge);
+        assert_eq!(budget.refusal_count(), 0);
+    }
+
+    #[test]
+    fn restore_refuses_a_journal_over_its_persisted_budget_and_retries() {
+        // #557 Phase 2: the persisted profile budget is enforced at
+        // restore with a typed refusal; refusal applies nothing, and
+        // the same journal restores once its budget is raised.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(1),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let mut entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let error = WorldCore::restore("test-world", WorldLimits::default(), entries.clone())
+            .unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::world_limits::WorldMemoryBudgetRefusal>()
+            .expect("an over-budget restore must fail with the typed budget refusal");
+        assert_eq!(refusal.limit_bytes, 1);
+        // Raise the persisted budget past the measured charge (with
+        // headroom for the larger number's own serialized width): the
+        // same entries now restore, charged exactly as accounted.
+        let raised = journal_charge(&entries) + 1024;
+        for entry in &mut entries {
+            if let JournalEntry::Checkpoint {
+                execution_profile, ..
+            } = entry
+            {
+                execution_profile.as_mut().unwrap().total_memory_bytes = Some(raised);
+            }
+        }
+        let expected = journal_charge(&entries);
+        assert!(expected <= raised);
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.memory_budget().limit_bytes(), raised);
+        assert_eq!(restored.core.memory_budget().charged_bytes(), expected);
+    }
+
     #[test]
     fn budget_entries_require_journal_version_4_while_budgetless_ones_do_not() {
         // #557 Phase 1: a persisted total budget is the first fact a

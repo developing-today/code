@@ -26,9 +26,158 @@ pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
 /// persistent logical state, session/queued charges, and transient
 /// persistence peaks — never an RSS guarantee: allocator metadata,
 /// thread stacks, and process-shared runtime caches are outside the
-/// accounting model. Enforcement charge sites land in later phases; this
-/// phase establishes the validated, persisted contract only.
+/// accounting model. Phase 1 established the validated, persisted
+/// contract; Phase 2 (below) adds the ledger and enforces it at world
+/// restore/open. Runtime growth, program, and transient-peak charge
+/// sites remain later phases.
 pub const DEFAULT_WORLD_TOTAL_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Fixed logical charge for a world's own core state — the
+/// `WorldCore` struct, its maps/deques, and the actor's fixed
+/// collections — independent of journal size (#557 Phase 2). A policy
+/// constant, not an allocator measurement.
+pub const WORLD_MEMORY_BASE_BYTES: u64 = 4 * 1024;
+
+/// Fixed structural allowance charged per materialized journal entry,
+/// on top of its serialized length (#557 Phase 2): the entry enum, its
+/// owned strings/vectors' headers, and map nodes. A policy constant,
+/// not an allocator measurement.
+pub const JOURNAL_ENTRY_OVERHEAD_BYTES: u64 = 64;
+
+/// Logical charge for one materialized journal entry: its serialized
+/// payload length plus the fixed structural allowance.
+#[must_use]
+pub fn journal_entry_charge(serialized_len: usize) -> u64 {
+    u64::try_from(serialized_len).unwrap_or(u64::MAX)
+        .saturating_add(JOURNAL_ENTRY_OVERHEAD_BYTES)
+}
+
+/// A refused charge against a world's total memory budget (#557).
+///
+/// Typed and recoverable, and deliberately distinct from a guest trap,
+/// an open-world ceiling refusal, and a storage failure: the world is
+/// unharmed, nothing was charged, and a retry can succeed after
+/// charges are released or the configured budget is raised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorldMemoryBudgetRefusal {
+    /// The world's effective budget, in logical bytes.
+    pub limit_bytes: u64,
+    /// Logical bytes already charged when the charge was refused.
+    pub charged_bytes: u64,
+    /// Logical bytes the refused charge asked for.
+    pub requested_bytes: u64,
+}
+
+impl std::fmt::Display for WorldMemoryBudgetRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "world is at its memory budget: {} charged + {} requested              exceeds the {}-byte logical budget",
+            self.charged_bytes, self.requested_bytes, self.limit_bytes
+        )
+    }
+}
+
+impl std::error::Error for WorldMemoryBudgetRefusal {}
+
+/// Per-world logical-charge ledger for the total memory budget
+/// (#557 Phase 2; design `doc/2026-11-01_design_id557.md`).
+///
+/// Deterministic accounting, not an RSS gauge: every charge is a
+/// documented logical size (a serialized length, a reservation
+/// ceiling, or a fixed policy allowance). The invariant is
+/// `charged_bytes <= limit_bytes` at every observable point; a charge
+/// that would break it is refused whole — it charges nothing and
+/// bumps `refusal_count` — so a refused operation leaves the ledger
+/// exactly as it was and can be retried after a release.
+#[derive(Debug, Clone)]
+pub struct WorldMemoryBudget {
+    limit_bytes: u64,
+    charged_bytes: u64,
+    high_water_bytes: u64,
+    refusal_count: u64,
+}
+
+impl WorldMemoryBudget {
+    /// A fresh ledger with nothing charged.
+    #[must_use]
+    pub const fn new(limit_bytes: u64) -> Self {
+        Self {
+            limit_bytes,
+            charged_bytes: 0,
+            high_water_bytes: 0,
+            refusal_count: 0,
+        }
+    }
+
+    /// The effective budget this ledger enforces, in logical bytes.
+    #[must_use]
+    pub const fn limit_bytes(&self) -> u64 {
+        self.limit_bytes
+    }
+
+    /// Set the effective budget (a profile resolved after construction
+    /// can only have lowered it; enforcement is against the new limit
+    /// from the next charge on).
+    pub const fn set_limit_bytes(&mut self, limit_bytes: u64) {
+        self.limit_bytes = limit_bytes;
+    }
+
+    /// Logical bytes currently charged.
+    #[must_use]
+    pub const fn charged_bytes(&self) -> u64 {
+        self.charged_bytes
+    }
+
+    /// Highest charged total ever reached under this ledger.
+    #[must_use]
+    pub const fn high_water_bytes(&self) -> u64 {
+        self.high_water_bytes
+    }
+
+    /// How many charges this ledger has refused.
+    #[must_use]
+    pub const fn refusal_count(&self) -> u64 {
+        self.refusal_count
+    }
+
+    /// Charge `bytes` against the budget, or refuse the whole charge.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldMemoryBudgetRefusal`] — charging nothing — when
+    /// the charge would take the total past the limit (or overflow).
+    pub fn try_charge(&mut self, bytes: u64) -> Result<(), WorldMemoryBudgetRefusal> {
+        match self.charged_bytes.checked_add(bytes) {
+            Some(total) if total <= self.limit_bytes => {
+                self.charged_bytes = total;
+                self.high_water_bytes = self.high_water_bytes.max(total);
+                Ok(())
+            }
+            _ => {
+                self.refusal_count += 1;
+                Err(WorldMemoryBudgetRefusal {
+                    limit_bytes: self.limit_bytes,
+                    charged_bytes: self.charged_bytes,
+                    requested_bytes: bytes,
+                })
+            }
+        }
+    }
+
+    /// Release a previous charge. Saturates at zero: releasing more
+    /// than is charged is a caller bug the ledger absorbs rather than
+    /// underflowing into free budget.
+    pub const fn release(&mut self, bytes: u64) {
+        self.charged_bytes = self.charged_bytes.saturating_sub(bytes);
+    }
+}
+
+impl Default for WorldMemoryBudget {
+    fn default() -> Self {
+        Self::new(DEFAULT_WORLD_TOTAL_MEMORY_BYTES)
+    }
+}
 
 /// Resource bounds applied to each guest invocation.
 ///
@@ -332,6 +481,64 @@ impl RuntimeLimits {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_budget_charges_up_to_the_exact_limit_and_refuses_past_it() {
+        let mut budget = WorldMemoryBudget::new(100);
+        budget.try_charge(60).unwrap();
+        budget.try_charge(40).unwrap();
+        assert_eq!(budget.charged_bytes(), 100);
+        assert_eq!(budget.high_water_bytes(), 100);
+        let refusal = budget.try_charge(1).unwrap_err();
+        assert_eq!(
+            refusal,
+            WorldMemoryBudgetRefusal {
+                limit_bytes: 100,
+                charged_bytes: 100,
+                requested_bytes: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_refused_charge_charges_nothing_and_counts_the_refusal() {
+        let mut budget = WorldMemoryBudget::new(10);
+        budget.try_charge(10).unwrap();
+        assert!(budget.try_charge(1).is_err());
+        assert_eq!(budget.charged_bytes(), 10, "refusal must be atomic");
+        assert_eq!(budget.refusal_count(), 1);
+        // After a release the same charge succeeds: refusal is
+        // recoverable, not poisoning.
+        budget.release(1);
+        budget.try_charge(1).unwrap();
+        assert_eq!(budget.charged_bytes(), 10);
+        assert_eq!(budget.high_water_bytes(), 10);
+    }
+
+    #[test]
+    fn an_overflowing_charge_is_refused_not_wrapped() {
+        let mut budget = WorldMemoryBudget::new(u64::MAX);
+        budget.try_charge(u64::MAX).unwrap();
+        assert!(budget.try_charge(1).is_err());
+        assert_eq!(budget.charged_bytes(), u64::MAX);
+    }
+
+    #[test]
+    fn releasing_more_than_charged_saturates_at_zero() {
+        let mut budget = WorldMemoryBudget::new(10);
+        budget.try_charge(4).unwrap();
+        budget.release(9);
+        assert_eq!(budget.charged_bytes(), 0);
+    }
+
+    #[test]
+    fn a_journal_entry_charges_its_serialized_length_plus_the_allowance() {
+        assert_eq!(journal_entry_charge(0), JOURNAL_ENTRY_OVERHEAD_BYTES);
+        assert_eq!(
+            journal_entry_charge(100),
+            100 + JOURNAL_ENTRY_OVERHEAD_BYTES
+        );
+    }
 
     #[test]
     fn an_empty_world_profile_inherits_every_server_ceiling() {
