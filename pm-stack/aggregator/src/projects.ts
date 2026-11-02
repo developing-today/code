@@ -78,7 +78,9 @@ interface GqlContent {
 }
 interface GqlItem {
   id?: string;
-  databaseId?: number;
+  // ProjectV2Item.databaseId is a nullable Int in the GraphQL schema:
+  // null is a valid upstream shape, normalized away in parseProjectItems.
+  databaseId?: number | null;
   type?: string;
   content?: GqlContent | null;
   fieldValues?: { nodes?: (GqlFieldValue | null)[] } | null;
@@ -141,7 +143,10 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
     const blocks = !isPr ? (c.blocking?.nodes ?? []).map(edgeRef).filter((x): x is RefKey => x !== null) : [];
     out.push({
       id: item.id,
-      databaseId: item.databaseId,
+      // Normalize the nullable GraphQL databaseId to the model's optional
+      // number: null becomes absent, so a valid item is never dropped by
+      // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
+      databaseId: item.databaseId ?? undefined,
       url: projectItemUrl(item.databaseId, projectUrl),
       projectUrl,
       ref: refKey({ repo, number: c.number }),
