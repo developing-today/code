@@ -8,6 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AA_GO_CAPS,
   aaAbsent,
   aaCaiPoints,
   aaCatalogFromConfig,
@@ -733,5 +734,35 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
     expect(scripts.length).toBeGreaterThan(0);
     for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+  });
+});
+
+describe("AA_GO_CAPS keys are reachable (#2645)", () => {
+  test("every key is a fixed point of normalizeModelName", () => {
+    // The lookup is AA_GO_CAPS[normalizeModelName(id)] and the table's
+    // keys are documented as normalizeModelName output. A key that is
+    // not a fixed point can never be hit — the two contributor keys
+    // were dead because normalizeModelName strips the "contributor"
+    // noise token.
+    for (const key of Object.keys(AA_GO_CAPS)) {
+      expect(normalizeModelName(key)).toBe(key);
+    }
+  });
+
+  test("catalog publishes goCapUsd 12 for both contributor ids", () => {
+    const snippet = `{
+      "provider": {
+        "opencode-go": { "name": "OpenCode Go", "models": {
+          "muse-spark-1.3-contributor": { "name": "Muse Spark 1.3" },
+          "gemini-4-argon-contributor": { "name": "Gemini 4 Argon" },
+          "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" }
+        } }
+      }
+    }`;
+    const catalog = aaCatalogFromConfig(snippet, { configs: [], rankings: [] });
+    expect(catalog).not.toBeNull();
+    expect(catalog!.find((e) => e.id === "opencode-go/muse-spark-1.3-contributor")!.goCapUsd).toBe(12);
+    expect(catalog!.find((e) => e.id === "opencode-go/gemini-4-argon-contributor")!.goCapUsd).toBe(12);
+    expect(catalog!.find((e) => e.id === "opencode-go/deepseek-v4.1-flash")!.goCapUsd).toBe(80);
   });
 });

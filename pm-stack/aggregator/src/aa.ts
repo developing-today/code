@@ -675,8 +675,8 @@ export const AA_GO_CAPS: Record<string, number> = {
   "kimi k3": 15,
   "grok 4 7": 15,
   "claude haiku 5 5": 15,
-  "muse spark 1 3 contributor": 12,
-  "gemini 4 argon contributor": 12,
+  "muse spark 1 3": 12,
+  "gemini 4 argon": 12,
 };
 
 interface RawModelEntry {
