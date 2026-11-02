@@ -30,6 +30,7 @@ function startStubServe(script) {
   let sessionStatus = {};
   let statusResponseDelay = 0;
   let onStatusRequest = null;
+  let promptAsyncResponseDelay = 0;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -43,6 +44,9 @@ function startStubServe(script) {
     },
     onStatusRequest: (handler) => {
       onStatusRequest = handler;
+    },
+    setPromptAsyncDelay: (ms) => {
+      promptAsyncResponseDelay = ms;
     },
     dropEventStreams: () => {
       for (const res of sseClients) res.destroy();
@@ -84,9 +88,13 @@ function startStubServe(script) {
         return;
       }
       if (req.method === 'POST' && url.pathname === `/session/${SESSION_ID}/prompt_async`) {
-        res.writeHead(204);
-        res.end();
-        setImmediate(() => script(emit, body, serveControls));
+        const respondPromptAsync = () => {
+          res.writeHead(204);
+          res.end();
+          setImmediate(() => script(emit, body, serveControls));
+        };
+        if (promptAsyncResponseDelay) setTimeout(respondPromptAsync, promptAsyncResponseDelay);
+        else respondPromptAsync();
         return;
       }
       if (req.method === 'POST' && /\/permissions\//.test(url.pathname)) {
@@ -106,7 +114,7 @@ function startStubServe(script) {
   });
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, calls, port: server.address().port });
+      resolve({ server, calls, port: server.address().port, controls: serveControls });
     });
   });
 }
@@ -365,4 +373,45 @@ test('reconciliation does not finish a newer prompt using a stale status snapsho
   });
   assert.equal(second.stopReason, 'end_turn');
   assert.equal(secondPromptIdleEmitted, true, 'new prompt waited for its own idle event');
+});
+
+test('reconciliation does not finish a prompt whose submission is still in flight', async (t) => {
+  // The prompt_async POST stays in flight while the stream drops and
+  // reconnects. The status snapshot taken during reconciliation predates
+  // server-side execution (idle/absent), so without the submitted guard
+  // the prompt would resolve end_turn early and its later streamed output
+  // would be discarded as orphan events.
+  const script = (emit) => {
+    emit({
+      type: 'message.part.updated',
+      properties: {
+        part: { id: 'part1', sessionID: SESSION_ID, type: 'text', text: 'late output' },
+        delta: 'late output',
+      },
+    });
+    emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+  };
+  const { stub, acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  stub.controls.setPromptAsyncDelay(2500);
+  const promptPromise = acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'slow submission' }],
+  });
+  // The prompt entry is registered as soon as the POST reaches the stub,
+  // while the 204 response (submission) is still delayed.
+  await acp.waitFor(
+    () => stub.calls.find((c) => c.pathname.endsWith('/prompt_async')),
+    'prompt_async to reach the stub',
+  );
+  // Drop the stream mid-submission with the session absent from status:
+  // reconnect reconciliation must leave the unsubmitted entry alone.
+  stub.controls.setStatus({});
+  stub.controls.dropEventStreams();
+  const result = await promptPromise;
+  assert.equal(result.stopReason, 'end_turn');
+  const chunks = acp.notifications
+    .filter((n) => n.method === 'session/update' && n.params.update.sessionUpdate === 'agent_message_chunk')
+    .map((n) => n.params.update.content.text);
+  assert.equal(chunks.join(''), 'late output', 'streamed output after reconcile was not discarded');
 });
