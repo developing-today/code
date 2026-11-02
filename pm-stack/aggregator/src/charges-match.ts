@@ -99,10 +99,6 @@ export function normalizeMerchantName(raw: string): string {
   return tokens.join(" ");
 }
 
-function squash(normalized: string): string {
-  return normalized.replace(/\s+/g, "");
-}
-
 function daysBetween(a: string, b: string): number {
   const ms = Math.abs(Date.parse(a) - Date.parse(b));
   return Math.floor(ms / 86_400_000);
@@ -146,6 +142,10 @@ const SAAS_MARKERS = [
   // charges to these are exactly the unmatched SaaS/AI charges the
   // hub exists to surface.
   "META",
+  // Known Meta billing descriptor (METAPAY*...): previously matched via
+  // the META substring; listed explicitly so token-boundary matching
+  // keeps surfacing it as unmatched SaaS when Meta is not in the catalog.
+  "METAPAY",
   "CLINE",
   "OPENCODE",
   "OPENDESIGN",
@@ -156,20 +156,17 @@ const SAAS_MARKERS = [
 
 /** Heuristic: does this normalized merchant look like a SaaS/AI charge? */
 export function isSaasLooking(normalized: string): boolean {
-  const flat = squash(normalized);
-  return SAAS_MARKERS.some((marker) => flat.includes(marker));
+  const tokens = new Set(normalized.split(" ").filter(Boolean));
+  return SAAS_MARKERS.some((marker) => tokens.has(marker));
 }
 
 /** The hub service a normalized merchant belongs to, if any. */
 export function matchService(normalized: string, services: ChargeServiceRef[]): ChargeServiceRef | undefined {
-  const flat = squash(normalized);
   const tokenSet = new Set(normalized.split(" ").filter(Boolean));
   for (const service of services) {
     for (const candidate of [service.name, ...(service.aliases ?? [])]) {
       const norm = normalizeMerchantName(candidate);
       if (!norm) continue;
-      const flatNorm = squash(norm);
-      if (flatNorm.length >= 4 && flat.includes(flatNorm)) return service;
       const tokens = norm.split(" ").filter(Boolean);
       if (tokens.length > 0 && tokens.every((t) => tokenSet.has(t))) return service;
     }
