@@ -453,6 +453,10 @@ pub async fn search_tags_handler(
         Err(message) => return bad_ns(message).into_response(),
     };
 
+    if let Err(e) = crate::tags::parse_search_query(&query.q) {
+        return bad_ns(format!("invalid search query: {e}")).into_response();
+    }
+
     match tag_store.search_by_query(ns, &query.q).await {
         Ok(tags) => {
             let response: Vec<TagResponse> = tags.into_iter().map(to_response).collect();
