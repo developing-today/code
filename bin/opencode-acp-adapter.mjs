@@ -126,7 +126,7 @@ function requestClient(method, params) {
 const sessions = new Map(); // acpSessionId -> { directory }
 const pendingPrompts = new Map(); // acpSessionId -> { requestId }
 const cancelledSessions = new Set(); // acpSessionId
-const partTextSent = new Map(); // partId -> chars of part.text already streamed
+const partTextSent = new Map(); // acpSessionId -> Map<partId, chars of part.text already streamed>
 
 function sessionUpdate(sessionId, update) {
   sendNotification('session/update', { sessionId, update });
@@ -217,14 +217,19 @@ function eventSessionId(properties) {
 
 function streamPartText(sessionId, part, delta) {
   if (!part || (part.type !== 'text' && part.type !== 'reasoning')) return;
+  let sessionPartTextSent = partTextSent.get(sessionId);
+  if (!sessionPartTextSent) {
+    sessionPartTextSent = new Map();
+    partTextSent.set(sessionId, sessionPartTextSent);
+  }
   let chunk = '';
   if (typeof delta === 'string' && delta.length > 0) {
     chunk = delta;
-    partTextSent.set(part.id, (partTextSent.get(part.id) || 0) + delta.length);
+    sessionPartTextSent.set(part.id, (sessionPartTextSent.get(part.id) || 0) + delta.length);
   } else if (typeof part.text === 'string') {
-    const sent = partTextSent.get(part.id) || 0;
+    const sent = sessionPartTextSent.get(part.id) || 0;
     chunk = part.text.slice(sent);
-    partTextSent.set(part.id, part.text.length);
+    sessionPartTextSent.set(part.id, part.text.length);
   }
   if (!chunk) return;
   sessionUpdate(sessionId, {
@@ -287,7 +292,7 @@ function finishPrompt(sessionId, result, error) {
   const pending = pendingPrompts.get(sessionId);
   if (!pending) return;
   pendingPrompts.delete(sessionId);
-  partTextSent.clear();
+  partTextSent.delete(sessionId);
   if (error) sendError(pending.requestId, -32603, error);
   else sendResult(pending.requestId, result);
 }
