@@ -74,6 +74,28 @@ export interface CoverageSnapshotFile {
 
 export const COVERAGE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+const COUNT_FIELDS = ["openIssues", "gateNow", "gateNext", "poolItems", "poolUnsetStatus", "poolUnsetArea"] as const;
+
+function isCountOrNull(value: unknown): value is number | null {
+  return value === null || typeof value === "number";
+}
+
+/** Structural gate for one stored coverage row: string repo, number-or-null counts. */
+function isCoverageRow(value: unknown): value is RepoCoverage {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.repo === "string" && COUNT_FIELDS.every((field) => isCountOrNull(row[field]));
+}
+
+/** Structural gate for one stored coverage report. */
+function isCoverageReport(value: unknown): value is CoverageReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Record<string, unknown>;
+  return (
+    typeof report.generatedAt === "string" && Array.isArray(report.repos) && report.repos.every(isCoverageRow)
+  );
+}
+
 function isRepositoryRef(value: string): boolean {
   const parts = value.split("/");
   if (parts.length !== 2) return false;
@@ -220,9 +242,15 @@ export class CoverageSnapshotStore {
   async read(): Promise<CoverageSnapshotFile | null> {
     try {
       const parsed = JSON.parse(await readFile(this.file, "utf8")) as CoverageSnapshotFile;
-      if (!parsed || typeof parsed !== "object" || !parsed.current || !Array.isArray(parsed.current.repos)) {
+      if (!parsed || typeof parsed !== "object") return null;
+      if (!isCoverageReport(parsed.current)) return null;
+      if (parsed.baseline !== undefined && parsed.baseline !== null && !isCoverageReport(parsed.baseline)) {
         return null;
       }
+      if (parsed.weekly !== undefined && parsed.weekly !== null && !isCoverageReport(parsed.weekly)) {
+        return null;
+      }
+      if (parsed.anchorAt !== undefined && typeof parsed.anchorAt !== "string") return null;
       return parsed;
     } catch {
       return null;
