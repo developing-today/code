@@ -121,6 +121,13 @@ pub struct PeersOptions {
 /// tab, CR, LF or other structure-breaking character is quoted and escaped by
 /// [`plain_field`] instead of shifting a column or forging a row (#1613).
 pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()> {
+    if options.depth < 0 {
+        bail!(
+            "peer crawl depth must be non-negative, got {}",
+            options.depth
+        );
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
     // Determine mode
@@ -161,7 +168,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
                 options.no_relay,
                 options.no_mdns,
             )
-            .await;
+            .await?;
             for peer in crawled {
                 all_peers.insert(peer.node_id, peer);
             }
@@ -298,7 +305,11 @@ async fn crawl_peers(
     timeout_secs: u64,
     no_relay: bool,
     no_mdns: bool,
-) -> Vec<PeerAnnouncement> {
+) -> Result<Vec<PeerAnnouncement>> {
+    if depth < 0 {
+        bail!("peer crawl depth must be non-negative, got {depth}");
+    }
+
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
     let mut visited: HashSet<EndpointId> = HashSet::new();
     let mut frontier: Vec<EndpointId> = Vec::new();
@@ -310,10 +321,9 @@ async fn crawl_peers(
     }
 
     let mut current_depth = 0;
-    let max_depth = if depth < 0 { i32::MAX } else { depth };
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
 
-    while current_depth < max_depth && !frontier.is_empty() {
+    while current_depth < depth && !frontier.is_empty() {
         if all_peers.len() >= max_peers {
             tracing::warn!(
                 "peers: max-peers cap ({}) reached at depth {}",
@@ -363,7 +373,7 @@ async fn crawl_peers(
         current_depth += 1;
     }
 
-    all_peers.into_values().collect()
+    Ok(all_peers.into_values().collect())
 }
 
 /// Discovers peers via gossip by joining the discovery topic.
@@ -488,6 +498,14 @@ mod tests {
     use super::*;
     use crate::discovery::PeerDiscovery;
     use iroh_base::SecretKey;
+
+    #[tokio::test]
+    async fn crawl_peers_refuses_negative_depth_before_networking() {
+        let err = crawl_peers(&[], -1, 1000, 30, false, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("depth must be non-negative"));
+    }
 
     fn now_secs() -> u64 {
         std::time::SystemTime::now()
