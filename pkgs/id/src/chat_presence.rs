@@ -76,6 +76,12 @@ pub const TYPING_TTL_SECS: u64 = 12;
 /// single received heartbeat can make the table do.
 pub const MAX_HEARTBEAT_CHANNELS: usize = 64;
 
+/// The maximum number of distinct nodes retained in [`PresenceTable`].
+///
+/// Bounding the node count prevents unbounded memory growth from a flood
+/// of self-signed heartbeats with minted keys on the public gossip topic (Fixes #4004).
+pub const MAX_PRESENCE_NODES: usize = 1024;
+
 /// Frame prefix distinguishing presence frames from peer-discovery announcements on
 /// the shared gossip topic. A frame without this prefix is not a presence frame, and
 /// [`decode_frame`] returns `None` for it; legacy announcement bytes never decode as
@@ -156,7 +162,9 @@ impl PresenceHeartbeat {
         let Ok(signature) = Signature::from_slice(&self.signature) else {
             return false;
         };
-        verifying_key.verify(&self.signing_bytes(), &signature).is_ok()
+        verifying_key
+            .verify(&self.signing_bytes(), &signature)
+            .is_ok()
     }
 
     /// Whether the heartbeat claims typing in `channel`.
@@ -242,7 +250,7 @@ impl PresenceTable {
     /// Records a heartbeat as of `now` (unix seconds), the deterministic core of
     /// [`update`](Self::update) and [`update_scoped`](Self::update_scoped).
     ///
-    /// Three guards, mirroring [`crate::discovery::PeerDiscovery`]:
+    /// Four guards, mirroring [`crate::discovery::PeerDiscovery`]:
     ///
     /// - **Freshness bound.** A heartbeat stamped older than [`PRESENCE_TTL_SECS`]
     ///   relative to `now` is refused — replaying a captured heartbeat cannot keep a
@@ -256,6 +264,11 @@ impl PresenceTable {
     ///   stamp's freshness bound no matter when copies of it arrive.
     /// - **Scoping.** Channels (and typing claims) the sender is not a member of,
     ///   per `is_member`, are filtered out before the heartbeat is stored.
+    /// - **Node count bound.** The table stores at most [`MAX_PRESENCE_NODES`] nodes.
+    ///   Updates to an existing key update in place and consume no new capacity. When
+    ///   inserting a new node while at capacity, expired entries are pruned first. If
+    ///   still at capacity, the oldest entry (lowest heartbeat `ts`, tie-broken by
+    ///   `node` key) is evicted to make room (Fixes #4004).
     ///
     /// Returns whether the heartbeat was accepted (inserted or replacing).
     pub fn update_at(
@@ -291,11 +304,38 @@ impl PresenceTable {
         let Ok(mut entries) = self.entries.write() else {
             return false;
         };
-        if let Some(existing) = entries.get(&node)
-            && heartbeat.ts < existing.heartbeat.ts
-        {
-            return false;
+        if let Some(existing) = entries.get(&node) {
+            if heartbeat.ts < existing.heartbeat.ts {
+                return false;
+            }
+            entries.insert(node, Entry { heartbeat });
+            return true;
         }
+
+        // Inserting a new node key while at capacity:
+        if entries.len() >= MAX_PRESENCE_NODES {
+            // First prune expired entries:
+            entries.retain(|_, entry| now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS);
+
+            // If still at capacity, deterministically evict the oldest entry
+            // (soonest to expire / lowest timestamp, tie-broken by node key).
+            if entries.len() >= MAX_PRESENCE_NODES {
+                let oldest_key = entries
+                    .iter()
+                    .min_by(|(k1, e1), (k2, e2)| {
+                        e1.heartbeat
+                            .ts
+                            .cmp(&e2.heartbeat.ts)
+                            .then_with(|| k1.cmp(k2))
+                    })
+                    .map(|(k, _)| *k);
+
+                if let Some(k) = oldest_key {
+                    entries.remove(&k);
+                }
+            }
+        }
+
         entries.insert(node, Entry { heartbeat });
         true
     }
@@ -700,7 +740,10 @@ mod tests {
             Liveness::Offline
         );
         let roster = table.roster_at(&chan, &[alice], replay_at);
-        assert!(!roster[0].typing, "a replayed typing claim must not refresh");
+        assert!(
+            !roster[0].typing,
+            "a replayed typing claim must not refresh"
+        );
     }
 
     #[test]
@@ -724,7 +767,9 @@ mod tests {
         forged.ts += 1;
         assert!(!forged.verify());
         let mut forged = hb;
-        forged.node = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes();
+        forged.node = SigningKey::from_bytes(&[8u8; 32])
+            .verifying_key()
+            .to_bytes();
         assert!(!forged.verify());
     }
 
@@ -743,5 +788,92 @@ mod tests {
             restarted.liveness_at(&alice, &chan, 8_000),
             Liveness::Offline
         );
+    }
+
+    #[test]
+    fn node_count_bound_caps_storage_and_prunes_expired_first() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 10_000;
+
+        // Fill table up to MAX_PRESENCE_NODES with distinct keys
+        for i in 0..MAX_PRESENCE_NODES {
+            let mut node = [0u8; 32];
+            node[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            // First 100 entries have ts = now - 50, remaining have ts = now
+            let ts = if i < 100 { now - 50 } else { now };
+            assert!(table.update_at(heartbeat(node, vec![chan], ts), now, &|_, _| true));
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // At `later = now + 30`, first 100 entries have age (now + 30) - (now - 50) = 80 > 75 (expired).
+        // The remaining entries have age (now + 30) - now = 30 <= 75 (still fresh).
+        let later = now + 30;
+        let mut new_node = [0xffu8; 32];
+        new_node[0] = 1;
+        assert!(table.update_at(heartbeat(new_node, vec![chan], later), later, &|_, _| true));
+
+        // After pruning the 100 expired entries and adding 1 new node,
+        // table count is MAX_PRESENCE_NODES - 100 + 1 = MAX_PRESENCE_NODES - 99.
+        assert_eq!(table.count(), MAX_PRESENCE_NODES - 99);
+    }
+
+    #[test]
+    fn node_count_bound_evicts_oldest_timestamp_when_all_fresh() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 20_000;
+
+        // Fill table with MAX_PRESENCE_NODES distinct keys
+        for i in 0..MAX_PRESENCE_NODES {
+            let mut node = [0u8; 32];
+            node[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            // node 0 has timestamp `now - 10`, others have timestamp `now`
+            let ts = if i == 0 { now - 10 } else { now };
+            assert!(table.update_at(heartbeat(node, vec![chan], ts), now, &|_, _| true));
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // A new node arrives while none is expired:
+        let mut new_node = [0xffu8; 32];
+        new_node[0] = 1;
+        assert!(table.update_at(heartbeat(new_node, vec![chan], now), now, &|_, _| true));
+
+        // Total count must not exceed MAX_PRESENCE_NODES
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Node 0 had the lowest timestamp and was evicted
+        let mut node0 = [0u8; 32];
+        node0[0..2].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(table.liveness_at(&node0, &chan, now), Liveness::Offline);
+        // New node is live
+        assert_eq!(table.liveness_at(&new_node, &chan, now), Liveness::Live);
+    }
+
+    #[test]
+    fn existing_node_update_at_capacity_succeeds_in_place_without_eviction() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 30_000;
+
+        // Fill table with MAX_PRESENCE_NODES distinct keys
+        for i in 0..MAX_PRESENCE_NODES {
+            let mut node = [0u8; 32];
+            node[0..2].copy_from_slice(&(i as u16).to_le_bytes());
+            assert!(table.update_at(heartbeat(node, vec![chan], now), now, &|_, _| true));
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Updating an existing node key (node 42) at capacity
+        let mut node42 = [0u8; 32];
+        node42[0..2].copy_from_slice(&42u16.to_le_bytes());
+        assert!(
+            table.update_at(heartbeat(node42, vec![chan], now + 1), now + 1, &|_, _| {
+                true
+            })
+        );
+
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        assert_eq!(table.liveness_at(&node42, &chan, now + 1), Liveness::Live);
     }
 }
