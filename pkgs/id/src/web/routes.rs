@@ -2605,7 +2605,22 @@ mod upload_router_tests {
         // binding through the public API alone (Codex P2 on PR #3894):
         // parse [interfaces.web] with the re-exported parser and build
         // the app router with the re-exported constructor.
-        let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        // The world page handler 404s when no world is hosted; host
+        // one so the assertions below measure routing (the configured
+        // route registered, the default route absent), not hosting.
+        state.world = Some(crate::world_hub::WorldHub::single(
+            crate::world_session::WorldService::new(
+                crate::world::WorldHandle::spawn(
+                    crate::world::WorldCore::new(
+                        "lobby",
+                        crate::world::WorldLimits::default(),
+                    )
+                    .unwrap(),
+                ),
+                None,
+            ),
+        ));
         let interface = crate::web::web_interface_from_app_toml(
             "[interfaces.web]\nmode = \"adapter\"\nroute = \"/arena\"\nsocket = \"/ws/arena\"\n",
         )
