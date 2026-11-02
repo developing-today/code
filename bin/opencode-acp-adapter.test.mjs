@@ -27,9 +27,30 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function startStubServe(script) {
   const calls = [];
   const sseClients = new Set();
+  let sessionStatus = {};
+  let statusResponseDelay = 0;
+  let onStatusRequest = null;
+  let promptAsyncResponseDelay = 0;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
+  };
+  const serveControls = {
+    setStatus: (status) => {
+      sessionStatus = status;
+    },
+    setStatusResponseDelay: (ms) => {
+      statusResponseDelay = ms;
+    },
+    onStatusRequest: (handler) => {
+      onStatusRequest = handler;
+    },
+    setPromptAsyncDelay: (ms) => {
+      promptAsyncResponseDelay = ms;
+    },
+    dropEventStreams: () => {
+      for (const res of sseClients) res.destroy();
+    },
   };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -50,15 +71,30 @@ function startStubServe(script) {
         res.on('close', () => sseClients.delete(res));
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/session/status') {
+        const statusSnapshot = sessionStatus;
+        onStatusRequest?.();
+        const sendStatus = () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(statusSnapshot));
+        };
+        if (statusResponseDelay) setTimeout(sendStatus, statusResponseDelay);
+        else sendStatus();
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/session') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id: SESSION_ID, directory: url.searchParams.get('directory') }));
         return;
       }
       if (req.method === 'POST' && url.pathname === `/session/${SESSION_ID}/prompt_async`) {
-        res.writeHead(204);
-        res.end();
-        setImmediate(() => script(emit, body));
+        const respondPromptAsync = () => {
+          res.writeHead(204);
+          res.end();
+          setImmediate(() => script(emit, body, serveControls));
+        };
+        if (promptAsyncResponseDelay) setTimeout(respondPromptAsync, promptAsyncResponseDelay);
+        else respondPromptAsync();
         return;
       }
       if (req.method === 'POST' && /\/permissions\//.test(url.pathname)) {
@@ -78,7 +114,7 @@ function startStubServe(script) {
   });
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, calls, port: server.address().port });
+      resolve({ server, calls, port: server.address().port, controls: serveControls });
     });
   });
 }
@@ -259,4 +295,123 @@ test('session/cancel aborts on the serve and the prompt resolves cancelled', asy
     stub.calls.find((c) => c.pathname === `/session/${SESSION_ID}/abort`),
     'stub serve saw POST abort',
   );
+});
+
+test('prompt completed during an event-stream drop is reconciled on reconnect (#4617)', async (t) => {
+  let promptCount = 0;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+      // The stream drops mid-prompt and the server finishes the prompt
+      // during the gap: no session.idle ever reaches the adapter, and
+      // the session leaves the status map. Without reconciliation the
+      // ACP request would hang forever.
+      setTimeout(() => {
+        serve.dropEventStreams();
+        serve.setStatus({});
+      }, 50);
+      return;
+    }
+    emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+  };
+  const { stub, acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'long task' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
+  assert.ok(
+    stub.calls.find((c) => c.method === 'GET' && c.pathname === '/session/status'),
+    'adapter queried /session/status after reconnecting',
+  );
+  // The session is not wedged: a later prompt is accepted and completes.
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'again' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+});
+
+test('reconciliation does not finish a newer prompt using a stale status snapshot', async (t) => {
+  let promptCount = 0;
+  let secondPromptIdleEmitted = false;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({});
+      serve.setStatusResponseDelay(500);
+      // Deliver the first prompt's completion over the reconnected stream
+      // while the status response is delayed. The client will start another
+      // prompt before the stale snapshot arrives.
+      serve.onStatusRequest(() => {
+        emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+      });
+      setTimeout(() => serve.dropEventStreams(), 50);
+      return;
+    }
+    serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+    setTimeout(() => {
+      secondPromptIdleEmitted = true;
+      serve.setStatus({});
+      emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+    }, 1000);
+  };
+  const { acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first task' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second task' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+  assert.equal(secondPromptIdleEmitted, true, 'new prompt waited for its own idle event');
+});
+
+test('reconciliation does not finish a prompt whose submission is still in flight', async (t) => {
+  // The prompt_async POST stays in flight while the stream drops and
+  // reconnects. The status snapshot taken during reconciliation predates
+  // server-side execution (idle/absent), so without the submitted guard
+  // the prompt would resolve end_turn early and its later streamed output
+  // would be discarded as orphan events.
+  const script = (emit) => {
+    emit({
+      type: 'message.part.updated',
+      properties: {
+        part: { id: 'part1', sessionID: SESSION_ID, type: 'text', text: 'late output' },
+        delta: 'late output',
+      },
+    });
+    emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+  };
+  const { stub, acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  stub.controls.setPromptAsyncDelay(2500);
+  const promptPromise = acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'slow submission' }],
+  });
+  // The prompt entry is registered as soon as the POST reaches the stub,
+  // while the 204 response (submission) is still delayed.
+  await acp.waitFor(
+    () => stub.calls.find((c) => c.pathname.endsWith('/prompt_async')),
+    'prompt_async to reach the stub',
+  );
+  // Drop the stream mid-submission with the session absent from status:
+  // reconnect reconciliation must leave the unsubmitted entry alone.
+  stub.controls.setStatus({});
+  stub.controls.dropEventStreams();
+  const result = await promptPromise;
+  assert.equal(result.stopReason, 'end_turn');
+  const chunks = acp.notifications
+    .filter((n) => n.method === 'session/update' && n.params.update.sessionUpdate === 'agent_message_chunk')
+    .map((n) => n.params.update.content.text);
+  assert.equal(chunks.join(''), 'late output', 'streamed output after reconcile was not discarded');
 });

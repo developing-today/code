@@ -124,7 +124,7 @@ function requestClient(method, params) {
 // ---------------------------------------------------------------------------
 
 const sessions = new Map(); // acpSessionId -> { directory }
-const pendingPrompts = new Map(); // acpSessionId -> { requestId }
+const pendingPrompts = new Map(); // acpSessionId -> { requestId, submitted }
 const cancelledSessions = new Set(); // acpSessionId
 const partTextSent = new Map(); // partId -> chars of part.text already streamed
 
@@ -155,10 +155,62 @@ async function ensureEventStream(timeoutMs = 5000) {
   ]);
 }
 
+// After a reconnect, prompts whose session finished while the stream
+// was down never get their session.idle / session.error event, so
+// without reconciliation they would stay in pendingPrompts forever
+// (and every later prompt would be rejected as already in flight,
+// #4617). Ask the serve for the current session status instead:
+// busy/retry sessions are still running and their completion event
+// will arrive on the new stream; idle or absent sessions finished
+// during the gap and are completed here exactly as session.idle
+// would have; if the status cannot be read at all, fail the pending
+// prompts explicitly rather than leaving them hanging.
+async function reconcilePendingPrompts() {
+  // Capture submission state up front: a prompt whose prompt_async POST
+  // has not resolved yet has no server-side execution for the status
+  // snapshot to reflect, so an idle/absent entry must not finish it.
+  // (The entry object is mutated on submission, so copy the flag here.)
+  const pendingAtRequest = [...pendingPrompts.entries()].map(([sessionId, pending]) => [
+    sessionId,
+    pending,
+    pending.submitted === true,
+  ]);
+  if (pendingAtRequest.length === 0) return;
+  let status = null;
+  try {
+    status = await serveJson('/session/status');
+  } catch (err) {
+    debug(`reconcile after reconnect: GET /session/status failed: ${err.message}`);
+  }
+  for (const [sessionId, pending, wasSubmitted] of pendingAtRequest) {
+    // The status snapshot may have been taken before a prompt started after
+    // this reconciliation began. Only finish the exact prompt we observed.
+    if (pendingPrompts.get(sessionId) !== pending) continue;
+    // The serve had not accepted this prompt when reconciliation began;
+    // its completion will arrive on the reconnected stream (and the POST
+    // failure path cleans up if submission itself failed).
+    if (!wasSubmitted) continue;
+    if (!status) {
+      finishPrompt(
+        sessionId,
+        null,
+        'event stream reconnected and the session state could not be verified; prompt aborted',
+      );
+      continue;
+    }
+    const type = status[sessionId]?.type;
+    if (type === 'busy' || type === 'retry') continue;
+    const wasCancelled = cancelledSessions.has(sessionId);
+    cancelledSessions.delete(sessionId);
+    finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
+  }
+}
+
 async function runEventStream() {
   eventStreamReady = new Promise((resolve) => {
     eventStreamReadyResolve = resolve;
   });
+  let connectedOnce = false;
   while (!shuttingDown) {
     try {
       const res = await fetch(`${serverBase}/event`, {
@@ -167,6 +219,8 @@ async function runEventStream() {
       if (!res.ok || !res.body) throw new Error(`GET /event -> ${res.status}`);
       markEventStreamReady();
       debug('event stream connected');
+      if (connectedOnce) void reconcilePendingPrompts();
+      connectedOnce = true;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -403,7 +457,11 @@ const handlers = {
     const parts = acpBlocksToServeParts(params.prompt);
     // Register before posting so fast events are not missed; the reply is
     // sent by finishPrompt when the serve reports session.idle / error.
-    pendingPrompts.set(sessionId, { requestId });
+    // `submitted` flips only after the serve accepts the prompt, so a
+    // reconnect reconciliation racing the in-flight POST knows this entry
+    // has no server-side state to reconcile yet and leaves it alone.
+    const pending = { requestId, submitted: false };
+    pendingPrompts.set(sessionId, pending);
     try {
       await serveJson(withDirectory(`/session/${sessionId}/prompt_async`, directory), {
         method: 'POST',
@@ -413,6 +471,7 @@ const handlers = {
       pendingPrompts.delete(sessionId);
       throw err;
     }
+    pending.submitted = true;
     return undefined; // response deferred to finishPrompt
   },
 
