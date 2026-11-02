@@ -19,6 +19,7 @@
 //! - [`FileOps::delete`] is a *hard* delete: the name, its metadata and its
 //!   archive tags are removed. The blob bytes stay until garbage collected.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -136,6 +137,14 @@ async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String>
         }
         suffix += 1;
     }
+}
+
+/// Whether `name` has the archive tag shape used by FileOps.
+fn is_archive_tag_name(name: &str) -> bool {
+    let Some((file_name, suffix)) = name.rsplit_once(".archive.") else {
+        return false;
+    };
+    !file_name.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Resolve a free archive name for `name` at `ts` and claim it for
@@ -433,6 +442,47 @@ impl<'a> FileOps<'a> {
         if name.trim().is_empty() {
             return Err(FileOpError::EmptyName);
         }
+
+        // Renames move the file identity metadata, including these archive
+        // references, to the current name. Read them before deleting metadata.
+        let mut archives = BTreeSet::new();
+        for key in [&b"archive.rename"[..], &b"archive.replace"[..]] {
+            for tag in self
+                .tags
+                .get_by_key(&self.tags.global, name.as_bytes(), key)
+                .await?
+            {
+                if let Some(archive_name) = tag.value.as_ref().and_then(|value| value.as_str()) {
+                    if is_archive_tag_name(archive_name) {
+                        archives.insert(archive_name.to_owned());
+                    } else {
+                        tracing::warn!("ignoring malformed archive reference on {name}");
+                    }
+                }
+            }
+        }
+
+        // Keep the legacy/current-name scan for archives without metadata.
+        // Collect before mutation so a listing failure cannot leave a partial
+        // hard delete behind.
+        let prefix = format!("{name}.archive.");
+        let mut list = self
+            .store
+            .tags()
+            .list()
+            .await
+            .map_err(anyhow::Error::from)?;
+        while let Some(item) = list.next().await {
+            let item = item.map_err(anyhow::Error::from)?;
+            let tag = String::from_utf8_lossy(item.name.as_ref()).into_owned();
+            if let Some(rest) = tag.strip_prefix(&prefix)
+                && !rest.is_empty()
+                && rest.bytes().all(|b| b.is_ascii_digit())
+            {
+                archives.insert(tag);
+            }
+        }
+
         let existed = self
             .store
             .tags()
@@ -455,26 +505,6 @@ impl<'a> FileOps<'a> {
                 0
             });
 
-        // Archive tags are named "<name>.archive.<unix-ts>"; match the numeric
-        // suffix exactly so unrelated files that merely share a prefix survive.
-        let prefix = format!("{name}.archive.");
-        let mut archives = Vec::new();
-        let mut list = self
-            .store
-            .tags()
-            .list()
-            .await
-            .map_err(anyhow::Error::from)?;
-        while let Some(item) = list.next().await {
-            let item = item.map_err(anyhow::Error::from)?;
-            let tag = String::from_utf8_lossy(item.name.as_ref()).into_owned();
-            if let Some(rest) = tag.strip_prefix(&prefix)
-                && !rest.is_empty()
-                && rest.bytes().all(|b| b.is_ascii_digit())
-            {
-                archives.push(tag);
-            }
-        }
         let mut archives_removed = 0;
         for tag in archives {
             match self.store.tags().delete(&tag).await {
@@ -594,5 +624,71 @@ mod archive_name_tests {
             store.tags().get(&name).await.unwrap().unwrap().hash,
             hash(7)
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod delete_tests {
+    use crate::local::LocalNode;
+
+    use super::*;
+
+    async fn put(node: &LocalNode, name: &str, data: &[u8]) {
+        let guard = node
+            .blobs()
+            .add_bytes(data.to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        node.ops().put(name, guard.hash()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_after_archived_rename_removes_previous_name_archive() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "before", b"original").await;
+
+        let rename = node.ops().rename("before", "after", true).await.unwrap();
+        let archive = rename.archived_original.unwrap();
+        assert!(node.blobs().tags().get(&archive).await.unwrap().is_some());
+
+        let deleted = node.ops().delete("after").await.unwrap();
+
+        assert_eq!(deleted.archives_removed, 1);
+        assert!(node.blobs().tags().get(&archive).await.unwrap().is_none());
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_after_repeated_replacements_removes_all_replaced_archives() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "A", b"original").await;
+
+        put(&node, "replacement-1", b"first replacement").await;
+        let first = node
+            .ops()
+            .rename("replacement-1", "A", false)
+            .await
+            .unwrap()
+            .archived_replaced
+            .unwrap();
+        put(&node, "replacement-2", b"second replacement").await;
+        let second = node
+            .ops()
+            .rename("replacement-2", "A", false)
+            .await
+            .unwrap()
+            .archived_replaced
+            .unwrap();
+        assert_ne!(first, second);
+
+        node.ops().rename("A", "B", false).await.unwrap();
+        let deleted = node.ops().delete("B").await.unwrap();
+
+        assert_eq!(deleted.archives_removed, 2);
+        assert!(node.blobs().tags().get(&first).await.unwrap().is_none());
+        assert!(node.blobs().tags().get(&second).await.unwrap().is_none());
+        node.shutdown().await.unwrap();
     }
 }
