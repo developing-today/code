@@ -69,6 +69,29 @@ describe("entryFromResult", () => {
     expect(balance?.pctOfLimit).toBeNull();
     expect(balance?.valueLabel).toBe("12.50");
   });
+  test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
+    const tickIso = "2026-11-02T03:00:00.000Z";
+    const fetchedAts = [1e16, -1e16, 0, -1, NaN, Infinity, -Infinity, undefined, 1793075143879];
+    const results = fetchedAts.map((fetchedAt) => ({ ...OK_RESULT, fetchedAt }));
+    const entries = results.map((result) => entryFromResult(result, tickIso));
+
+    expect(entries).toHaveLength(results.length);
+    expect(entries.map((entry) => entry.measuredAt)).toEqual([
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      new Date(1793075143879).toISOString(),
+    ]);
+    for (const entry of entries) {
+      expect(entry.windows).toHaveLength(2);
+      expect(entry.windows.every((window) => window.measuredAt === entry.measuredAt)).toBe(true);
+    }
+  });
   test("per-model usage flattens to <model>:<window>", () => {
     const entry = entryFromResult(
       {
