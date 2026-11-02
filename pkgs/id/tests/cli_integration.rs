@@ -43,6 +43,12 @@ fn examples_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
 }
 
+fn apps_dir() -> PathBuf {
+    std::env::var_os("ID_TEST_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps"))
+}
+
 /// How long one CLI invocation may run before its test fails. A client stuck
 /// on a silent server must not block the suite.
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
@@ -551,6 +557,46 @@ mod list_tests {
                 assert_eq!(parts[0].len(), 64, "Hash should be 64 hex chars");
             }
         }
+    }
+
+    #[test]
+    fn test_list_quotes_control_characters_in_names() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.list-control.txt");
+        fs::write(&test_file, b"Control character list test").unwrap();
+
+        let name = "unsafe\nforged\tcolumn";
+        let put_spec = format!("{}:{name}", test_file.display());
+        // A second plain file takes cmd_put past its single-item
+        // stdin auto-detect (a lone `path:name` spec does not exist
+        // as a file, so it would be read as a stdin blob name and
+        // parse_put_spec would never run).
+        run_cmd_success(
+            &["put", &put_spec, test_file.to_str().unwrap()],
+            tmp.path(),
+        );
+
+        let output = run_cmd_success_stdout(&["list"], tmp.path());
+        let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the stored name must not forge another row: {output:?}"
+        );
+        let mut quoted_names = 0;
+        for row in &rows {
+            let fields: Vec<_> = row.split('\t').collect();
+            assert_eq!(
+                fields.len(),
+                2,
+                "the stored name must not forge a column: {output:?}"
+            );
+            assert_eq!(fields[0].len(), 64);
+            if fields[1] == r#""unsafe\nforged\tcolumn""# {
+                quoted_names += 1;
+            }
+        }
+        assert_eq!(quoted_names, 1, "the unsafe name must appear quoted: {output:?}");
     }
 }
 
@@ -2074,7 +2120,7 @@ mod serve_tests {
     fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let mut server = ServerHandle::spawn_with_args(
             server_dir.path(),
             &["--world", "--world-admin-token", "adm"],
@@ -2172,7 +2218,7 @@ mod serve_tests {
     fn test_journal_is_trimmed_behind_a_checkpoint_and_a_game_resumes() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let module = module.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -2279,7 +2325,7 @@ mod serve_tests {
         let examples = examples_dir();
         let counter = examples.join("roc-counter/counter.wasm");
         let counter = counter.to_str().unwrap();
-        let tictactoe = examples.join("tic-tac-toe/tic-tac-toe.wasm");
+        let tictactoe = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let tictactoe = tictactoe.to_str().unwrap();
         let serve_args = [
             "--world",

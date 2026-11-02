@@ -82,8 +82,13 @@ export function cycleStartUtc(now = new Date()) {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
-const num = (v, field) => {
-  const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN;
+const PLAIN_DECIMAL = /^[0-9]+(?:\.[0-9]+)?$/;
+const DECIMAL_COUNT = /^[0-9]+$/;
+
+const num = (v, field, { integerString = false } = {}) => {
+  const validString = typeof v === "string" &&
+    (integerString ? DECIMAL_COUNT.test(v) : PLAIN_DECIMAL.test(v));
+  const n = typeof v === "number" ? v : validString ? Number(v) : NaN;
   if (!Number.isFinite(n) || n < 0) {
     throw new ExportError("unparseable", 6, `graphql: field ${field} not a finite non-negative number`);
   }
@@ -133,7 +138,7 @@ export function classifyR2(groups) {
   const unclassified = [];
   for (const g of groups) {
     const action = g?.dimensions?.actionType;
-    const requests = num(g?.sum?.requests, `r2.${String(action)}.requests`);
+    const requests = num(g?.sum?.requests, `r2.${String(action)}.requests`, { integerString: true });
     const status = g?.dimensions?.responseStatusCode;
     if (status != null && R2_NONBILLABLE_STATUSES.has(Number(status))) {
       nonbillable += requests;
@@ -158,19 +163,19 @@ export function foldKv(groups) {
   let reads = 0;
   let writes = 0;
   for (const g of groups) {
-    const requests = num(g?.sum?.requests, `kv.${String(g?.dimensions?.actionType)}.requests`);
+    const requests = num(g?.sum?.requests, `kv.${String(g?.dimensions?.actionType)}.requests`, { integerString: true });
     if (g?.dimensions?.actionType === "read") reads += requests;
     else writes += requests; // write, delete, list — and any future write-side action
   }
   return { reads, writes };
 }
 
-const firstSum = (groups, field, label) => {
+const firstSum = (groups, field, label, { integerString = true } = {}) => {
   if (!Array.isArray(groups)) {
     throw new ExportError("unparseable", 6, `graphql: ${label} groups missing`);
   }
   let total = 0;
-  for (const g of groups) total += num(g?.sum?.[field], `${label}.${field}`);
+  for (const g of groups) total += num(g?.sum?.[field], `${label}.${field}`, { integerString });
   return total;
 };
 
@@ -230,7 +235,8 @@ export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}
         : ""),
   });
 
-  const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai");
+  // Neurons are a fractional measurement (fixture total 4114515.31), not a request count: plain-decimal strings stay valid here.
+  const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai", { integerString: false });
   const daysElapsed = Math.max(1, (now - cycleStart) / 86_400_000);
   push("workers-ai-neurons", Math.round(neuronsTotal / daysElapsed), "neurons", {
     detail: `per-day average over the cycle to date; cycle total ${Math.round(neuronsTotal)} neurons`,

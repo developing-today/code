@@ -23,9 +23,9 @@
 //!
 //! Both commands support multiple output formats via `--format`:
 //!
-//! - **tag**: Shows query tag with each match
+//! - **tag**: Default format, shows query tag with each match
 //! - **group**: Groups matches by query
-//! - **union**: Default format, shows all matches with query suffix
+//! - **union**: Shows all matches with query suffix
 //!
 //! # Filtering and Limiting
 //!

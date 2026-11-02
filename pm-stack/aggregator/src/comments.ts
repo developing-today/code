@@ -239,6 +239,15 @@ export class CommentsStore {
     return comment;
   }
 
+  /** Kind/state-aware counts per object ref, for 💬 badges (#1210):
+   *  badges distinguish notes from actionable comments instead of one
+   *  conflated total. */
+  async countsDetailed(): Promise<Map<string, CommentKindCounts>> {
+    const out = new Map<string, CommentKindCounts>();
+    for (const [ref, list] of await this.byObject()) out.set(ref, commentKindCounts(list));
+    return out;
+  }
+
   /** Pending triage/posting counts (#1145), for the health view. */
   async pendingCounts(): Promise<PendingCommentCounts> {
     return pendingCommentCounts(await this.all());
@@ -296,6 +305,7 @@ export class CommentsStore {
       // success.
       c.githubState = "posted";
       c.githubUrl = result.url;
+      delete c.githubError;
     } else {
       // An error report never moves a posted comment backwards.
       if (c.githubState === "posted") {
@@ -303,11 +313,15 @@ export class CommentsStore {
       }
       if (c.githubState === "failed") {
         // Repeat failure: idempotent — but persist first, for the
-        // same reason as the posted repeat above (#1686).
+        // same reason as the posted repeat above (#1686). The stored
+        // last error still refreshes (#1210): "last error" means the
+        // newest report, not the first failure.
+        c.githubError = result.error;
         await this.persist();
         return c;
       }
       c.githubState = "failed";
+      c.githubError = result.error;
     }
     await this.persist();
     return c;
@@ -333,6 +347,68 @@ export function pendingCommentCounts(comments: DashComment[]): PendingCommentCou
     if (c.kind === "github" && c.githubState === "pending") pendingGithub++;
   }
   return { pendingMessages, pendingGithub, total: comments.length };
+}
+
+/** Whether a comment still waits on a loop (#1210): a message
+ *  awaiting triage, or a github comment pending or failed to post.
+ *  Notes and terminal states (triaged / posted) are never queued. */
+export function isQueuedComment(c: DashComment): boolean {
+  if (c.kind === "message") return c.triageState === "new";
+  if (c.kind === "github") return c.githubState === "pending" || c.githubState === "failed";
+  return false;
+}
+
+/** The comments queue (#1210): every queued comment, oldest first. */
+export function queuedComments(comments: DashComment[]): DashComment[] {
+  return comments.filter(isQueuedComment).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** Kind/state-aware counts over a comment list (#1210). */
+export interface CommentKindCounts {
+  total: number;
+  notes: number;
+  messages: number;
+  messagesNew: number;
+  github: number;
+  githubPending: number;
+  githubFailed: number;
+  /** Messages awaiting triage + github comments pending/failed. */
+  actionable: number;
+}
+
+export function commentKindCounts(comments: DashComment[]): CommentKindCounts {
+  const out: CommentKindCounts = {
+    total: 0,
+    notes: 0,
+    messages: 0,
+    messagesNew: 0,
+    github: 0,
+    githubPending: 0,
+    githubFailed: 0,
+    actionable: 0,
+  };
+  for (const c of comments) {
+    out.total++;
+    if (c.kind === "note") {
+      out.notes++;
+    } else if (c.kind === "message") {
+      out.messages++;
+      if (c.triageState === "new") {
+        out.messagesNew++;
+        out.actionable++;
+      }
+    } else if (c.kind === "github") {
+      out.github++;
+      if (c.githubState === "pending") {
+        out.githubPending++;
+        out.actionable++;
+      } else if (c.githubState === "failed") {
+        out.githubFailed++;
+        out.actionable++;
+      }
+    }
+  }
+  return out;
 }
 
 /** The URL a posted GitHub comment lives at, for rendering. */

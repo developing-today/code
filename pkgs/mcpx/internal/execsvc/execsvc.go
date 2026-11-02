@@ -81,8 +81,9 @@ type ArtifactOptions struct {
 	// MaxBytes is the per-artifact ceiling the caller accepts for inline or
 	// streamed delivery. Anything larger stays a reference.
 	MaxBytes int64 `json:"maxBytes,omitempty"`
-	// SharedFs is a directory the caller can read. Artifacts are placed
-	// there -- hardlinked, not copied -- instead of being transferred.
+	// SharedFs is a directory the caller can read. Artifacts are copied there
+	// from the store so the caller can read them directly without a later
+	// transfer over the MCP connection.
 	SharedFs string `json:"sharedFs,omitempty"`
 	// Dir is where the CLI writes artifacts for the person who ran it. It is
 	// SharedFs by another name for a local caller, kept separate because one
@@ -1098,9 +1099,9 @@ func (s *Service) deliver(res *Result, opts Options) error {
 	for i := range res.Artifacts {
 		a := &res.Artifacts[i]
 		if dir != "" {
-			// A shared filesystem beats every transfer mode: the caller can
-			// already read the bytes, so hardlinking them into its directory
-			// costs an inode and no I/O.
+			// A shared filesystem lets the caller read the destination directly.
+			// Export still copies bytes from the store into that directory; this
+			// avoids a later transfer, not filesystem I/O.
 			p, err := s.Store.Export(a.Meta, dir)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %v", a.Name, err))

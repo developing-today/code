@@ -16,6 +16,38 @@ export type ScreenCell = {
   columns: number;
 };
 
+export type ScreenPatch = {
+  version: number;
+  width: number;
+  height: number;
+  runs: Array<{ start: number; cells: ScreenCell[] }>;
+};
+
+/** Apply a bounded, ordered row-major patch without mutating its base. */
+export function applyScreenPatch(previous: ScreenSurface, patch: ScreenPatch): ScreenSurface | null {
+  if (
+    !previous ||
+    !patch ||
+    patch.version !== previous.version ||
+    patch.width !== previous.width ||
+    patch.height !== previous.height ||
+    !Array.isArray(patch.runs) ||
+    previous.cells.length !== previous.width * previous.height
+  ) {
+    return null;
+  }
+  const cells = previous.cells.slice();
+  let coveredUntil = 0;
+  for (const run of patch.runs) {
+    if (!run || !Number.isInteger(run.start) || run.start < coveredUntil || !Array.isArray(run.cells)) return null;
+    const end = run.start + run.cells.length;
+    if (!Number.isSafeInteger(end) || end > cells.length) return null;
+    for (let index = 0; index < run.cells.length; index++) cells[run.start + index] = run.cells[index];
+    coveredUntil = end;
+  }
+  return { ...previous, cells };
+}
+
 const MAX_SCREEN_WIDTH = 120;
 const MAX_SCREEN_HEIGHT = 50;
 const MAX_SCREEN_CELLS = MAX_SCREEN_WIDTH * MAX_SCREEN_HEIGHT;

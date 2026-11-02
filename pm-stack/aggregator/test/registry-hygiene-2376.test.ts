@@ -78,7 +78,12 @@ describe("poisoned records cannot reach the mergeRecords sort (#2376)", () => {
 
   test("launch path: parseLaunchRecords drops records with non-string timestamps", () => {
     const jsonl = [
-      JSON.stringify({ id: "ses_launch_ok", label: "OK", startedAt: "2026-10-31T00:00:00Z", lastSeenAt: "2026-11-01T00:00:00Z" }),
+      JSON.stringify({
+        id: "ses_launch_ok",
+        label: "OK",
+        startedAt: "2026-10-31T00:00:00Z",
+        lastSeenAt: "2026-11-01T00:00:00Z",
+      }),
       JSON.stringify({ id: "ses_launch_num", label: "Num", lastSeenAt: 1730000000 }),
       JSON.stringify({ id: "ses_launch_bool", label: "Bool", lastSeenAt: true }),
       JSON.stringify({ id: "ses_launch_bad_start", label: "BadStart", startedAt: 1730000000 }),

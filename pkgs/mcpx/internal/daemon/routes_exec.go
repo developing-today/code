@@ -408,10 +408,10 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 // handleArtifactPut is how artifact() in a script registers a file.
 //
 // The body is the bytes, or -- when the script is on this machine and said so
-// with X-Mcpx-Path -- nothing, and the named file is hardlinked instead.
-// Reading, hashing into memory and writing again to hand somebody a file they
-// can already see would be the wrong shape for the local case, which is most
-// cases.
+// with X-Mcpx-Path -- the daemon reads and copies the named file into the
+// content-addressed store. The path hint avoids uploading the body over the
+// client transport, but the source is still read and hashed so the stored blob
+// is independent of the file outside the store (#1660).
 func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 	store, err := s.Artifacts()
 	if err != nil {

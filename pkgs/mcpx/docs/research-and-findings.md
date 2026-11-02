@@ -38,16 +38,16 @@ harvest has somewhere to put things, and says so rather than padding.
 - **The cost model of zero-context discovery.** Listing servers costs ~171
   tokens, a search ~61, and `types` 675–4,402 per namespace — the numbers
   behind progressive discovery: a client should not pay for every tool
-  definition up front. *(measured — `docs/story.md`, "Zero-context
-  discovery")*
+  definition up front. _(measured — `docs/story.md`, "Zero-context
+  discovery")_
 - **Switch to progressive discovery at 1–5% of the context window**, and do
   not mutate the `tools` array mid-conversation: it invalidates the
-  provider's prompt cache. *(reported — modelcontextprotocol.io, MCP client
-  best practices, as cited on #1871)*
+  provider's prompt cache. _(reported — modelcontextprotocol.io, MCP client
+  best practices, as cited on #1871)_
 - **Models write code better than they call tools**, Cloudflare argues,
   because tool-call tokens are synthetic training data while code is what
-  models were trained on. This is the argument behind Code Mode. *(reported —
-  blog.cloudflare.com/code-mode, as cited on #1871)*
+  models were trained on. This is the argument behind Code Mode. _(reported —
+  blog.cloudflare.com/code-mode, as cited on #1871)_
 
 ## Harnesses
 
@@ -55,20 +55,20 @@ harvest has somewhere to put things, and says so rather than padding.
   separates the opencode plugin surface (v1 vs v2) from the parts that apply
   to any harness; `OPENCODE-V2.md` corrects the record where the first draft
   blurred them — opencode v1 ships code mode behind
-  `OPENCODE_EXPERIMENTAL_CODE_MODE`. *(read-from-source —
-  `docs/opencode-plugin.md`, `OPENCODE-V2.md`)*
+  `OPENCODE_EXPERIMENTAL_CODE_MODE`. _(read-from-source —
+  `docs/opencode-plugin.md`, `OPENCODE-V2.md`)_
 - **The harness knows what the agent does not.** Session state, statistics,
   and affordances live in the harness; an agent that assumes them instead of
   asking gets them wrong. The opencode session statistics are the worked
-  example. *(read-from-source — `docs/story.md`, "The harness knows what the
-  agent does not" and "Statistics from opencode")*
+  example. _(read-from-source — `docs/story.md`, "The harness knows what the
+  agent does not" and "Statistics from opencode")_
 - **`AGENTS.md` is the cross-harness instruction file**: the same file is
   read by the harnesses this repository is used from, which is why fleet
-  rules live there and not in one tool's config. *(read-from-source —
-  `AGENTS.md` at the repository root and in `pkgs/mcpx`)*
+  rules live there and not in one tool's config. _(read-from-source —
+  `AGENTS.md` at the repository root and in `pkgs/mcpx`)_
 - **A harness-free core is a design constraint, not an accident** (#48):
   codex, claude code, pi, and manus must all be able to drive the same core.
-  *(read-from-source — `docs/story.md`; issue #48)*
+  _(read-from-source — `docs/story.md`; issue #48)_
 
 ## Plugins
 
@@ -76,13 +76,13 @@ harvest has somewhere to put things, and says so rather than padding.
 
 - **A plugin can connect without the binary.** The connection ladder and
   `GET /v1/resolve` let the opencode plugin find or start a daemon instead
-  of assuming one is installed (#44, fixed in #53). *(read-from-source —
-  `docs/plugin-discovery.md`)*
+  of assuming one is installed (#44, fixed in #53). _(read-from-source —
+  `docs/plugin-discovery.md`)_
 - **The plugin logs over the socket** (#36), so plugin diagnostics land
   where the daemon's do instead of in a file nobody opens.
-  *(read-from-source — `docs/plugin-discovery.md`; issue #36)*
-- **Plugin install is a README, not a package step.** *(read-from-source —
-  `plugin/opencode/README.md`)*
+  _(read-from-source — `docs/plugin-discovery.md`; issue #36)_
+- **Plugin install is a README, not a package step.** _(read-from-source —
+  `plugin/opencode/README.md`)_
 
 ## Token providers
 
@@ -92,75 +92,75 @@ model providers, and the credential/OAuth providers that hand out tokens.
 - **Model providers are maintained as patches.** This repository patches
   opencode for provider behaviour (Copilot business support, Copilot
   compaction, OpenAI response-id caching) and keeps skills for maintaining
-  those patches across opencode updates. *(read-from-source — #1871 seed
+  those patches across opencode updates. _(read-from-source — #1871 seed
   list. Harvest note, 2026-11-01: the three patch files the issue names are
   no longer at the repository root on `main`; the patches' current home
-  needs naming here by whoever next touches the opencode patch set.)*
+  needs naming here by whoever next touches the opencode patch set.)_
 - **Credential placeholders keep secrets out of config files and descriptions, but
   stdio servers receive them through the environment. Generated scripts inherit
   that environment unless variables are unset or the run uses `-i`; do not
-  treat this as isolation from code you execute. *(read-from-source —
-  `docs/story.md`, "Credentials"; `internal/runner/dispatch.go:693–705`)*
+  treat this as isolation from code you execute. _(read-from-source —
+  `docs/story.md`, "Credentials"; `internal/runner/dispatch.go:693–705`)_
 
 ## Cloudflare
 
 - **Code Mode mechanics.** The Worker Loader API runs generated code in
   isolates; `fetch()`/`connect()` throw inside it; bindings hide API keys
   from the generated code. Shared with #153 — the design treatment lives
-  with the design, this is the finding. *(read-from-source — `docs/story.md`;
-  issue #153)*
+  with the design, this is the finding. _(read-from-source — `docs/story.md`;
+  issue #153)_
 
 ## The TypeScript ecosystem
 
 - **Node runs TypeScript by stripping types, and only erasable syntax
   survives.** Node v24.20.0 type stripping rejects a file with an `enum`;
   constructor parameter properties failed too, which is why the generated
-  client uses plain fields. *(read-from-source — `ASSESSMENT.md` bug 3;
-  `docs/story.md`, "Runtime portability")*
+  client uses plain fields. _(read-from-source — `ASSESSMENT.md` bug 3;
+  `docs/story.md`, "Runtime portability")_
 - **Runtime detection order is deno, then bun, then node** (`script.runtime`,
   `--runtime`, `MCPX_SCRIPT_RUNTIME`). Versions at the time of the seed:
-  Deno 2.9.6, Bun 1.3.11. *(read-from-source — `docs/story.md`, "Runtime
+  Deno 2.9.6, Bun 1.3.11. _(read-from-source — `docs/story.md`, "Runtime
   portability"; the runtime comparison itself belongs to #101 and
-  `docs/runtimes.md`)*
+  `docs/runtimes.md`)_
 - **`--typecheck` is `deno check`, Deno only**: ~80 ms on repeat, ~400 ms
-  for a new program (#79). *(measured — as recorded on #1871; `docs/story.md`)*
+  for a new program (#79). _(measured — as recorded on #1871; `docs/story.md`)_
 - **Constructing a TypeScript compiler per request was lootbox's memory
   problem** — the `ts-morph` lesson behind the current design.
-  *(read-from-source — `ASSESSMENT.md`)*
+  _(read-from-source — `ASSESSMENT.md`)_
 
 ## SSE
 
 - **Server-sent events, not WebSockets.** SSE is plain HTTP, `EventSource`
   reconnects on its own, and WebSocket upgrades are mishandled by
   middleboxes — the reasoning behind mcpx's remote transport.
-  *(read-from-source — `docs/story.md`, "Server-sent events, not
-  WebSockets")*
+  _(read-from-source — `docs/story.md`, "Server-sent events, not
+  WebSockets")_
 - **Lossless reconnection** is a protocol property, not a client hope: the
   stream carries what a reconnecting client needs to resume without a gap.
-  *(read-from-source — `docs/story.md`, "Lossless reconnection")*
+  _(read-from-source — `docs/story.md`, "Lossless reconnection")_
 
 ## Sockets and TCP
 
 - **What each transport costs.** Spawning `mcpx status` took 23.12 ms; a
   unix-socket keep-alive round trip 0.17 ms (135× cheaper); TCP loopback
   keep-alive 0.65 ms. The daemon-and-socket design is priced by these
-  numbers. *(measured — `docs/story.md`, "What each transport costs")*
+  numbers. _(measured — `docs/story.md`, "What each transport costs")_
 - **macOS `sun_path` is 104 bytes.** Deep state directories produced socket
-  paths that failed with `bind: invalid argument`. *(read-from-source —
-  `ASSESSMENT.md` bug 4)*
+  paths that failed with `bind: invalid argument`. _(read-from-source —
+  `ASSESSMENT.md` bug 4)_
 - **`localhost` is not `127.0.0.1`.** It resolved to IPv6 only while the
   compiled build bound `127.0.0.1`, so the client dialled an address
-  nothing listened on. *(read-from-source — `ASSESSMENT.md`)*
+  nothing listened on. _(read-from-source — `ASSESSMENT.md`)_
 
 ## RPC and WebSockets
 
 - **JSON-RPC framing needs no dependency** — it is standard library, which
   is why it appears in the dependency audit as a deliberate non-dependency.
-  *(read-from-source — `docs/dependencies.md`)*
+  _(read-from-source — `docs/dependencies.md`)_
 - **Lootbox's WebSocket.** The predecessor system used a WebSocket RPC
   channel (`lootbox.config.json`: `serverUrl: ws://127.0.0.1:9420/ws`) —
-  the contrast case for the SSE choice above. *(read-from-source — #1871
-  seed list)*
+  the contrast case for the SSE choice above. _(read-from-source — #1871
+  seed list)_
 
 ## MCP
 
@@ -168,59 +168,59 @@ model providers, and the credential/OAuth providers that hand out tokens.
 
 - **Two protocol eras.** The protocol has a before and an after, and a
   client has to speak to both; "What 2026-07-28 actually asks of a client"
-  is the checklist. *(read-from-source — `docs/story.md`, "Two protocol
-  eras")*
+  is the checklist. _(read-from-source — `docs/story.md`, "Two protocol
+  eras")_
 - **The revision matrix** — every revision in both directions, plus what is
   still missing — lives in `docs/protocol.md` and is excerpted, not copied,
-  here. *(read-from-source — `docs/protocol.md`)*
+  here. _(read-from-source — `docs/protocol.md`)_
 - **The sampling bug: it did not work, and nothing said so.** Capabilities
   are declared in the handshake, but the handler was installed after it,
   and every test called the passthrough directly — so sampling was
   advertised, broken, and green in CI at the same time.
-  *(read-from-source — `docs/story.md`, "Sampling")*
+  _(read-from-source — `docs/story.md`, "Sampling")_
 - **The elicitation bug came first** — the same shape, earlier.
-  *(read-from-source — `docs/story.md`, "Elicitation"; `docs/elicitation.md`)*
+  _(read-from-source — `docs/story.md`, "Elicitation"; `docs/elicitation.md`)_
 - **`mcpx doctor` found a bug immediately** — a diagnostics command earns
   its keep the first time it runs against a real installation.
-  *(read-from-source — `docs/story.md`, "mcpx doctor")*
+  _(read-from-source — `docs/story.md`, "mcpx doctor")_
 - **Remote servers without a shim**: Streamable HTTP makes `mcp-remote`
-  unnecessary for remote servers. *(read-from-source — `docs/story.md`,
-  "Remote servers without a shim")*
+  unnecessary for remote servers. _(read-from-source — `docs/story.md`,
+  "Remote servers without a shim")_
 - **Which registry.** The official registry publishes an OpenAPI spec;
   HAPI is not open source and returns 404. Registry choice is a licensing
   and availability decision before it is a technical one.
-  *(read-from-source — `docs/story.md`, "Which registry")*
+  _(read-from-source — `docs/story.md`, "Which registry")_
 
 ## OpenAPI and REST
 
 - **Specifications as tools: two things easy to get wrong.** A relative
   server URL must resolve against the document's location, and only read
-  methods are exposed by default. *(read-from-source — `docs/story.md`,
-  "Specifications as tools")*
+  methods are exposed by default. _(read-from-source — `docs/story.md`,
+  "Specifications as tools")_
 - **The specification described the wrong thing**: the first spec described
-  mcpx's own ten tools, not the hundreds it fronts. *(read-from-source —
-  `docs/story.md`, "Specifications as tools")*
+  mcpx's own ten tools, not the hundreds it fronts. _(read-from-source —
+  `docs/story.md`, "Specifications as tools")_
 - **One ops table generates the routes, the MCP tools, and the OpenAPI
   document** (`internal/api/ops*.go`), so the three cannot drift apart.
-  *(read-from-source — `internal/api/`)*
+  _(read-from-source — `internal/api/`)_
 
 ## OAuth
 
 - **OAuth for remote servers is `status: proposed`**, not built; the
   credential story that exists today is in "Credentials".
-  *(read-from-source — `docs/story.md`, "OAuth for remote servers" and
-  "Credentials")*
+  _(read-from-source — `docs/story.md`, "OAuth for remote servers" and
+  "Credentials")_
 
 ## Command line
 
 - **Command-line programs as servers**: a CLI with a daemon behind it is a
   server with a command-line client, and should be designed like one.
-  *(read-from-source — `docs/story.md`, "Command-line programs as servers")*
+  _(read-from-source — `docs/story.md`, "Command-line programs as servers")_
 - **Derived flag names surprise people**: `daemon.leaseTTL` becomes
-  `--daemon-lease-ttl`. *(read-from-source — `docs/cli.md:142–146`)*
+  `--daemon-lease-ttl`. _(read-from-source — `docs/cli.md:142–146`)_
 - **Accepted-and-ignored flags are bugs**, even when accepting them is
-  deliberate-looking (#74, fixed by #75). *(read-from-source — issues #74,
-  #75)*
+  deliberate-looking (#74, fixed by #75). _(read-from-source — issues #74,
+  #75)_
 - **Help coverage once drifted from the dispatch table** (historical):
   `man`, `completion`, `serve`, `openapi`, `adapter`, `registry`, and
   `api` were once dispatched by `cmd/mcpx/main.go` but undeclared in
@@ -228,8 +228,8 @@ model providers, and the credential/OAuth providers that hand out tokens.
   not list them. All seven are declared now, and
   `TestEveryDispatchedCommandIsDeclared` holds the declaration and the
   dispatch table equal in both directions, so the gap cannot reopen
-  silently. *(read-from-source — `docs/cli.md`, “once dispatched
-  but undeclared”; `internal/cli/manual.go`)*
+  silently. _(read-from-source — `docs/cli.md`, “once dispatched
+  but undeclared”; `internal/cli/manual.go`)_
 
 ## Containers and CI
 

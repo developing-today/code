@@ -259,6 +259,23 @@ describe("live source orchestration states (#1140)", () => {
     expect(src.provenance().orchestration).toContain("has not published");
   });
 
+  test("collector errors are distinct from sections not yet published", async () => {
+    const src = await sourceWithFeed({
+      meta: {
+        sections: {
+          orchestration: { status: "error", at: new Date().toISOString(), error: "invalid JSON" },
+          dns: { status: "error", at: new Date().toISOString(), error: "register unreadable" },
+        },
+      },
+    });
+    expect(await src.orchestration()).toBeNull();
+    expect(src.provenance().orchestration).toContain("collector error");
+    expect(src.provenanceDetail?.().orchestration.state).toBe("error");
+    expect(await src.dns()).toBeNull();
+    expect(src.provenance().dns).toContain("collector error");
+    expect(src.provenanceDetail?.().dns.state).toBe("error");
+  });
+
   test("invalid: a present-but-malformed section is named, not 'absent'", async () => {
     const src = await sourceWithFeed({ orchestration: { ...LIVE_SHAPE, provenance: 42 } });
     expect(await src.orchestration()).toBeNull();

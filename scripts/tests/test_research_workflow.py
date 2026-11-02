@@ -463,7 +463,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.check(package, True, "--require-resolved")
 
     def add_note(self, package, body_text):
-        content = self.scratch / f"note-input-{len(body_text)}-{abs(hash(body_text))}.txt"
+        content = (
+            self.scratch / f"note-input-{len(body_text)}-{abs(hash(body_text))}.txt"
+        )
         content.write_text(body_text, encoding="utf-8")
         before = set(package.rglob("*.md"))
         self.cli(

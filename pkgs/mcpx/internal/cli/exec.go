@@ -147,11 +147,9 @@ func (e execOptions) artifactOptions(cwd string) *execsvc.ArtifactOptions {
 
 // localStore opens the daemon's artifact store from this side.
 //
-// The same directory, not a copy. When the daemon is on this machine the
-// store is a shared SQLite index in WAL mode and a tree of blobs, so the CLI
-// reading it sees exactly what the daemon wrote -- and can hardlink a blob
-// into an output directory rather than fetching its own copy of bytes that
-// are already here.
+// When the daemon is on this machine the store is a shared SQLite index in
+// WAL mode and a tree of blobs. The CLI can read those blobs directly and
+// copy them into an output directory without fetching them back over a socket.
 func (a *App) localStore() (*artifacts.Store, error) {
 	set := a.Settings()
 	if !set.Bool("artifacts.enabled") {

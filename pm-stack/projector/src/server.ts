@@ -252,7 +252,14 @@ export function serve(db: Client, env: ServerEnv, port: number): Bun.Server {
     // A reconcile poll runs for minutes; Bun's 10s default idle timeout
     // closed the socket mid-poll and the caller saw an empty reply.
     idleTimeout: 255,
-    async fetch(req) {
+    async fetch(req, server) {
+      // /reconcile is a long poll by design: under GitHub rate
+      // limiting a full pass takes longer than Bun's 255s
+      // idle-timeout ceiling, and the reconcile timer unit's curl
+      // died at the cap with an empty reply (curl 52) even though
+      // the poll itself was healthy (2026-11-01). Exempt just this
+      // route from the idle timeout; every other route keeps 255s.
+      if (new URL(req.url).pathname === "/reconcile") server.timeout(req, 0);
       return handleRequest(req, db, env);
     },
   });

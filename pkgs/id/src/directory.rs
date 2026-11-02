@@ -90,24 +90,11 @@ pub struct Account {
 
 /// A request the directory refuses, carried in the error so transports can
 /// choose a status without parsing messages.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum Refusal {
-    /// No valid credential, session or key was presented.
-    #[error("{0}")]
-    Unauthenticated(String),
-    /// The caller is known but may not do this.
-    #[error("{0}")]
-    Forbidden(String),
-    /// The named account, group or member does not exist.
-    #[error("{0}")]
-    NotFound(String),
-    /// The change clashes with what already exists.
-    #[error("{0}")]
-    Conflict(String),
-    /// Too many requests for the same thing in a short time.
-    #[error("{0}")]
-    RateLimited(String),
-}
+///
+/// The definition lives in `id-core` since the Phase 1 crate split
+/// (#3447) — leaf modules there (petname) produce it too — and it is
+/// re-exported here at its historical path.
+pub use id_core::Refusal;
 
 macro_rules! refuse {
     ($kind:ident, $($arg:tt)*) => {

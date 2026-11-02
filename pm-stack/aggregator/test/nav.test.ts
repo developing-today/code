@@ -37,7 +37,7 @@ function serverPaths(): { exact: string[]; prefixes: string[] } {
 
 /** Routes that are not pages a person navigates to: JSON twins, POST
  * endpoints, datastar fragments, static assets, and the /board alias. */
-const NON_PAGE = /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$/;
+const NON_PAGE = /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$/;
 
 describe("the manifest groups every page (#1135)", () => {
   test("every page names one of PAGE_GROUPS, and groups have no page-less id", () => {

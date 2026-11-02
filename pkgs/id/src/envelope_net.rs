@@ -199,13 +199,19 @@ async fn receive(hub: &WorldHub, body: &[u8]) -> Reply {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Instant;
+
     use iroh::{
         address_lookup::MemoryLookup,
         endpoint::{RelayMode, presets},
         protocol::Router,
     };
+    use iroh_blobs::{Hash, store::mem::MemStore};
+    use tokio::sync::Mutex;
 
     use super::*;
+    use crate::commands::put::add_raw;
     use crate::connectivity::silent::{
         endpoint_with_silent_lookup, unanswered_addr, unanswered_id,
     };
@@ -213,8 +219,6 @@ mod tests {
     use crate::envelope_outbox::{Finish, Outbox, flush};
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
-    use std::time::Instant;
-    use tokio::sync::Mutex;
 
     const NOW: u64 = 1_000_000_000;
 
@@ -233,6 +237,40 @@ mod tests {
             .bind()
             .await
             .unwrap()
+    }
+
+    fn loopback_addr(ep: &Endpoint) -> EndpointAddr {
+        EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|addr| {
+                let ip = if addr.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    addr.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, addr.port()))
+            }),
+        )
+    }
+
+    /// Test-only receiver for exercising the raw frame transport. This is not
+    /// the production [`EnvelopeProtocol`], which accepts directory envelopes
+    /// and deliberately refuses chat-frame JSON.
+    #[derive(Clone, Debug)]
+    struct CaptureFrames(Arc<Mutex<Vec<Vec<u8>>>>);
+
+    impl ProtocolHandler for CaptureFrames {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            let frames = self.0.clone();
+            answer_frames(&conn, move |body| {
+                let frames = frames.clone();
+                async move {
+                    frames.lock().await.push(body);
+                    Reply::Applied
+                }
+            })
+            .await
+        }
     }
 
     /// A lobby on a node that is reachable only over loopback.
@@ -314,6 +352,119 @@ mod tests {
             deliver(&client, addr, &stranger).await,
             Outcome::Refused(_)
         ));
+    }
+
+    /// A throwaway transport fixture for the proposed chat frame. It proves
+    /// byte-preserving exchange on the existing ALPN and a local content-hash
+    /// hit; it does not test CLI routing, production envelope acceptance, or
+    /// chat signature verification.
+    #[tokio::test]
+    async fn test_review_gated_chat_frame_round_trips_and_resolves_local_blob() {
+        let alice = endpoint().await;
+        let bob = endpoint().await;
+        let alice_frames = Arc::new(Mutex::new(Vec::new()));
+        let bob_frames = Arc::new(Mutex::new(Vec::new()));
+        let alice_router = Router::builder(alice.clone())
+            .accept(ENVELOPE_ALPN, CaptureFrames(alice_frames.clone()))
+            .spawn();
+        let bob_router = Router::builder(bob.clone())
+            .accept(ENVELOPE_ALPN, CaptureFrames(bob_frames.clone()))
+            .spawn();
+
+        let receiver_store: iroh_blobs::api::Store = MemStore::new().into();
+        let blob_bytes = b"review-gated chat PoC local blob";
+        let (blob_hash, _keep) = add_raw(&receiver_store, blob_bytes.to_vec()).await.unwrap();
+
+        let frame_alice_to_bob = serde_json::to_vec(&serde_json::json!({
+            "v": 1,
+            "channel": "group:local-poc",
+            "author": alice.id().to_string(),
+            "seq": 1,
+            "after": [],
+            "text": "blob link fixture",
+            "links": [{
+                "kind": "blob",
+                "hash": blob_hash.to_string(),
+                "author": alice.id().to_string()
+            }],
+            "sig": "test-only; no signature verification"
+        }))
+        .unwrap();
+        let frame_bob_to_alice = serde_json::to_vec(&serde_json::json!({
+            "v": 1,
+            "channel": "group:local-poc",
+            "author": bob.id().to_string(),
+            "seq": 1,
+            "after": [],
+            "text": "acknowledged",
+            "links": [],
+            "sig": "test-only; no signature verification"
+        }))
+        .unwrap();
+
+        println!(
+            "Alice -> Bob /id-envelope/1 frame bytes (UTF-8): {}",
+            String::from_utf8(frame_alice_to_bob.clone()).unwrap()
+        );
+        println!(
+            "Bob -> Alice /id-envelope/1 frame bytes (UTF-8): {}",
+            String::from_utf8(frame_bob_to_alice.clone()).unwrap()
+        );
+
+        assert_eq!(
+            send_within(
+                &alice,
+                ENVELOPE_ALPN,
+                loopback_addr(&bob),
+                &frame_alice_to_bob,
+                Duration::from_secs(5),
+            )
+            .await,
+            Outcome::Delivered
+        );
+        assert_eq!(
+            send_within(
+                &bob,
+                ENVELOPE_ALPN,
+                loopback_addr(&alice),
+                &frame_bob_to_alice,
+                Duration::from_secs(5),
+            )
+            .await,
+            Outcome::Delivered
+        );
+
+        assert_eq!(
+            bob_frames.lock().await.as_slice(),
+            &[frame_alice_to_bob.clone()]
+        );
+        assert_eq!(
+            alice_frames.lock().await.as_slice(),
+            &[frame_bob_to_alice.clone()]
+        );
+
+        let received_alice_to_bob = bob_frames.lock().await[0].clone();
+        let received_frame: serde_json::Value =
+            serde_json::from_slice(&received_alice_to_bob).unwrap();
+        let linked_hash: Hash = received_frame["links"][0]["hash"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(linked_hash, blob_hash);
+        assert!(receiver_store.blobs().has(linked_hash).await.unwrap());
+        let resolved = receiver_store.blobs().get_bytes(linked_hash).await.unwrap();
+        assert_eq!(&*resolved, blob_bytes);
+        assert_eq!(Hash::new(&*resolved), blob_hash);
+        println!(
+            "Bob local blob resolution: hash={blob_hash} bytes={} hash_verified=true",
+            resolved.len()
+        );
+
+        alice.close().await;
+        bob.close().await;
+        alice_router.shutdown().await.unwrap();
+        bob_router.shutdown().await.unwrap();
     }
 
     #[tokio::test]

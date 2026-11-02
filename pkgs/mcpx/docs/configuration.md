@@ -422,6 +422,8 @@ skipped launcher phases).
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `completion.maxValues` | int | `100` | daemon | yes | `--completion-max-values` | `MCPX_COMPLETION_MAX_VALUES` | *(plumbing)* how many completions one reply carries |
+| `completion.perMinute` | int | `120` | daemon | yes | `--completion-per-minute` | `MCPX_COMPLETION_PER_MINUTE` | *(plumbing)* how many completion requests one caller may make against one server per minute; 0 disables |
+| `completion.serverPerMinute` | int | `600` | daemon | yes | `--completion-server-per-minute` | `MCPX_COMPLETION_SERVER_PER_MINUTE` | *(plumbing)* how many completion requests one server may receive per minute across all callers; 0 disables |
 
 ### daemon
 

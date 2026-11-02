@@ -140,6 +140,165 @@ mod tests {
         );
     }
 
+    fn handoff_event() -> WorldEvent {
+        WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: "{\"handoff\":true}".to_owned(),
+            },
+        }
+    }
+
+    fn export_entry() -> JournalEntry {
+        JournalEntry::EntityExported {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            prior_owner_epoch: 4,
+            source_event: handoff_event(),
+            payload_schema: "entity/v1".to_owned(),
+            program_module_hash: "module".to_owned(),
+            payload: vec![1, 2, 3],
+            payload_digest: "digest".to_owned(),
+        }
+    }
+
+    #[test]
+    fn handoff_entries_require_journal_version_3() {
+        // #3870 phase 1: handoff kinds are the first entries a version-2
+        // binary cannot read, so they pin the header to version 3 — the
+        // same bump-on-first-write contract as the execution profile (#227).
+        assert_eq!(
+            journal_version_required_by(&export_entry()),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let entity_input = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&entity_input),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let plain = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::Chat("hi".to_owned()),
+            },
+        };
+        assert_eq!(journal_version_required_by(&plain), JOURNAL_VERSION);
+        // A checkpoint whose retained events include an EntityInput event
+        // requires version 3 even with no active handoff (PR #3922 Codex).
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            }],
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        // Coordinator records fix their wire shape in this packet too.
+        let started = CoordinatorJournalEntry::HandoffStarted {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            expected_owner_epoch: 4,
+            region_map_epoch: 2,
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            requested_at: 42,
+        };
+        let json = serde_json::to_string(&started).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CoordinatorJournalEntry>(&json).unwrap(),
+            started
+        );
+    }
+
+    #[test]
+    fn handoff_transfers_survive_restore_and_checkpoint_compaction() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            JournalEntry::EntityImported {
+                handoff_id: "cd".repeat(16),
+                entity_ref: "entity-2".to_owned(),
+                source_region: "region-b".to_owned(),
+                target_region: "region-a".to_owned(),
+                prior_owner_epoch: 1,
+                new_owner_epoch: 2,
+                program_module_hash: "module".to_owned(),
+                payload_schema: "entity/v1".to_owned(),
+                payload_digest: "digest-2".to_owned(),
+                destination_event: handoff_event(),
+            },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        let transfers = restored.core.handoff_transfers().to_vec();
+        assert_eq!(transfers.len(), 2);
+        assert_eq!(transfers[0].direction, HandoffDirection::Export);
+        assert_eq!(transfers[0].payload.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(transfers[1].direction, HandoffDirection::Import);
+        assert_eq!(transfers[1].new_owner_epoch, Some(2));
+
+        // Compaction must preserve the active handoffs (fence, payload,
+        // receipt, epochs) and mark the compacted header version 3.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            compacted[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
+    }
+
+    #[test]
+    fn duplicate_handoff_export_in_journal_is_refused() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            export_entry(),
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(error.to_string().contains("twice"), "{error:#}");
+    }
+
     #[test]
     fn execution_profile_survives_checkpoint_compaction_and_restore() {
         let profile = crate::world_limits::WorldExecutionProfile {
@@ -205,6 +364,11 @@ mod tests {
             match &event.kind {
                 WorldEventKind::Input(bytes) => {
                     let text = std::str::from_utf8(bytes)?;
+                    self.script = text.parse().unwrap_or(self.script);
+                    self.asks += 1;
+                }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let text = std::str::from_utf8(input)?;
                     self.script = text.parse().unwrap_or(self.script);
                     self.asks += 1;
                 }
@@ -752,15 +916,15 @@ mod tests {
     #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core
@@ -805,15 +969,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_follow_the_world_grant_not_a_participant_capability() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let owner_scopes = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
@@ -883,16 +1047,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_speak_for_the_world_not_for_a_present_participant() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "tick-attribution",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "tick-attribution",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger.set_granted(BTreeSet::from([
             "time.tick".to_owned(),
             "chat.say".to_owned(),
@@ -1127,16 +1290,15 @@ mod tests {
     #[tokio::test]
     async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ceiling-ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ceiling-ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core
@@ -1522,6 +1684,58 @@ mod tests {
             },
         ];
         assert!(WorldCore::restore("test-world", WorldLimits::default(), entries).is_err());
+    }
+
+    #[test]
+    fn restore_refuses_an_issued_participant_zero() {
+        // #2972: participant 0 is the reserved host/system identity —
+        // mint can never issue it, so a journal issuing it to itself
+        // (with a self-chosen digest) must be refused outright, whether
+        // the forged entry stands alone or follows legitimate entries.
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let legitimate = JournalEntry::Issued {
+            participant: owner,
+            digest: hex_encode(&token_digest(owner_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let forged = JournalEntry::Issued {
+            participant: Participant {
+                id: 0,
+                display_name: "host".to_owned(),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let header = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        for entries in [
+            vec![header.clone(), forged.clone()],
+            vec![header, legitimate, forged],
+        ] {
+            let err = match WorldCore::restore("test-world", WorldLimits::default(), entries) {
+                Ok(_) => panic!("restore must refuse an Issued participant 0"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("reserved host identity"),
+                "error must name the reserved id: {err}"
+            );
+        }
     }
 
     #[test]
@@ -2330,6 +2544,11 @@ mod tests {
                 match &event.kind {
                     WorldEventKind::Input(bytes) => {
                         if bytes.as_slice() == b"read" {
+                            self.asks += 1;
+                        }
+                    }
+                    WorldEventKind::EntityInput { input, .. } => {
+                        if input.as_slice() == b"read" {
                             self.asks += 1;
                         }
                     }
@@ -3321,6 +3540,10 @@ mod schedule_tests {
                     let document: serde_json::Value = serde_json::from_slice(bytes)?;
                     self.requests = document["requests"].as_array().cloned().unwrap_or_default();
                 }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let document: serde_json::Value = serde_json::from_slice(input)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
                 WorldEventKind::System { event: text } => {
                     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
                         return Ok(());
@@ -3889,6 +4112,7 @@ mod schedule_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules,
+            transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         };

@@ -1107,8 +1107,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 
 	// The artifact store is the daemon's, opened from this side. When the
 	// daemon is on this machine that is the same SQLite index and the same
-	// blobs, so a file the script registered can be hardlinked into an
-	// output directory rather than fetched back over a socket.
+	// blobs, so a file the script registered can be copied from the store into
+	// an output directory without being fetched back over a socket.
 	var store *artifacts.Store
 	if st, serr := a.localStore(); serr == nil {
 		store = st

@@ -161,8 +161,7 @@ in
               narHash = "sha256-y4xkNIopeCdJ/C/PiIZeKlfALrmxUrBYg5CXUSqsMXU=";
             };
           in
-          builtins.unsafeDiscardStringContext
-            "path:${pluginTree.outPath}?narHash=${pluginTree.narHash}";
+          builtins.unsafeDiscardStringContext "path:${pluginTree.outPath}?narHash=${pluginTree.narHash}";
       }
     ];
 

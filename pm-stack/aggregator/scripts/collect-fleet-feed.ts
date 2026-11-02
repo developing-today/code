@@ -73,8 +73,21 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
-import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
-import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
+import {
+  disabledProvidersFromConfig,
+  aaAbsent,
+  aaSectionFromSupabase,
+  isAaSection,
+  type AaRawPayload,
+} from "../src/aa.ts";
+import {
+  feedSectionStatus,
+  normalizeOrchestrationSection,
+  orchestrationSectionProblem,
+  sanitizeCollectionError,
+  type FeedSectionStatus,
+  type FleetFeed,
+} from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import type {
   AaFeedSection,
@@ -147,6 +160,8 @@ function poolFor(provider: string, model: string): string | null {
     case "openai-codex":
     case "chatgpt":
       return "openai:codex";
+    case "openai.alternate":
+      return "openai.alternate";
     case "cline-pass":
       return "cline-pass:cline-pass";
     case "opendesign":
@@ -469,6 +484,12 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
 
 async function main(): Promise<void> {
   const now = new Date();
+  const sectionStatuses: NonNullable<FleetFeed["meta"]>["sections"] = {};
+  const markSection = (key: string, status: FeedSectionStatus, error?: unknown) => {
+    sectionStatuses[key] = feedSectionStatus(status, new Date().toISOString(), error);
+  };
+  const isMissingInput = (error: unknown): boolean =>
+    typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
   // Identity-registry records (#906 §3), accumulated across sources below.
   const registry: SessionRecord[] = [];
 
@@ -487,10 +508,14 @@ async function main(): Promise<void> {
       console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
     }
     pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(`collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`),
+      console.error(
+        `collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`,
+      ),
     );
+    markSection("quota", "ok");
   } catch (err) {
-    console.error(`collector: quota view unreadable (${err}); emitting no pools`);
+    console.error(`collector: quota view unreadable (${sanitizeCollectionError(err)}); emitting no pools`);
+    markSection("quota", "error", err);
   }
 
   // --- usage & billing hub sections (design §2.3: ride the same feed) ---
@@ -509,6 +534,9 @@ async function main(): Promise<void> {
     payg = extractPaygLines(quotaViewText, registryText);
     charges = extractCharges(quotaViewText, registryText);
     subscriptions = extractSubscriptions(quotaViewText);
+    for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "ok");
+  } else {
+    for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "skipped");
   }
 
   // --- charges auto-matching (#1057) -------------------------------------
@@ -521,10 +549,7 @@ async function main(): Promise<void> {
   try {
     const candidates = parseChargeCandidates(JSON.parse(await readFile(chargeCandidatesPath, "utf8")));
     if (candidates.length) {
-      const auto = matchCharges(
-        candidates,
-        chargeServiceCatalog(saas ?? [], pools),
-      );
+      const auto = matchCharges(candidates, chargeServiceCatalog(saas ?? [], pools));
       charges = mergeChargeRows(auto.rows, charges ?? []);
       let surfaced = new Set<string>();
       try {
@@ -541,9 +566,13 @@ async function main(): Promise<void> {
       console.log(
         `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,
       );
+      markSection("chargesAttention", "ok");
+    } else {
+      markSection("chargesAttention", "skipped");
     }
-  } catch {
+  } catch (err) {
     console.error("collector: charge candidates unreadable; hub charges stay hand-fed only this run");
+    markSection("chargesAttention", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- server attention + burn -------------------------------------------
@@ -579,11 +608,14 @@ async function main(): Promise<void> {
         }
         if (sessions.length) pool.activeSessions = sessions;
       }
+      markSection("attention", "ok");
     } else {
       console.error("collector: OpenCode server unreachable; attention empty");
+      markSection("attention", "error", "OpenCode server unreachable");
     }
   } catch (err) {
-    console.error(`collector: OpenCode server read failed (${err}); attention empty`);
+    console.error(`collector: OpenCode server read failed (${sanitizeCollectionError(err)}); attention empty`);
+    markSection("attention", "error", err);
   }
 
   // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
@@ -594,8 +626,10 @@ async function main(): Promise<void> {
     if (entries.length) attention = [...attention, ...entries];
     for (const e of entries) registry.push(recordFromSessionEntry(e));
     jules = julesSummary(state);
-  } catch {
+    markSection("julesSummary", "ok");
+  } catch (err) {
     console.error("collector: jules-review state unreadable; no Jules sessions this run");
+    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- Muse launch records (#906 §3) --------------------------------
@@ -609,6 +643,7 @@ async function main(): Promise<void> {
   } catch {
     /* no launch records yet */
   }
+  markSection("registry", registry.length ? "ok" : "skipped");
 
   // --- DNS register (#902's file, parsed; #906 §1 owns the view) ---------
   let dns: DnsSection | undefined;
@@ -617,9 +652,15 @@ async function main(): Promise<void> {
     dns =
       dnsSectionFromRegister(md, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
       undefined;
-    if (!dns) console.error("collector: DNS register parsed to zero entries; section omitted");
-  } catch {
+    if (!dns) {
+      console.error("collector: DNS register parsed to zero entries; section omitted");
+      markSection("dns", "error", "register did not produce a valid DNS section");
+    } else {
+      markSection("dns", "ok");
+    }
+  } catch (err) {
     console.error("collector: DNS register unreadable; section omitted");
+    markSection("dns", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- orchestration section (#899) --------------------------------------
@@ -632,14 +673,17 @@ async function main(): Promise<void> {
     const normalized = normalizeOrchestrationSection(parsed);
     if (normalized) {
       orchestration = normalized;
+      markSection("orchestration", "ok");
     } else {
       console.error(
         `collector: orchestration.json failed its structural check (${orchestrationSectionProblem(parsed)}); section omitted`,
       );
+      markSection("orchestration", "error", `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`);
     }
-  } catch {
+  } catch (err) {
     // No orchestration file yet (the job has not run) is the normal
     // pre-#899 state — omit the section silently.
+    markSection("orchestration", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- GitHub Project pool (#910 stage 5) --------------------------------
@@ -651,18 +695,21 @@ async function main(): Promise<void> {
     const token = await resolveProjectToken();
     if (!token) {
       console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
+      markSection("projects", "skipped");
     } else {
       projects = await fetchProjectPool(token);
       if (!projects.length) {
         console.error("collector: GitHub Project read returned zero items; projects section omitted");
         projects = undefined;
       }
+      markSection("projects", "ok");
     }
   } catch (err) {
     console.error(
-      `collector: GitHub Project read failed (${err instanceof Error ? err.message : "error"}); projects section omitted`,
+      `collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`,
     );
     projects = undefined;
+    markSection("projects", "error", err);
   }
 
   // --- Coverage census (#1220) -------------------------------------------
@@ -675,10 +722,15 @@ async function main(): Promise<void> {
     const token = await resolveProjectToken();
     if (!token) {
       console.error("collector: no GitHub token available; coverage census omitted");
+      markSection("coverage", "skipped");
     } else {
       const count = async (q: string): Promise<number> => {
         const res = await fetch(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(q)}`, {
-          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "pm-aggregator-collector" },
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github+json",
+            "user-agent": "pm-aggregator-collector",
+          },
         });
         if (!res.ok) throw new Error(`search ${res.status}`);
         const body = (await res.json()) as { total_count?: number };
@@ -686,6 +738,7 @@ async function main(): Promise<void> {
         return body.total_count as number;
       };
       const rows: RepoCensus[] = [];
+      let failedRepos = 0;
       for (const repo of REPOS) {
         try {
           const base = `repo:${repo} is:issue is:open`;
@@ -696,22 +749,42 @@ async function main(): Promise<void> {
             gateNext: await count(`${base} label:next`),
           });
         } catch (err) {
-          console.error(`collector: coverage census failed for ${repo} (${err instanceof Error ? err.message : "error"}); repo omitted`);
+          failedRepos++;
+          console.error(
+            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); repo omitted`,
+          );
         }
       }
       if (rows.length) coverage = rows;
+      if (failedRepos === REPOS.length && REPOS.length > 0) {
+        markSection("coverage", "error", "all repository census reads failed");
+      } else if (failedRepos > 0) {
+        markSection("coverage", "error", `${failedRepos} repository census reads failed`);
+      } else {
+        markSection("coverage", "ok");
+      }
     }
   } catch (err) {
-    console.error(`collector: coverage census failed (${err instanceof Error ? err.message : "error"}); section omitted`);
+    console.error(
+      `collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`,
+    );
     coverage = undefined;
+    markSection("coverage", "error", err);
   }
 
   // --- AA cost explorer (Supabase ainventory) ------------------------------
   // Always attempted; the section carries its own failure (absent
   // form) so the dashboard can say why instead of showing stale data.
-  const aa = await collectAaSection(now.toISOString());
+  const collectedAa = await collectAaSection(now.toISOString());
+  const aa =
+    collectedAa.status === "absent"
+      ? { ...collectedAa, reason: sanitizeCollectionError(collectedAa.reason) }
+      : collectedAa;
   if (aa.status === "absent") {
-    console.error(`collector: AA section absent (${aa.reason})`);
+    console.error(`collector: AA section absent (${sanitizeCollectionError(aa.reason)})`);
+    markSection("aa", "error", aa.reason);
+  } else {
+    markSection("aa", "ok");
   }
 
   // --- usage snapshot records (hub §4 writers) ---------------------------
@@ -743,6 +816,7 @@ async function main(): Promise<void> {
       }
     }
   }
+  markSection("snapshots", dedupedSnapshots.length ? "ok" : "skipped");
 
   // #1116 item 3: this collector runs from the pm-feed checkout of
   // this repo; measure its drift vs origin/main so a stale checkout
@@ -754,6 +828,7 @@ async function main(): Promise<void> {
     version: 1,
     generatedAt: now.toISOString(),
     checkout,
+    meta: { sections: sectionStatuses },
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
     julesSummary: jules,

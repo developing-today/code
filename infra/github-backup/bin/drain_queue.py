@@ -39,6 +39,7 @@ acked as handled-by-policy (never retried, never counted as failures),
 logged as one loud DRAIN-DROP line, and counted in the run summary.
 The allowlist fails closed: no owners in config, nothing is fetched.
 """
+
 import json, os, sys, time, urllib.request
 from datetime import datetime, timezone
 
@@ -57,7 +58,10 @@ def worker_req(path, payload=None):
     req.add_header("Authorization", "Bearer " + os.environ["GHB_WORKER_BEARER"])
     # Cloudflare's edge bot-filters the default Python-urllib UA (403);
     # a plain browser UA is required for this poller to reach the Worker.
-    req.add_header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    req.add_header(
+        "User-Agent",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    )
     if data:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as r:
@@ -75,8 +79,11 @@ def event_age_s(ev, now):
         return max(0, int(now - ts))
     if isinstance(ts, str):
         try:
-            t = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ") \
-                .replace(tzinfo=timezone.utc).timestamp()
+            t = (
+                datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ")
+                .replace(tzinfo=timezone.utc)
+                .timestamp()
+            )
             return max(0, int(now - t))
         except ValueError:
             try:
@@ -143,8 +150,11 @@ def main():
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     log_path = os.path.join(root, "fetch.log")
     plan_path = os.path.join(root, "plan.json")
-    planned = {p["repo"] for p in json.load(open(plan_path))} \
-        if os.path.exists(plan_path) else set()
+    planned = (
+        {p["repo"] for p in json.load(open(plan_path))}
+        if os.path.exists(plan_path)
+        else set()
+    )
 
     def log(line):
         with open(log_path, "a") as f:
@@ -162,8 +172,10 @@ def main():
         owner = event_owner(ev)
         repo = event_repo(ev)
         if owner is None or owner.lower() not in allowed:
-            log(f"{stamp} DRAIN-DROP foreign owner={owner or 'unknown'} "
-                f"repo={repo or 'unknown'} delivery={ev.get('id')}")
+            log(
+                f"{stamp} DRAIN-DROP foreign owner={owner or 'unknown'} "
+                f"repo={repo or 'unknown'} delivery={ev.get('id')}"
+            )
             ack.append(ev["id"])
             dropped.append(repo or "unknown")
             continue
@@ -179,8 +191,10 @@ def main():
         ages = [a for a in (event_age_s(e, now) for e in evs) if a is not None]
         age_note = f"oldest event age {max(ages)}s" if ages else "event age unknown"
         if repo not in planned:
-            log(f"{stamp} {repo} webhook event for unplanned repo — "
-                f"left for weekly reconcile")
+            log(
+                f"{stamp} {repo} webhook event for unplanned repo — "
+                f"left for weekly reconcile"
+            )
             ack.extend(ids)
             unplanned.append(repo)
             continue
@@ -202,26 +216,42 @@ def main():
         fs["count"] += 1
         fs["last"] = now
         err = (state.get(repo) or {}).get("last_error", "")
-        log(f"{stamp} {repo} {res} {err} (drain: {age_note}, "
-            f"consecutive drain failures {fs['count']})")
+        log(
+            f"{stamp} {repo} {res} {err} (drain: {age_note}, "
+            f"consecutive drain failures {fs['count']})"
+        )
         if fs["count"] >= CHRONIC_DRAIN_FAILURES:
-            log(f"{stamp} {repo} DRAIN-CHRONIC {fs['count']} consecutive "
-                f"drain failures — event(s) kept queued, needs attention")
-        failed.append({"repo": repo, "result": res,
-                       "consecutive_failures": fs["count"]})
+            log(
+                f"{stamp} {repo} DRAIN-CHRONIC {fs['count']} consecutive "
+                f"drain failures — event(s) kept queued, needs attention"
+            )
+        failed.append(
+            {"repo": repo, "result": res, "consecutive_failures": fs["count"]}
+        )
     with open(state_path, "w") as f:
         json.dump(state, f, indent=0)
     if ack:
         worker_req(cfg["worker"]["queue_poll_path"] + "/ack", {"ids": ack})
-    print(json.dumps({"events": len(events), "fetched": fetched,
-                      "failed": failed, "unplanned": unplanned,
-                      "dropped_foreign": len(dropped),
-                      "coalesced_pending": pending, "acked": len(ack)}))
-    chronic = [f["repo"] for f in failed
-               if f["consecutive_failures"] >= CHRONIC_DRAIN_FAILURES]
+    print(
+        json.dumps(
+            {
+                "events": len(events),
+                "fetched": fetched,
+                "failed": failed,
+                "unplanned": unplanned,
+                "dropped_foreign": len(dropped),
+                "coalesced_pending": pending,
+                "acked": len(ack),
+            }
+        )
+    )
+    chronic = [
+        f["repo"] for f in failed if f["consecutive_failures"] >= CHRONIC_DRAIN_FAILURES
+    ]
     if chronic:
-        print(f"drain: chronic failures (events kept queued): {chronic}",
-              file=sys.stderr)
+        print(
+            f"drain: chronic failures (events kept queued): {chronic}", file=sys.stderr
+        )
         return 1
     return 0
 

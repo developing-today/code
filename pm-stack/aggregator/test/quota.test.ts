@@ -50,6 +50,17 @@ describe("quota extractors", () => {
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
 
+  test("alternate ChatGPT account is its own pool — never merged into the main pool", () => {
+    const p = byId.get("openai.alternate")!;
+    expect(p).toBeDefined();
+    expect(p.provider).toBe("OpenAI");
+    // This view has no "### ChatGPT (Alternate)" dated-read section, so
+    // the pool renders as a shell; the gatherer overlay supplies the
+    // live windows (see quota-current.test.ts).
+    expect(p.windows).toEqual([]);
+    expect(poolProviderId("openai.alternate")).toBe("openai.alternate");
+  });
+
   test("meta is walled until the weekly reset — and it is the only Meta pool", () => {
     const p = byId.get("meta:high-usage")!;
     expect(p.state).toBe("walled");
@@ -244,9 +255,7 @@ describe("disabled_providers enforcement (#1114)", () => {
   test("the Claude pool's door is claude-code: disabling it filters anthropic:claude-pro", () => {
     expect(poolProviderId("anthropic:claude-pro")).toBe("claude-code");
     const filtered: Array<[string, string]> = [];
-    const disabled = disabledProvidersFromConfig(
-      JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }),
-    );
+    const disabled = disabledProvidersFromConfig(JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }));
     const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
     expect(pools.map((p) => p.id)).not.toContain("anthropic:claude-pro");
     expect(filtered).toContainEqual(["anthropic:claude-pro", "claude-code"]);

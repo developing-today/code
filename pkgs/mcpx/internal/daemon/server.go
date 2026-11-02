@@ -43,6 +43,9 @@ import (
 // socket is not portable across Deno, Bun and Node).
 type Server struct {
 	reg *Registry
+	// completeLimiter holds the completion/complete admission windows
+	// (#2387). The zero value is ready; every Server gets its own.
+	completeLimiter rateLimiter
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths
