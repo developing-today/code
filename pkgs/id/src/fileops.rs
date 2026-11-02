@@ -496,6 +496,17 @@ impl<'a> FileOps<'a> {
                 Ok(_) => archives_removed += 1,
                 Err(e) => tracing::warn!("failed to delete archive tag {tag}: {e}"),
             }
+            // Archives created by rename/copy carry the replaced file's
+            // metadata (archive_existing moves it onto the archive subject);
+            // remove it too, or it stays searchable after the archive blob
+            // tag is gone.
+            if let Err(e) = self
+                .tags
+                .del_all_tags(&self.tags.global, tag.as_bytes())
+                .await
+            {
+                tracing::warn!("failed to delete metadata for archive {tag}: {e:#}");
+            }
         }
 
         Ok(DeleteOutcome {
@@ -845,6 +856,77 @@ mod replacement_metadata_tests {
         assert!(
             has_tag(&source, "source-only", "source-metadata"),
             "{source:?}"
+        );
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_onto_existing_preserves_replaced_tag_payloads() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source.txt", b"new content").await;
+        put(&node, "destination.txt", b"replaced content").await;
+
+        // A tag with a non-empty entry payload, as written for legacy
+        // links by migrate_legacy_meta (payload carries the link target).
+        let payload: &[u8] = b"hash:0123abcd";
+        node.tags()
+            .set_tag(
+                &node.tags().global,
+                b"destination.txt",
+                b"link",
+                Some(b"target"),
+                payload,
+            )
+            .await
+            .unwrap();
+        let before = tags_of(&node, "destination.txt").await;
+        let before = before
+            .iter()
+            .find(|tag| tag.key.as_bytes() == b"link")
+            .expect("link tag seeded");
+        assert_eq!(before.len as usize, payload.len(), "{before:?}");
+        let before_hash = before.hash;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+
+        let archived = tags_of(&node, &archive).await;
+        let moved = archived
+            .iter()
+            .find(|tag| tag.key.as_bytes() == b"link")
+            .expect("link tag moved to archive");
+        assert_eq!(moved.hash, before_hash, "{moved:?}");
+        assert_eq!(moved.len as usize, payload.len(), "{moved:?}");
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_removes_archived_replaced_metadata() {
+        let node = LocalNode::open(true).await.unwrap();
+        seed_replacement_pair(&node).await;
+
+        let outcome = node
+            .ops()
+            .rename("source.txt", "destination.txt", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.expect("replaced file archived");
+        assert!(
+            !tags_of(&node, &archive).await.is_empty(),
+            "archive carries the replaced file's metadata before delete"
+        );
+
+        let deleted = node.ops().delete("destination.txt").await.unwrap();
+        assert_eq!(deleted.archives_removed, 1);
+        assert!(
+            tags_of(&node, &archive).await.is_empty(),
+            "archive metadata removed with the archive"
         );
 
         node.shutdown().await.unwrap();
