@@ -40,6 +40,25 @@ describe("parseChargeCandidates", () => {
     expect(parseChargeCandidates("nope")).toEqual([]);
     expect(parseChargeCandidates({ charges: [] })).toEqual([]);
   });
+
+  test("rejects impossible calendar dates but keeps leap days and timestamp slicing", () => {
+    const dates = [
+      "2026-13-45",
+      "2026-02-30",
+      "2026-00-00",
+      "2026-10-00",
+      "2026-02-29",
+      "2026-04-31",
+      "2024-02-29",
+      "2026-02-28T14:03:00Z",
+    ];
+
+    expect(
+      parseChargeCandidates(dates.map((at) => ({ source: "plaid", at, merchant: "Example", amountUsd: 1 }))).map(
+        (candidate) => candidate.at,
+      ),
+    ).toEqual(["2024-02-29", "2026-02-28"]);
+  });
 });
 
 describe("mergeChargeRows canonical-label dedupe", () => {
