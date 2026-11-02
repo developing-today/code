@@ -171,6 +171,49 @@ describe("SnapshotStore.compact", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("retention below 1 is rejected and the current month stays raw (#3285)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      const raw = JSON.stringify(rec("2026-10-05T12:00:00Z", "svc-a", "weekly", 12)) + "\n";
+      await writeFile(join(dir, "usage-2026-10.jsonl"), raw);
+      const store = new SnapshotStore(dir);
+      // Zero retention made the in-progress month eligible for
+      // compaction; the library seam now refuses it in both modes.
+      await expect(store.compact({ now: NOW, retentionMonths: 0 })).rejects.toThrow(
+        "retentionMonths must be a positive integer",
+      );
+      await expect(store.compact({ now: NOW, retentionMonths: 0, dryRun: true })).rejects.toThrow(
+        "retentionMonths must be a positive integer",
+      );
+      await expect(store.compact({ now: NOW, retentionMonths: -2 })).rejects.toThrow(
+        "retentionMonths must be a positive integer",
+      );
+      expect(await readdir(dir)).toEqual(["usage-2026-10.jsonl"]);
+      expect(await readFile(join(dir, "usage-2026-10.jsonl"), "utf8")).toBe(raw);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("smallest accepted retention (1) compacts last month but never the current month (#3285)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      const currentRaw = JSON.stringify(rec("2026-10-05T12:00:00Z", "svc-a", "weekly", 12)) + "\n";
+      await writeFile(join(dir, "usage-2026-10.jsonl"), currentRaw);
+      await writeFile(
+        join(dir, "usage-2026-09.jsonl"),
+        JSON.stringify(rec("2026-09-15T12:00:00Z", "svc-a", "weekly", 55)) + "\n",
+      );
+      const report = await new SnapshotStore(dir).compact({ now: NOW, retentionMonths: 1 });
+      expect(report.cutoffMonth).toBe("2026-09");
+      expect(report.months.map((m) => m.month)).toEqual(["2026-09"]);
+      expect((await readdir(dir)).sort()).toEqual(["usage-2026-09.rollup.jsonl", "usage-2026-10.jsonl"]);
+      expect(await readFile(join(dir, "usage-2026-10.jsonl"), "utf8")).toBe(currentRaw);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Codex review regressions (PR #2379)", () => {
