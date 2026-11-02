@@ -33,6 +33,7 @@ import type {
   UsageMetric,
   UsageUnit,
 } from "./model.ts";
+import { arrayOf, isFiniteNumber, isIsoDate, isNonEmptyString, isRecord } from "./validate.ts";
 
 /** Freshness bound for gatherer precedence: two missed ticks. */
 export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
@@ -47,21 +48,54 @@ export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
  */
 export const QUOTA_CURRENT_FUTURE_SKEW_MS = 60_000;
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["providers"][number]["windows"][number] {
+  if (!isRecord(value)) return false;
+  const finiteOrNull = (v: unknown) => v === null || isFiniteNumber(v);
+  return (
+    isNonEmptyString(value.name) &&
+    finiteOrNull(value.value) &&
+    finiteOrNull(value.pctOfLimit) &&
+    (value.valueLabel === null || typeof value.valueLabel === "string") &&
+    finiteOrNull(value.windowSeconds) &&
+    (value.resetsAt === null || isIsoDate(value.resetsAt)) &&
+    typeof value.measuredAt === "string" &&
+    typeof value.source === "string" &&
+    (value.state === "ok" || value.state === "error")
+  );
+}
+
+function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
+  return (
+    isRecord(value) &&
+    typeof value.providerId === "string" &&
+    typeof value.providerName === "string" &&
+    typeof value.serviceId === "string" &&
+    (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
+    typeof value.measuredAt === "string" &&
+    typeof value.source === "string" &&
+    Array.isArray(value.windows)
+  );
+}
 
 /** Structural check of a parsed quota-current.json document. */
 export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
   if (!isRecord(doc)) return null;
   if (doc.version !== 1 || typeof doc.generatedAt !== "string") return null;
-  if (!Array.isArray(doc.providers)) return null;
-  for (const p of doc.providers) {
-    if (!isRecord(p)) return null;
-    if (typeof p.providerId !== "string" || typeof p.serviceId !== "string") return null;
-    if (p.state !== "ok" && p.state !== "error" && p.state !== "unconfigured") return null;
-    if (typeof p.measuredAt !== "string" || typeof p.source !== "string") return null;
-    if (!Array.isArray(p.windows)) return null;
-  }
-  return doc as unknown as QuotaCurrentFile;
+  const providers = arrayOf(isQuotaCurrentEntry)(doc.providers);
+  // Keep rejecting a wholly malformed provider list; when at least one entry is valid,
+  // isolate malformed siblings so one provider cannot suppress unrelated overlays.
+  if (!providers || (providers.values.length === 0 && providers.dropped > 0)) return null;
+  let droppedWindows = 0;
+  const validProviders = providers.values.map((provider) => {
+    const windows = arrayOf(isQuotaCurrentWindow)(provider.windows)!;
+    droppedWindows += windows.dropped;
+    return { ...provider, windows: windows.values };
+  });
+  return {
+    ...doc,
+    providers: validProviders,
+    sanitized: { droppedProviders: providers.dropped, droppedWindows },
+  } as unknown as QuotaCurrentFile;
 }
 
 type FreshState = PoolFreshness["state"];

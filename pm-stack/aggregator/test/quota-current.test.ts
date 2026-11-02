@@ -295,6 +295,34 @@ describe("quota-current overlay", () => {
     expect(view.pools.find((p) => p.id === "meta:high-usage")!.windows[0].percent).toBe(100);
     expect(view.gatherer).toBeUndefined();
   });
+
+  test("malformed providers and windows are dropped without losing valid provider overlays", () => {
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({ serviceId: "meta:high-usage", windows: [win("weekly", 42, iso(5 * 60_000))] }),
+          entry({ serviceId: "openai:codex", windows: [win("7-day", 17, iso(5 * 60_000))] }),
+        ]),
+      ),
+    );
+    doc.providers[0].windows.push(
+      null,
+      { ...doc.providers[0].windows[0], name: 42 },
+      { ...doc.providers[0].windows[0], resetsAt: { invalid: true } },
+    );
+    doc.providers.push(null);
+
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.sanitized).toEqual({ droppedProviders: 1, droppedWindows: 3 });
+    expect(parsed?.providers).toHaveLength(2);
+    const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
+    expect(out.pools.find((p) => p.id === "meta:high-usage")?.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["weekly", 42],
+    ]);
+    expect(out.pools.find((p) => p.id === "openai:codex")?.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["7-day", 17],
+    ]);
+  });
 });
 
 describe("parseQuotaCurrent", () => {

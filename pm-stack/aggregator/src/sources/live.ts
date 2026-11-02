@@ -855,6 +855,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const file = parseQuotaCurrent(JSON.parse(raw));
         if (file) {
           provenance.quota += ` · gatherer ${file.generatedAt}`;
+          const sanitized = file.sanitized;
+          if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
+            provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
+          }
           return overlayQuotaCurrent(view, file);
         }
       } catch {
