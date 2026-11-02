@@ -39,6 +39,24 @@ import { createWrapPlugins } from "./wrap";
 export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "binary";
 
 /**
+ * Parse an <ol> `start` attribute into the ordered_list `order` attr
+ * (#2005). Only a plain non-negative decimal integer that fits in a
+ * safe integer is preserved (0 included); anything else — malformed
+ * text, fractions, negatives, hex/scientific notation, empty, or an
+ * unrepresentable magnitude — falls back to 1. The bare Number() this
+ * replaces let NaN/fractional/reinterpreted starts through, and the
+ * markdown codec (which reads order as u64) then silently renumbered
+ * pasted lists from 1 on save.
+ */
+export function parseOrderedListStart(raw: string | null): number {
+  if (raw === null) return 1;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return 1;
+  const n = Number(trimmed);
+  return Number.isSafeInteger(n) ? n : 1;
+}
+
+/**
  * Full schema with list support and GFM extensions for rich/markdown/plain modes.
  * Extends prosemirror-schema-basic with strikethrough mark, task list nodes, and table nodes.
  */
@@ -97,7 +115,7 @@ export const richSchema = new Schema({
           tag: "ol",
           getAttrs(dom) {
             const el = dom as HTMLElement;
-            return { order: el.hasAttribute("start") ? Number(el.getAttribute("start")) : 1 };
+            return { order: parseOrderedListStart(el.getAttribute("start")) };
           },
         },
       ],
