@@ -209,7 +209,9 @@ impl Mirror<'_> {
     }
 
     /// Holds `event` at clock time `now`, either parked or waiting for `deps`, and writes its
-    /// row. An event that is already held is left as it is.
+    /// row. An event that is already held is left as it is. An event whose key the pool has
+    /// already arrived or has ready is skipped: the ordinary restore ignores it, and its row
+    /// goes in the same transaction, so the rows never name an event the pool does not hold.
     pub fn hold(
         &mut self,
         event: Event,
@@ -309,7 +311,10 @@ impl Mirror<'_> {
     }
 
     /// Holds `row` parked: it waits for nothing, so no arrival releases it, and only the age cap
-    /// drops it. It keeps its first arrival time and its arrival number.
+    /// drops it. It keeps its first arrival time and its arrival number. This is the store's
+    /// explicit held-for-good route for proof headers: the header is already marked arrived,
+    /// so the ordinary restore would ignore it, and
+    /// [`restore_held_for_good`](WaitingPool::restore_held_for_good) holds it anyway.
     fn park(&mut self, row: Row) -> Result<(), StoreError> {
         let event = row_event(&row)?;
         let parked = Row {
@@ -317,7 +322,7 @@ impl Mirror<'_> {
             ..row
         };
         self.pool
-            .restore(parked.author, parked.id, [], event, parked.arrived_at)
+            .restore_held_for_good(parked.author, parked.id, event, parked.arrived_at)
             .map_err(|_refused| corrupt("a held proof header cannot be held for good"))?;
         put(self.txn, &parked)
     }
