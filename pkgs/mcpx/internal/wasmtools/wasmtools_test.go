@@ -58,6 +58,97 @@ func TestSameModuleWithoutGrantIsDenied(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsGuestWithoutExportedMemory(t *testing.T) {
+	_, err := Load(context.Background(), noMemoryGuest(false))
+	if err == nil || !strings.Contains(err.Error(), "guest does not export memory") {
+		t.Fatalf("Load error = %v, want an error naming missing memory", err)
+	}
+}
+
+func TestLoadRejectsGuestWithoutExportedMemoryWhenStartCallsGrantedLog(t *testing.T) {
+	_, err := Load(context.Background(), noMemoryGuest(true), GrantLog)
+	if err == nil || !strings.Contains(err.Error(), "guest does not export memory") {
+		t.Fatalf("Load error = %v, want an error naming missing memory", err)
+	}
+}
+
+// noMemoryGuest is a tiny test fixture equivalent to a core-WASM module with
+// the four required mcpx functions but no exported memory. In the second form,
+// the guest imports mcpx.log and calls it from its start function, before Load
+// can inspect the module. The exports all return zero; their behavior is
+// irrelevant because Load must reject both modules first.
+func noMemoryGuest(startCallsLog bool) []byte {
+	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	appendSection := func(id byte, payload []byte) {
+		module = append(module, id)
+		module = appendWasmU32(module, uint32(len(payload)))
+		module = append(module, payload...)
+	}
+	appendName := func(dst []byte, name string) []byte {
+		dst = appendWasmU32(dst, uint32(len(name)))
+		return append(dst, name...)
+	}
+
+	if startCallsLog {
+		// (i32, i32) -> (), () -> i32, (i32, i32) -> i32, () -> ()
+		appendSection(1, []byte{
+			4,
+			0x60, 2, 0x7f, 0x7f, 0,
+			0x60, 0, 1, 0x7f,
+			0x60, 2, 0x7f, 0x7f, 1, 0x7f,
+			0x60, 0, 0,
+		})
+		importSection := []byte{1}
+		importSection = appendName(importSection, "mcpx")
+		importSection = appendName(importSection, "log")
+		importSection = append(importSection, 0, 0) // function, type 0
+		appendSection(2, importSection)
+		appendSection(3, []byte{5, 1, 1, 1, 2, 3})
+	} else {
+		// () -> i32, (i32, i32) -> i32
+		appendSection(1, []byte{
+			2,
+			0x60, 0, 1, 0x7f,
+			0x60, 2, 0x7f, 0x7f, 1, 0x7f,
+		})
+		appendSection(3, []byte{4, 0, 0, 0, 1})
+	}
+
+	exports := []byte{4}
+	for i, name := range []string{"mcpx_input_ptr", "mcpx_output_ptr", "mcpx_list_tools", "mcpx_call_tool"} {
+		exports = appendName(exports, name)
+		exports = append(exports, 0, byte(i)) // function export; import shifts indices below
+		if startCallsLog {
+			exports[len(exports)-1]++
+		}
+	}
+	appendSection(7, exports)
+
+	body := []byte{4, 0, 0x41, 0, 0x0b} // locals=0; i32.const 0; end
+	code := []byte{4}
+	if startCallsLog {
+		code[0] = 5
+	}
+	for range 4 {
+		code = append(code, body...)
+	}
+	if startCallsLog {
+		startBody := []byte{8, 0, 0x41, 0, 0x41, 0, 0x10, 0, 0x0b} // locals=0; log(0, 0); end
+		code = append(code, startBody...)
+		appendSection(8, []byte{5}) // start function index, after imported log + four exports
+	}
+	appendSection(10, code)
+	return module
+}
+
+func appendWasmU32(dst []byte, value uint32) []byte {
+	for value >= 0x80 {
+		dst = append(dst, byte(value)|0x80)
+		value >>= 7
+	}
+	return append(dst, byte(value))
+}
+
 func TestUngrantedCapabilityImportIsDenied(t *testing.T) {
 	ctx := context.Background()
 	// greedy.wasm imports mcpx.read_file, which the host never offers —
