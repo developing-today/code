@@ -397,6 +397,49 @@ export async function projectorComments(baseUrl: string, refs: RefKey[]): Promis
   return out;
 }
 
+/** The latest non-deleted comment per ref, from a list in any order. */
+export function latestPerRef(comments: Comment[]): Comment[] {
+  const byRef = new Map<RefKey, Comment>();
+  for (const c of comments) {
+    if (c.deleted) continue;
+    const cur = byRef.get(c.ref);
+    if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+  }
+  return [...byRef.values()];
+}
+
+/**
+ * The latest comment for each ref, one projector read per ref (#1279).
+ * The bulk /comments read applies its row limit across every requested
+ * ref (projector default 500), so in a busy batch an item's latest
+ * comment can be truncated away entirely; a per-ref limit=1 read cannot
+ * be crowded out by other items' comments. Reads run with bounded
+ * concurrency against the local projector; any failed read fails the
+ * whole call (null), matching projectorComments' fail-soft contract.
+ */
+export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
+  if (refs.length === 0) return [];
+  const out: Comment[] = [];
+  const CONCURRENCY = 16;
+  for (let i = 0; i < refs.length; i += CONCURRENCY) {
+    const batch = refs.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (ref): Promise<Comment[] | null> => {
+        const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(ref)}&limit=1`);
+        if (!r.ok) return null;
+        return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+          .map(mapProjectorComment)
+          .filter((c) => !c.deleted);
+      }),
+    );
+    for (const rows of results) {
+      if (rows === null) return null;
+      if (rows.length) out.push(latestPerRef(rows)[0]);
+    }
+  }
+  return out;
+}
+
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
 export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
@@ -849,6 +892,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         }
       }
       return fix.comments(refs);
+    },
+    async latestComments(refs) {
+      if (cfg.projector.baseUrl) {
+        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
+        if (live) {
+          provenance.comments = "live (projector)";
+          return live;
+        }
+      }
+      return latestPerRef(await fix.comments(refs));
     },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced

@@ -2,7 +2,8 @@
 // 2026-10-27 + triage task 2593). The decision table is data here so a
 // future manifest edit that drifts from it fails loudly.
 import { describe, expect, test } from "bun:test";
-import type { ProjectPoolItem, Provenance } from "../src/model.ts";
+import type { Comment, ProjectPoolItem, Provenance } from "../src/model.ts";
+import { buildBriefs } from "../src/brief.ts";
 import { PAGES, SUBROUTE_PARENTS, manifestRouteFor, pageByRoute, primaryGroupedPages } from "../src/pages.ts";
 import { buildProgramData } from "../src/program.ts";
 import { navLinks, pageDropdown, renderPages, renderProgram } from "../src/render.ts";
@@ -123,5 +124,48 @@ describe("the Projects merge into Program (#1497)", () => {
     // Area chips in the merged section point back at /program, not the redirect.
     expect(html).toContain('href="/program?area=pm-dashboard"');
     expect(html).not.toContain('href="/projects?area=');
+  });
+
+  test("renderProgram forwards prebuilt comment-backed briefs to the pool cards (#1279)", () => {
+    const pool: ProjectPoolItem[] = [
+      {
+        id: "PVTI_y",
+        url: "https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=2",
+        projectUrl: "https://github.com/orgs/developing-today/projects/4",
+        ref: "developing-today/code#2",
+        repo: "developing-today/code",
+        number: 2,
+        issueUrl: "https://github.com/developing-today/code/issues/2",
+        title: "briefed pool card",
+        state: "open",
+        contentKind: "issue",
+        status: "Todo",
+        area: "pm-dashboard",
+        horizon: null,
+        kind: null,
+      },
+    ];
+    const briefs = buildBriefs(pool, {
+      comments: [
+        {
+          id: "c1",
+          ref: "developing-today/code#2",
+          kind: "issue_comment",
+          author: "alice",
+          body: "working on it",
+          createdAt: "2026-10-30T00:00:00Z",
+          url: "https://github.com/developing-today/code/issues/2#issuecomment-1",
+          deleted: false,
+        } as Comment,
+      ],
+    });
+    const items = new Map();
+    const data = { ...buildProgramData(items, pool, null), projects: [] };
+    const withBriefs = renderProgram(data, items, PROV, undefined, { pool, area: null, briefs });
+    // The comment-backed brief names the last actor; the comment-less
+    // fallback built inside projectsBodyHtml cannot.
+    expect(withBriefs).toContain("Last activity by alice");
+    const without = renderProgram(data, items, PROV, undefined, { pool, area: null });
+    expect(without).not.toContain("Last activity by alice");
   });
 });

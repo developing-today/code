@@ -86,6 +86,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
@@ -1623,6 +1624,14 @@ function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): strin
   return `<div class="strip">${parts.join(" ")}</div>`;
 }
 
+function briefPanelsForRefs(refs: RefKey[], briefs?: Map<RefKey, ItemBrief>): string {
+  return [...new Set(refs)]
+    .map((ref) => briefs?.get(ref))
+    .filter((brief): brief is ItemBrief => Boolean(brief))
+    .map(briefPanelHtml)
+    .join("");
+}
+
 // --- Board view -----------------------------------------------------------
 
 /** The board's card grid alone (#1444 fragment payload). */
@@ -1634,6 +1643,7 @@ export function renderBoardBody(
     actionsByObject?: Map<string, DashAction[]>;
     poolByRef?: Map<RefKey, ProjectPoolItem>;
     identities?: AuthorIdentity[];
+    briefs?: Map<RefKey, ItemBrief>;
   },
   renderOpts?: { showAllDone?: boolean },
 ): string {
@@ -1675,6 +1685,7 @@ export function renderBoardBody(
         .map((item) => {
           const repo = item.repo ? `<span class="muted">${esc(item.repo)}</span><br>` : "";
           const cmt = counts ? commentBadge(item.id, counts) : "";
+          const briefs = briefPanelsForRefs(item.links.map((link) => link.ref), act?.briefs);
           if (item.source === "orchestrator") {
             // Synthetic in-flight entry: visibly not a Kaneo card. Its
             // GitHub refs link directly (no execution strip — the
@@ -1687,7 +1698,7 @@ export function renderBoardBody(
             const refs = item.links.length
               ? `<div class="strip">${item.links.map((l) => `<a class="badge open" href="${esc(refUrl(l.ref))}">${esc(l.ref)}</a>`).join(" ")}</div>`
               : "";
-            return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}</div>`;
+            return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}${briefs}</div>`;
           }
           const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
           // #1154: a card whose linked issue sits in the Project pool
@@ -1701,7 +1712,7 @@ export function renderBoardBody(
             }
           }
           const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}</div>`;
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}${briefs}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1732,6 +1743,7 @@ export function renderBoard(
     actionsByObject?: Map<string, DashAction[]>;
     poolByRef?: Map<RefKey, ProjectPoolItem>;
     identities?: AuthorIdentity[];
+    briefs?: Map<RefKey, ItemBrief>;
   },
   renderOpts?: { showAllDone?: boolean },
 ): string {
@@ -1841,6 +1853,7 @@ function roadmapCard(
   counts?: Map<string, number | CommentKindCounts>,
   drill?: RoadmapDrill,
   annotations?: Map<string, RoadmapAnnotation[]>,
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1855,7 +1868,8 @@ function roadmapCard(
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
     : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}</div>`;
+  const briefPanels = briefPanelsForRefs(refs, briefs);
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1868,6 +1882,7 @@ function timelineTable(
   counts?: Map<string, number | CommentKindCounts>,
   drill?: Map<string, RoadmapDrill>,
   annotations?: Map<string, RoadmapAnnotation[]>,
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1875,7 +1890,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
@@ -1895,6 +1910,7 @@ export function renderRoadmap(
   drill?: Map<string, RoadmapDrill>,
   annotations?: Map<string, RoadmapAnnotation[]>,
   viewQuery = "",
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1911,15 +1927,15 @@ export function renderRoadmap(
   ).join("");
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const sections = dg.lanes
       .map(
         (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
+          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
       )
       .join("");
     const notes: string[] = [];
@@ -1961,6 +1977,8 @@ export interface ItemExtras {
   serviceLinks?: ItemServiceLink[];
   /** Present when this item's Project-pool entry is an epic. */
   epicRollup?: EpicRollup;
+  /** Project-pool briefs for linked refs (#1279). */
+  briefs?: Map<RefKey, ItemBrief>;
 }
 
 function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
@@ -2033,6 +2051,7 @@ export function renderItem(
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
+${extras?.briefs ? briefPanelsForRefs(links.map((link) => link.ref), extras.briefs) : ""}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
@@ -2946,8 +2965,9 @@ export function renderAttention(
   counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   act?: AttentionAct,
+  briefs?: Map<RefKey, ItemBrief>,
 ): string {
-  const sections = attentionSections(view, coverage, counts, act);
+  const sections = attentionSections(view, coverage, counts, act, briefs);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
@@ -2971,6 +2991,7 @@ export function attentionSections(
   coverage: SourceCoverage[],
   counts?: Map<string, number | CommentKindCounts>,
   act?: AttentionAct,
+  briefs?: Map<RefKey, ItemBrief>,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -3073,7 +3094,10 @@ export function attentionSections(
     if (cs.suppressed) continue;
     const drewAct = tierAct(item);
     drewCardsList.push({
-      html: bulkPickHtml(objectRef, item.title, act, drewAct.disabledReason) + tierItemCard(item, "Why you", counts, drewAct),
+      html:
+        bulkPickHtml(objectRef, item.title, act, drewAct.disabledReason) +
+        tierItemCard(item, "Why you", counts, drewAct) +
+        (item.ref ? briefPanelsForRefs([item.ref], briefs) : ""),
       sinceMs: Date.parse(item.since) || 0,
       seenMs: Date.parse(item.lastSeenAt) || 0,
       rank: item.horizon ? (HORIZON_RANK[item.horizon] ?? 5) : 5,
@@ -3102,7 +3126,11 @@ export function attentionSections(
     const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
     const orchAct = tierAct(item);
-    orchCardsList.push(bulkPickHtml(objectRef, item.title, act, orchAct.disabledReason) + tierItemCard(item, "Why the fleet", counts, orchAct));
+    orchCardsList.push(
+      bulkPickHtml(objectRef, item.title, act, orchAct.disabledReason) +
+        tierItemCard(item, "Why the fleet", counts, orchAct) +
+        (item.ref ? briefPanelsForRefs([item.ref], briefs) : ""),
+    );
   }
   // Store-only suppressed refs: items the publisher no longer lists
   // (their dismissal was applied and they left the tiers) stay visible
@@ -5841,6 +5869,20 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
 /** The Projects pool body (cards, chips, coverage) without the page
  * shell — rendered standalone by renderProjects and, since the #1497
  * merge, as the pool section of /program. */
+/** The per-item brief panel (#1279): visibly labelled as derived, every
+ * line carrying its evidence link. The identical brief object ships in
+ * the JSON twin (/api/projects.json `briefs`). */
+export function briefPanelHtml(brief: ItemBrief): string {
+  const ev = (e: { text: string; url: string }) => `<a href="${esc(e.url)}">${esc(e.text)}</a>`;
+  const activity = brief.lastActivity.evidence
+    ? `${esc(brief.lastActivity.text)} Evidence: ${ev(brief.lastActivity.evidence)}.`
+    : esc(brief.lastActivity.text);
+  const clash = brief.disagreement
+    ? `<br><span>⚠ ${esc(brief.disagreement.text)} Evidence: ${ev(brief.disagreement.evidence)}.</span>`
+    : "";
+  return `<div class="brief" style="border-left:3px solid #888;padding-left:0.6em;margin-top:0.4em"><strong>Derived brief</strong> <span class="muted">(derived from the projection — not authored)</span><br><span>State: ${esc(brief.state.text)} Evidence: ${ev(brief.state.evidence)}.</span><br><span>Blocker: ${esc(brief.blocker.text)} Evidence: ${ev(brief.blocker.evidence)}.</span><br><span>${activity}</span><br><span>Next: ${esc(brief.nextAction.text)} Evidence: ${ev(brief.nextAction.evidence)}.</span>${clash}</div>`;
+}
+
 export function projectsBodyHtml(
   pool: ProjectPoolItem[],
   opts: {
@@ -5852,6 +5894,9 @@ export function projectsBodyHtml(
     coverage?: CoverageSnapshotFile | null;
     /** Where the area chips point: /projects standalone, /program once merged (#1497). */
     basePath?: string;
+    /** Prebuilt briefs (#1279), e.g. with comment activity folded in.
+     * Absent: briefs are built here from the pool + orchestration only. */
+    briefs?: Map<RefKey, ItemBrief>;
   } = {},
 ): string {
   const base = opts.basePath ?? "/projects";
@@ -5914,7 +5959,8 @@ export function projectsBodyHtml(
         : "";
       const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
       const epicRollup = rollup ? epicRollupHtml(rollup) : "";
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}</div>`;
+      const brief = opts.briefs?.get(p.ref) ?? buildItemBrief(p, { pool, orchestration: opts.orchestration });
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}${briefPanelHtml(brief)}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
@@ -6038,12 +6084,14 @@ export function renderProgram(
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
+    /** Prebuilt briefs (#1279), e.g. with comment activity folded in. */
+    briefs?: Map<RefKey, ItemBrief>;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program" })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
