@@ -207,6 +207,34 @@ export interface OpencodeCoverageInputs {
 }
 
 /**
+ * Merge the runtime overlay (#4544: the sync-models-owned provider catalogs
+ * that live outside the tracked configured default and are layered over it
+ * via OPENCODE_CONFIG) into the base config text, returning the effective
+ * config as JSON text. Returns null when either side does not parse —
+ * callers fall back to the base text alone.
+ */
+export function mergeOpencodeConfigTexts(baseText: string, overlayText: string): string | null {
+  let base: unknown;
+  let overlay: unknown;
+  try {
+    base = JSON.parse(stripJsonComments(baseText));
+    overlay = JSON.parse(stripJsonComments(overlayText));
+  } catch {
+    return null;
+  }
+  if (typeof base !== "object" || base === null || typeof overlay !== "object" || overlay === null) return null;
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  const merge = (b: unknown, o: unknown): unknown => {
+    if (!isObj(b) || !isObj(o)) return o;
+    const out: Record<string, unknown> = { ...b };
+    for (const k of Object.keys(o)) out[k] = merge(b[k], o[k]);
+    return out;
+  };
+  return JSON.stringify(merge(base, overlay));
+}
+
+/**
  * Extract the provider catalog and the pooled leaf set from the repo's
  * .opencode/opencode.jsonc. Returns null when the file does not parse —
  * coverage is best-effort and its absence is stated, never guessed.
@@ -1073,6 +1101,7 @@ export function aaSectionFromSupabase(
   raw: AaRawPayload,
   opencodeConfigText: string | null,
   generatedAt: string,
+  opencodeRuntimeText: string | null = null,
 ): AaSection | null {
   if (typeof raw.batch !== "string" || !Array.isArray(raw.rankings) || !Array.isArray(raw.configs)) return null;
   const rankings = raw.rankings.map(rankingFromRaw).filter((r): r is AaRanking => r !== null);
@@ -1093,9 +1122,16 @@ export function aaSectionFromSupabase(
   let coverage: AaCoverage | undefined;
   let catalog: AaCatalogEntry[] | undefined;
   if (opencodeConfigText) {
-    const inputs = parseOpencodeCoverageInputs(opencodeConfigText);
+    // #4544: coverage and the catalog are computed from the effective config
+    // (tracked default + runtime overlay) so the sync-owned providers'
+    // models stay visible after the split.
+    const effectiveText =
+      (opencodeRuntimeText
+        ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText)
+        : null) ?? opencodeConfigText;
+    const inputs = parseOpencodeCoverageInputs(effectiveText);
     if (inputs) coverage = computeAaCoverage(measuredNames, inputs);
-    catalog = aaCatalogFromConfig(opencodeConfigText, { configs, rankings }, prices) ?? undefined;
+    catalog = aaCatalogFromConfig(effectiveText, { configs, rankings }, prices) ?? undefined;
   }
   return {
     status: "ok",

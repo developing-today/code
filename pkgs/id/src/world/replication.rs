@@ -387,6 +387,83 @@ pub fn chain_payload(
     Ok(cursor)
 }
 
+/// Check a snapshot/tail payload's own journal header against the frame
+/// that carries it (#4486). Chaining only proves the payload is a sequence
+/// of decodable entries; restore additionally demands the journal begin
+/// with exactly one `Created` header for this world at a supported
+/// version and contain no second header. A signed payload violating that
+/// would advance the verified cursor over a journal no replica can ever
+/// restore, so [`ReplicationTracker::accept`] refuses it here, before any
+/// state changes.
+///
+/// - Snapshot: the first entry must be a `Created` header whose world and
+///   version equal the envelope's `world_id` and `header_version`, and no
+///   later entry may be a `Created`.
+/// - Tail: a tail starting at the chain base carries journal entry 0
+///   itself, so its first entry may be that same matching header; any
+///   other `Created` in a tail is a second header mid-journal.
+///
+/// # Errors
+///
+/// [`ReplicationError::InvalidJournalHeader`] on a header violation;
+/// [`ReplicationError::MalformedPayload`] if a line does not decode (the
+/// same refusal [`chain_payload`] would give).
+fn validate_payload_journal_header(envelope: &ReplicationEnvelope) -> Result<(), ReplicationError> {
+    if envelope.payload.is_empty() {
+        return match envelope.kind {
+            // An empty snapshot carries no header at all: missing header.
+            ReplicationKind::Snapshot => Err(ReplicationError::InvalidJournalHeader),
+            _ => Ok(()),
+        };
+    }
+    if !envelope.payload.ends_with(b"\n") {
+        return Err(ReplicationError::MalformedPayload);
+    }
+    let mut entries = Vec::new();
+    for line in envelope.payload.split_inclusive(|byte| *byte == b'\n') {
+        entries.push(
+            serde_json::from_slice::<JournalEntry>(line)
+                .map_err(|_| ReplicationError::MalformedPayload)?,
+        );
+    }
+    let header_matches = |entry: &JournalEntry| match entry {
+        JournalEntry::Created { world_id, version } => {
+            world_id == &envelope.world_id && *version == envelope.header_version
+        }
+        _ => false,
+    };
+    let is_created = |entry: &JournalEntry| matches!(entry, JournalEntry::Created { .. });
+    match envelope.kind {
+        ReplicationKind::Snapshot => {
+            if !entries.first().is_some_and(|entry| header_matches(entry)) {
+                return Err(ReplicationError::InvalidJournalHeader);
+            }
+            if entries[1..].iter().any(|entry| is_created(entry)) {
+                return Err(ReplicationError::InvalidJournalHeader);
+            }
+        }
+        ReplicationKind::Tail => {
+            let starts_at_base = envelope.cursor_before
+                == chain_base_cursor(
+                    &envelope.world_id,
+                    &envelope.source,
+                    envelope.header_version,
+                );
+            for (idx, entry) in entries.iter().enumerate() {
+                if !is_created(entry) {
+                    continue;
+                }
+                if idx == 0 && starts_at_base && header_matches(entry) {
+                    continue;
+                }
+                return Err(ReplicationError::InvalidJournalHeader);
+            }
+        }
+        ReplicationKind::Terminal => {}
+    }
+    Ok(())
+}
+
 /// A replication envelope plus its Ed25519 signature — the frame a
 /// replication stream actually carries (as the payload of the transport
 /// framing, see [`crate::frames`]).
@@ -542,6 +619,15 @@ pub enum ReplicationError {
     /// does not decode as a journal entry.
     #[error("replication payload is not complete journal entries")]
     MalformedPayload,
+    /// The payload's own journal header does not match the frame: a
+    /// snapshot that does not begin with exactly one [`JournalEntry::Created`]
+    /// header naming the envelope's world and header version, a duplicate
+    /// header later in a snapshot, or a header entry carried by a tail past
+    /// the journal start. Such a payload chains fine but
+    /// [`super::WorldCore::restore`] refuses the journal, so a verified
+    /// cursor must never advance over it (#4486).
+    #[error("replication payload journal header does not match the frame")]
+    InvalidJournalHeader,
     /// A terminal frame names a cursor the batch has not reached — the
     /// batch is truncated or the terminal belongs to another batch.
     #[error("terminal frame does not match the reached cursor")]
@@ -665,6 +751,7 @@ impl ReplicationTracker {
                 if envelope.cursor_before != base {
                     return Err(ReplicationError::CursorFork);
                 }
+                validate_payload_journal_header(envelope)?;
                 let chained = chain_payload(envelope.cursor_before, &envelope.payload)?;
                 if chained != envelope.cursor_after {
                     return Err(ReplicationError::EntryChainMismatch);
@@ -685,6 +772,7 @@ impl ReplicationTracker {
                 if envelope.cursor_before != self.cursor {
                     return Err(ReplicationError::CursorFork);
                 }
+                validate_payload_journal_header(envelope)?;
                 let chained = chain_payload(envelope.cursor_before, &envelope.payload)?;
                 if chained != envelope.cursor_after {
                     return Err(ReplicationError::EntryChainMismatch);
@@ -735,10 +823,15 @@ mod tests {
 
     /// Three real journal entries as their exact replicated line bytes.
     fn entry_payload() -> Vec<u8> {
+        entry_payload_with_version(1)
+    }
+
+    /// [`entry_payload`] with a chosen journal header version.
+    fn entry_payload_with_version(version: u32) -> Vec<u8> {
         let entries = [
             JournalEntry::Created {
                 world_id: WORLD.to_string(),
-                version: 1,
+                version,
             },
             JournalEntry::CapsGranted {
                 granted: vec!["chat".to_string()],
@@ -1246,13 +1339,14 @@ mod tests {
         // After a header bump the writer sends a snapshot on the new
         // chain base; the receiver rebases instead of demanding
         // continuity with the old chain.
+        let snapshot_payload = entry_payload_with_version(2);
         let snapshot = ReplicationEnvelope::snapshot(
             WORLD,
             source_of(&key),
             2,
             NONCE,
             frame_digest(&first),
-            entry_payload(),
+            snapshot_payload.clone(),
         )
         .unwrap();
         let snapshot_bytes = SignedReplicationEnvelope::sign(snapshot, &key)
@@ -1265,7 +1359,7 @@ mod tests {
         assert_eq!(accepted.cursor_after.ordinal, 3);
         assert_eq!(
             accepted.cursor_after,
-            chain_payload(chain_base_cursor(WORLD, &source_of(&key), 2), &entry_payload())
+            chain_payload(chain_base_cursor(WORLD, &source_of(&key), 2), &snapshot_payload)
                 .unwrap()
         );
         // A tail on the old header version is now refused.
@@ -1287,6 +1381,96 @@ mod tests {
             receiver.accept(&stale_bytes),
             Err(ReplicationError::HeaderVersionChanged)
         );
+    }
+
+    /// A signed snapshot frame over `payload` on the version-`version`
+    /// chain, with frame-chain digest `prev`.
+    fn signed_snapshot(
+        key: &SigningKey,
+        version: u32,
+        prev: [u8; 32],
+        payload: Vec<u8>,
+    ) -> Vec<u8> {
+        let envelope =
+            ReplicationEnvelope::snapshot(WORLD, source_of(key), version, NONCE, prev, payload)
+                .unwrap();
+        SignedReplicationEnvelope::sign(envelope, key)
+            .unwrap()
+            .encode_frame()
+            .unwrap()
+    }
+
+    #[test]
+    fn snapshot_and_tail_payloads_must_carry_the_journals_own_header() {
+        // Regression tests for #4486: accept verified payloads whose
+        // journal WorldCore::restore refuses, and the verified cursor
+        // advanced over a journal no replica could ever restore.
+        let key = signing_key(1);
+        let base = chain_base_cursor(WORLD, &source_of(&key), 1);
+        let good = entry_payload();
+        let first_line_end = good.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+        let mut receiver = tracker(&key);
+
+        // Missing header: a snapshot whose payload starts mid-journal.
+        let frame = signed_snapshot(&key, 1, [0; 32], good[first_line_end..].to_vec());
+        assert_eq!(
+            receiver.accept(&frame),
+            Err(ReplicationError::InvalidJournalHeader)
+        );
+        assert_eq!(receiver.cursor(), base);
+
+        // Foreign-world header: the payload's Created names another world
+        // than the envelope (and the receiver).
+        let foreign = [
+            JournalEntry::Created {
+                world_id: "other-world".to_string(),
+                version: 1,
+            },
+            JournalEntry::CapsGranted {
+                granted: vec!["chat".to_string()],
+            },
+        ];
+        let foreign_payload: Vec<u8> = foreign.iter().flat_map(journal_entry_line).collect();
+        let frame = signed_snapshot(&key, 1, [0; 32], foreign_payload);
+        assert_eq!(
+            receiver.accept(&frame),
+            Err(ReplicationError::InvalidJournalHeader)
+        );
+        assert_eq!(receiver.cursor(), base);
+
+        // Payload version mismatch: the header's version is not the
+        // envelope's header_version.
+        let frame = signed_snapshot(&key, 1, [0; 32], entry_payload_with_version(2));
+        assert_eq!(
+            receiver.accept(&frame),
+            Err(ReplicationError::InvalidJournalHeader)
+        );
+        assert_eq!(receiver.cursor(), base);
+
+        // Duplicate header: a second Created later in the snapshot.
+        let mut duplicate = good.clone();
+        duplicate.extend_from_slice(&journal_entry_line(&JournalEntry::Created {
+            world_id: WORLD.to_string(),
+            version: 1,
+        }));
+        let frame = signed_snapshot(&key, 1, [0; 32], duplicate);
+        assert_eq!(
+            receiver.accept(&frame),
+            Err(ReplicationError::InvalidJournalHeader)
+        );
+        assert_eq!(receiver.cursor(), base);
+
+        // Created in a tail: after a valid snapshot, a tail frame carrying
+        // a header entry is refused and the verified cursor does not move.
+        let snapshot = signed_snapshot(&key, 1, [0; 32], good.clone());
+        receiver.accept(&snapshot).unwrap();
+        let reached = receiver.cursor();
+        let frame = signed_tail(&key, reached, frame_digest(&snapshot), good.clone());
+        assert_eq!(
+            receiver.accept(&frame),
+            Err(ReplicationError::InvalidJournalHeader)
+        );
+        assert_eq!(receiver.cursor(), reached);
     }
 
     #[test]

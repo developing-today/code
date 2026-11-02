@@ -90,7 +90,7 @@ import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./pro
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
-import { buildEpicRollups, type EpicRollup } from "./epics.ts";
+import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
@@ -1841,7 +1841,7 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
     if (drill.children.length === 0) {
       parts.push(`<p class="muted">No child issues in the Project pool for this epic yet.</p>`);
     } else {
-      const done = drill.children.filter((c) => c.state === "closed" || c.state === "merged").length;
+      const done = drill.children.filter(isEpicChildDone).length;
       const total = drill.children.length;
       const pct = Math.round((done / total) * 100);
       parts.push(
