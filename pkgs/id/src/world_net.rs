@@ -187,24 +187,22 @@ impl StreamIo {
                 // allocated (frames::read_frame_len / read_frame_body
                 // split), holding the shared lock only for the
                 // synchronous charge — never across the body read. A
-                // refusal sheds this stream only; the peer connection
-                // and its other sessions stay up.
+                // hard refusal sheds this stream only; the peer
+                // connection and its other sessions stay up.
                 let inbound = match read_frame_len(&mut recv).await {
                     Ok(Some(len)) => {
-                        // The guard drops at the end of this block, before
-                        // the body read's await: a refused (or poisoned)
-                        // charge sheds this stream, not the connection.
-                        let admitted = match reader_abuse.lock() {
-                            Ok(mut abuse) => charge_frame(
-                                &mut abuse,
-                                remote,
-                                reader_authorized_task.load(Ordering::Acquire),
-                                len as usize,
-                                abuse_now_ms(),
-                            )
-                            .is_ok(),
-                            Err(_) => false,
-                        };
+                        // The charge runs before the body is read, so
+                        // an authorized stream can wait out a temporary
+                        // refusal with the body still unread (read-side
+                        // backpressure); the lock is never held across
+                        // the wait or the body read.
+                        let admitted = charge_inbound_frame(
+                            &reader_abuse,
+                            remote,
+                            &reader_authorized_task,
+                            len as usize,
+                        )
+                        .await;
                         if admitted {
                             match read_frame_body(&mut recv, len).await {
                                 Ok(body) => match String::from_utf8(body) {
@@ -298,6 +296,47 @@ async fn charge_frame_with_backpressure(
                 };
                 tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
             }
+        }
+    }
+}
+
+/// Charge one inbound frame for a stream reader.
+///
+/// An authorized stream that hits a temporary refusal waits out the
+/// refusal's retry interval and charges again, with the frame body still
+/// unread on the stream: QUIC flow control then paces the sender instead
+/// of the refusal closing the stream mid-transfer (a module upload sends
+/// many chunks back-to-back and would otherwise die at the burst limit,
+/// well below the supported module size). A pre-authorization refusal, a
+/// refusal with no retry offered, and a poisoned evaluator still refuse
+/// immediately — the caller sheds this stream only. The shared lock is
+/// released before every wait.
+async fn charge_inbound_frame(
+    abuse: &Arc<Mutex<AbuseEvaluator>>,
+    endpoint: AbuseEndpointId,
+    authorized: &AtomicBool,
+    payload_len: usize,
+) -> bool {
+    loop {
+        let is_authorized = authorized.load(Ordering::Acquire);
+        let retry_after_ms = match abuse.lock() {
+            Ok(mut abuse) => match charge_frame(
+                &mut abuse,
+                endpoint,
+                is_authorized,
+                payload_len,
+                abuse_now_ms(),
+            ) {
+                Ok(()) => return true,
+                Err(refusal) => refusal.0.retry_after_ms,
+            },
+            Err(_) => return false,
+        };
+        match retry_after_ms {
+            Some(ms) if is_authorized => {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            _ => return false,
         }
     }
 }
@@ -1451,6 +1490,56 @@ mod tests {
                 .unwrap()
                 .frames,
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_refusal_backpressures_authorized_streams_but_sheds_preauth() {
+        use crate::abuse::{AbusePolicy, BucketLimits};
+
+        let limits = BucketLimits {
+            frames_per_sec: 1_000,
+            frame_burst: 1,
+            bytes_per_sec: 1_000,
+            byte_burst: 1,
+        };
+        let evaluator = Arc::new(Mutex::new(AbuseEvaluator::new(
+            AbusePolicy {
+                authorized: limits,
+                pre_authorization: limits,
+                ..AbusePolicy::default()
+            },
+            [1; 32],
+        )));
+
+        // Pre-authorization: the first frame fits the burst, the next is
+        // refused immediately — no waiting, the stream is shed.
+        let preauth = [3; 32];
+        let flag = AtomicBool::new(false);
+        assert!(charge_inbound_frame(&evaluator, preauth, &flag, 1).await);
+        assert!(
+            !tokio::time::timeout(
+                Duration::from_millis(500),
+                charge_inbound_frame(&evaluator, preauth, &flag, 1),
+            )
+            .await
+            .expect("a pre-auth refusal returns immediately"),
+            "a pre-auth refusal sheds the stream"
+        );
+
+        // Authorized: the same burst refusal becomes backpressure — the
+        // charge completes once the bucket refills instead of failing.
+        let authed = [4; 32];
+        let flag = AtomicBool::new(true);
+        assert!(charge_inbound_frame(&evaluator, authed, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                charge_inbound_frame(&evaluator, authed, &flag, 1),
+            )
+            .await
+            .expect("the retry should complete after the token refills"),
+            "an authorized refusal is backpressure, not a closed stream"
         );
     }
 
