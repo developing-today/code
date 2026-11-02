@@ -420,7 +420,7 @@ describe("handlePaste batch ordering (#1323)", () => {
   function paste(v: EditorView, files: File[]): void {
     const event = { clipboardData: { files }, preventDefault: vi.fn() };
     const result = handlePaste!.call(
-      plugin,
+      plugin!,
       v,
       event as unknown as ClipboardEvent,
       undefined as unknown as Slice,
