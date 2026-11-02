@@ -341,3 +341,39 @@ func TestJSONDefaultsWithBracketsInsideStrings(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderValidatesAndEncodesDeclaredDefaults(t *testing.T) {
+	cases := []struct {
+		name, typ, def, want string
+		wantErr              bool
+	}{
+		{"invalid number identifier", "number", "banana", "", true},
+		{"unquoted string", "string", "hello", `value: "hello"`, false},
+		{"invalid boolean identifier", "boolean", "yes", "", true},
+		{"number expression", "number", "1+1", "", true},
+		{"number control", "number", "30", "value: 30", false},
+		{"quoted string control", "string", `"hi"`, `value: "hi"`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "// @param value:" + tc.typ + " = " + tc.def + "\nawait demo.run({ value: @value });"
+			r := recipes.Parse("demo", "/tmp/demo.ts", src)
+			out, err := r.Render(nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Render accepted invalid %s default %q; output:\n%s", tc.typ, tc.def, out)
+				}
+				if !strings.Contains(err.Error(), "value") || !strings.Contains(err.Error(), tc.typ) {
+					t.Errorf("error %q should name the placeholder and expected type %q", err, tc.typ)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("Render output =\n%s\nwant it to contain %q", out, tc.want)
+			}
+		})
+	}
+}
