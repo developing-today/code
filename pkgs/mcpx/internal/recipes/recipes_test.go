@@ -2,6 +2,7 @@ package recipes_test
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 
@@ -156,6 +157,61 @@ func TestMentionsInCommentsAndStringsAreNotPlaceholders(t *testing.T) {
 			}
 			if out != src+"\n" {
 				t.Fatalf("render changed a comment/string mention:\n got %q\nwant %q", out, src+"\n")
+			}
+		})
+	}
+}
+
+func TestRenderValidatesTypedPlaceholderValues(t *testing.T) {
+	tests := []struct {
+		name        string
+		typeOf      recipes.Type
+		value       any
+		want        string
+		wantErrType string
+	}{
+		{name: "number rejects boolean", typeOf: recipes.TypeNumber, value: true, wantErrType: "number"},
+		{name: "number rejects Inf string", typeOf: recipes.TypeNumber, value: "Inf", wantErrType: "number"},
+		{name: "number rejects NaN string", typeOf: recipes.TypeNumber, value: "NaN", wantErrType: "number"},
+		{name: "number rejects hexadecimal float", typeOf: recipes.TypeNumber, value: "0x10p0", wantErrType: "number"},
+		{name: "number rejects separators", typeOf: recipes.TypeNumber, value: "1_000", wantErrType: "number"},
+		{name: "number rejects leading plus", typeOf: recipes.TypeNumber, value: "+3", wantErrType: "number"},
+		{name: "number rejects missing integer", typeOf: recipes.TypeNumber, value: ".5", wantErrType: "number"},
+		{name: "number rejects positive infinity", typeOf: recipes.TypeNumber, value: math.Inf(1), wantErrType: "number"},
+		{name: "number rejects negative infinity", typeOf: recipes.TypeNumber, value: math.Inf(-1), wantErrType: "number"},
+		{name: "number rejects NaN", typeOf: recipes.TypeNumber, value: math.NaN(), wantErrType: "number"},
+		{name: "string rejects number", typeOf: recipes.TypeString, value: 42, wantErrType: "string"},
+		{name: "string rejects boolean", typeOf: recipes.TypeString, value: true, wantErrType: "string"},
+		{name: "string rejects array", typeOf: recipes.TypeString, value: []any{"a"}, wantErrType: "string"},
+		{name: "boolean rejects number", typeOf: recipes.TypeBoolean, value: 1, wantErrType: "boolean"},
+		{name: "integer number control", typeOf: recipes.TypeNumber, value: 3, want: "3"},
+		{name: "float number control", typeOf: recipes.TypeNumber, value: 3.5, want: "3.5"},
+		{name: "JSON integer string control", typeOf: recipes.TypeNumber, value: "3", want: "3"},
+		{name: "JSON decimal string control", typeOf: recipes.TypeNumber, value: "-3.5", want: "-3.5"},
+		{name: "JSON exponent string control", typeOf: recipes.TypeNumber, value: "1e2", want: "1e2"},
+		{name: "string control is quoted", typeOf: recipes.TypeString, value: "hello", want: `"hello"`},
+		{name: "boolean control", typeOf: recipes.TypeBoolean, value: true, want: "true"},
+		{name: "boolean string path stays canonical", typeOf: recipes.TypeBoolean, value: "TRUE", want: "true"},
+		{name: "JSON object control", typeOf: recipes.TypeJSON, value: map[string]any{"ok": true}, want: `{"ok":true}`},
+		{name: "JSON string control stays raw", typeOf: recipes.TypeJSON, value: `{"ok":true}`, want: `{"ok":true}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := "// @param value:" + string(tt.typeOf) + "\nconst result = @value;"
+			r := recipes.Parse("literal", "/tmp/literal.ts", source)
+			out, err := r.Render(map[string]any{"value": tt.value})
+			if tt.wantErrType != "" {
+				if err == nil || !strings.Contains(err.Error(), "value is a "+tt.wantErrType) {
+					t.Fatalf("Render error = %v, want error for %s", err, tt.wantErrType)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render: %v", err)
+			}
+			if !strings.Contains(out, "const result = "+tt.want+";") {
+				t.Fatalf("Render output does not contain expected literal %q:\n%s", tt.want, out)
 			}
 		})
 	}
