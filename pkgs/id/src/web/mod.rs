@@ -243,7 +243,12 @@ impl AppState {
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
             upload_name_lock: Arc::new(Mutex::new(())),
-            identity: IdentityStore::new(secret_key, identity_db_path).await?,
+            identity: IdentityStore::new_with_max_identities(
+                secret_key,
+                identity_db_path,
+                identity::configured_max_identities(),
+            )
+            .await?,
             local_events,
             world: None,
             cookie_secure: false,

@@ -2971,6 +2971,22 @@ async fn identity_register_handler(
                 .into_response()
         }
         Err(err) => {
+            // #1766: at the admission bound the refusal is a clear,
+            // observable 503 — not a generic 500 — and no existing
+            // identity is affected by it.
+            if let Some(cap) = err.downcast_ref::<super::identity::IdentityCapacityError>() {
+                tracing::warn!("[identity] Registration refused at capacity: {cap}");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({
+                        "error": "identity_capacity_reached",
+                        "detail": cap.to_string(),
+                        "limit": cap.limit,
+                        "registered": cap.registered,
+                    })),
+                )
+                    .into_response();
+            }
             tracing::error!("[identity] Registration failed: {}", err);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
