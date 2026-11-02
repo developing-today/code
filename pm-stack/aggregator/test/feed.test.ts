@@ -638,10 +638,14 @@ describe("feed PAYG sanitization (#2450)", () => {
       { ...PAYG, label: null },
       { ...PAYG, accruedUsd: "23.92" },
       { ...PAYG, accruedUsd: Number.POSITIVE_INFINITY },
+      { ...PAYG, accruedUsd: -0.01 },
       { ...PAYG, collectedUsd: "23.91" },
+      { ...PAYG, collectedUsd: -0.01 },
       { ...PAYG, unbilledUsd: "6.01" },
+      { ...PAYG, unbilledUsd: -0.01 },
       { ...PAYG, note: 42 },
       { ...PAYG, measuredAt: 42 },
+      { ...PAYG, measuredAt: "banana" },
       { ...PAYG, sourceClass: "unknown" },
     ]) {
       expect(isPaygLine(bad)).toBe(false);
@@ -672,6 +676,29 @@ describe("feed PAYG sanitization (#2450)", () => {
     expect(loaded?.paygDropped).toBe(2);
   });
 
+  test("negative and inverted measurements drop individually; valid and null controls survive", async () => {
+    const allNull = {
+      ...PAYG,
+      accruedUsd: null,
+      collectedUsd: null,
+      estimate: null,
+      unbilledUsd: null,
+      measuredAt: null,
+    };
+    const invalid = [
+      { ...PAYG, accruedUsd: -1 },
+      { ...PAYG, collectedUsd: -1 },
+      { ...PAYG, unbilledUsd: -1 },
+      { ...PAYG, estimate: { low: -1, high: 5, period: "month" } },
+      { ...PAYG, estimate: { low: 1, high: -1, period: "month" } },
+      { ...PAYG, estimate: { low: 6, high: 5, period: "month" } },
+      { ...PAYG, measuredAt: "banana" },
+    ];
+    const loaded = await loadWithPayg([PAYG, ...invalid, allNull]);
+    expect(loaded?.payg).toEqual([PAYG, allNull]);
+    expect(loaded?.paygDropped).toBe(invalid.length);
+  });
+
   test("estimate variants are checked structurally", async () => {
     const noEstimate = { ...PAYG };
     delete noEstimate.estimate;
@@ -682,6 +709,9 @@ describe("feed PAYG sanitization (#2450)", () => {
       { ...PAYG, estimate: { high: 25, period: "month" } },
       { ...PAYG, estimate: { low: "20", high: 25, period: "month" } },
       { ...PAYG, estimate: { low: Number.POSITIVE_INFINITY, high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: -1, high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: 20, high: -1, period: "month" } },
+      { ...PAYG, estimate: { low: 26, high: 25, period: "month" } },
       { ...PAYG, estimate: { low: 20, high: 25, period: 3 } },
       { ...PAYG, estimate: { low: 20, high: 25, period: "month", note: 3 } },
     ];
