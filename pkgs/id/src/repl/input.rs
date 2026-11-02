@@ -311,6 +311,63 @@ fn is_protected(protected: &[(usize, usize)], idx: usize) -> bool {
     protected.iter().any(|&(a, b)| idx >= a && idx < b)
 }
 
+/// Byte spans of backtick substitutions in `source`, honouring the
+/// module's quoting contract and the protected spans: a backtick only
+/// opens a span outside quotes and outside protected text, and the
+/// closing backtick is the next unprotected backtick (the backtick
+/// stage's own rule). An unterminated span runs to the end of the
+/// line; the backtick stage reports that error when it runs. The
+/// $(...) stage uses these spans to leave a `$(` that is backtick
+/// body alone: the whole body is shell code and `shell_capture`
+/// expands its own substitutions when the backtick stage executes
+/// it (#4562 — without this, the $(...) stage misreads the `$((` of
+/// an arithmetic expansion inside backticks as a substitution whose
+/// command is a no-op subshell, eating the expansion).
+fn backtick_spans(source: &str, protected: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let chars: Vec<(usize, char)> = source.char_indices().collect();
+    let mut spans = Vec::new();
+    let mut k = 0;
+    let mut quote: Option<char> = None;
+    while k < chars.len() {
+        let (i, c) = chars[k];
+        if is_protected(protected, i) {
+            k += 1;
+            continue;
+        }
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+                k += 1;
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                    k += 1;
+                } else if c == '`' {
+                    let mut j = k + 1;
+                    while j < chars.len()
+                        && !(chars[j].1 == '`' && !is_protected(protected, chars[j].0))
+                    {
+                        j += 1;
+                    }
+                    let end = if j < chars.len() {
+                        chars[j].0 + 1
+                    } else {
+                        source.len()
+                    };
+                    spans.push((i, end));
+                    k = if j < chars.len() { j + 1 } else { chars.len() };
+                } else {
+                    k += 1;
+                }
+            }
+        }
+    }
+    spans
+}
+
 /// `find_unquoted`, searching from byte offset `from` (a point the
 /// caller knows to be unquoted in the source) and treating protected
 /// spans as inert.
@@ -612,7 +669,18 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let mut substituted = String::with_capacity(source.len());
         let mut new_protected: Vec<(usize, usize)> = Vec::new();
         let mut pos = 0;
-        while let Some(start) = find_unquoted_from(&source, "$(", &protected, pos) {
+        // A `$(` inside a backtick span is backtick body, not a
+        // substitution this stage owns: the backtick stage executes
+        // the whole body as shell code (#4562). `search` is the scan
+        // cursor; `pos` stays the copy cursor, so skipped text is
+        // still copied verbatim for the backtick stage.
+        let bt_spans = backtick_spans(&source, &protected);
+        let mut search = 0;
+        while let Some(start) = find_unquoted_from(&source, "$(", &protected, search) {
+            if let Some(&(_, span_end)) = bt_spans.iter().find(|&&(a, b)| start >= a && start < b) {
+                search = span_end;
+                continue;
+            }
             let mut depth = 1;
             let mut end = start + 2;
             let mut quote: Option<char> = None;
@@ -659,6 +727,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
             substituted.push_str(&output);
             new_protected.push((span_start, substituted.len()));
             pos = end + 1;
+            search = pos;
         }
         let chunk_base = substituted.len();
         substituted.push_str(&source[pos..]);
