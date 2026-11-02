@@ -552,7 +552,7 @@ wasm_fuel = 5_000_000
     }
 
     #[test]
-    fn invalid_profile_bounds_are_rejected() {
+    fn test_invalid_profile_bounds_are_rejected() {
         // #3015: each bound resolve() refuses at apply time must already
         // fail parse(), with the same checks.
         for text in [
@@ -574,7 +574,7 @@ native_call_deadline_ms = 0",
     }
 
     #[test]
-    fn minimum_profile_bounds_are_accepted() {
+    fn test_minimum_profile_bounds_are_accepted() {
         // #3015: the boundary-valid values (one Wasm page, 16 MiB native)
         // sit exactly on the floors and must parse.
         let manifest = parse("[profile]
@@ -586,7 +586,7 @@ native_memory_bytes = 16777216")
     }
 
     #[test]
-    fn schedule_count_is_capped_at_parse() {
+    fn test_schedule_count_is_capped_at_parse() {
         // #3015: a manifest may declare at most MAX_PENDING_SCHEDULES
         // pending schedules; one more must fail parse, not a live apply.
         let build = |count: usize| {
