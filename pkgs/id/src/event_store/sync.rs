@@ -854,6 +854,7 @@ mod tests {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -1107,6 +1108,7 @@ mod tests {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             },
         )
         .unwrap();
@@ -1150,6 +1152,7 @@ mod tests {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             },
         )
         .unwrap();
@@ -1197,6 +1200,7 @@ mod tests {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             },
         )
         .unwrap();
