@@ -39,7 +39,7 @@ import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ChargeCandidate } from "../src/charges-match.ts";
+import { isRealCalendarDate, type ChargeCandidate } from "../src/charges-match.ts";
 
 const run = promisify(execFile);
 const PLAID_CLI = process.env.PLAID_CLI ?? "/opt/hatch/bin/plaid";
@@ -100,7 +100,7 @@ async function plaidCandidates(start: string, end: string): Promise<ChargeCandid
     if (t.pending || !(t.amount > 0)) continue;
     if (EXCLUDED_CATEGORIES.has(t.category?.[0] ?? "")) continue;
     const merchant = (t.merchant_name ?? t.name ?? "").trim();
-    if (!merchant || !/^\d{4}-\d{2}-\d{2}$/.test(t.date)) continue;
+    if (!merchant || !isRealCalendarDate(t.date)) continue;
     const method = methodLabel(accounts.get(t.account_id));
     out.push({ source: "plaid", at: t.date, merchant, amountUsd: t.amount, ...(method ? { method } : {}) });
   }
@@ -234,7 +234,7 @@ async function gmailCandidates(
       continue;
     }
     const at = gmailMessageDay(m);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) {
+    if (!isRealCalendarDate(at)) {
       skipped++;
       continue;
     }

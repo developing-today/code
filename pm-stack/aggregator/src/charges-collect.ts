@@ -14,6 +14,7 @@
 
 import {
   DEDUPE_WINDOW_DAYS,
+  isRealCalendarDate,
   normalizeMerchantName,
   type ChargeCandidate,
   type UnmatchedCharge,
@@ -41,12 +42,14 @@ export function parseChargeCandidates(raw: unknown): ChargeCandidate[] {
     if (typeof entry !== "object" || entry === null) continue;
     const c = entry as Partial<ChargeCandidate>;
     if (c.source !== "plaid" && c.source !== "gmail") continue;
-    if (typeof c.at !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(c.at)) continue;
+    if (typeof c.at !== "string") continue;
+    const at = c.at.slice(0, 10);
+    if (!isRealCalendarDate(at)) continue;
     if (typeof c.merchant !== "string" || !c.merchant.trim()) continue;
     if (typeof c.amountUsd !== "number" || !Number.isFinite(c.amountUsd)) continue;
     out.push({
       source: c.source,
-      at: c.at.slice(0, 10),
+      at,
       merchant: c.merchant,
       amountUsd: c.amountUsd,
       ...(typeof c.method === "string" && c.method ? { method: c.method } : {}),
