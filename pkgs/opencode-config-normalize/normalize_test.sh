@@ -232,6 +232,32 @@ EOF
 check string-lookalikes "$tmp/string-lookalikes.fixture" \
   '{"$schema":"https://opencode.ai/config.json","list":[1,2],"note":"docs at https://example.com/a//b, markers /* not a comment */ and ,} ,] stay","plugin":["opencode-plugin-x"]}' 0
 
+# Case 10: unterminated block comment (PR #4312 review) — the stripper
+# used to drop everything after the open /* and then repair and write
+# the file anyway, leaving a still-invalid config behind. An
+# unterminated comment is unparseable: leave the file byte-identical.
+cat > "$tmp/unterminated-comment.fixture" <<'EOF'
+{
+  "plugins": ["opencode-plugin-x"]
+}
+/* trailing note that never closes
+EOF
+check unterminated-comment "$tmp/unterminated-comment.fixture" '__UNPARSEABLE__' 0
+
+# Case 11: "plugins": inside comments before the live key (PR #4312
+# review) — the raw-text rename used to select the comment text first,
+# leaving the live key unrepaired and the run failed. The live key is
+# the one renamed; comments are preserved.
+cat > "$tmp/comment-plugins-key.fixture" <<'EOF'
+{
+  /* v2 spelling was "plugins": ["old"] — comment, do not touch */
+  // likewise "plugins": in a line comment is not a key
+  "plugins": ["opencode-plugin-x"]
+}
+EOF
+check comment-plugins-key "$tmp/comment-plugins-key.fixture" \
+  '{"plugin":["opencode-plugin-x"]}' 0
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1
