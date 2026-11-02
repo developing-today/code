@@ -321,6 +321,92 @@ fn insufficient_lp_inventory_fails_preflight() {
 }
 
 #[test]
+fn user_and_lp_source_must_be_distinct_before_persisting_intent() {
+    let mut executor = executor();
+    // Give the aliased source enough funds so an ordinary balance
+    // failure cannot mask the same-account transfer defect.
+    let funding = funding_transfer(902, ISSUER_SRC, LP_SRC, 10_000, SRC);
+    assert_eq!(executor.backend.create_transfers(&[funding]), vec![Ok(())]);
+
+    let mut aliased = request();
+    aliased.user_source = LP_SRC;
+
+    let error = executor
+        .prepare(&aliased)
+        .expect_err("T1 must reject a same-account transfer before writing an intent");
+    assert!(error.to_string().contains("user source and LP source"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn fee_and_user_source_must_be_distinct_before_persisting_intent() {
+    let mut executor = executor();
+    let mut aliased = request();
+    aliased.fee_account = Some(USER_SRC);
+
+    let error = executor
+        .prepare(&aliased)
+        .expect_err("the fee leg must not debit and credit the same account");
+    assert!(error.to_string().contains("user source and fee"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn lp_and_user_destination_must_be_distinct_before_persisting_intent() {
+    let mut executor = executor();
+    // Fund the aliased destination so the ordinary LP inventory check
+    // cannot mask the same-account transfer defect.
+    let funding = funding_transfer(901, ISSUER_DST, USER_DST, 50_000, DST);
+    assert_eq!(executor.backend.create_transfers(&[funding]), vec![Ok(())]);
+
+    let mut aliased = request();
+    aliased.lp_dest = USER_DST;
+    let error = executor
+        .prepare(&aliased)
+        .expect_err("T3 must reject a same-account transfer before writing an intent");
+    assert!(
+        error
+            .to_string()
+            .contains("LP destination and user destination")
+    );
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn conversion_without_fee_still_posts() {
+    let mut executor = executor();
+    let mut no_fee = request();
+    no_fee.transfer_ids = vec![604, 605];
+    no_fee.fee_account = None;
+    no_fee.fee_amount = 0;
+
+    let record = executor
+        .execute(&no_fee)
+        .expect("distinct accounts must still allow a conversion without a fee leg");
+    assert_eq!(record.state, IntentState::Posted);
+    assert_eq!(record.legs.len(), 2);
+    assert_eq!(executor.backend.transfers_with_user_data_128(777).len(), 2);
+}
+
+#[test]
 fn duplicate_t1_and_fee_transfer_ids_fail_preflight_before_persisting_intent() {
     let mut executor = executor();
     let mut duplicate = request();
