@@ -3063,15 +3063,38 @@ export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceD
 
 // --- DNS register page (#906 §1, data from #902) -----------------------------
 
-function dnsTable(entries: DnsEntry[]): string {
+function dnsTable(entries: DnsEntry[], renewingSoon: Set<DnsEntry>): string {
   const rows = entries
     .map(
       (e) =>
-        `<tr><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
+        `<tr data-dns-row data-dns-status="${esc(e.status)}" data-dns-renewing-soon="${renewingSoon.has(e)}"><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Domain register</caption><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table id="dns-register-table"><caption>Domain register</caption><thead><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</tbody></table></div>`;
 }
+
+const DNS_FILTER_SCRIPT = `<script>
+(function () {
+  var buttons = document.querySelectorAll("[data-dns-filter]");
+  var rows = document.querySelectorAll("[data-dns-row]");
+  buttons.forEach(function (button) {
+    button.addEventListener("click", function () {
+      var filter = button.getAttribute("data-dns-filter");
+      buttons.forEach(function (candidate) {
+        var selected = candidate === button;
+        candidate.classList.toggle("primary", selected);
+        candidate.setAttribute("aria-pressed", String(selected));
+      });
+      rows.forEach(function (row) {
+        var matches = filter === "all" || (filter === "renewing-soon"
+          ? row.getAttribute("data-dns-renewing-soon") === "true"
+          : row.getAttribute("data-dns-status") === filter);
+        row.hidden = !matches;
+      });
+    });
+  });
+})();
+</script>`;
 
 export function renderDns(section: DnsSection | null, provenance: Provenance, detail?: ProvenanceDetail): string {
   const chips = detail ? freshnessChips(detail, ["dns"]) : "";
@@ -3088,23 +3111,36 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
   const s = summarizeDns(section);
   const next = s.nextRenewal;
   const soonTotal = Math.round(s.renewingSoon.reduce((sum, e) => sum + (e.priceUsd ?? 0), 0) * 100) / 100;
+  const renewingSoon = new Set(s.renewingSoon);
+  const filters = [
+    ["all", "All", section.entries.length],
+    ["active", "Active", s.active.length],
+    ["earmarked", "Earmarked", s.earmarked.length],
+    ["unused", "Unused", s.unused.length],
+    ["renewing-soon", "Renewing soon", s.renewingSoon.length],
+  ] as const;
+  const filterChips = filters
+    .map(
+      ([filter, label, count], index) =>
+        `<button type="button" class="qchip dns-filter${index === 0 ? " primary" : ""}" data-dns-filter="${filter}" aria-pressed="${index === 0}">${label} (${count})</button>`,
+    )
+    .join("");
   const body = `<h1>DNS / domain register</h1>
 <p class="muted">${section.entries.length} domains · $${section.totalAnnualListUsd.toFixed(2)}/yr at list renewal prices · register parsed ${fmtDate(section.generatedAt)} (${esc(section.source)}). The register is maintained by the #902 pipeline — this page renders it, never edits it. Machine-first: <a href="/api/dns.json">/api/dns.json</a>.</p>
 <div class="board">
 <div class="card"><strong>Next renewal</strong><br>${
     next
-      ? `<strong>${esc(next.domain)}</strong> — ${esc(next.renewal)}${next.priceUsd != null ? ` ($${next.priceUsd.toFixed(2)})` : ""}<br><span class="muted">${esc(next.plan)}</span>`
+      ? `${esc(next.renewal)}${next.priceUsd != null ? ` · $${next.priceUsd.toFixed(2)}` : ""}<br><span class="muted">See the first row in the renewal-sorted register.</span>`
       : "—"
   }</div>
-<div class="card"><strong>Renewing in 45 days</strong><br>${s.renewingSoon.length} domain${s.renewingSoon.length === 1 ? "" : "s"} · $${soonTotal.toFixed(2)}<br><span class="muted">Auto-renew is ON across the account portfolio — this is upcoming spend, not lapse risk.</span></div>
+<div class="card"><strong>Renewing in 45 days</strong><br>${s.renewingSoon.length} domain${s.renewingSoon.length === 1 ? "" : "s"} · $${soonTotal.toFixed(2)} at list price</div>
+<div class="card"><strong>Auto-renew</strong><br>${s.autoRenew.on} ON · ${s.autoRenew.off} OFF · ${s.autoRenew.unknown} unknown</div>
 <div class="card"><strong>Portfolio shape</strong><br>${s.active.length} in use · ${s.earmarked.length} unused but earmarked · ${s.unused.length} completely unused</div>
 </div>
-<h2>Next renewals</h2>${dnsTable(section.entries.slice(0, 10))}
-<h2>In use (${s.active.length})</h2>${dnsTable(s.active)}
-<h2>Unused but earmarked (${s.earmarked.length})</h2><p class="muted">No public-facing use, but the name or plan ties them to a project family (earmark as recorded in the register).</p>${dnsTable(s.earmarked)}
-<h2>Completely unused (${s.unused.length})</h2><p class="muted">Nothing but registrar defaults — each still auto-renews until someone decides otherwise.</p>${dnsTable(s.unused)}
-<details><summary>Full register (${section.entries.length})</summary>${dnsTable(section.entries)}</details>`;
-  return layout("DNS register", body, provenance, "/dns", "", chips);
+<h2>Domain register (${section.entries.length})</h2>
+<div class="chips" role="group" aria-label="Filter domains by status">${filterChips}</div>
+${dnsTable(section.entries, renewingSoon)}`;
+  return layout("DNS register", body, provenance, "/dns", DNS_FILTER_SCRIPT, chips);
 }
 
 // --- AA cost explorer page (ainventory import data via the fleet feed) -----
