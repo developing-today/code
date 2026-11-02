@@ -1340,6 +1340,8 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Parser diagnostics for malformed entries removed at the ingest boundary. */
+  sanitized?: { droppedProviders: number; droppedWindows: number };
 }
 
 /**
