@@ -100,6 +100,25 @@ permissions:
   pull-requests: read
 
 jobs:
+  plugin-sync:
+    name: "plugin: sync check"
+    # The workflow-level pull_request paths include pkgs/mcpx/** and
+    # .opencode/plugin/**. Keep this cheap check separate from the push-only
+    # test job so drift is caught before it reaches main.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check the dogfood plugin copy is in sync
+        run: |
+          diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
+
   test:
     name: "basic: test"
     # Original coverage was push-only; the pull_request/schedule
