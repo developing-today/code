@@ -1133,6 +1133,31 @@ fn parse_selection(sel: &str, match_count: usize) -> Option<Vec<usize>> {
     }
 }
 
+trait MatchGetter {
+    async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()>;
+}
+
+impl MatchGetter for ReplContext {
+    async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()> {
+        self.get(name, destination).await
+    }
+}
+
+async fn output_selected_matches_to_dir<G: MatchGetter>(
+    ctx: &mut G,
+    selections: &[usize],
+    filtered_matches: &[(String, FindMatch)],
+    dir_path: &str,
+) {
+    for n in selections {
+        let (_, m) = &filtered_matches[n - 1];
+        let output_path = format!("{}/{}", dir_path, m.name);
+        if let Err(e) = ctx.get_match(&m.name, Some(&output_path)).await {
+            println!("error: {e}");
+        }
+    }
+}
+
 /// Interactive selection and output of filtered matches.
 #[allow(clippy::if_same_then_else)] // Both branches return Ok(()), but have different side effects
 async fn select_and_output_matches_filtered(
@@ -1208,16 +1233,7 @@ async fn select_and_output_matches_filtered(
                 println!("error creating directory: {e}");
                 return Ok(());
             }
-            for n in &selections {
-                let (_, m) = &filtered_matches[n - 1];
-                let output_path = format!("{}/{}", dir_path, m.name);
-                if let Err(e) = ctx.get(&m.name, Some(&output_path)).await {
-                    println!("error: {e}");
-                }
-                if let Err(e) = ctx.get(&m.name, Some("-")).await {
-                    println!("error: {e}");
-                }
-            }
+            output_selected_matches_to_dir(ctx, &selections, filtered_matches, dir_path).await;
         } else if to_file {
             for n in &selections {
                 let (_, m) = &filtered_matches[n - 1];
@@ -1551,6 +1567,53 @@ fn print_peek_words(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingGetter {
+        calls: Vec<(String, Option<String>)>,
+    }
+
+    impl MatchGetter for RecordingGetter {
+        async fn get_match(&mut self, name: &str, destination: Option<&str>) -> Result<()> {
+            self.calls
+                .push((name.to_owned(), destination.map(str::to_owned)));
+            Ok(())
+        }
+    }
+
+    fn test_find_match(name: &str) -> (String, FindMatch) {
+        (
+            "query".to_owned(),
+            FindMatch {
+                hash: iroh_blobs::Hash::from_bytes([0; 32]),
+                name: name.to_owned(),
+                kind: MatchKind::Exact,
+                is_hash_match: false,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_fetches_each_selected_match_once_to_its_file() {
+        let matches = vec![test_find_match("one.txt"), test_find_match("two.txt")];
+
+        let mut single = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut single, &[1], &matches, "downloads").await;
+        assert_eq!(
+            single.calls,
+            vec![("one.txt".to_owned(), Some("downloads/one.txt".to_owned()))]
+        );
+
+        let mut multiple = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut multiple, &[1, 2], &matches, "downloads").await;
+        assert_eq!(
+            multiple.calls,
+            vec![
+                ("one.txt".to_owned(), Some("downloads/one.txt".to_owned())),
+                ("two.txt".to_owned(), Some("downloads/two.txt".to_owned())),
+            ]
+        );
+    }
 
     #[test]
     fn test_substitute_heredoc_content_midline() {
