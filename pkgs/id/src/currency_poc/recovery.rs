@@ -37,6 +37,10 @@ pub enum ReconcileOutcome {
     /// A partial leg set was found — not possible for an atomic linked
     /// chain; left unresolved for investigation.
     Inconsistent,
+    /// Resubmission of this record was rejected by the ledger; the
+    /// record stays unresolved and the scan continued with the
+    /// remaining records instead of aborting.
+    ResubmissionRejected,
 }
 
 /// Reconcile every unresolved record in `store` against `backend`.
@@ -48,12 +52,20 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
 ) -> Result<Vec<(u128, ReconcileOutcome)>> {
     let mut outcomes = Vec::new();
     for mut record in store.unresolved().context("listing unresolved intents")? {
-        let present = record
-            .legs
-            .iter()
-            .filter(|leg| backend.lookup_transfer(leg.id).is_some())
-            .count();
-        let outcome = if present == record.legs.len() {
+        // Existence by ID is not proof of posting: a looked-up
+        // transfer must equal the persisted leg, otherwise the ID
+        // collided with an unrelated transfer.
+        let mut present = 0usize;
+        let mut matched = 0usize;
+        for leg in &record.legs {
+            if let Some(found) = backend.lookup_transfer(leg.id) {
+                present += 1;
+                if found == *leg {
+                    matched += 1;
+                }
+            }
+        }
+        let outcome = if matched == record.legs.len() {
             record.state = IntentState::Posted;
             store
                 .put(&record)
@@ -66,11 +78,13 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
                     let failed = results
                         .iter()
                         .find(|result| !matches!(result, Ok(()) | Err(TransferError::Exists)));
-                    if let Some(error) = failed {
-                        anyhow::bail!(
-                            "recovery resubmission of conversion {} failed: {error:?}",
-                            record.conversion_id
-                        );
+                    if failed.is_some() {
+                        // One rejected resubmission must not abort
+                        // recovery of every later record: leave this
+                        // record unresolved, report it, and continue.
+                        outcomes
+                            .push((record.conversion_id, ReconcileOutcome::ResubmissionRejected));
+                        continue;
                     }
                     record.state = IntentState::Posted;
                     store

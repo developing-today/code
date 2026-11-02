@@ -341,3 +341,132 @@ fn file_intent_store_write_ahead_survives_reopen() {
     assert_eq!(backend.transfers_with_user_data_128(777).len(), 3);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- Regression tests for the Codex review findings on PR #3873 ---
+
+#[test]
+fn zero_denominator_quote_is_rejected_not_a_panic() {
+    let mut executor = executor();
+    let mut bad = request();
+    bad.quote.denominator = 0;
+    assert!(executor.prepare(&bad).is_err());
+    assert!(executor.store.get(777).unwrap().is_none());
+}
+
+#[test]
+fn overflowing_quote_is_rejected_not_saturated() {
+    let mut executor = executor();
+    let mut bad = request();
+    bad.quote.numerator = u128::MAX;
+    bad.quote.denominator = 1;
+    assert!(executor.prepare(&bad).is_err());
+    assert!(executor.store.get(777).unwrap().is_none());
+}
+
+#[test]
+fn duplicate_transfer_id_in_one_chain_is_rejected() {
+    // Two legs sharing one transfer ID must not both stage balance
+    // changes while only the first is journaled.
+    let mut ledger = funded_ledger();
+    let first = Transfer {
+        id: 700,
+        debit_account_id: ISSUER_SRC,
+        credit_account_id: USER_SRC,
+        amount: 100,
+        ledger: SRC,
+        user_data_128: 43,
+        code: 1,
+        linked: true,
+    };
+    let second = Transfer {
+        id: 700,
+        debit_account_id: ISSUER_SRC,
+        credit_account_id: LP_SRC,
+        amount: 200,
+        ledger: SRC,
+        user_data_128: 43,
+        code: 1,
+        linked: false,
+    };
+    let results = ledger.create_transfers(&[first, second]);
+    assert!(results.iter().all(|result| result.is_err()));
+    assert!(ledger.transfers_with_user_data_128(43).is_empty());
+    assert_eq!(
+        ledger.account_balance(USER_SRC).unwrap().spendable(),
+        10_000,
+        "no balance may move for a rejected duplicate-ID chain"
+    );
+}
+
+#[test]
+fn recovery_does_not_trust_transfer_id_existence_alone() {
+    // A prepared no-fee conversion whose transfer IDs collide with
+    // the fixture's funding transfers (501/502, different contents)
+    // is Inconsistent, never AlreadyPosted.
+    let mut executor = executor();
+    let mut colliding = request();
+    colliding.fee_amount = 0;
+    colliding.fee_account = None;
+    colliding.transfer_ids = vec![501, 502];
+    let record = executor.prepare(&colliding).expect("intent prepared");
+    assert_eq!(record.legs.len(), 2);
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Inconsistent)]);
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Recorded,
+        "a mismatched record stays unresolved"
+    );
+}
+
+#[test]
+fn conversion_id_reuse_cannot_replace_persisted_intent() {
+    let mut executor = executor();
+    let record = executor.execute(&request()).expect("conversion posts");
+
+    // An identical retry reuses the original record, state included.
+    let again = executor
+        .prepare(&request())
+        .expect("identical retry reuses the persisted intent");
+    assert_eq!(again, record);
+
+    // A conflicting retry is rejected and the original survives.
+    let mut conflicting = request();
+    conflicting.amount_in = 500;
+    conflicting.transfer_ids = vec![611, 612, 613];
+    assert!(executor.prepare(&conflicting).is_err());
+    assert_eq!(executor.store.get(777).unwrap().unwrap(), record);
+}
+
+#[test]
+fn recovery_scan_continues_after_a_rejected_resubmission() {
+    let mut executor = executor();
+    let _record_a = executor.prepare(&request()).expect("intent A prepared");
+    let mut request_b = request();
+    request_b.conversion_id = 888;
+    request_b.transfer_ids = vec![604, 605, 606];
+    request_b.amount_in = 100;
+    let _record_b = executor.prepare(&request_b).expect("intent B prepared");
+
+    // Drain the LP destination so A's resubmission (amount_out 2_000)
+    // is rejected while B's (200) still posts.
+    let drain = funding_transfer(900, LP_DST, USER_DST, 49_000, DST);
+    assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("one rejected resubmission must not abort the scan");
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes.contains(&(777, ReconcileOutcome::ResubmissionRejected)));
+    assert!(outcomes.contains(&(888, ReconcileOutcome::Resubmitted)));
+    assert_eq!(executor.backend.transfers_with_user_data_128(888).len(), 3);
+}

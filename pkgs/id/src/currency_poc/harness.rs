@@ -16,7 +16,6 @@
 //! path is supplied via `TIGERBEETLE_POC_BINARY` or `PATH`.
 
 use std::fs;
-use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -116,9 +115,11 @@ impl TestCluster {
     fn wait_ready(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Ok(mut stream) = TcpStream::connect(&self.address) {
-                let _ = stream.write_all(b"");
-                let _ = stream.read(&mut [0u8; 1]);
+            if let Ok(_stream) = TcpStream::connect(&self.address) {
+                // A successful TCP connect is the readiness signal.
+                // The replica sends no unsolicited bytes, so any read
+                // here would block unboundedly and defeat the deadline
+                // this loop is supposed to enforce.
                 return Ok(());
             }
             if Instant::now() > deadline {

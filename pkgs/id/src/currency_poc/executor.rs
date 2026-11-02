@@ -32,8 +32,17 @@ pub struct RateQuote {
 }
 
 impl RateQuote {
-    pub fn amount_out(&self, amount_in: u128) -> u128 {
-        amount_in.saturating_mul(self.numerator) / self.denominator
+    /// The converted amount, or `None` when the quote is malformed
+    /// (zero denominator) or the multiplication overflows `u128`.
+    /// Overflow is an explicit failure, never a silent saturation:
+    /// a saturated product would silently change the authorised rate.
+    pub fn amount_out(&self, amount_in: u128) -> Option<u128> {
+        if self.denominator == 0 {
+            return None;
+        }
+        amount_in
+            .checked_mul(self.numerator)
+            .map(|product| product / self.denominator)
     }
 }
 
@@ -75,7 +84,9 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     /// Build the legs for a request. Every leg but the last is
     /// `linked`; the batch is submitted as one chain.
     pub fn build_legs(request: &ConversionRequest) -> Result<Vec<Transfer>> {
-        let amount_out = request.quote.amount_out(request.amount_in);
+        let amount_out = request.quote.amount_out(request.amount_in).context(
+            "rate quote is malformed (zero denominator) or its multiplication overflows",
+        )?;
         let mut legs = Vec::with_capacity(3);
         let mut ids = request.transfer_ids.iter();
         let mut next_id = move || -> Result<u128> {
@@ -125,10 +136,13 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     /// enough destination inventory. Failing here means no intent is
     /// written and nothing is submitted.
     pub fn preflight(&self, request: &ConversionRequest) -> Result<()> {
-        let amount_out = request.quote.amount_out(request.amount_in);
         if request.quote.denominator == 0 {
             bail!("preflight: rate quote has a zero denominator");
         }
+        let amount_out = request
+            .quote
+            .amount_out(request.amount_in)
+            .context("preflight: rate quote multiplication overflows")?;
         if amount_out == 0 {
             bail!("preflight: rate quote produces a zero destination amount");
         }
@@ -187,6 +201,9 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     pub fn prepare(&mut self, request: &ConversionRequest) -> Result<IntentRecord> {
         self.preflight(request)?;
         let legs = Self::build_legs(request)?;
+        let amount_out = request.quote.amount_out(request.amount_in).context(
+            "rate quote is malformed (zero denominator) or its multiplication overflows",
+        )?;
         let record = IntentRecord {
             conversion_id: request.conversion_id,
             legs,
@@ -198,11 +215,31 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
             source_ledger: request.source_ledger,
             dest_ledger: request.dest_ledger,
             amount_in: request.amount_in,
-            amount_out: request.quote.amount_out(request.amount_in),
+            amount_out,
             fee_amount: request.fee_amount,
             authorisation_id: request.quote.authorisation_id.clone(),
             state: IntentState::Recorded,
         };
+        // A conversion ID is the identity of ONE conversion: never
+        // replace its persisted intent. An identical retry reuses the
+        // original record (with its state); a conflicting request is
+        // rejected, so a retry can never erase the recovery record of
+        // an earlier, possibly-posted submission.
+        if let Some(existing) = self
+            .store
+            .get(record.conversion_id)
+            .context("intent lookup before persist failed")?
+        {
+            let mut comparable = existing.clone();
+            comparable.state = record.state;
+            if comparable == record {
+                return Ok(existing);
+            }
+            bail!(
+                "prepare: conversion {} already has a persisted intent with different legs or amounts; refusing to replace it",
+                record.conversion_id
+            );
+        }
         self.store
             .put(&record)
             .context("write-ahead intent persist failed")?;

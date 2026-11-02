@@ -141,6 +141,13 @@ impl IntentStore for FileIntentStore {
         file.sync_all()?;
         drop(file);
         fs::rename(&tmp, &path)?;
+        // Sync the containing directory so the rename itself is
+        // durable: syncing the file alone does not guarantee the new
+        // directory entry survives a machine crash, and the
+        // write-ahead guarantee depends on the record being findable
+        // by the recovery scanner afterwards.
+        let dir = fs::File::open(&self.dir)?;
+        dir.sync_all()?;
         Ok(())
     }
 

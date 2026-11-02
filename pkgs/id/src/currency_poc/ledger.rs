@@ -147,9 +147,20 @@ impl InMemoryLedger {
         &self,
         transfer: &Transfer,
         staged: &mut HashMap<AccountId, AccountBalance>,
+        staged_transfers: &HashMap<TransferId, Transfer>,
     ) -> Result<(), TransferError> {
         if let Some(existing) = self.transfers.get(&transfer.id) {
             return if existing == transfer {
+                Err(TransferError::Exists)
+            } else {
+                Err(TransferError::ExistsWithDifferentFields)
+            };
+        }
+        // A transfer ID may appear at most once per chain: without
+        // this check two legs sharing an ID would both stage balance
+        // changes while only the first is journaled at commit.
+        if let Some(staged_transfer) = staged_transfers.get(&transfer.id) {
+            return if staged_transfer == transfer {
                 Err(TransferError::Exists)
             } else {
                 Err(TransferError::ExistsWithDifferentFields)
@@ -246,6 +257,7 @@ impl LedgerBackend for InMemoryLedger {
             }
             let chain = &batch[chain_start..=chain_end];
             let mut staged = self.balances.clone();
+            let mut staged_transfers: HashMap<TransferId, Transfer> = HashMap::new();
             // Per-leg validation outcome. An idempotent `Exists` leg
             // does not fail the chain: its effects are already in the
             // real balances, so it is reported as `Err(Exists)` (as
@@ -253,8 +265,11 @@ impl LedgerBackend for InMemoryLedger {
             let mut leg_outcomes: Vec<Result<(), TransferError>> = Vec::with_capacity(chain.len());
             let mut failure: Option<(usize, TransferError)> = None;
             for (offset, transfer) in chain.iter().enumerate() {
-                match self.validate_and_stage(transfer, &mut staged) {
-                    Ok(()) => leg_outcomes.push(Ok(())),
+                match self.validate_and_stage(transfer, &mut staged, &staged_transfers) {
+                    Ok(()) => {
+                        staged_transfers.insert(transfer.id, transfer.clone());
+                        leg_outcomes.push(Ok(()));
+                    }
                     Err(TransferError::Exists) => {
                         leg_outcomes.push(Err(TransferError::Exists));
                     }
