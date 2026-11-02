@@ -941,7 +941,10 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, r.URL.Query(), "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		cs := s.callSettings(r)
 		if cs != nil {
@@ -988,7 +991,10 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cs := s.callSettings(r)
-	budget, _ := strconv.Atoi(r.URL.Query().Get("budget"))
+	budget, ok := parseOptionalIntQuery(w, r.URL.Query(), "budget")
+	if !ok {
+		return
+	}
 	if budget <= 0 {
 		budget = cs.Int("catalog.budget")
 	}
