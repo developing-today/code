@@ -329,42 +329,16 @@ fn smtp_command(
 /// Read one reply, which may span lines, and check its code.
 ///
 /// The reply must finish before `deadline` (the send's total budget): the
-/// socket read timeout is tightened to the time remaining before every read,
-/// and the deadline is re-checked after every line, so a relay that sends a
-/// continuation line every few seconds — always inside the socket timeout —
-/// still fails at the deadline. Each line is read through a `take` cap so an
-/// unterminated line cannot buffer without limit.
+/// socket read timeout is recomputed from the time remaining before every
+/// underlying read (see `read_reply_line`), so a relay that sends a
+/// continuation line — or a single byte — every few seconds, always inside
+/// the socket inactivity window, still fails at the deadline.
 fn expect(reader: &mut BufReader<TcpStream>, code: u16, deadline: Instant) -> Result<()> {
-    use std::io::Read as _;
     let mut continuations = 0_usize;
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        ensure!(
-            !remaining.is_zero(),
-            "the mail relay did not finish its reply before the send deadline"
-        );
-        reader
-            .get_ref()
-            .set_read_timeout(Some(remaining.min(RELAY_TIMEOUT)))?;
-        let mut line = String::new();
-        let read = reader
-            .by_ref()
-            .take(u64::try_from(MAX_REPLY_LINE_BYTES + 1).unwrap_or(u64::MAX))
-            .read_line(&mut line);
-        match read {
-            Ok(0) => bail!("the mail relay closed the connection"),
-            Ok(_) => {}
-            Err(error) => {
-                if Instant::now() >= deadline {
-                    bail!("the mail relay did not finish its reply before the send deadline");
-                }
-                return Err(error).context("read from the mail relay");
-            }
-        }
-        ensure!(
-            line.len() <= MAX_REPLY_LINE_BYTES,
-            "the mail relay sent a reply line longer than {MAX_REPLY_LINE_BYTES} bytes"
-        );
+        let Some(line) = read_reply_line(reader, deadline)? else {
+            bail!("the mail relay closed the connection");
+        };
         let line = line.trim_end();
         ensure!(
             line.get(..3).and_then(|c| c.parse::<u16>().ok()) == Some(code),
@@ -379,6 +353,65 @@ fn expect(reader: &mut BufReader<TcpStream>, code: u16, deadline: Instant) -> Re
             "the mail relay sent more than {MAX_REPLY_CONTINUATION_LINES} continuation lines in one reply"
         );
     }
+}
+
+/// Read one reply line (through its `\n`), or `None` if the relay closed the
+/// connection before sending any byte of it.
+///
+/// The socket read timeout is recomputed from the time remaining before
+/// EVERY underlying read, not once per line: `read_line` on a trickling
+/// relay performs many socket reads per line, and a timeout set once would
+/// let each of them run for the full inactivity window, stretching one line
+/// far past the total deadline. The buffered length is checked as bytes
+/// arrive, so an unterminated line is refused at the cap instead of
+/// buffering without limit.
+fn read_reply_line(reader: &mut BufReader<TcpStream>, deadline: Instant) -> Result<Option<String>> {
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        ensure!(
+            !remaining.is_zero(),
+            "the mail relay did not finish its reply before the send deadline"
+        );
+        reader
+            .get_ref()
+            .set_read_timeout(Some(remaining.min(RELAY_TIMEOUT)))?;
+        let available = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    bail!("the mail relay did not finish its reply before the send deadline");
+                }
+                return Err(error).context("read from the mail relay");
+            }
+        };
+        if available.is_empty() {
+            // EOF: no byte of this line at all is a closed connection; a
+            // partial line is returned for the caller to judge, matching
+            // read_line's behaviour at EOF.
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let (chunk, complete) = match available.iter().position(|&b| b == b'\n') {
+            Some(pos) => (&available[..=pos], true),
+            None => (available, false),
+        };
+        let chunk_len = chunk.len();
+        bytes.extend_from_slice(chunk);
+        reader.consume(chunk_len);
+        ensure!(
+            bytes.len() <= MAX_REPLY_LINE_BYTES,
+            "the mail relay sent a reply line longer than {MAX_REPLY_LINE_BYTES} bytes"
+        );
+        if complete {
+            break;
+        }
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .context("the mail relay sent a reply line that is not valid UTF-8")
 }
 
 #[cfg(test)]
@@ -730,6 +763,49 @@ mod tests {
             thread::sleep(Duration::from_secs(2));
         });
         addr
+    }
+
+    /// A relay that answers EHLO by trickling single bytes of one line,
+    /// never completing it — every socket read is fast, so only a timeout
+    /// recomputed per underlying read can enforce the total deadline.
+    fn byte_trickling_relay() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            writer.write_all(b"220 fake ready\r\n").unwrap();
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                return;
+            }
+            if writer.write_all(b"250-").is_err() {
+                return;
+            }
+            while writer.write_all(b"x").is_ok() {
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn a_byte_trickling_line_fails_at_the_total_deadline() {
+        let sink = SmtpSink::new(byte_trickling_relay(), "id@example.test".to_owned()).unwrap();
+        let started = Instant::now();
+        let error = sink
+            .send_with_timeout(&sample(), Duration::from_millis(300))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("before the send deadline"),
+            "{error:#}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "byte-trickling line took {:?} to fail",
+            started.elapsed()
+        );
     }
 
     #[test]
