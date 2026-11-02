@@ -237,7 +237,9 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
 
   const forget = (): void => {
     found = undefined;
-    missedAt = Date.now();
+    // A transient daemon failure is not a discovery miss; retry the ladder
+    // immediately on the next call.
+    missedAt = 0;
   };
 
   /**
