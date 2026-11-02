@@ -137,6 +137,60 @@ describe("quota extractors", () => {
     expect(p.windows[2].resetsAt).toBe("2026-11-06T00:48:00.000Z");
   });
 
+  test("clinepass invalid measured anchors keep percentages and null both resets", () => {
+    const stamps = [
+      "2026-13-25 ~04:48",
+      "2026-02-30 ~04:48",
+      "2026-10-25 ~99:99",
+      "2026-10-25 ~24:00",
+      "2026-10-25 ~23:60",
+    ];
+    for (const stamp of stamps) {
+      const view = VIEW.replace(
+        "Measured 2026-10-25 ~04:48 CDT",
+        `Measured ${stamp} CDT`,
+      );
+      const p = extractQuotaPools(view, NOW).find(
+        (x) => x.id === "cline-pass:cline-pass",
+      )!;
+      expect(p.windows.map((w) => w.percent)).toEqual([0, 26, 69]);
+      expect(p.windows.map((w) => w.resetsAt)).toEqual([null, null, null]);
+    }
+  });
+
+  test("clinepass oversized relative offsets null only their own reset", () => {
+    const weeklyTooFar = VIEW.replace("resets in 5d 23h", "resets in 200000d 0h");
+    const weekly = extractQuotaPools(weeklyTooFar, NOW).find(
+      (x) => x.id === "cline-pass:cline-pass",
+    )!;
+    expect(weekly.windows.map((w) => w.percent)).toEqual([0, 26, 69]);
+    expect(weekly.windows.map((w) => w.resetsAt)).toEqual([
+      null,
+      null,
+      "2026-11-06T00:48:00.000Z",
+    ]);
+
+    const monthlyTooFar = VIEW.replace("resets in 11d 15h", "resets in 99999999999d 0h");
+    const monthly = extractQuotaPools(monthlyTooFar, NOW).find(
+      (x) => x.id === "cline-pass:cline-pass",
+    )!;
+    expect(monthly.windows.map((w) => w.percent)).toEqual([0, 26, 69]);
+    expect(monthly.windows.map((w) => w.resetsAt)).toEqual([
+      null,
+      "2026-10-31T08:48:00.000Z",
+      null,
+    ]);
+  });
+
+  test("clinepass accepts the 366-day relative offset ceiling", () => {
+    const atLimit = VIEW.replace("resets in 5d 23h", "resets in 366d 0h");
+    const p = extractQuotaPools(atLimit, NOW).find(
+      (x) => x.id === "cline-pass:cline-pass",
+    )!;
+    expect(p.windows[1].resetsAt).toBe("2027-10-26T09:48:00.000Z");
+    expect(p.windows[2].resetsAt).toBe("2026-11-06T00:48:00.000Z");
+  });
+
   test("command code credits + short windows", () => {
     const p = byId.get("commandcode:go")!;
     expect(p.windows[0]).toMatchObject({ unit: "usd", used: 6.57, limit: 10 });

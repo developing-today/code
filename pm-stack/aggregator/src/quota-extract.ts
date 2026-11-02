@@ -18,6 +18,7 @@
 // never collapse them into one pool.
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const MONTHS: Record<string, number> = {
   Jan: 0,
@@ -213,8 +214,14 @@ const extractClinePass: Extractor = (s) => {
     /5-hour \*\*(\d+(?:\.\d+)?)%\*\* used; weekly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\); monthly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\)/i,
   );
   if (!measured || !m) return null;
-  const base = Date.parse(dateTimeCDT(measured[1], measured[2]));
-  const rel = (d: string, h: string) => new Date(base + (Number(d) * 24 + Number(h)) * 3_600_000).toISOString();
+  const base = parseIsoDate(dateTimeCDT(measured[1], measured[2]));
+  const rel = (d: string, h: string): string | null => {
+    const offsetHours = Number(d) * 24 + Number(h);
+    if (base === null || !Number.isFinite(offsetHours) || offsetHours > 8784) {
+      return null;
+    }
+    return new Date(base.getTime() + offsetHours * 3_600_000).toISOString();
+  };
   return {
     windows: [
       pctWindow("5-hour", Number(m[1]), null),
