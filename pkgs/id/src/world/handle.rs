@@ -612,6 +612,52 @@ impl WorldHandle {
             .send(WorldCommand::Input {
                 token,
                 input,
+                signed_move: None,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped input response")?
+    }
+
+    /// Bind the calling participant's author key for signed play (#2814).
+    /// Once bound, the participant's inputs must be player-signed.
+    pub async fn bind_author_key(
+        &self,
+        token: JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::BindAuthorKey {
+                token,
+                author_key,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped bind response")?
+    }
+
+    /// Submit a player-signed game input (#2814): `signed_move` is the
+    /// chain event the player signed over exactly `input` (see
+    /// [`super::signed::sign_move`]).
+    pub async fn input_signed(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        signed_move: Vec<u8>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::Input {
+                token,
+                input,
+                signed_move: Some(signed_move),
                 reply,
             })
             .await
@@ -742,6 +788,23 @@ impl WorldHandle {
         installed_by: Option<u64>,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
+        self.install_program_with_trust(
+            module_hash, seed, provenance, installed_by, None, program,
+        )
+        .await
+    }
+
+    /// As [`Self::install_program_by`], also recording the module trust
+    /// decision that admitted the module for the audit journal (#1069).
+    pub async fn install_program_with_trust(
+        &self,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        installed_by: Option<u64>,
+        trust: Option<crate::world::TrustDecision>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgram {
@@ -749,6 +812,7 @@ impl WorldHandle {
                 seed,
                 provenance,
                 installed_by,
+                trust,
                 program,
                 reply,
             })

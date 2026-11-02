@@ -821,6 +821,13 @@ impl crate::world::WorldProgram for WorldInstance {
                 std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
                 Self::update(self, event.participant_id, bytes)
             }
+            // Entity-addressed input (#3870) delivers its opaque bytes to
+            // the program exactly like unscoped input; the entity scoping
+            // is a host-side fencing concern, not a program concern.
+            crate::world::WorldEventKind::EntityInput { input, .. } => {
+                std::str::from_utf8(input).context("Roc world input must be valid UTF-8")?;
+                Self::update(self, event.participant_id, input)
+            }
             // Host events (capability results, ticks, presence) are JSON
             // text delivered as participant 0; the program updates on them
             // like any other event.
@@ -1019,7 +1026,7 @@ mod tests {
 
     #[test]
     fn checked_in_tic_tac_toe_plays_a_full_game() {
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         let records = |world: &mut WorldInstance| {
@@ -1098,7 +1105,7 @@ mod tests {
         );
 
         // Tic-tac-toe: the board alone carries the ply count and the winner.
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
@@ -1319,7 +1326,7 @@ mod tests {
             ),
             (
                 "tic-tac-toe",
-                include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
             ),
         ];
         println!("| example | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |");
@@ -1980,7 +1987,7 @@ mod tests {
             },
             Example {
                 name: "tic-tac-toe",
-                wasm: include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                wasm: include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
                 drive: drive_tic_tac_toe,
             },
             Example {

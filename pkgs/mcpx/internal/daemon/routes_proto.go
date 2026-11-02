@@ -298,14 +298,18 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// the table before the upstream request goes out, so it is registered
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
-	key, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
-	r.beginAsk(id, server, key, cc.SessionID)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
-	return p.Call(ctx, key, effTool, effArgs)
+
+	return p.Call(ctx, rs, effTool, effArgs)
+
 }
 
 // ReadResourceAsk is resources/read, interruptibly.
@@ -314,11 +318,11 @@ func (r *Registry) ReadResourceAsk(ctx context.Context, id, server, uri string, 
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
 	}
-	key := r.keyFor(p, cc)
-	r.beginAsk(id, server, key, cc.SessionID)
+	rs := r.resolvedFor(p, cc)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
-	return p.ReadResource(ctx, key, upstreamResourceURI(ctx, p, uri))
+	return p.ReadResource(ctx, rs, upstreamResourceURI(ctx, p, uri))
 }
 
 // GetPromptAsk is prompts/get, interruptibly.
@@ -327,11 +331,11 @@ func (r *Registry) GetPromptAsk(ctx context.Context, id, server, name string, ar
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
 	}
-	key := r.keyFor(p, cc)
-	r.beginAsk(id, server, key, cc.SessionID)
+	rs := r.resolvedFor(p, cc)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
-	return p.GetPrompt(ctx, key, name, args)
+	return p.GetPrompt(ctx, rs, name, args)
 }
 
 // runKey carries the exec run a /v1/call was made from.
@@ -1002,7 +1006,7 @@ func (s *Server) watchResources(ctx context.Context, server string, uris []strin
 		}
 		upstream = upstreamResourceURI(ctx, p, upstream)
 		match = append(match, upstream)
-		release, err := p.Watch(ctx, s.reg.keyFor(p, config.CallContext{}), upstream)
+		release, err := p.Watch(ctx, s.reg.resolvedFor(p, config.CallContext{}), upstream)
 		if err != nil {
 			w.refuse(u, err.Error())
 			s.warnUnwatched(owner, u, err.Error())

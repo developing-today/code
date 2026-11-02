@@ -34,11 +34,57 @@ pub struct WorldCore {
     /// Events committed since the journal last started from a checkpoint.
     pub(crate) since_checkpoint: u64,
     pub(crate) capabilities: HashMap<u64, CapabilityRecord>,
-    /// Recent chat timestamps, pruned to the active rolling window on each send.
-    pub(crate) chat_rates: HashMap<u64, VecDeque<std::time::Instant>>,
+    /// Chat rate limiting as a consumer of the shared #2244 P0-A abuse
+    /// evaluator: one frame bucket per participant (keyed by a
+    /// participant-derived endpoint id), with the historical chat caps
+    /// — a burst of `CHAT_RATE_BURST` refilling over `CHAT_RATE_WINDOW`.
+    pub(crate) chat_abuse: crate::abuse::AbuseEvaluator,
+    /// Monotonic origin used for chat bucket refill timestamps.
+    pub(crate) chat_epoch: std::time::Instant,
     pub(crate) events: VecDeque<WorldEvent>,
     pub(crate) directory: crate::directory::Directory,
     pub(crate) petnames: crate::petname::Petnames,
+    /// Active region-seam handoffs this world is a side of (#3870 phase 1,
+    /// design #2818 §3): export fences/payloads and import receipts,
+    /// rebuilt by journal replay and preserved across compaction by the
+    /// checkpoint's `transfers` field.
+    pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+    /// Author keys bound to participants for signed move capture (#2814):
+    /// participant id to the player's ed25519 verifying key bytes. A bound
+    /// participant's inputs must arrive player-signed (see
+    /// [`signed`](super::signed)). Runtime state in this first pass;
+    /// journal persistence of bindings is a follow-up.
+    pub(crate) author_keys: HashMap<u64, [u8; 32]>,
+    /// Each bound participant's expected signed-move chain position.
+    pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
+    /// Accepted signed moves, in world sequence order.
+    pub(crate) signed_moves: Vec<signed::SignedMoveRecord>,
+}
+
+/// The abuse-evaluator policy for world chat: the historical caps
+/// (`CHAT_RATE_BURST` lines per `CHAT_RATE_WINDOW`) expressed as a
+/// token bucket — same burst, same sustained rate.
+fn chat_abuse_policy() -> crate::abuse::AbusePolicy {
+    let limits = crate::abuse::BucketLimits {
+        frames_per_sec: u64::from(CHAT_RATE_BURST) / CHAT_RATE_WINDOW.as_secs().max(1),
+        frame_burst: u64::from(CHAT_RATE_BURST),
+        bytes_per_sec: 0,
+        byte_burst: 0,
+    };
+    crate::abuse::AbusePolicy {
+        authorized: limits,
+        pre_authorization: limits,
+        max_connections_per_peer: usize::MAX,
+    }
+}
+
+/// The evaluator endpoint key for one chat participant: the participant
+/// id in the first eight bytes, zeroes elsewhere. World-local — these
+/// keys never leave the world's own evaluator.
+fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
+    let mut endpoint = [0_u8; 32];
+    endpoint[..8].copy_from_slice(&participant_id.to_be_bytes());
+    endpoint
 }
 
 impl WorldCore {
@@ -81,6 +127,7 @@ impl WorldCore {
         crate::world_caps::validate_ceiling_names(&server_caps)
             .context("server capability ceiling")?;
         let grant_on_use = limits.grant_on_use;
+        let chat_epoch = clock.now_instant();
         let mut core = Self {
             world_id,
             limits,
@@ -101,10 +148,15 @@ impl WorldCore {
             file_write_override: false,
             since_checkpoint: 0,
             capabilities: HashMap::new(),
-            chat_rates: HashMap::new(),
+            chat_abuse: crate::abuse::AbuseEvaluator::new(chat_abuse_policy(), [0; 32]),
+            chat_epoch,
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
+            handoff_transfers: Vec::new(),
+            author_keys: HashMap::new(),
+            move_chains: HashMap::new(),
+            signed_moves: Vec::new(),
         };
         core.sync_ledger_ceiling();
         Ok(core)
@@ -189,6 +241,29 @@ impl WorldCore {
                         participant.id != 0,
                         "participant 0 is the reserved host identity and cannot be issued"
                     );
+                    // #2960: the journaled display name must be one mint
+                    // could have produced. Mint sanitizes every name
+                    // (control and format characters stripped, capped at
+                    // 48 chars, trimmed) and refuses an empty result, so a
+                    // name that is a fixed point of neither sanitization
+                    // — or is empty — comes from a journal no live path
+                    // can write; refuse the whole restore. The pre-#2112
+                    // sanitizer (control characters only) is also accepted:
+                    // journals minted before format stripping landed can
+                    // legitimately carry ZWJ/ZWNJ names such as family
+                    // emoji, and those worlds restored fine before this
+                    // check existed.
+                    ensure!(
+                        !participant.display_name.is_empty()
+                            && (participant.display_name
+                                == sanitize_display_name(&participant.display_name)
+                                || participant.display_name
+                                    == legacy_sanitize_display_name(
+                                        &participant.display_name
+                                    )),
+                        "participant {} has a display name mint could not have produced",
+                        participant.id
+                    );
                     ensure!(
                         !core.capabilities.contains_key(&participant.id),
                         "participant {} issued twice",
@@ -214,6 +289,21 @@ impl WorldCore {
                             participant.id
                         );
                     }
+                    // #2890: mint refuses scope bits from_bits rejects
+                    // and scopes without JOIN; a journaled Issued entry
+                    // must meet the same bar, or restore would resurrect
+                    // a capability mint could never have issued.
+                    let Some(validated_scopes) = WorldScopes::from_bits(scopes) else {
+                        anyhow::bail!(
+                            "participant {} journaled scopes {scopes:#04x} name no scope",
+                            participant.id
+                        );
+                    };
+                    ensure!(
+                        validated_scopes.contains(WorldScopes::JOIN),
+                        "participant {} journaled scopes must include join scope",
+                        participant.id
+                    );
                     core.next_participant_id = core.next_participant_id.max(
                         participant
                             .id
@@ -225,7 +315,7 @@ impl WorldCore {
                         CapabilityRecord {
                             digest,
                             participant,
-                            scopes: WorldScopes(scopes),
+                            scopes: validated_scopes,
                             parent,
                             revoked: false,
                             bounds: CapabilityBounds { expires_at, uses },
@@ -301,6 +391,90 @@ impl WorldCore {
                         "journal fires schedule {id:?}, which is not pending"
                     );
                 }
+                JournalEntry::EntityExported {
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                    source_event,
+                    payload_schema,
+                    program_module_hash,
+                    payload,
+                    payload_digest,
+                } => {
+                    ensure!(
+                        source_event.sequence == 0 && source_event.participant_id == 0,
+                        "journal export event claims a sequence"
+                    );
+                    ensure!(
+                        !core.handoff_transfers.iter().any(|t| {
+                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
+                        }),
+                        "journal exports handoff {handoff_id:?} twice"
+                    );
+                    core.handoff_transfers.push(HandoffTransferState {
+                        handoff_id,
+                        entity_ref,
+                        source_region,
+                        target_region,
+                        direction: HandoffDirection::Export,
+                        prior_owner_epoch,
+                        new_owner_epoch: None,
+                        program_module_hash,
+                        payload_schema,
+                        payload_digest,
+                        payload: Some(payload),
+                        event: source_event.clone(),
+                    });
+                    // Replay applies the ownership-changing event from the
+                    // same durable fact (design #2818 §3).
+                    replay.push(source_event);
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::EntityImported {
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                    new_owner_epoch,
+                    program_module_hash,
+                    payload_schema,
+                    payload_digest,
+                    destination_event,
+                } => {
+                    ensure!(
+                        destination_event.sequence == 0 && destination_event.participant_id == 0,
+                        "journal import event claims a sequence"
+                    );
+                    ensure!(
+                        new_owner_epoch == prior_owner_epoch + 1,
+                        "journal import for handoff {handoff_id:?} does not advance the owner epoch"
+                    );
+                    ensure!(
+                        !core.handoff_transfers.iter().any(|t| {
+                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Import
+                        }),
+                        "journal imports handoff {handoff_id:?} twice"
+                    );
+                    core.handoff_transfers.push(HandoffTransferState {
+                        handoff_id,
+                        entity_ref,
+                        source_region,
+                        target_region,
+                        direction: HandoffDirection::Import,
+                        prior_owner_epoch,
+                        new_owner_epoch: Some(new_owner_epoch),
+                        program_module_hash,
+                        payload_schema,
+                        payload_digest,
+                        payload: None,
+                        event: destination_event.clone(),
+                    });
+                    replay.push(destination_event);
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
                 // Audit-only: the install is carried by the `Committed`
                 // `ProgramInstalled` event; this entry records who ordered it
                 // and changes no restored state.
@@ -342,6 +516,7 @@ impl WorldCore {
                             module_hash,
                             seed,
                             provenance,
+                            ..
                         } => {
                             core.active_module_hash = Some(module_hash.clone());
                             core.active_module_provenance = provenance.clone();
@@ -354,7 +529,9 @@ impl WorldCore {
                             });
                             replay.clear();
                         }
-                        WorldEventKind::Input(_) => replay.push(event.clone()),
+                        WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
+                            replay.push(event.clone())
+                        }
                         // System events belong to the journal's tail; a
                         // checkpoint behind them already contains their effect.
                         WorldEventKind::System { .. } | WorldEventKind::Chat(_) => {}
@@ -369,6 +546,7 @@ impl WorldCore {
                     execution_profile,
                     caps_ceiling,
                     schedules,
+                    transfers,
                     snapshot,
                     events,
                 } => {
@@ -406,6 +584,9 @@ impl WorldCore {
                         }
                         None => crate::world_caps::catalog_names(),
                     };
+                    // A checkpoint comes first in its journal, so its
+                    // transfer list is the whole active-handoff state.
+                    core.handoff_transfers = transfers.unwrap_or_default();
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
@@ -533,6 +714,11 @@ impl WorldCore {
                 .map(|(id, at_ms)| (id.clone(), *at_ms))
                 .collect()
         });
+        // Active handoffs ride on the checkpoint, mirroring the ceiling and
+        // schedules: without them compaction could resurrect an exported
+        // entity, forget an import receipt, or drop an owner epoch.
+        let transfers: Option<Vec<HandoffTransferState>> =
+            (!self.handoff_transfers.is_empty()).then(|| self.handoff_transfers.clone());
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
             module_hash,
@@ -541,6 +727,7 @@ impl WorldCore {
             execution_profile: Some(self.execution_profile),
             caps_ceiling,
             schedules,
+            transfers,
             snapshot,
             events: self.events.iter().cloned().collect(),
         });
@@ -601,16 +788,22 @@ impl WorldCore {
     /// A malformed id, a duplicate pending id, a full schedule, or a time past
     /// the horizon.
     pub(crate) fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
-        self.check_schedule_replacing(id, at_ms, now_ms, false)
+        self.check_schedule_inner(id, at_ms, now_ms, false)
     }
 
     /// Like [`Self::check_schedule`], but for a set that replaces the pending
-    /// schedule with the same id: the entry being replaced counts as already
-    /// cancelled, so it is neither a duplicate nor a use of the capacity.
+    /// schedule with the same id. Whether this is a replacement is derived
+    /// from this core's schedule map: the entry being replaced counts as
+    /// already cancelled, so it is neither a duplicate nor a use of capacity.
     /// Callers validate with this BEFORE persisting the replacement's
     /// cancellation, so a refused replacement (say, past the horizon) leaves
     /// the existing schedule standing (#807).
-    pub(crate) fn check_schedule_replacing(
+    pub(crate) fn check_schedule_replacing(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
+        let replacing = self.schedules.contains_key(id);
+        self.check_schedule_inner(id, at_ms, now_ms, replacing)
+    }
+
+    fn check_schedule_inner(
         &self,
         id: &str,
         at_ms: u64,
@@ -665,8 +858,13 @@ impl WorldCore {
         &self.world_id
     }
 
-    /// The per-world resource requests, independent of current server ceilings.
+    /// Active region-seam handoffs this world is a side of (#3870 phase 1).
     #[must_use]
+    pub(crate) fn handoff_transfers(&self) -> &[HandoffTransferState] {
+        &self.handoff_transfers
+    }
+
+    /// The per-world resource requests, independent of current server ceilings.
     pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
         self.execution_profile
     }
@@ -984,26 +1182,22 @@ impl WorldCore {
         );
         let text = sanitize_chat(text);
         ensure!(!text.is_empty(), "chat message must not be empty");
-        let now = self.clock().now_instant();
-        self.chat_rates.retain(|_, sent| {
-            while sent
-                .front()
-                .is_some_and(|at| now.duration_since(*at) >= CHAT_RATE_WINDOW)
-            {
-                sent.pop_front();
-            }
-            !sent.is_empty()
-        });
-        let current = self.chat_rates.get(&participant_id);
-        ensure!(
-            current.is_none_or(|sent| sent.len() < usize::from(CHAT_RATE_BURST)),
-            "chat rate exceeded; try again later"
-        );
+        // Consume one token from the participant's shared-bucket frame
+        // allowance; a refusal is the structured #2244 refusal (reason +
+        // bounded retry value), not prose.
+        let now_ms = u64::try_from(
+            self.clock()
+                .now_instant()
+                .saturating_duration_since(self.chat_epoch)
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
+        self.chat_abuse.prune_idle_endpoints(now_ms);
+        self.chat_abuse.prune_counters(now_ms, 60 * 60 * 1_000);
+        self.chat_abuse
+            .check_frame(chat_endpoint(participant_id), true, now_ms)
+            .map_err(crate::abuse::RefusalError::from)?;
         let event = self.commit(participant_id, WorldEventKind::Chat(text))?;
-        self.chat_rates
-            .entry(participant_id)
-            .or_default()
-            .push_back(now);
         Ok(event)
     }
 
@@ -1013,8 +1207,153 @@ impl WorldCore {
         self.commit_prepared(event)
     }
 
+    /// Bind `author_key` (the player's ed25519 verifying key) to the
+    /// participant the capability names, opting that participant into
+    /// signed play (#2814): from now on its inputs must arrive as
+    /// player-signed moves via [`WorldCore::input_signed`], and the
+    /// unsigned path refuses them. Re-binding the same key is a no-op;
+    /// binding a different key is refused (key rotation is out of scope).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the capability does not authorize input, or a different
+    /// key is already bound to the participant.
+    pub fn bind_author_key(
+        &mut self,
+        token: &JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<u64> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        if let Some(bound) = self.author_keys.get(&participant_id) {
+            ensure!(
+                *bound == author_key,
+                "participant {participant_id} already has a different author key bound"
+            );
+        } else {
+            self.author_keys.insert(participant_id, author_key);
+            self.move_chains.entry(participant_id).or_default();
+        }
+        Ok(participant_id)
+    }
+
+    /// Validate a player-signed input and prepare its event, verifying
+    /// the signed move against the participant's bound key and current
+    /// chain position without advancing the chain (see
+    /// [`WorldCore::record_signed_move`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input`], plus: the participant has no
+    /// bound author key, or the signed move fails
+    /// [`signed::MoveChain::verify`].
+    pub(crate) fn prepare_input_signed(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<(WorldEvent, crate::chain::Event)> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        self.ensure_uses_left(participant_id)?;
+        ensure!(
+            input.len() <= self.limits.input_bytes,
+            "world input exceeds {} bytes",
+            self.limits.input_bytes
+        );
+        ensure!(!input.is_empty(), "world input must not be empty");
+        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "participant {participant_id} has no bound author key; bind one before signed play"
+            )
+        })?;
+        let chain = self
+            .move_chains
+            .get(&participant_id)
+            .cloned()
+            .unwrap_or_default();
+        let signed = chain.verify(signed_move, &self.world_id, input, &author)?;
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        Ok((
+            WorldEvent {
+                sequence,
+                participant_id,
+                kind: WorldEventKind::Input(input.to_vec()),
+            },
+            signed,
+        ))
+    }
+
+    /// Record a signed move whose prepared event has just committed:
+    /// advance the author's chain past it and keep the cross-referenced
+    /// record. The actor calls this immediately after
+    /// [`WorldCore::commit_prepared`] for the prepared event, while no
+    /// other input can interleave.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the participant has no bound author key, or the signed
+    /// move is no longer the author's expected next move at commit time.
+    pub(crate) fn record_signed_move(
+        &mut self,
+        event: &WorldEvent,
+        signed: &crate::chain::Event,
+    ) -> Result<()> {
+        let participant_id = event.participant_id;
+        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
+            anyhow::anyhow!("participant {participant_id} has no bound author key")
+        })?;
+        let chain = self.move_chains.entry(participant_id).or_default();
+        ensure!(
+            signed.header.seq_num == chain.next_seq()
+                && signed.header.backlink == chain.frontier(),
+            "signed move is no longer the author's expected next move at commit"
+        );
+        chain.accept(signed);
+        self.signed_moves.push(signed::SignedMoveRecord {
+            world_sequence: event.sequence,
+            participant_id,
+            author,
+            author_seq: signed.header.seq_num,
+            event_id: signed.id,
+            bytes: signed.bytes.clone(),
+        });
+        Ok(())
+    }
+
+    /// Commit a player-signed game input (#2814): the move is verified
+    /// against the participant's bound key and chain position, committed
+    /// as a normal input event, and recorded as signed evidence.
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input_signed`].
+    pub fn input_signed(
+        &mut self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<WorldEvent> {
+        let (event, signed) = self.prepare_input_signed(token, input, signed_move)?;
+        let event = self.commit_prepared(event)?;
+        self.record_signed_move(&event, &signed)?;
+        Ok(event)
+    }
+
+    /// Accepted signed moves, in world sequence order (#2814): the
+    /// evidence base an attestation witness replays.
+    #[must_use]
+    pub fn signed_moves(&self) -> &[signed::SignedMoveRecord] {
+        &self.signed_moves
+    }
+
     pub(crate) fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.author_keys.contains_key(&participant_id),
+            "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,

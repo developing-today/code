@@ -89,6 +89,19 @@ export interface GitHubAuth {
 
 const discoveredInstallations = new Map<string, number>();
 
+function parseConfiguredInstallId(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(`Invalid GITHUB_APP_INSTALL_ID ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  const installId = Number(raw);
+  if (!Number.isSafeInteger(installId) || installId <= 0) {
+    throw new Error(`Invalid GITHUB_APP_INSTALL_ID ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  return installId;
+}
+
 /**
  * Resolve the installation id for one repo via GET /repos/{repo}/installation
  * (App JWT). An app installed on several accounts (an org + a user) has one
@@ -122,11 +135,12 @@ export async function apiTokenFor(
   fetchFn: typeof fetch = fetch,
   installationIds?: Record<string, number>,
 ): Promise<GitHubAuth> {
+  const configuredInstallId = parseConfiguredInstallId(env.GITHUB_APP_INSTALL_ID);
   let installId = installationIds?.[repo];
   if (!installId && env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
     installId = await discoverInstallationId(env, repo, fetchFn);
   }
-  if (!installId && env.GITHUB_APP_INSTALL_ID) installId = Number(env.GITHUB_APP_INSTALL_ID);
+  if (!installId) installId = configuredInstallId;
   if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && installId) {
     const jwt = await appJwt(env);
     const res = await fetchFn(`https://api.github.com/app/installations/${installId}/access_tokens`, {

@@ -68,6 +68,23 @@ pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
 
 pub(crate) fn sanitize_display_name(name: &str) -> String {
     name.chars()
+        .filter(|ch| !ch.is_control() && !crate::petname::is_format_char(*ch))
+        .collect::<String>()
+        .trim()
+        .chars()
+        .take(48)
+        .collect()
+}
+
+/// The display-name sanitizer as it existed before #2112 (commit
+/// 872aa09f) added format-character stripping: control characters
+/// stripped, 48-char cap, trimmed. Journals written by that earlier
+/// mint can legitimately carry names that are fixed points of this
+/// version but not of the current one — ZWJ/ZWNJ sequences such as
+/// family emoji are the common case — and restore accepts those for
+/// journal compatibility (see the #2960 check in `WorldCore::restore`).
+pub(crate) fn legacy_sanitize_display_name(name: &str) -> String {
+    name.chars()
         .filter(|ch| !ch.is_control())
         .take(48)
         .collect::<String>()
@@ -77,8 +94,84 @@ pub(crate) fn sanitize_display_name(name: &str) -> String {
 
 pub(crate) fn sanitize_chat(text: &str) -> String {
     text.chars()
-        .filter(|ch| !ch.is_control() || *ch == '\n' || *ch == '\t')
+        .filter(|ch| {
+            (!ch.is_control() || *ch == '\n' || *ch == '\t')
+                && (!crate::petname::is_format_char(*ch) || *ch == '\u{200c}' || *ch == '\u{200d}')
+        })
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{legacy_sanitize_display_name, sanitize_chat, sanitize_display_name};
+
+    #[test]
+    fn display_name_strips_bidi_override() {
+        assert_eq!(sanitize_display_name("evil\u{202e}name"), "evilname");
+    }
+
+    #[test]
+    fn display_name_strips_zero_width_only_name_to_empty() {
+        assert_eq!(sanitize_display_name("\u{200b}\u{200b}"), "");
+    }
+
+    #[test]
+    fn display_name_strips_joiners() {
+        assert_eq!(sanitize_display_name("a\u{200d}b"), "ab");
+        assert_eq!(sanitize_display_name("a\u{200c}b"), "ab");
+    }
+
+    #[test]
+    fn legacy_display_name_keeps_joiners_but_strips_controls() {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        assert_eq!(legacy_sanitize_display_name(family), family);
+        assert_eq!(legacy_sanitize_display_name("a\u{7}b"), "ab");
+        assert_eq!(legacy_sanitize_display_name("  Ada  "), "Ada");
+    }
+
+    #[test]
+    fn display_name_strips_control_chars() {
+        assert_eq!(sanitize_display_name("a\u{7}b"), "ab");
+    }
+
+    #[test]
+    fn display_name_trims_before_applying_character_budget() {
+        for spaces in [48, 47, 46] {
+            let padded = format!("{}Bob", " ".repeat(spaces));
+            assert_eq!(sanitize_display_name(&padded), "Bob");
+        }
+
+        let exactly_48 = "x".repeat(48);
+        assert_eq!(sanitize_display_name(&format!(" {exactly_48}")), exactly_48);
+        assert_eq!(
+            sanitize_display_name(&format!("\u{7}{exactly_48}")),
+            exactly_48
+        );
+    }
+
+    #[test]
+    fn chat_strips_bidi_isolates() {
+        assert_eq!(sanitize_chat("a\u{2066}b\u{2069}c"), "abc");
+    }
+
+    #[test]
+    fn chat_preserves_zwj_emoji_and_zwnj() {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        assert_eq!(sanitize_chat(family), family);
+        assert_eq!(sanitize_chat("a\u{200c}b"), "a\u{200c}b");
+    }
+
+    #[test]
+    fn chat_strips_other_format_and_control_chars() {
+        assert_eq!(sanitize_chat("a\u{200b}b"), "ab");
+        assert_eq!(sanitize_chat("a\u{202e}b"), "ab");
+        assert_eq!(sanitize_chat("a\u{7}b"), "ab");
+    }
+
+    #[test]
+    fn chat_preserves_newline_and_tab() {
+        assert_eq!(sanitize_chat("a\nb\tc"), "a\nb\tc");
+    }
 }

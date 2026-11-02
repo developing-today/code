@@ -7,7 +7,7 @@
 // start -> no-op -> hash change -> A/B roll; swap strategy; a broken
 // new build keeping the old instance; adoption of a foreign instance.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -143,6 +143,108 @@ test('resolveEnv injects backend ports', () => {
   assert.equal(env.BASE, 'x');
 });
 
+// ---------- loadConfig validation (#1952) ----------
+
+const loadBad = (config) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-supervise-badcfg-'));
+  const configPath = path.join(root, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify(config));
+  let err = null;
+  try {
+    loadConfig(configPath);
+  } catch (e) {
+    err = e;
+  }
+  assert.ok(err, `expected loadConfig to reject ${JSON.stringify(config)}`);
+  assert.ok(!(err instanceof TypeError), `error must not be an opaque TypeError: ${err.message}`);
+  assert.ok(err.message.includes(configPath), `error must name the config file: ${err.message}`);
+  return err.message;
+};
+
+const validProxy = { name: 'p1', command: ['/bin/true'], canonicalPort: 18742, portEnv: 'P1_PORT' };
+
+test('loadConfig accepts an omitted proxies list and a valid minimal proxy', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-supervise-okcfg-'));
+  const emptyPath = path.join(root, 'empty.json');
+  fs.writeFileSync(emptyPath, JSON.stringify({}));
+  assert.deepEqual(loadConfig(emptyPath).proxies, []);
+  const okPath = path.join(root, 'ok.json');
+  fs.writeFileSync(okPath, JSON.stringify({ proxies: [validProxy] }));
+  const cfg = loadConfig(okPath);
+  assert.equal(cfg.proxies[0].name, 'p1');
+  assert.equal(cfg.drainSeconds, 5);
+  assert.equal(cfg.healthTimeoutSeconds, 45);
+  assert.equal(cfg.lockTimeoutSeconds, 900);
+});
+
+test('loadConfig rejects malformed top-level and entry shapes, naming the field', () => {
+  assert.match(loadBad([]), /top-level value must be an object/);
+  assert.match(loadBad({ proxies: {} }), /field 'proxies' must be an array/);
+  assert.match(loadBad({ proxies: ['nope'] }), /proxies\[0\]: entry must be an object/);
+  assert.match(loadBad({ proxies: [{ name: 'p1', canonicalPort: 18742, portEnv: 'P' }] }), /proxies\[0\] \('p1'\): field 'command' is required/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, command: 'run' }] }), /field 'command' must be an array/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, command: [] }] }), /field 'command' must be a non-empty array/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, command: ['/bin/true', 7] }] }), /field 'command\[1\]' must be a non-empty string/);
+  assert.match(loadBad({ proxies: [{ command: ['/bin/true'], canonicalPort: 18742, portEnv: 'P' }] }), /field 'name' is required/);
+  assert.match(loadBad({ proxies: [validProxy, validProxy] }), /field 'name' duplicates/);
+  assert.match(loadBad({ proxies: [{ name: 'p1', command: ['/bin/true'], canonicalPort: 18742 }] }), /field 'portEnv' is required/);
+});
+
+test('loadConfig rejects bad ports and altPortOffset values', () => {
+  assert.match(loadBad({ proxies: [{ ...validProxy, canonicalPort: 'abc' }] }), /field 'canonicalPort' must be an integer in 1\.\.=65535/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, canonicalPort: 0 }] }), /field 'canonicalPort'/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, canonicalPort: 65536 }] }), /field 'canonicalPort'/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, canonicalPort: 18742.5 }] }), /field 'canonicalPort'/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, altPortOffset: 0 }] }), /field 'altPortOffset' must be a positive integer/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, altPortOffset: -5 }] }), /field 'altPortOffset'/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, canonicalPort: 65000, altPortOffset: 1000 }] }), /field 'altPortOffset' makes canonicalPort \+ altPortOffset exceed 65535/);
+});
+
+test('loadConfig rejects port collisions between proxies on the same host (#4094)', () => {
+  const other = { name: 'p2', command: ['/bin/true'], canonicalPort: 19742, portEnv: 'P2_PORT' };
+  const loadOk = (config) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-supervise-okcfg-'));
+    const configPath = path.join(root, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    return loadConfig(configPath);
+  };
+  // canonical vs canonical (validProxy claims 18742 and, by the default
+  // offset, 19742 — so `other` at 19742 is also canonical vs alternate).
+  assert.match(loadBad({ proxies: [validProxy, { ...other, canonicalPort: 18742 }] }), /field 'canonicalPort' port 18742 on host '127\.0\.0\.1' is already claimed by proxy 'p1' as its canonicalPort/);
+  assert.match(loadBad({ proxies: [validProxy, other] }), /port 19742 .* already claimed by proxy 'p1' as its altPort/);
+  // alternate vs alternate: 18742+500 and 19000+242 are both 19242.
+  assert.match(
+    loadBad({ proxies: [{ ...validProxy, altPortOffset: 500 }, { ...other, canonicalPort: 19000, altPortOffset: 242 }] }),
+    /field 'altPort' port 19242 .* already claimed by proxy 'p1' as its altPort/,
+  );
+  // The same ports on a different host are different claims and stay valid,
+  // as does a fully distinct port set on the same host.
+  assert.equal(loadOk({ proxies: [validProxy, { ...other, canonicalPort: 18742, host: '127.0.0.2' }] }).proxies.length, 2);
+  assert.equal(loadOk({ proxies: [validProxy, { ...other, canonicalPort: 20742 }] }).proxies.length, 2);
+});
+
+test('loadConfig rejects out-of-range or non-integer timeouts', () => {
+  assert.match(loadBad({ drainSeconds: 'soon', proxies: [] }), /field 'drainSeconds' must be an integer in 0\.\.=3600/);
+  assert.match(loadBad({ drainSeconds: -1, proxies: [] }), /field 'drainSeconds'/);
+  assert.match(loadBad({ drainSeconds: 3601, proxies: [] }), /field 'drainSeconds'/);
+  assert.match(loadBad({ healthTimeoutSeconds: -5, proxies: [] }), /field 'healthTimeoutSeconds' must be an integer in 1\.\.=3600/);
+  assert.match(loadBad({ healthTimeoutSeconds: 0, proxies: [] }), /field 'healthTimeoutSeconds'/);
+  assert.match(loadBad({ lockTimeoutSeconds: -1, proxies: [] }), /field 'lockTimeoutSeconds' must be an integer in 1\.\.=86400/);
+  assert.match(loadBad({ lockTimeoutSeconds: 86401, proxies: [] }), /field 'lockTimeoutSeconds'/);
+  assert.match(loadBad({ lockTimeoutSeconds: 1.5, proxies: [] }), /field 'lockTimeoutSeconds'/);
+});
+
+test('loadConfig rejects bad hashFiles/hashEnv/backends/env shapes', () => {
+  assert.match(loadBad({ proxies: [{ ...validProxy, hashFiles: 'x' }] }), /field 'hashFiles' must be an array/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, hashFiles: [42] }] }), /field 'hashFiles\[0\]'/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, hashEnv: 'HOME' }] }), /field 'hashEnv' must be an array/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, backends: {} }] }), /field 'backends' must be an array/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, backends: [{ name: 'b1' }] }] }), /field 'backends\[0\]\.env' is required/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, env: [] }] }), /field 'env' must be an object/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, env: { A: 1 } }] }), /field 'env\.A' must be a string/);
+  assert.match(loadBad({ proxies: [{ ...validProxy, strategy: 'sideways' }] }), /field 'strategy' must be one of/);
+});
+
 test('reconcile starts, then no-ops on unchanged hash', async (t) => {
   const w = await makeWorld(t);
   const r1 = await w.run();
@@ -238,6 +340,71 @@ test('foreign healthy instance is adopted, not duplicated', async (t) => {
 
 test('module under test is the worktree copy', () => {
   assert.ok(fs.existsSync(path.join(here, 'proxy-supervise.mjs')));
+});
+
+test('CLI: rejects unknown arguments before proxy side effects', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-supervise-argv-'));
+  try {
+    const stateDir = path.join(root, 'state');
+    const endpointDir = path.join(root, 'endpoints');
+    const marker = path.join(root, 'spawned');
+    const scriptPath = path.join(root, 'fake-proxy.mjs');
+    const configPath = path.join(root, 'config.json');
+    fs.writeFileSync(scriptPath, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'spawned');`);
+    fs.writeFileSync(configPath, JSON.stringify({
+      stateDir,
+      endpointDir,
+      drainSeconds: 1,
+      healthTimeoutSeconds: 1,
+      proxies: [{
+        name: 'fake-proxy',
+        canonicalPort: 43991,
+        command: [process.execPath, scriptPath],
+        portEnv: 'FAKE_PROXY_PORT',
+        hashFiles: [scriptPath],
+      }],
+    }));
+
+    const script = path.join(here, 'proxy-supervise.mjs');
+    for (const [args, named] of [
+      [['--config', configPath, '--dry-rnu'], '--dry-rnu'],
+      [['--config', configPath, '--bogus-flag'], '--bogus-flag'],
+      [['--config', configPath, '--statuz'], '--statuz'],
+      [['--config', configPath, '--only'], '--only'],
+      [['--config', configPath, '--only', '--status'], '--only'],
+      [['--config'], '--config'],
+      [['--config', '--status'], '--config'],
+    ]) {
+      const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 5000 });
+      assert.equal(result.status, 2, `${args}: ${result.stdout}\n${result.stderr}`);
+      assert.ok(result.stderr.includes(named), `${args}: stderr must name ${named}: ${result.stderr}`);
+      assert.equal(fs.existsSync(marker), false, 'invalid argv must not spawn the configured proxy');
+      assert.equal(fs.existsSync(stateDir), false, 'invalid argv must not create state or a lock');
+      assert.equal(fs.existsSync(endpointDir), false, 'invalid argv must not create endpoint state');
+    }
+
+    const unknownBeforeRead = spawnSync(process.execPath, [
+      script, '--config', path.join(root, 'missing.json'), '--statuz',
+    ], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(unknownBeforeRead.status, 2, `${unknownBeforeRead.stdout}\n${unknownBeforeRead.stderr}`);
+    assert.match(unknownBeforeRead.stderr, /--statuz/);
+    assert.doesNotMatch(unknownBeforeRead.stderr, /ENOENT/);
+
+    const dryRun = spawnSync(process.execPath, [
+      script, '--config', configPath, '--only', 'fake-proxy', '--dry-run',
+    ], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(dryRun.status, 0, `${dryRun.stdout}\n${dryRun.stderr}`);
+    assert.match(dryRun.stdout, /"action":"would-start"/);
+    assert.equal(fs.existsSync(marker), false, 'a valid dry run must not spawn the configured proxy');
+    assert.equal(fs.existsSync(stateDir), false, 'a valid dry run must not create state or a lock');
+    assert.equal(fs.existsSync(endpointDir), false, 'a valid dry run must not create endpoint state');
+
+    const bare = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(bare.status, 2, `${bare.stdout}\n${bare.stderr}`);
+    assert.match(bare.stderr, /missing required --config/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('CLI entry point still runs when invoked through a symlinked path (#2083)', async () => {

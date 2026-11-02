@@ -676,6 +676,14 @@ export class SnapshotStore {
   }): Promise<CompactionReport> {
     const now = opts.now ?? new Date();
     const retentionMonths = opts.retentionMonths ?? 13;
+    if (!Number.isInteger(retentionMonths) || retentionMonths < 1) {
+      // Zero (or negative/fractional) retention would make the in-progress
+      // month eligible for compaction (#3285): its raw file would be
+      // replaced by a lossy rollup while writers are still appending.
+      throw new RangeError(
+        `SnapshotStore.compact: retentionMonths must be a positive integer, got ${opts.retentionMonths}`,
+      );
+    }
     const dryRun = opts.dryRun ?? false;
     const currentMonth = now.toISOString().slice(0, 7);
     const cutoffMonth = shiftMonth(currentMonth, -retentionMonths);

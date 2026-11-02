@@ -263,6 +263,12 @@ impl crate::world::WorldProgram for NativeProgram {
                 self.deliver(event.participant_id, bytes)?;
                 Ok(())
             }
+            // Entity-addressed input (#3870): the bytes are the program's;
+            // the entity scoping is host-side fencing metadata.
+            crate::world::WorldEventKind::EntityInput { input, .. } => {
+                self.deliver(event.participant_id, input)?;
+                Ok(())
+            }
             // Host events are JSON text delivered as participant 0.
             crate::world::WorldEventKind::System { event } => {
                 self.deliver(0, event.as_bytes())?;

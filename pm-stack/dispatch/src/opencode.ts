@@ -70,6 +70,10 @@ export class OpenCodeClient {
     await this.api("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, { text });
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.api("DELETE", `/api/session/${encodeURIComponent(sessionId)}`);
+  }
+
   async listSessions(): Promise<unknown> {
     return this.api("GET", "/api/session");
   }

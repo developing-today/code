@@ -281,6 +281,55 @@ describe("rediscovery precedence", () => {
     await rt.look();
     expect(rememberedSeen).toEqual([targetKey(picked)]);
   });
+
+  test("a transient failure immediately rediscovers at the default miss cooldown", async () => {
+    let discoverCalls = 0;
+    let failExec = true;
+    const rt = runtime({
+      discoverFn: async () => {
+        discoverCalls += 1;
+        return discoveryWith([candidate(socketTarget)]);
+      },
+      clientFor: () =>
+        fakeClient({
+          exec: async () => {
+            if (failExec) {
+              failExec = false;
+              throw new Error("daemon went away");
+            }
+            return { output: "recovered through daemon" };
+          },
+        }),
+    });
+    const exec = rt.tools().find((t) => t.name === "exec")!;
+
+    await expect(
+      exec.execute({ source: "1" } as never, { sessionID: "s1" }),
+    ).rejects.toThrow();
+    expect(discoverCalls).toBe(1);
+
+    const recovered = await exec.execute(
+      { source: "1" } as never,
+      { sessionID: "s1" },
+    );
+    expect(recovered.content).toContain("recovered through daemon");
+    expect(discoverCalls).toBe(2);
+  });
+
+  test("a genuine discovery miss still observes the default cooldown", async () => {
+    let discoverCalls = 0;
+    const rt = runtime({
+      discoverFn: async () => {
+        discoverCalls += 1;
+        return { candidates: [], rung: 6, reason: "none", ambiguous: false };
+      },
+    });
+
+    await rt.look();
+    await rt.look();
+
+    expect(discoverCalls).toBe(1);
+  });
 });
 
 describe("tool executors", () => {

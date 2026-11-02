@@ -689,6 +689,7 @@ func pick[T comparable](vals ...T) T {
 }
 
 var nsSanitize = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+var nsIdentifier = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
 
 // SanitizeNamespace turns an arbitrary server name into a valid TypeScript
 // identifier.
@@ -841,9 +842,15 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		}
 	}
 
-	if ex.Namespace != "" && codegen.ReservedNamespace(ex.Namespace) {
-		return nil, fmt.Errorf("server %q: namespace %q is a reserved word or a name the generated client already uses; pick another",
-			name, ex.Namespace)
+	if ex.Namespace != "" {
+		if !nsIdentifier.MatchString(ex.Namespace) {
+			return nil, fmt.Errorf("server %q: namespace %q is not a valid identifier; want [A-Za-z_$][A-Za-z0-9_$]*",
+				name, ex.Namespace)
+		}
+		if codegen.ReservedNamespace(ex.Namespace) {
+			return nil, fmt.Errorf("server %q: namespace %q is a reserved word or a name the generated client already uses; pick another",
+				name, ex.Namespace)
+		}
 	}
 	r := &Resolved{
 		Server:          s,

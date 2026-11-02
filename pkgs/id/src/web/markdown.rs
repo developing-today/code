@@ -3188,7 +3188,7 @@ fn linked_image_sequence<'a>(children: &[&'a AstNode<'a>]) -> Option<(Value, usi
     let (href, link_title) = parse_anchor_tag(&html_inline_literal(children[0])?)?;
     let img = parse_img_tag(&html_inline_literal(children[1])?)?;
     let consumed = if children.len() >= 3
-        && html_inline_literal(children[2]).is_some_and(|h| h.trim() == "</a>")
+        && html_inline_literal(children[2]).is_some_and(|h| h.trim().eq_ignore_ascii_case("</a>"))
     {
         3
     } else {
@@ -3613,9 +3613,21 @@ fn parse_dimension(raw: &str) -> Option<u64> {
 /// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
 ///
 /// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
+fn find_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> Option<usize> {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|candidate| candidate.eq_ignore_ascii_case(needle))
+}
+
 fn parse_img_tag(html: &str) -> Option<Value> {
     let trimmed = html.trim();
-    if !trimmed.starts_with("<img ") && !trimmed.starts_with("<img>") {
+    let bytes = trimmed.as_bytes();
+    if !bytes
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<img"))
+        || !matches!(bytes.get(4).copied(), Some(b' ' | b'>'))
+    {
         return None;
     }
 
@@ -3656,7 +3668,12 @@ fn parse_img_tag(html: &str) -> Option<Value> {
 fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
     let trimmed = html.trim();
     let after_name = trimmed.as_bytes().get(2).copied()?;
-    if !trimmed.starts_with("<a") || !(after_name.is_ascii_whitespace() || after_name == b'>') {
+    if !trimmed
+        .as_bytes()
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<a"))
+        || !(after_name.is_ascii_whitespace() || after_name == b'>')
+    {
         return None;
     }
     let parsed = parse_tag_attrs(trimmed, 2);
@@ -3685,8 +3702,10 @@ fn image_with_link(mut img: Value, href: &str, link_title: Option<&str>) -> Valu
 fn parse_linked_img_tag(html: &str) -> Option<Value> {
     let trimmed = html.trim();
     let (href, link_title) = parse_anchor_tag(trimmed)?;
-    let img_start = trimmed.find("<img")?;
-    if !trimmed[..img_start].trim_end().ends_with('>') || !trimmed[img_start..].contains("</a>") {
+    let img_start = find_ascii_case_insensitive(trimmed, b"<img")?;
+    if !trimmed[..img_start].trim_end().ends_with('>')
+        || find_ascii_case_insensitive(&trimmed[img_start..], b"</a>").is_none()
+    {
         return None;
     }
     let img = parse_img_tag(&trimmed[img_start..])?;
@@ -4282,10 +4301,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "paragraph" => NodeValue::Paragraph,
 
         "heading" => {
-            #[allow(clippy::cast_possible_truncation)] // level is clamped to 1-6
-            let level = json["attrs"]["level"].as_u64().unwrap_or(1) as u8;
+            let level = json["attrs"]["level"].as_u64().unwrap_or(1).clamp(1, 6);
+            #[allow(clippy::cast_possible_truncation)] // level is clamped to 1-6 before narrowing
+            let level = level as u8;
             NodeValue::Heading(comrak::nodes::NodeHeading {
-                level: level.clamp(1, 6),
+                level,
                 setext: false,
                 closed: false,
             })
@@ -5173,6 +5193,48 @@ mod tests {
 
         assert_eq!(content[1]["type"], "heading");
         assert_eq!(content[1]["attrs"]["level"], 2);
+    }
+
+    #[test]
+    fn test_heading_levels_are_clamped_before_u8_cast_on_save() {
+        let cases: &[(Option<u64>, u8)] = &[
+            (None, 1),
+            (Some(0), 1),
+            (Some(1), 1),
+            (Some(2), 2),
+            (Some(3), 3),
+            (Some(4), 4),
+            (Some(5), 5),
+            (Some(6), 6),
+            (Some(7), 6),
+            (Some(255), 6),
+            (Some(256), 6),
+            (Some(261), 6),
+            (Some(1_000), 6),
+            (Some(u64::MAX), 6),
+        ];
+
+        for (level, expected_level) in cases {
+            let heading = match level {
+                Some(level) => json!({
+                    "type": "heading",
+                    "attrs": {"level": level},
+                    "content": [{"type": "text", "text": "Heading"}]
+                }),
+                None => json!({
+                    "type": "heading",
+                    "content": [{"type": "text", "text": "Heading"}]
+                }),
+            };
+            let doc = json!({"type": "doc", "content": [heading]});
+            let expected = format!("{} Heading\n", "#".repeat(usize::from(*expected_level)));
+
+            assert_eq!(
+                prosemirror_to_markdown(&doc).unwrap(),
+                expected,
+                "heading level {level:?}"
+            );
+        }
     }
 
     #[test]
@@ -8941,6 +9003,31 @@ Some text
     }
 
     #[test]
+    fn test_uppercase_img_tag_imports_as_image() {
+        let doc =
+            markdown_to_prosemirror("<IMG SRC=\"/blob/AbC.png\" ALT=\"MiXeD\" WIDTH=\"200\" />\n");
+        let img = &doc["content"][0]["content"][0];
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["attrs"]["src"], "/blob/AbC.png");
+        assert_eq!(img["attrs"]["alt"], "MiXeD");
+        assert_eq!(img["attrs"]["width"], 200);
+    }
+
+    #[test]
+    fn test_mixed_case_inline_img_tag_imports_as_image() {
+        let doc = markdown_to_prosemirror("before <Img src=\"inline.png\" alt=\"Mixed\" /> after\n");
+        let content = doc["content"][0]["content"]
+            .as_array()
+            .expect("paragraph content");
+        let img = content
+            .iter()
+            .find(|node| node["type"] == "image")
+            .expect("mixed-case inline image node");
+        assert_eq!(img["attrs"]["src"], "inline.png");
+        assert_eq!(img["attrs"]["alt"], "Mixed");
+    }
+
+    #[test]
     fn test_img_dimension_grammar_kept_forms() {
         // #2180: lossless pixel forms are kept (grammar pinned by
         // triage task 3225): bare, padded, px/PX-suffixed,
@@ -9284,6 +9371,34 @@ Some text
                     .is_none_or(|t| !t.contains("<a") && !t.contains("</a>"))
             }),
             "no literal anchor text nodes: {doc}"
+        );
+    }
+
+    #[test]
+    fn test_uppercase_linked_img_tags_import_with_link() {
+        let node = parse_linked_img_tag(
+            "<A HREF=\"https://example.com/Case\" TITLE=\"Link\"><IMG SRC=\"Img.png\" ALT=\"Pic\" /></a>",
+        )
+        .expect("case-insensitive linked image parses");
+        assert_eq!(node["attrs"]["src"], "Img.png");
+        assert_eq!(node["attrs"]["alt"], "Pic");
+        assert_eq!(node["attrs"]["linkHref"], "https://example.com/Case");
+        assert_eq!(node["attrs"]["linkTitle"], "Link");
+
+        let doc = markdown_to_prosemirror(
+            "before <A HREF=\"https://example.com/Case\"><IMG SRC=\"Img.png\" ALT=\"Pic\" /></A> after\n",
+        );
+        let content = doc["content"][0]["content"]
+            .as_array()
+            .expect("paragraph content");
+        let img = content
+            .iter()
+            .find(|node| node["type"] == "image")
+            .expect("linked image node");
+        assert_eq!(img["attrs"]["linkHref"], "https://example.com/Case");
+        assert!(
+            content.iter().all(|node| node["type"] != "html_inline"),
+            "closing anchor is consumed with the image: {doc}"
         );
     }
 
