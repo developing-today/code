@@ -87,4 +87,51 @@ describe("apiTokenFor installation resolution", () => {
     const auth = await apiTokenFor(env, "acme/widgets", fetchFn as unknown as typeof fetch);
     expect(auth).toEqual({ kind: "app", token: "inst-token" });
   });
+
+  test("rejects a present invalid static installation ID instead of falling back", async () => {
+    for (const raw of ["abc", "12.5", "0", "-1", "9007199254740992"]) {
+      const calls: string[] = [];
+      const fetchFn = async (url: string) => {
+        calls.push(url);
+        return new Response("{}", { status: 404 });
+      };
+      const result = await apiTokenFor(
+        { GITHUB_APP_INSTALL_ID: raw, GITHUB_TOKEN: "plain-token" },
+        "acme/invalid-static",
+        fetchFn as unknown as typeof fetch,
+      ).catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain("GITHUB_APP_INSTALL_ID");
+      expect((result as Error).message).toContain(JSON.stringify(raw));
+      expect(calls).toEqual([]);
+    }
+  });
+
+  test("keeps the plain-token fallback for absent or empty static IDs", async () => {
+    for (const raw of [undefined, ""]) {
+      const auth = await apiTokenFor(
+        { GITHUB_APP_INSTALL_ID: raw, GITHUB_TOKEN: "plain-token" },
+        "acme/no-app",
+      );
+      expect(auth).toEqual({ kind: "token", token: "plain-token" });
+    }
+  });
+
+  test("uses a valid static installation ID when discovery is unavailable", async () => {
+    const env = {
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8"),
+      GITHUB_APP_INSTALL_ID: "42",
+    };
+    const calls: string[] = [];
+    const fetchFn = async (url: string) => {
+      calls.push(url);
+      if (url === "https://api.github.com/repos/acme/static/installation") return new Response("{}", { status: 404 });
+      if (url === "https://api.github.com/app/installations/42/access_tokens") return Response.json({ token: "static-token" });
+      return new Response("{}", { status: 404 });
+    };
+    const auth = await apiTokenFor(env, "acme/static", fetchFn as unknown as typeof fetch);
+    expect(auth).toEqual({ kind: "app", token: "static-token" });
+    expect(calls).toContain("https://api.github.com/app/installations/42/access_tokens");
+  });
 });
