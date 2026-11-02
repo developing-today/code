@@ -227,6 +227,7 @@ pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
+pub(crate) use id_core::is_format_char;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
 pub use id_core::waiting;

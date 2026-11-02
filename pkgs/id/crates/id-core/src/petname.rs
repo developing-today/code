@@ -13,6 +13,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::Refusal;
+pub use crate::is_format_char;
 
 const MAX_PETNAME_CHARS: usize = 64;
 const FINGERPRINT_CHARS: usize = 6;
@@ -231,38 +232,6 @@ fn ensure_has(petnames: &Petnames, owner: &str, account: &str) -> Result<()> {
 
 fn looks_like(name: &str) -> anyhow::Error {
     Refusal::Conflict(format!("that name looks too much like {name}")).into()
-}
-
-/// Whether `c` is a Unicode format character (general category Cf):
-/// zero-width spaces and joiners, bidi controls and isolates, the word
-/// joiner, soft hyphen, and the rest of the category. Rust's
-/// `char::is_control` covers only category Cc, and Cf characters are
-/// invisible or reorder the text around them, so a name carrying one
-/// can render exactly like another name. Ranges are the Cf set of
-/// Unicode 16. Shared with the other name boundaries (invite names,
-/// #1770) so every surface refuses the same set.
-pub fn is_format_char(c: char) -> bool {
-    matches!(c,
-        '\u{00AD}'
-        | '\u{0600}'..='\u{0605}'
-        | '\u{06DD}'
-        | '\u{070F}'
-        | '\u{0890}'..='\u{0891}'
-        | '\u{08E2}'
-        | '\u{180E}'
-        | '\u{200B}'..='\u{200F}'
-        | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{206F}'
-        | '\u{FEFF}'
-        | '\u{FFF9}'..='\u{FFFB}'
-        | '\u{110BD}'
-        | '\u{110CD}'
-        | '\u{13430}'..='\u{1343F}'
-        | '\u{1BCA0}'..='\u{1BCA3}'
-        | '\u{1D173}'..='\u{1D182}'
-        | '\u{E0001}'
-        | '\u{E0020}'..='\u{E007F}')
 }
 
 /// The name with every format character (category Cf) removed, for the
@@ -741,6 +710,7 @@ mod tests {
             "Pay\u{200B}Pal",
             "Pay\u{202A}Pal",
             "Pay\u{202E}Pal",
+            "Pay\u{061C}Pal",
             "Pay\u{2060}Pal",
             "Pay\u{FEFF}Pal",
             "Pay\u{00AD}Pal",
@@ -749,6 +719,7 @@ mod tests {
             "Pay\u{FFF9}Pal",
             "Pay\u{E0001}Pal",
             "Pay\u{E0041}Pal",
+            "Pay\u{1D17A}Pal",
         ] {
             assert!(normalize_name(bad).is_err(), "{bad:?} must be refused");
         }
