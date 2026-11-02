@@ -5,6 +5,28 @@ import { join } from "node:path";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
+function parseAggregatorPort(value: string | undefined): number {
+  const normalized = s(value, "4870");
+  const port = Number(normalized);
+  if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`,
+    );
+  }
+  return port;
+}
+
+function parseAggregatorHosts(value: string | undefined): string[] {
+  const hosts = s(value, "127.0.0.1")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+  if (hosts.length === 0) {
+    throw new Error(`Invalid PM_AGG_HOSTS=${JSON.stringify(value)}; expected at least one non-empty host`);
+  }
+  return hosts;
+}
+
 export interface Config {
   /** "fixtures" | "live" — the default Source. */
   source: "fixtures" | "live";
@@ -78,11 +100,8 @@ export interface Config {
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
     source: env.PM_AGG_SOURCE === "live" ? "live" : "fixtures",
-    port: Number(s(env.PM_AGG_PORT, "4870")),
-    hosts: s(env.PM_AGG_HOSTS, "127.0.0.1")
-      .split(",")
-      .map((h) => h.trim())
-      .filter(Boolean),
+    port: parseAggregatorPort(env.PM_AGG_PORT),
+    hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
