@@ -23,7 +23,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
-import type { PaygLine, QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
+import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -123,6 +123,28 @@ describe("feed project-pool section gate (#2399)", () => {
     ).toHaveLength(2);
   });
 
+  test("number must be a positive integer, bad values drop individually (#3514)", () => {
+    // Real GraphQL numbers are positive integers; NaN/Infinity/1.5/-3/0
+    // used to pass the bare typeof gate and render as fabricated refs.
+    expect(isProjectPoolItem(EDGElESS)).toBe(true);
+    for (const bad of [1.5, -3, 0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isProjectPoolItem({ ...EDGElESS, number: bad })).toBe(false);
+    }
+    expect(
+      poolFromFeed({
+        projects: [
+          EDGElESS,
+          { ...EDGElESS, number: 1.5 },
+          { ...EDGElESS, number: -3 },
+          { ...EDGElESS, number: 0 },
+          { ...EDGElESS, number: Number.NaN },
+          { ...EDGElESS, number: Number.POSITIVE_INFINITY },
+          GRAPHED,
+        ] as unknown as never,
+      }),
+    ).toHaveLength(2);
+  });
+
   test("poolFromFeed is fail-soft: garbage sections yield no items, bad items drop", () => {
     expect(poolFromFeed(null)).toEqual([]);
     expect(poolFromFeed(undefined)).toEqual([]);
@@ -211,6 +233,13 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     percent: 25,
   };
   const POOL: QuotaPool = { id: "opencode-go", provider: "opencode", plan: "go", state: "healthy", windows: [WINDOW] };
+  const CREDENTIAL: QuotaCredentialRow = {
+    label: "OpenAI 2",
+    providerId: "openai",
+    windows: [WINDOW],
+    freshness: { measuredAt: "2026-10-01T00:00:00Z", source: "quota-current", state: "ok" },
+  };
+  const ACTIVE_SESSION = { session: "session-1", model: "gpt-5", tokens: 42 };
   const CHOICES = { hasHeadroom: ["opencode-go"], burnBeforeReset: [], doNotStart: [] };
   const feedWith = (quota: unknown) => ({
     version: 1,
@@ -251,6 +280,109 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     expect(out.droppedPools).toBe(0);
     expect(out.droppedWindows).toBe(2);
     expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  // #3427: value-malformed windows (impossible resetsAt, negative
+  // limit/used, out-of-range percent) used to pass the type-only guard
+  // and mislead guidance/health. They now drop individually and count,
+  // exactly like shape failures; valid windows are untouched.
+  test("Feb-30 resetsAt window drops individually", () => {
+    const bad = { ...WINDOW, resetsAt: "2026-02-30T00:00:00Z" };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("negative used window drops individually", () => {
+    const bad = { ...WINDOW, used: -5 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("negative limit window drops individually", () => {
+    const bad = { ...WINDOW, limit: -100 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("percent -50 window drops individually", () => {
+    const bad = { ...WINDOW, percent: -50 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("percent 15000 window drops individually", () => {
+    const bad = { ...WINDOW, percent: 15000 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("valid windows are untouched and droppedWindows counts every drop", () => {
+    const feb30 = { ...WINDOW, name: "feb30", resetsAt: "2026-02-30T00:00:00Z" };
+    const negUsed = { ...WINDOW, name: "neg-used", used: -1 };
+    const negLimit = { ...WINDOW, name: "neg-limit", limit: -1 };
+    const negPct = { ...WINDOW, name: "neg-pct", percent: -50 };
+    const hugePct = { ...WINDOW, name: "huge-pct", percent: 15000 };
+    const pool = { ...POOL, windows: [WINDOW, feb30, negUsed, negLimit, negPct, hugePct] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(5);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 0, windows: 5, activeSessions: 0, burn: 0 });
+  });
+
+  test("malformed credential rows and active sessions drop individually and render safely", () => {
+    const malformedCredentialRows: unknown[] = [
+      { label: "missing freshness", providerId: "openai", windows: [WINDOW] },
+      { ...CREDENTIAL, freshness: null },
+      { ...CREDENTIAL, label: 42 },
+      CREDENTIAL,
+    ];
+    const malformedSessions = [
+      null,
+      { session: "missing-tokens", model: "gpt-5" },
+      ACTIVE_SESSION,
+      { session: "non-finite", model: "gpt-5", tokens: Number.POSITIVE_INFINITY },
+    ];
+    const pool = { ...POOL, credentials: malformedCredentialRows, activeSessions: malformedSessions };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+
+    expect(out.droppedPools).toBe(0);
+    expect(out.droppedCredentials).toBe(3);
+    expect(out.droppedActiveSessions).toBe(3);
+    expect(out.view.pools[0]).toEqual({ ...POOL, credentials: [CREDENTIAL], activeSessions: [ACTIVE_SESSION] });
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 3, windows: 0, activeSessions: 3, burn: 0 });
+    const html = renderQuota(out.view, {} as never);
+    expect(html).toContain("credential OpenAI 2");
+    expect(html).toContain("burning: session-1 (gpt-5) 42 tok");
+  });
+
+  test("a present non-array activeSessions section becomes empty and counts once", () => {
+    const out = sanitizeQuotaView(quotaWith([{ ...POOL, activeSessions: "not-an-array" }]) as never);
+
+    expect(out.droppedPools).toBe(0);
+    expect(out.droppedActiveSessions).toBe(1);
+    expect(out.view.pools[0]).toEqual({ ...POOL, activeSessions: [] });
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 0, windows: 0, activeSessions: 1, burn: 0 });
+    expect(() => renderQuota(out.view, {} as never)).not.toThrow();
+  });
+
+  test("well-formed credential and active-session rows remain unchanged", () => {
+    const quota = quotaWith([{ ...POOL, credentials: [CREDENTIAL], activeSessions: [ACTIVE_SESSION] }]) as QuotaView;
+    const out = sanitizeQuotaView(quota);
+
+    expect(out.view).toEqual(quota);
+    expect(out.droppedCredentials).toBe(0);
+    expect(out.droppedActiveSessions).toBe(0);
+    expect(renderQuota(out.view, {} as never)).toContain("credential OpenAI 2");
   });
 
   test("malformed burn segments drop individually", () => {
@@ -295,10 +427,16 @@ describe("feed quota section gate + sanitization (#2429)", () => {
   });
 
   test("a fully well-formed quota view is unchanged", () => {
-    const q = quotaWith([POOL], { burn: [] }) as unknown as QuotaView;
+    const q = quotaWith(
+      [{ ...POOL, credentials: [CREDENTIAL], activeSessions: [ACTIVE_SESSION] }],
+      { burn: [] },
+    ) as unknown as QuotaView;
     const out = sanitizeQuotaView(q);
-    expect(out.droppedPools + out.droppedWindows + out.droppedBurn).toBe(0);
+    expect(
+      out.droppedPools + out.droppedCredentials + out.droppedWindows + out.droppedActiveSessions + out.droppedBurn,
+    ).toBe(0);
     expect(out.view).toEqual(q);
+    expect(renderQuota(out.view, {} as never)).toContain("credential OpenAI 2");
   });
 
   test("choices are reconciled to surviving pools with usable windows", () => {
@@ -306,26 +444,33 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     const out = sanitizeQuotaView(quotaWith([noWindows]) as never);
     expect(out.view.pools.length).toBe(1);
     expect(out.view.choices).toEqual({ hasHeadroom: [], burnBeforeReset: [], doNotStart: [] });
-    expect(out.view.dropped).toEqual({ pools: 0, windows: 1, burn: 0 });
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 0, windows: 1, activeSessions: 0, burn: 0 });
   });
 
   test("a dropped pool leaves the retained choices and surfaces dropped on the view", () => {
     const out = sanitizeQuotaView(quotaWith([null, POOL]) as never);
     expect(out.view.choices.hasHeadroom).toEqual(["opencode-go"]);
-    expect(out.view.dropped).toEqual({ pools: 1, windows: 0, burn: 0 });
+    expect(out.view.dropped).toEqual({ pools: 1, credentials: 0, windows: 0, activeSessions: 0, burn: 0 });
   });
 
   test("loadFeed returns the sanitized remainder with drop counts attached", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-feed-quota-"));
     const file = join(dir, "feed.json");
-    const pool = { ...POOL, windows: [WINDOW, null] };
+    const pool = {
+      ...POOL,
+      windows: [WINDOW, null],
+      credentials: [{ label: "missing freshness", providerId: "openai", windows: [WINDOW] }, CREDENTIAL],
+      activeSessions: [null, ACTIVE_SESSION],
+    };
     writeFileSync(file, JSON.stringify(feedWith(quotaWith([null, pool]))));
     const loaded = await loadFeed(file);
     expect(loaded).not.toBeNull();
     expect(loaded?.quota.pools.length).toBe(1);
     expect(loaded?.quota.pools[0]?.windows).toEqual([WINDOW]);
-    expect(loaded?.quotaDropped).toEqual({ pools: 1, windows: 1, burn: 0 });
-    expect(loaded?.quota.dropped).toEqual({ pools: 1, windows: 1, burn: 0 });
+    expect(loaded?.quota.pools[0]?.credentials).toEqual([CREDENTIAL]);
+    expect(loaded?.quota.pools[0]?.activeSessions).toEqual([ACTIVE_SESSION]);
+    expect(loaded?.quotaDropped).toEqual({ pools: 1, credentials: 1, windows: 1, activeSessions: 1, burn: 0 });
+    expect(loaded?.quota.dropped).toEqual({ pools: 1, credentials: 1, windows: 1, activeSessions: 1, burn: 0 });
   });
 
   test("loadFeed rejects a feed missing burn/choices (fixture-fallback path)", async () => {
@@ -727,6 +872,87 @@ describe("feed chargesAttention gate + sanitization (#2439)", () => {
     const loaded = await loadFrom(feedWithCa([UNMATCHED]));
     expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
     expect(loaded?.chargesAttentionDropped).toBeUndefined();
+  });
+});
+
+describe("charge gates reject impossible rows (#3458)", () => {
+  const CHOICES = { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] };
+  const ROW = {
+    at: "2026-10-30",
+    label: "Mystery AI Inc",
+    amountUsd: 42.5,
+    method: "Visa …7535",
+    source: "plaid",
+  };
+  const UNMATCHED = {
+    merchant: "Mystery AI Inc",
+    normalized: "mystery ai",
+    amountUsd: 42.5,
+    at: "2026-10-30",
+    source: "plaid",
+  };
+  const baseFeed = (extra: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: CHOICES },
+    attention: [],
+    ...(extra as Record<string, unknown>),
+  });
+  const load = async (feed: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-3458-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feed));
+    return loadFeed(file);
+  };
+
+  test("isChargeRow rejects non-positive amounts and non-calendar dates, accepts a valid row", () => {
+    expect(isChargeRow(ROW)).toBe(true);
+    expect(isChargeRow({ ...ROW, amountUsd: -1 })).toBe(false);
+    expect(isChargeRow({ ...ROW, amountUsd: 0 })).toBe(false);
+    expect(isChargeRow({ ...ROW, at: "banana" })).toBe(false);
+    expect(isChargeRow({ ...ROW, at: "2026-02-30" })).toBe(false);
+  });
+
+  test("isUnmatchedCharge rejects non-positive amounts and non-calendar dates, accepts a valid row", () => {
+    expect(isUnmatchedCharge(UNMATCHED)).toBe(true);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: -5 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: 0 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: "banana" })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: "2026-02-30" })).toBe(false);
+  });
+
+  test("loadFeed drops impossible charges individually and surfaces chargesDropped", async () => {
+    const loaded = await load(
+      baseFeed({
+        charges: [
+          ROW,
+          { ...ROW, amountUsd: -1 },
+          { ...ROW, amountUsd: 0 },
+          { ...ROW, at: "banana" },
+          { ...ROW, at: "2026-02-30" },
+        ],
+      }),
+    );
+    expect(loaded).not.toBeNull();
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBe(4);
+  });
+
+  test("loadFeed drops impossible chargesAttention individually and surfaces chargesAttentionDropped", async () => {
+    const loaded = await load(
+      baseFeed({
+        chargesAttention: [
+          UNMATCHED,
+          { ...UNMATCHED, amountUsd: -1 },
+          { ...UNMATCHED, amountUsd: 0 },
+          { ...UNMATCHED, at: "banana" },
+          { ...UNMATCHED, at: "2026-02-30" },
+        ],
+      }),
+    );
+    expect(loaded).not.toBeNull();
+    expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
+    expect(loaded?.chargesAttentionDropped).toBe(4);
   });
 });
 
