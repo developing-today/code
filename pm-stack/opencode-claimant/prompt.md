@@ -78,11 +78,15 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    From the moment creation succeeds, the session id is KNOWN and
    the steps below are ordered so it can never be lost.
    c. BIND AT LAUNCH, immediately after creation and BEFORE sending
-   the prompt or anything else that can interleave: PATCH the
-   task row (the pm-dispatch precedent: a launch that knows its
-   exact task binds by direct PATCH, then records the lane) setting
-   `progress.session_id` to the new session id and
-   `progress.launched_by: "opencode-claimant"`, then run the helper
+   the prompt or anything else that can interleave: run the helper
+   `bind <id> --worker opencode-claimant --session-id <session id>`
+   (bind_repo_task_lane_session, migration 0021). That one call
+   atomically writes the session id into the lane ledger AND sets
+   `progress.session_id` + `progress.launched_by:
+   "opencode-claimant"` on the task row, and it refuses to overwrite
+   a different existing binding -- a bind error means someone else
+   owns the launch; do not prompt your session, note it in the fire
+   log, and move on. Then run the helper
    `checkpoint <id> --worker opencode-claimant --stage launched`
    with the session id in the progress JSON. A launch without this
    binding is the Oct 28 duplicate-PR defect -- never leave one.
