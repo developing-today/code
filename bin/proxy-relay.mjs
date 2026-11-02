@@ -165,6 +165,14 @@ const server = net.createServer((client) => {
       );
       return;
     }
+    // Pause the client across the async target selection / tunnel
+    // CONNECT window (#2847): the peek listener is already removed, so a
+    // socket left flowing here silently drops every byte that arrives
+    // before the pipe below is set up. pipe() resumes the client once
+    // the peeked buffer has been handed to the upstream, so buffered
+    // bytes follow it in order; if every target fails, the catch below
+    // destroys the still-paused client.
+    client.pause();
     const order = [preferred, ...TARGET_PORTS.filter((p) => p !== preferred)];
     tryTargets(order)
       .then((upstream) => {
