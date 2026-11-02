@@ -108,6 +108,15 @@ if (args[0] === 'serve') {
   }
   if (prompt.includes('HANGTERMI')) { process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); return; }
   if (prompt.includes('HANGME')) { setInterval(() => {}, 1000); return; }
+  if (prompt.includes('HANGDESCENDANT')) {
+    // A descendant that inherits our stdout/stderr and outlives us: the
+    // proxy's child 'close' event waits on those pipes, so killing this
+    // process alone never settles the request (Codex P2 on PR #4242).
+    const descendant = require('child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });
+    if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, 'DESCPID ' + descendant.pid + String.fromCharCode(10));
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (prompt.includes('FAILME')) { console.error('stub muse: auth expired'); process.exit(3); }
   if (prompt.includes('FAILPARTIAL')) {
     line({ payload_type: 'run.output.delta', payload: { text: 'partial answer' } });
@@ -1061,6 +1070,30 @@ test('exec deadline: never-exiting child is killed, request 500s with the timeou
   const promptFile = stubPromptFile(logFile);
   assert.ok(promptFile, 'prompt file path recorded in stub argv log');
   assert.equal(fs.existsSync(promptFile), false, 'prompt file must be unlinked on the deadline path');
+});
+
+test('exec deadline: request settles at deadline+grace even when a descendant holds the stdio pipes (#2159)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '300' });
+  t.after(stop);
+  const started = Date.now();
+  let res = null;
+  try {
+    res = await postChat(port, { messages: [{ role: 'user', content: 'please HANGDESCENDANT now' }] }, AbortSignal.timeout(20000));
+  } catch { /* aborted: settlement was not bounded */ }
+  assert.ok(res, 'request must settle at deadline + kill grace, not when the descendant exits');
+  assert.equal(res.status, 500);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /muse exec turn timed out after 300ms/);
+  assert.ok(Date.now() - started < 15000, 'settlement must be bounded independently of the descendant lifetime');
+  const pid = stubExecPid(logFile);
+  assert.ok(pid, 'stub exec pid recorded');
+  await waitForCondition(() => !pidAlive(pid));
+  const promptFile = stubPromptFile(logFile);
+  assert.ok(promptFile, 'prompt file path recorded in stub argv log');
+  assert.equal(fs.existsSync(promptFile), false, 'prompt file must be unlinked on the independent settle path');
+  const dm = fs.readFileSync(logFile, 'utf-8').match(/DESCPID (\d+)/);
+  assert.ok(dm, 'descendant pid recorded');
+  try { process.kill(Number(dm[1]), 'SIGKILL'); } catch { /* already gone */ }
 });
 
 test('exec deadline: streaming request gets an SSE-framed timeout error + [DONE] (#2159)', async (t) => {

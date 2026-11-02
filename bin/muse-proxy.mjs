@@ -1728,12 +1728,28 @@ const server = http.createServer((req, res) => {
       }
 
       // Turn deadline (#2159): from spawn, exec fallback only. The kill
-      // produces the child's close event, and the close handler below
-      // settles the request through the existing error shape.
+      // normally produces the child's close event, and the close handler
+      // below settles the request through the existing error shape. But
+      // 'close' waits for the child's stdio pipes to drain, and a
+      // descendant that inherited those pipes can hold them open
+      // indefinitely after the child itself is dead — so the deadline
+      // also arms an independent settle at deadline + kill grace that
+      // bounds settlement and prompt-file cleanup whether or not
+      // 'close' ever fires (Codex review on PR #4242).
       let timedOut = false;
+      let settleTimer = null;
       const deadlineTimer = setTimeout(() => {
         timedOut = true;
         killChildWithEscalation(child);
+        // The +1s past the grace lets the normal SIGKILL path settle
+        // through 'close' first; only a 'close' that never comes (the
+        // descendant-pipe case) actually reaches this timer.
+        settleTimer = setTimeout(() => {
+          try { child.stdout?.destroy(); } catch (_) {}
+          try { child.stderr?.destroy(); } catch (_) {}
+          settleRequest(null, null);
+        }, EXEC_KILL_GRACE_MS + 1000);
+        settleTimer.unref?.();
       }, EXEC_TURN_TIMEOUT_MS_VALUE);
       deadlineTimer.unref?.();
 
@@ -1849,8 +1865,12 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify(errorBody));
       };
 
-      child.on('close', (code, signal) => {
+      let settled = false;
+      const settleRequest = (code, signal) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(deadlineTimer);
+        if (settleTimer) clearTimeout(settleTimer);
         if (lineBuffer.trim().length > 0) {
           processJsonLine(lineBuffer);
           lineBuffer = '';
@@ -1971,10 +1991,15 @@ const server = http.createServer((req, res) => {
             }
           }, null, 2));
         }
-      });
+      };
+
+      child.on('close', settleRequest);
 
       child.on('error', err => {
+        if (settled) return;
+        settled = true;
         clearTimeout(deadlineTimer);
+        if (settleTimer) clearTimeout(settleTimer);
         console.error(`[muse-proxy child error] ${err.message}`);
         try { fs.unlinkSync(promptFile); } catch (_) {}
         if (!res.headersSent) {
