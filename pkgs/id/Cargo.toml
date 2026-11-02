@@ -290,6 +290,17 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+[profile.ci-check]
+# Nix test-phase profile (#3195): release-shaped codegen so tests keep
+# release behaviour (opt-level 3, fuel budgets), without paying release
+# LTO, single-codegen-unit, or symbol stripping for throwaway test
+# binaries. Wired in via checkType in default.nix; the release binary
+# build is untouched.
+inherits = "release"
+lto = false
+codegen-units = 256
+strip = false
+
 [profile.test]
 # Include debug info for better error messages
 debug = true
