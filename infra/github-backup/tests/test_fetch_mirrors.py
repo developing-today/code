@@ -147,7 +147,7 @@ class FetchMirrorsFailureStreakTests(unittest.TestCase):
             with (
                 patch.object(fetch_mirrors, "load_config", return_value={}),
                 patch.object(fetch_mirrors, "backup_root", return_value=root),
-                patch.object(fetch_mirrors, "mirror_path", return_value="/mirror"),
+                patch.object(fetch_mirrors, "mirror_path", side_effect=lambda _root, repo: f"/mirror/{repo}"),
                 patch.object(fetch_mirrors, "valid_mirror", return_value=True),
                 patch.object(fetch_mirrors.manifest_mod, "build") as build_manifest,
                 patch.object(fetch_mirrors.time, "strftime", side_effect=fake_strftime),
@@ -164,6 +164,7 @@ class FetchMirrorsFailureStreakTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[1].args[0][2], "/mirror/owner/later")
             build_manifest.assert_called_once_with(root)
 
             with open(os.path.join(root, "state.json")) as state_file:
