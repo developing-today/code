@@ -546,9 +546,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// {} / 2]}.x {} and the function permutation).
 					asyncFunctionModifier := lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && onlyTriviaBetween(chars, prevIdentEnd, identStart)
 					asyncFunctionExprPosition := asyncFunctionModifier && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)
-					if asyncFunctionExprPosition && prevIdentBrokeLine && prevPrevIdent == "return" && prevPrevIdentPrev != '.' && prevPrevIdentPrev != '#' {
+					if asyncFunctionExprPosition && prevIdentBrokeLine && (prevPrevIdent == "return" || prevPrevIdent == "yield") && prevPrevIdentPrev != '.' && prevPrevIdentPrev != '#' {
 						// A line break before `async` ends a preceding
-						// return statement by ASI. The function is then
+						// return or yield statement by ASI (both are
+						// restricted productions). The function is then
 						// a declaration in the new statement, not an
 						// expression inherited from `return` (Codex P2
 						// on #3354). Expression position from an operator
@@ -771,7 +772,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				inString = 0
 				stack = append(stack, delimToken{char: '{', line: line, templateExpr: true})
 				prevSig = 'o'
-				prevChar = '{'
+				// The substitution is an expression context, not a
+				// statement boundary: record '(' as the previous
+				// significant character so a leading '{' classifies
+				// as an object literal and a leading function/class
+				// as an expression (Codex P2 on #3354:
+				// `${{} / 2}` read the object's closure as a block
+				// boundary and the division as a regex opener).
+				prevChar = '('
 				dotRun = 0
 				prevTokenArrow = false
 				closedExprAfter = false
