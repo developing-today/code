@@ -1455,18 +1455,34 @@ func (p *Pool) ReapIdle(now time.Time) int {
 	return len(stop)
 }
 
+// signalProcess probes pid with signal 0: it reports whether the process
+// exists without affecting it. It is the seam tests inject through
+// keyPIDAliveProbed so the EPERM cases are deterministic (#2336).
+func signalProcess(pid int) error {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Signal(syscall.Signal(0))
+}
+
 // keyPIDAlive reports whether the process a pid-scoped key names still exists.
 // An unparseable key is treated as alive so a bug here cannot kill instances.
 func keyPIDAlive(key string) bool {
+	return keyPIDAliveProbed(key, signalProcess)
+}
+
+// keyPIDAliveProbed is keyPIDAlive with the signal-0 probe injected. A probe
+// error of EPERM means the process exists but is owned by someone else: it is
+// alive, exactly as daemon.ProcessAlive already treats it (#2336). Any other
+// probe error (ESRCH above all) means the process is gone.
+func keyPIDAliveProbed(key string, probe func(int) error) bool {
 	pid, ok := config.PIDOf(key)
 	if !ok {
 		return true
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	err := probe(pid)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // InstanceStatus is a diagnostic snapshot.
