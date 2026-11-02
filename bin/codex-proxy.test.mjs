@@ -23,6 +23,10 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  printf '%s\\n' '{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","supported_reasoning_levels":[{"effort":"low"}],"default_reasoning_level":"low"},{"slug":"gpt-6-astra","display_name":"GPT-6 Astra","supported_reasoning_levels":[{"effort":"low"}],"default_reasoning_level":"low"},{"slug":"gpt-6-sol","display_name":"GPT-6 Sol","supported_reasoning_levels":[{"effort":"low"}],"default_reasoning_level":"low"}]}'
+  exit 0
+fi
 prompt="$(cat)"
 resume=0
 for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
@@ -34,6 +38,8 @@ for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
 } >> "$HOME/invocations.log"
 if [ "$resume" = "1" ]; then
   case "$prompt" in
+    *RESUMETIMEOUT*)
+      exec node -e 'setInterval(() => {}, 1000)' ;;
     *RESUMEFAIL*)
       echo "stub codex: session not found" >&2
       exit 3 ;;
@@ -70,6 +76,10 @@ case "$prompt" in
     exit 0 ;;
   *SIGKILLME*)
     kill -9 $$ ;;
+  *TIMEOUT*)
+    exec node -e 'const fs = require("node:fs"); fs.writeFileSync(process.env.CODEX_PROXY_CHILD_PID_FILE, String(process.pid)); setInterval(() => {}, 1000)' ;;
+  *IGNORETERM*)
+    exec node -e 'const fs = require("node:fs"); fs.writeFileSync(process.env.CODEX_PROXY_CHILD_PID_FILE, String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)' ;;
   *)
     printf '%s\\n' '{"type":"thread.started","thread_id":"stub-session-1"}'
     printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Hello world"}}'
@@ -244,6 +254,27 @@ const post = (port, body) => fetch(`http://127.0.0.1:${port}/v1/chat/completions
   body: JSON.stringify(body)
 });
 
+const waitFor = async (predicate, timeoutMs = 5000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`condition not met within ${timeoutMs}ms`);
+};
+
+const isProcessAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err.code === 'ESRCH') return false;
+    throw err;
+  }
+};
+
+const readPid = (file) => Number(fs.readFileSync(file, 'utf-8'));
+
 const assertFailure = async (port, marker, detail) => {
   const messages = [{ role: 'user', content: `please ${marker} now` }];
 
@@ -360,6 +391,119 @@ test('empty-stderr fallback names the killing signal, not code null (#676)', asy
   const { port, stop } = await startProxy();
   t.after(stop);
   await assertFailure(port, 'SIGKILLME', /Codex execution failed: codex exec terminated by signal SIGKILL/);
+});
+
+test('exec turn deadline terminates a hung child and reports timeout', async (t) => {
+  const pidFile = path.join(os.tmpdir(), `codex-proxy-timeout-${process.pid}.pid`);
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '1000',
+    CODEX_PROXY_CHILD_PID_FILE: pidFile
+  });
+  t.after(() => {
+    stop();
+    try { fs.unlinkSync(pidFile); } catch {}
+  });
+
+  const res = await post(port, { messages: [{ role: 'user', content: 'please TIMEOUT now' }] });
+  assert.equal(res.status, 500);
+  const body = await res.json();
+  assert.match(body.error.message, /codex exec timed out after 1000ms/);
+  const pid = readPid(pidFile);
+  await waitFor(() => !isProcessAlive(pid));
+});
+
+test('warm-resume timeout fails the request instead of launching a cold fallback', async (t) => {
+  const { port, home, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec-resume',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '1000'
+  });
+  t.after(stop);
+
+  const first = await post(port, { messages: TURN1 });
+  assert.equal(first.status, 200);
+  await first.text();
+
+  const secondMessages = [
+    ...TURN1,
+    { role: 'assistant', content: 'Hello world' },
+    { role: 'user', content: 'please RESUMETIMEOUT now' }
+  ];
+  const second = await post(port, { messages: secondMessages });
+  assert.equal(second.status, 500);
+  assert.match((await second.json()).error.message, /codex exec timed out after 1000ms/);
+  assert.equal(readInvocations(home).length, 2, 'timed-out resume must not start a third cold run');
+});
+
+test('exec turn timeout escalates from SIGTERM to SIGKILL', async (t) => {
+  const pidFile = path.join(os.tmpdir(), `codex-proxy-timeout-ignore-${process.pid}.pid`);
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '1000',
+    CODEX_PROXY_CHILD_PID_FILE: pidFile
+  });
+  t.after(() => {
+    stop();
+    try {
+      if (fs.existsSync(pidFile)) {
+        const pid = readPid(pidFile);
+        if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
+        fs.unlinkSync(pidFile);
+      }
+    } catch {}
+  });
+
+  const startedAt = Date.now();
+  const res = await post(port, { messages: [{ role: 'user', content: 'please IGNORETERM now' }] });
+  assert.equal(res.status, 500);
+  assert.match((await res.json()).error.message, /codex exec timed out after 1000ms/);
+  assert.ok(Date.now() - startedAt >= 3800, 'request should settle after the SIGKILL grace period');
+  const pid = readPid(pidFile);
+  assert.equal(isProcessAlive(pid), false, 'SIGKILL escalation must leave no child process');
+});
+
+test('client disconnect terminates the exec child with the shared kill helper', async (t) => {
+  const pidFile = path.join(os.tmpdir(), `codex-proxy-disconnect-${process.pid}.pid`);
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '60000',
+    CODEX_PROXY_CHILD_PID_FILE: pidFile
+  });
+  t.after(() => {
+    stop();
+    try {
+      if (fs.existsSync(pidFile)) {
+        const pid = readPid(pidFile);
+        if (isProcessAlive(pid)) process.kill(pid, 'SIGKILL');
+        fs.unlinkSync(pidFile);
+      }
+    } catch {}
+  });
+
+  const controller = new AbortController();
+  const pending = fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'please IGNORETERM now' }] }),
+    signal: controller.signal
+  });
+  await waitFor(() => fs.existsSync(pidFile));
+  const pid = readPid(pidFile);
+  controller.abort();
+  await assert.rejects(pending);
+  await waitFor(() => !isProcessAlive(pid), 5000);
+});
+
+test('invalid exec timeout override warns once and uses the default', async (t) => {
+  const { port, stop, log } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '0'
+  });
+  t.after(stop);
+
+  const res = await post(port, { messages: [{ role: 'user', content: 'normal run' }] });
+  assert.equal(res.status, 200);
+  assert.equal((log().match(/invalid CODEX_PROXY_EXEC_TURN_TIMEOUT_MS/g) || []).length, 1);
 });
 
 const readInvocations = (home) => {

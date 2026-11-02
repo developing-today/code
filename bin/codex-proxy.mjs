@@ -11,6 +11,21 @@ import { parseProxyPort } from './proxy-port.mjs';
 
 const PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const HOST = process.env.CODEX_PROXY_HOST || '127.0.0.1';
+const DEFAULT_EXEC_TURN_TIMEOUT_MS = 300 * 1000;
+const EXEC_TURN_KILL_GRACE_MS = 3000;
+const EXEC_TURN_TIMEOUT_MS = (() => {
+  const raw = process.env.CODEX_PROXY_EXEC_TURN_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_EXEC_TURN_TIMEOUT_MS;
+
+  const parsed = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(parsed) || parsed <= 0) {
+    console.warn(
+      `[codex-proxy] invalid CODEX_PROXY_EXEC_TURN_TIMEOUT_MS; using ${DEFAULT_EXEC_TURN_TIMEOUT_MS}ms`
+    );
+    return DEFAULT_EXEC_TURN_TIMEOUT_MS;
+  }
+  return parsed;
+})();
 
 // Publish the bound endpoint so other tools can find this proxy without
 // knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
@@ -832,6 +847,35 @@ const runAppServerOnce = async ({ messages, fullName, baseModel, effort, prompt,
   return { ...attempt, threadId, key };
 };
 
+// Terminate one exec child at most once, escalating if SIGTERM does not
+// close it. The close listener prevents a stale SIGKILL timer after exit.
+const createExecChildKiller = (child) => {
+  let killStarted = false;
+  let closed = false;
+  let killTimer = null;
+
+  child.once('close', () => {
+    closed = true;
+    if (killTimer) {
+      clearTimeout(killTimer);
+      killTimer = null;
+    }
+  });
+
+  return () => {
+    if (killStarted || closed) return;
+    killStarted = true;
+    try { child.kill('SIGTERM'); } catch (_) {}
+    killTimer = setTimeout(() => {
+      killTimer = null;
+      if (!closed) {
+        try { child.kill('SIGKILL'); } catch (_) {}
+      }
+    }, EXEC_TURN_KILL_GRACE_MS);
+    killTimer.unref?.();
+  };
+};
+
 // Run one `codex exec` child to completion. Resolves (never rejects) to
 // { ok, content, promptTokens, completionTokens, sessionId, detail }.
 // `emit(text)` is called live for each completed agent message when
@@ -840,9 +884,12 @@ const runAppServerOnce = async ({ messages, fullName, baseModel, effort, prompt,
 const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
   new Promise((resolve) => {
     let settled = false;
+    let timeoutTimer = null;
+    let timedOut = false;
     const done = (result) => {
       if (!settled) {
         settled = true;
+        if (timeoutTimer) clearTimeout(timeoutTimer);
         resolve(result);
       }
     };
@@ -861,7 +908,15 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
       done({ ok: false, content: '', sessionId: null, detail: err.message });
       return;
     }
-    if (onSpawn) onSpawn(child);
+    const killChild = createExecChildKiller(child);
+    if (onSpawn) onSpawn(child, killChild);
+
+    timeoutTimer = setTimeout(() => {
+      timeoutTimer = null;
+      timedOut = true;
+      killChild();
+    }, EXEC_TURN_TIMEOUT_MS);
+    timeoutTimer.unref?.();
 
     console.log(`[codex-proxy] Spawning: ${CODEX_BIN} ${args.join(' ')}`);
 
@@ -967,6 +1022,22 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
 
       if (completionTokens === 0 && fullContent.length > 0) {
         completionTokens = Math.max(1, Math.ceil(fullContent.length / 4));
+      }
+
+      // The timeout initiated the shutdown, so its verdict takes precedence
+      // over the SIGTERM/SIGKILL close event and any partial/in-band result.
+      if (timedOut) {
+        done({
+          ok: false,
+          timedOut: true,
+          content: fullContent,
+          promptTokens,
+          completionTokens,
+          cacheReadTokens,
+          sessionId,
+          detail: `codex exec timed out after ${EXEC_TURN_TIMEOUT_MS}ms`
+        });
+        return;
       }
 
       // Failure is judged by the run's authoritative signals: a
@@ -1218,13 +1289,11 @@ const server = http.createServer(async (req, res) => {
       };
 
       (async () => {
-        let currentChild = null;
+        let currentKillChild = null;
         res.on('close', () => {
-          if (!res.writableEnded && currentChild) {
-            try { currentChild.kill('SIGTERM'); } catch (_) {}
-          }
+          if (!res.writableEnded && currentKillChild) currentKillChild();
         });
-        const onSpawn = (c) => { currentChild = c; };
+        const onSpawn = (_child, killChild) => { currentKillChild = killChild; };
 
         // Lead transport (#480): the warm app-server daemon. Live deltas
         // stream as they arrive; a failure before anything was emitted
@@ -1280,6 +1349,10 @@ const server = http.createServer(async (req, res) => {
               `[codex-proxy] warm resume: key=${plan.key.slice(0, 8)} session=${plan.entry.sessionId} fed=${plan.entry.fedCount}->${body.messages.length}`
             );
             sendSuccess(attempt, true);
+            return;
+          }
+          if (attempt.timedOut) {
+            sendFailure(attempt.detail);
             return;
           }
           console.warn(
