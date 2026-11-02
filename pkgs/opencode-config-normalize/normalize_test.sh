@@ -310,6 +310,50 @@ EOF
 check plugins-merge "$tmp/plugins-merge.fixture" \
   '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b",["opencode-plugin-c",{"opt":1}]]}' 0
 
+# Case 14: plugin + plugins both present with comments inside BOTH
+# arrays (#4639) — the merge is a textual element splice, so every
+# comment survives byte-identical instead of the arrays being
+# re-serialised.
+cat >"$tmp/plugins-merge-comments.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  // file-level note
+  "plugin": [
+    /* legacy note */
+    "opencode-plugin-a"
+  ],
+  "plugins": [
+    // native note
+    "opencode-plugin-b"
+    // trailing native
+  ]
+}
+EOF
+check plugins-merge-comments "$tmp/plugins-merge-comments.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+for needle in '/* legacy note */' '// native note' '// trailing native' '// file-level note'; do
+  grep -qF "$needle" "$tmp/plugins-merge-comments.jsonc" || {
+    echo "FAIL plugins-merge-comments: lost comment: $needle"
+    failures=$((failures + 1))
+  }
+done
+
+# Case 15: a // line comment trailing the last legacy element (#4639
+# boundary) — the joining comma would be swallowed by the comment, so
+# the merge fails closed: exit 1 with the file byte-identical.
+cat >"$tmp/plugins-merge-trailing-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-plugin-a" // trailing legacy note
+  ],
+  "plugins": [
+    "opencode-plugin-b"
+  ]
+}
+EOF
+check plugins-merge-trailing-comment "$tmp/plugins-merge-trailing-comment.fixture" '' 1
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1

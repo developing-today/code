@@ -279,11 +279,97 @@ def delete_top_level_entry(text, key):
     return None
 
 
+def line_comment_at_end(fragment):
+    # True when fragment's last line ends inside a // line comment: a
+    # joining comma appended after it would be swallowed by the comment.
+    # String- and block-comment-aware so // inside a string value or a
+    # /* */ comment does not misfire (#3179).
+    line = fragment.split('\n')[-1]
+    in_str = False
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if in_str:
+            if c == '\\' and i + 1 < len(line):
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            i += 1
+            continue
+        if c == '/' and line[i + 1:i + 2] == '/':
+            return True
+        if c == '/' and line[i + 1:i + 2] == '*':
+            end = line.find('*/', i + 2)
+            if end < 0:
+                return True  # runs past EOL: fail closed
+            i = end + 2
+            continue
+        i += 1
+    return False
+
+
+def splice_plugin_merge(text):
+    # Both-present plugin+plugins merge (#4639) as a textual element
+    # splice: the legacy elements move into the `plugins` array (legacy
+    # first, native appended — the fork's encoded.plugins order) and the
+    # v1 `plugin` entry is dropped, all without re-serialising, so
+    # comments inside both arrays survive byte-identical. Returns the new
+    # text, or None when the splice cannot be done comment-safely (e.g. a
+    # // line comment trailing the last legacy element would swallow the
+    # joining comma); the caller then exits 1 with the file
+    # byte-identical — a repair tool must never be a data-loss path
+    # (#2364).
+    legacy_span = find_value_span(text, 'plugin')
+    native_span = find_value_span(text, 'plugins')
+    if legacy_span is None or native_span is None:
+        return None
+    lvs, lve = legacy_span
+    nvs, nve = native_span
+    legacy_text = text[lvs:lve]
+    native_text = text[nvs:nve]
+    if not (legacy_text.startswith('[') and legacy_text.endswith(']')):
+        return None
+    if not (native_text.startswith('[') and native_text.endswith(']')):
+        return None
+    legacy_inner = legacy_text[1:-1].strip()
+    native_inner = native_text[1:-1].strip()
+    if legacy_inner and native_inner:
+        core = legacy_inner
+        if core.endswith(','):
+            core = core[:-1].rstrip()
+        if line_comment_at_end(core):
+            return None
+        inner = core + ',\n' + native_inner
+    elif legacy_inner:
+        inner = legacy_inner
+    else:
+        inner = None
+    if inner is None:
+        merged = native_text  # nothing to move: keep native bytes verbatim
+    elif line_comment_at_end(inner):
+        # A // comment runs to end of line: the closing bracket goes on
+        # its own line so it is not swallowed by the comment.
+        merged = '[' + inner + '\n]'
+    else:
+        merged = '[' + inner + ']'
+    text = text[:nvs] + merged + text[nve:]
+    return delete_top_level_entry(text, 'plugin')
+
+
 # plugin -> plugins. When `plugins` is absent this is a bare key rename
 # (array contents are byte-preserved, comments included). When both
 # spellings are present, merge the way the fork does — legacy entries
 # first, native entries appended (normalize.ts: encoded.plugins =
-# [...legacyPlugins, ...nativePlugins]) — then drop the v1 entry. A raw
+# [...legacyPlugins, ...nativePlugins]) — then drop the v1 entry. The
+# merge is a textual element splice, not a re-serialise, so comments
+# inside both arrays survive; shapes that cannot be spliced
+# comment-safely fail closed with exit 1 and the file byte-identical
+# (#4639). A raw
 # text search can hit "plugin": inside an earlier comment and leave the
 # live key unrepaired (PR #4312 review), so all splices go through the
 # string/comment-aware locators, and any splice that cannot be done
@@ -301,14 +387,9 @@ if 'plugin' in doc:
         native = doc.get('plugins')
         if not isinstance(legacy, list) or not isinstance(native, list):
             sys.exit(1)  # unmergeable shapes: leave the file untouched
-        span = find_value_span(out, 'plugins')
-        if span is None:
-            sys.exit(1)
-        vs, ve = span
-        out = out[:vs] + json.dumps(legacy + native) + out[ve:]
-        out = delete_top_level_entry(out, 'plugin')
+        out = splice_plugin_merge(out)
         if out is None:
-            sys.exit(1)
+            sys.exit(1)  # not spliceable comment-safely: fail closed
         changed = True
 
 # agent -> agents: fold the v1 `agent` map into `agents` (existing
