@@ -11,7 +11,7 @@
 // host-installed codex can never shadow it, #694.)
 // partial output.
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -23,6 +23,13 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
+# The proxy runs this through execFile before accepting chat turns. Handle it
+# before reading stdin: execFile leaves the child's stdin open, so cat would
+# otherwise wait for the 30-second command timeout on every request.
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  printf '%s\\n' '{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"default_reasoning_level":"medium"},{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"},{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"}]}'
+  exit 0
+fi
 prompt="$(cat)"
 resume=0
 for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
@@ -77,6 +84,27 @@ case "$prompt" in
     exit 0 ;;
 esac
 `;
+
+test('Codex stub answers live model lookup without blocking on stdin', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-stub-test-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const stubPath = path.join(tmp, 'codex');
+  fs.writeFileSync(stubPath, STUB, { mode: 0o755 });
+
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(stubPath, ['debug', 'models'], { timeout: 1000 }, (err, out, stderr) => {
+      if (err) {
+        reject(new Error(`codex debug models stub failed: ${err.message}; stderr=${stderr}`));
+      } else {
+        resolve(out);
+      }
+    });
+  });
+  const catalog = JSON.parse(stdout);
+  assert.ok(Array.isArray(catalog.models));
+  assert.ok(catalog.models.length >= 3);
+  assert.ok(catalog.models.some((model) => model.slug === 'gpt-6.1-sol'));
+});
 
 
 // ---------------------------------------------------------------------------
