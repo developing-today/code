@@ -44,6 +44,34 @@ describe("quota extractors", () => {
     expect(p.state).toBe("healthy");
   });
 
+  test("claude and meta invalid reset captures yield resetsAt null and preserve the read (#2470)", () => {
+    const invalidResets = ["2026-13-28 14:00", "2026-02-30 14:00", "2026-10-39 14:00", "2026-10-28 99:99"];
+    for (const reset of invalidResets) {
+      const claudeView = `\n### Claude\n- weekly 68% used, weekly reset Wed ${reset} CDT\n`;
+      const claude = extractQuotaPools(claudeView, NOW).find((p) => p.id === "anthropic:claude-pro")!;
+      expect(claude.windows).toHaveLength(1);
+      expect(claude.windows[0].percent).toBe(68);
+      expect(claude.windows[0].resetsAt).toBeNull();
+
+      const metaView = `\n### Meta Model API\n- weekly quota 46% used at 03:20 CDT. Weekly reset today ${reset} CDT.\n`;
+      const meta = extractQuotaPools(metaView, NOW).find((p) => p.id === "meta:high-usage")!;
+      expect(meta.windows).toHaveLength(1);
+      expect(meta.windows[0].percent).toBe(46);
+      expect(meta.windows[0].resetsAt).toBeNull();
+      expect(meta.wallLiftsAt).toBeUndefined();
+    }
+  });
+
+  test("meta feb-30 reset neither discards the read nor invents a wall lift (#2470)", () => {
+    const burnedView = `\n### Meta Model API\n- weekly quota 46% used at 03:20 CDT, then burned to empty by morning sessions. Weekly reset today 2026-02-30 19:00 CDT.\n`;
+    const meta = extractQuotaPools(burnedView, NOW).find((p) => p.id === "meta:high-usage")!;
+    expect(meta.windows).toHaveLength(1);
+    expect(meta.windows[0].percent).toBe(46);
+    expect(meta.windows[0].resetsAt).toBeNull();
+    expect(meta.wallLiftsAt).toBeUndefined();
+    expect(meta.state).toBe("healthy");
+  });
+
   test("codex 7-day read", () => {
     const p = byId.get("openai:codex")!;
     expect(p.windows[0].percent).toBe(11);
