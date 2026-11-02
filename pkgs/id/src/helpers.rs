@@ -34,6 +34,7 @@
 
 use crate::commands::text::{plain_field, tsv_row};
 use crate::protocol::{FindMatch, MatchKind, TaggedMatch};
+use anyhow::{Result, bail};
 
 /// Parses a put specification into path and optional name.
 ///
@@ -291,6 +292,48 @@ fn format_match_repl(query: &str, m: &FindMatch, format: &str) -> String {
 /// protocol find paths can never diverge; this path is kept only for
 /// backwards compatibility.
 pub use crate::match_kind;
+
+/// Build the local write path for a downloaded find/search match.
+///
+/// A match name is untrusted input: in remote mode both the name and the
+/// blob content come from the queried node, so the name must never be used
+/// as a filesystem path verbatim (`../` and absolute names would overwrite
+/// arbitrary local files — issues #1614, #2307). The write path is derived
+/// from the name's final path component only (`Path::file_name` ruling),
+/// optionally under `dir`. A name with no final component (`..`, `/`, a
+/// trailing separator, empty) is refused and nothing is written. Ordinary
+/// single-segment names produce byte-identical paths to the previous
+/// verbatim behaviour.
+///
+/// This is the single shared implementation used by both the CLI
+/// (`commands/find.rs`) and the REPL (`repl/runner.rs`); do not copy this
+/// rule elsewhere.
+pub fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
+    if name.is_empty() || name.ends_with('/') {
+        bail!(
+            "refusing download of match with unsafe name {:?}: no final path component",
+            name
+        );
+    }
+    let Some(file_name) = std::path::Path::new(name)
+        .file_name()
+        .and_then(|c| c.to_str())
+    else {
+        bail!(
+            "refusing download of match with unsafe name {:?}: no final path component",
+            name
+        );
+    };
+    Ok(match dir {
+        Some(dir) => format!("{}/{}", dir, file_name),
+        // A derived bare "-" would collide with the stdout sentinel in
+        // export_blob ("-" means stdout there); write the file as "./-"
+        // instead. An explicit user-supplied "-" is untouched and still
+        // means stdout (Codex review on PR #4472).
+        None if file_name == "-" => "./-".to_owned(),
+        None => file_name.to_owned(),
+    })
+}
 
 /// Parse a duration such as `45s`, `90m`, `12h` or `3d` into seconds.
 ///

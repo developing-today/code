@@ -68,6 +68,16 @@ def is_candidate(row):
     prog = row.get("progress") or {}
     if prog.get("lane") != "opencode" or prog.get("session_id"):
         return False
+    # The claiming lane must have RECORDED its yield (instruction
+    # section 1b: checkpoint stage "handed_off"). Assignment alone is
+    # not a handoff: lanes on pre-1b instructions assign and then work
+    # the task themselves, and a launch into a task whose lane is
+    # mid-work double-executes it (first live batch, 2026-11-02:
+    # tasks 5565/5867/6397 were launched while their claiming lanes
+    # worked/parked/failed them in parallel). The recorded yield is
+    # the only launch-safe signal.
+    if prog.get("stage") != "handed_off":
+        return False
     lane_id = row.get("lane_id")
     if lane_id and UUID_LANE.match(lane_id):
         return False

@@ -93,6 +93,7 @@ import {
   getAlertsStore,
   sendTestPush,
   startAlertEngine,
+  toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
 } from "./alerts.ts";
@@ -1519,12 +1520,12 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/push/subscriptions") {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
-    if (req.method === "GET") return json({ subscriptions: await store.listSubscriptions() });
+    if (req.method === "GET") return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: await store.upsertSubscription(parsed.value) }, 201);
+        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
