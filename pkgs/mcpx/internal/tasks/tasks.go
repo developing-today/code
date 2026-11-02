@@ -909,7 +909,6 @@ func (s *Store) CancelImmediate(id string, reason string) (Task, bool) {
 	s.mu.Unlock()
 
 	if transitioned {
-		s.changed(id)
 		if onCancel != nil {
 			ctx, cancelCtx := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
 			onCancel(ctx, reason)
@@ -921,6 +920,11 @@ func (s *Store) CancelImmediate(id string, reason string) (Task, bool) {
 		if cancel != nil {
 			cancel()
 		}
+		// Notify watchers last: a watcher may wait on the task's
+		// completion (Store.Result waits for done), which only the
+		// now-cancelled work can deliver -- notifying first could
+		// deadlock the watcher against the pending cancellation.
+		s.changed(id)
 	}
 	return snap, true
 }
