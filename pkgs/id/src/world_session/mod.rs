@@ -59,11 +59,19 @@ pub(crate) use types::{
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
-    MAX_WORLD_MODULE_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, SessionConfig, SessionIo, WorldService,
-    check_invite_bounds,
+    MAX_WORLD_MODULE_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, ModuleSignature, SessionConfig,
+    SessionIo, WorldService, check_invite_bounds,
 };
 
 impl WorldService {
+    /// Require module artifacts to carry a valid signature from one of these
+    /// Ed25519 public keys. An empty list preserves the legacy unsigned path.
+    #[must_use]
+    pub fn with_module_trust_keys(mut self, keys: Vec<[u8; 32]>) -> Self {
+        self.trusted_module_keys = keys;
+        self
+    }
+
     /// Accept native (ELF) module installs. Wasm stays the default tier.
     #[must_use]
     pub const fn with_native_enabled(mut self) -> Self {
@@ -180,6 +188,7 @@ impl WorldService {
             compiler: None,
             native: false,
             source_only: false,
+            trusted_module_keys: Vec::new(),
             runtime: crate::world_limits::RuntimeLimits::default(),
             mail: None,
             outbox: None,
@@ -329,6 +338,7 @@ impl WorldService {
                 permit,
                 true,
                 Some(provenance),
+                None,
             )
             .await
             .map_err(|error| format!("install failed: {error:?}"))?;
@@ -492,6 +502,21 @@ impl WorldService {
         seed: u64,
         claimed_hash: &str,
     ) -> Result<(String, u64), InstallError> {
+        self.install_wasm_with_signature(supplied_admin, wasm, seed, claimed_hash, None)
+            .await
+    }
+
+    /// As [`Self::install_wasm`], with an optional signer signature for
+    /// servers that configure a non-empty module trust list.
+    #[cfg(feature = "sandbox")]
+    pub async fn install_wasm_with_signature(
+        &self,
+        supplied_admin: Option<&str>,
+        wasm: Vec<u8>,
+        seed: u64,
+        claimed_hash: &str,
+        signature: Option<&ModuleSignature>,
+    ) -> Result<(String, u64), InstallError> {
         let permit = self.try_reserve_module_upload()?;
         self.install_wasm_reserved(
             supplied_admin,
@@ -501,6 +526,7 @@ impl WorldService {
             permit,
             false,
             None,
+            signature,
         )
         .await
     }
@@ -515,6 +541,7 @@ impl WorldService {
         _permit: OwnedSemaphorePermit,
         compiled_from_source: bool,
         provenance: Option<crate::world::ModuleProvenance>,
+        signature: Option<&ModuleSignature>,
     ) -> Result<(String, u64), InstallError> {
         let _profile_operation = self.profile_operation.lock().await;
         self.authorize_admin(supplied_admin)
@@ -537,6 +564,14 @@ impl WorldService {
         let module_hash = hash.to_string();
         if claimed_hash != module_hash {
             return Err(InstallError::InvalidUpload);
+        }
+        // The trust gate governs uploaded artifacts. A module the server
+        // compiled itself from source (`compiled_from_source`) never crosses
+        // the upload path, so it needs no publisher signature — requiring one
+        // would disable source-only program updates entirely (Codex review
+        // on PR #4088).
+        if !compiled_from_source {
+            verify_module_signature(&self.trusted_module_keys, &wasm, signature)?;
         }
         let is_native = crate::world_native::is_native_module(&wasm);
         if is_native && !self.native {
@@ -730,6 +765,38 @@ impl WorldService {
 #[must_use]
 pub fn module_hash(wasm: &[u8]) -> String {
     Hash::new(wasm).to_string()
+}
+
+/// Verify an upload against the configured publisher trust list. Signatures
+/// cover a domain-separated BLAKE3 digest, not a transport-specific encoding.
+fn verify_module_signature(
+    trusted_keys: &[[u8; 32]],
+    wasm: &[u8],
+    signature: Option<&ModuleSignature>,
+) -> Result<(), InstallError> {
+    if trusted_keys.is_empty() {
+        return Ok(());
+    }
+    let signature = signature.ok_or(InstallError::UntrustedModule)?;
+    let public_key = decode_hex(&signature.public_key).ok_or(InstallError::UntrustedModule)?;
+    let public_key: [u8; 32] = public_key
+        .try_into()
+        .map_err(|_| InstallError::UntrustedModule)?;
+    if !trusted_keys.contains(&public_key) {
+        return Err(InstallError::UntrustedModule);
+    }
+    let signature_bytes = decode_hex(&signature.signature).ok_or(InstallError::UntrustedModule)?;
+    let signature_bytes: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| InstallError::UntrustedModule)?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
+        .map_err(|_| InstallError::UntrustedModule)?;
+    let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
+    let digest = blake3::hash(wasm);
+    let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+    message.extend_from_slice(digest.as_bytes());
+    key.verify_strict(&message, &signature)
+        .map_err(|_| InstallError::UntrustedModule)
 }
 
 /// Constant-time (for equal lengths) secret comparison.
@@ -1139,6 +1206,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             admin_token,
             total_bytes,
             module_hash,
+            signature,
             seed,
         } => {
             if service.source_only() {
@@ -1160,6 +1228,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 &admin_token,
                 total_bytes,
                 module_hash.as_deref(),
+                signature.as_ref(),
                 seed,
             )
             .await
@@ -1758,6 +1827,7 @@ async fn install_module_session<I: SessionIo>(
     admin_token: &str,
     total_bytes: usize,
     claimed_hash: Option<&str>,
+    signature: Option<&ModuleSignature>,
     seed: u64,
 ) -> Result<(), &'static str> {
     if admin_token.len() > MAX_ADMIN_TOKEN_BYTES
@@ -1778,7 +1848,7 @@ async fn install_module_session<I: SessionIo>(
         .map_err(|_| "world is busy installing another module")?;
     #[cfg(not(feature = "sandbox"))]
     {
-        let _ = (io, seed, upload_permit);
+        let _ = (io, seed, upload_permit, signature);
         return Err("module installation requires the sandbox feature");
     }
 
@@ -1840,6 +1910,7 @@ async fn install_module_session<I: SessionIo>(
                 upload_permit,
                 false,
                 None,
+                signature,
             )
             .await
             .map_err(|error| match error {
@@ -1850,6 +1921,7 @@ async fn install_module_session<I: SessionIo>(
                     "raw module uploads are disabled by source-only policy"
                 }
                 InstallError::InvalidModule => "Wasm module failed validation or initialization",
+                InstallError::UntrustedModule => "module signature is not trusted",
                 InstallError::Unavailable => "world could not activate the module",
             })?;
         if !send_json(

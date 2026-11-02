@@ -2,7 +2,7 @@
 mod tests {
     use tokio::sync::mpsc;
 
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
 
     use super::*;
     use crate::directory::{Actor, Level, Member};
@@ -1736,6 +1736,51 @@ mod tests {
             .install_wasm(Some("admin"), wasm, 1, &hash)
             .await
             .expect("raw modules stay supported by default");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn module_trust_list_allows_empty_refuses_unsigned_and_accepts_trusted_signer() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+
+        let empty = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("empty-trust", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into());
+        empty
+            .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+            .await
+            .expect("empty trust list keeps legacy installs working");
+
+        let signer = SigningKey::from_bytes(&[42; 32]);
+        let trusted = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("trusted", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into())
+        .with_module_trust_keys(vec![signer.verifying_key().to_bytes()]);
+        assert_eq!(
+            trusted
+                .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+                .await,
+            Err(InstallError::UntrustedModule),
+            "a non-empty trust list refuses unsigned uploads"
+        );
+
+        let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+        message.extend_from_slice(blake3::hash(&wasm).as_bytes());
+        let signature = ModuleSignature {
+            public_key: hex_encode(&signer.verifying_key().to_bytes()),
+            signature: hex_encode(&signer.sign(&message).to_bytes()),
+        };
+        trusted
+            .install_wasm_with_signature(Some("admin"), wasm, 2, &hash, Some(&signature))
+            .await
+            .expect("a trust-listed signer may install the module");
     }
 
     #[cfg(feature = "sandbox")]
