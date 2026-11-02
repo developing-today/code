@@ -53,6 +53,16 @@ describe("shell contract validator", () => {
     expect(() => parseShellContract(malformedServer)).toThrow("view.sequence: unknown field type `u65`");
   });
 
+  it("rejects malformed constraint values when loading a contract", () => {
+    const badEnum = structuredClone(contract);
+    (badEnum.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", enum: 7 };
+    expect(() => parseShellContract(badEnum)).toThrow("chat.text: enum must be an array of strings");
+
+    const badBound = structuredClone(contract);
+    (badBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: "9" };
+    expect(() => parseShellContract(badBound)).toThrow("chat.text: max_bytes must be a finite number");
+  });
+
   it("returns violations instead of throwing for malformed field specs", () => {
     const malformedClient = withFieldType("client", "chat", "text", "u65");
     const clientCheck = checkClientFrame(malformedClient, { type: "chat", text: "hi" }, "joined");

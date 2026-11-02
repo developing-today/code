@@ -83,6 +83,18 @@ function parseField(raw: unknown): Field {
   if (typeof optional !== "boolean") throw new Error("optional must be a boolean");
   const nullable = raw.nullable ?? optional;
   if (typeof nullable !== "boolean") throw new Error("nullable must be a boolean");
+  for (const key of ["min", "max", "max_bytes"] as const) {
+    const bound = raw[key];
+    if (bound !== undefined && (typeof bound !== "number" || !Number.isFinite(bound))) {
+      throw new Error(`${key} must be a finite number`);
+    }
+  }
+  if (
+    raw.enum !== undefined &&
+    (!Array.isArray(raw.enum) || raw.enum.some((item) => typeof item !== "string"))
+  ) {
+    throw new Error("enum must be an array of strings");
+  }
   return {
     kind: kind as FieldType,
     optional,
