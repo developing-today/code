@@ -14,7 +14,6 @@ import {
   sanitizeSubscriptions,
 } from "../src/feed.ts";
 import { renderQuota } from "../src/render.ts";
-import { renderQuota } from "../src/render.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
