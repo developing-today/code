@@ -1441,12 +1441,33 @@ impl GroupWarningWatcher {
             // re-add would be missed or counted twice.
             let current = projection.group_active_devices(group);
             {
+                // Refresh the authorizing accounts from the fold as well
+                // as the device keys: an account can stop authorizing a
+                // device without a device event of its own (its membership
+                // was removed), and a stale account left in the tracked
+                // set would keep the device authorized through every
+                // later revoke by the remaining accounts, hiding genuine
+                // churn (Codex review on PR #4035).
+                let mut fold_accounts: std::collections::BTreeMap<
+                    GroupKey,
+                    std::collections::BTreeSet<GroupKey>,
+                > = std::collections::BTreeMap::new();
+                for account in view.members.keys() {
+                    for device in projection.active_devices(group, account) {
+                        fold_accounts.entry(device).or_default().insert(*account);
+                    }
+                }
                 let authorized = self.authorized.entry(*group).or_default();
                 authorized.retain(|device, _accounts| current.contains(device));
                 let seen = self.seen_devices.entry(*group).or_default();
                 for device in &current {
-                    if !authorized.contains_key(device) {
+                    let is_new = !authorized.contains_key(device);
+                    if let Some(accounts) = fold_accounts.get(device) {
+                        authorized.insert(*device, accounts.clone());
+                    } else if is_new {
                         authorized.insert(*device, std::collections::BTreeSet::new());
+                    }
+                    if is_new {
                         seen.insert(*device);
                     }
                 }
@@ -2054,6 +2075,50 @@ mod tests {
             log.device_add(other, group, device, Role::Read).unwrap();
         }
         assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_group_warnings_count_churn_after_a_grant_owner_is_removed() {
+        use crate::groups::Role;
+
+        // Codex review on PR #4035 (second round): when accounts A and B
+        // both authorize a device and A is then removed from the group,
+        // the device stays active through B, but the watcher's tracked
+        // account set must drop A too. A stale A would keep the device
+        // authorized through every later revoke by B, so genuine
+        // revoke + re-add cycles by B would never count as churn.
+        let dir = serve_test_dir("churn-grant-owner-removed");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let other: GroupKey = [2; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // Both accounts authorize the device; the first evaluation
+        // adopts it with both grant owners tracked.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        log.device_add(other, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Removing the other account leaves the device authorized
+        // through the author alone; the evaluation reconciles the
+        // tracked grant owners with the fold. Not itself a re-add.
+        log.remove(author, group, other, None).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+
+        // Four genuine revoke + re-add cycles by the remaining account,
+        // all inside one interval, must count four re-adds and warn.
+        for _ in 0..4 {
+            log.device_revoke(author, group, device).unwrap();
+            log.device_add(author, group, device, Role::Read).unwrap();
+        }
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_002);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
