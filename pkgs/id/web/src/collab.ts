@@ -68,10 +68,43 @@ const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
  * instead of wedging the session on a rejected oversized batch. */
 export const MAX_STEPS_PER_MESSAGE = 1000;
 
-/** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE,
- * in order. Remaining steps stay unconfirmed and are sent by later flushes. */
-export function stepBatch<T>(steps: readonly T[]): T[] {
-  return steps.slice(0, MAX_STEPS_PER_MESSAGE);
+/** Wire-size budget for one Steps message, mirroring the server frame cap
+ * MAX_FRAME_BYTES (1 MiB, pkgs/id/src/frames.rs) minus a reserve for the
+ * MessagePack envelope ([tag, version, steps, clientID]). The step-count
+ * cap alone cannot bound the wire size: 1,000 medium steps encode to far
+ * more than 1 MiB, and the server refuses an over-limit message before
+ * applying any of it (Codex P2 on PR #4051). */
+export const MAX_STEPS_MESSAGE_BYTES = 1024 * 1024 - 4096;
+
+/** Encoded size of one step on the wire (MessagePack, same Packr config
+ * as the send path). */
+export function stepWireSize(step: unknown): number {
+  return packr.pack(step).byteLength;
+}
+
+/** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE
+ * steps and at most MAX_STEPS_MESSAGE_BYTES of encoded steps, in order.
+ * Remaining steps stay unconfirmed and are sent by later flushes.
+ * Returns an empty batch when the FIRST pending step alone exceeds the
+ * byte budget: such a step can never be sent within the server cap, and
+ * splitting it into several wire steps would corrupt prosemirror-collab's
+ * count-based confirmation (the server echoes applied steps and the
+ * plugin confirms that many unconfirmed steps). Withholding it keeps the
+ * edit in the local document instead of having the server reject the
+ * message and the reconnect path re-initialize the editor from server
+ * state, silently discarding the edit. */
+export function stepBatch<T>(steps: readonly T[], sizeOf: (step: T) => number = () => 0): T[] {
+  const batch: T[] = [];
+  let bytes = 0;
+  for (const step of steps) {
+    if (batch.length >= MAX_STEPS_PER_MESSAGE) break;
+    const size = sizeOf(step);
+    if (batch.length > 0 && bytes + size > MAX_STEPS_MESSAGE_BYTES) break;
+    if (batch.length === 0 && size > MAX_STEPS_MESSAGE_BYTES) break;
+    batch.push(step);
+    bytes += size;
+  }
+  return batch;
 }
 
 export interface CollabConnection {
@@ -211,7 +244,20 @@ export function initCollab(
     const sendable = getSendableSteps(editorInstance.view);
     console.log("[collab] sendable:", sendable);
     if (sendable) {
-      const batch = stepBatch(sendable.steps);
+      const batch = stepBatch(sendable.steps, stepWireSize);
+      if (batch.length === 0) {
+        // The head pending step alone exceeds the wire budget (e.g. a
+        // >1 MiB paste represented as a single replace step). Do not send
+        // it: the server would refuse the message and the reconnect path
+        // would discard the edit. It stays in the local document,
+        // unconfirmed; surface the wedge instead of losing content.
+        console.error(
+          "[collab] Pending step exceeds the",
+          MAX_STEPS_MESSAGE_BYTES,
+          "byte message budget and cannot be synced; edit kept locally only.",
+        );
+        return;
+      }
       console.log(
         "[collab] Sending",
         batch.length,
