@@ -169,6 +169,7 @@ pub mod cli;
 pub mod commands;
 pub use id_core::connectivity;
 pub mod currency;
+pub mod currency_poc;
 pub mod dht;
 #[cfg(feature = "world")]
 pub mod directory;
