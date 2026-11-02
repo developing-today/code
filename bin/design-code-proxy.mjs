@@ -323,6 +323,12 @@ const dispatchWithFallback = (body, clientRes) => {
     // a body still being drained — may touch the client response (Codex
     // P2 on PR #4204).
     const targetRetired = () => failSettled;
+    // Set when THIS target writes the client head (streaming path). A
+    // retired target whose head the client is carrying is still the owner
+    // of that stream: its late errors must tear the stream down, not be
+    // ignored (PR #4204 Codex P2, second round). Only a retired target
+    // that never wrote the head has handed the client to the fallback.
+    let headWrittenByMe = false;
     const stream = Boolean(body.stream);
     const payload = JSON.stringify({
       ...body,
@@ -348,7 +354,7 @@ const dispatchWithFallback = (body, clientRes) => {
       // pooled socket is released instead of stalling half-open.
       localRes.on('error', err => {
         console.warn(`[design-code-proxy] Error reading response from 127.0.0.1:${target.port}: ${err.message}`);
-        if (targetRetired()) return; // fallback owns the client response now
+        if (targetRetired() && !headWrittenByMe) return; // fallback owns the client response now
         if (!clientRes.headersSent) onFail(err);
         else clientRes.destroy();
       });
@@ -392,6 +398,7 @@ const dispatchWithFallback = (body, clientRes) => {
             delete headers['content-length'];
           }
           clientRes.writeHead(localRes.statusCode || 200, headers);
+          headWrittenByMe = true;
         }
       };
 
