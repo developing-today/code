@@ -69,10 +69,11 @@ pub(crate) fn hex_decode_32(encoded: &str) -> Option<[u8; 32]> {
 pub(crate) fn sanitize_display_name(name: &str) -> String {
     name.chars()
         .filter(|ch| !ch.is_control() && !crate::petname::is_format_char(*ch))
-        .take(48)
         .collect::<String>()
         .trim()
-        .to_owned()
+        .chars()
+        .take(48)
+        .collect()
 }
 
 pub(crate) fn sanitize_chat(text: &str) -> String {
@@ -109,6 +110,21 @@ mod tests {
     #[test]
     fn display_name_strips_control_chars() {
         assert_eq!(sanitize_display_name("a\u{7}b"), "ab");
+    }
+
+    #[test]
+    fn display_name_trims_before_applying_character_budget() {
+        for spaces in [48, 47, 46] {
+            let padded = format!("{}Bob", " ".repeat(spaces));
+            assert_eq!(sanitize_display_name(&padded), "Bob");
+        }
+
+        let exactly_48 = "x".repeat(48);
+        assert_eq!(sanitize_display_name(&format!(" {exactly_48}")), exactly_48);
+        assert_eq!(
+            sanitize_display_name(&format!("\u{7}{exactly_48}")),
+            exactly_48
+        );
     }
 
     #[test]
