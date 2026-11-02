@@ -22,7 +22,7 @@ export function openDb(env: DbEnv): Client {
   return createClient({ url, authToken: env.TURSO_AUTH_TOKEN });
 }
 
-/** Run schema.sql. Idempotent — every statement is CREATE ... IF NOT EXISTS. */
+/** Run schema.sql. DDL is idempotent and data migrations use INSERT OR IGNORE. */
 export async function migrate(db: Client, schemaPath?: string): Promise<void> {
   const path = schemaPath ?? new URL("../schema.sql", import.meta.url).pathname;
   const sql = await Bun.file(path).text();
@@ -336,7 +336,8 @@ export async function getLinks(db: Client, opts: { subject?: string; ref?: strin
 
 export async function deliveryApplied(db: Client, deliveryId: string): Promise<boolean> {
   const r = await db.execute({
-    sql: `SELECT 1 AS x FROM pmp_deliveries WHERE delivery_id = ?`,
+    sql: `SELECT 1 AS x FROM pmp_deliveries
+          WHERE delivery_id = ? AND outcome IN ('applied', 'ignored')`,
     args: [deliveryId],
   });
   return r.rows.length > 0;
@@ -353,9 +354,24 @@ export async function recordDelivery(
     detail?: string | null;
   },
 ): Promise<void> {
+  if (d.outcome === "error") {
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO pmp_delivery_errors (delivery_id, event, received_at, outcome, detail)
+            VALUES (?,?,?,'error',?)`,
+      args: [d.deliveryId, d.event, now(), d.detail ?? null],
+    });
+  }
   await db.execute({
     sql: `INSERT INTO pmp_deliveries (delivery_id, event, action, ref, received_at, outcome, detail)
-          VALUES (?,?,?,?,?,?,?)`,
+          VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(delivery_id) DO UPDATE SET
+            event = excluded.event,
+            action = excluded.action,
+            ref = excluded.ref,
+            received_at = excluded.received_at,
+            outcome = excluded.outcome,
+            detail = excluded.detail
+          WHERE pmp_deliveries.outcome NOT IN ('applied', 'ignored')`,
     args: [d.deliveryId, d.event, d.action ?? null, d.ref ?? null, now(), d.outcome, d.detail ?? null],
   });
 }
