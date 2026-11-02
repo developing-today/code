@@ -50,6 +50,7 @@
 //! id serve --no-relay
 //! ```
 
+use std::collections::HashSet;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -418,7 +419,8 @@ impl WebBinding {
 /// # Errors
 ///
 /// Fails on the `--web-listen`/`--bind`/`--port` conflict, or on a
-/// malformed `[web_bindings]` line (named in the error).
+/// malformed `[web_bindings]` line (named in the error), or a duplicate
+/// nonzero listener address in the selected source.
 pub fn resolve_web_bindings(
     web_listen: &[SocketAddr],
     bind_explicit: bool,
@@ -436,13 +438,14 @@ pub fn resolve_web_bindings(
             !port_explicit,
             "--web-listen cannot be combined with --port: pass listener              addresses with --web-listen only, or use --bind/--port for a              single listener"
         );
+        ensure_unique_web_listener_addresses(web_listen.iter().copied(), "--web-listen")?;
         return Ok(web_listen
             .iter()
             .map(|addr| WebBinding { addr: *addr })
             .collect());
     }
     if !config_bindings.is_empty() {
-        return config_bindings
+        let bindings: Result<Vec<_>> = config_bindings
             .iter()
             .map(|line| {
                 line.parse::<SocketAddr>()
@@ -454,10 +457,35 @@ pub fn resolve_web_bindings(
                     })
             })
             .collect();
+        let bindings = bindings?;
+        ensure_unique_web_listener_addresses(
+            bindings.iter().map(WebBinding::socket_addr),
+            "[web_bindings] in defaults.conf",
+        )?;
+        return Ok(bindings);
     }
     Ok(vec![WebBinding {
         addr: SocketAddr::new(legacy_bind, legacy_port),
     }])
+}
+
+fn ensure_unique_web_listener_addresses(
+    addresses: impl IntoIterator<Item = SocketAddr>,
+    source: &str,
+) -> Result<()> {
+    let mut seen = HashSet::new();
+    for addr in addresses {
+        // Port 0 asks the OS for a fresh port on each bind, so repeated port-0
+        // entries do not resolve to the same listener address.
+        if addr.port() == 0 {
+            continue;
+        }
+        ensure!(
+            seen.insert(addr),
+            "duplicate web listener address {addr} from {source}"
+        );
+    }
+    Ok(())
 }
 
 fn validate_world_options(
@@ -2658,7 +2686,7 @@ mod tests {
             "127.0.0.1:4001".parse().unwrap(),
             "[::1]:4002".parse().unwrap(),
         ];
-        let config = vec!["127.0.0.1:3000".to_owned()];
+        let config = vec!["127.0.0.1:3000".to_owned(), "127.0.0.1:3000".to_owned()];
         let bindings = resolve_web_bindings(
             &flags,
             false,
@@ -2680,6 +2708,23 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_web_bindings_rejects_duplicate_flags() {
+        let duplicate: SocketAddr = "127.0.0.1:4001".parse().unwrap();
+        let err = resolve_web_bindings(
+            &[duplicate, duplicate],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("127.0.0.1:4001"), "{err}");
+        assert!(err.contains("--web-listen"), "{err}");
+    }
+
+    #[test]
     fn test_resolve_web_bindings_config_only() {
         let config = vec!["127.0.0.1:3000".to_owned(), "192.0.2.10:3001".to_owned()];
         let bindings = resolve_web_bindings(
@@ -2693,6 +2738,51 @@ mod tests {
         .unwrap();
         assert_eq!(bindings.len(), 2);
         assert_eq!(bindings[1].socket_addr().port(), 3001);
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_rejects_duplicate_config() {
+        let config = vec!["127.0.0.1:3000".to_owned(), "127.0.0.1:3000".to_owned()];
+        let err = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("127.0.0.1:3000"), "{err}");
+        assert!(err.contains("[web_bindings]"), "{err}");
+        assert!(err.contains("defaults.conf"), "{err}");
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_allows_repeated_port_zero() {
+        let duplicate: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let from_flags = resolve_web_bindings(
+            &[duplicate, duplicate],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(from_flags.len(), 2);
+
+        let config = vec!["127.0.0.1:0".to_owned(), "127.0.0.1:0".to_owned()];
+        let from_config = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(from_config.len(), 2);
     }
 
     #[test]
