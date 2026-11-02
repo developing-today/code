@@ -1213,9 +1213,15 @@ async fn output_selected_matches_to_dir<G: MatchGetter>(
     // ruling before writing anything, so one unsafe name or basename
     // collision writes nothing (batch refusal, consistent with #2178).
     let mut destinations = std::collections::HashMap::new();
+    let mut seen = std::collections::HashSet::new();
     let mut plan: Vec<(&FindMatch, String)> = Vec::new();
     for n in selections {
         let (_, m) = &filtered_matches[n - 1];
+        // Identical matches listed twice (overlapping queries) are one
+        // download, not a collision (Codex review on PR #4472).
+        if !seen.insert(format!("{}:{}", m.hash, m.name)) {
+            continue;
+        }
         let output_path = match download_output_path(Some(dir_path), &m.name) {
             Ok(path) => path,
             Err(e) => {
@@ -1329,10 +1335,16 @@ async fn select_and_output_matches_filtered(
                 }
             } else {
                 let mut destinations = std::collections::HashSet::new();
+                let mut seen = std::collections::HashSet::new();
                 let mut plan: Vec<(&FindMatch, String)> = Vec::new();
                 let mut refused = false;
                 for n in &selections {
                     let (_, m) = &filtered_matches[n - 1];
+                    // Identical matches listed twice are one download,
+                    // not a collision (Codex review on PR #4472).
+                    if !seen.insert(format!("{}:{}", m.hash, m.name)) {
+                        continue;
+                    }
                     match download_output_path(None, &m.name) {
                         Ok(output) => {
                             if !destinations.insert(output.clone()) {
@@ -1807,6 +1819,22 @@ mod tests {
             rec.calls.is_empty(),
             "colliding basenames must write nothing, got {:?}",
             rec.calls
+        );
+    }
+
+    #[tokio::test]
+    async fn test_interactive_dir_duplicate_identical_selections_fetch_once() {
+        // Overlapping queries can list the same (hash, name) match twice;
+        // selecting both entries is one download, not a basename collision.
+        let matches = vec![test_find_match("report.txt"), test_find_match("report.txt")];
+        let mut rec = RecordingGetter::default();
+        output_selected_matches_to_dir(&mut rec, &[1, 2], &matches, "downloads").await;
+        assert_eq!(
+            rec.calls,
+            vec![(
+                "report.txt".to_owned(),
+                Some("downloads/report.txt".to_owned())
+            )]
         );
     }
 

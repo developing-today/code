@@ -1051,6 +1051,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_download_output_path_dash_name_is_not_the_stdout_sentinel() {
+        // A match-derived "-" must name a file, not the stdout sentinel;
+        // only an explicit user-supplied "-" means stdout.
+        assert_eq!(download_output_path(None, "-").unwrap(), "./-");
+        assert_eq!(download_output_path(None, "nested/-").unwrap(), "./-");
+        assert_eq!(
+            download_output_path(Some("out"), "nested/-").unwrap(),
+            "out/-"
+        );
+    }
+
+    #[test]
     fn test_download_output_path_refuses_names_without_final_component() {
         for name in ["..", "/", "", "foo/", "../", "."] {
             assert!(

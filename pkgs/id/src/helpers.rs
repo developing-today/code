@@ -326,6 +326,11 @@ pub fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
     };
     Ok(match dir {
         Some(dir) => format!("{}/{}", dir, file_name),
+        // A derived bare "-" would collide with the stdout sentinel in
+        // export_blob ("-" means stdout there); write the file as "./-"
+        // instead. An explicit user-supplied "-" is untouched and still
+        // means stdout (Codex review on PR #4472).
+        None if file_name == "-" => "./-".to_owned(),
         None => file_name.to_owned(),
     })
 }
