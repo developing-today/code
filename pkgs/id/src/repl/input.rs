@@ -345,6 +345,42 @@ fn backtick_spans(source: &str, protected: &[(usize, usize)]) -> Vec<(usize, usi
                 if c == '\'' || c == '"' {
                     quote = Some(c);
                     k += 1;
+                } else if c == '$' && chars.get(k + 1).is_some_and(|&(_, next)| next == '(') {
+                    // A $(...) body is shell code consumed by that
+                    // substitution: a backtick inside it (e.g. an
+                    // escaped literal in $(printf \`) is not a
+                    // top-level backtick opener and must not hide
+                    // later substitutions (Codex review, PR #4600).
+                    let mut depth = 1;
+                    let mut j = k + 2;
+                    let mut inner: Option<char> = None;
+                    while j < chars.len() {
+                        let (ci, d) = chars[j];
+                        if is_protected(protected, ci) {
+                            j += 1;
+                            continue;
+                        }
+                        match inner {
+                            Some(q) => {
+                                if d == q {
+                                    inner = None;
+                                }
+                            }
+                            None => match d {
+                                '\'' | '"' => inner = Some(d),
+                                '(' => depth += 1,
+                                ')' => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            },
+                        }
+                        j += 1;
+                    }
+                    k = if j < chars.len() { j + 1 } else { chars.len() };
                 } else if c == '`' {
                     let mut j = k + 1;
                     while j < chars.len()
@@ -1246,6 +1282,17 @@ mod tests {
         // #4562: same skip rule for backtick spans.
         match preprocess_repl_line("get `echo $((1<<3))`").unwrap() {
             ReplInput::Ready(s) => assert_eq!(s, "get 8"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_backtick_inside_substitution_hides_nothing() {
+        // Codex review, PR #4600: an escaped literal backtick inside a
+        // $(...) body is not a top-level backtick opener; the later
+        // substitution must still expand.
+        match preprocess_repl_line("get $(printf \\`) $(echo hi)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get ` hi"),
             _ => panic!("expected Ready"),
         }
     }
