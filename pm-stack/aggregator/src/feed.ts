@@ -502,22 +502,33 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
  * with toFixed and used as a severity, so those three must be a
  * string, a finite number, and a string. normalized/source are not
  * gate-required: the consumer tolerates any source value and never
- * dereferences normalized. */
+ * dereferences normalized. (#3458): amountUsd must be positive and at
+ * must be a real ISO calendar date — impossible rows alter charge
+ * totals and attention severity. */
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
-  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+  return (
+    typeof v.merchant === "string" &&
+    isFiniteNumber(v.amountUsd) &&
+    v.amountUsd > 0 &&
+    isIsoDate(v.at)
+  );
 }
 
 /** One charges-evidence row as the /quota charges strip renders it
  * (#2445): a record with string at/label/method/source and a
  * finite-number amountUsd (ChargeRow, model.ts). Built on the shared
- * validate.ts primitives, like the quota element validators above. */
+ * validate.ts primitives, like the quota element validators above.
+ * (#3458): amountUsd must be positive and at must be a real ISO
+ * calendar date — impossible rows alter charge totals and attention
+ * severity. */
 export function isChargeRow(v: unknown): v is ChargeRow {
   if (!isRecord(v)) return false;
   return (
-    typeof v.at === "string" &&
+    isIsoDate(v.at) &&
     typeof v.label === "string" &&
     isFiniteNumber(v.amountUsd) &&
+    v.amountUsd > 0 &&
     typeof v.method === "string" &&
     typeof v.source === "string"
   );
