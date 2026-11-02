@@ -136,6 +136,9 @@ pub struct ServeInfo {
     pub addrs: Vec<String>,
     /// Port for the web UI, if enabled.
     pub web_port: Option<u16>,
+    /// The start time (in clock ticks) of the serve process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<u64>,
 }
 
 impl ServeInfo {
@@ -173,7 +176,7 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
     let info: ServeInfo = serde_json::from_str(&contents).ok()?;
 
     // Check if process is still alive
-    if !is_process_alive(info.pid) {
+    if !is_process_alive(info.pid, info.start_time) {
         // Stale lock file - remove it
         let _ = afs::remove_file(SERVE_LOCK).await;
         return None;
@@ -197,7 +200,47 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 /// `true` if the process exists, `false` otherwise.
 #[allow(clippy::cast_possible_wrap)] // PID is always positive, wrap is safe for kill()
 #[allow(unsafe_code)] // Required for libc::kill
-pub fn is_process_alive(pid: u32) -> bool {
+
+/// Retrieves the start time of the given process on Linux.
+///
+/// Returns `None` if the process cannot be found or on non-Linux platforms.
+#[cfg(target_os = "linux")]
+fn get_process_start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let rparen = stat.rfind(')')?;
+    let after_comm = &stat[rparen + 1..];
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    // In /proc/[pid]/stat, the starttime field is the 22nd field overall.
+    // The `comm` field is the 2nd field. `after_comm` starts with a space, then the 3rd field.
+    // So the 22nd field corresponds to index 19 of `fields` (0-indexed).
+    if fields.len() > 19 {
+        fields[19].parse().ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_process_start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Checks if a process with the given PID is still running and matches the expected start time.
+///
+/// On Linux, this verifies both that the process exists and that its start time matches the lock,
+/// preventing false positives from PID reuse. On non-Linux platforms where start time cannot be read,
+/// or non-Unix platforms where kill is unavailable, this falls back to existence checks or returning true, respectively.
+#[allow(clippy::cast_possible_wrap)] // PID is always positive, wrap is safe for kill()
+#[allow(unsafe_code)] // Required for libc::kill
+pub fn is_process_alive(pid: u32, expected_start_time: Option<u64>) -> bool {
+    if let Some(expected) = expected_start_time {
+        if let Some(actual) = get_process_start_time(pid) {
+            if expected != actual {
+                return false;
+            }
+        }
+    }
+
     #[cfg(unix)]
     {
         // SAFETY: libc::kill with signal 0 only checks process existence without
@@ -238,6 +281,7 @@ pub async fn create_serve_lock(
         pid: std::process::id(),
         addrs: addrs.iter().map(ToString::to_string).collect(),
         web_port,
+        start_time: get_process_start_time(std::process::id()),
     };
     let contents = serde_json::to_string_pretty(&info)?;
     afs::write(SERVE_LOCK, contents).await?;
@@ -1856,7 +1900,7 @@ mod tests {
     #[test]
     fn test_is_process_alive_current_process() {
         let pid = std::process::id();
-        assert!(is_process_alive(pid));
+        assert!(is_process_alive(pid, get_process_start_time(pid)));
     }
 
     #[test]
@@ -1865,7 +1909,7 @@ mod tests {
         // Note: On non-Unix this always returns true
         #[cfg(unix)]
         {
-            assert!(!is_process_alive(999_999_999));
+            assert!(!is_process_alive(999_999_999, None));
         }
     }
 
@@ -1876,7 +1920,22 @@ mod tests {
         #[cfg(unix)]
         {
             // Just check that the function doesn't panic - the result depends on environment
-            let _ = is_process_alive(1);
+            let _ = is_process_alive(1, None);
+        }
+    }
+
+    #[test]
+    fn test_is_process_alive_reused_pid() {
+        let pid = std::process::id();
+        let start_time = get_process_start_time(pid);
+
+        // Correct start time (or None on non-Linux, which just checks pid)
+        assert!(is_process_alive(pid, start_time));
+
+        #[cfg(target_os = "linux")]
+        if let Some(time) = start_time {
+            // Wrong start time (simulates reused pid)
+            assert!(!is_process_alive(pid, Some(time + 1)));
         }
     }
 
@@ -1892,6 +1951,7 @@ mod tests {
             pid: 12345,
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:8080".to_owned()],
             web_port: Some(3000),
+            start_time: Some(456),
         };
 
         assert_eq!(info.node_id, node_id.to_string());
@@ -1912,6 +1972,7 @@ mod tests {
             pid: 99,
             addrs: vec!["127.0.0.1:8080".to_owned()],
             web_port: None,
+            start_time: None,
         };
 
         let cloned = info.clone();
@@ -1919,6 +1980,7 @@ mod tests {
         assert_eq!(cloned.addrs, info.addrs);
         assert_eq!(cloned.pid, info.pid);
         assert_eq!(cloned.web_port, info.web_port);
+        assert_eq!(cloned.start_time, info.start_time);
     }
 
     #[test]
@@ -1928,6 +1990,7 @@ mod tests {
             pid: 42,
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:9090".to_owned()],
             web_port: Some(3001),
+            start_time: Some(123),
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -1936,6 +1999,7 @@ mod tests {
         assert_eq!(parsed.pid, 42);
         assert_eq!(parsed.addrs.len(), 2);
         assert_eq!(parsed.web_port, Some(3001));
+        assert_eq!(parsed.start_time, Some(123));
     }
 
     #[test]
@@ -1945,6 +2009,7 @@ mod tests {
             pid: 100,
             addrs: vec!["127.0.0.1:5555".to_owned()],
             web_port: None,
+            start_time: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
