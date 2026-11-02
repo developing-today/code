@@ -516,15 +516,34 @@ export async function sendTestPush(
   return summary;
 }
 
-let storePromise: Promise<AlertsStore | null> | null = null;
+/**
+ * Create the shared store resolver. Keep the in-flight attempt and successful
+ * store cached, but clear null/rejected attempts so a later call can recover.
+ */
+export function createAlertsStoreGetter(
+  getClient: typeof getSupabaseClient = getSupabaseClient,
+): () => Promise<AlertsStore | null> {
+  let storePromise: Promise<AlertsStore | null> | null = null;
+
+  return function getAlertsStore(): Promise<AlertsStore | null> {
+    if (!storePromise) {
+      const pending = getClient().then((db) => (db ? new AlertsStore(db) : null));
+      storePromise = pending;
+      void pending.then(
+        (store) => {
+          if (store === null && storePromise === pending) storePromise = null;
+        },
+        () => {
+          if (storePromise === pending) storePromise = null;
+        },
+      );
+    }
+    return storePromise;
+  }
+}
 
 /** The shared store; null when the Supabase path is unavailable. */
-export function getAlertsStore(): Promise<AlertsStore | null> {
-  if (!storePromise) {
-    storePromise = getSupabaseClient().then((db) => (db ? new AlertsStore(db) : null));
-  }
-  return storePromise;
-}
+export const getAlertsStore = createAlertsStoreGetter();
 
 // --- The engine ---------------------------------------------------------------
 
