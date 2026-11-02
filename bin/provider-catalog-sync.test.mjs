@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  parseArgs,
+  UsageError,
   parseJsonc,
   findModelsSpan,
   insertModelEntry,
@@ -227,4 +229,89 @@ test('importing provider-catalog-sync.mjs as a library does not run main (#2235)
 test('assertNotDefaultBranch aborts on the default branch, passes elsewhere', () => {
   assert.throws(() => assertNotDefaultBranch('main', 'main'), /default branch \(main\)/);
   assert.doesNotThrow(() => assertNotDefaultBranch('chore/catalog-sync-2026-10-28', 'main'));
+});
+
+// ---------------------------------------------------------------------------
+// Strict argv validation (issue #3449): invalid argv aborts as a usage error
+// naming the flag, before any file read, fetch, or write; controls keep the
+// old behaviour (dry-run exit 3 no write, --apply exit 0 writes).
+// ---------------------------------------------------------------------------
+const SCRIPT = new URL('./provider-catalog-sync.mjs', import.meta.url).pathname;
+
+test('parseArgs rejects unknown and typo arguments naming them', () => {
+  assert.throws(() => parseArgs(['--aply']), (e) => e instanceof UsageError && e.message.includes('--aply'));
+  assert.throws(() => parseArgs(['--bogus-flag']), /--bogus-flag/);
+  assert.throws(() => parseArgs(['positional']), /positional/);
+});
+
+test('parseArgs rejects flag-as-value and trailing value flags naming the flag', () => {
+  assert.throws(() => parseArgs(['--config', '--apply']), (e) => e instanceof UsageError && e.message.includes('--config'));
+  assert.throws(() => parseArgs(['--config']), /--config/);
+  // '--models-dev --apply' was consumed twice (spec + apply) before #3449.
+  assert.throws(() => parseArgs(['--models-dev', '--apply']), /--models-dev/);
+  assert.throws(() => parseArgs(['--config', 'a.jsonc', '--config', 'b.jsonc']), /--config/);
+});
+
+test('parseArgs accepts the documented controls', () => {
+  const dry = parseArgs([]);
+  assert.deepEqual(dry.options, {});
+  assert.equal(dry.flags.size, 0);
+  const full = parseArgs(['--config', 'c.jsonc', '--models-dev', 'm.json', '--source-dir', 'src', '--repo', 'r', '--apply', '--open-pr', '--json']);
+  assert.equal(full.options['--config'], 'c.jsonc');
+  assert.equal(full.options['--models-dev'], 'm.json');
+  assert.ok(full.flags.has('--apply') && full.flags.has('--open-pr') && full.flags.has('--json'));
+});
+
+function runCli(args, env = {}) {
+  const clean = { ...process.env, ...env };
+  delete clean.OPENCODE_CONFIG_PATH;
+  return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: clean });
+}
+
+test('CLI: invalid argv exits 2 naming the flag, before any read or write', () => {
+  for (const [args, named] of [
+    [['--aply'], '--aply'],
+    [['--bogus-flag'], '--bogus-flag'],
+    [['--config', '--apply'], '--config'],
+    [['--config'], '--config'],
+    [['--models-dev', '--apply'], '--models-dev'],
+  ]) {
+    const r = runCli(args);
+    assert.equal(r.status, 2, `${args} -> ${r.stdout} ${r.stderr}`);
+    assert.ok(r.stderr.includes(named), `${args} stderr names ${named}: ${r.stderr}`);
+  }
+});
+
+function controlFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-sync-argv-'));
+  const configPath = path.join(dir, 'opencode.jsonc');
+  const configText = `{
+  "provider": {
+    "commandcode": {
+      "npm": "@ai-sdk/openai-compatible",
+      "models": {
+        "acme-1": { "name": "Acme 1 (commandcode)" }
+      }
+    }
+  }
+}
+`;
+  fs.writeFileSync(configPath, configText);
+  const sourceDir = path.join(dir, 'src');
+  fs.mkdirSync(sourceDir);
+  fs.writeFileSync(path.join(sourceDir, '18748.json'), JSON.stringify({ data: [{ id: 'acme-1' }, { id: 'acme-2' }] }));
+  const modelsDev = path.join(dir, 'models-dev.json');
+  fs.writeFileSync(modelsDev, '{}');
+  return { configPath, configText, sourceDir, modelsDev };
+}
+
+test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes', () => {
+  const { configPath, configText, sourceDir, modelsDev } = controlFixture();
+  const base = ['--config', configPath, '--models-dev', modelsDev, '--source-dir', sourceDir];
+  const dry = runCli(base);
+  assert.equal(dry.status, 3, `dry: ${dry.stdout} ${dry.stderr}`);
+  assert.equal(fs.readFileSync(configPath, 'utf8'), configText);
+  const applied = runCli([...base, '--apply']);
+  assert.equal(applied.status, 0, `apply: ${applied.stdout} ${applied.stderr}`);
+  assert.ok(fs.readFileSync(configPath, 'utf8').includes('acme-2'));
 });

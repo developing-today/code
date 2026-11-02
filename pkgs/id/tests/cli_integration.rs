@@ -675,6 +675,43 @@ mod find_search_tests {
         );
         assert!(combined.contains("no matches") || output.status.success());
     }
+
+    #[test]
+    fn test_bulk_download_collision_fails_before_writing_for_find_and_search() {
+        let tmp = TempDir::new().unwrap();
+        let first_file = tmp.path().join("first-source.txt");
+        let second_file = tmp.path().join("second-source.txt");
+        fs::write(&first_file, b"first report").unwrap();
+        fs::write(&second_file, b"second report").unwrap();
+
+        let first_spec = format!("{}:one/report.txt", first_file.display());
+        let second_spec = format!("{}:two/report.txt", second_file.display());
+        run_cmd_success(&["put", &first_spec, &second_spec], tmp.path());
+
+        for (command, output_dir) in [("find", "find-output"), ("search", "search-output")] {
+            let output = run_cmd(
+                &[command, "--all", "--dir", output_dir, "report.txt"],
+                tmp.path(),
+            );
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !output.status.success(),
+                "{command} should reject colliding destinations: {combined}"
+            );
+            assert!(
+                combined.contains("collision"),
+                "{command} should explain the collision: {combined}"
+            );
+            assert!(
+                !tmp.path().join(output_dir).exists(),
+                "{command} must reject the batch before creating or writing its destination"
+            );
+        }
+    }
 }
 
 mod id_tests {

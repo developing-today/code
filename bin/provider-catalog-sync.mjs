@@ -685,24 +685,75 @@ export function openPrCommands({ branch, branchExists, date, bodyFile }) {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Strict argv parsing (issue #3449). Before this, opt() returned argv[idx+1]
+// unchecked and unknown arguments were never rejected: flag tokens were
+// consumed as values ('--config --apply' opened a file named '--apply'), a
+// token could be consumed twice ('--models-dev --apply' both set the
+// models.dev spec AND enabled apply), a trailing value flag crashed with a
+// raw TypeError that never named the flag, and a typo'd '--aply' silently
+// degraded an apply run into a dry run. Validation runs before any file
+// read, fetch, or write; a failure is a usage error (exit 2, this script's
+// hard-error code, matching the sibling usage-error pattern from
+// #3419/#3295) that names the offending flag.
+// ---------------------------------------------------------------------------
+export const VALUE_OPTIONS = ['--config', '--models-dev', '--source-dir', '--repo'];
+export const FLAG_OPTIONS = ['--apply', '--open-pr', '--json', '--help'];
+export const USAGE =
+  'usage: provider-catalog-sync [--config <path>] [--models-dev <url|path>] ' +
+  '[--source-dir <dir>] [--repo <dir>] [--apply] [--open-pr] [--json]';
+
+export class UsageError extends Error {}
+
+export function parseArgs(argv) {
+  const options = {};
+  const flags = new Set();
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (FLAG_OPTIONS.includes(token)) {
+      flags.add(token);
+      continue;
+    }
+    if (VALUE_OPTIONS.includes(token)) {
+      if (Object.hasOwn(options, token)) {
+        throw new UsageError(`${token} was given more than once\n${USAGE}`);
+      }
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new UsageError(
+          `${token} requires a value, but ${
+            value === undefined ? 'no value followed it' : `the next token is the flag ${value}`
+          }\n${USAGE}`,
+        );
+      }
+      options[token] = value;
+      i += 1;
+      continue;
+    }
+    throw new UsageError(`unrecognised argument: ${token}\n${USAGE}`);
+  }
+  return { options, flags };
+}
+
 async function main(argv) {
-  const args = new Set(argv);
-  const opt = (name, dflt) => {
-    const idx = argv.indexOf(name);
-    return idx >= 0 ? argv[idx + 1] : dflt;
-  };
+  const { options, flags } = parseArgs(argv);
+  if (flags.has('--help')) {
+    console.log(USAGE);
+    return 0;
+  }
+  const opt = (name, dflt) => options[name] ?? dflt;
   const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
   const configPath =
     process.env.OPENCODE_CONFIG_PATH || opt('--config', path.join(root, '.opencode', 'opencode.jsonc'));
   const modelsDevSpec = opt('--models-dev', 'https://models.dev/api.json');
   const sourceDir = opt('--source-dir', null);
-  const apply = args.has('--apply');
-  const openPr = args.has('--open-pr');
+  const apply = flags.has('--apply');
+  const openPr = flags.has('--open-pr');
 
   const { report, configText, config } = await runSync({ configPath, modelsDevSpec, sourceDir });
 
   if (!apply) {
-    if (args.has('--json')) console.log(JSON.stringify(report, null, 2));
+    if (flags.has('--json')) console.log(JSON.stringify(report, null, 2));
     else console.log(renderHuman(report));
     return report.totals.additions_validated > 0 ? 3 : 0;
   }
@@ -765,7 +816,11 @@ if (isMain) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {
-      console.error(`[catalog-sync] fatal: ${err?.stack ?? err}`);
+      if (err instanceof UsageError) {
+        console.error(`[catalog-sync] ${err.message}`);
+      } else {
+        console.error(`[catalog-sync] fatal: ${err?.stack ?? err}`);
+      }
       process.exit(2);
     },
   );

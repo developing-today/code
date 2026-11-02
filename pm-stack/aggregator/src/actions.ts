@@ -61,6 +61,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isObjectRef, validateAuthor } from "./comments.ts";
+import type { ViewFilters } from "./views.ts";
+import { validateViewFilters, validateViewName } from "./views.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
 import { isRecord } from "./validate.ts";
 
@@ -92,7 +94,13 @@ export type DashActionVerb =
   // preference (#1290)
   | "set-delegation-default"
   // preference — Needs-you card order (#1456)
-  | "set-needs-order";
+  | "set-needs-order"
+  // preference — saved views (#1276): named per-person filter sets,
+  // applied by the aggregator to the views store (src/views.ts).
+  | "save-view"
+  | "rename-view"
+  | "delete-view"
+  | "set-default-view";
 
 export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = {
   triage: [
@@ -110,7 +118,7 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
-  preference: ["set-delegation-default", "set-needs-order"],
+  preference: ["set-delegation-default", "set-needs-order", "save-view", "rename-view", "delete-view", "set-default-view"],
 };
 
 export interface DashActionPayload {
@@ -144,6 +152,13 @@ export interface DashActionPayload {
   /** set-needs-order: the Needs-you card ordering (#1456). "urgency" is
    *  the orchestrator's published order; the rest sort at render. */
   needsOrder?: "urgency" | "newest" | "oldest" | "deadline";
+  /** save-view / rename-view: the view's display name (#1276). */
+  viewName?: string;
+  /** save-view: the view's filter set (#1276). */
+  viewFilters?: ViewFilters;
+  /** rename-view / delete-view / set-default-view: the view id in the
+   *  views store (#1276). Absent on set-default-view = clear default. */
+  viewId?: string;
 }
 
 export interface DashAction {
@@ -313,6 +328,15 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
     }
     payload.needsOrder = rawPayload.needsOrder;
   }
+  const viewName = cleanText(rawPayload.viewName, 120);
+  if (viewName !== undefined) payload.viewName = viewName;
+  const viewId = cleanText(rawPayload.viewId, 120);
+  if (viewId !== undefined) payload.viewId = viewId;
+  if (rawPayload.viewFilters !== undefined) {
+    const vf = validateViewFilters(rawPayload.viewFilters);
+    if (!vf.ok) return { ok: false, error: `payload.viewFilters: ${vf.error}` };
+    payload.viewFilters = vf.value;
+  }
 
   let targetRef: RefKey | undefined;
   if (b.targetRef !== undefined) {
@@ -360,6 +384,23 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   }
   if (verb === "set-needs-order" && payload.needsOrder === undefined) {
     return { ok: false, error: "set-needs-order requires payload.needsOrder" };
+  }
+  if (verb === "save-view") {
+    if (payload.viewName === undefined || validateViewName(payload.viewName) === null) {
+      return { ok: false, error: "save-view requires payload.viewName" };
+    }
+    if (payload.viewFilters === undefined) {
+      return { ok: false, error: "save-view requires payload.viewFilters (at least one filter)" };
+    }
+  }
+  if (verb === "rename-view") {
+    if (payload.viewId === undefined) return { ok: false, error: "rename-view requires payload.viewId" };
+    if (payload.viewName === undefined || validateViewName(payload.viewName) === null) {
+      return { ok: false, error: "rename-view requires payload.viewName" };
+    }
+  }
+  if (verb === "delete-view" && payload.viewId === undefined) {
+    return { ok: false, error: "delete-view requires payload.viewId" };
   }
   if (verb === "restore" && supersedes === undefined) {
     return { ok: false, error: "restore requires supersedes (the id of the action it undoes)" };
