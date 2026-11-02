@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
 )
 
 // invalidNumerics are present-but-unparseable integer spellings (#3485):
@@ -472,6 +475,141 @@ func TestNumeric_catalog_budget(t *testing.T) {
 		}
 		if rec.Body.String() != absent.Body.String() {
 			t.Errorf("budget=%s: body differs from absent (default); want identical.\ngot:  %s\nwant: %s", raw, rec.Body.String(), absent.Body.String())
+		}
+	}
+}
+
+// TestNumeric_artifacts_limit pins #3485 for GET /v1/artifacts limit —
+// the seventh member of the class, which the six routes named in #3485
+// missed: handleArtifactList discarded the Atoi error the same way.
+// Found by the registry guard below (Codex review of PR #4429).
+func TestNumeric_artifacts_limit(t *testing.T) {
+	newServer := func(t *testing.T) *Server {
+		store, err := artifacts.Open(artifacts.Options{Dir: t.TempDir(), TTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { store.Close() })
+		srv := &Server{}
+		srv.artifactStore = store
+		srv.artifactsOnce.Do(func() {})
+		for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+			req := httptest.NewRequest(http.MethodPost, "/v1/artifacts?name="+name, strings.NewReader("bytes"))
+			rec := httptest.NewRecorder()
+			srv.handleArtifactPut(rec, req)
+			if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+				t.Fatalf("seed %s: status = %d (%s)", name, rec.Code, rec.Body.String())
+			}
+		}
+		return srv
+	}
+	do := func(s *Server, query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/artifacts"+query, nil)
+		rec := httptest.NewRecorder()
+		s.handleArtifactList(rec, req)
+		return rec
+	}
+
+	s := newServer(t)
+	assertInvalidNumeric(t, "limit", func(raw string) *httptest.ResponseRecorder {
+		return do(s, "?limit="+raw)
+	})
+
+	s = newServer(t)
+	absent := do(s, "")
+	if absent.Code != http.StatusOK {
+		t.Fatalf("absent limit: status = %d, want 200 (%s)", absent.Code, absent.Body.String())
+	}
+	if n := decodeCount(t, absent.Body.Bytes(), "artifacts"); n != 3 {
+		t.Errorf("absent limit: got %d artifacts, want 3 (the default)", n)
+	}
+
+	s = newServer(t)
+	if rec := do(s, "?limit=1"); rec.Code != http.StatusOK {
+		t.Errorf("limit=1: status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	} else if n := decodeCount(t, rec.Body.Bytes(), "artifacts"); n != 1 {
+		t.Errorf("limit=1: got %d artifacts, want 1", n)
+	}
+
+	// Zero and negative resolve to the configured default. Artifact ids
+	// and timestamps differ per seeded store, so compare counts against
+	// the absent (default) response, not raw bodies.
+	for _, raw := range []string{"0", "-5"} {
+		s = newServer(t)
+		rec := do(s, "?limit="+raw)
+		if rec.Code != http.StatusOK {
+			t.Errorf("limit=%s: status = %d, want 200 (%s)", raw, rec.Code, rec.Body.String())
+			continue
+		}
+		if n := decodeCount(t, rec.Body.Bytes(), "artifacts"); n != 3 {
+			t.Errorf("limit=%s: got %d artifacts, want 3 (the default)", raw, n)
+		}
+	}
+}
+
+// numericGuardCovered names every integer query parameter whose handler
+// rejects a present-but-unparseable value with a 400 and is probed by a
+// TestNumeric_* test in this file. Key: "METHOD path param".
+var numericGuardCovered = map[string]string{
+	"GET /v1/log limit":             "TestNumeric_log_limit",
+	"GET /v1/stats top":             "TestNumeric_stats_top",
+	"GET /v1/registry/search limit": "TestNumeric_registry_limit",
+	"GET /v1/recipes limit":         "TestNumeric_recipes_limit",
+	"GET /v1/search limit":          "TestNumeric_search_limit",
+	"GET /v1/catalog budget":        "TestNumeric_catalog_budget",
+	"GET /v1/artifacts limit":       "TestNumeric_artifacts_limit",
+}
+
+// numericGuardExcluded names integer query parameters that are
+// deliberately NOT under the #3485 rule, with the reason recorded so a
+// future reader does not have to re-derive it.
+var numericGuardExcluded = map[string]string{
+	// The events cursor is validated on its own track (#1679/#2223):
+	// server.go ParseUint-checks since and 400s before the handler.
+	"GET /v1/events since": "cursor validation (#1679/#2223), strict ParseUint 400 in the events handler",
+	// waitMs is a long-poll hint, not a result bound: pollWait treats an
+	// unparseable value as the configured ceiling by design and errors
+	// only on out-of-range values (poll_wait.go).
+	"GET /v1/ask/{id} waitMs":          "pollWait hint semantics: unparseable falls back to the configured ceiling by design",
+	"GET /v1/tasks/{id}/result waitMs": "pollWait hint semantics: unparseable falls back to the configured ceiling by design",
+}
+
+// TestNumeric_registry_guard is the class guard for #3485 required by
+// pkgs/mcpx/internal/AGENTS.md ("a bug that is a class of bug gets a
+// guard: iterate the registry or table so the test fails for every
+// member, present and future"). It iterates every integer query
+// parameter declared in internal/api and fails unless each one is
+// either probed by a TestNumeric_* test above or explicitly excluded
+// with a reason — so a newly declared integer query parameter cannot
+// silently escape validation coverage. It also fails when a covered or
+// excluded entry no longer exists in the registry (stale table).
+func TestNumeric_registry_guard(t *testing.T) {
+	declared := map[string]bool{}
+	for _, op := range api.Ops() {
+		for _, param := range op.Params {
+			if param.In == api.InQuery && param.Type == "integer" {
+				declared[fmt.Sprintf("%s %s %s", op.Method, op.Path, param.Name)] = true
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("no integer query parameters found in the api registry; the guard is reading the wrong table")
+	}
+	for key := range declared {
+		_, covered := numericGuardCovered[key]
+		_, excluded := numericGuardExcluded[key]
+		if !covered && !excluded {
+			t.Errorf("integer query parameter %q is declared in internal/api but has no #3485 coverage and no recorded exclusion — add a TestNumeric_* probe or an exclusion with a reason", key)
+		}
+	}
+	for key := range numericGuardCovered {
+		if !declared[key] {
+			t.Errorf("covered parameter %q is no longer declared in internal/api; remove it from numericGuardCovered", key)
+		}
+	}
+	for key := range numericGuardExcluded {
+		if !declared[key] {
+			t.Errorf("excluded parameter %q is no longer declared in internal/api; remove it from numericGuardExcluded", key)
 		}
 	}
 }
