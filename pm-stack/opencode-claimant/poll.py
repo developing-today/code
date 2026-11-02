@@ -26,6 +26,7 @@ an unreadable session list must never become a launch decision.
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -48,6 +49,29 @@ CAP = 12
 # whose client died mid-run, so it stops counting too — the claimant
 # fires every 10 min and a working session updates far more often.
 ACTIVE_WINDOW_MS = 30 * 60 * 1000
+
+
+UUID_LANE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def is_candidate(row):
+    """A claimed task is a claimant candidate iff the opencode execution
+    lane was assigned (progress.lane, stamped by assign_repo_task_lane
+    since migration 0021), no session is bound yet, and the claiming
+    lane is not itself an OpenChamber scheduled lane. OpenChamber lanes
+    ARE opencode sessions executing their own claims, so a claimant
+    launch for one would double-execute; they are registered in
+    agent.lanes under their scheduled-task UUIDs, while Muse shift
+    lanes use short ids (code-a, opencode-a, ...) and legacy claims
+    carry no lane id at all."""
+    prog = row.get("progress") or {}
+    if prog.get("lane") != "opencode" or prog.get("session_id"):
+        return False
+    lane_id = row.get("lane_id")
+    if lane_id and UUID_LANE.match(lane_id):
+        return False
+    return True
 
 
 def is_root_session(s):
@@ -167,7 +191,7 @@ def main():
             helper.http(
                 "GET",
                 f"tasks?queue=eq.{q}&status=eq.claimed"
-                "&select=id,queue,status,worker_id,priority,progress,lease_until"
+                "&select=id,queue,status,worker_id,priority,progress,lease_until,lane_id"
                 "&limit=500",
                 key,
             )
@@ -175,9 +199,9 @@ def main():
         )
         cands = []
         for r in rows:
-            prog = r.get("progress") or {}
-            if prog.get("lane") != "opencode" or prog.get("session_id"):
+            if not is_candidate(r):
                 continue
+            prog = r.get("progress") or {}
             cands.append(
                 {
                     "id": r["id"],
@@ -185,6 +209,7 @@ def main():
                     "priority": r.get("priority"),
                     "worker_id": r.get("worker_id"),
                     "lease_until": r.get("lease_until"),
+                    "lane_id": r.get("lane_id"),
                     "issue_number": prog.get("issue_number"),
                 }
             )
