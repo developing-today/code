@@ -343,6 +343,7 @@ describe("attention action controls (#1152/#1156)", () => {
     expect(html).toContain('data-object="orch:goal_plaid"');
     expect(html).toContain("Review batch");
     expect(html).toContain("/api/actions/batch"); // BULK_SCRIPT is on the page
+    expect(html).toContain("encoder.encode(JSON.stringify(a)).byteLength"); // pack by UTF-8 bytes, matching the request cap
     // Without identities there is no action surface \u2014 and no bulk bar.
     const anon = renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
       actionsByObject: new Map(),
