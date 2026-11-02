@@ -57,6 +57,8 @@ pub const FILE: &str = "artifacts.jsonl";
 pub const PAGE_BYTES: usize = 256 * 1024;
 /// Home servers one declaration may name.
 pub const MAX_HOME_SERVERS: usize = 8;
+/// The largest world ID one home server may carry, in bytes.
+pub const MAX_WORLD_ID_BYTES: usize = 64;
 /// Hashes one artifact may name in `after`.
 pub const MAX_AFTER: usize = 32;
 /// The largest content a document may carry, as serialized JSON.
@@ -372,11 +374,36 @@ impl SignedArtifact {
                         "a declaration names at most {MAX_HOME_SERVERS} servers"
                     )));
                 }
-                for server in &body.servers {
+                for (index, server) in body.servers.iter().enumerate() {
                     check_target(&server.endpoint)
                         .map_err(|error| forbidden(format!("{error:#}")))?;
-                    if server.world_id.is_empty() {
-                        return Err(forbidden("a home server needs a world ID"));
+                    if body.servers[..index]
+                        .iter()
+                        .any(|prior| prior.endpoint == server.endpoint)
+                    {
+                        return Err(forbidden(
+                            "a declaration names each endpoint at most once",
+                        ));
+                    }
+                    if server.world_id.is_empty() || server.world_id.len() > MAX_WORLD_ID_BYTES {
+                        return Err(forbidden(format!(
+                            "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
+                        )));
+                    }
+                    if server.world_id.trim().is_empty() {
+                        return Err(forbidden(
+                            "a home server's world ID must not be whitespace only",
+                        ));
+                    }
+                    if server.world_id.chars().any(char::is_control) {
+                        return Err(forbidden(
+                            "a home server's world ID must not contain control characters",
+                        ));
+                    }
+                    if server.world_id.chars().any(crate::is_format_char) {
+                        return Err(forbidden(
+                            "a home server's world ID must not contain format characters",
+                        ));
                     }
                 }
                 Ok(Some(Kind::HomeDeclared(body)))
@@ -1901,6 +1928,60 @@ mod tests {
             .unwrap();
         assert_eq!(stored, Stored::New);
         assert_eq!(directory.artifacts().head_seq(&public(1)), 1);
+    }
+
+    fn home_declared_with(servers: Vec<HomeServer>) -> SignedArtifact {
+        ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::HomeDeclared(HomeDeclared {
+                    account: public(1),
+                    servers,
+                }),
+            )
+            .unwrap()
+    }
+
+    fn home_server(endpoint: String, world_id: &str) -> HomeServer {
+        HomeServer {
+            endpoint,
+            world_id: world_id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn parsed_home_world_id_is_bounded_and_clean() {
+        let control = home_declared_with(vec![home_server(endpoint_of(7), "home")]);
+        assert!(matches!(control.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        let at_bound = home_declared_with(vec![home_server(endpoint_of(7), &"w".repeat(64))]);
+        assert!(matches!(at_bound.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        for world_id in [
+            "w".repeat(65),
+            "   ".to_owned(),
+            "home\nFORGED".to_owned(),
+            "ho\u{1}me".to_owned(),
+            "home\u{202e}".to_owned(),
+        ] {
+            let refused = home_declared_with(vec![home_server(endpoint_of(7), &world_id)]);
+            assert!(refused.parsed().is_err(), "world_id {world_id:?} accepted");
+        }
+    }
+
+    #[test]
+    fn parsed_home_declaration_refuses_duplicate_endpoints() {
+        let distinct = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(endpoint_of(8), "lobby"),
+        ]);
+        assert!(matches!(distinct.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        let duplicate = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(endpoint_of(7), "lobby"),
+        ]);
+        assert!(duplicate.parsed().is_err());
     }
 
     #[test]
