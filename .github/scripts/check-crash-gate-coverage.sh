@@ -54,25 +54,78 @@ for recipe in crash-gate-sweep crash-gate-control crash-gate-ingest; do
 done
 
 # --- #[ignore]d test names from the crash suite ----------------------------
-# An ignored test is declared as a #[ignore ...] attribute line followed
-# (after any further attribute/doc lines) by `fn <name>(`. Names repeat
-# across files (main.rs and identity.rs carry copies); coverage is by
-# name, so deduplicate.
-ignored_tests="$(
+# An ignored test is declared as a #[ignore ...] attribute followed
+# (after any further attribute/doc lines and blank lines) by a fn item.
+# The declaration shape varies — visibility modifiers (pub, pub(crate)),
+# async fn, indentation inside a mod block, and #[ignore = "..."] reason
+# strings wrapped across lines with a backslash continuation (#2963) —
+# so enumeration is a small state machine over those shapes, not one
+# exact line pattern. A #[ignore] that cannot be paired with a fn
+# declaration is parse drift: the awk names it on stderr and exits
+# non-zero rather than silently dropping the test from the enumeration.
+# Names repeat across files (main.rs and identity.rs carry copies);
+# coverage is by name, so deduplicate.
+if ! ignored_raw="$(
   awk '
-    /#\[ignore/ { ignored = 1; next }
-    ignored && /^#\[/ { next }
-    ignored && /^\/\/\// { next }
-    ignored && /^fn [A-Za-z0-9_]+/ {
-      name = $2
-      sub(/\(.*/, "", name)
-      print name
-      ignored = 0
+    function unquoted_quotes(line,   s) {
+      s = line
+      gsub(/\\./, "", s)
+      return gsub(/"/, "\"", s)
+    }
+    function fn_name(line,   s) {
+      s = line
+      sub(/^[[:space:]]*/, "", s)
+      sub(/^pub[[:space:]]*\([^)]*\)[[:space:]]*/, "", s)
+      sub(/^pub[[:space:]]+/, "", s)
+      sub(/^async[[:space:]]+/, "", s)
+      sub(/^unsafe[[:space:]]+/, "", s)
+      sub(/^extern[[:space:]]+"[^"]*"[[:space:]]*/, "", s)
+      sub(/^const[[:space:]]+/, "", s)
+      if (s !~ /^fn[[:space:]]+/) return ""
+      sub(/^fn[[:space:]]+/, "", s)
+      sub(/[^A-Za-z0-9_].*/, "", s)
+      return s
+    }
+    function drift(where) {
+      printf "::error::check-crash-gate-coverage: #[ignore] at %s is not followed by a recognizable fn declaration — the enumeration in check-crash-gate-coverage.sh cannot see this test; fix the declaration shape or extend the enumeration.\n", where > "/dev/stderr"
+      bad = 1
+    }
+    in_string {
+      if (unquoted_quotes($0) % 2 == 1) in_string = 0
       next
     }
-    ignored { ignored = 0 }
-  ' "$crash_dir"/*.rs | sort -u
-)"
+    pending {
+      if ($0 ~ /^[[:space:]]*$/) next
+      if ($0 ~ /^[[:space:]]*\/\/\//) next
+      if ($0 ~ /^[[:space:]]*#\[/) {
+        if (unquoted_quotes($0) % 2 == 1) in_string = 1
+        next
+      }
+      name = fn_name($0)
+      if (name != "") {
+        print name
+        pending = 0
+        next
+      }
+      drift(FILENAME ":" FNR)
+      pending = 0
+      next
+    }
+    /#\[ignore/ {
+      pending = 1
+      if (unquoted_quotes($0) % 2 == 1) in_string = 1
+      next
+    }
+    END {
+      if (pending) drift(FILENAME " (end of file)")
+      if (bad) exit 1
+    }
+  ' "$crash_dir"/*.rs
+)"; then
+  echo "::error::check-crash-gate-coverage: enumeration of #[ignore]d tests failed (see above) — refusing to assert coverage it did not check."
+  exit 1
+fi
+ignored_tests="$(printf '%s\n' "$ignored_raw" | sort -u)"
 
 if [[ -z $ignored_tests ]]; then
   echo "::error::check-crash-gate-coverage: no #[ignore]d tests found in pkgs/id/tests/crash/*.rs — the suite changed shape; update this guard."
