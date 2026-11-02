@@ -56,6 +56,7 @@ import { identitiesFromRecords } from "./registry.ts";
 import {
   attentionFragment,
   attentionSections,
+  esc,
   ghObjectRef,
   renderAa,
   renderAttention,
@@ -1040,7 +1041,7 @@ async function handler(req: Request): Promise<Response> {
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
     if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
-      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${esc(serviceMatch[1])}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
       404,
     );
   }
@@ -1223,7 +1224,7 @@ async function handler(req: Request): Promise<Response> {
     const config = projectConfigById(programProjectMatch[1]);
     if (!config) {
       return html(
-        `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        `<h1>Not found</h1><p class="muted">no project with id <code>${esc(programProjectMatch[1])}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
         404,
       );
     }
@@ -1612,7 +1613,7 @@ async function handler(req: Request): Promise<Response> {
       };
       return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }
-    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
+    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`, 404);
   }
 
   return notFoundResponse(path);
