@@ -10,10 +10,11 @@
 //! (TigerBeetle transfer creation is idempotent by ID) or the record
 //! abandoned.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -71,13 +72,41 @@ impl IntentRecord {
     }
 }
 
+/// A stored entry that a listing skipped because it could not be
+/// read or parsed (#4125). Skipped entries are never deleted by the
+/// store or the recovery scanner: the path stays on disk so an
+/// operator can inspect, repair, or remove it deliberately.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnreadableIntent {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 /// Persistence seam for intent records.
 pub trait IntentStore {
     /// Insert or replace a record. Must be durable before returning:
     /// the write-ahead guarantee depends on it.
     fn put(&mut self, record: &IntentRecord) -> io::Result<()>;
     fn get(&self, conversion_id: u128) -> io::Result<Option<IntentRecord>>;
+    /// List every unresolved record in the store.
+    ///
+    /// Listing contract (#4125): one unreadable or unparseable entry
+    /// must NOT abort the listing \u2014 the store directory is a
+    /// long-lived recovery surface that has to survive schema
+    /// evolution, operator handling, and foreign files. An
+    /// implementation therefore skips such an entry, leaves it in
+    /// place, and reports it through
+    /// [`IntentStore::unreadable_entries`]; only a failure to
+    /// enumerate the store itself is an `Err`. The in-memory store
+    /// holds already-parsed records, so it never skips.
     fn unresolved(&self) -> io::Result<Vec<IntentRecord>>;
+    /// Entries skipped by the most recent [`IntentStore::unresolved`]
+    /// call because they could not be read or parsed, in path order.
+    /// Empty when the last listing skipped nothing (or for stores
+    /// that cannot hold unreadable entries).
+    fn unreadable_entries(&self) -> Vec<UnreadableIntent> {
+        Vec::new()
+    }
 }
 
 /// In-memory store for tests and demos.
@@ -117,12 +146,25 @@ impl IntentStore for InMemoryIntentStore {
 /// never leaves a torn record behind.
 pub struct FileIntentStore {
     dir: PathBuf,
+    /// Entries skipped by the most recent `unresolved` listing
+    /// (#4125); behind a `RefCell` because listing takes `&self`.
+    unreadable: RefCell<Vec<UnreadableIntent>>,
 }
 
 impl FileIntentStore {
     pub fn open(dir: PathBuf) -> io::Result<Self> {
         fs::create_dir_all(&dir)?;
-        Ok(Self { dir })
+        Ok(Self {
+            dir,
+            unreadable: RefCell::new(Vec::new()),
+        })
+    }
+
+    fn note_unreadable(&self, path: &Path, reason: String) {
+        self.unreadable.borrow_mut().push(UnreadableIntent {
+            path: path.to_path_buf(),
+            reason,
+        });
     }
 
     fn path_for(&self, conversion_id: u128) -> PathBuf {
@@ -163,19 +205,52 @@ impl IntentStore for FileIntentStore {
     }
 
     fn unresolved(&self) -> io::Result<Vec<IntentRecord>> {
+        // A failure to enumerate the directory itself is fatal (the
+        // store is unreachable); anything wrong with one entry inside
+        // it is not (#4125).
+        let entries = fs::read_dir(&self.dir)?;
+        self.unreadable.borrow_mut().clear();
         let mut records = Vec::new();
-        for entry in fs::read_dir(&self.dir)? {
-            let path = entry?.path();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.note_unreadable(&self.dir, format!("directory entry: {error}"));
+                    continue;
+                }
+            };
+            let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let bytes = fs::read(&path)?;
-            let record: IntentRecord = serde_json::from_slice(&bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            // fs::read also fails for a subdirectory named *.json;
+            // serde parsing fails for foreign or schema-drifted
+            // content. Both skip-and-report, never abort, never delete.
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.note_unreadable(&path, format!("read: {error}"));
+                    continue;
+                }
+            };
+            let record: IntentRecord = match serde_json::from_slice(&bytes) {
+                Ok(record) => record,
+                Err(error) => {
+                    self.note_unreadable(&path, format!("parse: {error}"));
+                    continue;
+                }
+            };
             if record.state.is_unresolved() {
                 records.push(record);
             }
         }
+        self.unreadable
+            .borrow_mut()
+            .sort_by(|a, b| a.path.cmp(&b.path));
         Ok(records)
+    }
+
+    fn unreadable_entries(&self) -> Vec<UnreadableIntent> {
+        self.unreadable.borrow().clone()
     }
 }

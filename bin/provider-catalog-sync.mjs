@@ -35,6 +35,20 @@
 // route membership, never in the catalog — so this tool only ever ADDS,
 // through a reviewable PR.
 //
+// #4544 split: the tracked configured default no longer carries the model
+// catalogs sync-models owns (antigravity-direct, openai-codex, google,
+// openai, cloudflare-gateway) — those live in the runtime overlay
+// (~/.local/state/opencode/opencode-runtime.jsonc). This tool diffs the
+// merged effective config (default + overlay; --runtime-config) and skips
+// the sync-owned providers on --apply; sync-models owns their writes.
+//
+// Config resolution (#4588): this tool's target is the tracked configured
+// default — an explicit --config wins, then OPENCODE_CATALOG_SYNC_CONFIG,
+// then <repo>/.opencode/opencode.jsonc. OPENCODE_CONFIG_PATH is never the
+// target: it is sync-models' variable and since #4544 it names the runtime
+// overlay, which this tool only reads (via --runtime-config) to compute the
+// merged effective config.
+//
 // Sources: laptop proxies are enumerated over HTTP on 127.0.0.1 (run this on
 // the laptop, or pass --source-dir with <port>.json snapshots for an offline
 // reproducible run). models.dev is a cross-check for every provider and the
@@ -498,9 +512,45 @@ async function loadModelsDev(spec) {
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
-export async function runSync({ configPath, modelsDevSpec, sourceDir }) {
+// Providers whose model catalogs bin/sync-models.mjs owns in the runtime
+// overlay (#4544). Catalog-sync diffs them (via the merged effective config)
+// but never writes them into the tracked configured default on --apply.
+export const SYNC_OWNED_PROVIDERS = new Set([
+  'antigravity-direct',
+  'openai-codex',
+  'google',
+  'openai',
+  'cloudflare-gateway',
+]);
+
+// Deep-merge plain objects (overlay wins on scalars) — the same layering
+// the OpenCode server applies to OPENCODE_CONFIG.
+export function deepMergeProviders(base, over) {
+  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (!isObj(base) || !isObj(over)) return over;
+  const out = { ...base };
+  for (const k of Object.keys(over)) out[k] = deepMergeProviders(base[k], over[k]);
+  return out;
+}
+
+export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeConfigPath }) {
   const configText = fs.readFileSync(configPath, 'utf8');
   const config = parseJsonc(configText);
+  // #4544: diff against the merged effective config (tracked default +
+  // runtime overlay) so the sync-owned providers still enumerate and their
+  // vanishings still surface exactly as before the split.
+  let runtimeOverlay = null;
+  if (runtimeConfigPath && fs.existsSync(runtimeConfigPath)) {
+    try {
+      const overlay = parseJsonc(fs.readFileSync(runtimeConfigPath, 'utf8'));
+      if (overlay && typeof overlay === 'object' && overlay.provider) {
+        config.provider = deepMergeProviders(config.provider ?? {}, overlay.provider);
+        runtimeOverlay = runtimeConfigPath;
+      }
+    } catch {
+      runtimeOverlay = null;
+    }
+  }
   const providers = config.provider ?? {};
   let modelsDev = null;
   let modelsDevError = null;
@@ -512,6 +562,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir }) {
   const report = {
     generated_at: new Date().toISOString(),
     config: configPath,
+    runtime_overlay: runtimeOverlay,
     models_dev: modelsDev ? 'loaded' : `unavailable (${modelsDevError})`,
     providers: {},
     totals: { additions_validated: 0, additions_unverified: 0, vanishings: 0, unverifiable: 0 },
@@ -735,11 +786,11 @@ export function openPrCommands({ branch, branchExists, date, bodyFile }) {
 // hard-error code, matching the sibling usage-error pattern from
 // #3419/#3295) that names the offending flag.
 // ---------------------------------------------------------------------------
-export const VALUE_OPTIONS = ['--config', '--models-dev', '--source-dir', '--repo'];
+export const VALUE_OPTIONS = ['--config', '--models-dev', '--source-dir', '--repo', '--runtime-config'];
 export const FLAG_OPTIONS = ['--apply', '--open-pr', '--json', '--help'];
 export const USAGE =
   'usage: provider-catalog-sync [--config <path>] [--models-dev <url|path>] ' +
-  '[--source-dir <dir>] [--repo <dir>] [--apply] [--open-pr] [--json]';
+  '[--source-dir <dir>] [--repo <dir>] [--runtime-config <path>] [--apply] [--open-pr] [--json]';
 
 export class UsageError extends Error {}
 
@@ -773,6 +824,18 @@ export function parseArgs(argv) {
   return { options, flags };
 }
 
+// Resolution order for the catalog target (#4588): explicit --config,
+// then the catalog-sync-specific OPENCODE_CATALOG_SYNC_CONFIG, then the
+// tracked configured default. OPENCODE_CONFIG_PATH is deliberately not
+// consulted — since #4544 it names the runtime overlay (sync-models' file).
+export function resolveConfigPath({ options, env, root }) {
+  return (
+    options['--config'] ??
+    env.OPENCODE_CATALOG_SYNC_CONFIG ??
+    path.join(root, '.opencode', 'opencode.jsonc')
+  );
+}
+
 async function main(argv) {
   const { options, flags } = parseArgs(argv);
   if (flags.has('--help')) {
@@ -781,14 +844,26 @@ async function main(argv) {
   }
   const opt = (name, dflt) => options[name] ?? dflt;
   const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-  const configPath =
-    process.env.OPENCODE_CONFIG_PATH || opt('--config', path.join(root, '.opencode', 'opencode.jsonc'));
+  const configPath = resolveConfigPath({ options, env: process.env, root });
+  const runtimeConfigPath = opt(
+    '--runtime-config',
+    process.env.OPENCODE_RUNTIME_CONFIG ||
+      path.join(
+        process.env.HOME || '/home/user',
+        '.local/state/opencode/opencode-runtime.jsonc',
+      ),
+  );
   const modelsDevSpec = opt('--models-dev', 'https://models.dev/api.json');
   const sourceDir = opt('--source-dir', null);
   const apply = flags.has('--apply');
   const openPr = flags.has('--open-pr');
 
-  const { report, configText, config } = await runSync({ configPath, modelsDevSpec, sourceDir });
+  const { report, configText, config } = await runSync({
+    configPath,
+    modelsDevSpec,
+    sourceDir,
+    runtimeConfigPath,
+  });
 
   if (!apply) {
     if (flags.has('--json')) console.log(JSON.stringify(report, null, 2));
@@ -804,10 +879,23 @@ async function main(argv) {
   try {
     modelsDev = await loadModelsDev(modelsDevSpec);
   } catch {}
-  const { text, added } = applyAdditions(configText, config, report, modelsDev);
+  // #4544: never write sync-models-owned catalogs into the tracked default;
+  // sync-models lands them in the runtime overlay instead.
+  const applyReport = { ...report, providers: {} };
+  for (const [pid, entry] of Object.entries(report.providers)) {
+    if (SYNC_OWNED_PROVIDERS.has(pid) && (entry.additions_validated ?? []).length > 0) {
+      console.log(
+        `[catalog-sync] skipping ${pid}: ${entry.additions_validated.length} validated addition(s) owned by sync-models (runtime overlay)`,
+      );
+      applyReport.providers[pid] = { ...entry, additions_validated: [] };
+    } else {
+      applyReport.providers[pid] = entry;
+    }
+  }
+  const { text, added } = applyAdditions(configText, config, applyReport, modelsDev);
   assertCatalogOnly(configText, text, added);
   fs.writeFileSync(configPath, text);
-  const body = renderPrBody(report, added);
+  const body = renderPrBody(applyReport, added);
   console.log(body);
   if (openPr) {
     const repoDir = opt('--repo', path.dirname(path.dirname(configPath)));

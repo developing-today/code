@@ -371,6 +371,39 @@ mod tests {
         assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
     }
 
+
+    #[test]
+    fn handoff_import_at_max_owner_epoch_is_refused() {
+        // #3961: prior = u64::MAX must never validate an import — the plain
+        // `prior + 1` wrapped to 0 in release (accepting new = 0) and panicked
+        // in debug/test. The checked form refuses every new epoch.
+        for new_owner_epoch in [0, 1, u64::MAX] {
+            let entries = vec![
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION_REGION_HANDOFF,
+                },
+                JournalEntry::EntityImported {
+                    handoff_id: "cd".repeat(16),
+                    entity_ref: "entity-2".to_owned(),
+                    source_region: "region-b".to_owned(),
+                    target_region: "region-a".to_owned(),
+                    prior_owner_epoch: u64::MAX,
+                    new_owner_epoch,
+                    program_module_hash: "module".to_owned(),
+                    payload_schema: "entity/v1".to_owned(),
+                    payload_digest: "digest-2".to_owned(),
+                    destination_event: handoff_event(),
+                },
+            ];
+            let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+            assert!(
+                error.to_string().contains("does not advance the owner epoch"),
+                "new={new_owner_epoch}: {error:#}"
+            );
+        }
+    }
+
     #[test]
     fn duplicate_handoff_export_in_journal_is_refused() {
         let entries = vec![

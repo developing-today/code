@@ -128,7 +128,10 @@ func namedFilters(q url.Values) []string {
 
 func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit == 0 {
 		limit = s.callSettings(r).Int("logstore.queryLimit")
 	}
@@ -200,7 +203,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if dim == "" {
 		dim = "calls"
 	}
-	top, _ := strconv.Atoi(q.Get("top"))
+	top, ok := parseOptionalIntQuery(w, q, "top")
+	if !ok {
+		return
+	}
 	if top <= 0 {
 		top = s.callSettings(r).Int("stats.top")
 	}
@@ -275,7 +281,11 @@ func capped[T any](rows []T, top int) []T {
 
 func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 	cs := s.callSettings(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	q := r.URL.Query()
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		limit = cs.Int("registry.limit")
 	}

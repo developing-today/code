@@ -458,7 +458,7 @@ impl WorldCore {
                         "journal import event claims a sequence"
                     );
                     ensure!(
-                        new_owner_epoch == prior_owner_epoch + 1,
+                        prior_owner_epoch.checked_add(1) == Some(new_owner_epoch),
                         "journal import for handoff {handoff_id:?} does not advance the owner epoch"
                     );
                     ensure!(
