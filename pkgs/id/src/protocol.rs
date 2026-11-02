@@ -742,8 +742,18 @@ impl MetaProtocol {
             }
         }
 
-        // The peer closed the connection; stop any streams still in flight.
-        streams.shutdown().await;
+        // The peer closed the connection. Drain admitted handlers instead
+        // of aborting them: shutdown() would cancel a handler at its next
+        // suspension point, and a mutating handler cancelled mid-flight
+        // (e.g. FileOps::rename, which deletes the source before awaiting
+        // the metadata transfer) can leave partial state behind. Each
+        // handler's network phases stay bounded by the stream deadline,
+        // so this drain terminates.
+        while let Some(result) = streams.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(%error, "meta stream handler task failed");
+            }
+        }
         Ok(())
     }
 
