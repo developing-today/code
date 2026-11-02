@@ -1718,6 +1718,9 @@ async fn download_module_admin_session<I: SessionIo>(
     {
         return Err("admin denied");
     }
+    // The admin credential validated: this session is authorized, so its
+    // outbound chunks charge the authorized bucket, not the pre-auth one.
+    io.mark_authorized();
     let bytes = service
         .stored_module_bytes(requested_hash)
         .await
