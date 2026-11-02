@@ -1248,6 +1248,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
                     world_hub.clone(),
                     web_cookie_secure,
+                    Some(serve_groups_log_path(groups_log.clone())),
                     Arc::clone(events),
                 )
                 .await?
@@ -1263,6 +1264,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                     crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
                     world_hub.clone(),
                     web_cookie_secure,
+                    Some(serve_groups_log_path(groups_log.clone())),
                 )
                 .await?
             }

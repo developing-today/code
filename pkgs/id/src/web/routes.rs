@@ -263,6 +263,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/world", get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
+        .route("/groups", get(super::groups::groups_page_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
         .route("/hash/{hash}", get(hash_redirect_handler))
         .route("/view/{*name}", get(view_handler))
