@@ -1057,6 +1057,30 @@ class ColdStore:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         name = f"{db_name}-{stamp}-{src.name}"
         file_id = self._resumable_upload(src, name, folder_id)
+        status, _h, resp = http_request(
+            "GET",
+            self.drive_base
+            + f"/files/{file_id}?"
+            + urllib.parse.urlencode({"fields": "id,md5Checksum,size"}),
+            headers=self._auth_headers(),
+        )
+        if status != 200:
+            raise ColdStoreError(
+                f"files.get after backup upload failed (HTTP {status})"
+            )
+        try:
+            info = json.loads(resp)
+            drive_md5 = info["md5Checksum"]
+            drive_size = int(info["size"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ColdStoreError(
+                "files.get after backup upload returned invalid metadata"
+            ) from exc
+        if drive_md5 != md5_file(src) or drive_size != size:
+            raise ColdStoreError(
+                "verification mismatch: Drive reports size/md5 that differ from "
+                "the local backup — backup NOT ledgered"
+            )
         conn = self.db()
         with conn:
             self.ledger_add(conn, "upload", size, "backup-upload", name)

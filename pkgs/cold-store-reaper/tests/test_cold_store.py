@@ -964,6 +964,54 @@ class TestBackups(ColdStoreTestBase):
         self.assertEqual(first, second)
         self.assertEqual(len(self.fake.folders), count)
 
+    def test_put_backup_verification_mismatch_does_not_ledger(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        upload = self.store._resumable_upload
+
+        def corrupt_after_upload(src, name, folder_id):
+            file_id = upload(src, name, folder_id)
+            self.fake.files[file_id] = b"corrupt stored bytes"
+            return file_id
+
+        with mock.patch.object(
+            self.store, "_resumable_upload", side_effect=corrupt_after_upload
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "verification mismatch"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-upload'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [])
+
+    def test_put_backup_readback_failure_does_not_ledger(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        request = cold_store.http_request
+
+        def fail_metadata_readback(method, url, *args, **kwargs):
+            if method == "GET" and "/files/" in url and "md5Checksum" in url:
+                return 503, {}, b"unavailable"
+            return request(method, url, *args, **kwargs)
+
+        with mock.patch(
+            "cold_store.http_request", side_effect=fail_metadata_readback
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "files.get after backup upload failed"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-upload'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [])
+
     def test_put_backup_naming_routing_ledger(self):
         dump = self.write_src("dump.sql", b"-- fake supabase dump\n" * 10)
         result = self.store.put_backup("supabase", str(dump))
