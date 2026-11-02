@@ -402,7 +402,11 @@ const parseHHMM = (s) => {
 
 // Is window `win` active at `now` (epoch ms)? Day and wall time are
 // read in the window's own timezone; start inclusive, end exclusive;
-// an end at or before start wraps past midnight.
+// an end at or before start wraps past midnight. A wrapping window's
+// after-midnight leg belongs to the day the window opened, so its
+// daysOfWeek check uses the previous day (#3874): a Fri 22:00-02:00
+// window is active Sat 01:00 and inactive Fri 01:00.
+const WEEKDAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const windowActive = (win, now) => {
   if (!win || typeof win !== "object") return false;
   const start = parseHHMM(win.start);
@@ -422,12 +426,21 @@ const windowActive = (win, now) => {
   }
   const get = (type) => parts.find((part) => part.type === type)?.value;
   const day = String(get("weekday") || "").slice(0, 3).toLowerCase();
-  if (Array.isArray(win.daysOfWeek) && win.daysOfWeek.length) {
-    const days = win.daysOfWeek.map((d) => String(d).slice(0, 3).toLowerCase());
-    if (!days.includes(day)) return false;
-  }
+  const days =
+    Array.isArray(win.daysOfWeek) && win.daysOfWeek.length
+      ? win.daysOfWeek.map((d) => String(d).slice(0, 3).toLowerCase())
+      : null;
+  const dayListed = (d) => !days || days.includes(d);
   const mins = Number(get("hour")) * 60 + Number(get("minute"));
-  return start <= end ? mins >= start && mins < end : mins >= start || mins < end;
+  if (start <= end)
+    return dayListed(day) && mins >= start && mins < end;
+  if (mins >= start) return dayListed(day);
+  if (mins < end) {
+    if (!days) return true;
+    const idx = WEEKDAY_NAMES.indexOf(day);
+    return idx >= 0 && days.includes(WEEKDAY_NAMES[(idx + 6) % 7]);
+  }
+  return false;
 };
 
 const targetEligible = (cfg, t, now) => {

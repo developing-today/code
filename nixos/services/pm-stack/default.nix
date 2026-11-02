@@ -130,8 +130,21 @@ in
             ExecStart = "${bun} run src/server.ts";
             EnvironmentFile = "${aggState}/.env";
             # The projector is a deployed service of this stack — never
-            # render it off (see the header note).
-            Environment = "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}";
+            # render it off (see the header note). The coverage snapshot
+            # is runtime state: keep it in the state dir, not the
+            # checkout — written into the working tree it dirtied the
+            # primary clone and failed pm-git-sync on every cycle
+            # (2026-11-01; the aggregator's config already supports
+            # PM_AGG_COVERAGE_SNAPSHOT_FILE for exactly this).
+            Environment = [
+              "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}"
+              "PM_AGG_COVERAGE_SNAPSHOT_FILE=${aggState}/coverage-snapshot.json"
+              # Roadmap annotations (#1284) are runtime state too: the
+              # first annotation would otherwise create
+              # roadmap-annotations.json inside this checkout and block
+              # pm-git-sync the same way (Codex P1 on PR #4054).
+              "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${aggState}/roadmap-annotations.json"
+            ];
             Restart = "on-failure";
             RestartSec = 5;
           };

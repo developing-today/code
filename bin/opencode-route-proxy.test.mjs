@@ -178,6 +178,7 @@ const startProxy = async (arg = {}) => {
     },
     "model_route_windows": {
       "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
+      "overnight": { "daysOfWeek": ["fri"], "start": "22:00", "end": "02:00", "timezone": "UTC" },
     },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
@@ -187,6 +188,7 @@ const startProxy = async (arg = {}) => {
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
+      "t-window-overnight": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "overnight" }, "leafB/m-b" ] },
       "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
       "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
       "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
@@ -484,6 +486,58 @@ test("a gate naming an unknown window fails closed", async () => {
     const rows = p.attempts();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// Overnight windows (#3874): the fixture "overnight" window is
+// Fri 22:00-02:00 UTC. 2026-11-06 is a Friday, 2026-11-07 a Saturday.
+// The after-midnight leg belongs to the day the window opened.
+const FRI_2300 = Date.UTC(2026, 10, 6, 23, 0);
+const SAT_0100 = Date.UTC(2026, 10, 7, 1, 0);
+const FRI_0100 = Date.UTC(2026, 10, 6, 1, 0);
+const SAT_2300 = Date.UTC(2026, 10, 7, 23, 0);
+
+test("overnight window is active on its opening evening", async () => {
+  const p = await startProxy({ nowMs: FRI_2300 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window stays active on the after-midnight leg", async () => {
+  const p = await startProxy({ nowMs: SAT_0100 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window is inactive on an unlisted day's after-midnight leg", async () => {
+  const p = await startProxy({ nowMs: FRI_0100 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window is inactive on an unlisted evening", async () => {
+  const p = await startProxy({ nowMs: SAT_2300 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
   } finally {
     await p.cleanup();
   }

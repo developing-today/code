@@ -71,6 +71,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
+use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     resolve_config,
@@ -778,6 +779,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_cap_policy,
         world_source_only,
     )?;
+    let apps_root = std::env::var_os("ID_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("apps"));
+    let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    for app in app_discovery.apps {
+        info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
+    }
+    for error in app_discovery.errors {
+        warn!(%error, "serve: app discovery failed");
+    }
     #[cfg(not(feature = "world"))]
     let _ = &world_allowed_caps;
     let key = load_or_create_keypair(KEY_FILE).await?;
@@ -819,6 +830,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
+    let chat_presence = PresenceTable::new();
 
     // Always create Gossip — iroh-docs needs it even if peer discovery is off
     let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -1094,6 +1106,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
+        let gossip_chat_presence = chat_presence.clone();
+        let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
         let gossip_endpoint = router.endpoint().clone();
@@ -1103,6 +1117,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 sender,
                 receiver,
                 gossip_peer_discovery,
+                gossip_chat_presence,
+                gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
             )
@@ -1491,6 +1507,8 @@ async fn run_gossip_loop(
     sender: distributed_topic_tracker::GossipSender,
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
+    chat_presence: PresenceTable,
+    signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
 ) {
@@ -1536,17 +1554,53 @@ async fn run_gossip_loop(
                     debug!("gossip announcement serialization error: {}", e);
                 }
             }
+
+            // Presence rides the same gossip plane (#2809): an ephemeral
+            // heartbeat naming this node. Channel membership lives in the
+            // chat layer above serve, so this heartbeat names no channels;
+            // receivers scope and read it through PresenceTable.
+            let mut presence = PresenceHeartbeat::new(
+                *announce_node_id.as_bytes(),
+                Vec::new(),
+                Vec::new(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            );
+            presence.sign(&signing_key);
+            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                debug!("gossip presence broadcast error: {}", e);
+            }
         }
     });
 
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
+    let recv_presence = chat_presence.clone();
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
                 Ok(event) => match event {
                     iroh_gossip::api::Event::Received(msg) => {
-                        match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
+                        if let Some(heartbeat) = decode_frame(&msg.content) {
+                            // Presence is a claim about `node`, and the gossip
+                            // topic is public and does not authenticate
+                            // authors: accept the frame only when the
+                            // heartbeat's signature by its claimed node
+                            // verifies, so nobody can forge or suppress
+                            // another node's presence (#2809 Codex review).
+                            if heartbeat.verify() {
+                                debug!(
+                                    "presence heartbeat from {}: {} channel(s)",
+                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                    heartbeat.channels.len()
+                                );
+                                recv_presence.update(heartbeat);
+                            } else {
+                                debug!("presence heartbeat failed signature verification, dropped");
+                            }
+                        } else {
+                            match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
                             Ok(announcement) => {
                                 debug!(
                                     "peer announcement from {}: blob_count={}",
@@ -1554,8 +1608,12 @@ async fn run_gossip_loop(
                                 );
                                 recv_discovery.update(announcement);
                             }
-                            Err(e) => {
-                                debug!("failed to deserialize peer announcement: {}", e);
+                                Err(e) => {
+                                    debug!(
+                                        "failed to deserialize peer announcement: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
@@ -1579,12 +1637,25 @@ async fn run_gossip_loop(
 
     // Spawn stale cleanup task — probes stale peers before removal
     let cleanup_discovery = peer_discovery;
+    let cleanup_presence = chat_presence;
 
     let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(STALE_CHECK_INTERVAL);
 
         loop {
             interval.tick().await;
+
+            // Presence entries expire on their own stamps; prune them here so a
+            // long-running server does not retain every node key it has ever
+            // seen (#2809 Codex review). This runs even when no discovery peer
+            // is stale.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let pruned = cleanup_presence.prune_at(now_secs);
+            if pruned > 0 {
+                debug!("pruned {} expired presence entrie(s)", pruned);
+            }
 
             let stale = cleanup_discovery.stale_peers();
             if stale.is_empty() {

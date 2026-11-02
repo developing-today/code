@@ -16,6 +16,7 @@ use id::chain::{ChainExt, Event, sign};
 use id::documents::{DOCUMENT_KIND, DocumentRef};
 use id::event_store::EventStore;
 use id::membership::AuthId;
+use id::notes::{CREATE_KIND as NOTE_CREATE_KIND, NoteOp, REVISE_KIND as NOTE_REVISE_KIND};
 use id::membership::body::encode_body;
 use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp};
 use id::waiting::WaitingLimits;
@@ -68,6 +69,7 @@ impl Chains {
             tag,
             document,
             removes: None,
+            note: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -106,6 +108,69 @@ impl Chains {
             None,
             Some(doc),
         )
+    }
+
+    fn note_create(
+        &mut self,
+        who: u8,
+        content: Hash,
+    ) -> (Event, Option<Vec<u8>>) {
+        let doc = DocumentRef {
+            media_type: "text/plain".to_owned(),
+            content,
+            size: 100,
+        };
+        let (seq, backlink) = match self.last.get(&who) {
+            Some((seq, hash)) => (seq + 1, Some(*hash)),
+            None => (0, None),
+        };
+        let ext = ChainExt {
+            kind: NOTE_CREATE_KIND.to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            note: Some(NoteOp::Create { content: doc }),
+        };
+        let event = sign(&key(who), seq, backlink, None, ext).unwrap();
+        self.last.insert(who, (seq, event.id));
+        (event, None)
+    }
+
+    fn note_revise(
+        &mut self,
+        who: u8,
+        after: &[Hash],
+        note: Hash,
+        parents: &[Hash],
+        content: Hash,
+    ) -> (Event, Option<Vec<u8>>) {
+        let doc = DocumentRef {
+            media_type: "text/plain".to_owned(),
+            content,
+            size: 100,
+        };
+        let (seq, backlink) = match self.last.get(&who) {
+            Some((seq, hash)) => (seq + 1, Some(*hash)),
+            None => (0, None),
+        };
+        let ext = ChainExt {
+            kind: NOTE_REVISE_KIND.to_owned(),
+            group: None,
+            after: after.to_vec(),
+            tag: None,
+            document: None,
+            removes: None,
+            note: Some(NoteOp::Revise {
+                note,
+                content: doc,
+                parents: parents.to_vec(),
+            }),
+        };
+        let event = sign(&key(who), seq, backlink, None, ext).unwrap();
+        self.last.insert(who, (seq, event.id));
+        (event, None)
     }
 
     fn tag_set(
@@ -437,5 +502,58 @@ fn test_active_backlink_walks_preserved_for_tail_prune() {
     assert_eq!(bob_chain.head, Some(b1.id));
 
     // Invariants check still passes
+    store.check_invariants().unwrap();
+}
+
+#[test]
+fn test_prune_preserves_note_parents_reachable_only_via_note_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path());
+    let mut chains = Chains::new();
+
+    // Alice creates a note; the create event is the note's stable ID and first revision.
+    let (create, create_body) = chains.note_create(1, Hash::digest(b"note v1"));
+    deliver(&mut store, &create, create_body.as_deref());
+
+    // Alice revises it normally: `after` names the create event.
+    let (rev1, rev1_body) = chains.note_revise(
+        1,
+        &[create.id],
+        create.id,
+        &[create.id],
+        Hash::digest(b"note v2"),
+    );
+    deliver(&mut store, &rev1, rev1_body.as_deref());
+
+    // Bob revises again, but his event's `after` is empty: the ONLY references to the
+    // note and to rev1 are inside the note operation itself.
+    let (rev2, rev2_body) = chains.note_revise(
+        2,
+        &[],
+        create.id,
+        &[rev1.id],
+        Hash::digest(b"note v3"),
+    );
+    deliver(&mut store, &rev2, rev2_body.as_deref());
+
+    // Charlie writes an unrelated event that saw rev2, keeping rev2 (and, through its
+    // note references, its history) in the surviving frontier.
+    let (anchor_event, anchor_body) =
+        chains.sign(3, None, &[rev2.id], "message", Some(b"seen".to_vec()), None, None);
+    deliver(&mut store, &anchor_event, anchor_body.as_deref());
+
+    store.check_invariants().unwrap();
+
+    // Cut at rev1: rev1 and the create event are behind the cut and would be pruned
+    // unless rev2's note references protect them.
+    let count = store
+        .prune_behind_cut(&[rev1.id], &[anchor_event.id])
+        .unwrap();
+    assert_eq!(count, 0, "note history reachable only via note refs must survive");
+    assert!(store.event_by_id(&create.id).unwrap().is_some());
+    assert!(store.event_by_id(&rev1.id).unwrap().is_some());
+    assert!(store.event_by_id(&rev2.id).unwrap().is_some());
+    assert!(store.event_by_id(&anchor_event.id).unwrap().is_some());
+
     store.check_invariants().unwrap();
 }
