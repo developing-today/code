@@ -1233,25 +1233,39 @@ impl BoardGraph {
                 _ => None,
             })
             .collect();
-        let mut active_attestations: BTreeSet<ArtifactHash> = attestation_edges
+        let eligible_attestations: BTreeSet<ArtifactHash> = attestation_edges
             .iter()
             .map(|(hash, _)| hash.clone())
             .filter(|hash| !superseded.contains(hash))
             .collect();
-        let attestation_superseded: BTreeSet<ArtifactHash> = loop {
-            let named: BTreeSet<ArtifactHash> = attestation_edges
-                .iter()
-                .filter(|(hash, _)| active_attestations.contains(hash))
-                .filter_map(|(_, previous)| previous.clone())
-                .collect();
-            let next: BTreeSet<ArtifactHash> = active_attestations
-                .difference(&named)
-                .cloned()
-                .collect();
-            if next == active_attestations {
-                break named;
+        // Recompute the active set from the eligible set on every pass,
+        // never by only shrinking the previous pass: in a chain
+        // grant -> revocation -> grant -> revocation, the middle
+        // revocation must reactivate once the grant superseding it is
+        // itself superseded, and a shrinking-only loop can never bring
+        // it back (Codex P1 on PR #4512). Supersedes edges always name
+        // an already-inserted record, so the graph is acyclic and this
+        // settles within one pass per chain link; the pass cap only
+        // bounds a graph that somehow broke that rule.
+        let mut active_attestations: BTreeSet<ArtifactHash> = eligible_attestations.clone();
+        let attestation_superseded: BTreeSet<ArtifactHash> = {
+            let mut named: BTreeSet<ArtifactHash> = BTreeSet::new();
+            for _ in 0..=attestation_edges.len() {
+                named = attestation_edges
+                    .iter()
+                    .filter(|(hash, _)| active_attestations.contains(hash))
+                    .filter_map(|(_, previous)| previous.clone())
+                    .collect();
+                let next: BTreeSet<ArtifactHash> = eligible_attestations
+                    .difference(&named)
+                    .cloned()
+                    .collect();
+                if next == active_attestations {
+                    break;
+                }
+                active_attestations = next;
             }
-            active_attestations = next;
+            named
         };
         let current_moderators: BTreeSet<String> = self
             .objects
@@ -2527,6 +2541,76 @@ mod tests {
         let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
         assert_eq!(view.hidden.len(), 1);
         assert!(!view.objects.contains(&post_hash));
+    }
+
+    #[test]
+    fn attestation_chain_frontier_reinstates_and_re_revokes() {
+        // Chain grant -> revocation -> grant -> revocation, each
+        // attestation superseding its predecessor: only the last
+        // revocation is the frontier, the first revocation reactivates
+        // once the second grant falls, and the first grant stays
+        // revoked (Codex P1 on PR #4512).
+        let owner = key(45);
+        let moderator = key(46);
+        let author = key(47);
+        let moderator_key = hex_encode(&moderator.verifying_key().to_bytes());
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&owner)).unwrap();
+        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let post_hash = graph
+            .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
+            .unwrap();
+        let attestation = |seq: u64, granted: bool, supersedes: Option<ArtifactHash>| {
+            SignedBoardObject::sign(
+                &owner,
+                seq,
+                "",
+                BoardObject::RoleAttestation(RoleAttestation {
+                    board: root_hash.clone(),
+                    member: moderator_key.clone(),
+                    role: BoardRole::Moderator,
+                    granted,
+                    supersedes,
+                }),
+            )
+            .unwrap()
+        };
+        let first_grant = graph.insert(attestation(2, true, None)).unwrap();
+        graph
+            .insert(moderation(
+                &moderator,
+                1,
+                root_hash.clone(),
+                post_hash.clone(),
+                ModerationActionKind::Hide,
+                Some("spam"),
+            ))
+            .unwrap();
+        let hidden = |graph: &BoardGraph| {
+            graph
+                .compose_view(&root_hash, &ViewLayers::default())
+                .unwrap()
+                .hidden
+                .len()
+        };
+        assert_eq!(hidden(&graph), 1);
+
+        let first_revocation = graph
+            .insert(attestation(3, false, Some(first_grant)))
+            .unwrap();
+        assert_eq!(hidden(&graph), 0);
+
+        let second_grant = graph
+            .insert(attestation(4, true, Some(first_revocation)))
+            .unwrap();
+        assert_eq!(hidden(&graph), 1);
+
+        graph
+            .insert(attestation(5, false, Some(second_grant)))
+            .unwrap();
+        assert_eq!(hidden(&graph), 0);
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert!(view.objects.contains(&post_hash));
     }
 
     #[test]
