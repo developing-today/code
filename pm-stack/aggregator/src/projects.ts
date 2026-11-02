@@ -247,6 +247,8 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     typeof p.ref === "string" &&
     typeof p.repo === "string" &&
     typeof p.number === "number" &&
+    Number.isInteger(p.number) &&
+    p.number > 0 &&
     typeof p.issueUrl === "string" &&
     typeof p.title === "string" &&
     // url/projectUrl/contentKind and the Project single-select fields are

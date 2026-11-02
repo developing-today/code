@@ -121,8 +121,34 @@ const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
-const outArg = process.argv.indexOf("--out");
-const outPath = outArg >= 0 ? process.argv[outArg + 1] : (process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json"));
+// Strict operator-argument contract (#3352, #3509): the only accepted
+// forms are no arguments or one documented separated `--out <path>`.
+// Every other token — a trailing/empty/flag-like --out value, an
+// --out=<path> join, a duplicate --out, or any unknown or positional
+// token — is a usage error (exit 2) raised here, before any collection,
+// network, subprocess, lock, or file-write side effect.
+function usageError(message: string): never {
+  console.error(`collect-fleet-feed: ${message}; usage: bun run scripts/collect-fleet-feed.ts [--out <path>]`);
+  process.exit(2);
+}
+
+function resolveOutPath(): string {
+  const fallback = process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json");
+  const args = process.argv.slice(2);
+  if (args.length === 0) return fallback;
+  if (args.filter((a) => a === "--out").length > 1)
+    usageError(`duplicate --out (got ${JSON.stringify(args)}); the documented form is a single --out <path>`);
+  if (args[0] === "--out") {
+    const value: string | undefined = args[1];
+    if (value === undefined || value === "" || value.startsWith("--"))
+      usageError(`--out requires a path value (got ${value === undefined ? "no value" : JSON.stringify(value)})`);
+    if (args.length > 2) usageError(`unexpected argument ${JSON.stringify(args[2])}`);
+    return value;
+  }
+  usageError(`unknown argument ${JSON.stringify(args[0])}`);
+}
+
+const outPath = resolveOutPath();
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(
