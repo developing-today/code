@@ -306,9 +306,11 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 			return nil
 		}
 		delete(pending, f.ID)
-		if err := w.Close(); err != nil {
-			return err
-		}
+		stagedPath := w.Name()
+		defer func() {
+			_ = w.Close()
+			_ = os.Remove(stagedPath)
+		}()
 		name := "artifact"
 		match := -1
 		for i := range res.Artifacts {
@@ -339,11 +341,15 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 			os.Remove(dest)
 			return err
 		}
+		if err := w.Close(); err != nil {
+			claim.Close()
+			os.Remove(dest)
+			return err
+		}
 		if err := claim.Close(); err != nil {
 			os.Remove(dest)
 			return err
 		}
-		os.Remove(w.Name())
 		if match >= 0 {
 			res.Artifacts[match].Path = dest
 		}
