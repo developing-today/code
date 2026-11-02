@@ -326,6 +326,42 @@ const WARM_TTL_MS = 2 * 60 * 60 * 1000;
 const WARM_MAX_SESSIONS = 64;
 const WARM_TURN_TIMEOUT_MS = 300 * 1000;
 
+// Exec-fallback turn deadline (#2159): the exec path settles a request
+// only when its child closes, so without a deadline a hung `muse exec`
+// child wedges the request forever and leaks the process. The override
+// is a strict positive integer of milliseconds within Node's timer
+// range (<= 2^31 - 1; setTimeout clamps larger delays to ~1ms, which
+// would time out every turn immediately); anything else warns once
+// and falls back to the default — 0/disabled is not expressible.
+const EXEC_TURN_TIMEOUT_MS = 300 * 1000;
+const EXEC_KILL_GRACE_MS = 3000;
+const parseExecTurnTimeoutMs = () => {
+  const raw = process.env.MUSE_PROXY_EXEC_TURN_TIMEOUT_MS;
+  if (raw === undefined) return EXEC_TURN_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0 || n > 2147483647) {
+    console.warn(`[muse-proxy] ignoring invalid MUSE_PROXY_EXEC_TURN_TIMEOUT_MS=${JSON.stringify(raw)}; using ${EXEC_TURN_TIMEOUT_MS}ms`);
+    return EXEC_TURN_TIMEOUT_MS;
+  }
+  return n;
+};
+const EXEC_TURN_TIMEOUT_MS_VALUE = parseExecTurnTimeoutMs();
+
+// Shared kill escalation for the exec fallback (#2159): SIGTERM, then
+// SIGKILL after a grace period. Used by both the turn deadline and the
+// client-disconnect handler, and idempotent so the two can race safely.
+const killChildWithEscalation = (child) => {
+  if (!child || child.__killEscalationStarted) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.__killEscalationStarted = true;
+  try { child.kill('SIGTERM'); } catch (_) {}
+  const grace = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch (_) {}
+  }, EXEC_KILL_GRACE_MS);
+  grace.unref?.();
+  child.once('close', () => clearTimeout(grace));
+};
+
 // MSP command ids must be UUIDv7 (the host rejects v4: "expected UUIDv7").
 let uuidV7LastMs = -1;
 let uuidV7Seq = 0;
@@ -1701,9 +1737,35 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      // Turn deadline (#2159): from spawn, exec fallback only. The kill
+      // normally produces the child's close event, and the close handler
+      // below settles the request through the existing error shape. But
+      // 'close' waits for the child's stdio pipes to drain, and a
+      // descendant that inherited those pipes can hold them open
+      // indefinitely after the child itself is dead — so the deadline
+      // also arms an independent settle at deadline + kill grace that
+      // bounds settlement and prompt-file cleanup whether or not
+      // 'close' ever fires (Codex review on PR #4242).
+      let timedOut = false;
+      let settleTimer = null;
+      const deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        killChildWithEscalation(child);
+        // The +1s past the grace lets the normal SIGKILL path settle
+        // through 'close' first; only a 'close' that never comes (the
+        // descendant-pipe case) actually reaches this timer.
+        settleTimer = setTimeout(() => {
+          try { child.stdout?.destroy(); } catch (_) {}
+          try { child.stderr?.destroy(); } catch (_) {}
+          settleRequest(null, null);
+        }, EXEC_KILL_GRACE_MS + 1000);
+        settleTimer.unref?.();
+      }, EXEC_TURN_TIMEOUT_MS_VALUE);
+      deadlineTimer.unref?.();
+
       res.on('close', () => {
         if (!res.writableEnded) {
-          try { child.kill('SIGTERM'); } catch (_) {}
+          killChildWithEscalation(child);
         }
       });
 
@@ -1794,12 +1856,49 @@ const server = http.createServer((req, res) => {
         }
       });
 
-      child.on('close', (code, signal) => {
+      const emitFailure = (detail) => {
+        const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
+        if (stream) {
+          // The 200 + text/event-stream headers are already on the wire,
+          // so a bare JSON body would be invisible to an SSE client
+          // parsing `data:` lines — it would see an empty, successful
+          // stream (#670). Frame the error as an SSE event and close
+          // the stream with [DONE] instead.
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
+            res.write('data: [DONE]\n\n');
+          }
+          res.end();
+          return;
+        }
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+        }
+        res.end(JSON.stringify(errorBody));
+      };
+
+      let settled = false;
+      const settleRequest = (code, signal) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        if (settleTimer) clearTimeout(settleTimer);
         if (lineBuffer.trim().length > 0) {
           processJsonLine(lineBuffer);
           lineBuffer = '';
         }
         try { fs.unlinkSync(promptFile); } catch (_) {}
+
+        // Deadline check FIRST (#2159): a turn killed for exceeding the
+        // deadline is a timeout failure even if the child had already
+        // emitted a completed terminal event — never a silent
+        // successful stop — and the #484 reconciliation is skipped.
+        if (timedOut) {
+          if (!res.writableEnded) {
+            emitFailure(`muse exec turn timed out after ${EXEC_TURN_TIMEOUT_MS_VALUE}ms`);
+          }
+          return;
+        }
 
         if (res.writableEnded) return;
 
@@ -1840,24 +1939,7 @@ const server = http.createServer((req, res) => {
               ? `muse exec terminated by signal ${signal}`
               : `muse exec exited with code ${code}`;
           const detail = (stderrLine || fallback).trim();
-          const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
-          if (stream) {
-            // The 200 + text/event-stream headers are already on the wire,
-            // so a bare JSON body would be invisible to an SSE client
-            // parsing `data:` lines — it would see an empty, successful
-            // stream (#670). Frame the error as an SSE event and close
-            // the stream with [DONE] instead.
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
-              res.write('data: [DONE]\n\n');
-            }
-            res.end();
-            return;
-          }
-          if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-          }
-          res.end(JSON.stringify(errorBody));
+          emitFailure(detail);
           return;
         }
 
@@ -1921,9 +2003,15 @@ const server = http.createServer((req, res) => {
             }
           }, null, 2));
         }
-      });
+      };
+
+      child.on('close', settleRequest);
 
       child.on('error', err => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        if (settleTimer) clearTimeout(settleTimer);
         console.error(`[muse-proxy child error] ${err.message}`);
         try { fs.unlinkSync(promptFile); } catch (_) {}
         if (!res.headersSent) {
