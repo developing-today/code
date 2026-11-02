@@ -20,9 +20,10 @@
 //!
 //! [`plain_field`] quotes a value when it contains a character that could
 //! break or blur a **tab-separated** row: any control character (this includes
-//! `LF`, `CR` and `TAB`, plus NUL, DEL, `NEL` and the rest) and the Unicode
-//! line/paragraph separators `U+2028` / `U+2029`. Everything else — including
-//! ASCII space and ordinary Unicode — is printed byte-identically to before.
+//! `LF`, `CR` and `TAB`, plus NUL, DEL, `NEL` and the rest), Unicode format
+//! characters (Cf), and the line/paragraph separators `U+2028` / `U+2029`.
+//! Everything else — including ASCII space and ordinary Unicode — is printed
+//! byte-identically to before.
 //!
 //! The trigger set is deliberately narrower than the `key=value` renderer's
 //! (#1611 also quotes on a space): a space does not delimit a TSV field, so a
@@ -38,11 +39,28 @@ use std::fmt::Display;
 /// Returns `true` for characters that could break a tab-separated row.
 ///
 /// Control characters cover `LF`, `CR`, `TAB`, NUL and every other C0/C1
-/// code point (including `NEL`, `U+0085`); the Unicode line and paragraph
-/// separators are included because some consumers treat them as line breaks
-/// even though they are not control characters.
+/// code point (including `NEL`, `U+0085`); format characters can be invisible
+/// or reorder text; and the Unicode line and paragraph separators are included
+/// because some consumers treat them as line breaks even though they are not
+/// control characters.
 fn breaks_row(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+    c.is_control() || crate::is_format_char(c) || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+fn push_unicode_escape(rendered: &mut String, c: char) {
+    use std::fmt::Write as _;
+
+    let code_point = u32::from(c);
+    if code_point <= 0xFFFF {
+        // Writing into a String cannot fail.
+        let _ = write!(rendered, "\\u{code_point:04x}");
+    } else {
+        // JSON escapes supplementary scalars as a UTF-16 surrogate pair.
+        let scalar = code_point - 0x1_0000;
+        let high = 0xD800 + (scalar >> 10);
+        let low = 0xDC00 + (scalar & 0x3FF);
+        let _ = write!(rendered, "\\u{high:04x}\\u{low:04x}");
+    }
 }
 
 /// Renders `value` as one row-safe field.
@@ -78,9 +96,7 @@ pub fn plain_field(value: &str) -> String {
             '\r' => rendered.push_str("\\r"),
             '\t' => rendered.push_str("\\t"),
             c if breaks_row(c) => {
-                use std::fmt::Write as _;
-                // Writing into a String cannot fail.
-                let _ = write!(rendered, "\\u{:04x}", u32::from(c));
+                push_unicode_escape(&mut rendered, c);
             }
             c => rendered.push(c),
         }
@@ -141,6 +157,50 @@ mod tests {
         for c in rendered.chars() {
             assert!(!breaks_row(c), "escaped output still holds {c:?}");
         }
+    }
+
+    #[test]
+    fn format_characters_are_quoted_and_escaped_alone_or_with_a_tab() {
+        let alone = plain_field("\u{202e}");
+        assert_eq!(alone, r#""\u202e""#);
+        assert!(!alone.contains('\u{202e}'));
+        assert_eq!(serde_json::from_str::<String>(&alone).unwrap(), "\u{202e}");
+
+        let with_tab = plain_field("a\u{202e}\tb");
+        assert_eq!(with_tab, r#""a\u202e\tb""#);
+        assert!(!with_tab.contains('\u{202e}'));
+        assert_eq!(
+            serde_json::from_str::<String>(&with_tab).unwrap(),
+            "a\u{202e}\tb"
+        );
+    }
+
+    #[test]
+    fn every_shared_format_character_is_json_escaped() {
+        let mut count = 0;
+        for code_point in 0..=0x10_FFFF {
+            let Some(c) = char::from_u32(code_point) else {
+                continue;
+            };
+            if !crate::is_format_char(c) {
+                continue;
+            }
+
+            let value = c.to_string();
+            let rendered = plain_field(&value);
+            assert!(rendered.starts_with('"') && rendered.ends_with('"'));
+            assert!(
+                rendered.contains("\\u"),
+                "{c:?} was not escaped: {rendered:?}"
+            );
+            assert!(!rendered.contains(c), "raw format character {c:?} remains");
+            assert_eq!(serde_json::from_str::<String>(&rendered).unwrap(), value);
+            count += 1;
+        }
+        assert!(
+            count > 100,
+            "expected the complete Unicode 16 Cf set, got {count}"
+        );
     }
 
     #[test]

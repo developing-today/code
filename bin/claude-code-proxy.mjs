@@ -36,6 +36,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
 
 // Default port 18749: the next free port in the fleet family (clef 18742,
 // agy 18743, codex 18744, antigravity-ls 18745, design-code 18746,
@@ -503,7 +504,9 @@ const chains = new Map();
 const enqueue = (key, job) => {
   const prev = chains.get(key) || Promise.resolve();
   const run = prev.then(job, job);
-  chains.set(key, run.catch(() => {}));
+  const stored = run.catch(() => {});
+  chains.set(key, stored);
+  stored.then(() => { if (chains.get(key) === stored) chains.delete(key); });
   return run;
 };
 
@@ -700,7 +703,8 @@ const server = http.createServer((req, res) => {
       endpoint: '/v1/chat/completions',
       sessions: {
         live: [...liveSessions.values()].filter(s => !s.dead).length,
-        stored: sessionStore.size
+        stored: sessionStore.size,
+        chains: chains.size
       }
     }, null, 2));
     return;
@@ -717,16 +721,18 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
       }
     });
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try { body = JSON.parse(bodyText); } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });

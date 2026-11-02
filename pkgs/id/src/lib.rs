@@ -155,6 +155,7 @@
 pub use id_core::access;
 pub mod abuse;
 pub mod aliases;
+pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
@@ -167,6 +168,8 @@ pub mod chat_presence;
 pub mod cli;
 pub mod commands;
 pub use id_core::connectivity;
+pub mod currency;
+pub mod currency_poc;
 pub mod dht;
 #[cfg(feature = "world")]
 pub mod directory;
@@ -200,6 +203,7 @@ pub mod local_events;
 pub mod log_sync;
 pub use id_core::membership;
 pub mod meta_client;
+pub mod note_links;
 pub mod notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
@@ -224,6 +228,7 @@ pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
+pub(crate) use id_core::is_format_char;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
 pub use id_core::waiting;

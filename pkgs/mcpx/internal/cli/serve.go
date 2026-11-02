@@ -552,6 +552,7 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 		TaskMaxTTL:          a.Settings().Duration("protoTasks.maxTTL"),
 		TaskMaxPerRequestor: a.Settings().Int("protoTasks.maxPerRequestor"),
 		TaskWindowPerMinute: perMinuteSetting(a.Settings().Int("protoTasks.perMinute")),
+		TaskCancelGrace:     a.Settings().Duration("protoTasks.cancelGrace"),
 	}
 	srv.Cache = mcpserver.Cache{
 		List: a.Settings().Duration("protoMessages.listMaxAge"),

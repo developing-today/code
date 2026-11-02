@@ -300,41 +300,41 @@ func (r *Registry) DiagnoseCatalog() diagnose.Catalog {
 // caller already has an instance, the scope key is the answer and a question
 // would be theatre.
 //
-// The returned key is the one to lease. Every path returns something: an
+// The returned scope is the one to lease. Every path returns something: an
 // unanswered question falls back to the configured default, because the
 // caller is frequently headless and a call that waits forever is worse than
 // one that takes the conservative option.
-func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.CallContext, key string) string {
+func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.CallContext, rs config.ResolvedScope) config.ResolvedScope {
 	if r.consumer.Disambiguate != "ask" || r.broker == nil {
-		return key
+		return rs
 	}
 	st := p.Status()
 	if st.Sharing != string(config.SharingExclusive) || len(st.Instances) < 2 {
-		return key
+		return rs
 	}
 	choices := []elicit.Choice{{
-		Value: key, Title: "new",
+		Value: rs.Key, Title: "new",
 		Detail: "start an instance for this caller, which is what happens today",
 	}}
-	recent := key
+	recent := rs
 	bestIdle := -1
 	for _, in := range st.Instances {
-		if in.Key == key {
+		if in.Key == rs.Key {
 			// The caller already has one. That is the answer.
-			return key
+			return rs
 		}
 		choices = append(choices, elicit.Choice{
 			Value: in.Key, Title: in.Key, Detail: describeInstance(in),
 		})
 		if bestIdle < 0 || in.IdleSec < bestIdle {
-			bestIdle, recent = in.IdleSec, in.Key
+			bestIdle, recent = in.IdleSec, resolvedInstanceScope(in)
 		}
 	}
 	sort.SliceStable(choices[1:], func(i, j int) bool {
 		return choices[1+i].Title < choices[1+j].Title
 	})
 
-	fallback := key
+	fallback := rs
 	if r.consumer.DisambiguateDefault == "recent" {
 		fallback = recent
 	}
@@ -344,7 +344,7 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 		Message: fmt.Sprintf("%s has %d live instances and this call named none of them. Which should it use?",
 			p.Namespace(), len(st.Instances)),
 		Choices: choices,
-		Default: fallback,
+		Default: fallback.Key,
 		TTL:     r.consumer.AskTimeout,
 	})
 	opened, err := r.broker.OpenRequest(req)
@@ -358,10 +358,10 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 	defer cancel()
 	ans, aerr := r.broker.Await(actx, opened.ID)
 	if aerr != nil {
-		r.logf("disambiguate %s: nobody answered, using %s", p.Name(), fallback)
+		r.logf("disambiguate %s: nobody answered, using %s", p.Name(), fallback.Key)
 		return fallback
 	}
-	chosen, answered := elicit.Resolve(ans, elicit.FieldInstance, fallback)
+	chosen, answered := elicit.Resolve(ans, elicit.FieldInstance, fallback.Key)
 	if !answered {
 		return fallback
 	}
@@ -370,11 +370,27 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 	// text somebody typed.
 	for _, c := range choices {
 		if c.Value == chosen {
-			return chosen
+			if chosen == rs.Key {
+				return rs
+			}
+			for _, in := range st.Instances {
+				if in.Key == chosen {
+					return resolvedInstanceScope(in)
+				}
+			}
+			return config.ResolvedScope{Key: chosen}
 		}
 	}
-	r.logf("disambiguate %s: %q is not one of the choices, using %s", p.Name(), chosen, fallback)
+	r.logf("disambiguate %s: %q is not one of the choices, using %s", p.Name(), chosen, fallback.Key)
 	return fallback
+}
+
+// resolvedInstanceScope carries the root chosen with a live instance into
+// Acquire. The instance may need a new protocol lane or may exit while the
+// disambiguation answer is pending, so the selected root cannot be recovered
+// by assuming Acquire will reuse the exact process shown in the choices.
+func resolvedInstanceScope(in pool.InstanceStatus) config.ResolvedScope {
+	return config.ResolvedScope{Key: in.Key, Root: in.Root}
 }
 
 func describeInstance(in pool.InstanceStatus) string {

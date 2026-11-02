@@ -31,6 +31,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
 
 // Default port 18747: 18746 is claimed by design-code-proxy
 // (DESIGN_CODE_PROXY_PORT) in this repo's config, so muse-proxy takes the
@@ -681,7 +682,9 @@ const warmChains = new Map();
 const enqueueWarm = (key, job) => {
   const prev = warmChains.get(key) || Promise.resolve();
   const run = prev.then(job, job);
-  warmChains.set(key, run.catch(() => {}));
+  const stored = run.catch(() => {});
+  warmChains.set(key, stored);
+  stored.then(() => { if (warmChains.get(key) === stored) warmChains.delete(key); });
   return run;
 };
 
@@ -1428,7 +1431,8 @@ const server = http.createServer((req, res) => {
         enabled: WARM_ENABLED,
         hostGen: warmHost.gen,
         hostUp: Boolean(warmHost.child),
-        sessions: warmStore.map.size
+        sessions: warmStore.map.size,
+        chains: warmChains.size
       },
       direct: {
         enabled: DIRECT_ENABLED,
@@ -1480,16 +1484,18 @@ const server = http.createServer((req, res) => {
   // HTTP response is piped through as-is. Without direct credentials the
   // route is not offered (404, as before direct mode existed).
   if (req.method === 'POST' && (pathname === '/v1/responses' || pathname === '/responses')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
       }
     });
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       const keyResult = await getDirectKey();
       if (keyResult.status === 'disabled' || keyResult.status === 'none') {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1578,10 +1584,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -1589,6 +1595,8 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);

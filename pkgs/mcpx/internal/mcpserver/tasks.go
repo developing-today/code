@@ -44,6 +44,7 @@ func (s *Server) tasks() *taskStore {
 			s.taskStore.MaxTTL = tm.TaskMaxTTL
 			s.taskStore.MaxPerRequestor = tm.TaskMaxPerRequestor
 			s.taskStore.PerMinute = tm.TaskWindowPerMinute
+			s.taskStore.CancelGrace = tm.TaskCancelGrace
 		}
 	}
 	return s.taskStore
@@ -671,7 +672,10 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		if cur, ok := st.Get(p.TaskID); ok && tasks.Terminal(cur.Status) {
 			return fail(codeInvalidParams, "task "+p.TaskID+" is already "+cur.Status)
 		}
-		snap, ok := st.Cancel(p.TaskID)
+		// Legacy semantics stay immediate and sticky (see
+		// tasks.Store.CancelImmediate); the cooperative grace window
+		// is the modern extension's alone.
+		snap, ok := st.CancelImmediate(p.TaskID, "cancelled")
 		if !ok {
 			return missing()
 		}
