@@ -5,7 +5,7 @@ description: Route a research package (doc/<UTC>_research_<slug>/) through the r
 
 # Research workflow (router)
 
-Moves a research package from S0 (intake) to S8 (implement). It reads machine state, decides what runs next, dispatches one stage skill per unit of work to parallel workers and lands their PRs. The stage contract is in [stages.md](/planning/workflow/stages.md), and the dispatch and merge rules are in [collaboration.md](/planning/workflow/collaboration.md) and [ordering.md](/planning/workflow/ordering.md). The router is an orchestrator. It writes only merge commits, the generated views, lease and log entries, and issue/PR bookkeeping. It never writes concept, research, design, plan or code content.
+Moves a research package from S0 (intake) to S8 (implement). It reads machine state, decides what runs next, dispatches one stage skill per unit of work to parallel workers and lands their PRs. The stage contract is in [stages.md](../../../planning/workflow/stages.md), and the dispatch and merge rules are in [collaboration.md](../../../planning/workflow/collaboration.md) and [ordering.md](../../../planning/workflow/ordering.md). The router is an orchestrator. It writes only merge commits, the generated views, lease and log entries, and issue/PR bookkeeping. It never writes concept, research, design, plan or code content.
 
 ## Set up
 
@@ -34,7 +34,7 @@ Each log line is `router <UTC> <kind>: <text>` and is appended to `$LOG/router.m
    Run status `pushed`, `pr-open` and `merged` come from `--live`. Never take them from a worker's own claim.
    Done when you have, for every concept, its stage, its run status, its ready-or-blocked state with the blocking ids, and its pending notes.
 
-3. **Choose one action per concept.** Map stage and run status to an action with the table in `references/routing.md`. The action is one of dispatch, verify-and-merge, monitor, restart, wait (name the blocker), ask the human (batched), or done. Concepts past the stop stage are left alone. Apply the barriers listed there: S3 waits for every S2 to merge, and `type: hint` concepts never go to S2. A conflict between concepts goes to the decision protocol in [decisions.md](/planning/workflow/decisions.md), not to you.
+3. **Choose one action per concept.** Map stage and run status to an action with the table in `references/routing.md`. The action is one of dispatch, verify-and-merge, monitor, restart, wait (name the blocker), ask the human (batched), or done. Concepts past the stop stage are left alone. Apply the barriers listed there: S3 waits for every S2 to merge, and `type: hint` concepts never go to S2. A conflict between concepts goes to the decision protocol in [decisions.md](../../../planning/workflow/decisions.md), not to you.
    Done when every concept has exactly one action, written as one log line.
 
 4. **Dispatch ready work in parallel.** Concepts are dispatched in `ready` order, and the number running at once never exceeds the profile's `max_parallel_writers` (5 by default). For each one:
@@ -60,7 +60,7 @@ Each log line is `router <UTC> <kind>: <text>` and is appended to `$LOG/router.m
 
 ## Single-concept shortcut
 
-A package with one concept keeps the full layout (no special case in [records.md](/planning/workflow/records.md)) but skips the ceremony:
+A package with one concept keeps the full layout (no special case in [records.md](../../../planning/workflow/records.md)) but skips the ceremony:
 
 - one worker runs S1 and then S2 in the same session if it fits;
 - S3 is just the check `rw check --package "$PKG" --require-resolved`;
@@ -70,7 +70,7 @@ Details are in `references/routing.md`.
 
 ## Parallelism and ownership
 
-There is one worker per concept per stage, each in its own worktree and branch with a pushed empty branch, and up to the cap at once. Every file has one writer. Wide files (`main.md`, `design.md`, indexes, `AGENTS.md`) change only through PRs, and `changes.md` changes by appending a single line. Notes and receipts are new files. The full rules are in [collaboration.md](/planning/workflow/collaboration.md) (rules 1 to 10); this skill does not restate them. Questions for the human are batched, ranked by effect, and each one has a default ([decisions.md](/planning/workflow/decisions.md)). Work continues on the defaults.
+There is one worker per concept per stage, each in its own worktree and branch with a pushed empty branch, and up to the cap at once. Every file has one writer. Wide files (`main.md`, `design.md`, indexes, `AGENTS.md`) change only through PRs, and `changes.md` changes by appending a single line. Notes and receipts are new files. The full rules are in [collaboration.md](../../../planning/workflow/collaboration.md) (rules 1 to 10); this skill does not restate them. Questions for the human are batched, ranked by effect, and each one has a default ([decisions.md](../../../planning/workflow/decisions.md)). Work continues on the defaults.
 
 ## Should load / should not load
 

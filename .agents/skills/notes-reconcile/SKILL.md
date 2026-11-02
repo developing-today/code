@@ -5,7 +5,7 @@ description: "Close out the directed notes for one concept of a workflow researc
 
 # Notes reconcile (S3)
 
-You close out one concept's notes. Every note any agent sent to this concept ends with exactly one receipt, the concept document reflects what was accepted, and the scan you made is on record so a later note is provably late, not lost. Note and receipt formats are in [records.md](/planning/workflow/records.md); the stage contract is in [stages.md](/planning/workflow/stages.md).
+You close out one concept's notes. Every note any agent sent to this concept ends with exactly one receipt, the concept document reflects what was accepted, and the scan you made is on record so a later note is provably late, not lost. Note and receipt formats are in [records.md](../../../planning/workflow/records.md); the stage contract is in [stages.md](../../../planning/workflow/stages.md).
 
 Commands below are `python3 -I scripts/research_workflow.py <command>`, run from the repository root; `<pkg>` is the package folder `doc/<UTC>_research_<slug>`. Run `<command> --help` for argument names.
 
@@ -27,7 +27,7 @@ Do not load for:
 
 ## Ownership and parallelism
 
-One agent per concept runs this stage, and the concepts reconcile in parallel. You are the concept's current owner: the only writer of its concept file and of the receipts for notes addressed to it. Notes are immutable and belong to their senders; you never edit, move or delete one. A change another concept must make goes back to it as a new note. `main.md` changes only inside this concept's section and only through your PR. Boot, lease, heartbeat and final-report rules are in [collaboration.md](/planning/workflow/collaboration.md).
+One agent per concept runs this stage, and the concepts reconcile in parallel. You are the concept's current owner: the only writer of its concept file and of the receipts for notes addressed to it. Notes are immutable and belong to their senders; you never edit, move or delete one. A change another concept must make goes back to it as a new note. `main.md` changes only inside this concept's section and only through your PR. Boot, lease, heartbeat and final-report rules are in [collaboration.md](../../../planning/workflow/collaboration.md).
 
 ## Steps
 
