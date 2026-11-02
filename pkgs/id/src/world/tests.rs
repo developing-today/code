@@ -4065,12 +4065,11 @@ mod schedule_tests {
         let mut core = world(8);
         core.schedules.insert("taken".to_owned(), now + 5);
         assert!(
-            core.check_schedule_replacing("taken", now + 9, now, true)
-                .is_ok(),
+            core.check_schedule_replacing("taken", now + 9, now).is_ok(),
             "replacing a pending id is not a duplicate"
         );
         let error = core
-            .check_schedule_replacing("taken", now + horizon + 1, now, true)
+            .check_schedule_replacing("taken", now + horizon + 1, now)
             .unwrap_err();
         assert!(error.to_string().contains("days past"), "{error}");
         assert_eq!(
@@ -4084,12 +4083,34 @@ mod schedule_tests {
             full.schedules.insert(format!("s{index}"), now);
         }
         assert!(
-            full.check_schedule_replacing("s0", now + 9, now, true)
-                .is_ok(),
+            full.check_schedule_replacing("s0", now + 9, now).is_ok(),
             "a replacement at capacity fits: it frees its own slot"
         );
         let error = full.check_schedule("one-more", now, now).unwrap_err();
         assert!(error.to_string().contains("pending schedules"), "{error}");
+    }
+
+    #[test]
+    fn replacement_path_cannot_admit_a_new_id_past_the_schedule_cap() {
+        let now = 1_000_000_000_000u64;
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES {
+            full.schedules.insert(format!("s{index}"), now);
+        }
+
+        let error = full
+            .check_schedule_replacing("new", now + 9, now)
+            .unwrap_err();
+        assert!(error.to_string().contains("pending schedules"), "{error}");
+        assert!(!full.schedules.contains_key("new"));
+    }
+
+    #[test]
+    fn replacement_path_on_an_empty_schedule_map_does_not_underflow() {
+        let now = 1_000_000_000_000u64;
+        let core = world(8);
+
+        assert!(core.check_schedule_replacing("new", now + 9, now).is_ok());
     }
 
     #[tokio::test]
