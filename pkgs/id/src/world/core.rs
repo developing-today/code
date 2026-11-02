@@ -96,6 +96,46 @@ fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
     endpoint
 }
 
+/// Validate the invariants shared by standalone handoff entries and
+/// checkpoint-carried transfer state. `prior_transfers` are the already
+/// admitted records, so callers validate a checkpoint's list in list order.
+fn validate_handoff_transfer(
+    transfer: &HandoffTransferState,
+    prior_transfers: &[HandoffTransferState],
+) -> Result<()> {
+    let name = match transfer.direction {
+        HandoffDirection::Export => "export",
+        HandoffDirection::Import => "import",
+    };
+    ensure!(
+        transfer.event.sequence == 0 && transfer.event.participant_id == 0,
+        "journal {name} event claims a sequence for handoff {:?}",
+        transfer.handoff_id
+    );
+    match transfer.direction {
+        HandoffDirection::Export => ensure!(
+            transfer.new_owner_epoch.is_none(),
+            "journal export for handoff {:?} carries a new owner epoch",
+            transfer.handoff_id
+        ),
+        HandoffDirection::Import => ensure!(
+            transfer.new_owner_epoch.is_some_and(|new_owner_epoch| {
+                transfer.prior_owner_epoch.checked_add(1) == Some(new_owner_epoch)
+            }),
+            "journal import for handoff {:?} does not advance the owner epoch",
+            transfer.handoff_id
+        ),
+    }
+    ensure!(
+        !prior_transfers.iter().any(|prior| {
+            prior.handoff_id == transfer.handoff_id && prior.direction == transfer.direction
+        }),
+        "journal {name}s handoff {:?} twice",
+        transfer.handoff_id
+    );
+    Ok(())
+}
+
 impl WorldCore {
     /// Create an empty in-memory world on the real [`SystemClock`].
     pub fn new(world_id: impl Into<String>, limits: WorldLimits) -> Result<Self> {
@@ -412,17 +452,7 @@ impl WorldCore {
                     payload,
                     payload_digest,
                 } => {
-                    ensure!(
-                        source_event.sequence == 0 && source_event.participant_id == 0,
-                        "journal export event claims a sequence"
-                    );
-                    ensure!(
-                        !core.handoff_transfers.iter().any(|t| {
-                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
-                        }),
-                        "journal exports handoff {handoff_id:?} twice"
-                    );
-                    core.handoff_transfers.push(HandoffTransferState {
+                    let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
                         source_region,
@@ -435,7 +465,9 @@ impl WorldCore {
                         payload_digest,
                         payload: Some(payload),
                         event: source_event.clone(),
-                    });
+                    };
+                    validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    core.handoff_transfers.push(transfer);
                     // Replay applies the ownership-changing event from the
                     // same durable fact (design #2818 §3).
                     replay.push(source_event);
@@ -453,21 +485,7 @@ impl WorldCore {
                     payload_digest,
                     destination_event,
                 } => {
-                    ensure!(
-                        destination_event.sequence == 0 && destination_event.participant_id == 0,
-                        "journal import event claims a sequence"
-                    );
-                    ensure!(
-                        prior_owner_epoch.checked_add(1) == Some(new_owner_epoch),
-                        "journal import for handoff {handoff_id:?} does not advance the owner epoch"
-                    );
-                    ensure!(
-                        !core.handoff_transfers.iter().any(|t| {
-                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Import
-                        }),
-                        "journal imports handoff {handoff_id:?} twice"
-                    );
-                    core.handoff_transfers.push(HandoffTransferState {
+                    let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
                         source_region,
@@ -480,7 +498,9 @@ impl WorldCore {
                         payload_digest,
                         payload: None,
                         event: destination_event.clone(),
-                    });
+                    };
+                    validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    core.handoff_transfers.push(transfer);
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
@@ -595,7 +615,12 @@ impl WorldCore {
                     };
                     // A checkpoint comes first in its journal, so its
                     // transfer list is the whole active-handoff state.
-                    core.handoff_transfers = transfers.unwrap_or_default();
+                    let mut validated_transfers = Vec::new();
+                    for transfer in transfers.unwrap_or_default() {
+                        validate_handoff_transfer(&transfer, &validated_transfers)?;
+                        validated_transfers.push(transfer);
+                    }
+                    core.handoff_transfers = validated_transfers;
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
