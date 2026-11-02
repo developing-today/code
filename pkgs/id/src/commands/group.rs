@@ -355,10 +355,8 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
         GroupCommand::Join { invite } => {
             Invitation::parse(&invite)?;
             bail!(
-                "join is not wired yet: the paste parsed, but nothing was recorded. The fold has no \
-                 event that admits an invited joiner (its join is a friendship's accept), and the \
-                 accept goes over the network to the inviter, which the pull and sync work (P6.5, P3) \
-                 provides"
+                "group join is unavailable: invitation parsing works, but admission and network \
+                 acceptance are not implemented yet; no group membership was recorded"
             )
         }
     }
