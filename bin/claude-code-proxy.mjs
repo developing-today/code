@@ -37,6 +37,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
 import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 // Default port 18749: the next free port in the fleet family (clef 18742,
 // agy 18743, codex 18744, antigravity-ls 18745, design-code 18746,
@@ -291,6 +292,8 @@ class ClaudeSession {
     this.dead = null; // Error once the child is gone
     this.lineBuffer = '';
     this.stderrTail = '';
+    this.stdoutDecoder = createStreamDecoder();
+    this.stderrDecoder = createStreamDecoder();
     this.turnWaiter = null; // { resolve, reject, onDelta, deltasText, lastAssistantText }
     this.workdir = sessionWorkdirFor(key);
 
@@ -336,7 +339,7 @@ class ClaudeSession {
     this.initRequestId = crypto.randomUUID();
     child.stdout.on('data', chunk => this._onStdout(chunk));
     child.stderr.on('data', chunk => {
-      const msg = chunk.toString('utf-8');
+      const msg = this.stderrDecoder.push(chunk);
       this.stderrTail = (this.stderrTail + msg).slice(-2000);
       if (msg.trim()) console.warn(`[claude-code-proxy stderr ${sessionId.slice(0, 8)}] ${msg.trim().slice(0, 300)}`);
     });
@@ -366,7 +369,7 @@ class ClaudeSession {
   }
 
   _onStdout(chunk) {
-    this.lineBuffer += chunk.toString('utf-8');
+    this.lineBuffer += this.stdoutDecoder.push(chunk);
     const lines = this.lineBuffer.split('\n');
     this.lineBuffer = lines.pop();
     for (const line of lines) {
