@@ -507,18 +507,19 @@ async function main(): Promise<number> {
   runs.push(await runTurso(tickAt));
 
   // #1159: register the native ClinePass adapter. Exactly one
-  // cline-pass run survives: a fresh module row wins (the native run
-  // is skipped), otherwise the native run replaces the module's
-  // errored run so #1268 retention below applies to one run only.
-  const clineRun = await runClinePass(tickAt);
-  if (clineRun) {
-    const idx = runs.findIndex((r) => r.id === CLINEPASS_PROVIDER_ID);
-    if (idx === -1) {
-      runs.push(clineRun);
-    } else if (runs[idx].entries.some((e) => e.state === "ok")) {
-      console.log("quota-gatherer: cline-pass ok via openchamber module - native adapter run skipped");
-    } else {
-      runs[idx] = clineRun;
+  // cline-pass run survives: a fresh module row wins and the native
+  // adapter is never even started (no duplicate credential resolve
+  // or dashboard fetch that tick); otherwise the native run
+  // replaces the module's errored run so #1268 retention below
+  // applies to one run only.
+  const clineIdx = runs.findIndex((r) => r.id === CLINEPASS_PROVIDER_ID);
+  if (clineIdx !== -1 && runs[clineIdx].entries.some((e) => e.state === "ok")) {
+    console.log("quota-gatherer: cline-pass ok via openchamber module - native adapter run skipped");
+  } else {
+    const clineRun = await runClinePass(tickAt);
+    if (clineRun) {
+      if (clineIdx === -1) runs.push(clineRun);
+      else runs[clineIdx] = clineRun;
     }
   }
 
