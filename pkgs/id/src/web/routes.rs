@@ -3950,7 +3950,7 @@ mod collab_route_tests {
         doc_id
     }
 
-    async fn get(uri: &str) -> (StatusCode, String) {
+    async fn get_doc(uri: &str) -> (StatusCode, String) {
         let app = Router::new().route("/ws/collab/{doc_id}", get(echo_doc_id));
         let response = app
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -3964,7 +3964,7 @@ mod collab_route_tests {
     #[tokio::test]
     async fn encoded_slash_round_trips_to_the_exact_filename() {
         assert_eq!(
-            get("/ws/collab/a%2Fb.md").await,
+            get_doc("/ws/collab/a%2Fb.md").await,
             (StatusCode::OK, "a/b.md".to_owned())
         );
     }
@@ -3973,21 +3973,21 @@ mod collab_route_tests {
     async fn encoded_percent_names_round_trip() {
         // a%20b.md the file, not "a b.md": the client sends a%2520b.md.
         assert_eq!(
-            get("/ws/collab/a%2520b.md").await,
+            get_doc("/ws/collab/a%2520b.md").await,
             (StatusCode::OK, "a%20b.md".to_owned())
         );
         assert_eq!(
-            get("/ws/collab/100%25.md").await,
+            get_doc("/ws/collab/100%25.md").await,
             (StatusCode::OK, "100%.md".to_owned())
         );
         assert_eq!(
-            get("/ws/collab/notes.md").await,
+            get_doc("/ws/collab/notes.md").await,
             (StatusCode::OK, "notes.md".to_owned())
         );
     }
 
     #[tokio::test]
     async fn a_real_second_segment_does_not_match() {
-        assert_eq!(get("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get_doc("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
     }
 }
