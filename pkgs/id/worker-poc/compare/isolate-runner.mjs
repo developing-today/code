@@ -28,7 +28,7 @@ const SEQUENCES = [
   },
   {
     world: "tic-tac-toe",
-    wasm: "../../examples/tic-tac-toe/tic-tac-toe.wasm",
+    wasm: "../../apps/tic-tac-toe/program/tic-tac-toe.wasm",
     // X:0, O:4, X:1, O retries occupied 4 (ignored), 9 not a move
     // (ignored), O:8, X:2 wins, 3 after the win (ignored).
     events: ["0", "4", "1", "4", "9", "8", "2", "3"],
