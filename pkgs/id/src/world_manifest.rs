@@ -591,7 +591,7 @@ native_memory_bytes = 16777216")
         // pending schedules; one more must fail parse, not a live apply.
         let build = |count: usize| {
             let entries: Vec<String> = (0..count)
-                .map(|i| format!(""s{i}" = 1800000000000"))
+                .map(|i| format!("\"s{i}\" = 1800000000000"))
                 .collect();
             format!("schedules = {{ {} }}", entries.join(", "))
         };
