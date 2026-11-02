@@ -82,6 +82,15 @@ class JanitorTests(unittest.TestCase):
         )
         self.assertEqual(found[0].protected, "fleet-build-active")
 
+    def test_adhoc_target_for_gone_worktree_is_eligible(self):
+        target = self.make_target("target-47", age=1)
+        found = janitor.discover_targets(
+            self.root, {}, set(), {47: "parked"}, set(), [],
+            time.time() - 48 * 3600,
+        )
+        self.assertIsNone(found[0].protected)
+        self.assertEqual(found[0].reason, "worktree-gone")
+
     def test_plan_is_oldest_first_and_stops_at_cap(self):
         old = self.make_target("target-1", size=7)
         newer = self.make_target("target-2", size=5)

@@ -168,6 +168,8 @@ def discover_targets(fleet_root: Path, branches: dict[Path, str | None],
                      claimed: set[int], statuses: dict[int, str], prs: set[str],
                      process_cwds: list[Path], stale_before: float) -> list[Target]:
     root = fleet_root.resolve(strict=True)
+    worktree_task_ids = {task_id for branch in branches.values()
+                         if (task_id := task_id_from(branch or "")) is not None}
     candidates: list[tuple[Path, Path | None, str | None, int | None]] = []
     for entry in sorted(root.iterdir()):
         if entry.is_symlink() or not entry.is_dir():
@@ -195,7 +197,9 @@ def discover_targets(fleet_root: Path, branches: dict[Path, str | None],
                                  protected=f"stat-failed: {exc}"))
             continue
         status = statuses.get(task_id) if task_id is not None else None
-        if status in {"done", "failed", "cancelled"}:
+        if worktree is None and task_id is not None and task_id not in worktree_task_ids:
+            reason = "worktree-gone"
+        elif status in {"done", "failed", "cancelled"}:
             reason = "terminal-task"
         else:
             reason = "older-than-threshold" if newest <= stale_before else None
@@ -357,6 +361,11 @@ def main() -> int:
                 fresh_status = queue_task_states(args.queue_helper, {target.task_id}).get(target.task_id)
                 if fresh_status not in {"done", "failed", "cancelled"}:
                     raise SafetyError(f"task {target.task_id} is no longer terminal; stopping")
+            if target.reason == "worktree-gone":
+                current_branches = worktree_branches(args.primary)
+                if target.task_id in {task_id_from(branch or "")
+                                      for branch in current_branches.values()}:
+                    raise SafetyError(f"task {target.task_id} gained a worktree; stopping")
             if target.branch and target.branch in fresh_prs:
                 raise SafetyError(f"branch {target.branch} gained an open PR; stopping")
             if target.task_id is not None and any(

@@ -7,10 +7,11 @@ ad-hoc targets are considered.
 
 ## Safety policy
 
-- A target is eligible when its queue task is terminal (`done`, `failed`, or
-  `cancelled`), or its newest file/directory mtime is at least **48 hours**
-  old. If eligible targets cannot bring the fleet total under the cap, the
-  janitor reports the overage and leaves younger, non-terminal targets alone.
+- A target is eligible when its ad-hoc task target has no matching live
+  worktree, its queue task is terminal (`done`, `failed`, or `cancelled`), or
+  its newest file/directory mtime is at least **48 hours** old. If eligible
+  targets cannot bring the fleet total under the cap, the janitor reports the
+  overage and leaves younger, non-terminal targets alone.
 - Never remove a target for a currently claimed `repo-health-code-pilot`
   task, a worktree whose branch has an open PR, an unmapped worktree/ad-hoc
   target, or a worktree/target containing a current-user Cargo, rustc,
