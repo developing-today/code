@@ -23,9 +23,25 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+function usageError(message: string): never {
+  console.error(`record-claude-launch: ${message}`);
+  process.exit(2);
+}
+
+/** The token after `--<name>`, refused when it is missing or is itself a flag:
+ * a flag token accepted as a value would be consumed a second time as a flag
+ * in its own right, and the corrupted record appended with exit 0 (#3415). */
+function valueAfter(index: number, name: string): string {
+  const value = process.argv[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    usageError(`--${name} requires a value that is not a flag`);
+  }
+  return value;
+}
+
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  return i >= 0 ? valueAfter(i, name) : undefined;
 }
 
 const file =
@@ -41,9 +57,7 @@ if (!label) {
 
 const now = new Date();
 const id = arg("id") ?? `claude-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-const taskRefs = process.argv
-  .map((a, i) => (a === "--task" ? process.argv[i + 1] : undefined))
-  .filter((v): v is string => typeof v === "string");
+const taskRefs = process.argv.flatMap((a, i) => (a === "--task" ? [valueAfter(i, "task")] : []));
 
 const record = {
   id,
