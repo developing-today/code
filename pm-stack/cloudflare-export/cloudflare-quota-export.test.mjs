@@ -3,6 +3,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  aiNeuronsDayAlerts,
+  aiNeuronsDayAlertThreshold,
+  AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT,
+  AI_NEURONS_DAY_GROUP_LIMIT,
   classifyBilling,
   classifyR2,
   cycleStartUtc,
@@ -35,6 +39,14 @@ const ACCOUNT = {
   ],
   r2StorageAdaptiveGroups: [{ max: { payloadSize: 25139205306 } }],
   aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 4114515.31 } }],
+  // Grouped rows sum to the same 4,114,515.31 cycle total: the
+  // Oct 24–25 2026 burn shape from #2287 (Oct 24 alone ~2.99M on the
+  // deepseek model via the gateway).
+  aiInferenceAdaptiveGroupsByDay: [
+    { dimensions: { date: "2026-10-24", modelId: "@cf/deepseek-ai/deepseek-v4-pro-0813" }, sum: { totalNeurons: 2990000 } },
+    { dimensions: { date: "2026-10-24", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 100000 } },
+    { dimensions: { date: "2026-10-25", modelId: "@cf/deepseek-ai/deepseek-v4-pro-0813" }, sum: { totalNeurons: 1024515.31 } },
+  ],
 };
 const NOW = new Date("2026-10-29T10:00:00Z");
 const START = cycleStartUtc(NOW);
@@ -289,6 +301,130 @@ test("run: GraphQL errors controls unchanged (#2608)", async () => {
   const doc = await runWithErrors(undefined);
   assert.equal(doc.status, "ok");
   assert.equal(doc.metrics.length, 11);
+});
+
+test("aiNeuronsDayAlerts: an Oct 24-shaped day fires with top-model attribution (#2287)", () => {
+  const { alerts, saturated } = aiNeuronsDayAlerts(ACCOUNT.aiInferenceAdaptiveGroupsByDay, 50000);
+  assert.equal(saturated, false);
+  assert.equal(alerts.length, 2); // both burn days exceed 50k
+  assert.deepEqual(alerts[0], {
+    kind: "workers-ai-neurons-day",
+    date: "2026-10-24",
+    totalNeurons: 3090000,
+    threshold: 50000,
+    topModels: [
+      { model: "@cf/deepseek-ai/deepseek-v4-pro-0813", neurons: 2990000 },
+      { model: "@cf/meta/llama-3.1-8b-instruct", neurons: 100000 },
+    ],
+  });
+  assert.equal(alerts[1].date, "2026-10-25");
+  assert.equal(alerts[1].totalNeurons, 1024515); // fractional day total rounds for display
+});
+
+test("aiNeuronsDayAlerts: days at or under the threshold stay silent (#2287)", () => {
+  const quiet = [
+    { dimensions: { date: "2026-10-24", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 10000 } },
+    { dimensions: { date: "2026-10-25", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 9999 } },
+  ];
+  assert.deepEqual(aiNeuronsDayAlerts(quiet, 50000), { alerts: [], saturated: false });
+  // Exactly at the threshold does not fire (the rule is exceeds).
+  assert.deepEqual(aiNeuronsDayAlerts(quiet, 10000).alerts, []);
+  // No usage at all (empty groups) is a legitimate silent zero.
+  assert.deepEqual(aiNeuronsDayAlerts([], 50000), { alerts: [], saturated: false });
+});
+
+test("aiNeuronsDayAlerts: top models are capped at 3, ordered by neurons (#2287)", () => {
+  const groups = ["m1", "m2", "m3", "m4"].map((modelId, i) => ({
+    dimensions: { date: "2026-10-24", modelId },
+    sum: { totalNeurons: (4 - i) * 100000 },
+  }));
+  const { alerts } = aiNeuronsDayAlerts(groups, 50000);
+  assert.equal(alerts.length, 1);
+  assert.deepEqual(alerts[0].topModels.map((m) => m.model), ["m1", "m2", "m3"]);
+});
+
+test("aiNeuronsDayAlerts: a missing or drifted grouped field fails closed (#2287)", () => {
+  assert.throws(() => aiNeuronsDayAlerts(undefined, 50000), /aiInferenceAdaptiveGroupsByDay groups missing/);
+  assert.throws(
+    () => aiNeuronsDayAlerts([{ dimensions: { date: "24 Oct", modelId: "m" }, sum: { totalNeurons: 1 } }], 50000),
+    /dimensions\.date/,
+  );
+  assert.throws(
+    () => aiNeuronsDayAlerts([{ dimensions: { date: "2026-10-24" }, sum: { totalNeurons: 1 } }], 50000),
+    /dimensions\.modelId/,
+  );
+  const missing = structuredClone(ACCOUNT);
+  delete missing.aiInferenceAdaptiveGroupsByDay;
+  assert.throws(() => parseGraphqlUsage(missing, { now: NOW, cycleStart: START }), /aiInferenceAdaptiveGroupsByDay/);
+});
+
+test("aiNeuronsDayAlerts: saturation is flagged, never silently truncated (#2287)", () => {
+  const groups = Array.from({ length: AI_NEURONS_DAY_GROUP_LIMIT }, (_, i) => ({
+    dimensions: { date: "2026-10-24", modelId: `m${i}` },
+    sum: { totalNeurons: 100 },
+  }));
+  const { alerts, saturated } = aiNeuronsDayAlerts(groups, 50000);
+  assert.equal(saturated, true);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].lowerBound, true);
+  // The document carries the saturation flag even when nothing fires.
+  const parsed = parseGraphqlUsage(
+    { ...structuredClone(ACCOUNT), aiInferenceAdaptiveGroupsByDay: groups },
+    { now: NOW, cycleStart: START, aiThreshold: Number.MAX_SAFE_INTEGER },
+  );
+  const doc = successDocument({
+    measuredAt: NOW.toISOString(),
+    cycleStart: START,
+    accountId: "acct",
+    billing: { status: "invoice-only" },
+    parsed,
+    r2Buckets: [],
+  });
+  assert.equal(doc.aiNeuronsByDaySaturated, true);
+  assert.equal("alerts" in doc, false);
+});
+
+test("aiNeuronsDayAlertThreshold: env override with honest fallback (#2287)", () => {
+  assert.equal(AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT, 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({}), 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "12345" }), 12345);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "" }), 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "abc" }), 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "-5" }), 50000);
+  // A custom threshold actually gates the alert through parseGraphqlUsage.
+  const parsed = parseGraphqlUsage(ACCOUNT, { now: NOW, cycleStart: START, aiThreshold: 4000000 });
+  assert.deepEqual(parsed.aiNeurons.alerts, []);
+});
+
+test("documents: alerts array present only when a day is firing (#2287)", () => {
+  const billing = classifyBilling([
+    { endpoint: "a", status: 403 },
+    { endpoint: "b", status: 403 },
+  ]);
+  const firing = successDocument({
+    measuredAt: NOW.toISOString(),
+    cycleStart: START,
+    accountId: "acct",
+    billing,
+    parsed: parseGraphqlUsage(ACCOUNT, { now: NOW, cycleStart: START }),
+    r2Buckets: [],
+  });
+  assert.equal(firing.alerts.length, 2);
+  assert.equal(firing.alerts[0].kind, "workers-ai-neurons-day");
+
+  const quietAccount = structuredClone(ACCOUNT);
+  quietAccount.aiInferenceAdaptiveGroupsByDay = [
+    { dimensions: { date: "2026-10-24", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 5000 } },
+  ];
+  const quiet = successDocument({
+    measuredAt: NOW.toISOString(),
+    cycleStart: START,
+    accountId: "acct",
+    billing,
+    parsed: parseGraphqlUsage(quietAccount, { now: NOW, cycleStart: START }),
+    r2Buckets: [],
+  });
+  assert.equal("alerts" in quiet, false);
 });
 
 test("measurement strings use plain decimals; request counts remain integers (#2791)", () => {
