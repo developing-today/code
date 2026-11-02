@@ -137,7 +137,7 @@ export function entryFromFileExport(
   entry.measuredAt = measuredAt;
   for (const w of doc.windows ?? []) {
     const pct = num(w.usedPct);
-    if (!w.name || pct == null) continue;
+    if (!w.name || pct == null || pct < 0 || pct > 100) continue;
     entry.windows.push({
       name: w.name,
       value: pct,
@@ -155,7 +155,7 @@ export function entryFromFileExport(
     });
   }
   const labelWindow = (name: string, usd: number | null | undefined): void => {
-    if (typeof usd !== "number" || !Number.isFinite(usd)) return;
+    if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return;
     entry.windows.push({
       name,
       value: null,
@@ -197,6 +197,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
     const pct = num(raw?.usedPercent);
+    if (pct != null && (pct < 0 || pct > 100)) return;
     entry.windows.push({
       name,
       value: pct,
