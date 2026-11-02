@@ -135,6 +135,36 @@ test('a slow daemon call does not head-of-line block a later ping (PR #4171 Code
   }
 });
 
+test('closing stdin mid-request still delivers the complete final response (PR #4171 Codex P2)', async () => {
+  const bigTree = `root/\n${'  file.rs  rust  1L  0 sym\n'.repeat(80000)}`;
+  const daemon = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/explore/tree')) setTimeout(() => res.end(JSON.stringify({ tree: bigTree })), 200);
+    else res.end(JSON.stringify({}));
+  });
+  await new Promise((resolve) => daemon.listen(0, '127.0.0.1', resolve));
+  const child = spawn(process.execPath, [path.join(binDir, 'codedb-bridge.mjs')], {
+    env: { ...process.env, CODEDB_DAEMON_URL: `http://127.0.0.1:${daemon.address().port}` },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  try {
+    let received = '';
+    const exited = new Promise((resolve) => child.on('exit', resolve));
+    child.stdout.on('data', (chunk) => {
+      received += chunk;
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codedb_tree', arguments: {} } })}\n`);
+    child.stdin.end(); // close immediately, while the daemon call is still pending
+    await exited;
+    const msg = JSON.parse(received.trim());
+    assert.equal(msg.id, 1);
+    assert.equal(msg.result.content[0].text, bigTree, 'final response must arrive complete, not truncated by process.exit');
+  } finally {
+    child.kill();
+    daemon.close();
+  }
+});
+
 test('daemon errors and an unreachable daemon surface as MCP errors naming the cause', async () => {
   const handle404 = createHandler({ fetchFn: stubFetch({}), daemonUrl: 'http://127.0.0.1:7719' });
   const missing = await call(handle404, 'codedb_outline', { path: 'nope.rs' });

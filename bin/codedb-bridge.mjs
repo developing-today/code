@@ -259,7 +259,16 @@ const main = async () => {
   let pending = 0;
   let closed = false;
   const maybeExit = () => {
-    if (closed && pending === 0) process.exit(0);
+    if (!closed || pending !== 0) return;
+    // process.exit() discards stdout bytes still queued for a pipe, which
+    // truncates the final response when stdin closes mid-request (Codex
+    // finding on PR #4171). Queue an empty write behind everything else:
+    // its callback fires only once all prior output has flushed.
+    process.stdout.write('', () => process.exit(0));
+  };
+  const settle = () => {
+    pending -= 1;
+    maybeExit();
   };
   rl.on('line', (line) => {
     const trimmed = line.trim();
@@ -273,13 +282,15 @@ const main = async () => {
     pending += 1;
     handle(msg)
       .then((response) => {
-        if (response !== null) process.stdout.write(`${JSON.stringify(response)}\n`);
+        if (response === null) {
+          settle();
+          return;
+        }
+        // Settle only when this response has actually flushed, so the
+        // exit path above can never outrun a queued write.
+        process.stdout.write(`${JSON.stringify(response)}\n`, settle);
       })
-      .catch(() => {}) // a handler failure must not kill the shared bridge; the caller times out on that one id
-      .finally(() => {
-        pending -= 1;
-        maybeExit();
-      });
+      .catch(() => settle()); // a handler failure must not kill the shared bridge; the caller times out on that one id
   });
   rl.on('close', () => {
     closed = true;
