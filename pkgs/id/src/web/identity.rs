@@ -301,26 +301,52 @@ impl IdentityStore {
         // verify/refresh readers waiting out one create is acceptable.
         // At capacity the refusal is the typed IdentityCapacityError —
         // existing records are never deleted to make room.
+        //
+        // The critical section runs in a detached task (Codex P2 on
+        // PR #4143): spawn_blocking is not aborted when the awaiting
+        // future is cancelled, so a section owned by the caller's
+        // future could drop the lock with the record committed to disk
+        // but never inserted — the in-memory count would then
+        // under-count persisted records and repeated cancellations
+        // would bypass the bound (and the uncounted records would all
+        // load on restart). Detached, the section keeps the admission
+        // reservation and the in-memory accounting alive through
+        // completion of the blocking write, independently of the
+        // requesting future; awaiting the handle only observes the
+        // outcome.
         {
-            let mut clients = self.clients.write().await;
-            if let Some(limit) = self.max_identities {
-                let registered = clients.len();
-                if registered >= limit {
-                    tracing::warn!(
-                        "[identity] Registration refused at capacity: {registered}/{limit} identities (admission bound, issue 1766)"
-                    );
-                    return Err(IdentityCapacityError { limit, registered }.into());
+            let clients = Arc::clone(&self.clients);
+            let db = self.db.clone();
+            let max_identities = self.max_identities;
+            let record = identity.clone();
+            let persist = tokio::spawn(async move {
+                let mut clients = clients.write().await;
+                if let Some(limit) = max_identities {
+                    let registered = clients.len();
+                    if registered >= limit {
+                        tracing::warn!(
+                            "[identity] Registration refused at capacity: {registered}/{limit} identities (admission bound, issue 1766)"
+                        );
+                        return Err(anyhow::Error::from(IdentityCapacityError {
+                            limit,
+                            registered,
+                        }));
+                    }
                 }
-            }
 
-            // Persist to database first (if available)
-            if let Some(db) = &self.db {
-                let db = Arc::clone(db);
-                let record = identity.clone();
-                run_blocking(move || db.create(&record)).await?;
-            }
+                // Persist to database first (if available)
+                if let Some(db) = &db {
+                    let db = Arc::clone(db);
+                    let record = record.clone();
+                    run_blocking(move || db.create(&record)).await?;
+                }
 
-            clients.insert(client_id.clone(), identity.clone());
+                clients.insert(record.client_id.clone(), record);
+                Ok::<(), anyhow::Error>(())
+            });
+            persist
+                .await
+                .map_err(|e| anyhow::anyhow!("identity registration task failed: {e}"))??;
         }
 
         // Create a watch channel for name changes
