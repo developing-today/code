@@ -84,6 +84,21 @@
           });
         }
       )
+      # TEMPORARY (code#4277, found via code#2715): cargo-llvm-cov's
+      # test suite fails deterministically on the current pins --
+      # rustc 1.99 writes raw profile format version 11, but the
+      # expression pins llvmPackages_22, whose llvm-profdata expects
+      # version 10 ("raw profile version mismatch ... error: no
+      # profile can be merged", 14 of 20 integration tests fail; the
+      # expression's header comment names this exact failure mode).
+      # Build it against llvmPackages_23, whose profdata reads v11;
+      # the full suite passes. Remove once the expression's pinned
+      # llvm matches rustc again; tracked in code#4277.
+      (final: prev: {
+        cargo-llvm-cov = prev.cargo-llvm-cov.override {
+          llvmPackages_22 = prev.llvmPackages_23;
+        };
+      })
       # TEMPORARY (code#2727, found via code#2715): patchelf 0.19.2 in
       # current nixpkgs corrupts the official Node.js 24.22.1 binary that
       # nix-openclaw repacks for OpenClaw -- the repacked `node` segfaults
