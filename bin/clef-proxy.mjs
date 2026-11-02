@@ -10,6 +10,12 @@ const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
 // CLEF_PROXY_GATEWAY_BASE; the Cloudflare gateway stays the default
 // and the URL shape after the base is unchanged.
 const GATEWAY_BASE = (process.env.CLEF_PROXY_GATEWAY_BASE || 'https://gateway.ai.cloudflare.com/v1').replace(/\/+$/, '');
+// One deadline covers both the data-path fetch and response-body read.
+// The environment override keeps the hanging-upstream regression test fast.
+const configuredDataPathTimeoutMs = Number(process.env.CLEF_PROXY_DATA_PATH_TIMEOUT_MS);
+const DATA_PATH_TIMEOUT_MS = Number.isSafeInteger(configuredDataPathTimeoutMs) && configuredDataPathTimeoutMs > 0
+  ? configuredDataPathTimeoutMs
+  : 30_000;
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
 
 // Warm connections (#480): upstream calls go through fetch, whose bundled
@@ -229,6 +235,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      let dataPathSignal;
       try {
         const { accountId, gatewayId, token } = getCredentials(req.headers['authorization']);
 
@@ -251,13 +258,15 @@ const server = http.createServer(async (req, res) => {
           questions: body.questions || {}
         };
 
+        dataPathSignal = AbortSignal.timeout(DATA_PATH_TIMEOUT_MS);
         const cfRes = await fetch(cfUrl, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: dataPathSignal
         });
 
         // The gateway can answer non-JSON (e.g. an HTML error page) or a
@@ -266,7 +275,11 @@ const server = http.createServer(async (req, res) => {
         let cfData = null;
         try {
           cfData = await cfRes.json();
-        } catch {}
+        } catch (err) {
+          // Preserve the existing non-JSON upstream behavior, but do not
+          // swallow an abort while the shared data-path deadline is active.
+          if (dataPathSignal.aborted) throw err;
+        }
 
         if (cfRes.ok && cfData?.success && cfData.result?.answers) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -279,6 +292,11 @@ const server = http.createServer(async (req, res) => {
           }));
         }
       } catch (err) {
+        if (dataPathSignal?.aborted) {
+          res.writeHead(504, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cloudflare Workers AI Clef request timed out' }));
+          return;
+        }
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message || 'Internal proxy error' }));
       }
