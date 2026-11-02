@@ -123,6 +123,28 @@ describe("feed project-pool section gate (#2399)", () => {
     ).toHaveLength(2);
   });
 
+  test("number must be a positive integer, bad values drop individually (#3514)", () => {
+    // Real GraphQL numbers are positive integers; NaN/Infinity/1.5/-3/0
+    // used to pass the bare typeof gate and render as fabricated refs.
+    expect(isProjectPoolItem(EDGElESS)).toBe(true);
+    for (const bad of [1.5, -3, 0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isProjectPoolItem({ ...EDGElESS, number: bad })).toBe(false);
+    }
+    expect(
+      poolFromFeed({
+        projects: [
+          EDGElESS,
+          { ...EDGElESS, number: 1.5 },
+          { ...EDGElESS, number: -3 },
+          { ...EDGElESS, number: 0 },
+          { ...EDGElESS, number: Number.NaN },
+          { ...EDGElESS, number: Number.POSITIVE_INFINITY },
+          GRAPHED,
+        ] as unknown as never,
+      }),
+    ).toHaveLength(2);
+  });
+
   test("poolFromFeed is fail-soft: garbage sections yield no items, bad items drop", () => {
     expect(poolFromFeed(null)).toEqual([]);
     expect(poolFromFeed(undefined)).toEqual([]);
