@@ -46,6 +46,7 @@ mod tests {
         ModuleProvenance::SourceBuild(SourceBuildProvenance {
             schema_version: 1,
             compiler_blake3: "compiler".to_owned(),
+            compiler_version: "roc-test 0.0.0".to_owned(),
             platform_blake3: "platform".to_owned(),
             source_blake3: "source".to_owned(),
             target: "wasm32".to_owned(),

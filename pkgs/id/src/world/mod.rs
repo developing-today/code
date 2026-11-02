@@ -404,6 +404,14 @@ pub struct SourceBuildProvenance {
     pub schema_version: u8,
     /// Domain-separated BLAKE3 digest of the compiler executable bytes.
     pub compiler_blake3: String,
+    /// Version string the compiler binary reports for itself (`roc
+    /// version`), recorded alongside its digest (#1069): the digest
+    /// identifies the exact bytes, the version is the human-legible
+    /// name for them. Empty when the version probe failed. Defaulted
+    /// so provenance records written before this field existed still
+    /// deserialize.
+    #[serde(default)]
+    pub compiler_version: String,
     /// BLAKE3 digest of the platform tree, including relative paths.
     pub platform_blake3: String,
     /// BLAKE3 digest of the submitted source filenames and contents.
@@ -617,6 +625,29 @@ pub enum CoordinatorJournalEntry {
     },
 }
 
+/// The basis on which the module trust gate admitted a module (#1069).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustBasis {
+    /// A publisher signature verified against the configured trust list.
+    SignatureVerified,
+    /// No trust list is configured, so the gate admits any module.
+    NoTrustList,
+    /// The server compiled the module from source itself, so the upload
+    /// trust gate does not apply.
+    ServerCompiled,
+}
+
+/// A trust gate decision to record in the journal alongside an install
+/// (#1069): the basis, and the publisher key when one verified.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustDecision {
+    /// The basis on which the module was admitted.
+    pub basis: TrustBasis,
+    /// Hex public key of the verifying publisher, if any.
+    pub publisher: Option<String>,
+}
+
 /// One durable fact about a world, in commit order.
 ///
 /// Capability secrets are never journaled, only their SHA-256 digests, so a
@@ -667,6 +698,22 @@ pub enum JournalEntry {
         /// from a moderator scope rather than the admin. `None` means admin.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<u64>,
+    },
+    /// A module trust decision admitted an installed module (#1069).
+    /// Journal-only: the audit record for the publisher-signature gate,
+    /// written alongside the `ProgramInstalled` event that carries the
+    /// install itself. It records the basis on which the module was
+    /// admitted; a module the gate rejected is never installed and
+    /// leaves no entry.
+    ModuleTrustDecision {
+        /// The hash of the admitted module.
+        module_hash: String,
+        /// The basis on which the module was admitted.
+        basis: TrustBasis,
+        /// Hex public key of the publisher whose signature verified,
+        /// when the basis is `signature_verified`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        publisher: Option<String>,
     },
     /// A builder-scoped participant installed a program. Journal-only: it is
     /// the audit record for the builder authority, written alongside the

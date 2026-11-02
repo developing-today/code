@@ -428,6 +428,9 @@ impl WorldCore {
                 // `ProgramInstalled` event; this entry records who ordered it
                 // and changes no restored state.
                 JournalEntry::BuilderInstalled { .. } => {}
+                // Audit-only: the decision is carried by the install it
+                // accompanies; replaying it changes no restored state.
+                JournalEntry::ModuleTrustDecision { .. } => {}
                 // Audit-only: the copied entries already reproduce the parent.
                 JournalEntry::Forked { .. } => {}
                 JournalEntry::System { event } => {

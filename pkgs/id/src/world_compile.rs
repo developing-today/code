@@ -246,6 +246,16 @@ pub async fn compile(
     let roc_bin = std::fs::canonicalize(resolve_program(&compiler.roc_bin))
         .context("resolve Roc compiler executable")?;
     let compiler_blake3 = digest_file(&roc_bin)?;
+    // The compiler's self-reported version (#1069). A failed probe
+    // records an empty string rather than failing a compile whose
+    // artifact identity is already pinned by `compiler_blake3`.
+    let compiler_version = std::process::Command::new(&roc_bin)
+        .arg("version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_default();
     let job_dir = job.path().to_owned();
     let output = PathBuf::from(&output_path);
     // The compiler is a whole LLVM process; run it on a blocking thread and
@@ -323,6 +333,7 @@ pub async fn compile(
         crate::world::ModuleProvenance::SourceBuild(crate::world::SourceBuildProvenance {
             schema_version: 1,
             compiler_blake3,
+            compiler_version,
             platform_blake3,
             source_blake3,
             target: target.to_owned(),
