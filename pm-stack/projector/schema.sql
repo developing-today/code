@@ -44,7 +44,7 @@ CREATE INDEX IF NOT EXISTS pmp_items_kind ON pmp_items(kind);
 -- comment-activity projection (aggregator requirement #2).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pmp_comments (
-  id             TEXT PRIMARY KEY,           -- GitHub comment/review id
+  id             TEXT NOT NULL,              -- GitHub comment/review id
   ref            TEXT NOT NULL,              -- item ref this comment belongs to
   kind           TEXT NOT NULL,              -- 'issue_comment' | 'review' | 'review_comment'
   author         TEXT,
@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS pmp_comments (
   commit_id      TEXT,
   deleted        INTEGER NOT NULL DEFAULT 0, -- set to 1 on GitHub delete events
   source_updated_at TEXT NOT NULL,           -- created_at (or updated_at) monotonic guard
-  fetched_at     TEXT NOT NULL
+  fetched_at     TEXT NOT NULL,
+  PRIMARY KEY (id, kind)
 );
 
 CREATE INDEX IF NOT EXISTS pmp_comments_ref ON pmp_comments(ref);
