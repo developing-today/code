@@ -49,9 +49,9 @@ Filled at S5. Every GitHub issue made for or related to this request, in recomme
 
 ## Links
 
-- Workflow: [stages](/planning/workflow/stages.md), [ordering](/planning/workflow/ordering.md), [decisions](/planning/workflow/decisions.md)
-- Order across requests: [DEPENDENCIES.md](/planning/DEPENDENCIES.md)
-- Feature plans land in [planning/plans/](/planning/plans/README.md), from the [plan template](/planning/templates/plan.md)
+- Workflow: [stages](../stages.md), [ordering](../ordering.md), [decisions](../decisions.md)
+- Order across requests: [DEPENDENCIES.md](../../DEPENDENCIES.md)
+- Feature plans land in [planning/plans/](../../plans/README.md), from the [plan template](../../templates/plan.md)
 ```
 
 - Run statuses: `not-started`, `claimed`, `running`, `pushed`, `pr-open`, `merged`, `validated`, `blocked`, `abandoned`. `pushed`, `pr-open` and `merged` come from git and GitHub through `status --live`.

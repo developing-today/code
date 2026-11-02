@@ -11,7 +11,7 @@ Use at S0 (`request-intake`): `init` writes a package's first `main.md` in this 
 - Meta design: [design.md](design.md) (review order, waves, run table, research stages)
 - Change log: [changes.md](changes.md)
 - Human review: [human-review.md](human-review.md) (from S6)
-- Workflow: [stages](/planning/workflow/stages.md), [records](/planning/workflow/records.md), [collaboration](/planning/workflow/collaboration.md)
+- Workflow: [stages](../stages.md), [records](../records.md), [collaboration](../collaboration.md)
 
 ## Files
 
