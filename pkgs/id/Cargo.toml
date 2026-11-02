@@ -17,6 +17,12 @@ categories = ["command-line-utilities", "network-programming"]
 
 [workspace]
 members = ["crates/id-core"]
+# The vendored crates stay OUT of the workspace: as path dependencies inside
+# this directory Cargo would otherwise treat them as members, and a member's
+# feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
+# forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
+# into Cargo.lock even though no build here enables it (see vendor/README.md).
+exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
 default-members = [".", "crates/id-core"]
 
 # =============================================================================

@@ -786,6 +786,8 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

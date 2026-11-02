@@ -130,6 +130,9 @@
   // Drew: disable the provider, do NOT change the routes - every
   // seat and definition stays in place per the switchboard rule.
   // To re-enable after the pool resets: delete this one line.
+  // REVERSED 2026-11-02 (Drew, direct order): "muse-direct" leaves
+  // the list. The Meta pool reset at 2026-11-02T00:00:00Z and reads
+  // fresh 0% with 100 pts headroom; the door is back in service.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -154,8 +157,7 @@
     "muse",
     "antigravity-ls",
     "antigravity-agy",
-    "commandcode",
-    "muse-direct"
+    "commandcode"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and

@@ -77,6 +77,12 @@ export function isDnsSection(v: unknown): v is DnsSection {
   return (
     typeof s.generatedAt === "string" &&
     Number.isFinite(Date.parse(s.generatedAt)) &&
+    // totalAnnualListUsd is dereferenced with .toFixed on the /dns and
+    // usage render paths, so the gate must guarantee a finite number
+    // (#2412) — a missing/string/null/NaN total certifies a section the
+    // renderers cannot render.
+    typeof s.totalAnnualListUsd === "number" &&
+    Number.isFinite(s.totalAnnualListUsd) &&
     Array.isArray(s.entries) &&
     s.entries.length > 0 &&
     s.entries.every(
@@ -84,7 +90,17 @@ export function isDnsSection(v: unknown): v is DnsSection {
         typeof e === "object" &&
         e !== null &&
         typeof (e as DnsEntry).domain === "string" &&
-        typeof (e as DnsEntry).renewal === "string",
+        typeof (e as DnsEntry).renewal === "string" &&
+        // priceUsd is number|null in the model: null/absent stays valid,
+        // but a present value must be a finite number (#2412).
+        ((e as DnsEntry).priceUsd === null ||
+          (e as DnsEntry).priceUsd === undefined ||
+          (typeof (e as DnsEntry).priceUsd === "number" && Number.isFinite((e as DnsEntry).priceUsd))) &&
+        // status feeds summarizeDns buckets; an unknown/missing status
+        // under-counts silently, so the gate owns the enum (#2412).
+        ((e as DnsEntry).status === "active" ||
+          (e as DnsEntry).status === "earmarked" ||
+          (e as DnsEntry).status === "unused"),
     )
   );
 }

@@ -19,7 +19,7 @@
 //! Artifacts travel over iroh only: pushed to a home server on
 //! [`PUSH_ALPN`], and pulled by account from the same endpoint on [`PULL_ALPN`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
@@ -285,6 +285,10 @@ impl SignedArtifact {
             self.after.iter().all(|hash| is_hash(hash)),
             "an artifact names a malformed hash in after"
         );
+        let mut seen = HashSet::with_capacity(self.after.len());
+        for hash in &self.after {
+            ensure!(seen.insert(hash), "an artifact names {hash} twice in after");
+        }
         let bytes = signed_bytes(
             &self.author,
             self.seq,
@@ -1711,6 +1715,41 @@ mod tests {
             .unwrap();
         assert!(log.insert(crowded).is_err());
         assert_eq!(log.head_seq(&public(1)), 2);
+    }
+
+    #[test]
+    fn test_duplicate_after_hashes_are_refused() {
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+
+        let doubled = log
+            .sign_after(
+                &key(1),
+                &document("second"),
+                vec![first.hash.clone(), first.hash.clone()],
+            )
+            .unwrap();
+        assert!(doubled.verify().is_err());
+        assert!(log.insert(doubled).is_err());
+
+        let repeated = log
+            .sign_after(
+                &key(1),
+                &document("third"),
+                vec![first.hash.clone(); MAX_AFTER],
+            )
+            .unwrap();
+        assert!(repeated.verify().is_err());
+        assert!(log.insert(repeated).is_err());
+        assert_eq!(log.head_seq(&public(1)), 1);
+
+        let distinct: Vec<String> = (0..MAX_AFTER).map(|i| format!("{i:064x}")).collect();
+        let frontier = log
+            .sign_after(&key(1), &document("fourth"), distinct)
+            .unwrap();
+        assert!(frontier.verify().is_ok());
+        assert_eq!(log.insert(frontier).unwrap(), Stored::New);
     }
 
     #[test]

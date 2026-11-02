@@ -71,6 +71,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
+use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     resolve_config,
@@ -195,14 +196,21 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 /// # Returns
 ///
 /// `true` if the process exists, `false` otherwise.
-#[allow(clippy::cast_possible_wrap)] // PID is always positive, wrap is safe for kill()
+#[allow(clippy::cast_possible_wrap)] // The Unix branch validates the PID before casting.
 #[allow(unsafe_code)] // Required for libc::kill
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
+        // PIDs read from the serve lock are untrusted u32 values. Zero checks
+        // the caller's process group, while values above i32::MAX wrap to
+        // negative process selectors, so neither can identify one process.
+        if pid == 0 || pid > i32::MAX as u32 {
+            return false;
+        }
+
         // SAFETY: libc::kill with signal 0 only checks process existence without
-        // sending any signal. The pid cast from u32 to i32 is safe because valid
-        // PIDs on Unix are always positive and fit in i32.
+        // sending any signal. The check above ensures pid is positive and fits
+        // in i32 before the cast.
         // #2384: a failed probe is not proof of death — EPERM means the
         // process exists but is owned by another user, so it is alive;
         // only ESRCH (no such process) and other errnos mean dead. This
@@ -342,6 +350,8 @@ pub struct ServeOptions {
     pub world_native: bool,
     /// Accept program changes only through server-side Roc compilation.
     pub world_source_only: bool,
+    /// Ed25519 public keys authorized to sign module artifacts (hex).
+    pub world_module_trust_keys: Vec<String>,
     /// Execution bounds for world programs.
     pub world_runtime: crate::cli::WorldRuntimeArgs,
     /// Nodes allowed to modify the store.
@@ -515,6 +525,7 @@ struct ServeWorlds {
     compiler: Option<crate::world_compile::Compiler>,
     native: bool,
     source_only: bool,
+    trusted_module_keys: Vec<[u8; 32]>,
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
 }
@@ -573,11 +584,13 @@ impl ServeWorlds {
             let blobs = self.blobs.clone();
             let mail = self.mail.clone();
             let source_only = self.source_only;
+            let trusted_module_keys = self.trusted_module_keys.clone();
             move |handle| {
                 let service = WorldService::new(handle, admin_token)
                     .with_blob_store(blobs)
                     .with_runtime_limits(runtime)
-                    .with_source_only(source_only);
+                    .with_source_only(source_only)
+                    .with_module_trust_keys(trusted_module_keys);
                 match &mail {
                     Some(sink) => service.with_mail(Arc::clone(sink)),
                     None => service,
@@ -765,6 +778,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         roc_platform,
         world_native,
         world_source_only,
+        world_module_trust_keys,
         world_ssh_port,
         world_runtime,
         allow_node,
@@ -778,8 +792,18 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_cap_policy,
         world_source_only,
     )?;
+    let apps_root = std::env::var_os("ID_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("apps"));
+    let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    for app in app_discovery.apps {
+        info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
+    }
+    for error in app_discovery.errors {
+        warn!(%error, "serve: app discovery failed");
+    }
     #[cfg(not(feature = "world"))]
-    let _ = &world_allowed_caps;
+    let _ = (&world_allowed_caps, &world_module_trust_keys);
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -819,6 +843,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
+    let chat_presence = PresenceTable::new();
 
     // Always create Gossip — iroh-docs needs it even if peer discovery is off
     let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -892,6 +917,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let runtime = crate::world_limits::RuntimeLimits::from_args(&world_runtime)?;
         let server_caps = allowed_caps(world_allowed_caps.as_deref())?;
         let compiler = resolve_compiler(roc_bin, roc_platform)?;
+        let trusted_module_keys = world_module_trust_keys
+            .iter()
+            .map(|encoded| {
+                let bytes = crate::world_session::decode_hex(encoded).ok_or_else(|| {
+                    anyhow::anyhow!("--world-module-trust-key must be 32-byte hex")
+                })?;
+                <[u8; 32]>::try_from(bytes.as_slice())
+                    .map_err(|_| anyhow::anyhow!("--world-module-trust-key must be 32-byte hex"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            trusted_module_keys.is_empty() || world_module.is_none(),
+            "--world-module-trust-key cannot be combined with --world-module: \
+             startup modules cannot carry a signature yet — remove one of the \
+             two, or install the module over the session protocol with a signature"
+        );
         ensure!(
             !world_source_only || compiler.is_some(),
             "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
@@ -909,6 +950,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             compiler,
             native: world_native,
             source_only: world_source_only,
+            trusted_module_keys,
             runtime,
             mail: mail_sink(
                 world_mail_outbox,
@@ -1094,6 +1136,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
+        let gossip_chat_presence = chat_presence.clone();
+        let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
         let gossip_endpoint = router.endpoint().clone();
@@ -1103,6 +1147,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 sender,
                 receiver,
                 gossip_peer_discovery,
+                gossip_chat_presence,
+                gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
             )
@@ -1491,6 +1537,8 @@ async fn run_gossip_loop(
     sender: distributed_topic_tracker::GossipSender,
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
+    chat_presence: PresenceTable,
+    signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
 ) {
@@ -1536,17 +1584,53 @@ async fn run_gossip_loop(
                     debug!("gossip announcement serialization error: {}", e);
                 }
             }
+
+            // Presence rides the same gossip plane (#2809): an ephemeral
+            // heartbeat naming this node. Channel membership lives in the
+            // chat layer above serve, so this heartbeat names no channels;
+            // receivers scope and read it through PresenceTable.
+            let mut presence = PresenceHeartbeat::new(
+                *announce_node_id.as_bytes(),
+                Vec::new(),
+                Vec::new(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            );
+            presence.sign(&signing_key);
+            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                debug!("gossip presence broadcast error: {}", e);
+            }
         }
     });
 
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
+    let recv_presence = chat_presence.clone();
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
                 Ok(event) => match event {
                     iroh_gossip::api::Event::Received(msg) => {
-                        match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
+                        if let Some(heartbeat) = decode_frame(&msg.content) {
+                            // Presence is a claim about `node`, and the gossip
+                            // topic is public and does not authenticate
+                            // authors: accept the frame only when the
+                            // heartbeat's signature by its claimed node
+                            // verifies, so nobody can forge or suppress
+                            // another node's presence (#2809 Codex review).
+                            if heartbeat.verify() {
+                                debug!(
+                                    "presence heartbeat from {}: {} channel(s)",
+                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                    heartbeat.channels.len()
+                                );
+                                recv_presence.update(heartbeat);
+                            } else {
+                                debug!("presence heartbeat failed signature verification, dropped");
+                            }
+                        } else {
+                            match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
                             Ok(announcement) => {
                                 debug!(
                                     "peer announcement from {}: blob_count={}",
@@ -1554,8 +1638,12 @@ async fn run_gossip_loop(
                                 );
                                 recv_discovery.update(announcement);
                             }
-                            Err(e) => {
-                                debug!("failed to deserialize peer announcement: {}", e);
+                                Err(e) => {
+                                    debug!(
+                                        "failed to deserialize peer announcement: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
@@ -1579,12 +1667,25 @@ async fn run_gossip_loop(
 
     // Spawn stale cleanup task — probes stale peers before removal
     let cleanup_discovery = peer_discovery;
+    let cleanup_presence = chat_presence;
 
     let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(STALE_CHECK_INTERVAL);
 
         loop {
             interval.tick().await;
+
+            // Presence entries expire on their own stamps; prune them here so a
+            // long-running server does not retain every node key it has ever
+            // seen (#2809 Codex review). This runs even when no discovery peer
+            // is stale.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let pruned = cleanup_presence.prune_at(now_secs);
+            if pruned > 0 {
+                debug!("pruned {} expired presence entrie(s)", pruned);
+            }
 
             let stale = cleanup_discovery.stale_peers();
             if stale.is_empty() {
@@ -1877,6 +1978,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "world")]
     #[test]
     fn world_names_are_bounded_and_are_a_single_path_segment() {
         for bad in [
@@ -1918,6 +2020,23 @@ mod tests {
     fn test_is_process_alive_current_process() {
         let pid = std::process::id();
         assert!(is_process_alive(pid));
+    }
+
+    #[test]
+    fn test_is_process_alive_pid_zero() {
+        #[cfg(unix)]
+        {
+            assert!(!is_process_alive(0));
+        }
+    }
+
+    #[test]
+    fn test_is_process_alive_pid_out_of_i32_range() {
+        #[cfg(unix)]
+        {
+            assert!(!is_process_alive(i32::MAX as u32 + 1));
+            assert!(!is_process_alive(u32::MAX));
+        }
     }
 
     #[test]

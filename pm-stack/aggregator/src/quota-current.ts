@@ -68,6 +68,10 @@ type FreshState = PoolFreshness["state"];
 
 function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
   if (entry.state === "ok") {
+    // #1268: retained last-known entries are stale by definition —
+    // the provider's latest run failed, however recent the retained
+    // measuredAt is (one tick is 15 min, inside the 20-min bound).
+    if (entry.retainedFromFailedTick) return "stale";
     const t = Date.parse(entry.measuredAt);
     return Number.isFinite(t) && t - nowMs <= QUOTA_CURRENT_FUTURE_SKEW_MS && nowMs - t <= QUOTA_CURRENT_FRESH_MS
       ? "ok"
@@ -112,9 +116,20 @@ function windowName(name: string): string {
   return name === "5h" ? "5-hour" : name;
 }
 
+/**
+ * A pctOfLimit is usable only as a finite number inside [0, 100] (#2582,
+ * gate pinned by triage task 3837). Out-of-range reads DROP, never clamp:
+ * clamping 150 -> 100 would still wall a healthy pool, and publishing -20
+ * would report negative usage. Shared by both reader sites below so the
+ * two can never drift apart.
+ */
+function usablePct(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100;
+}
+
 function pctWindows(entry: QuotaCurrentEntry): QuotaWindow[] {
   return entry.windows
-    .filter((w) => typeof w.pctOfLimit === "number" && Number.isFinite(w.pctOfLimit))
+    .filter((w) => usablePct(w.pctOfLimit))
     .map((w) => ({
       name: windowName(w.name),
       unit: "other" as const,
@@ -313,7 +328,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
         used: w.value,
         limit: meta.limit,
         unit: meta.unit,
-        ...(w.pctOfLimit != null ? { percent: w.pctOfLimit } : {}),
+        ...(usablePct(w.pctOfLimit) ? { percent: w.pctOfLimit } : {}),
         highlight: prev.get(w.name)?.highlight ?? true,
       });
     }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
@@ -16,7 +17,7 @@ func eraFor(t *testing.T, p *pool.Pool, version string) (mcpclient.Era, string) 
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	lease, err := p.Acquire(mcpclient.WithCallerVersion(ctx, version), "")
+	lease, err := p.Acquire(mcpclient.WithCallerVersion(ctx, version), config.ResolvedScope{Key: ""})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,13 +111,13 @@ func TestFollowLanesHaveTheirOwnCapacity(t *testing.T) {
 	for _, held := range []string{"2026-07-28", "2025-11-25"} {
 		other := map[string]string{"2026-07-28": "2025-11-25", "2025-11-25": "2026-07-28"}[held]
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		lease, err := p.Acquire(mcpclient.WithCallerVersion(ctx, held), "")
+		lease, err := p.Acquire(mcpclient.WithCallerVersion(ctx, held), config.ResolvedScope{Key: ""})
 		cancel()
 		if err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
-		second, err := p.Acquire(mcpclient.WithCallerVersion(ctx, other), "")
+		second, err := p.Acquire(mcpclient.WithCallerVersion(ctx, other), config.ResolvedScope{Key: ""})
 		cancel()
 		if err != nil {
 			lease.Release()
