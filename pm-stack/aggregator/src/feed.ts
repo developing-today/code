@@ -32,7 +32,9 @@ import type {
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
+  PoolFreshness,
   ProjectPoolItem,
+  QuotaCredentialRow,
   QuotaPool,
   QuotaView,
   QuotaWindow,
@@ -51,9 +53,9 @@ export interface FleetFeed {
    *  in feeds written before the drift check existed. */
   checkout?: CheckoutDrift;
   quota: QuotaView;
-  /** Element drops loadFeed's quota sanitization made (#2429), set
+  /** Element drops loadFeed's quota sanitization made (#2429/#3921), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
-  quotaDropped?: { pools: number; windows: number; burn: number };
+  quotaDropped?: { pools: number; credentials: number; windows: number; activeSessions: number; burn: number };
   /** Element drops loadFeed's chargesAttention sanitization made
    * (#2439), set only when at least one entry dropped; absent on raw
    * parsed feeds and on feeds whose entries all survived. */
@@ -463,21 +465,50 @@ const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
  * must never be iterated as a collection of windows (it fabricated
  * attention flags). Window ELEMENTS are filtered by sanitizeQuotaView,
- * so a pool survives one bad window. Credential rows, when present,
- * must at least be records holding a windows array; their elements are
- * filtered the same way. */
+ * so a pool survives one bad window. Optional credential containers
+ * must be arrays; malformed credential rows and active-session entries
+ * are dropped individually by sanitizeQuotaView. */
 export function isQuotaPool(v: unknown): v is QuotaPool {
   if (!isRecord(v)) return false;
   if (typeof v.id !== "string" || typeof v.provider !== "string" || typeof v.plan !== "string") return false;
   if (typeof v.state !== "string" || !QUOTA_STATES.includes(v.state)) return false;
   if (!Array.isArray(v.windows)) return false;
-  if (v.credentials !== undefined) {
-    if (!Array.isArray(v.credentials)) return false;
-    for (const row of v.credentials) {
-      if (!isRecord(row) || !Array.isArray(row.windows)) return false;
-    }
-  }
+  if (v.credentials !== undefined && !Array.isArray(v.credentials)) return false;
   return true;
+}
+
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+
+function isQuotaFreshness(v: unknown): v is PoolFreshness {
+  return (
+    isRecord(v) &&
+    typeof v.measuredAt === "string" &&
+    typeof v.source === "string" &&
+    typeof v.state === "string" &&
+    QUOTA_FRESHNESS_STATES.includes(v.state) &&
+    (v.error === undefined || typeof v.error === "string")
+  );
+}
+
+function isQuotaCredentialRow(v: unknown): v is QuotaCredentialRow {
+  return (
+    isRecord(v) &&
+    typeof v.label === "string" &&
+    typeof v.providerId === "string" &&
+    Array.isArray(v.windows) &&
+    isQuotaFreshness(v.freshness)
+  );
+}
+
+type QuotaActiveSession = NonNullable<QuotaPool["activeSessions"]>[number];
+
+function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
+  return (
+    isRecord(v) &&
+    typeof v.session === "string" &&
+    typeof v.model === "string" &&
+    isFiniteNumber(v.tokens)
+  );
 }
 
 /** One historical burn segment as renderQuota maps it (#2429).
@@ -543,30 +574,49 @@ function isQuotaChoices(v: unknown): boolean {
 export interface QuotaSanitization {
   view: QuotaView;
   droppedPools: number;
+  droppedCredentials: number;
   droppedWindows: number;
+  droppedActiveSessions: number;
   droppedBurn: number;
 }
 
-/** Drop-and-count sanitization of a gate-passed quota section (#2429,
+/** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921,
  * following poolFromFeed's per-element pattern, built on the shared
  * arrayOf primitive from #2577): malformed pools and burn segments
- * drop individually, malformed windows drop out of their pool, and the
- * well-formed remainder renders. The counts ride out on the result so
- * the caller surfaces them, never swallows them. */
+ * drop individually, malformed windows/credential rows/active sessions
+ * drop out of their pool, and the well-formed remainder renders. The
+ * counts ride out on the result so the caller surfaces them, never
+ * swallows them. */
 export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   const pools = arrayOf(isQuotaPool)(quota.pools);
+  let droppedCredentials = 0;
   let droppedWindows = 0;
+  let droppedActiveSessions = 0;
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
     droppedWindows += windows?.dropped ?? 0;
     let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
     if (pool.credentials !== undefined) {
-      const rows = pool.credentials.map((row) => {
+      const rows = arrayOf(isQuotaCredentialRow)(pool.credentials);
+      droppedCredentials += rows?.dropped ?? 0;
+      const credentials = (rows?.values ?? []).map((row) => {
         const rowWindows = arrayOf(isQuotaWindow)(row.windows);
         droppedWindows += rowWindows?.dropped ?? 0;
         return { ...row, windows: rowWindows?.values ?? [] };
       });
-      out = { ...out, credentials: rows };
+      out = { ...out, credentials };
+    }
+    if (pool.activeSessions !== undefined) {
+      if (Array.isArray(pool.activeSessions)) {
+        const sessions = arrayOf(isQuotaActiveSession)(pool.activeSessions);
+        droppedActiveSessions += sessions?.dropped ?? 0;
+        out = { ...out, activeSessions: sessions?.values ?? [] };
+      } else {
+        // A present malformed section is one dropped section, not a pool
+        // failure; the renderer treats an empty list as no active sessions.
+        droppedActiveSessions += 1;
+        out = { ...out, activeSessions: [] };
+      }
     }
     return out;
   });
@@ -588,13 +638,21 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
   // Surface the loss on the view itself (its consumers project the
   // view, e.g. /api/quota.json), not only on the feed wrapper.
-  if (droppedPools + droppedWindows + droppedBurn > 0) {
-    view.dropped = { pools: droppedPools, windows: droppedWindows, burn: droppedBurn };
+  if (droppedPools + droppedCredentials + droppedWindows + droppedActiveSessions + droppedBurn > 0) {
+    view.dropped = {
+      pools: droppedPools,
+      credentials: droppedCredentials,
+      windows: droppedWindows,
+      activeSessions: droppedActiveSessions,
+      burn: droppedBurn,
+    };
   }
   return {
     view,
     droppedPools,
+    droppedCredentials,
     droppedWindows,
+    droppedActiveSessions,
     droppedBurn,
   };
 }
@@ -765,7 +823,13 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...feed,
       meta,
       quota: san.view,
-      quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      quotaDropped: {
+        pools: san.droppedPools,
+        credentials: san.droppedCredentials,
+        windows: san.droppedWindows,
+        activeSessions: san.droppedActiveSessions,
+        burn: san.droppedBurn,
+      },
       ...(charges ? { chargesAttention: charges.values } : {}),
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,

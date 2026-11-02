@@ -877,6 +877,11 @@ in
     };
     Service = {
       Type = "oneshot";
+      # #4544: sync-models maintains the runtime overlay, never the tracked
+      # configured default — its rewrites must not dirty the repo tree.
+      Environment = [
+        "OPENCODE_CONFIG_PATH=%h/.local/state/opencode/opencode-runtime.jsonc"
+      ];
       ExecStart = toString (
         pkgs.writeShellScript "sync-models-run" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
@@ -1596,6 +1601,13 @@ in
       # reads OPENCODE_DISABLE_FILEWATCHER; the EXPERIMENTAL_ name was
       # read nowhere, so the watcher was silently still on.)
       OPENCODE_DISABLE_FILEWATCHER = "1";
+      # Config split (#4544): the runtime overlay — the provider catalogs
+      # sync-models maintains, plus the server's own runtime config patches
+      # — layers over the tracked configured default
+      # (.opencode/opencode.jsonc). OPENCODE_CONFIG is the server's explicit
+      # config layer; OPENCODE_CONFIG_PATH points sync-models at the file.
+      OPENCODE_CONFIG = "$HOME/.local/state/opencode/opencode-runtime.jsonc";
+      OPENCODE_CONFIG_PATH = "$HOME/.local/state/opencode/opencode-runtime.jsonc";
       # XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       # XDG_CONFIG_HOME = "$HOME/.config";

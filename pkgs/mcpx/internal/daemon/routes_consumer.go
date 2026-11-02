@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -154,7 +153,10 @@ func (s *Server) handleRecipesList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"recipes": out, "dirs": s.consumer.dirs})
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, r.URL.Query(), "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		limit = consumerPolicyFrom(s.callSettings(r)).RecipeLimit
 	}
