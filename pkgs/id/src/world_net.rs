@@ -11,7 +11,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,7 @@ use tokio::{
 };
 
 use crate::abuse::{
-    AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, Counters, Direction,
+    AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, ConnectionId, Counters, Direction,
     EndpointId as AbuseEndpointId, NodeId,
 };
 use crate::frames::{read_frame_body, read_frame_len};
@@ -75,6 +75,8 @@ pub struct WorldProtocol {
     /// endpoint opens, plus the counter registry operators read via
     /// [`WorldProtocol::abuse_counters`].
     abuse: Arc<Mutex<AbuseEvaluator>>,
+    /// Lifetime count of peers refused by the per-peer connection cap.
+    connection_cap_refusals: Arc<AtomicU64>,
 }
 
 /// Monotonic milliseconds for the abuse evaluator, from a process-wide
@@ -123,7 +125,16 @@ impl WorldProtocol {
                 local_node,
                 budgets,
             ))),
+            connection_cap_refusals: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Number of connections refused by the per-peer cap since this
+    /// protocol instance was created. Refusal details, including the
+    /// peer identity, are also emitted at `WARN` level.
+    #[must_use]
+    pub fn connection_cap_refusals(&self) -> u64 {
+        self.connection_cap_refusals.load(Ordering::Relaxed)
     }
 
     /// Snapshot of the per-(local node, remote endpoint) frame/byte
@@ -158,6 +169,25 @@ impl WorldProtocol {
     }
 }
 
+/// Owns one evaluator registration for a live QUIC connection. Keeping
+/// this guard in `accept` ties the per-peer slot to the transport's full
+/// lifetime, including every early return and unwinding path.
+struct PeerConnectionRegistration {
+    abuse: Arc<Mutex<AbuseEvaluator>>,
+    endpoint: AbuseEndpointId,
+    connection: ConnectionId,
+}
+
+impl Drop for PeerConnectionRegistration {
+    fn drop(&mut self) {
+        let mut abuse = self
+            .abuse
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        abuse.close_connection(&self.endpoint, self.connection);
+    }
+}
+
 impl ProtocolHandler for WorldProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // Bound stale endpoint and counter state as new connections arrive;
@@ -166,6 +196,39 @@ impl ProtocolHandler for WorldProtocol {
         self.prune_abuse_state();
         let remote = conn.remote_id();
         tracing::debug!("world: connection from node {remote}");
+        let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
+        let connection_id = match self.abuse.lock() {
+            Ok(mut abuse) => match abuse.open_connection(remote_endpoint, abuse_now_ms()) {
+                Ok(connection_id) => connection_id,
+                Err(refusal) => {
+                    let refusal_count = self
+                        .connection_cap_refusals
+                        .fetch_add(1, Ordering::Relaxed)
+                        .saturating_add(1);
+                    tracing::warn!(
+                        remote = %remote,
+                        refusal_count,
+                        retry_after_ms = ?refusal.retry_after_ms,
+                        "world: per-peer connection cap reached; refusing connection"
+                    );
+                    conn.close(0_u32.into(), b"per-peer connection cap reached");
+                    return Ok(());
+                }
+            },
+            Err(_) => {
+                tracing::error!(
+                    remote = %remote,
+                    "world: abuse evaluator lock poisoned; refusing connection"
+                );
+                conn.close(0_u32.into(), b"abuse evaluator unavailable");
+                return Ok(());
+            }
+        };
+        let _registration = PeerConnectionRegistration {
+            abuse: Arc::clone(&self.abuse),
+            endpoint: remote_endpoint,
+            connection: connection_id,
+        };
         let permits = Arc::new(Semaphore::new(MAX_SESSIONS_PER_CONNECTION));
         let mut sessions = JoinSet::new();
         while let Ok((mut send, recv)) = conn.accept_bi().await {
@@ -176,7 +239,6 @@ impl ProtocolHandler for WorldProtocol {
             };
             let hub = self.hub.clone();
             let abuse = Arc::clone(&self.abuse);
-            let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
             sessions.spawn(async move {
                 let _permit = permit;
                 let mut io = StreamIo::new(send, recv, abuse, remote_endpoint);
@@ -1449,14 +1511,16 @@ mod tests {
         router: Router,
         addr: EndpointAddr,
         world: WorldHandle,
+        protocol: WorldProtocol,
     }
 
     async fn host(admin: Option<&str>) -> Host {
         let ep = endpoint().await;
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world.clone(), admin.map(str::to_owned));
+        let protocol = WorldProtocol::new(service);
         let router = Router::builder(ep.clone())
-            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .accept(WORLD_ALPN, protocol.clone())
             .spawn();
         // Loopback sockets only: the test endpoints use no relay or discovery.
         let addr = EndpointAddr::from_parts(
@@ -1474,7 +1538,39 @@ mod tests {
             router,
             addr,
             world,
+            protocol,
         }
+    }
+
+    async fn endpoint_with_key(key: [u8; 32]) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(iroh_base::SecretKey::from_bytes(&key))
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn wait_for_connection_count(
+        protocol: &WorldProtocol,
+        endpoint: AbuseEndpointId,
+        expected: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count = protocol
+                    .abuse
+                    .lock()
+                    .unwrap()
+                    .active_connection_count(&endpoint);
+                if count == expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for registered peer connections");
     }
 
     async fn next(client: &mut WorldClient) -> Option<serde_json::Value> {
@@ -1482,6 +1578,83 @@ mod tests {
             .await
             .expect("timed out waiting for a world frame")
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn accept_enforces_per_peer_connection_cap_and_releases_slots() {
+        let host = host(Some("admin")).await;
+        let peer_key = [71; 32];
+        let peer_id: AbuseEndpointId = *iroh_base::SecretKey::from_bytes(&peer_key)
+            .public()
+            .as_bytes();
+        let mut clients = Vec::new();
+
+        // Separate endpoint instances with the same identity model distinct
+        // concurrent QUIC connections from one peer.
+        for _ in 0..4 {
+            let client_endpoint = endpoint_with_key(peer_key).await;
+            let client = WorldClient::connect(&client_endpoint, host.addr.clone())
+                .await
+                .unwrap();
+            clients.push((client_endpoint, client));
+        }
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+
+        let fifth_endpoint = endpoint_with_key(peer_key).await;
+        let fifth = WorldClient::connect(&fifth_endpoint, host.addr.clone()).await;
+        if let Ok(client) = fifth {
+            client.close();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.protocol.connection_cap_refusals() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fifth peer connection was not refused");
+        assert_eq!(host.protocol.connection_cap_refusals(), 1);
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+
+        // The same cap is independent per peer, not a server-wide limit.
+        let other_endpoint = endpoint_with_key([72; 32]).await;
+        let other_id: AbuseEndpointId = *other_endpoint.id().as_bytes();
+        let mut other = WorldClient::connect(&other_endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        wait_for_connection_count(&host.protocol, other_id, 1).await;
+        assert_eq!(host.protocol.connection_cap_refusals(), 1);
+        other
+            .invite("admin", "Other peer", None, None)
+            .await
+            .unwrap();
+
+        // Closing one transport releases its registration and admits a new
+        // connection from the peer that had reached the cap.
+        let (closed_endpoint, closed_client) = clients.remove(0);
+        closed_client.close();
+        closed_endpoint.close().await;
+        wait_for_connection_count(&host.protocol, peer_id, 3).await;
+
+        let retry_endpoint = endpoint_with_key(peer_key).await;
+        let mut retry = WorldClient::connect(&retry_endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+        retry
+            .invite("admin", "Replacement peer", None, None)
+            .await
+            .unwrap();
+
+        retry.close();
+        retry_endpoint.close().await;
+        other.close();
+        other_endpoint.close().await;
+        fifth_endpoint.close().await;
+        for (client_endpoint, client) in clients {
+            client.close();
+            client_endpoint.close().await;
+        }
+        host.router.shutdown().await.unwrap();
     }
 
     #[tokio::test]
