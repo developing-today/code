@@ -98,7 +98,7 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(id::cli::normalize_args(std::env::args_os()));
 
     // Switch to the data directory if specified.
     // All data paths (.iroh-store, .iroh-key, .iroh-serve.lock) are CWD-relative,
