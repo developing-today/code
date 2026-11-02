@@ -158,6 +158,36 @@ def diff_names(diff_text):
     return names
 
 
+def untracked_added_text(mcpx, rel_paths, untracked):
+    """Render untracked files as added diff lines.
+
+    `git diff <base>` never mentions untracked files, so the T1b
+    (exported idents), T2 (registry names) and harness (newEnv) scans
+    over diff text would miss them. Rendering each content line with a
+    `+` prefix feeds those scans exactly what a staged new file with
+    the same content produces; the `+++` header keeps the diff
+    parsers' own file-header exclusion working.
+    """
+    chunks = []
+    for p in sorted(rel_paths):
+        if f"pkgs/mcpx/{p}" not in untracked:
+            continue
+        full = os.path.join(mcpx, p)
+        if not os.path.isfile(full):
+            continue
+        try:
+            text = open(full, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        chunks.append(
+            "+++ untracked pkgs/mcpx/"
+            + p
+            + "\n"
+            + "".join("+" + line + "\n" for line in text.splitlines())
+        )
+    return "".join(chunks)
+
+
 def strip_go_noise(text):
     """Blank out string/char literals and comments (keeping newlines and
     positions), so brace counting sees only Go syntax. Names are still
@@ -333,10 +363,11 @@ def main():
     if not os.path.isdir(mcpx):
         sys.exit("pkgs/mcpx not found — run from inside the code repo")
 
-    changed = set(run(["git", "diff", "--name-only", args.base], root).split())
-    changed |= set(
+    untracked = set(
         run(["git", "ls-files", "--others", "--exclude-standard"], root).split()
     )
+    changed = set(run(["git", "diff", "--name-only", args.base], root).split())
+    changed |= untracked
     rel = sorted(p[len("pkgs/mcpx/") :] for p in changed if p.startswith("pkgs/mcpx/"))
 
     commands = []  # (tier, command string runnable from repo root)
@@ -398,6 +429,10 @@ def main():
             root,
             check=False,
         )
+    # `git diff <base>` is silent about untracked files even though they
+    # are part of the change: render their contents as added lines so the
+    # T1b/T2 scans below see the same text a staged new file produces.
+    diff_text += untracked_added_text(mcpx, src, untracked)
 
     # T1b — importers of packages whose exported declarations changed.
     exported = changed_exported_idents(diff_text)
@@ -468,6 +503,9 @@ def main():
             root,
             check=False,
         )
+        # Same untracked silence as above: an untracked e2e file with a
+        # newEnv touch is a harness change just like a staged one.
+        e2e_diff += untracked_added_text(mcpx, sorted(edited_e2e_all), untracked)
         if "newEnv" in e2e_diff:
             harness = True
         changed_e2e_tests = changed_test_names(mcpx, edited_e2e_all, root, args.base)

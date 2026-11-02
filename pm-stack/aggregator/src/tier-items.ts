@@ -15,6 +15,7 @@
  * shape and stays untouched.
  */
 import type { DashAction, NewAction } from "./actions.ts";
+import { parseIsoDate } from "./validate.ts";
 import type {
   DelegationMode,
   OrchestrationSection,
@@ -66,7 +67,14 @@ function optionalBounded(v: unknown, max: number): string | undefined {
 }
 
 function isIso(v: unknown): v is string {
-  return typeof v === "string" && v.includes("T") && !Number.isNaN(Date.parse(v));
+  // #3396: Date.parse alone normalizes impossible calendar days
+  // (2026-02-30 -> Mar 2) instead of refusing them, so a delegation
+  // timestamp could name a day that never existed — and proposalExpired
+  // then clocked the 48h TTL from that phantom day. parseIsoDate (the
+  // strict in-package primitive validate.ts already enforces at ingest)
+  // re-checks the calendar day; the existing shape gates stay, so
+  // accepted formats are unchanged apart from the impossible-date rule.
+  return typeof v === "string" && v.includes("T") && !Number.isNaN(Date.parse(v)) && parseIsoDate(v) !== null;
 }
 
 function sanitizeOptions(raw: unknown): TierItemOption[] | undefined {
@@ -340,6 +348,11 @@ export function findTierItem(section: OrchestrationSection, objectRef: string): 
 export function checkActionAgainstItem(input: NewAction, item: TierItem | undefined, nowMs: number): string | null {
   const p = input.payload ?? {};
   if (input.verb === "answer") {
+    if (p.optionId !== undefined) {
+      if (!item) return "this item is no longer on the published Needs User tier — refresh and try again";
+      if (!(item.options ?? []).some((o) => o.id === p.optionId))
+        return `option "${p.optionId}" is not one of this item's published options`;
+    }
     if (p.answers && p.answers.length) {
       if (!item) return "this item is no longer on the published Needs User tier — refresh and try again";
       const qs = item.questions ?? [];
@@ -348,16 +361,24 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
       for (const a of p.answers) {
         const q = byId.get(a.questionId);
         if (!q) return `unknown question id "${a.questionId}" for this item`;
-        if ((q.type === "single" || q.type === "yesno") && q.options) {
-          if (typeof a.value !== "string" || !q.options.some((o) => o.id === a.value))
-            return `answer for "${q.id}" must be one of its options`;
-        }
-        if (q.type === "multi" && q.options) {
-          if (
-            !Array.isArray(a.value) ||
-            a.value.some((v) => typeof v !== "string" || !q.options?.some((o) => o.id === v))
-          )
-            return `answers for "${q.id}" must be chosen from its options`;
+        switch (q.type) {
+          case "yesno":
+            if (a.value !== "yes" && a.value !== "no") return `answer for "${q.id}" must be "yes" or "no"`;
+            break;
+          case "single":
+            if (typeof a.value !== "string" || !q.options?.some((o) => o.id === a.value))
+              return `answer for "${q.id}" must be one of its options`;
+            break;
+          case "text":
+            if (typeof a.value !== "string") return `answer for "${q.id}" must be text`;
+            break;
+          case "multi":
+            if (
+              !Array.isArray(a.value) ||
+              a.value.some((v) => typeof v !== "string" || !q.options?.some((o) => o.id === v))
+            )
+              return `answers for "${q.id}" must be chosen from its options`;
+            break;
         }
       }
       // #1451 (Drew, 2026-10-27): partial survey submits are allowed —
@@ -365,10 +386,6 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
       // questions remain open. Membership and value checks above still
       // reject anything the item never asked. (Before #1451 this point
       // rejected a submit missing required answers outright.)
-    } else if (p.optionId) {
-      if (!item) return "this item is no longer on the published Needs User tier — refresh and try again";
-      if (!(item.options ?? []).some((o) => o.id === p.optionId))
-        return `option "${p.optionId}" is not one of this item's published options`;
     } else if (p.text) {
       const required = (item?.questions ?? []).filter((q) => q.required).map((q) => q.id);
       if (required.length)

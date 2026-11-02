@@ -17,6 +17,7 @@ import {
   isFiniteNumber,
   isIsoDate,
   isNonNegative,
+  isPercentOf,
   isRecord,
   isStringArray,
   isTimestampNotFuture,
@@ -145,7 +146,10 @@ export function sanitizeCollectionError(value: unknown): string {
     .replace(/\bBasic\s+[A-Za-z0-9+/=]+/gi, "Basic [redacted]")
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
-    .replace(/\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "$1[redacted]")
+    .replace(
+      /\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      "$1[redacted]",
+    )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
     .replace(/[\r\n\t]+/g, " ")
@@ -153,14 +157,8 @@ export function sanitizeCollectionError(value: unknown): string {
   return message || "collection failed";
 }
 
-export function feedSectionStatus(
-  status: FeedSectionStatus,
-  at: string,
-  error?: unknown,
-): FeedSectionCollectionStatus {
-  return status === "error"
-    ? { status, at, error: sanitizeCollectionError(error) }
-    : { status, at };
+export function feedSectionStatus(status: FeedSectionStatus, at: string, error?: unknown): FeedSectionCollectionStatus {
+  return status === "error" ? { status, at, error: sanitizeCollectionError(error) } : { status, at };
 }
 
 /** Tolerate malformed optional metadata without rejecting an otherwise
@@ -438,18 +436,24 @@ export function coverageFromFeed(feed: Partial<FleetFeed> | null | undefined): R
   return rows.length ? rows : null;
 }
 
+const isQuotaPercent = isPercentOf(100);
+
 /** One quota window as the renderers dereference it (#2429): `limit`
  * is read arithmetically by windowPercent, `used` is rendered, and a
- * non-object element crashes both renderQuota and buildAttentionFlags. */
+ * non-object element crashes both renderQuota and buildAttentionFlags.
+ * Value rules (#3427): a non-null resetsAt must be a real ISO calendar
+ * date (impossible dates roll forward in guidance), non-null limit and
+ * used must be non-negative finite, and percent when present must be
+ * within 0..100 (negative or >100 percents misread as healthy/walled). */
 export function isQuotaWindow(v: unknown): v is QuotaWindow {
   if (!isRecord(v)) return false;
   return (
     typeof v.name === "string" &&
     (v.unit === "requests" || v.unit === "tokens" || v.unit === "usd" || v.unit === "messages" || v.unit === "other") &&
-    (v.limit === null || isFiniteNumber(v.limit)) &&
-    isFiniteNumber(v.used) &&
-    (v.resetsAt === null || typeof v.resetsAt === "string") &&
-    (v.percent === undefined || isFiniteNumber(v.percent))
+    (v.limit === null || isNonNegative(v.limit)) &&
+    isNonNegative(v.used) &&
+    (v.resetsAt === null || isIsoDate(v.resetsAt)) &&
+    (v.percent === undefined || isQuotaPercent(v.percent))
   );
 }
 

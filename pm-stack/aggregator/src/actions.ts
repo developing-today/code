@@ -65,7 +65,13 @@ import type { ViewFilters } from "./views.ts";
 import { validateViewFilters, validateViewName } from "./views.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
 import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
-import { archiveStoreBytes, quarantineUnreadableStore, quarantineWholeStore, type InvalidStoreRecord, type StoreArchive } from "./store-recovery.ts";
+import {
+  archiveStoreBytes,
+  quarantineUnreadableStore,
+  quarantineWholeStore,
+  type InvalidStoreRecord,
+  type StoreArchive,
+} from "./store-recovery.ts";
 
 export type DashActionKind = "triage" | "status-request" | "session" | "preference";
 
@@ -119,7 +125,14 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
-  preference: ["set-delegation-default", "set-needs-order", "save-view", "rename-view", "delete-view", "set-default-view"],
+  preference: [
+    "set-delegation-default",
+    "set-needs-order",
+    "save-view",
+    "rename-view",
+    "delete-view",
+    "set-default-view",
+  ],
 };
 
 const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
@@ -555,18 +568,24 @@ export class ActionsStore {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.actions = [];
       this.fileExtras = {};
-      console.error(`[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
     if (!isRecord(parsed) || !Array.isArray(parsed.actions)) {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.actions = [];
       this.fileExtras = {};
-      console.error(`[actions] WARNING: actions store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[actions] WARNING: actions store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
 
-    this.fileExtras = Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== "version" && key !== "actions"));
+    this.fileExtras = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key !== "version" && key !== "actions"),
+    );
     const valid: DashAction[] = [];
     const invalid: InvalidStoreRecord[] = [];
     parsed.actions.forEach((action, index) => {

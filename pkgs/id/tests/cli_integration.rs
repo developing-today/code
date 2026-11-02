@@ -1999,6 +1999,7 @@ mod serve_tests {
             "--capability",
             &capability,
             "--command-mode",
+            "--json",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -2017,6 +2018,18 @@ mod serve_tests {
         assert!(event.contains("\"type\":\"event\""), "{event}");
         let view = lines.next().expect("view line").unwrap();
         assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/not-a-command\n").unwrap();
+        let error = lines.next().expect("local error record").unwrap();
+        let error: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(error["type"], "local");
+        assert_eq!(error["level"], "error");
+        assert_eq!(error["message"], "unknown command; type /help");
+        stdin.write_all(b"/help\n").unwrap();
+        let help = lines.next().expect("local help record").unwrap();
+        let help: serde_json::Value = serde_json::from_str(&help).unwrap();
+        assert_eq!(help["type"], "local");
+        assert_eq!(help["level"], "info");
+        assert!(help["message"].as_str().unwrap().contains("/records"));
         stdin.write_all(b"/stats\n").unwrap();
         let info = lines.next().expect("info line").unwrap();
         assert!(info.contains("\"type\":\"module_info\""), "{info}");
@@ -3640,6 +3653,90 @@ mod serve_tests {
         server.stop();
     }
 
+    /// Repeated `--web-listen` values reach the actual executable and bind
+    /// every requested listener, not just the Clap parser/resolver.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_repeated_listen_flags() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(
+            tmp.path(),
+            &[
+                "--web",
+                "--web-listen",
+                "127.0.0.1:0",
+                "--web-listen",
+                "127.0.0.1:0",
+            ],
+        );
+        server.wait_ready_with_web(true);
+
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+        let bindings = json["web_bindings"]
+            .as_array()
+            .expect("lock should list every web binding");
+        assert_eq!(bindings.len(), 2, "both CLI listeners should be bound");
+        let first: std::net::SocketAddr = bindings[0].as_str().unwrap().parse().unwrap();
+        let second: std::net::SocketAddr = bindings[1].as_str().unwrap().parse().unwrap();
+        assert_ne!(first.port(), 0);
+        assert_ne!(second.port(), 0);
+        assert_ne!(first.port(), second.port());
+        for addr in [first, second] {
+            let mut stream = StdTcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut status_line = Vec::new();
+            reader.read_until(b'\n', &mut status_line).unwrap();
+            assert!(
+                status_line.starts_with(b"HTTP/1.1 200"),
+                "listener {addr} should answer HTTP 200, got {:?}",
+                String::from_utf8_lossy(&status_line)
+            );
+        }
+
+        server.stop();
+    }
+
+    /// Explicit legacy flags conflict with `--web-listen` through the real
+    /// CLI value-source handling in `main`.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_listen_conflicts_with_explicit_legacy_flags() {
+        let tmp = TempDir::new().unwrap();
+        for (legacy_flag, value, expected) in [
+            ("--bind", "127.0.0.1", "--bind"),
+            ("--port", "3000", "--port"),
+        ] {
+            let output = run_cmd(
+                &[
+                    "serve",
+                    "--ephemeral",
+                    "--web",
+                    "--web-listen",
+                    "127.0.0.1:0",
+                    legacy_flag,
+                    value,
+                ],
+                tmp.path(),
+            );
+            assert!(
+                !output.status.success(),
+                "explicit {legacy_flag} should conflict with --web-listen"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(expected),
+                "error should name {expected}: {stderr}"
+            );
+        }
+    }
+
     /// Test that multiple servers can run with web on different random ports.
     #[test]
     #[cfg(feature = "web")]
@@ -4038,6 +4135,17 @@ mod serve_tests {
         assert!(
             json["web_port"].is_null(),
             "web_port should be null when --web is not used"
+        );
+
+        // A server without --web must not initialize the web-only identity
+        // database or event directory.
+        assert!(
+            !tmp.path().join(".identity.redb").exists(),
+            "web-disabled serve must not create the web identity database"
+        );
+        assert!(
+            !tmp.path().join("events").exists(),
+            "web-disabled serve must not create the web events directory"
         );
 
         server.stop();

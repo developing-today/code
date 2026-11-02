@@ -22,7 +22,7 @@ function libsqlStore(db: Client): ProjectorStore {
   return {
     upsertItem: (i) => store.upsertItem(db, i),
     upsertComment: (c) => store.upsertComment(db, c),
-    markCommentDeleted: (id) => store.markCommentDeleted(db, id),
+    markCommentDeleted: (c) => store.markCommentDeleted(db, c),
     recordPush: (p) => store.recordPush(db, p),
   };
 }
@@ -88,6 +88,9 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     const signature = req.headers.get("x-hub-signature-256");
     const event = req.headers.get("x-github-event") ?? "unknown";
     const deliveryId = req.headers.get("x-github-delivery") ?? "";
+    if (!deliveryId) {
+      return jsonResponse(400, { error: "missing_delivery_id" });
+    }
     let body: Uint8Array;
     try {
       body = await readBoundedBody(req.body, 10_000_000);

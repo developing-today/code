@@ -165,6 +165,9 @@ const loadConfig = () => {
   if (cfgCache && cfgCache.path === path && cfgCache.mtimeMs === st.mtimeMs)
     return cfgCache;
   const raw = parseJsonc(readFileSync(path, "utf8"));
+  const windows =
+    raw.experimental?.model_route_windows || raw.model_route_windows || {};
+  warnInvalidWindows(windows);
   cfgCache = {
     path,
     mtimeMs: st.mtimeMs,
@@ -172,7 +175,7 @@ const loadConfig = () => {
     providerRoutes:
       raw.experimental?.provider_routes || raw.provider_routes || {},
     routes: raw.experimental?.model_routes || raw.model_routes || {},
-    windows: raw.experimental?.model_route_windows || raw.model_route_windows || {},
+    windows,
     disabled: new Set(raw.disabled_providers || []),
   };
   return cfgCache;
@@ -397,7 +400,31 @@ const nowMs = () => {
 
 const parseHHMM = (s) => {
   const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(typeof s === "string" ? s.trim() : "");
-  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+};
+
+// At config load, name any model_route_windows entry whose start/end
+// is not a valid HH:MM (hour 00-23, minute 00-59) instead of silently
+// evaluating it (#4259). windowActive fails closed (never active) for
+// these entries, so a typo'd window surfaces as a loud no-match rather
+// than flipping a route gate to always-on/always-off/end-less.
+const warnInvalidWindows = (windows) => {
+  if (!windows || typeof windows !== "object") return;
+  for (const [name, win] of Object.entries(windows)) {
+    const start = parseHHMM(win?.start);
+    const end = parseHHMM(win?.end);
+    if (start === null || end === null) {
+      console.error(
+        `opencode-route-proxy: invalid model_route_windows["${name}"]: ` +
+          `start=${JSON.stringify(win?.start)} end=${JSON.stringify(win?.end)} ` +
+          `(expected HH:MM with hour 00-23, minute 00-59); window will never match`,
+      );
+    }
+  }
 };
 
 // Is window `win` active at `now` (epoch ms)? Day and wall time are

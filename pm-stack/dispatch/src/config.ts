@@ -107,10 +107,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     supabaseUrl: s(env.SUPABASE_URL, "https://nltgxorqwxhgfzseiirt.supabase.co").replace(/\/$/, ""),
     supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY?.trim() ? env.SUPABASE_SERVICE_ROLE_KEY.trim() : null,
     opencodeUrl: s(env.OPENCODE_URL, "http://127.0.0.1:13420").replace(/\/$/, ""),
-    opencodeAuthFile: s(
-      env.OPENCODE_AUTH_FILE,
-      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
-    ),
+    opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),
     githubAppId: env.GITHUB_APP_ID?.trim() ? env.GITHUB_APP_ID.trim() : null,
     githubAppPrivateKeyPem: appPem,
   };

@@ -19,9 +19,11 @@ impl WorldCommand {
             Self::ApplyDirectory { .. } => "ApplyDirectory",
             Self::Revoke { .. } => "Revoke",
             Self::ParticipantId { .. } => "ParticipantId",
+            Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
             Self::Snapshot { .. } => "Snapshot",
+            Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
             Self::ProjectEvent { .. } => "ProjectEvent",
             Self::View { .. } => "View",
@@ -100,11 +102,27 @@ pub(crate) enum WorldCommand {
     Input {
         token: JoinCapability,
         input: Vec<u8>,
+        /// The player-signed move event bytes for this input (#2814), when
+        /// the participant plays signed. `None` is the unsigned path,
+        /// which refuses participants with a bound author key.
+        signed_move: Option<Vec<u8>>,
         reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    /// Bind the calling participant's author key for signed play (#2814).
+    BindAuthorKey {
+        token: JoinCapability,
+        author_key: [u8; 32],
+        reply: oneshot::Sender<Result<u64>>,
     },
     Snapshot {
         token: JoinCapability,
         reply: oneshot::Sender<Result<WorldSnapshot>>,
+    },
+    /// Admin-authorized web rendering; the caller must validate the admin
+    /// secret before requesting this view. The synthetic viewer is not a
+    /// registered participant and never receives presence or event rights.
+    HostView {
+        reply: oneshot::Sender<Result<(WorldSnapshot, Option<String>)>>,
     },
     EventsAfter {
         token: JoinCapability,
@@ -1108,6 +1126,13 @@ impl WorldActor {
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
             }
+            WorldCommand::BindAuthorKey {
+                token,
+                author_key,
+                reply,
+            } => {
+                let _ = reply.send(self.core.bind_author_key(&token, author_key));
+            }
             WorldCommand::Presence {
                 participant,
                 joined,
@@ -1135,13 +1160,24 @@ impl WorldActor {
             WorldCommand::Input {
                 token,
                 input,
+                signed_move,
                 reply,
             } => {
-                let result = match self.core.prepare_input(&token, &input) {
+                let prepared = match &signed_move {
+                    Some(bytes) => self
+                        .core
+                        .prepare_input_signed(&token, &input, bytes)
+                        .map(|(event, signed)| (event, Some(signed))),
+                    None => self
+                        .core
+                        .prepare_input(&token, &input)
+                        .map(|event| (event, None)),
+                };
+                let result = match prepared {
                     Ok(_) if self.storage_failed => Err(anyhow::anyhow!(
                         "world storage failed; the world is read-only"
                     )),
-                    Ok(candidate) if self.program_healthy => {
+                    Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
                         match self
                             .program
@@ -1153,6 +1189,12 @@ impl WorldActor {
                                     event: candidate.clone(),
                                 })
                                 .and_then(|()| self.core.commit_prepared(candidate))
+                                .and_then(|event| {
+                                    if let Some(signed) = &signed {
+                                        self.core.record_signed_move(&event, signed)?;
+                                    }
+                                    Ok(event)
+                                })
                                 .inspect(|event| {
                                     let records = records.unwrap_or_default();
                                     self.republished(records, event.sequence);
@@ -1175,6 +1217,32 @@ impl WorldActor {
             }
             WorldCommand::Snapshot { token, reply } => {
                 let _ = reply.send(self.core.snapshot(&token));
+            }
+            WorldCommand::HostView { reply } => {
+                let result = if self.program_healthy {
+                    let viewer = Participant {
+                        id: 0,
+                        display_name: "Host".to_owned(),
+                    };
+                    self.program.view(&viewer).and_then(|view| {
+                        if view
+                            .as_ref()
+                            .is_some_and(|text| text.len() > self.core.limits.presentation_bytes)
+                        {
+                            self.view_failures = self.view_failures.saturating_add(1);
+                            anyhow::bail!(
+                                "world presentation exceeds {} bytes",
+                                self.core.limits.presentation_bytes
+                            );
+                        }
+                        Ok((self.core.snapshot_unchecked(WorldScopes::ALL), view))
+                    })
+                } else {
+                    Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    ))
+                };
+                let _ = reply.send(result);
             }
             WorldCommand::EventsAfter {
                 token,
@@ -1403,12 +1471,8 @@ impl WorldActor {
                     // existing schedule standing, in the journal as in
                     // memory (#807).
                     let replacing = self.core.schedules.contains_key(&id);
-                    self.core.check_schedule_replacing(
-                        &id,
-                        at_ms,
-                        self.core.clock().now_ms(),
-                        replacing,
-                    )?;
+                    self.core
+                        .check_schedule_replacing(&id, at_ms, self.core.clock().now_ms())?;
                     if replacing {
                         // Journal the cancel before the replacement set:
                         // replay refuses two pending sets for one id.

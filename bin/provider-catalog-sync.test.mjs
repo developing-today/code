@@ -55,6 +55,26 @@ test('parseJsonc strips comments and trailing commas', () => {
   assert.equal(cfg.provider['proxy-a'].models['gpt-1-sol'].limit.context, 1000);
 });
 
+test('parseJsonc preserves commas before brackets inside strings (#3430)', () => {
+  assert.equal(parseJsonc('{ "note": "x,}", "n": 1 }').note, 'x,}');
+  assert.equal(parseJsonc('{ "note": "a,]", "n": 1 }').note, 'a,]');
+  assert.equal(parseJsonc('{ "note": "a, }", "n": 1 }').note, 'a, }');
+  assert.equal(parseJsonc('{ "list": ["x, ]", "y"] }').list[0], 'x, ]');
+  const nested = parseJsonc(
+    '{ "provider": { "p": { "models": { "m": { "variants": { "v": { "headers": "a,}" } } } } } } }',
+  );
+  assert.equal(nested.provider.p.models.m.variants.v.headers, 'a,}');
+});
+
+test('parseJsonc still removes real trailing commas and strips comments (#3430)', () => {
+  assert.deepEqual(parseJsonc('{ "a": 1, }'), { a: 1 });
+  assert.deepEqual(parseJsonc('// hi\n{ "a": [1, 2,], "b": { "c": 3, } }'), {
+    a: [1, 2],
+    b: { c: 3 },
+  });
+  assert.equal(parseJsonc('{ "url": "https://example.com//x" }').url, 'https://example.com//x');
+});
+
 test('findModelsSpan locates the models object per provider', () => {
   const span = findModelsSpan(FIXTURE, 'name-only-b');
   assert.ok(span);

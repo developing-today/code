@@ -120,7 +120,45 @@ export function stripJsonc(text) {
     out.push(c);
     i += 1;
   }
-  return out.join('').replace(/,(\s*[}\]])/g, '$1');
+  const stripped = out.join('');
+  // String-aware trailing-comma removal: a ',' followed by only whitespace
+  // then '}' or ']' is structural, but the same sequence inside a string
+  // literal is content and must survive verbatim (#3430).
+  const res = [];
+  let j = 0;
+  let inStr = false;
+  let e = false;
+  while (j < stripped.length) {
+    const ch = stripped[j];
+    if (inStr) {
+      res.push(ch);
+      if (e) e = false;
+      else if (ch === '\\') e = true;
+      else if (ch === '"') inStr = false;
+      j += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      res.push(ch);
+      j += 1;
+      continue;
+    }
+    if (ch === ',') {
+      let k = j + 1;
+      while (k < stripped.length && /\s/.test(stripped[k])) k += 1;
+      if (stripped[k] === '}' || stripped[k] === ']') {
+        j += 1;
+        continue;
+      }
+      res.push(ch);
+      j += 1;
+      continue;
+    }
+    res.push(ch);
+    j += 1;
+  }
+  return res.join('');
 }
 
 export function parseJsonc(text) {

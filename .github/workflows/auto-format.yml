@@ -72,16 +72,37 @@ jobs:
             echo "No changed files to format."
             exit 0
           fi
-          printf 'Formatting %s file(s):\n' "${#changed_files[@]}"
-          printf '  %s\n' "${changed_files[@]}"
-          nix run .#format -- "${changed_files[@]}"
+          # The bot pushes with the default GITHUB_TOKEN, which lacks
+          # workflow authorization: staging a workflow formatting diff
+          # rejects the whole push and loses the unrelated fixes with
+          # it (#3118). Workflow files are excluded from this write
+          # pass only; treefmt still formats them everywhere else.
+          format_files=()
+          skipped_workflow_files=()
+          for f in "${changed_files[@]}"; do
+            case "$f" in
+              .github/workflows/*) skipped_workflow_files+=("$f") ;;
+              *) format_files+=("$f") ;;
+            esac
+          done
+          if ((${#skipped_workflow_files[@]} > 0)); then
+            printf 'Skipping workflow file(s) the bot cannot push:\n'
+            printf '  %s\n' "${skipped_workflow_files[@]}"
+          fi
+          if ((${#format_files[@]} == 0)); then
+            echo "Only workflow files changed; nothing for the auto-format bot to push."
+            exit 0
+          fi
+          printf 'Formatting %s file(s):\n' "${#format_files[@]}"
+          printf '  %s\n' "${format_files[@]}"
+          nix run .#format -- "${format_files[@]}"
           if git diff --quiet; then
             echo "treefmt made no changes."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add -- "${format_files[@]}"
           git commit -m "style(treefmt): auto-format on main"
           for attempt in 1 2; do
             if git push origin HEAD:main; then

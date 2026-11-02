@@ -175,10 +175,11 @@ export function entryFromFileExport(
 
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
-  const measuredAt =
-    typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt)
-      ? new Date(result.fetchedAt).toISOString()
-      : tickIso;
+  let measuredAt = tickIso;
+  if (typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt) && result.fetchedAt > 0) {
+    const fetchedDate = new Date(result.fetchedAt);
+    if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
+  }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
   const entry: QuotaCurrentEntry = {
     providerId: result.providerId,
@@ -475,7 +476,8 @@ export function entryFromTurso(
     return entry;
   }
   const periodEnd = sub?.current_billing_period_end ?? sub?.current_period_end ?? sub?.period_end ?? sub?.ends_at;
-  const periodStart = sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
+  const periodStart =
+    sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
   const resetsAt = normalizeResetAt(periodEnd);
   const startMs = typeof periodStart === "string" ? Date.parse(periodStart) : Number.NaN;
   const endMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : Number.NaN;

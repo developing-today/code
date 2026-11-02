@@ -44,6 +44,7 @@
 //! id serve --web
 //! ```
 
+mod app_interface;
 mod assets;
 mod collab;
 mod content_mode;
@@ -78,7 +79,8 @@ pub use collab::CollabState;
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
-pub use routes::create_router;
+pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
+pub use routes::{create_router, create_router_for_app};
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
@@ -233,6 +235,15 @@ pub struct AppState {
     pub(crate) local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
     /// Optional hosted world (and its invite secret) for the WebSocket bridge.
     pub world: Option<crate::world_hub::WorldHub>,
+    /// The `[interfaces.web]` page route this state's router binds
+    /// the world page at (#2325). Defaults to the world app's own
+    /// `/world`; `create_router_for_app` overwrites it from the
+    /// app's declared interface.
+    pub web_route: String,
+    /// The `[interfaces.web]` live-channel route, if the app
+    /// declares one (#2325). Defaults to the world app's
+    /// `/ws/world`.
+    pub web_socket: Option<String>,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
 }
@@ -307,9 +318,16 @@ impl AppState {
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
             upload_name_lock: Arc::new(Mutex::new(())),
-            identity: IdentityStore::new(secret_key, identity_db_path).await?,
+            identity: IdentityStore::new_with_max_identities(
+                secret_key,
+                identity_db_path,
+                identity::configured_max_identities(),
+            )
+            .await?,
             local_events,
             world: None,
+            web_route: "/world".to_owned(),
+            web_socket: Some("/ws/world".to_owned()),
             cookie_secure: false,
         })
     }
@@ -426,6 +444,50 @@ pub async fn web_router_with_local_events(
     )
     .await?;
     Ok(finish_router(state, security, world, cookie_secure))
+}
+
+/// Build one router per listener security over a SINGLE shared
+/// [`AppState`] (#2145 multi-listener serve).
+///
+/// `web_router` opens the identity store exclusively, so building one
+/// router per listener fails on the second open ("identity store …
+/// is already open"). Here the state is built once and cloned per
+/// listener; each clone is finished with that listener's own
+/// [`WebSecurity`], so per-bind host/token policy still applies.
+#[allow(clippy::too_many_arguments)]
+pub async fn web_routers(
+    store: Store,
+    peers: Option<PeerDiscovery>,
+    node_id: String,
+    tag_store: Arc<TagStore>,
+    secret_key: [u8; 32],
+    identity_db_path: std::path::PathBuf,
+    securities: Vec<WebSecurity>,
+    world: Option<crate::world_hub::WorldHub>,
+    cookie_secure: bool,
+    local_events: Option<Arc<Mutex<crate::local_events::LocalEvents>>>,
+) -> anyhow::Result<Vec<Router>> {
+    let state = match local_events {
+        Some(events) => {
+            AppState::with_local_events(
+                store,
+                peers,
+                node_id,
+                tag_store,
+                secret_key,
+                identity_db_path,
+                events,
+            )
+            .await?
+        }
+        None => {
+            AppState::new(store, peers, node_id, tag_store, secret_key, identity_db_path).await?
+        }
+    };
+    Ok(securities
+        .into_iter()
+        .map(|security| finish_router(state.clone(), security, world.clone(), cookie_secure))
+        .collect())
 }
 
 /// Applies the world/cookie settings and the security layer to a built state.

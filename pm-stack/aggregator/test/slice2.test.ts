@@ -18,12 +18,7 @@ import {
   FIXTURE_ROADMAP,
   fixtureSource,
 } from "../src/sources/fixtures.ts";
-import {
-  droppedJulesItemCount,
-  julesSummary,
-  mapJulesItems,
-  type JulesReviewState,
-} from "../src/sources/jules.ts";
+import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 
 const NOW = Date.parse("2026-10-25T15:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();

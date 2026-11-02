@@ -1,3 +1,12 @@
+//! Durable world reconstruction and authority-bearing core state.
+//!
+//! Reconstruction is admission: validate each journal entry against the
+//! verifier's state rebuilt from earlier admitted entries. Refuse the whole
+//! restore on invalid input; never partially apply or silently repair it.
+//! Guest snapshots contain program-owned state, not host authority: the host
+//! capability ledger is reconstructed and checked separately, and guest
+//! requests remain subject to that ledger.
+
 use super::*;
 
 use anyhow::{Context, Result, ensure};
@@ -49,6 +58,16 @@ pub struct WorldCore {
     /// rebuilt by journal replay and preserved across compaction by the
     /// checkpoint's `transfers` field.
     pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+    /// Author keys bound to participants for signed move capture (#2814):
+    /// participant id to the player's ed25519 verifying key bytes. A bound
+    /// participant's inputs must arrive player-signed (see
+    /// [`signed`](super::signed)). Runtime state in this first pass;
+    /// journal persistence of bindings is a follow-up.
+    pub(crate) author_keys: HashMap<u64, [u8; 32]>,
+    /// Each bound participant's expected signed-move chain position.
+    pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
+    /// Accepted signed moves, in world sequence order.
+    pub(crate) signed_moves: Vec<signed::SignedMoveRecord>,
 }
 
 /// The abuse-evaluator policy for world chat: the historical caps
@@ -144,6 +163,9 @@ impl WorldCore {
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
+            author_keys: HashMap::new(),
+            move_chains: HashMap::new(),
+            signed_moves: Vec::new(),
         };
         core.sync_ledger_ceiling();
         Ok(core)
@@ -228,6 +250,29 @@ impl WorldCore {
                         participant.id != 0,
                         "participant 0 is the reserved host identity and cannot be issued"
                     );
+                    // #2960: the journaled display name must be one mint
+                    // could have produced. Mint sanitizes every name
+                    // (control and format characters stripped, capped at
+                    // 48 chars, trimmed) and refuses an empty result, so a
+                    // name that is a fixed point of neither sanitization
+                    // — or is empty — comes from a journal no live path
+                    // can write; refuse the whole restore. The pre-#2112
+                    // sanitizer (control characters only) is also accepted:
+                    // journals minted before format stripping landed can
+                    // legitimately carry ZWJ/ZWNJ names such as family
+                    // emoji, and those worlds restored fine before this
+                    // check existed.
+                    ensure!(
+                        !participant.display_name.is_empty()
+                            && (participant.display_name
+                                == sanitize_display_name(&participant.display_name)
+                                || participant.display_name
+                                    == legacy_sanitize_display_name(
+                                        &participant.display_name
+                                    )),
+                        "participant {} has a display name mint could not have produced",
+                        participant.id
+                    );
                     ensure!(
                         !core.capabilities.contains_key(&participant.id),
                         "participant {} issued twice",
@@ -253,6 +298,21 @@ impl WorldCore {
                             participant.id
                         );
                     }
+                    // #2890: mint refuses scope bits from_bits rejects
+                    // and scopes without JOIN; a journaled Issued entry
+                    // must meet the same bar, or restore would resurrect
+                    // a capability mint could never have issued.
+                    let Some(validated_scopes) = WorldScopes::from_bits(scopes) else {
+                        anyhow::bail!(
+                            "participant {} journaled scopes {scopes:#04x} name no scope",
+                            participant.id
+                        );
+                    };
+                    ensure!(
+                        validated_scopes.contains(WorldScopes::JOIN),
+                        "participant {} journaled scopes must include join scope",
+                        participant.id
+                    );
                     core.next_participant_id = core.next_participant_id.max(
                         participant
                             .id
@@ -264,7 +324,7 @@ impl WorldCore {
                         CapabilityRecord {
                             digest,
                             participant,
-                            scopes: WorldScopes(scopes),
+                            scopes: validated_scopes,
                             parent,
                             revoked: false,
                             bounds: CapabilityBounds { expires_at, uses },
@@ -737,16 +797,22 @@ impl WorldCore {
     /// A malformed id, a duplicate pending id, a full schedule, or a time past
     /// the horizon.
     pub(crate) fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
-        self.check_schedule_replacing(id, at_ms, now_ms, false)
+        self.check_schedule_inner(id, at_ms, now_ms, false)
     }
 
     /// Like [`Self::check_schedule`], but for a set that replaces the pending
-    /// schedule with the same id: the entry being replaced counts as already
-    /// cancelled, so it is neither a duplicate nor a use of the capacity.
+    /// schedule with the same id. Whether this is a replacement is derived
+    /// from this core's schedule map: the entry being replaced counts as
+    /// already cancelled, so it is neither a duplicate nor a use of capacity.
     /// Callers validate with this BEFORE persisting the replacement's
     /// cancellation, so a refused replacement (say, past the horizon) leaves
     /// the existing schedule standing (#807).
-    pub(crate) fn check_schedule_replacing(
+    pub(crate) fn check_schedule_replacing(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
+        let replacing = self.schedules.contains_key(id);
+        self.check_schedule_inner(id, at_ms, now_ms, replacing)
+    }
+
+    fn check_schedule_inner(
         &self,
         id: &str,
         at_ms: u64,
@@ -1150,8 +1216,153 @@ impl WorldCore {
         self.commit_prepared(event)
     }
 
+    /// Bind `author_key` (the player's ed25519 verifying key) to the
+    /// participant the capability names, opting that participant into
+    /// signed play (#2814): from now on its inputs must arrive as
+    /// player-signed moves via [`WorldCore::input_signed`], and the
+    /// unsigned path refuses them. Re-binding the same key is a no-op;
+    /// binding a different key is refused (key rotation is out of scope).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the capability does not authorize input, or a different
+    /// key is already bound to the participant.
+    pub fn bind_author_key(
+        &mut self,
+        token: &JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<u64> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        if let Some(bound) = self.author_keys.get(&participant_id) {
+            ensure!(
+                *bound == author_key,
+                "participant {participant_id} already has a different author key bound"
+            );
+        } else {
+            self.author_keys.insert(participant_id, author_key);
+            self.move_chains.entry(participant_id).or_default();
+        }
+        Ok(participant_id)
+    }
+
+    /// Validate a player-signed input and prepare its event, verifying
+    /// the signed move against the participant's bound key and current
+    /// chain position without advancing the chain (see
+    /// [`WorldCore::record_signed_move`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input`], plus: the participant has no
+    /// bound author key, or the signed move fails
+    /// [`signed::MoveChain::verify`].
+    pub(crate) fn prepare_input_signed(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<(WorldEvent, crate::chain::Event)> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        self.ensure_uses_left(participant_id)?;
+        ensure!(
+            input.len() <= self.limits.input_bytes,
+            "world input exceeds {} bytes",
+            self.limits.input_bytes
+        );
+        ensure!(!input.is_empty(), "world input must not be empty");
+        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "participant {participant_id} has no bound author key; bind one before signed play"
+            )
+        })?;
+        let chain = self
+            .move_chains
+            .get(&participant_id)
+            .cloned()
+            .unwrap_or_default();
+        let signed = chain.verify(signed_move, &self.world_id, input, &author)?;
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        Ok((
+            WorldEvent {
+                sequence,
+                participant_id,
+                kind: WorldEventKind::Input(input.to_vec()),
+            },
+            signed,
+        ))
+    }
+
+    /// Record a signed move whose prepared event has just committed:
+    /// advance the author's chain past it and keep the cross-referenced
+    /// record. The actor calls this immediately after
+    /// [`WorldCore::commit_prepared`] for the prepared event, while no
+    /// other input can interleave.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the participant has no bound author key, or the signed
+    /// move is no longer the author's expected next move at commit time.
+    pub(crate) fn record_signed_move(
+        &mut self,
+        event: &WorldEvent,
+        signed: &crate::chain::Event,
+    ) -> Result<()> {
+        let participant_id = event.participant_id;
+        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
+            anyhow::anyhow!("participant {participant_id} has no bound author key")
+        })?;
+        let chain = self.move_chains.entry(participant_id).or_default();
+        ensure!(
+            signed.header.seq_num == chain.next_seq()
+                && signed.header.backlink == chain.frontier(),
+            "signed move is no longer the author's expected next move at commit"
+        );
+        chain.accept(signed);
+        self.signed_moves.push(signed::SignedMoveRecord {
+            world_sequence: event.sequence,
+            participant_id,
+            author,
+            author_seq: signed.header.seq_num,
+            event_id: signed.id,
+            bytes: signed.bytes.clone(),
+        });
+        Ok(())
+    }
+
+    /// Commit a player-signed game input (#2814): the move is verified
+    /// against the participant's bound key and chain position, committed
+    /// as a normal input event, and recorded as signed evidence.
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input_signed`].
+    pub fn input_signed(
+        &mut self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<WorldEvent> {
+        let (event, signed) = self.prepare_input_signed(token, input, signed_move)?;
+        let event = self.commit_prepared(event)?;
+        self.record_signed_move(&event, &signed)?;
+        Ok(event)
+    }
+
+    /// Accepted signed moves, in world sequence order (#2814): the
+    /// evidence base an attestation witness replays.
+    #[must_use]
+    pub fn signed_moves(&self) -> &[signed::SignedMoveRecord] {
+        &self.signed_moves
+    }
+
     pub(crate) fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.author_keys.contains_key(&participant_id),
+            "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,

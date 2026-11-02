@@ -14,8 +14,9 @@ function fakeStore() {
     async upsertComment(c) {
       comments.set(c.id, c);
     },
-    async markCommentDeleted(id) {
-      deleted.push(id);
+    async markCommentDeleted(c) {
+      deleted.push(c.id);
+      comments.set(c.id, { ...c, deleted: 1 });
     },
     async recordPush(p) {
       pushes.push(p);
@@ -148,6 +149,7 @@ describe("projector: PR + review + review comment (PR-interior)", () => {
         line: 42,
         diff_hunk: "@@ -1 +1 @@",
         created_at: "2026-10-25T01:05:00Z",
+        updated_at: "2026-10-25T01:12:00Z",
         html_url: "https://github.com/developing-today/code/pull/201#discussion_r601",
       },
     });
@@ -155,10 +157,58 @@ describe("projector: PR + review + review comment (PR-interior)", () => {
     expect(rc?.kind).toBe("review_comment");
     expect(rc?.path).toBe("src/foo.ts");
     expect(rc?.line).toBe(42);
+    expect(rc?.source_updated_at).toBe("2026-10-25T01:12:00Z");
   });
 });
 
 describe("projector: comment deletion + push", () => {
+  test("issue and review comments use their update timestamps", async () => {
+    const { store, comments } = fakeStore();
+    const issue = {
+      number: 301,
+      title: "x",
+      html_url: "https://github.com/developing-today/code/issues/301",
+      created_at: "2026-10-25T00:00:00Z",
+      updated_at: "2026-10-25T00:00:00Z",
+    };
+    await applyEvent(store, "issue_comment", {
+      action: "edited",
+      repository: { full_name: "developing-today/code" },
+      issue,
+      comment: {
+        id: 701,
+        body: "edited issue comment",
+        created_at: "2026-10-25T01:00:00Z",
+        updated_at: "2026-10-25T01:15:00Z",
+      },
+    });
+    await applyEvent(store, "pull_request_review_comment", {
+      action: "edited",
+      repository: { full_name: "developing-today/code" },
+      pull_request: { ...issue, html_url: "https://github.com/developing-today/code/pull/301" },
+      comment: {
+        id: 702,
+        body: "edited review comment",
+        created_at: "2026-10-25T01:00:00Z",
+        updated_at: "2026-10-25T01:20:00Z",
+      },
+    });
+    await applyEvent(store, "issue_comment", {
+      action: "created",
+      repository: { full_name: "developing-today/code" },
+      issue,
+      comment: {
+        id: 704,
+        body: "comment without updated_at",
+        created_at: "2026-10-25T01:30:00Z",
+      },
+    });
+
+    expect(comments.get("701")?.source_updated_at).toBe("2026-10-25T01:15:00Z");
+    expect(comments.get("702")?.source_updated_at).toBe("2026-10-25T01:20:00Z");
+    expect(comments.get("704")?.source_updated_at).toBe("2026-10-25T01:30:00Z");
+  });
+
   test("deleted issue comment marks deleted", async () => {
     const { store, deleted } = fakeStore();
     await applyEvent(store, "issue_comment", {
@@ -175,6 +225,23 @@ describe("projector: comment deletion + push", () => {
       comment: { id: 700 },
     });
     expect(deleted).toContain("700");
+  });
+
+  test("deleted review comment marks deleted", async () => {
+    const { store, deleted } = fakeStore();
+    await applyEvent(store, "pull_request_review_comment", {
+      action: "deleted",
+      repository: { full_name: "developing-today/code" },
+      pull_request: {
+        number: 302,
+        title: "x",
+        html_url: "https://github.com/developing-today/code/pull/302",
+        created_at: "2026-10-25T00:00:00Z",
+        updated_at: "2026-10-25T00:00:00Z",
+      },
+      comment: { id: 703 },
+    });
+    expect(deleted).toContain("703");
   });
 
   test("push event records head/before/pusher", async () => {

@@ -96,6 +96,9 @@ func Load(ctx context.Context, src []byte, grants ...string) (*Source, error) {
 				s.dropLogLine()
 				return
 			}
+			if _, ok := m.ExportedMemoryDefinitions()["memory"]; !ok {
+				return
+			}
 			b, ok := m.Memory().Read(ptr, length)
 			if ok {
 				s.appendLog(b)
@@ -111,6 +114,10 @@ func Load(ctx context.Context, src []byte, grants ...string) (*Source, error) {
 	if err != nil {
 		rt.Close(ctx)
 		return nil, fmt.Errorf("wasmtools: instantiate guest (ungranted import?): %w", err)
+	}
+	if _, ok := mod.ExportedMemoryDefinitions()["memory"]; !ok {
+		rt.Close(ctx)
+		return nil, fmt.Errorf("wasmtools: guest does not export memory")
 	}
 	s.mod = mod
 	for _, fn := range []string{inputPtrFn, outputPtrFn, listFn, callFn} {

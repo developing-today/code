@@ -701,6 +701,76 @@ mod tests {
         );
     }
 
+    fn issued_entry(scopes: u8) -> JournalEntry {
+        let secret = "ef".repeat(32);
+        let digest = hex_encode(&token_digest(&format!("1.{secret}")));
+        JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "ann".to_owned(),
+            },
+            digest,
+            scopes,
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        }
+    }
+
+    fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
+        WorldCore::restore(
+            "scopes",
+            WorldLimits::default(),
+            vec![
+                JournalEntry::Created {
+                    world_id: "scopes".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                issued_entry(scopes),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_restore_refuses_issued_scopes_naming_no_scope() {
+        // 0x80 names no scope; from_bits rejects the whole byte.
+        let error = restore_with_scopes(0x87).unwrap_err();
+        assert!(
+            error.to_string().contains("participant 1"),
+            "error names the participant: {error}"
+        );
+        assert!(
+            error.to_string().contains("name no scope"),
+            "error explains the refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn test_restore_refuses_issued_scopes_without_join() {
+        for scopes in [0, WorldScopes::CHAT.0, WorldScopes::INPUT.0] {
+            let error = restore_with_scopes(scopes).unwrap_err();
+            assert!(
+                error.to_string().contains("join scope"),
+                "scopes {scopes:#04x} refused for missing JOIN: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_restore_accepts_guest_and_admin_bit_scopes() {
+        for scopes in [
+            WorldScopes::GUEST.0,
+            WorldScopes::JOIN.0 | WorldScopes::BUILDER.0,
+            WorldScopes::JOIN.0 | WorldScopes::MODERATOR.0,
+        ] {
+            let restored = restore_with_scopes(scopes).unwrap();
+            let record = restored.core.capabilities.get(&1).unwrap();
+            assert_eq!(record.scopes.bits(), scopes, "scopes round-trip");
+        }
+    }
+
     #[test]
     fn a_restore_closes_presence_the_journal_left_open() {
         let secret = "cd".repeat(32);
@@ -1781,6 +1851,98 @@ mod tests {
             assert!(
                 err.to_string().contains("reserved host identity"),
                 "error must name the reserved id: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_refuses_issued_display_names_mint_could_not_produce() {
+        // #2960: restore inserts journaled participants verbatim, but
+        // mint sanitizes every display name (control/format characters
+        // stripped, 48-char cap, trimmed) and refuses an empty result.
+        // A journaled name mint could never have produced — empty,
+        // control-bearing, over-length, or untrimmed — must refuse the
+        // whole restore, while a legitimately minted journal restores
+        // with byte-identical names.
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let legitimate = JournalEntry::Issued {
+            participant: owner.clone(),
+            digest: hex_encode(&token_digest(owner_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let header = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        // A legitimately minted name restores fine.
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legitimate],
+        )
+        .unwrap();
+        // A name minted before #2112's format stripping — a fixed point
+        // of the legacy sanitizer only, here a ZWJ family emoji — also
+        // restores fine: those journals predate the current sanitizer
+        // and restored successfully before this check existed.
+        let legacy = JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".to_owned(),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legacy],
+        )
+        .unwrap();
+        for bad_name in [
+            String::new(),
+            "a\u{7}\n".to_owned() + &"x".repeat(98),
+            "a".repeat(49),
+            "Ada ".to_owned(),
+            "\u{1}\u{2}".to_owned(),
+        ] {
+            let forged = JournalEntry::Issued {
+                participant: Participant {
+                    id: 1,
+                    display_name: bad_name.clone(),
+                },
+                digest: "ab".repeat(32),
+                scopes: WorldScopes::GUEST.bits(),
+                parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
+                subject: None,
+            };
+            let err = match WorldCore::restore(
+                "test-world",
+                WorldLimits::default(),
+                [header.clone(), forged],
+            ) {
+                Ok(_) => panic!("restore must refuse display name {bad_name:?}"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("display name"),
+                "error must name the display name rule: {err}"
             );
         }
     }
@@ -2918,6 +3080,122 @@ mod tests {
             "the fallback triggers a view failure count"
         );
     }
+
+    #[test]
+    fn signed_moves_chain_verify_and_replay_the_journal_order() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let mut core = WorldCore::new("ttt", WorldLimits::default()).unwrap();
+        let (_, token_x) = core
+            .issue_capability("x", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (_, token_o) = core
+            .issue_capability("o", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let key_x = SigningKey::from_bytes(Hash::digest(b"x key").as_bytes());
+        let key_o = SigningKey::from_bytes(Hash::digest(b"o key").as_bytes());
+        let author_x = *key_x.verifying_key().as_bytes();
+        let author_o = *key_o.verifying_key().as_bytes();
+        core.bind_author_key(&token_x, author_x).unwrap();
+        core.bind_author_key(&token_o, author_o).unwrap();
+
+        // Once a key is bound, the unsigned path refuses the participant.
+        assert!(core.input(&token_x, b"cell-0").is_err());
+
+        // A tic-tac-toe game through the world path: alternating signed
+        // moves, each chained to the player's previous move.
+        let script: [(&JoinCapability, &SigningKey, &[u8]); 5] = [
+            (&token_x, &key_x, b"cell-0"),
+            (&token_o, &key_o, b"cell-4"),
+            (&token_x, &key_x, b"cell-1"),
+            (&token_o, &key_o, b"cell-3"),
+            (&token_x, &key_x, b"cell-2"),
+        ];
+        let mut seq: std::collections::HashMap<u64, u32> = Default::default();
+        let mut frontier: std::collections::HashMap<u64, Hash> = Default::default();
+        for (token, key, input) in script {
+            let author = *key.verifying_key().as_bytes();
+            let participant = if author == author_x { 1 } else { 2 };
+            let n = seq.entry(participant).or_default();
+            let signed = signed::sign_move(
+                key,
+                "ttt",
+                *n,
+                frontier.get(&participant).copied(),
+                input,
+            )
+            .unwrap();
+            let event = core.input_signed(token, input, &signed.bytes).unwrap();
+            assert_eq!(event.kind, WorldEventKind::Input(input.to_vec()));
+            frontier.insert(participant, signed.id);
+            *n += 1;
+        }
+
+        // The accepted records cross-reference world sequence and chain
+        // position, and replaying each author's chain against the
+        // journal's input bytes reproduces the journal order.
+        let records = core.signed_moves().to_vec();
+        assert_eq!(records.len(), 5);
+        let mut chains: std::collections::HashMap<u64, signed::MoveChain> = Default::default();
+        for record in &records {
+            let journal_event = core
+                .events
+                .iter()
+                .find(|event| event.sequence == record.world_sequence)
+                .unwrap();
+            let WorldEventKind::Input(input) = &journal_event.kind else {
+                panic!("signed move record does not name an input event");
+            };
+            assert_eq!(journal_event.participant_id, record.participant_id);
+            chains
+                .entry(record.participant_id)
+                .or_default()
+                .verify_and_accept(&record.bytes, "ttt", input, &record.author)
+                .unwrap();
+        }
+
+        // Tampering: a move signed over one input does not verify for
+        // another, and a mutated signed byte string does not verify at
+        // all. Neither advances the author's chain.
+        let next = signed::sign_move(&key_x, "ttt", 3, frontier.get(&1).copied(), b"cell-8")
+            .unwrap();
+        assert!(core.input_signed(&token_x, b"cell-7", &next.bytes).is_err());
+        let mut mutated = next.bytes.clone();
+        mutated[12] ^= 0xff;
+        assert!(core.input_signed(&token_x, b"cell-8", &mutated).is_err());
+        core.input_signed(&token_x, b"cell-8", &next.bytes).unwrap();
+
+        // Equivocation: a rival move signed at the same author sequence
+        // is a valid chain event on its own (the fork-proof material the
+        // event store's ingest rules consume), but the world refuses it
+        // once the first move at that sequence has been accepted.
+        let rival = signed::sign_move(&key_x, "ttt", 3, frontier.get(&1).copied(), b"cell-6")
+            .unwrap();
+        assert!(crate::chain::decode(&rival.bytes).is_ok());
+        assert!(core.input_signed(&token_x, b"cell-6", &rival.bytes).is_err());
+    }
+
+    #[tokio::test]
+    async fn signed_input_flows_through_the_actor() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let core = WorldCore::new("ttt-actor", WorldLimits::default()).unwrap();
+        let handle = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let (_, token) = handle.issue("x", WorldScopes::GUEST).await.unwrap();
+        let key = SigningKey::from_bytes(Hash::digest(b"actor x").as_bytes());
+        handle
+            .bind_author_key(token.clone(), *key.verifying_key().as_bytes())
+            .await
+            .unwrap();
+        assert!(handle.input(token.clone(), b"cell-0".to_vec()).await.is_err());
+        let signed = signed::sign_move(&key, "ttt-actor", 0, None, b"cell-0").unwrap();
+        let event = handle
+            .input_signed(token, b"cell-0".to_vec(), signed.bytes)
+            .await
+            .unwrap();
+        assert_eq!(event.kind, WorldEventKind::Input(b"cell-0".to_vec()));
+    }
+
 }
 
 #[cfg(test)]
@@ -3705,6 +3983,7 @@ mod schedule_tests {
             .handle(WorldCommand::Input {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
+                signed_move: None,
                 reply,
             })
             .await;
@@ -3786,12 +4065,11 @@ mod schedule_tests {
         let mut core = world(8);
         core.schedules.insert("taken".to_owned(), now + 5);
         assert!(
-            core.check_schedule_replacing("taken", now + 9, now, true)
-                .is_ok(),
+            core.check_schedule_replacing("taken", now + 9, now).is_ok(),
             "replacing a pending id is not a duplicate"
         );
         let error = core
-            .check_schedule_replacing("taken", now + horizon + 1, now, true)
+            .check_schedule_replacing("taken", now + horizon + 1, now)
             .unwrap_err();
         assert!(error.to_string().contains("days past"), "{error}");
         assert_eq!(
@@ -3805,12 +4083,34 @@ mod schedule_tests {
             full.schedules.insert(format!("s{index}"), now);
         }
         assert!(
-            full.check_schedule_replacing("s0", now + 9, now, true)
-                .is_ok(),
+            full.check_schedule_replacing("s0", now + 9, now).is_ok(),
             "a replacement at capacity fits: it frees its own slot"
         );
         let error = full.check_schedule("one-more", now, now).unwrap_err();
         assert!(error.to_string().contains("pending schedules"), "{error}");
+    }
+
+    #[test]
+    fn replacement_path_cannot_admit_a_new_id_past_the_schedule_cap() {
+        let now = 1_000_000_000_000u64;
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES {
+            full.schedules.insert(format!("s{index}"), now);
+        }
+
+        let error = full
+            .check_schedule_replacing("new", now + 9, now)
+            .unwrap_err();
+        assert!(error.to_string().contains("pending schedules"), "{error}");
+        assert!(!full.schedules.contains_key("new"));
+    }
+
+    #[test]
+    fn replacement_path_on_an_empty_schedule_map_does_not_underflow() {
+        let now = 1_000_000_000_000u64;
+        let core = world(8);
+
+        assert!(core.check_schedule_replacing("new", now + 9, now).is_ok());
     }
 
     #[tokio::test]
@@ -4286,6 +4586,7 @@ mod schedule_tests {
             "unexpected reason: {reason}"
         );
     }
+
 }
 
 /// Structural guard for the one client projection (F11.11, #543).

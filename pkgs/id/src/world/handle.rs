@@ -612,6 +612,52 @@ impl WorldHandle {
             .send(WorldCommand::Input {
                 token,
                 input,
+                signed_move: None,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped input response")?
+    }
+
+    /// Bind the calling participant's author key for signed play (#2814).
+    /// Once bound, the participant's inputs must be player-signed.
+    pub async fn bind_author_key(
+        &self,
+        token: JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<u64> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::BindAuthorKey {
+                token,
+                author_key,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped bind response")?
+    }
+
+    /// Submit a player-signed game input (#2814): `signed_move` is the
+    /// chain event the player signed over exactly `input` (see
+    /// [`super::signed::sign_move`]).
+    pub async fn input_signed(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        signed_move: Vec<u8>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::Input {
+                token,
+                input,
+                signed_move: Some(signed_move),
                 reply,
             })
             .await
@@ -631,6 +677,19 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped snapshot response")?
+    }
+
+    /// Return the admin-only snapshot and presentation for a read-only host
+    /// view. The caller must authenticate the world admin before invoking it.
+    pub(crate) async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::HostView { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped host-view response")?
     }
 
     /// What the holder of `token` may see of a live `event` (from

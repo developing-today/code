@@ -25,6 +25,13 @@
 //!   id         Print node ID
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
+//!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   group        Groups: create, policy, add, remove, set roles, list, join
+//!   delegate     Grant a delegate a scope in a group
+//!   revoke       Revoke a delegation by its grant's event ID
+//!   doc          Documents: publish a file; list events, frontier, history
+//!   claim        Tag claims on any subject (set, clear, list, search)
+//!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
 //!
 //! # Search Filtering Flags
@@ -444,6 +451,15 @@ pub enum Command {
         /// `--web-token` when you do.
         #[arg(long, default_value = "127.0.0.1")]
         bind: std::net::IpAddr,
+        /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
+        ///
+        /// Each occurrence adds one listener; the set replaces any
+        /// `[web_bindings]` entries from `defaults.conf` entirely.
+        /// Combining `--web-listen` with an explicitly-set `--bind` or
+        /// `--port` is a startup error naming the conflict. IPv6
+        /// addresses use the bracket form, e.g. `[::1]:3001`.
+        #[arg(long = "web-listen", value_name = "IP:PORT")]
+        web_listen: Vec<SocketAddr>,
         /// Require this token to use the web interface.
         ///
         /// Open `http://host:port/?token=<TOKEN>` once; the browser keeps a
@@ -1365,7 +1381,7 @@ pub enum Command {
         ///
         /// 0 = no crawl, 1 = query direct peers (default),
         /// N = recursively query up to N levels deep.
-        #[arg(long, default_value = "1")]
+        #[arg(long, default_value = "1", allow_negative_numbers = true, value_parser = clap::value_parser!(i32).range(0..))]
         depth: i32,
         /// Maximum total peers to discover.
         ///
@@ -1535,7 +1551,7 @@ pub enum GroupCommand {
     },
     /// List the groups in the log, one line each.
     List,
-    /// Join a group with an invitation: a pasted ticket, or an `id:join?` link. Not wired yet.
+    /// Unavailable: group admission and network joining are not implemented yet.
     Join {
         /// The pasted ticket or link.
         invite: String,
@@ -1687,8 +1703,12 @@ pub enum WorldCommand {
         /// Store the replica on disk so it survives between runs.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
-        /// Give up after this many seconds without a completed sync.
-        #[arg(long, default_value_t = 30)]
+        /// Give up after this many seconds without a completed sync (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         timeout_secs: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -1736,6 +1756,9 @@ pub enum WorldCommand {
         /// `/quit`, ...) instead of sending every line as chat.
         #[arg(long)]
         command_mode: bool,
+        /// Emit local command responses as JSONL records on stdout.
+        #[arg(long, requires = "command_mode")]
+        json: bool,
         /// How to reach the host: `iroh` (NODE is a node ID) or `ssh` (NODE
         /// is `[user@]host[:port]` of the host's world SSH server, and the
         /// frames travel over an SSH exec channel, for networks and jump
@@ -2023,8 +2046,12 @@ pub enum WorldCommand {
         /// Guest capability from `id world invite`.
         #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
         capability: String,
-        /// Stop after this many seconds.
-        #[arg(long, default_value_t = 5)]
+        /// Stop after this many seconds (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 5,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         seconds: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -2466,6 +2493,53 @@ pub enum TagCommand {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn test_command_lists_cover_all_clap_subcommands() {
+        let cmd = Cli::command();
+        let names: Vec<&str> = cmd
+            .get_subcommands()
+            .map(|s| s.get_name())
+            .filter(|n| *n != "help")
+            .collect();
+        assert!(names.len() >= 20, "expected the full command set, got {names:?}");
+
+        // The module-doc command list at the top of this file.
+        let source = include_str!("cli.rs");
+        let doc_list = source
+            .split("Commands:")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("module-doc command list present");
+        for name in &names {
+            assert!(
+                doc_list.lines().any(|line| line
+                    .trim_start_matches('/')
+                    .trim_start_matches('!')
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    == Some(name)),
+                "module-doc command list in cli.rs omits `{name}`"
+            );
+        }
+
+        // The user-facing CLI Commands table in the README.
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+        let table = readme
+            .split("## CLI Commands")
+            .nth(1)
+            .and_then(|rest| rest.split("### ").next())
+            .expect("README CLI Commands table present");
+        for name in &names {
+            let cell = format!("| `{name}`");
+            assert!(
+                table.lines().any(|line| line.starts_with(&cell)),
+                "README CLI Commands table omits `{name}`"
+            );
+        }
+    }
 
     #[test]
     fn test_cli_parse_no_args() {
@@ -3119,6 +3193,30 @@ mod tests {
                 assert_eq!(max_peers, 50);
             }
             _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_peers_depth_rejects_negative_and_preserves_non_negative_values() {
+        for argv in [
+            vec!["id", "peers", "--depth=-1"],
+            vec!["id", "peers", "--depth", "-1"],
+        ] {
+            let err = Cli::try_parse_from(argv).unwrap_err();
+            assert!(
+                err.to_string().contains("depth"),
+                "error should name depth: {err}"
+            );
+        }
+
+        for depth in ["0", "1", "2"] {
+            let cli = Cli::try_parse_from(["id", "peers", "--depth", depth]).unwrap();
+            match cli.command {
+                Some(Command::Peers { depth: parsed, .. }) => {
+                    assert_eq!(parsed, depth.parse::<i32>().unwrap());
+                }
+                _ => panic!("Expected Peers command"),
+            }
         }
     }
 
@@ -4081,6 +4179,34 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_serve_web_listen_repeatable() {
+        // #2145: --web-listen is repeatable and parses each IP:PORT.
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--web",
+            "--web-listen",
+            "127.0.0.1:4001",
+            "--web-listen",
+            "[::1]:4002",
+        ]);
+        match cli.command {
+            Some(Command::Serve { web_listen, .. }) => {
+                assert_eq!(
+                    web_listen,
+                    vec![
+                        "127.0.0.1:4001".parse::<SocketAddr>().unwrap(),
+                        "[::1]:4002".parse::<SocketAddr>().unwrap(),
+                    ]
+                );
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        // A malformed listener is a parse error, not a silent skip.
+        assert!(Cli::try_parse_from(["id", "serve", "--web-listen", "nope"]).is_err());
+    }
+
+    #[test]
     fn test_cli_parse_serve_security_flags() {
         let cli = Cli::parse_from([
             "id",
@@ -4459,6 +4585,24 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
         ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "join",
+            &node,
+            "--capability",
+            "c",
+            "--command-mode",
+            "--json",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { json: true, .. })
+        ));
+        assert!(
+            Cli::try_parse_from(["id", "world", "join", &node, "--capability", "c", "--json",])
+                .is_err()
+        );
     }
 
     #[test]
@@ -4608,6 +4752,67 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 9, .. })
         ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_timeout_ranges() {
+        let node = "a".repeat(64);
+        let logs_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "logs".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--seconds".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+        let mirror_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "mirror".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--timeout-secs".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+
+        let logs = Cli::parse_from(["id", "world", "logs", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            logs.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 5, .. })
+        ));
+        let mirror = Cli::parse_from(["id", "world", "mirror", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            mirror.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs: 30, .. })
+        ));
+
+        for seconds in ["0", "86400"] {
+            let logs = Cli::try_parse_from(logs_args(seconds)).unwrap();
+            let mirror = Cli::try_parse_from(mirror_args(seconds)).unwrap();
+            let expected = seconds.parse::<u64>().unwrap();
+            assert!(matches!(
+                logs.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds, .. } if seconds == expected)
+            ));
+            assert!(matches!(
+                mirror.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs, .. } if timeout_secs == expected)
+            ));
+        }
+
+        for seconds in ["86401", "18446744073709551615"] {
+            let logs_error = Cli::try_parse_from(logs_args(seconds)).unwrap_err();
+            assert!(logs_error.to_string().contains("--seconds"));
+            let mirror_error = Cli::try_parse_from(mirror_args(seconds)).unwrap_err();
+            assert!(mirror_error.to_string().contains("--timeout-secs"));
+        }
     }
 
     #[test]

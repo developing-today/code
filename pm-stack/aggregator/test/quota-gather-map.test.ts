@@ -69,6 +69,29 @@ describe("entryFromResult", () => {
     expect(balance?.pctOfLimit).toBeNull();
     expect(balance?.valueLabel).toBe("12.50");
   });
+  test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
+    const tickIso = "2026-11-02T03:00:00.000Z";
+    const fetchedAts = [1e16, -1e16, 0, -1, NaN, Infinity, -Infinity, undefined, 1793075143879];
+    const results = fetchedAts.map((fetchedAt) => ({ ...OK_RESULT, fetchedAt }));
+    const entries = results.map((result) => entryFromResult(result, tickIso));
+
+    expect(entries).toHaveLength(results.length);
+    expect(entries.map((entry) => entry.measuredAt)).toEqual([
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      new Date(1793075143879).toISOString(),
+    ]);
+    for (const entry of entries) {
+      expect(entry.windows).toHaveLength(2);
+      expect(entry.windows.every((window) => window.measuredAt === entry.measuredAt)).toBe(true);
+    }
+  });
   test("per-model usage flattens to <model>:<window>", () => {
     const entry = entryFromResult(
       {
@@ -325,7 +348,11 @@ describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
     const ticks = [T1, T2, T3, T4];
     const counts: number[] = [];
     for (const tick of ticks) {
-      const { records, appended } = recordsFromEntries([cred("cred_a", 10, tick), cred("cred_b", 20, tick)], state, "quota-gatherer");
+      const { records, appended } = recordsFromEntries(
+        [cred("cred_a", 10, tick), cred("cred_b", 20, tick)],
+        state,
+        "quota-gatherer",
+      );
       counts.push(records.length);
       if (tick === T1) {
         expect(records).toHaveLength(1);
@@ -372,7 +399,9 @@ describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
     expect(moved.records).toHaveLength(1);
     expect(moved.records[0].value).toBe(25);
     const settled = new Map([...state, ...moved.appended]);
-    expect(recordsFromEntries([cred("cred_a", 10, T3), cred("cred_b", 25, T3)], settled, "quota-gatherer").records).toHaveLength(0);
+    expect(
+      recordsFromEntries([cred("cred_a", 10, T3), cred("cred_b", 25, T3)], settled, "quota-gatherer").records,
+    ).toHaveLength(0);
   });
 
   test("non-max credential moving 10->15 with the max unchanged appends zero", () => {
@@ -383,7 +412,11 @@ describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
   });
 
   test("one recordsFromEntries call never emits two records for the same serviceId|window key", () => {
-    const { records } = recordsFromEntries([cred("cred_a", 10, T1), cred("cred_b", 20, T1)], new Map(), "quota-gatherer");
+    const { records } = recordsFromEntries(
+      [cred("cred_a", 10, T1), cred("cred_b", 20, T1)],
+      new Map(),
+      "quota-gatherer",
+    );
     const keys = records.map((r) => `${r.serviceId}|${r.metricId}`);
     expect(new Set(keys).size).toBe(keys.length);
   });
@@ -503,7 +536,12 @@ describe("entryFromTurso (#1049)", () => {
     },
   };
   const subDoc = {
-    subscription: { plan: "starter", name: "starter", current_billing_period_start: "2026-10-01T04:00:00+00:00", current_billing_period_end: "2026-11-01T04:00:00+00:00" },
+    subscription: {
+      plan: "starter",
+      name: "starter",
+      current_billing_period_start: "2026-10-01T04:00:00+00:00",
+      current_billing_period_end: "2026-11-01T04:00:00+00:00",
+    },
   };
   const at = "2026-10-29T02:30:00.000Z";
   test("maps org usage onto the turso entry vs Starter limits, period end as cycle end", () => {
@@ -560,12 +598,21 @@ describe("entryFromTurso (#1049)", () => {
 
 describe("entryFromTurso negative usage (#2553)", () => {
   const subDoc = {
-    subscription: { plan: "starter", name: "starter", current_billing_period_start: "2026-10-01T04:00:00+00:00", current_billing_period_end: "2026-11-01T04:00:00+00:00" },
+    subscription: {
+      plan: "starter",
+      name: "starter",
+      current_billing_period_start: "2026-10-01T04:00:00+00:00",
+      current_billing_period_end: "2026-11-01T04:00:00+00:00",
+    },
   };
   const at = "2026-10-29T02:30:00.000Z";
   test("all-negative usage read is an error entry with no windows and no records", () => {
     const entry = entryFromTurso(
-      { organization: { usage: { databases: -3, storage_bytes: -2, rows_read: -5, rows_written: -1, bytes_synced: -1 } } },
+      {
+        organization: {
+          usage: { databases: -3, storage_bytes: -2, rows_read: -5, rows_written: -1, bytes_synced: -1 },
+        },
+      },
       subDoc,
       { measuredAt: at },
     );
@@ -576,7 +623,17 @@ describe("entryFromTurso negative usage (#2553)", () => {
   });
   test("one negative metric is omitted; the valid metrics publish unchanged and no record is negative", () => {
     const entry = entryFromTurso(
-      { organization: { usage: { databases: -3, storage_bytes: 1_053_323_264, rows_read: 1_905_385, rows_written: 30_026, bytes_synced: -1 } } },
+      {
+        organization: {
+          usage: {
+            databases: -3,
+            storage_bytes: 1_053_323_264,
+            rows_read: 1_905_385,
+            rows_written: 30_026,
+            bytes_synced: -1,
+          },
+        },
+      },
       subDoc,
       { measuredAt: at },
     );

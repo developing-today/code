@@ -688,6 +688,93 @@ mod tests {
     }
 
     #[test]
+    fn patch_refuses_a_control_character_replacement() {
+        let previous = grid(2, 1, " ");
+        let invalid = ScreenPatch {
+            version: 1,
+            width: 2,
+            height: 1,
+            runs: vec![CellRun {
+                start: 0,
+                cells: vec![cell("\x1b")],
+            }],
+        };
+
+        assert_eq!(invalid.apply(&previous), None);
+    }
+
+    #[test]
+    fn patch_refuses_a_narrow_replacement_that_leaves_an_orphaned_continuation() {
+        let previous = ScreenSurface::from_cells(
+            2,
+            1,
+            vec![
+                ScreenCell {
+                    symbol: "界".to_owned(),
+                    columns: 2,
+                    ..cell("界")
+                },
+                ScreenCell {
+                    symbol: String::new(),
+                    columns: 0,
+                    ..cell("")
+                },
+            ],
+        )
+        .unwrap();
+        let invalid = ScreenPatch {
+            version: 1,
+            width: 2,
+            height: 1,
+            runs: vec![CellRun {
+                start: 0,
+                cells: vec![cell("x")],
+            }],
+        };
+
+        assert_eq!(invalid.apply(&previous), None);
+    }
+
+    #[test]
+    fn patch_refuses_a_cell_with_an_invalid_column_count() {
+        let previous = grid(2, 1, " ");
+        let invalid = ScreenPatch {
+            version: 1,
+            width: 2,
+            height: 1,
+            runs: vec![CellRun {
+                start: 0,
+                cells: vec![ScreenCell {
+                    columns: 3,
+                    ..cell("x")
+                }],
+            }],
+        };
+
+        assert_eq!(invalid.apply(&previous), None);
+    }
+
+    #[test]
+    fn patch_refuses_a_wide_glyph_in_the_last_column_of_a_row() {
+        let previous = grid(2, 1, " ");
+        let invalid = ScreenPatch {
+            version: 1,
+            width: 2,
+            height: 1,
+            runs: vec![CellRun {
+                start: 1,
+                cells: vec![ScreenCell {
+                    symbol: "界".to_owned(),
+                    columns: 2,
+                    ..cell("界")
+                }],
+            }],
+        };
+
+        assert_eq!(invalid.apply(&previous), None);
+    }
+
+    #[test]
     fn ansi_diff_repaints_changed_rows_with_terminal_parity_and_byte_savings() {
         let previous = grid(80, 24, " ");
         let mut cells = previous.cells.clone();

@@ -108,13 +108,20 @@ class TestDiscoverInputs(unittest.TestCase):
                     with self.subTest(owner=owner):
                         original = {"type": "github", "owner": owner, "repo": "nixpkgs"}
                         self.assertEqual(
-                            self._discover(script_dir, self._lock_for_original(original)),
+                            self._discover(
+                                script_dir, self._lock_for_original(original)
+                            ),
                             ["candidate"],
                         )
                 for owner in (*rejected, *non_strings):
                     with self.subTest(owner=owner):
                         original = {"type": "github", "owner": owner, "repo": "nixpkgs"}
-                        self.assertEqual(self._discover(script_dir, self._lock_for_original(original)), [])
+                        self.assertEqual(
+                            self._discover(
+                                script_dir, self._lock_for_original(original)
+                            ),
+                            [],
+                        )
 
     def test_repository_type_follows_and_ref_filters_are_preserved(self):
         inputs = {
@@ -128,19 +135,48 @@ class TestDiscoverInputs(unittest.TestCase):
         }
         nodes = {
             "root": {"inputs": inputs},
-            "default": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs"}},
-            "master": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "master"}},
-            "unstable": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixos-unstable"}},
-            "stable": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixos-24.11"}},
-            "wrong-repo": {"original": {"type": "github", "owner": "NixOS", "repo": "other"}},
-            "wrong-type": {"original": {"type": "git", "owner": "NixOS", "repo": "nixpkgs"}},
+            "default": {
+                "original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs"}
+            },
+            "master": {
+                "original": {
+                    "type": "github",
+                    "owner": "NixOS",
+                    "repo": "nixpkgs",
+                    "ref": "master",
+                }
+            },
+            "unstable": {
+                "original": {
+                    "type": "github",
+                    "owner": "NixOS",
+                    "repo": "nixpkgs",
+                    "ref": "nixos-unstable",
+                }
+            },
+            "stable": {
+                "original": {
+                    "type": "github",
+                    "owner": "NixOS",
+                    "repo": "nixpkgs",
+                    "ref": "nixos-24.11",
+                }
+            },
+            "wrong-repo": {
+                "original": {"type": "github", "owner": "NixOS", "repo": "other"}
+            },
+            "wrong-type": {
+                "original": {"type": "git", "owner": "NixOS", "repo": "nixpkgs"}
+            },
         }
         lock_data = {"nodes": nodes}
         expected = ["default", "master", "stable", "unstable"]
 
         for label, script_dir in COPIES.items():
             with self.subTest(copy=label):
-                discover = runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))["discover_inputs"]
+                discover = runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))[
+                    "discover_inputs"
+                ]
                 self.assertEqual(discover(lock_data, None), expected)
                 self.assertEqual(discover(lock_data, "master"), ["default", "master"])
                 self.assertEqual(discover(lock_data, "nixos-unstable"), ["unstable"])
@@ -148,7 +184,12 @@ class TestDiscoverInputs(unittest.TestCase):
 
     def test_current_flake_lock_keeps_the_four_intended_inputs(self):
         lock_data = json.loads((ROOT / "flake.lock").read_text())
-        expected = ["nixpkgs-25", "nixpkgs-master", "nixpkgs-stable", "nixpkgs-unstable"]
+        expected = [
+            "nixpkgs-25",
+            "nixpkgs-master",
+            "nixpkgs-stable",
+            "nixpkgs-unstable",
+        ]
 
         for label, script_dir in COPIES.items():
             with self.subTest(copy=label):
@@ -166,7 +207,9 @@ class ScriptTree:
     the running interpreter serves the wrapper's fallback.
     """
 
-    def __init__(self, src_dir: Path, nix_status: int, interpreter_missing: bool = False):
+    def __init__(
+        self, src_dir: Path, nix_status: int, interpreter_missing: bool = False
+    ):
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
         self.repo_dir = base / "repo"
@@ -180,9 +223,7 @@ class ScriptTree:
         self.counter = base / "nix-calls"
         _write_executable(
             self.bin / "nix",
-            "#!/bin/sh\n"
-            f'echo call >> "{self.counter}"\n'
-            f"exit {nix_status}\n",
+            f'#!/bin/sh\necho call >> "{self.counter}"\nexit {nix_status}\n',
         )
         if interpreter_missing:
             # No uv stub and a PATH with no uv on it: the .py shebang
@@ -224,7 +265,10 @@ class ScriptTree:
 
     def run_py(self) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [sys.executable, str(self.repo_dir / "scripts" / "update-nixpkgs-inputs.py")],
+            [
+                sys.executable,
+                str(self.repo_dir / "scripts" / "update-nixpkgs-inputs.py"),
+            ],
             env=self.env,
             capture_output=True,
             text=True,
@@ -302,7 +346,9 @@ class TestWrapperContract(unittest.TestCase):
                 self.assertEqual(tree.nix_calls(), 1)
             finally:
                 tree.cleanup()
-        with self.subTest(copy=label, case="missing interpreter (127) falls back to python3"):
+        with self.subTest(
+            copy=label, case="missing interpreter (127) falls back to python3"
+        ):
             tree = ScriptTree(src_dir, nix_status=1, interpreter_missing=True)
             try:
                 # uv absent: the shebang interpreter cannot be found, so

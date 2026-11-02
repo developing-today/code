@@ -57,7 +57,9 @@ class FetchMirrorsFailureStreakTests(unittest.TestCase):
             ):
                 for date, _ in sequence:
                     day[0] = date
-                    exit_codes.append(fetch_mirrors.main(["fetch_mirrors.py", "owner/repo"]))
+                    exit_codes.append(
+                        fetch_mirrors.main(["fetch_mirrors.py", "owner/repo"])
+                    )
 
             with open(os.path.join(root, "state.json")) as state_file:
                 state = json.load(state_file)
@@ -126,6 +128,65 @@ class FetchMirrorsFailureStreakTests(unittest.TestCase):
         )
         self.assertEqual(exit_codes, [1])
         self.assertEqual(fail_days, ["2026-03-19", "2026-03-20", "2026-03-21"])
+
+    def test_timeout_continues_and_records_chronic_failure(self):
+        with tempfile.TemporaryDirectory(prefix="ghb-fetch-timeout-test-") as root:
+            initial_state = {
+                "owner/first": {
+                    "fail_days": ["2026-01-05", "2026-01-06"],
+                }
+            }
+            with open(os.path.join(root, "state.json"), "w") as state_file:
+                json.dump(initial_state, state_file)
+
+            def fake_strftime(fmt):
+                if fmt == "%Y-%m-%d":
+                    return "2026-01-07"
+                return "2026-01-07T12:00:00+0000"
+
+            timeout = fetch_mirrors.subprocess.TimeoutExpired("git fetch", 3600)
+            later_success = SimpleNamespace(returncode=0, stdout="", stderr="")
+            with (
+                patch.object(fetch_mirrors, "load_config", return_value={}),
+                patch.object(fetch_mirrors, "backup_root", return_value=root),
+                patch.object(
+                    fetch_mirrors,
+                    "mirror_path",
+                    side_effect=lambda _root, repo: f"/mirror/{repo}",
+                ),
+                patch.object(fetch_mirrors, "valid_mirror", return_value=True),
+                patch.object(fetch_mirrors.manifest_mod, "build") as build_manifest,
+                patch.object(fetch_mirrors.time, "strftime", side_effect=fake_strftime),
+                patch.object(
+                    fetch_mirrors.subprocess,
+                    "run",
+                    side_effect=[timeout, later_success],
+                ) as run,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                exit_code = fetch_mirrors.main(
+                    ["fetch_mirrors.py", "owner/first", "owner/later"]
+                )
+
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[1].args[0][2], "/mirror/owner/later")
+            build_manifest.assert_called_once_with(root)
+
+            with open(os.path.join(root, "state.json")) as state_file:
+                state = json.load(state_file)
+            self.assertEqual(
+                state["owner/first"]["fail_days"],
+                ["2026-01-05", "2026-01-06", "2026-01-07"],
+            )
+            self.assertIn("timed out", state["owner/first"]["last_error"].lower())
+            self.assertEqual(state["owner/later"]["fail_days"], [])
+            self.assertIn("last_fetch", state["owner/later"])
+
+            with open(os.path.join(root, "fetch.log")) as log_file:
+                log = log_file.read()
+            self.assertIn("owner/first fail", log)
+            self.assertIn("timed out", log.lower())
 
 
 if __name__ == "__main__":

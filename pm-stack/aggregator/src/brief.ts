@@ -134,14 +134,15 @@ function buildItemBriefWithIndexes(
         };
 
   // --- Disagreement --------------------------------------------------------
-  const disagreement: ItemBrief["disagreement"] = clash && derived !== "Unknown"
-    ? {
-        project: clash.project,
-        derived: clash.derived,
-        text: `Sources disagree: the Project Status says “${clash.project}” while the rest of the dashboard derives “${clash.derived}”. Both are shown; neither is preferred.`,
-        evidence: { text: `${item.repo}#${item.number} in the Project`, url: item.url },
-      }
-    : null;
+  const disagreement: ItemBrief["disagreement"] =
+    clash && derived !== "Unknown"
+      ? {
+          project: clash.project,
+          derived: clash.derived,
+          text: `Sources disagree: the Project Status says “${clash.project}” while the rest of the dashboard derives “${clash.derived}”. Both are shown; neither is preferred.`,
+          evidence: { text: `${item.repo}#${item.number} in the Project`, url: item.url },
+        }
+      : null;
 
   // --- Suggested next action (deterministic rules, first match wins) -------
   let nextAction: ItemBrief["nextAction"];
@@ -201,10 +202,7 @@ export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}):
 }
 
 /** Briefs for a whole pool, keyed by ref — the JSON twin's shape. */
-export function buildBriefs(
-  pool: ProjectPoolItem[],
-  inputs: Omit<BriefInputs, "pool"> = {},
-): Map<RefKey, ItemBrief> {
+export function buildBriefs(pool: ProjectPoolItem[], inputs: Omit<BriefInputs, "pool"> = {}): Map<RefKey, ItemBrief> {
   const byRef = new Map(pool.map((item) => [item.ref, item]));
   const commentsByRef = new Map<RefKey, Comment[]>();
   for (const comment of inputs.comments ?? []) {

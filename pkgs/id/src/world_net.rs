@@ -26,8 +26,11 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
-use crate::abuse::{AbuseEvaluator, AbusePolicy, Counters, EndpointId as AbuseEndpointId, NodeId};
-use crate::frames::{charge_frame, read_frame_body, read_frame_len};
+use crate::abuse::{
+    AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, Counters, Direction,
+    EndpointId as AbuseEndpointId, NodeId,
+};
+use crate::frames::{read_frame_body, read_frame_len};
 use crate::world_hub::WorldHub;
 use crate::world_session::{
     Inbound, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, module_hash, run_session,
@@ -96,11 +99,29 @@ impl WorldProtocol {
     /// endpoint either way.
     #[must_use]
     pub fn with_local_node(hub: impl Into<WorldHub>, local_node: NodeId) -> Self {
+        Self::with_budgets(hub, local_node, BudgetPolicy::default())
+    }
+
+    /// Like [`WorldProtocol::with_local_node`], with the #2247
+    /// rolling-window budget policy the shared evaluator enforces
+    /// at the frame seam: app-wide inbound/outbound, per-endpoint,
+    /// and per-counterparty override scopes (the per-IP scope is
+    /// not charged here — Iroh peers are relay-capable and no IP is
+    /// directly observed). [`WorldProtocol::new`] and
+    /// [`WorldProtocol::with_local_node`] use
+    /// [`BudgetPolicy::default`]: the #2247 defaults in code.
+    #[must_use]
+    pub fn with_budgets(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        budgets: BudgetPolicy,
+    ) -> Self {
         Self {
             hub: hub.into(),
-            abuse: Arc::new(Mutex::new(AbuseEvaluator::new(
+            abuse: Arc::new(Mutex::new(AbuseEvaluator::with_budgets(
                 AbusePolicy::default(),
                 local_node,
+                budgets,
             ))),
         }
     }
@@ -109,6 +130,17 @@ impl WorldProtocol {
     /// counters recorded by the shared evaluator — the operator
     /// visibility surface for #2244 P0-A charging.
     #[must_use]
+    /// Estimated #2247 budget usage per scope and window — the
+    /// operator-visibility surface for budgets, alongside
+    /// [`WorldProtocol::abuse_counters`].
+    #[must_use]
+    pub fn budget_usage(&self) -> Vec<(crate::abuse::BudgetScope, crate::abuse::BudgetLimit, BudgetUsage)> {
+        self.abuse
+            .lock()
+            .map(|abuse| abuse.budget_usage(abuse_now_ms()))
+            .unwrap_or_default()
+    }
+
     pub fn abuse_counters(&self) -> Vec<((NodeId, AbuseEndpointId), Counters)> {
         self.abuse
             .lock()
@@ -121,6 +153,7 @@ impl WorldProtocol {
             let now_ms = abuse_now_ms();
             abuse.prune_idle_endpoints(now_ms);
             abuse.prune_counters(now_ms, ABUSE_COUNTER_RETENTION_MS);
+            abuse.prune_budget_state(now_ms);
         }
     }
 }
@@ -279,11 +312,12 @@ async fn charge_frame_with_backpressure(
 ) -> bool {
     loop {
         let result = match abuse.lock() {
-            Ok(mut abuse) => charge_frame(
+            Ok(mut abuse) => crate::frames::charge_frame_budgeted(
                 &mut abuse,
                 endpoint,
                 authorized,
                 payload_len,
+                Direction::Outbound,
                 abuse_now_ms(),
             ),
             Err(_) => return false,
@@ -320,11 +354,12 @@ async fn charge_inbound_frame(
     loop {
         let is_authorized = authorized.load(Ordering::Acquire);
         let retry_after_ms = match abuse.lock() {
-            Ok(mut abuse) => match charge_frame(
+            Ok(mut abuse) => match crate::frames::charge_frame_budgeted(
                 &mut abuse,
                 endpoint,
                 is_authorized,
                 payload_len,
+                Direction::Inbound,
                 abuse_now_ms(),
             ) {
                 Ok(()) => return true,
