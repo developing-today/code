@@ -120,6 +120,30 @@ the flake-check job runs on main and on the nix-ci nightly
 schedule. mcpx conformance legs run on every mcpx-touching merge
 to main.
 
+## Release gate (#1782)
+
+Tag-based publishing is fail-closed. Before GoReleaser or the mcpx release
+workflow can build/publish, `.github/scripts/release-gate.sh` requires the
+tag's commit to be the current `main` head and requires a completed
+`success` run, for that exact SHA, of every main-tier workflow listed in
+`.github/workflows/main-broken.yml`'s `workflow_run.workflows` trigger. The
+script keeps that watched-workflow list in sync explicitly; if a watched
+workflow is renamed, update both files in the same change. A failed,
+cancelled, skipped, in-progress, or missing run refuses the release. This
+also means a tag on a stale commit is refused even if its older runs were
+green. The checks use the Actions API and require `actions: read` permission.
+
+`workflow_dispatch` remains a non-publishing snapshot path and does not
+weaken the tag gate. There is no routine bypass input or secret switch.
+For an exceptional hotfix where waiting for the normal main-tier run is
+unacceptable, the override path is: get Drew's explicit approval recorded
+on #1782; make a reviewed, temporary change to the gate scoped to the exact
+full commit SHA and documented reason; release only that current-main SHA;
+then remove the exception in a follow-up PR. Never add a wildcard or a
+standing "skip gate" switch. The normal recovery path for missing or red
+checks is to fix forward on main, wait for all watched checks to succeed,
+and tag that green main head.
+
 ## Dedup rule
 
 A commit must not run the same suite twice via push +
