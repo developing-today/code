@@ -701,25 +701,53 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
 
 // ---------- main ----------
 
-const main = async () => {
-  const args = process.argv.slice(2);
-  const get = (flag) => {
-    const i = args.indexOf(flag);
-    return i >= 0 ? args[i + 1] : null;
-  };
-  const configPath = get('--config');
-  if (!configPath) {
-    console.error('usage: proxy-supervise.mjs --config <config.json> [--only <name>] [--status] [--dry-run]');
-    process.exit(2);
+const USAGE = 'usage: proxy-supervise.mjs --config <config.json> [--only <name>] [--status] [--dry-run]';
+
+const parseArgs = (args) => {
+  const parsed = { configPath: null, only: null, status: false, dryRun: false };
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--config' || arg === '--only') {
+      if (seen.has(arg)) throw new Error(`duplicate argument: ${arg}`);
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) throw new Error(`missing value for ${arg}`);
+      if (arg === '--config') parsed.configPath = value;
+      else parsed.only = value;
+      seen.add(arg);
+      i++;
+      continue;
+    }
+    if (arg === '--status' || arg === '--dry-run') {
+      if (seen.has(arg)) throw new Error(`duplicate argument: ${arg}`);
+      if (arg === '--status') parsed.status = true;
+      else parsed.dryRun = true;
+      seen.add(arg);
+      continue;
+    }
+    throw new Error(`unknown argument: ${arg}`);
   }
+  if (!parsed.configPath) throw new Error('missing required --config');
+  return parsed;
+};
+
+const main = async () => {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`proxy-supervise: ${error.message}\n${USAGE}`);
+    process.exitCode = 2;
+    return;
+  }
+  const { configPath, only, status, dryRun } = options;
   const cfg = loadConfig(configPath);
-  const only = get('--only');
   const selected = cfg.proxies.filter((p) => !only || p.name === only);
   if (selected.length === 0) {
     console.error(`no proxy named ${only} in ${configPath}`);
     process.exit(2);
   }
-  if (args.includes('--status')) {
+  if (status) {
     for (const p of selected) {
       const st = readJson(stateFile(cfg, p.name));
       const ep = readJson(endpointFile(cfg, p.name));
@@ -728,7 +756,6 @@ const main = async () => {
     }
     return;
   }
-  const dryRun = args.includes('--dry-run');
   let failures = 0;
   for (const p of selected) {
     try {
