@@ -986,9 +986,27 @@ impl TagStore {
         from: &[u8],
         to: &[u8],
     ) -> Result<usize> {
+        self.transfer_all_tags_except(ns, from, to, &[]).await
+    }
+
+    /// Transfer tags to another subject, dropping tags whose keys are excluded.
+    ///
+    /// Each non-excluded tag is copied to `to`, then all tags are deleted from
+    /// `from`. Excluded tags are discarded rather than left on the old subject.
+    /// Returns the number of tags copied.
+    pub async fn transfer_all_tags_except(
+        &self,
+        ns: &NamespacePair,
+        from: &[u8],
+        to: &[u8],
+        excluded_keys: &[&[u8]],
+    ) -> Result<usize> {
         let tags = self.get_tags(ns, from).await?;
-        let count = tags.len();
+        let mut count = 0;
         for tag in &tags {
+            if excluded_keys.iter().any(|key| *key == tag.key.as_bytes()) {
+                continue;
+            }
             self.set_tag(
                 ns,
                 to,
@@ -997,6 +1015,7 @@ impl TagStore {
                 b"",
             )
             .await?;
+            count += 1;
         }
         self.del_all_tags(ns, from).await?;
 
