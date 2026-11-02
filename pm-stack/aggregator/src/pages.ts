@@ -138,6 +138,16 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "comments-queue",
+    title: "Comments queue",
+    route: "/comments",
+    api: "/api/comments/queue.json",
+    blurb:
+      "Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "program",
     title: "Program status",
     route: "/program",
@@ -165,7 +175,10 @@ export const PAGES: PageDef[] = [
     blurb:
       "The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Supabase ledger.",
     group: "ops",
-    nav: "dropdown",
+    // Drew 2026-11-01: primary — the ack surface must be one tap from
+    // the bar, not buried in the Pages dropdown (supersedes the
+    // post-#1497 dropdown placement recorded in curation-1497.test).
+    nav: "primary",
   },
   {
     id: "pages",

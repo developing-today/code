@@ -92,8 +92,7 @@ const MAX_DATE_MS = 8.64e15;
 const validMs = (ms: number | undefined): boolean =>
   typeof ms === "number" && Number.isFinite(ms) && ms > 0 && ms <= MAX_DATE_MS;
 
-const iso = (ms: number | undefined): string | null =>
-  validMs(ms) ? new Date(ms as number).toISOString() : null;
+const iso = (ms: number | undefined): string | null => (validMs(ms) ? new Date(ms as number).toISOString() : null);
 
 function errText(e: unknown): string | null {
   if (!e) return null;

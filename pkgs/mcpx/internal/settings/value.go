@@ -446,12 +446,16 @@ func dedupe(in []string) []string {
 
 // ParseBytes reads 16MB, 1GiB, 1024. Decimal and binary suffixes both work
 // because both appear in the wild and arguing about which is correct helps
-// nobody configure a log file.
+// nobody configure a log file. Negative sizes and magnitudes that do not
+// fit in an int64 are refused (#1697): a size is spent as a byte count or a
+// slice capacity downstream, where a negative is a panic and an overflowed
+// one silently becomes the most negative int64 there is.
 func ParseBytes(v string) (int64, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0, nil
 	}
+	orig := v
 	mult := int64(1)
 	upper := strings.ToUpper(v)
 	for _, suf := range []struct {
@@ -474,7 +478,15 @@ func ParseBytes(v string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("not a size: %q", v)
 	}
-	return int64(f * float64(mult)), nil
+	scaled := f * float64(mult)
+	if scaled >= 9223372036854775808.0 { // 2^63: the first magnitude int64 cannot hold
+		return 0, fmt.Errorf("size too large: %q", orig)
+	}
+	n := int64(scaled)
+	if n < 0 {
+		return 0, fmt.Errorf("size must not be negative: %q", orig)
+	}
+	return n, nil
 }
 
 // Validate checks one raw value against its declaration.

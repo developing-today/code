@@ -30,7 +30,10 @@ fi
 # aborts loudly (exit 1, so the systemd unit shows failed) with the
 # conflicted paths named; a rejected push likewise fails loudly
 # instead of being swallowed. Local commits are always kept.
-git -C "$d" fetch -q --no-tags origin "$db" || { echo "autocommit: fetch failed in $d (deferred)"; exit 0; }
+git -C "$d" fetch -q --no-tags origin "$db" || {
+  echo "autocommit: fetch failed in $d (deferred)"
+  exit 0
+}
 behind="$(git -C "$d" rev-list --count "HEAD..@{u}" 2>/dev/null || echo 0)"
 if [ "${behind:-0}" -gt 0 ]; then
   stash_before="$(git -C "$d" stash list)"

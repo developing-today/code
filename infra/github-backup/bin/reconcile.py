@@ -14,10 +14,18 @@ Webhooks (the App + Worker) are the freshness layer; this sweep is what
 guarantees nothing is missed. Exit code is non-zero only on owner-level
 inventory failure, so the timer unit surfaces it.
 """
+
 import json, os, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root, inventory, build_plan, valid_mirror, mirror_path
+from ghb_common import (
+    load_config,
+    backup_root,
+    inventory,
+    build_plan,
+    valid_mirror,
+    mirror_path,
+)
 import manifest as manifest_mod
 
 
@@ -62,8 +70,10 @@ def main():
     if errors:
         planned_repos = {p["repo"] for p in plan}
         for item in old_items:
-            if item["repo"].split("/")[0] in errors \
-                    and item["repo"] not in planned_repos:
+            if (
+                item["repo"].split("/")[0] in errors
+                and item["repo"] not in planned_repos
+            ):
                 plan.append(item)
                 retained.append(item["repo"])
         if retained:
@@ -74,12 +84,16 @@ def main():
     missing = [r for r in new if not valid_mirror(mirror_path(root, r))]
     with open(old_plan_path, "w") as f:
         json.dump(plan, f, indent=0)
-    lines = [f"# github-backup reconcile {today}", "",
-             f"- inventory: {len(repos)} repos across {len(cfg['owners'])} owners",
-             f"- plan: {len(plan)} mirrors ({len(added)} new, {len(removed)} no longer planned)",
-             f"- excluded by config: {len(excluded)}; gaps: {len(gaps)}; "
-             f"pending Drew review: {len(pending)}; zero-commit skipped: {len(skipped_empty)}",
-             f"- mirrors missing on disk before clone pass: {len(missing)}", ""]
+    lines = [
+        f"# github-backup reconcile {today}",
+        "",
+        f"- inventory: {len(repos)} repos across {len(cfg['owners'])} owners",
+        f"- plan: {len(plan)} mirrors ({len(added)} new, {len(removed)} no longer planned)",
+        f"- excluded by config: {len(excluded)}; gaps: {len(gaps)}; "
+        f"pending Drew review: {len(pending)}; zero-commit skipped: {len(skipped_empty)}",
+        f"- mirrors missing on disk before clone pass: {len(missing)}",
+        "",
+    ]
     if errors:
         lines.append("## inventory errors")
         for o, e in errors.items():
@@ -87,10 +101,12 @@ def main():
         lines.append("")
     if retained:
         lines.append("## plan entries retained for failed owners (last-known-good)")
-        lines.append(f"- {len(retained)} previously planned repos kept in "
-                     f"plan.json + MANIFEST.json because their owner's "
-                     f"inventory failed; their mirrors stay covered until "
-                     f"the owner inventories cleanly again:")
+        lines.append(
+            f"- {len(retained)} previously planned repos kept in "
+            f"plan.json + MANIFEST.json because their owner's "
+            f"inventory failed; their mirrors stay covered until "
+            f"the owner inventories cleanly again:"
+        )
         lines += [f"- {r}" for r in sorted(retained)] + [""]
     if added:
         lines.append("## newly planned")
@@ -106,9 +122,14 @@ def main():
         f.write("\n".join(lines))
     print("\n".join(lines))
     if missing:
-        r = subprocess.run([sys.executable,
-                            os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                         "clone_all.py")])
+        r = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "clone_all.py"
+                ),
+            ]
+        )
         if r.returncode != 0:
             print("clone pass had failures; see clone-status.jsonl")
     manifest_mod.build(root)

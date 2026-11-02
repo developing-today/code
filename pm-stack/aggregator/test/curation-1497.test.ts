@@ -34,10 +34,15 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   program: "primary",
   health: "primary",
   pages: "dropdown",
-  // Post-#1497 addition (#3676, 2026-11-01): the Alerts page enters
-  // at dropdown tier — it earns no primary slot without a new
-  // curation decision.
-  alerts: "dropdown",
+  // Post-#1497 addition (#3676, 2026-11-01): Alerts entered at
+  // dropdown tier; Drew's ruling the same day (he could not find the
+  // ack surface from his phone) promotes it to primary — a curation
+  // decision, recorded here like the others.
+  alerts: "primary",
+  // Post-#1497 addition (#1210, 2026-11-01): the comments queue
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  "comments-queue": "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

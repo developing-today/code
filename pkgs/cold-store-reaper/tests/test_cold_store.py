@@ -2028,9 +2028,7 @@ class TestOffsetLessLastModified(EvictTestBase):
     as too-young, which is non-evictable by construction."""
 
     def _listed(self):
-        return {
-            o["key"]: o for o in self.store.s3_list_objects("supabase-backups")
-        }
+        return {o["key"]: o for o in self.store.s3_list_objects("supabase-backups")}
 
     def test_offset_less_stamp_parses_to_none(self):
         body = (
@@ -2077,9 +2075,7 @@ class TestOffsetLessLastModified(EvictTestBase):
         scan = self.scan_by_key()
         for name in ("young", "oldtimer", "evict1", "evict2"):
             self.assertEqual(scan[self.keys[name]]["verdict"], "too-young")
-        self.assertEqual(
-            scan[self.keys["unverified"]]["verdict"], "bundle-unverified"
-        )
+        self.assertEqual(scan[self.keys["unverified"]]["verdict"], "bundle-unverified")
         self.assertEqual(self.s3.deleted, [])
 
     def test_aware_stamps_unchanged_in_listing(self):
@@ -2088,7 +2084,6 @@ class TestOffsetLessLastModified(EvictTestBase):
             listed[self.keys["oldtimer"]]["last_modified"],
             datetime(2026, 6, 1, tzinfo=timezone.utc),
         )
-
 
 
 class TestS3ListPageValidation(unittest.TestCase):
@@ -2132,9 +2127,7 @@ class TestS3ListPageValidation(unittest.TestCase):
 
     def test_negative_size_raises(self):
         with self.assertRaises(cold_store.ColdStoreError):
-            cold_store._parse_s3_list_page(
-                self._page(self._entry("<Size>-5</Size>"))
-            )
+            cold_store._parse_s3_list_page(self._page(self._entry("<Size>-5</Size>")))
 
     def test_missing_size_keeps_default_zero(self):
         objects, truncated, token = cold_store._parse_s3_list_page(
@@ -2147,8 +2140,10 @@ class TestS3ListPageValidation(unittest.TestCase):
     def test_valid_page_pagination_and_stamp_unchanged(self):
         body = self._page(
             self._entry("<Size>3</Size>"),
-            extra=("<IsTruncated>true</IsTruncated>"
-                   "<NextContinuationToken>tok2</NextContinuationToken>"),
+            extra=(
+                "<IsTruncated>true</IsTruncated>"
+                "<NextContinuationToken>tok2</NextContinuationToken>"
+            ),
         )
         objects, truncated, token = cold_store._parse_s3_list_page(body)
         self.assertEqual(len(objects), 1)
@@ -2175,14 +2170,10 @@ class TestOffsetLessBackupPick(S3TestBase):
         # a later wall-clock reading, but its zone is unknown, so it
         # is not evidence of newness and must not win the pick
         self.s3.put(naive_key, naive_body, "2026-10-23T02:00:00.000")
-        self.s3.put(
-            "pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z"
-        )
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
         result = self.store.backup_supabase()
         self.assertEqual(result["source_key"], aware_key)
-        self.assertEqual(
-            result["sha256"], hashlib.sha256(aware_body).hexdigest()
-        )
+        self.assertEqual(result["sha256"], hashlib.sha256(aware_body).hexdigest())
 
 
 class TestEvictApply(EvictTestBase):
@@ -2903,7 +2894,6 @@ class TestWorkerDecoder(unittest.TestCase):
         self.assertIn("PASS", proc.stdout)
 
 
-
 class TestD1ResponseShapes(ColdStoreTestBase):
     """Regression (#2618): D1 response handling must not assume object
     shapes — malformed bodies raise ColdStoreError (or fall back to raw
@@ -2956,9 +2946,7 @@ class TestD1ResponseShapes(ColdStoreTestBase):
 
     def test_d1_select_non_object_result_entry_raises_cold_store_error(self):
         with self.assertRaises(cold_store.ColdStoreError):
-            self._select_with_body(
-                b'{"success": true, "result": ["x"]}'
-            )
+            self._select_with_body(b'{"success": true, "result": ["x"]}')
 
     def test_d1_select_controls_unchanged(self):
         rows = self._select_with_body(
@@ -2983,6 +2971,7 @@ class TestD1ResponseShapes(ColdStoreTestBase):
             ):
                 with self.assertRaises(cold_store.ColdStoreError):
                     self.store.sync_manifest()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

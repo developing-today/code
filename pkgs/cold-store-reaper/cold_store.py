@@ -146,9 +146,7 @@ def _parse_s3_list_page(body: bytes):
     try:
         root = ET.fromstring(body)
     except ET.ParseError as exc:
-        raise ColdStoreError(
-            f"s3 list page is not well-formed XML: {exc}"
-        ) from exc
+        raise ColdStoreError(f"s3 list page is not well-formed XML: {exc}") from exc
     if _xml_local(root.tag) != "ListBucketResult":
         raise ColdStoreError(
             "s3 list page root is "
@@ -251,9 +249,7 @@ def _d1_parse_payload(resp: bytes, what: str):
     except (ValueError, TypeError):
         raise ColdStoreError(f"{what}: non-JSON body") from None
     if not isinstance(payload, dict):
-        raise ColdStoreError(
-            f"{what}: non-object body ({type(payload).__name__})"
-        )
+        raise ColdStoreError(f"{what}: non-object body ({type(payload).__name__})")
     return payload
 
 
@@ -1350,8 +1346,7 @@ class ColdStore:
         first = result[0] if isinstance(result, list) else result
         if not isinstance(first, dict):
             raise ColdStoreError(
-                f"D1 query returned a non-object result entry "
-                f"({type(first).__name__})"
+                f"D1 query returned a non-object result entry ({type(first).__name__})"
             )
         return first.get("results") or []
 
@@ -1690,11 +1685,7 @@ class ColdStore:
             if not truncated:
                 return out
             if not next_token or next_token == token:
-                defect = (
-                    "a missing or empty"
-                    if not next_token
-                    else "a non-advancing"
-                )
+                defect = "a missing or empty" if not next_token else "a non-advancing"
                 raise ColdStoreError(
                     f"list of {bucket}: truncated page returned {defect} "
                     "NextContinuationToken; aborting instead of "

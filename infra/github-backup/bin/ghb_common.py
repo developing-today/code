@@ -6,6 +6,7 @@ Config lives in ../config.json next to this file's parent directory.
 The backup tree (default ~/backups/github) holds only data + generated
 state (plan.json, MANIFEST.json, logs); all logic lives in the repo.
 """
+
 import json, os, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -71,9 +72,10 @@ def inventory_owner(owner):
         variables = {"login": owner}
         if after:
             variables["after"] = after
-        r = run(["gh", "api", "graphql", "-f", f"query={_GQL}",
-                 "-f", f"login={owner}"] +
-                (["-f", f"after={after}"] if after else []))
+        r = run(
+            ["gh", "api", "graphql", "-f", f"query={_GQL}", "-f", f"login={owner}"]
+            + (["-f", f"after={after}"] if after else [])
+        )
         if r.returncode != 0:
             raise RuntimeError(f"gh api graphql failed for {owner}: {r.stderr[:300]}")
         data = json.loads(r.stdout)
@@ -85,35 +87,42 @@ def inventory_owner(owner):
         # (#3229). Raise so inventory() records an owner-level error.
         if data.get("errors"):
             raise RuntimeError(
-                f"gh api graphql errors for {owner}: "
-                f"{json.dumps(data['errors'])[:300]}")
+                f"gh api graphql errors for {owner}: {json.dumps(data['errors'])[:300]}"
+            )
         owner_obj = (data.get("data") or {}).get("repositoryOwner")
         if owner_obj is None:
             raise RuntimeError(
                 f"gh api graphql for {owner}: repositoryOwner is null — "
                 f"owner not visible to the token (renamed, SAML-blocked, "
-                f"or no access); refusing to read as an empty owner")
+                f"or no access); refusing to read as an empty owner"
+            )
         conn = owner_obj.get("repositories")
         if conn is None:
             raise RuntimeError(
                 f"gh api graphql for {owner}: repositories connection is "
-                f"null; refusing to read as an empty owner")
+                f"null; refusing to read as an empty owner"
+            )
         if conn.get("nodes") is None or conn.get("pageInfo") is None:
             raise RuntimeError(
                 f"gh api graphql for {owner}: malformed repositories "
-                f"connection (nodes/pageInfo missing)")
+                f"connection (nodes/pageInfo missing)"
+            )
         for n in conn["nodes"]:
-            repos.append({
-                "repo": n["nameWithOwner"],
-                "fork": bool(n["isFork"]),
-                "archived": bool(n["isArchived"]),
-                "size_kb": n.get("diskUsage") or 0,
-                "parent": (n.get("parent") or {}).get("nameWithOwner"),
-                "branch": (n.get("defaultBranchRef") or {}).get("name"),
-                "head": ((n.get("defaultBranchRef") or {}).get("target") or {}).get("oid"),
-                "pushed_at": n.get("pushedAt"),
-                "empty": n.get("defaultBranchRef") is None,
-            })
+            repos.append(
+                {
+                    "repo": n["nameWithOwner"],
+                    "fork": bool(n["isFork"]),
+                    "archived": bool(n["isArchived"]),
+                    "size_kb": n.get("diskUsage") or 0,
+                    "parent": (n.get("parent") or {}).get("nameWithOwner"),
+                    "branch": (n.get("defaultBranchRef") or {}).get("name"),
+                    "head": ((n.get("defaultBranchRef") or {}).get("target") or {}).get(
+                        "oid"
+                    ),
+                    "pushed_at": n.get("pushedAt"),
+                    "empty": n.get("defaultBranchRef") is None,
+                }
+            )
         if conn["pageInfo"]["hasNextPage"]:
             after = conn["pageInfo"]["endCursor"]
         else:
@@ -147,7 +156,12 @@ def build_plan(repos, cfg):
     included, excluded, gap, pending, skipped_empty = {}, [], [], [], []
     for name, v in sorted(repos.items()):
         if name in gaps or (name.split("/")[0] + "/*") in gaps:
-            gap.append({"repo": name, "reason": gaps.get(name) or gaps.get(name.split("/")[0] + "/*")})
+            gap.append(
+                {
+                    "repo": name,
+                    "reason": gaps.get(name) or gaps.get(name.split("/")[0] + "/*"),
+                }
+            )
             continue
         if name in excl:
             excluded.append({"repo": name, "reason": excl[name]})
@@ -155,13 +169,20 @@ def build_plan(repos, cfg):
         if rules.get("skip_zero_commit_repos") and v.get("empty"):
             skipped_empty.append({"repo": name, "reason": "zero commits (empty repo)"})
             continue
-        if (not v["fork"] and rules.get("include_nonforks")) or name in force \
-                or v["size_kb"] < cap_kb:
+        if (
+            (not v["fork"] and rules.get("include_nonforks"))
+            or name in force
+            or v["size_kb"] < cap_kb
+        ):
             included[name] = v
         else:
-            pending.append({"repo": name,
-                            "reason": f"fork {v['size_kb']/1024:.0f} MB >= cap "
-                                      f"{rules.get('fork_max_size_mb')} MB — pending Drew review"})
+            pending.append(
+                {
+                    "repo": name,
+                    "reason": f"fork {v['size_kb'] / 1024:.0f} MB >= cap "
+                    f"{rules.get('fork_max_size_mb')} MB — pending Drew review",
+                }
+            )
     incset = set(included)
 
     def depth(k):
@@ -169,7 +190,9 @@ def build_plan(repos, cfg):
         while True:
             p = included.get(cur, {}).get("parent")
             if p and p in incset and p not in guard:
-                guard.add(p); n += 1; cur = p
+                guard.add(p)
+                n += 1
+                cur = p
             else:
                 return n
 
@@ -185,8 +208,16 @@ def build_plan(repos, cfg):
                 ref = anchor_for[p]
             else:
                 anchor_for[p] = k
-        plan.append({"repo": k, "reference": ref, "size_kb": v["size_kb"],
-                     "fork": v["fork"], "parent": v.get("parent"),
-                     "branch": v.get("branch"), "head": v.get("head"),
-                     "private": None})
+        plan.append(
+            {
+                "repo": k,
+                "reference": ref,
+                "size_kb": v["size_kb"],
+                "fork": v["fork"],
+                "parent": v.get("parent"),
+                "branch": v.get("branch"),
+                "head": v.get("head"),
+                "private": None,
+            }
+        )
     return plan, excluded, gap, pending, skipped_empty

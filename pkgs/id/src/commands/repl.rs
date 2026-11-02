@@ -92,7 +92,7 @@ use crate::commands::client::create_local_client_endpoint;
 use crate::commands::put::{add_raw, push_and_name};
 use crate::commands::serve::get_serve_info;
 use crate::commands::tag::{self as tag, TagDisplayOptions};
-use crate::commands::text::plain_field;
+use crate::commands::text::{plain_field, tsv_row};
 use crate::discovery::PeerAnnouncement;
 use crate::local::LocalNode;
 use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
@@ -465,7 +465,7 @@ impl ReplContext {
                         println!("(no files stored)");
                     } else {
                         for (hash, name) in items {
-                            println!("{hash}\t{name}");
+                            println!("{}", tsv_row(hash, &name));
                         }
                     }
                 }
@@ -478,7 +478,7 @@ impl ReplContext {
             while let Some(item) = list.next().await {
                 let item = item?;
                 let name = String::from_utf8_lossy(item.name.as_ref());
-                println!("{}\t{}", item.hash, name);
+                println!("{}", tsv_row(item.hash, &name));
                 count += 1;
             }
             if count == 0 {
@@ -874,7 +874,7 @@ impl ReplContext {
                     println!("(no files stored on @{})", &node_str[..8]);
                 } else {
                     for (hash, name) in items {
-                        println!("{hash}\t{name}");
+                        println!("{}", tsv_row(hash, &name));
                     }
                 }
             }

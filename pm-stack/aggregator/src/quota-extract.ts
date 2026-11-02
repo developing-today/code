@@ -11,6 +11,11 @@
 // via the `meta` provider. There is no "muse plan" pool and the
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
+// exactly TWO ChatGPT pools — the main account (drewrypope) reached
+// through the `codex` gatherer door (pool openai:codex) and the
+// alternate account (popesdrew) through the `openai.alternate` door
+// (pool openai.alternate). Separate accounts, separate allowances:
+// never collapse them into one pool.
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
 
@@ -109,6 +114,28 @@ const extractCodex: Extractor = (s, now) => {
   return {
     windows: [pctWindow("7-day", Number(pct[1]), reset ? monthDayTime(reset[1], reset[2], reset[3], now) : null)],
     note: "Codex window read (the Plus/Pro chat allowances are a separate, unresolved record).",
+  };
+};
+
+/**
+ * The alternate ChatGPT account (popesdrew). It has no dated-read
+ * section in the stewardship view yet — its live windows arrive
+ * through the quota gatherer (the openai.alternate credential) and
+ * are overlaid onto this pool by overlayQuotaCurrent. The extractor
+ * exists so a future "### ChatGPT (Alternate)" section is picked up
+ * like every other pool's dated read; until then it fail-softs to
+ * the shell, like any extractor whose pattern stops matching.
+ */
+const extractChatGptAlternate: Extractor = (s) => {
+  const fiveHour = first(s, /5-hour\s+(\d+(?:\.\d+)?)%\s+used/i);
+  const weekly = first(s, /7-day\s+(\d+(?:\.\d+)?)%\s+used/i);
+  if (!fiveHour && !weekly) return null;
+  const windows: QuotaWindow[] = [];
+  if (fiveHour) windows.push(pctWindow("5-hour", Number(fiveHour[1]), null));
+  if (weekly) windows.push(pctWindow("7-day", Number(weekly[1]), null));
+  return {
+    windows,
+    note: "Alternate ChatGPT account (popesdrew) — a separate pool from the main account; the two are never combined.",
   };
 };
 
@@ -342,6 +369,15 @@ export const POOL_SPECS: PoolSpec[] = [
     heading: /^### ChatGPT/,
     extract: extractCodex,
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
+  },
+  {
+    id: "openai.alternate",
+    provider: "OpenAI",
+    plan: "ChatGPT (Alternate — popesdrew)",
+    heading: /^### ChatGPT \(Alternate\)/,
+    extract: extractChatGptAlternate,
+    shellNote:
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai:codex); the two are never combined.",
   },
   {
     id: "opencode-go:personal",

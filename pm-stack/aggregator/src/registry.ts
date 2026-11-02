@@ -171,8 +171,7 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
     // a string silently spreads into single-character refs). The validator
     // owns the rule, per the #2347/#2376 precedent above: taskRefs must be
     // absent or an array of strings; anything else rejects the record.
-    (r.taskRefs === undefined ||
-      (Array.isArray(r.taskRefs) && r.taskRefs.every((t) => typeof t === "string")))
+    (r.taskRefs === undefined || (Array.isArray(r.taskRefs) && r.taskRefs.every((t) => typeof t === "string")))
   );
 }
 

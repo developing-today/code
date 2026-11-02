@@ -407,6 +407,26 @@ func (r *Registry) Pool(nameOrNS string) (*pool.Pool, bool) {
 	return nil, false
 }
 
+// CanonicalName resolves a name-or-namespace the way Pool does and
+// returns the configured server name, or the input unchanged when it
+// names nothing. It is a map read only -- no lease, no upstream -- so
+// callers that must key by server identity before touching the pool
+// (the completion rate limiter, #2387) can share one spelling per
+// server instead of one budget per spelling.
+func (r *Registry) CanonicalName(nameOrNS string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.pools[nameOrNS]; ok {
+		return nameOrNS
+	}
+	for _, name := range r.order {
+		if r.views[name].Namespace == nameOrNS {
+			return name
+		}
+	}
+	return nameOrNS
+}
+
 func (r *Registry) loadCache() {
 	b, err := os.ReadFile(r.paths.SchemaCachePath(r.hash))
 	if err != nil {

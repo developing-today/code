@@ -40,8 +40,9 @@ func execOps() []Op {
 			Summary:    "Store a file a script produced",
 			Description: "What artifact() in a generated client calls. The body is the " +
 				"bytes; a caller on the daemon's own filesystem may instead send " +
-				"X-Mcpx-Path and have the file hardlinked, which is why handing back " +
-				"a large local file costs an inode rather than a copy. Content is " +
+				"X-Mcpx-Path so the daemon can read and copy the file into the store. " +
+				"This avoids uploading the body over the client transport, but the " +
+				"file is still read, hashed, and written. Content is " +
 				"addressed by sha256 and served by a separate random id, because a " +
 				"content hash is guessable by anyone who can guess the content.",
 			Admin: true, Mutating: true,

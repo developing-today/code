@@ -528,3 +528,57 @@ export function entryFromTurso(
   entry.usage = usage;
   return entry;
 }
+
+/**
+ * #1268: map over items with at most `limit` invocations in flight,
+ * preserving input order in the results. The gatherer fetches ~30
+ * catalogue providers per tick; an unbounded Promise.all fires all
+ * of them at once. A non-positive or non-finite limit degrades to
+ * sequential (1) rather than to unbounded. Errors propagate like
+ * Promise.all: the first rejection rejects the whole map (callers
+ * that fail soft per item catch inside their worker, as runProvider
+ * does).
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const cap = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(cap, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * #1268: the last-known entries for a provider — the previous tick's
+ * `ok` entries, verbatim. When this tick's run for a provider errors
+ * out (timeout, fetch failure), the gatherer retains these instead
+ * of writing fresh error rows over them: the entries keep their
+ * original measuredAt, so the hub's freshness classification
+ * (quota-current.ts) surfaces them as stale — last-known data with
+ * visible staleness, never fresh-looking zeros and never a vanished
+ * provider. Error/unconfigured previous entries are not data and are
+ * never retained.
+ */
+export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId: string): QuotaCurrentEntry[] {
+  return prev.filter((e) => e.providerId === providerId && e.state === "ok");
+}
+
+/**
+ * #1268: stamp retained entries with the failed tick that kept them.
+ * Copies, never the previous tick's objects; measuredAt is preserved
+ * (it is the honest age of the data) — the stamp is the explicit
+ * signal readers use to classify the entry stale immediately,
+ * instead of it reading as fresh until the freshness bound lapses.
+ */
+export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
+  return entries.map((e) => ({ ...e, retainedFromFailedTick: failedTickIso }));
+}

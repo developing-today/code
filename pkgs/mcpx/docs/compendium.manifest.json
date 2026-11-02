@@ -838,6 +838,13 @@
       "note": "the binary: what it is, how it is built and shipped"
     },
     {
+      "path": "docs/changes/artifact-copy-semantics.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #3064 (artifact copy semantics); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
       "path": "docs/cli.md",
       "chapter": "designs",
       "role": "chapter-source",

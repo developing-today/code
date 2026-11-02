@@ -79,6 +79,14 @@ id tag del myfile.txt category
 # Migrate existing files to have name/file auto-tags
 id migrate-tags
 
+# Client-only by default: the remote operations above and every
+# `id world ...` subcommand are clients — they connect out to a host
+# and never host or serve a world, however many world sessions they
+# open. Hosting begins only through the explicit `id serve` (its SSH
+# world serving is opt-in via `serve` flags). Reaching a node is not
+# world authority: a valid world capability is still required for
+# world operations. See "Client-only boundary" below.
+
 # Start a server
 id serve                          # CLI only
 id serve --web                    # With web UI (default port 3000)
@@ -98,6 +106,29 @@ id list <node_id>
 id id                   # Print local node ID
 id peers                # List discovered peers
 ```
+
+## Client-only boundary
+
+Remote commands are clients: they never host a world. `id world
+join`, `id world invite`, `id world records`, the other `id world ...`
+subcommands and the remote `put` / `list` forms connect out to a host
+node; none of them hosts a world or grants any authority on your node,
+and opening additional world sessions from a client changes none of
+that. There is no `--client-only` flag: no client command has a
+hosting mode to switch off.
+
+Two client subcommands do open local listeners without hosting a
+world: `id world ssh-tunnel` without `--stdio` listens on a local
+address (loopback by default) so an ordinary `ssh` client can reach
+the host through it, and `id world mirror` runs a replica endpoint
+that accepts sync connections for the replica it keeps. Neither makes
+your node a world host and neither grants world authority.
+
+Hosting starts only when you run `id serve` explicitly (SSH world
+serving is a further opt-in among the `serve` flags). And connectivity
+is never authority: being able to reach a node proves only which node
+it is — a valid world capability, minted by the host's admin with
+`id world invite`, is still required for every world operation.
 
 ## CLI Commands
 
