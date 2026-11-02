@@ -47,8 +47,26 @@ pub struct WorldWebState {
 /// Routes for the world session bridge; merge into any `Router<S>` with
 /// [`WorldWebState`] as the provided state.
 pub fn world_routes() -> axum::Router<WorldWebState> {
+    world_routes_at("/ws/world")
+}
+
+/// Routes for the world session bridge with the live channel bound
+/// at `socket` - the [interfaces.web] parameterisation (#2325).
+/// Every other route is the shared world API surface, unchanged.
+/// Two apps bound at different sockets can be merged into one
+/// server (or served side by side) without either seeing the
+/// other's channel.
+pub fn world_routes_at(socket: &str) -> axum::Router<WorldWebState> {
+    world_http_routes().route(socket, axum::routing::get(handler))
+}
+
+/// The shared world HTTP surface - invite, metrics, directory and
+/// the script-free explore/invite pages - with no live channel.
+/// An app whose `[interfaces.web]` section declares no socket still
+/// serves these routes; only the websocket bridge is socket-bound
+/// (Codex P2 on #3894).
+pub fn world_http_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
-        .route("/ws/world", axum::routing::get(handler))
         .route("/api/world/invite", axum::routing::post(invite_handler))
         .route("/api/world/metrics", axum::routing::get(metrics_handler))
         .merge(super::explore::explore_routes())
@@ -1439,5 +1457,76 @@ mod tests {
         // An idle peer remains connected and can publish after its neighbor is
         // revoked, which demonstrates revocation didn't poison the world.
         assert_eq!(world.chat(bob, "still here").await.unwrap().sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn two_apps_bind_distinct_sockets() {
+        // App A keeps the historical binding; app B binds its own
+        // socket from its [interfaces.web] section (#2325).
+        let addr_a = serve(world_routes().with_state(WorldWebState {
+            hub: None,
+            cookie_secure: false,
+        }))
+        .await;
+        let addr_b = serve(world_routes_at("/ws/arena").with_state(WorldWebState {
+            hub: None,
+            cookie_secure: false,
+        }))
+        .await;
+
+        // Each app answers a websocket handshake on its own socket...
+        let (mut client_a, _) = tokio_tungstenite::connect_async(format!("ws://{addr_a}/ws/world"))
+            .await
+            .unwrap();
+        let (mut client_b, _) = tokio_tungstenite::connect_async(format!("ws://{addr_b}/ws/arena"))
+            .await
+            .unwrap();
+        // ...and neither answers on the other's: the bindings are
+        // distinct, not aliased.
+        assert!(
+            tokio_tungstenite::connect_async(format!("ws://{addr_a}/ws/arena"))
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio_tungstenite::connect_async(format!("ws://{addr_b}/ws/world"))
+                .await
+                .is_err()
+        );
+        let _ = client_a.close(None).await;
+        let _ = client_b.close(None).await;
+    }
+
+    #[tokio::test]
+    async fn http_routes_serve_without_a_socket() {
+        // The shared HTTP surface is served even when an app binds
+        // no live channel (Codex P2 on #3894): metrics answers 401
+        // (route present, no token) rather than 404 (route absent),
+        // and the script-free explore page renders.
+        let router = world_http_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
+            cookie_secure: false,
+        });
+        let metrics = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metrics.status(), StatusCode::UNAUTHORIZED);
+        let explore = router
+            .oneshot(
+                Request::builder()
+                    .uri("/explore")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(explore.status(), StatusCode::OK);
     }
 }

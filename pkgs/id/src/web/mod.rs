@@ -44,6 +44,7 @@
 //! id serve --web
 //! ```
 
+mod app_interface;
 mod assets;
 mod collab;
 mod content_mode;
@@ -78,7 +79,8 @@ pub use collab::CollabState;
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
-pub use routes::create_router;
+pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
+pub use routes::{create_router, create_router_for_app};
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
@@ -169,6 +171,15 @@ pub struct AppState {
     pub(crate) local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
     /// Optional hosted world (and its invite secret) for the WebSocket bridge.
     pub world: Option<crate::world_hub::WorldHub>,
+    /// The `[interfaces.web]` page route this state's router binds
+    /// the world page at (#2325). Defaults to the world app's own
+    /// `/world`; `create_router_for_app` overwrites it from the
+    /// app's declared interface.
+    pub web_route: String,
+    /// The `[interfaces.web]` live-channel route, if the app
+    /// declares one (#2325). Defaults to the world app's
+    /// `/ws/world`.
+    pub web_socket: Option<String>,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
 }
@@ -246,6 +257,8 @@ impl AppState {
             identity: IdentityStore::new(secret_key, identity_db_path).await?,
             local_events,
             world: None,
+            web_route: "/world".to_owned(),
+            web_socket: Some("/ws/world".to_owned()),
             cookie_secure: false,
         })
     }

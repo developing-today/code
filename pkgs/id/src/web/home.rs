@@ -172,6 +172,7 @@ pub(super) fn render_home(
     worlds: &[crate::world_hub::WorldInfo],
     default_world: &str,
     world_enabled: bool,
+    world_route: &str,
 ) -> String {
     let world_name = html_escape(default_world);
     let world_href = urlencoding::encode(default_world);
@@ -183,7 +184,7 @@ pub(super) fn render_home(
         let _ = std::fmt::Write::write_fmt(
             &mut html,
             format_args!(
-                "<li><a href=\"/world?world={world_href}\">{world_name}</a> (default world)</li>"
+                "<li><a href=\"{world_route}?world={world_href}\">{world_name}</a> (default world)</li>"
             ),
         );
     } else {
@@ -198,7 +199,7 @@ pub(super) fn render_home(
             let _ = std::fmt::Write::write_fmt(
                 &mut html,
                 format_args!(
-                    "<li><a href=\"/world?world={href}\">{name}</a> <span>{state}</span></li>"
+                    "<li><a href=\"{world_route}?world={href}\">{name}</a> <span>{state}</span></li>"
                 ),
             );
         }
@@ -208,7 +209,7 @@ pub(super) fn render_home(
         let _ = std::fmt::Write::write_fmt(
             &mut html,
             format_args!(
-                "<section class=\"card bg-base-200 border border-base-300 p-4\"><h2>Global chat</h2><p>This is the authenticated default world ({world_name}). Join with a guest capability to participate. Messages use the existing bounded world chat and are live only within this server.</p><iframe title=\"Live global chat in {world_name}\" src=\"/world?world={world_href}\" loading=\"lazy\" class=\"w-full min-h-[36rem] border border-base-300\"></iframe></section>"
+                "<section class=\"card bg-base-200 border border-base-300 p-4\"><h2>Global chat</h2><p>This is the authenticated default world ({world_name}). Join with a guest capability to participate. Messages use the existing bounded world chat and are live only within this server.</p><iframe title=\"Live global chat in {world_name}\" src=\"{world_route}?world={world_href}\" loading=\"lazy\" class=\"w-full min-h-[36rem] border border-base-300\"></iframe></section>"
             ),
         );
     } else {
@@ -317,7 +318,7 @@ mod tests {
 
     #[test]
     fn homepage_has_world_explorer_live_chat_and_discovery_feed() {
-        let html = render_home(&[], "lobby", true);
+        let html = render_home(&[], "lobby", true, "/world");
         assert!(html.contains("World explorer"));
         assert!(html.contains("Global chat"));
         assert!(html.contains("Recent documents"));
@@ -326,6 +327,9 @@ mod tests {
         assert!(!html.contains("<main"));
         assert!(html.contains("Popular documents"));
         assert!(html.contains("/world?world=lobby"));
+        let custom = render_home(&[], "lobby", true, "/arena");
+        assert!(custom.contains("/arena?world=lobby"));
+        assert!(!custom.contains("/world?world=lobby"));
         assert!(html.contains("this server"));
         assert!(html.contains("/files"));
     }
@@ -494,7 +498,7 @@ mod tests {
 
     #[test]
     fn global_chat_embeds_existing_authenticated_world_chat() {
-        let html = render_home(&[], "lobby", true);
+        let html = render_home(&[], "lobby", true, "/world");
         assert!(html.contains("/world?world=lobby"));
         assert!(html.contains("authenticated default world"));
         assert!(html.contains("guest capability"));

@@ -110,6 +110,10 @@ function initWorld(): void {
   )
     return;
 
+  // The live channel this page's app bound, rendered by the server
+  // as a data attribute on the root element (#2325); the historical
+  // /ws/world remains the default for pages rendered without one.
+  const worldSocketPath = root.dataset.worldSocket ?? "/ws/world";
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
   // The world a request is addressed to; `null` means the server's default.
@@ -337,7 +341,7 @@ function initWorld(): void {
     // async close event (dispatched after a rejoin had already replaced
     // it) scheduled a duplicate reconnect, and a stale socket's open
     // sent its join frame on the newer socket.
-    const ws = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    const ws = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
     socket = ws;
     setStatus("Connecting…");
     ws.addEventListener("open", () => {
@@ -431,7 +435,7 @@ function initWorld(): void {
     installButton.disabled = true;
     setStatus(`Uploading ${file.name} (${file.size} bytes)…`);
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    const upload = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    const upload = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
     let uploadStarted = false;
     upload.addEventListener("open", () => {
       upload.send(
@@ -553,7 +557,7 @@ function initWorld(): void {
     compileButton.disabled = true;
     setStatus(`Reading ${files.length} Roc source file${files.length === 1 ? "" : "s"} (${totalBytes} bytes)…`);
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    const compiler = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    const compiler = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
     compiler.addEventListener("open", () => {
       setStatus("Sources sent; compiling and installing on the host…");
       compiler.send(
