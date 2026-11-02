@@ -1270,7 +1270,7 @@ pub enum Command {
         ///
         /// 0 = no crawl, 1 = query direct peers (default),
         /// N = recursively query up to N levels deep.
-        #[arg(long, default_value = "1")]
+        #[arg(long, default_value = "1", allow_negative_numbers = true, value_parser = clap::value_parser!(i32).range(0..))]
         depth: i32,
         /// Maximum total peers to discover.
         ///
@@ -2933,6 +2933,30 @@ mod tests {
                 assert_eq!(max_peers, 50);
             }
             _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_peers_depth_rejects_negative_and_preserves_non_negative_values() {
+        for argv in [
+            vec!["id", "peers", "--depth=-1"],
+            vec!["id", "peers", "--depth", "-1"],
+        ] {
+            let err = Cli::try_parse_from(argv).unwrap_err();
+            assert!(
+                err.to_string().contains("depth"),
+                "error should name depth: {err}"
+            );
+        }
+
+        for depth in ["0", "1", "2"] {
+            let cli = Cli::try_parse_from(["id", "peers", "--depth", depth]).unwrap();
+            match cli.command {
+                Some(Command::Peers { depth: parsed, .. }) => {
+                    assert_eq!(parsed, depth.parse::<i32>().unwrap());
+                }
+                _ => panic!("Expected Peers command"),
+            }
         }
     }
 
