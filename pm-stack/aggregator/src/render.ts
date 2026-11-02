@@ -1887,6 +1887,7 @@ export function renderRoadmap(
   reconciliation?: RoadmapReconciliation,
   drill?: Map<string, RoadmapDrill>,
   annotations?: Map<string, RoadmapAnnotation[]>,
+  viewQuery = "",
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1898,7 +1899,8 @@ export function renderRoadmap(
         ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
         : "";
   const chips = GRAINS.map(
-    ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
+    ([g, label]) =>
+      `<a href="/roadmap?h=${g}${viewQuery ? `&${viewQuery}` : ""}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
   let body: string;
   if (grain === "quarter") {

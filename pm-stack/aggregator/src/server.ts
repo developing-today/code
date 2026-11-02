@@ -9,9 +9,11 @@
 import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ActionsStore, validateNewAction } from "./actions.ts";
+import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
+import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
@@ -40,7 +42,7 @@ import {
   unavailableRoadmapReconciliation,
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
-import type { DashComment, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import type { DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -129,6 +131,7 @@ async function coverageSnapshot(
   return next;
 }
 const actionsStore = new ActionsStore(cfg.actionsFile);
+const viewsStore = new ViewsStore(cfg.viewsFile);
 
 function pickSource(): Source {
   // #1290: the live source reads the standing delegation default from
@@ -515,6 +518,115 @@ async function overviewContext() {
   return { attention: view, pool, quota, health, board, actionsByObject };
 }
 
+
+// -- Saved views (#1276) -------------------------------------------------
+// A request names a view three ways, in precedence order: explicit
+// vf.* filter params (the shareable-URL form — reproduces the view for
+// any viewer with no store lookup), a view id (store lookup), or the
+// viewer's own default view (the viewer is named by the `viewer` query
+// param, the dashboard author key "<kind>:<id>"). No view named = the
+// pages render exactly as before.
+
+interface ResolvedView {
+  filters: ViewFilters;
+  view: SavedView | null;
+}
+
+async function resolveView(url: URL): Promise<ResolvedView | null> {
+  const fromQuery = filtersFromQuery(url.searchParams);
+  if (fromQuery) {
+    const id = url.searchParams.get("view");
+    return { filters: fromQuery, view: id ? await viewsStore.get(id).catch(() => null) : null };
+  }
+  const id = url.searchParams.get("view");
+  if (id) {
+    const view = await viewsStore.get(id).catch(() => null);
+    return view ? { filters: view.filters, view } : null;
+  }
+  const viewer = url.searchParams.get("viewer");
+  if (viewer) {
+    const view = await viewsStore.defaultFor(viewer).catch(() => null);
+    return view ? { filters: view.filters, view } : null;
+  }
+  return null;
+}
+
+function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewItemLike {
+  return {
+    ref: item.ref,
+    repo: item.ref.replace(/#\d+$/, ""),
+    area: item.projectArea ?? pool?.area ?? null,
+    horizon: item.projectHorizon ?? pool?.horizon ?? null,
+    owner: item.author,
+    state: item.state,
+    epic: pool?.epicRef ?? null,
+  };
+}
+
+function poolItemLike(item: ProjectPoolItem): ViewItemLike {
+  return {
+    ref: item.ref,
+    repo: item.repo,
+    area: item.area,
+    horizon: item.horizon,
+    owner: item.author ?? null,
+    state: item.state,
+    epic: item.epicRef ?? null,
+  };
+}
+
+/** A board card / roadmap row matches when its own fields match, or
+ *  when any canonical item it links to matches. */
+function linkedLike(
+  own: ViewItemLike,
+  links: readonly { ref: RefKey }[],
+  items: Map<RefKey, GhItem>,
+  poolByRef: Map<RefKey, ProjectPoolItem>,
+  filters: ViewFilters,
+): boolean {
+  if (itemMatchesView(own, filters)) return true;
+  for (const l of links) {
+    const item = items.get(l.ref);
+    if (item && itemMatchesView(ghItemLike(item, poolByRef.get(l.ref)), filters)) return true;
+  }
+  return false;
+}
+
+/** Apply a preference view verb to the views store (#1276). Returns a
+ *  result note for the action record, or throws — the caller maps a
+ *  throw to a rejected action so the audit trail says what happened. */
+async function applyViewAction(action: DashAction): Promise<string> {
+  const owner = ownerKey(action.author);
+  const pl = action.payload;
+  switch (action.verb) {
+    case "save-view": {
+      const view = await viewsStore.save({ owner, name: pl.viewName!, filters: pl.viewFilters! });
+      return `saved view ${view.id} "${view.name}"`;
+    }
+    case "rename-view": {
+      const view = await viewsStore.rename(pl.viewId!, owner, pl.viewName!);
+      if (!view) throw new Error(`no view ${pl.viewId} for this owner`);
+      return `renamed view ${view.id} to "${view.name}"`;
+    }
+    case "delete-view": {
+      const gone = await viewsStore.remove(pl.viewId!, owner);
+      if (!gone) throw new Error(`no view ${pl.viewId} for this owner`);
+      return `deleted view ${pl.viewId}`;
+    }
+    case "set-default-view": {
+      if (pl.viewId === undefined) {
+        await viewsStore.setDefault(null, owner);
+        return "default view cleared";
+      }
+      const view = await viewsStore.setDefault(pl.viewId, owner);
+      if (!view) throw new Error(`no view ${pl.viewId} for this owner`);
+      return `default view is now ${view.id} "${view.name}"`;
+    }
+    default:
+      throw new Error(`not a view verb: ${action.verb}`);
+  }
+}
+
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
 
 async function handler(req: Request): Promise<Response> {
@@ -643,6 +755,35 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
       const { action, created } = added;
+      // #1276: saved-view preference verbs are applied by the
+      // aggregator itself to the views store and marked applied (or
+      // rejected, with the reason) in the same request — the action
+      // record stays the audit trail for every view change.
+      if (
+        created &&
+        action.kind === "preference" &&
+        (action.verb === "save-view" ||
+          action.verb === "rename-view" ||
+          action.verb === "delete-view" ||
+          action.verb === "set-default-view")
+      ) {
+        try {
+          const note = await applyViewAction(action);
+          const updated = await actionsStore.markResult(action.id, {
+            outcome: "applied",
+            byRun: "aggregator-views",
+            note,
+          });
+          return json({ action: updated ?? action }, 201);
+        } catch (err) {
+          const updated = await actionsStore.markResult(action.id, {
+            outcome: "rejected",
+            byRun: "aggregator-views",
+            note: err instanceof Error ? err.message : String(err),
+          });
+          return json({ action: updated ?? action, error: err instanceof Error ? err.message : String(err) }, 400);
+        }
+      }
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
@@ -730,6 +871,12 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
+  if (path === "/api/views.json") {
+    // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
+    const owner = url.searchParams.get("owner");
+    const views = owner ? await viewsStore.forOwner(owner) : await viewsStore.all();
+    return json({ views });
+  }
   if (path === "/api/actions.json") {
     const object = url.searchParams.get("object");
     const kind = url.searchParams.get("kind");
@@ -775,7 +922,18 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/board") {
     const { board, items, counts, act } = await boardRender();
-    return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
+    const resolved = await resolveView(url);
+    if (!resolved) {
+      return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
+    }
+    const poolByRef = act.poolByRef;
+    const keptBoard = board.filter((b) =>
+      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    );
+    const keptRefs = new Set<string>();
+    for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
+    const keptItems = new Map([...items].filter(([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters)));
+    return html(renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
@@ -800,11 +958,40 @@ async function handler(req: Request): Promise<Response> {
     const { rows, items, reconciliation, drill } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    const annotations = new Map(
-      await Promise.all(rows.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
+    const resolved = await resolveView(url);
+    // Codex P2, PR #4013: grain links inside renderRoadmap must keep
+    // the active view parameters, or switching grain drops the view.
+    const viewParams = new URLSearchParams();
+    for (const [k, v] of url.searchParams) {
+      if (k === "view" || k === "viewer" || k.startsWith("vf.")) viewParams.set(k, v);
+    }
+    const viewQuery = viewParams.toString();
+    const annotationsFor = async (rs: typeof rows) =>
+      new Map(
+        await Promise.all(rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
+      );
+    if (!resolved) {
+      return html(
+        renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(rows), viewQuery),
+      );
+    }
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+    const keptRows = rows.filter((r) =>
+      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
+    );
+    // Codex P2, PR #4013: items linked from a KEPT row keep their
+    // metadata (links/badges in roadmapCard) even when they fail the
+    // item filter themselves — same rule the board handler applies.
+    const keptRefs = new Set<string>();
+    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
+    const keptItems = new Map(
+      [...items].filter(
+        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
+      ),
     );
     return html(
-      renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, annotations),
+      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(keptRows), viewQuery),
     );
   }
 
@@ -909,7 +1096,13 @@ async function handler(req: Request): Promise<Response> {
     // the #projects-pool section of /program now. The route redirects
     // (area filter preserved); /api/projects.json below is unchanged.
     const area = url.searchParams.get("area");
-    const target = area ? `/program?area=${encodeURIComponent(area)}#projects-pool` : "/program#projects-pool";
+    const keep = new URLSearchParams();
+    if (area) keep.set("area", area);
+    for (const [k, v] of url.searchParams) {
+      if (k === "view" || k === "viewer" || k.startsWith("vf.")) keep.set(k, v);
+    }
+    const qs = keep.toString();
+    const target = qs ? `/program?${qs}#projects-pool` : "/program#projects-pool";
     return new Response(null, { status: 302, headers: { Location: target } });
   }
   if (path === "/api/projects.json") {
@@ -919,9 +1112,11 @@ async function handler(req: Request): Promise<Response> {
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    const resolved = await resolveView(url);
+    const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     return json({
       project: "developing-today#4",
-      items: pool,
+      items: outPool,
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -943,15 +1138,22 @@ async function handler(req: Request): Promise<Response> {
       source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
+    // #1276 (Codex P2, PR #4013): /projects redirects here with the
+    // view parameters preserved, but this handler never resolved the
+    // view — apply it to the pool before rendering, exactly as
+    // /api/projects.json does, so shared/default views filter the
+    // HTML page (and its JSON twin) too.
+    const resolved = await resolveView(url);
+    const viewPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const data = {
-      ...buildProgramData(items, pool, orchestration),
-      projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
+      ...buildProgramData(items, viewPool, orchestration),
+      projects: buildProjectSummaries(PROJECT_CONFIGS, viewPool, rows),
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
     return html(
       renderProgram(data, items, prov(), provDetail(), {
-        pool,
+        pool: viewPool,
         area: url.searchParams.get("area"),
         orchestration,
         coverage,
@@ -1025,18 +1227,45 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
-    return json({ board, items: [...items.values()] });
+    const resolved = await resolveView(url);
+    if (!resolved) return json({ board, items: [...items.values()] });
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+    const keptBoard = board.filter((b) =>
+      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
+    );
+    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
+    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
-    const annotatedRows = await Promise.all(
-      rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+    const resolved = await resolveView(url);
+    if (!resolved) {
+      const annotatedRows = await Promise.all(
+        rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+      );
+      return json({
+        rows: annotatedRows,
+        items: [...items.values()],
+        drift: roadmapDriftReport(reconciliation),
+        annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
+      });
+    }
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+    const keptRows = rows.filter((r) =>
+      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
+    );
+    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
+    const annotatedKeptRows = await Promise.all(
+      keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
     return json({
-      rows: annotatedRows,
-      items: [...items.values()],
+      rows: annotatedKeptRows,
+      items: keptItems,
       drift: roadmapDriftReport(reconciliation),
       annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
+      view: resolved.view?.id ?? null,
     });
   }
   if (path === "/api/quota.json") {
