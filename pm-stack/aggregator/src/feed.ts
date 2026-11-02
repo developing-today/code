@@ -202,7 +202,60 @@ function isGoalMeasurement(v: unknown): boolean {
     Array.isArray(g.linedUp) &&
     Array.isArray(g.stalled) &&
     Array.isArray(g.gaps) &&
+    // #2417: todayFromSection dereferences every lined-up / stalled
+    // element, so a non-record element must fail here, at the gate —
+    // presence of the arrays alone let [null] through to a TypeError.
+    g.linedUp.every(isRecord) &&
+    g.stalled.every(isRecord) &&
     (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
+  );
+}
+
+/**
+ * Element gates for the section's remaining arrays (#2417). The
+ * section gate used to check only that these arrays exist; poisoned
+ * elements (null, primitives, shapeless objects) then reached
+ * consumers that dereference them — buildAttention on tier items,
+ * the projects view on dependencies, the today view on actions —
+ * and threw TypeErrors instead of taking the designed invalid-section
+ * fallback. The rules stay at the depth consumers need:
+ *
+ * - Tier items: a plain record with a string `id`. Deeper fields are
+ *   the per-item sanitizer's job (src/tier-items.ts, #1290) — a
+ *   malformed extension drops there, never the item, so the gate
+ *   must not reject on them.
+ * - Dependencies: the declared consumed shape — required string
+ *   `task`, `status` in the DependencyRef union, and the optional
+ *   ref/worker fields string-typed when present.
+ * - Actions: the four rendered string fields (at, kind, target,
+ *   summary).
+ */
+function isTierElement(v: unknown): boolean {
+  return isRecord(v) && typeof v.id === "string";
+}
+
+const DEPENDENCY_STATUSES: readonly string[] = ["in-progress", "queued", "stalled", "done", "unknown"];
+
+function isDependencyElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.task === "string" &&
+    typeof v.status === "string" &&
+    DEPENDENCY_STATUSES.includes(v.status) &&
+    (v.ref === undefined || typeof v.ref === "string") &&
+    (v.taskRef === undefined || typeof v.taskRef === "string") &&
+    (v.workerSessionId === undefined || typeof v.workerSessionId === "string") &&
+    (v.workerLabel === undefined || typeof v.workerLabel === "string")
+  );
+}
+
+function isActionElement(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    typeof v.at === "string" &&
+    typeof v.kind === "string" &&
+    typeof v.target === "string" &&
+    typeof v.summary === "string"
   );
 }
 
@@ -242,11 +295,15 @@ export function orchestrationSectionProblem(v: unknown): string | null {
   if (!isProvenance(s.provenance)) return "provenance";
   if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
   if (!Array.isArray(s.tiers.needsDrew)) return "tiers.needsDrew";
+  if (!s.tiers.needsDrew.every(isTierElement)) return "tiers.needsDrew (per-item shape)";
   if (!Array.isArray(s.tiers.needsOrchestrator)) return "tiers.needsOrchestrator";
+  if (!s.tiers.needsOrchestrator.every(isTierElement)) return "tiers.needsOrchestrator (per-item shape)";
   if (!Array.isArray(s.dependencies)) return "dependencies";
+  if (!s.dependencies.every(isDependencyElement)) return "dependencies (per-dependency shape)";
   if (!Array.isArray(s.goals)) return "goals";
   if (!s.goals.every(isGoalMeasurement)) return "goals (per-goal shape)";
   if (!Array.isArray(s.actions)) return "actions";
+  if (!s.actions.every(isActionElement)) return "actions (per-action shape)";
   return null;
 }
 
