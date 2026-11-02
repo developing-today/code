@@ -457,7 +457,12 @@ export function titleRefs(title: string): RefKey[] {
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
-  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) add(`${m[1]}#${m[2]}`);
+  const explicitRefSpans: { start: number; end: number }[] = [];
+  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
+    const start = m.index ?? 0;
+    explicitRefSpans.push({ start, end: start + m[0].length });
+    add(`${m[1]}#${m[2]}`);
+  }
   const aliases: { at: number; repo: string }[] = [];
   for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
     aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
@@ -465,6 +470,7 @@ export function titleRefs(title: string): RefKey[] {
   if (aliases.length) {
     for (const m of title.matchAll(/#(\d+)/g)) {
       const at = m.index ?? 0;
+      if (explicitRefSpans.some((span) => span.start <= at && at < span.end)) continue;
       const before = aliases.filter((a) => a.at < at).pop();
       const repo = (before ?? aliases.find((a) => a.at > at))?.repo;
       if (repo) add(`${repo}#${m[1]}`);

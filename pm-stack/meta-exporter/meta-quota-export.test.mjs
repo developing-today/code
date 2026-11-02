@@ -74,6 +74,14 @@ test("parseBillingBanner: minor units to USD, currency checked", () => {
   assert.equal(parseBillingBanner({ kind: "free_partial", remaining_minor_units: 14857, currency: "USD" }), 148.57);
   assert.throws(() => parseBillingBanner({ remaining_minor_units: 100, currency: "EUR" }), /currency/);
   assert.throws(() => parseBillingBanner({}));
+  // Fractional minor units are shape drift: fail closed, never export a fractional dollar amount (#2510).
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 1050.5, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 0.1, currency: "USD" }), /missing\/invalid/);
+  assert.equal(parseBillingBanner({ remaining_minor_units: 0, currency: "USD" }), 0);
+  // Unsafe integers and negatives reject; MAX_SAFE_INTEGER itself is the
+  // representation limit, not a business cap.
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: Number.MAX_SAFE_INTEGER + 1, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: -100, currency: "USD" }), /missing\/invalid/);
 });
 
 test("parsePaygBalance: reads the iframe text, absence stays null", () => {
