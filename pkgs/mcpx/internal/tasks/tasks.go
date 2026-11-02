@@ -871,6 +871,60 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 	return snap, true
 }
 
+// CancelImmediate records Cancelled at once and returns the terminal
+// snapshot. It is the legacy 2025-11-25 tasks/cancel semantics
+// (conformance: tasks-cancel-transition-before-response,
+// tasks-cancelled-sticky): the transition happens before the reply and
+// stands whatever the work does afterwards. The cooperative grace
+// window of CancelWithReason belongs to the modern extension path
+// only. The work is still notified (OnCancel, the store hook, and its
+// context), it just cannot change the recorded ending.
+func (s *Store) CancelImmediate(id string, reason string) (Task, bool) {
+	s.mu.Lock()
+	t, ok := s.tasks[id]
+	if !ok {
+		s.mu.Unlock()
+		return Task{}, false
+	}
+	transitioned := !Terminal(t.Status)
+	var onCancel func(ctx context.Context, reason string)
+	var cancel context.CancelFunc
+	if transitioned {
+		if t.cancelTimer != nil {
+			t.cancelTimer.Stop()
+			t.cancelTimer = nil
+		}
+		t.cancelling = false
+		t.Status, t.LastUpdatedAt = Cancelled, time.Now()
+		if t.StatusMessage == "" && reason != "" {
+			t.StatusMessage = reason
+		}
+		s.saveTaskLocked(t)
+		s.armRetentionLocked(t)
+		onCancel = t.OnCancel
+		cancel = t.cancel
+	}
+	snap := *t
+	hook := s.OnCancelHook
+	s.mu.Unlock()
+
+	if transitioned {
+		s.changed(id)
+		if onCancel != nil {
+			ctx, cancelCtx := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
+			onCancel(ctx, reason)
+			cancelCtx()
+		}
+		if hook != nil {
+			hook(id, reason)
+		}
+		if cancel != nil {
+			cancel()
+		}
+	}
+	return snap, true
+}
+
 // expireCancellation records the cancel only if the task's work did not
 // record a terminal status first. Called by the per-task grace timer.
 func (s *Store) expireCancellation(t *Task, reason string) {

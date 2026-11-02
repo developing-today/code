@@ -212,6 +212,29 @@ func TestCooperativeCancellationHandshake(t *testing.T) {
 	}
 }
 
+func TestCancelImmediateIsTerminalAndSticky(t *testing.T) {
+	// The legacy 2025-11-25 path (#2499, Codex P1 on PR #3699): even
+	// with a grace window configured, an immediate cancel records
+	// Cancelled before replying, and the work finishing afterwards
+	// cannot change that ending.
+	st := tasks.New()
+	st.CancelGrace = time.Second
+	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
+		<-ctx.Done()
+		return "too late", nil
+	})
+	snap, ok := st.CancelImmediate(task.TaskID, "cancelled")
+	if !ok || snap.Status != tasks.Cancelled {
+		t.Fatalf("immediate cancel should return the terminal snapshot, got %+v", snap)
+	}
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := st.Get(task.TaskID); after.Status != tasks.Cancelled {
+		t.Errorf("a legacy cancellation must stand, got %q", after.Status)
+	}
+}
+
 // --- Phase 1 of #2497 (#2498): task-store limits ---
 
 func TestStartClampsTTLToTheStoreMax(t *testing.T) {
