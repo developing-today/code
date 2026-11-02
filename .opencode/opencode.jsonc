@@ -3024,7 +3024,7 @@
           }
     }
   },
-  "agent": {
+  "agents": {
     "build": {
       "mode": "all",
       "permissions": [
@@ -3515,7 +3515,7 @@
     "provider": "random"
   },
   "warming": true,
-  "plugin": [
+  "plugins": [
     // "@pieliesdie/opencode-antigravity-auth@2.0.0", -- disabled 2026-10-24: direct-auth/API-key agy route off; plan agy runs via the antigravity-ls proxy only
     "opencode-working-memory@latest",
     "opencode-scheduler@latest",
