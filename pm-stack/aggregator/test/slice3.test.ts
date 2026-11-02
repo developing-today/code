@@ -262,6 +262,25 @@ describe("dns register parser", () => {
     expect(isDnsSection(withStatus("unused"))).toBe(true);
   });
 
+  test("isDnsSection rejects negative money, allows zero (#4226)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    // Negative finite money passed the #2412 finiteness gate: a negative
+    // total renders as negative spend and records a negative snapshot.
+    expect(isDnsSection({ ...good, totalAnnualListUsd: -999 })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: -0.01 })).toBe(false);
+    // Zero is the control: a free tier totals 0 and stays valid.
+    expect(isDnsSection({ ...good, totalAnnualListUsd: 0 })).toBe(true);
+    const withEntry = (priceUsd: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, priceUsd } : e)),
+    });
+    expect(isDnsSection(withEntry(-4.07))).toBe(false);
+    expect(isDnsSection(withEntry(-0.01))).toBe(false);
+    expect(isDnsSection(withEntry(0))).toBe(true);
+    expect(isDnsSection(withEntry(null))).toBe(true);
+  });
+
   test("isDnsSection rejects impossible generatedAt dates Date.parse rolls over (#3441)", () => {
     const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
     expect(good).not.toBeNull();
