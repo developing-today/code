@@ -87,6 +87,14 @@ manifest, so a new page never touches the chrome. To add one:
    twin when the page has data worth polling.
 4. Wire any new data through `Source` (with its fixture twin), and
    through the fleet feed when the data originates on the sandbox.
+5. Pass the mobile checklist (#1180, 390x844 audit): no page-level
+   horizontal scroll (wide tables live inside `.tblwrap`, `pre` blocks
+   scroll inside themselves); every control-class tap target (nav
+   links, chips, buttons, form controls, checkbox labels) is at least
+   40px tall; the sticky nav never permanently covers content
+   (anchored elements carry `scroll-margin-top`). Inline text links
+   inside prose and table cells are exempt from the 40px floor.
+   Re-run the per-page audit when a page's layout changes materially.
 
 `/dns` is the worked example: the register file lives on the sandbox
 (#902 owns it), the collector parses it into a `dns` feed section
