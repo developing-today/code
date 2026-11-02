@@ -154,3 +154,22 @@ class JanitorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_owner_changed_when_worktree_switched_branch(self):
+        target = self.make_target("task-43/pkgs/id/target")
+        recorded = janitor.Target(target.resolve(), 10, 0, "queue/42-old", 42)
+        worktree = target.parents[2].resolve()
+        self.assertTrue(
+            janitor.owner_changed(recorded, {worktree: "queue/43-new"}))
+        self.assertFalse(
+            janitor.owner_changed(
+                janitor.Target(target.resolve(), 10, 0, "queue/43-new", 43),
+                {worktree: "queue/43-new"}))
+        # The worktree was unregistered entirely since the plan.
+        self.assertTrue(janitor.owner_changed(recorded, {}))
+
+    def test_owner_changed_ignores_adhoc_targets(self):
+        target = self.make_target("target-42")
+        recorded = janitor.Target(target.resolve(), 10, 0, None, 42)
+        self.assertFalse(janitor.owner_changed(recorded, {}))
+

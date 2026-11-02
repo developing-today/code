@@ -60,6 +60,20 @@ def worktree_root_for_target(path: Path) -> Path | None:
     return None
 
 
+def owner_changed(target: Target, branches_now: dict[Path, str | None]) -> bool:
+    """Whether the checkout owning a worktree target has moved to a
+    different branch/task since discovery. A switch between plan and
+    removal invalidates the plan's queue/PR checks, which are keyed to
+    the recorded branch/task (#4175 Codex P2): the apply path must
+    re-derive the owner and stop if it changed."""
+    root = worktree_root_for_target(target.path)
+    if root is None:
+        return False
+    current_branch = branches_now.get(root.resolve())
+    current_task = task_id_from(current_branch or "") or task_id_from(root.name)
+    return current_branch != target.branch or current_task != target.task_id
+
+
 def cwd_inside(cwds: list[Path], base: Path) -> bool:
     return any(cwd == base or cwd.is_relative_to(base) for cwd in cwds)
 
@@ -412,6 +426,10 @@ def main() -> int:
                     task_id_from(pr) == target.task_id for pr in fresh_prs):
                 raise SafetyError(f"task {target.task_id} gained an open PR; stopping")
             worktree_root = worktree_root_for_target(resolved)
+            if worktree_root is not None and owner_changed(
+                    target, worktree_branches(args.primary)):
+                raise SafetyError(
+                    f"owning worktree changed branch/task since plan; stopping before {path}")
             if worktree_root is not None and cwd_inside(fresh_cwds, worktree_root):
                 raise SafetyError(
                     f"build process active in worktree; stopping before {path}")
