@@ -1829,7 +1829,13 @@ mod tests {
         // A bare --lines/-n keeps the default line count, matching the
         // merged-first set's bare --first/--last default design (#4072).
         assert_eq!(parse_peek_args(&["report", "--lines"]).unwrap().1.lines, 5);
-        assert_eq!(parse_peek_args(&["report", "-n", "--quiet"]).unwrap().1.lines, 5);
+        assert_eq!(
+            parse_peek_args(&["report", "-n", "--quiet"])
+                .unwrap()
+                .1
+                .lines,
+            5
+        );
     }
 
     #[test]
