@@ -1363,6 +1363,7 @@ mod tests {
             document: None,
             removes: None,
             note: None,
+            link: None,
         }
     }
 

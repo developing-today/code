@@ -710,6 +710,7 @@ impl LocalEvents {
             document,
             removes,
             note,
+            link: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -966,6 +967,7 @@ mod tests {
                     content: DocumentRef::for_bytes("text/markdown", b"bogus").unwrap(),
                     parents: vec![id(223)],
                 }),
+                link: None,
             },
         )
         .unwrap();
