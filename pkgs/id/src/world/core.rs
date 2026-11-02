@@ -228,6 +228,29 @@ impl WorldCore {
                         participant.id != 0,
                         "participant 0 is the reserved host identity and cannot be issued"
                     );
+                    // #2960: the journaled display name must be one mint
+                    // could have produced. Mint sanitizes every name
+                    // (control and format characters stripped, capped at
+                    // 48 chars, trimmed) and refuses an empty result, so a
+                    // name that is a fixed point of neither sanitization
+                    // — or is empty — comes from a journal no live path
+                    // can write; refuse the whole restore. The pre-#2112
+                    // sanitizer (control characters only) is also accepted:
+                    // journals minted before format stripping landed can
+                    // legitimately carry ZWJ/ZWNJ names such as family
+                    // emoji, and those worlds restored fine before this
+                    // check existed.
+                    ensure!(
+                        !participant.display_name.is_empty()
+                            && (participant.display_name
+                                == sanitize_display_name(&participant.display_name)
+                                || participant.display_name
+                                    == legacy_sanitize_display_name(
+                                        &participant.display_name
+                                    )),
+                        "participant {} has a display name mint could not have produced",
+                        participant.id
+                    );
                     ensure!(
                         !core.capabilities.contains_key(&participant.id),
                         "participant {} issued twice",

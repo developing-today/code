@@ -1856,6 +1856,98 @@ mod tests {
     }
 
     #[test]
+    fn restore_refuses_issued_display_names_mint_could_not_produce() {
+        // #2960: restore inserts journaled participants verbatim, but
+        // mint sanitizes every display name (control/format characters
+        // stripped, 48-char cap, trimmed) and refuses an empty result.
+        // A journaled name mint could never have produced — empty,
+        // control-bearing, over-length, or untrimmed — must refuse the
+        // whole restore, while a legitimately minted journal restores
+        // with byte-identical names.
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let legitimate = JournalEntry::Issued {
+            participant: owner.clone(),
+            digest: hex_encode(&token_digest(owner_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let header = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        // A legitimately minted name restores fine.
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legitimate],
+        )
+        .unwrap();
+        // A name minted before #2112's format stripping — a fixed point
+        // of the legacy sanitizer only, here a ZWJ family emoji — also
+        // restores fine: those journals predate the current sanitizer
+        // and restored successfully before this check existed.
+        let legacy = JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".to_owned(),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legacy],
+        )
+        .unwrap();
+        for bad_name in [
+            String::new(),
+            "a\u{7}\n".to_owned() + &"x".repeat(98),
+            "a".repeat(49),
+            "Ada ".to_owned(),
+            "\u{1}\u{2}".to_owned(),
+        ] {
+            let forged = JournalEntry::Issued {
+                participant: Participant {
+                    id: 1,
+                    display_name: bad_name.clone(),
+                },
+                digest: "ab".repeat(32),
+                scopes: WorldScopes::GUEST.bits(),
+                parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
+                subject: None,
+            };
+            let err = match WorldCore::restore(
+                "test-world",
+                WorldLimits::default(),
+                [header.clone(), forged],
+            ) {
+                Ok(_) => panic!("restore must refuse display name {bad_name:?}"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("display name"),
+                "error must name the display name rule: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn events_are_sequenced_and_reconnect_can_catch_up() {
         let mut core = world(8);
         let (_, token) = join(&mut core, "Ada");
