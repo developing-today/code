@@ -123,8 +123,110 @@ const writeJsonAtomic = (file, obj) => {
 
 // ---------- config ----------
 
+const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+// loadConfig validates the whole config before any reconcile begins
+// (#1952): a malformed entry must fail fast with an error naming the
+// config file and the offending entry/field, never escape as an opaque
+// TypeError, and never pass unsafe timeouts/ports through to runtime
+// calculations (drain deadlines, lock staleness, port arithmetic).
 export const loadConfig = (file) => {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const fail = (msg) => {
+    throw new Error(`proxy-supervise: invalid config ${file}: ${msg}`);
+  };
+  const checkString = (where, field, value, { required = false } = {}) => {
+    if (value === undefined) {
+      if (required) fail(`${where}: field '${field}' is required and must be a non-empty string`);
+      return;
+    }
+    if (typeof value !== 'string' || value.length === 0)
+      fail(`${where}: field '${field}' must be a non-empty string, got ${JSON.stringify(value)}`);
+  };
+  const checkInt = (where, field, value, min, max) => {
+    if (!Number.isInteger(value) || value < min || value > max)
+      fail(`${where}: field '${field}' must be an integer in ${min}..=${max}, got ${JSON.stringify(value)}`);
+  };
+  const checkStringArray = (where, field, value, { nonEmpty = false } = {}) => {
+    if (!Array.isArray(value))
+      fail(`${where}: field '${field}' must be an array of non-empty strings, got ${JSON.stringify(value)}`);
+    if (nonEmpty && value.length === 0)
+      fail(`${where}: field '${field}' must be a non-empty array of non-empty strings`);
+    value.forEach((item, i) => {
+      if (typeof item !== 'string' || item.length === 0)
+        fail(`${where}: field '${field}[${i}]' must be a non-empty string, got ${JSON.stringify(item)}`);
+    });
+  };
+
+  if (!isPlainObject(raw)) fail('top-level value must be an object');
+  checkString('config', 'stateDir', raw.stateDir);
+  checkString('config', 'endpointDir', raw.endpointDir);
+  if (raw.systemdRun !== undefined && raw.systemdRun !== null && raw.systemdRun !== 'system' && raw.systemdRun !== 'user')
+    fail(`config: field 'systemdRun' must be 'system', 'user', or null, got ${JSON.stringify(raw.systemdRun)}`);
+  if (raw.drainSeconds !== undefined) checkInt('config', 'drainSeconds', raw.drainSeconds, 0, 3600);
+  if (raw.healthTimeoutSeconds !== undefined) checkInt('config', 'healthTimeoutSeconds', raw.healthTimeoutSeconds, 1, 3600);
+  if (raw.lockTimeoutSeconds !== undefined) checkInt('config', 'lockTimeoutSeconds', raw.lockTimeoutSeconds, 1, 86400);
+  if (raw.proxies !== undefined && !Array.isArray(raw.proxies))
+    fail(`config: field 'proxies' must be an array, got ${JSON.stringify(raw.proxies)}`);
+
+  const seenNames = new Set();
+  const seenPorts = new Map();
+  for (const [i, p] of (raw.proxies || []).entries()) {
+    if (!isPlainObject(p)) fail(`proxies[${i}]: entry must be an object, got ${JSON.stringify(p)}`);
+    const where = typeof p.name === 'string' && p.name ? `proxies[${i}] ('${p.name}')` : `proxies[${i}]`;
+    checkString(where, 'name', p.name, { required: true });
+    if (seenNames.has(p.name)) fail(`${where}: field 'name' duplicates an earlier proxy name '${p.name}'`);
+    seenNames.add(p.name);
+    if (p.command === undefined)
+      fail(`${where}: field 'command' is required and must be a non-empty array of non-empty strings`);
+    checkStringArray(where, 'command', p.command, { nonEmpty: true });
+    checkInt(where, 'canonicalPort', p.canonicalPort, 1, 65535);
+    checkString(where, 'portEnv', p.portEnv, { required: true });
+    const altPortOffset = p.altPortOffset ?? 1000;
+    if (!Number.isInteger(altPortOffset) || altPortOffset <= 0)
+      fail(`${where}: field 'altPortOffset' must be a positive integer, got ${JSON.stringify(p.altPortOffset)}`);
+    if (p.canonicalPort + altPortOffset > 65535)
+      fail(`${where}: field 'altPortOffset' makes canonicalPort + altPortOffset exceed 65535 (${p.canonicalPort} + ${altPortOffset})`);
+    if (p.hashFiles !== undefined) checkStringArray(where, 'hashFiles', p.hashFiles);
+    if (p.hashEnv !== undefined) checkStringArray(where, 'hashEnv', p.hashEnv);
+    if (p.backends !== undefined) {
+      if (!Array.isArray(p.backends))
+        fail(`${where}: field 'backends' must be an array, got ${JSON.stringify(p.backends)}`);
+      p.backends.forEach((b, j) => {
+        if (!isPlainObject(b)) fail(`${where}: field 'backends[${j}]' must be an object, got ${JSON.stringify(b)}`);
+        checkString(where, `backends[${j}].name`, b.name, { required: true });
+        checkString(where, `backends[${j}].env`, b.env, { required: true });
+      });
+    }
+    if (p.env !== undefined) {
+      if (!isPlainObject(p.env))
+        fail(`${where}: field 'env' must be an object mapping names to strings, got ${JSON.stringify(p.env)}`);
+      for (const [k, v] of Object.entries(p.env))
+        if (typeof v !== 'string') fail(`${where}: field 'env.${k}' must be a string, got ${JSON.stringify(v)}`);
+    }
+    if (p.strategy !== undefined && !['ab', 'swap', 'inplace'].includes(p.strategy))
+      fail(`${where}: field 'strategy' must be one of 'ab', 'swap', 'inplace', got ${JSON.stringify(p.strategy)}`);
+    checkString(where, 'host', p.host);
+    if (p.healthPath !== undefined && (typeof p.healthPath !== 'string' || !p.healthPath.startsWith('/')))
+      fail(`${where}: field 'healthPath' must be a string starting with '/', got ${JSON.stringify(p.healthPath)}`);
+    checkString(where, 'cwd', p.cwd);
+    if (p.wireCommand !== undefined) checkStringArray(where, 'wireCommand', p.wireCommand, { nonEmpty: true });
+    // Each proxy claims two ports on its host at runtime — the canonical
+    // port and the alternate (canonicalPort + altPortOffset) — and reconcile
+    // health-checks and spawns on exactly those two, keying health on the
+    // port alone. Two proxies on the same host must therefore never claim
+    // the same port in any role (#4094); the same port on a different host
+    // is a different claim and stays valid.
+    const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
+    for (const [field, port] of [['canonicalPort', p.canonicalPort], ['altPort', p.canonicalPort + altPortOffset]]) {
+      const claim = `${host}:${port}`;
+      const prior = seenPorts.get(claim);
+      if (prior)
+        fail(`${where}: field '${field}' port ${port} on host '${host}' is already claimed by proxy '${prior.name}' as its ${prior.field}`);
+      seenPorts.set(claim, { name: p.name, field });
+    }
+  }
+
   const cfg = {
     stateDir: expandPath(raw.stateDir || '~/.local/state/proxy-supervisor'),
     endpointDir: expandPath(raw.endpointDir || '~/.local/state'),

@@ -448,6 +448,7 @@ describe("opencode session-identity tool", () => {
 let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
 const tmp = mkdtempSync(join(tmpdir(), "agg-slice3-"));
+const annotationsFile = join(tmp, "roadmap-annotations.json");
 
 beforeAll(async () => {
   port = 5200 + Math.floor(Math.random() * 800);
@@ -461,6 +462,7 @@ beforeAll(async () => {
       PM_AGG_PORT: String(port),
       PM_AGG_SOURCE: "fixtures",
       PM_AGG_COMMENTS_FILE: commentsFile,
+      PM_AGG_ROADMAP_ANNOTATIONS_FILE: annotationsFile,
       PM_AGG_REGISTRY_FILE: join(tmp, "registry.json"),
     },
     stdout: "pipe",
@@ -579,5 +581,54 @@ describe("slice-3 routes", () => {
     const html = await (await fetch(`http://127.0.0.1:${port}/item/${id}`)).text();
     expect(html).toContain("Dashboard comments");
     expect(html).toContain("cform");
+  });
+
+  test("roadmap annotations round-trip through API, timeline, drill-down, and JSON; aliases survive reshuffles", async () => {
+    const roadmap = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
+      rows: { subject: string; annotations: { body: string }[] }[];
+    };
+    expect(roadmap.rows.length).toBeGreaterThan(1);
+    const stableRef = roadmap.rows[0].subject;
+    const reshuffledRef = roadmap.rows[1].subject;
+    const post = (objectRef: string, body: string) =>
+      fetch(`http://127.0.0.1:${port}/api/roadmap/annotations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          objectRef,
+          kind: "decision",
+          date: "2026-10-12",
+          author: { kind: "drew", id: "drew", label: "Drew" },
+          body,
+        }),
+      });
+
+    expect((await post(stableRef, "Moved after review")).status).toBe(201);
+    const alias = await fetch(`http://127.0.0.1:${port}/api/roadmap/annotations/alias`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ aliasRef: reshuffledRef, stableRef }),
+    });
+    expect(alias.status).toBe(200);
+    expect((await post(reshuffledRef, "Follow-up under the new row id")).status).toBe(201);
+
+    const json = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
+      rows: { subject: string; annotations: { body: string; date: string; kind: string; author: { label: string } }[] }[];
+      annotationAliases: Record<string, string>;
+    };
+    const reshuffledRow = json.rows.find((row) => row.subject === reshuffledRef)!;
+    expect(reshuffledRow.annotations.map((annotation) => annotation.body)).toEqual([
+      "Moved after review",
+      "Follow-up under the new row id",
+    ]);
+    expect(reshuffledRow.annotations[0]).toMatchObject({ date: "2026-10-12", kind: "decision", author: { label: "Drew" } });
+    expect(json.annotationAliases[reshuffledRef]).toBe(stableRef);
+
+    const detail = await (await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent(reshuffledRef)}`)).text();
+    expect(detail).toContain("Roadmap annotations");
+    expect(detail).toContain("Follow-up under the new row id");
+    expect(detail).toContain("name=\"date\"");
+    const timeline = await (await fetch(`http://127.0.0.1:${port}/roadmap`)).text();
+    expect(timeline).toContain("Moved after review");
   });
 });

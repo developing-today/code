@@ -115,7 +115,7 @@ pub struct Defaults {
 /// # Example
 ///
 /// ```rust
-/// use id::discovery::parse_defaults;
+/// use id_core::discovery::parse_defaults;
 ///
 /// let conf = r#"
 /// [bootstrap]
@@ -336,7 +336,7 @@ pub const STALE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// # Example
 ///
 /// ```rust
-/// use id::discovery::PeerAnnouncement;
+/// use id_core::discovery::PeerAnnouncement;
 /// use iroh_base::SecretKey;
 ///
 /// let key = SecretKey::generate();
@@ -389,7 +389,7 @@ pub struct PeerInfo {
 /// # Example
 ///
 /// ```rust
-/// use id::discovery::{PeerDiscovery, PeerAnnouncement};
+/// use id_core::discovery::{PeerDiscovery, PeerAnnouncement};
 /// use iroh_base::SecretKey;
 ///
 /// let discovery = PeerDiscovery::new();

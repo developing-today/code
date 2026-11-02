@@ -29,7 +29,7 @@
 //! # Examples
 //!
 //! ```
-//! use id::tuple::{TupleEncoder, decode};
+//! use id_core::tuple::{TupleEncoder, decode};
 //!
 //! // Encode a key for: file="README.md", tag="label", value="rust"
 //! let key = TupleEncoder::new()
@@ -169,7 +169,7 @@ impl TupleValue {
 /// # Examples
 ///
 /// ```
-/// use id::tuple::TupleEncoder;
+/// use id_core::tuple::TupleEncoder;
 ///
 /// // Encode a struct: {a: 1, b: [0, 1, 2], c: null}
 /// let key = TupleEncoder::new()
