@@ -82,6 +82,43 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(projectPoolSectionProblem([{ ...EDGElESS, blocks: "developing-today/code#1" }])).toBe("item 0");
   });
 
+  test("structural fields + optional-field types are gated (#2418)", () => {
+    // labels: a bare string or non-string members crash renders; both fail.
+    expect(isProjectPoolItem({ ...EDGElESS, labels: "blocked" })).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, labels: [42] })).toBe(false);
+    // required url/projectUrl/contentKind.
+    const noUrl = { ...EDGElESS } as Record<string, unknown>;
+    delete noUrl.url;
+    expect(isProjectPoolItem(noUrl)).toBe(false);
+    const noProjectUrl = { ...EDGElESS } as Record<string, unknown>;
+    delete noProjectUrl.projectUrl;
+    expect(isProjectPoolItem(noProjectUrl)).toBe(false);
+    const noKind = { ...EDGElESS } as Record<string, unknown>;
+    delete noKind.contentKind;
+    expect(isProjectPoolItem(noKind)).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, contentKind: "draft" })).toBe(false);
+    // required nullable fields: string or null only, never a wrong type or absent.
+    expect(isProjectPoolItem({ ...EDGElESS, status: 7 })).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, area: undefined })).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, horizon: false })).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, kind: ["Task"] })).toBe(false);
+    // present optional fields must match their declared types.
+    expect(isProjectPoolItem({ ...EDGElESS, databaseId: "42" })).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, draft: "yes" })).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, author: 42 })).toBe(false);
+    expect(isProjectPoolItem({ ...EDGElESS, updatedAt: null })).toBe(false);
+    // absent optional fields remain valid; a mixed pool drops only the bad entry.
+    const bare = { ...EDGElESS } as Record<string, unknown>;
+    delete bare.labels;
+    delete bare.databaseId;
+    delete bare.draft;
+    delete bare.author;
+    delete bare.updatedAt;
+    expect(isProjectPoolItem(bare)).toBe(true);
+    expect(poolFromFeed({ projects: [EDGElESS, { ...EDGElESS, labels: "blocked" }, GRAPHED] as unknown as never })).toHaveLength(2);
+  });
+
+
   test("poolFromFeed is fail-soft: garbage sections yield no items, bad items drop", () => {
     expect(poolFromFeed(null)).toEqual([]);
     expect(poolFromFeed(undefined)).toEqual([]);
