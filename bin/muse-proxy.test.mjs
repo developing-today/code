@@ -1102,6 +1102,13 @@ test('exec deadline: a normal child inside the deadline is unaffected (#2159)', 
   assert.equal(plain.choices[0].message.content, 'Hello world');
 });
 
+test('exec deadline: an override above Node timer limit falls back to the default, not a ~1ms timeout (#2159)', async (t) => {
+  const { port, stop } = await startProxy({ MUSE_PROXY_EXEC_TURN_TIMEOUT_MS: '2147483648' });
+  t.after(stop);
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world');
+});
+
 test('exec disconnect: client disconnect kills the child via the shared helper (#2159)', async (t) => {
   const { port, stop, logFile } = await startProxy();
   t.after(stop);

@@ -325,15 +325,17 @@ const WARM_TURN_TIMEOUT_MS = 300 * 1000;
 // Exec-fallback turn deadline (#2159): the exec path settles a request
 // only when its child closes, so without a deadline a hung `muse exec`
 // child wedges the request forever and leaks the process. The override
-// is a strict positive integer of milliseconds; anything else warns
-// once and falls back to the default — 0/disabled is not expressible.
+// is a strict positive integer of milliseconds within Node's timer
+// range (<= 2^31 - 1; setTimeout clamps larger delays to ~1ms, which
+// would time out every turn immediately); anything else warns once
+// and falls back to the default — 0/disabled is not expressible.
 const EXEC_TURN_TIMEOUT_MS = 300 * 1000;
 const EXEC_KILL_GRACE_MS = 3000;
 const parseExecTurnTimeoutMs = () => {
   const raw = process.env.MUSE_PROXY_EXEC_TURN_TIMEOUT_MS;
   if (raw === undefined) return EXEC_TURN_TIMEOUT_MS;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) {
+  if (!Number.isInteger(n) || n <= 0 || n > 2147483647) {
     console.warn(`[muse-proxy] ignoring invalid MUSE_PROXY_EXEC_TURN_TIMEOUT_MS=${JSON.stringify(raw)}; using ${EXEC_TURN_TIMEOUT_MS}ms`);
     return EXEC_TURN_TIMEOUT_MS;
   }
