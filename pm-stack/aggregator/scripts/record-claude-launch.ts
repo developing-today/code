@@ -22,6 +22,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseRef } from "../src/model.ts";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -44,6 +45,17 @@ const id = arg("id") ?? `claude-${now.getTime().toString(36)}-${Math.random().to
 const taskRefs = process.argv
   .map((a, i) => (a === "--task" ? process.argv[i + 1] : undefined))
   .filter((v): v is string => typeof v === "string");
+
+for (const ref of taskRefs) {
+  try {
+    parseRef(ref);
+  } catch {
+    console.error(
+      `record-claude-launch: invalid --task ${JSON.stringify(ref)} (expected owner/repo#123 with a safe integer number)`,
+    );
+    process.exit(2);
+  }
+}
 
 const record = {
   id,
