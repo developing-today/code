@@ -1216,17 +1216,43 @@ impl BoardGraph {
         // Current moderator frontier: a role attestation that another
         // attestation supersedes is history, not authority. Following
         // the signed supersedes links (never arrival order) keeps this
-        // identical on every peer holding the same set.
-        let mut attestation_superseded: BTreeSet<ArtifactHash> = BTreeSet::new();
-        for signed in self.objects.values() {
-            if let BoardObject::RoleAttestation(value) = &signed.object {
-                if &value.board == board {
-                    if let Some(previous) = &value.supersedes {
-                        attestation_superseded.insert(previous.clone());
-                    }
+        // identical on every peer holding the same set. An attestation
+        // that is itself superseded — by an active generic supersede
+        // above, or by an active attestation's supersedes edge — has no
+        // effect, so its own supersedes edge does not apply either
+        // (#4003): superseding a revocation reinstates the grant it
+        // revoked. Like the generic frontier, this resolves to a fixed
+        // point over the active attestations.
+        let attestation_edges: Vec<(ArtifactHash, Option<ArtifactHash>)> = self
+            .objects
+            .iter()
+            .filter_map(|(hash, signed)| match &signed.object {
+                BoardObject::RoleAttestation(value) if &value.board == board => {
+                    Some((hash.clone(), value.supersedes.clone()))
                 }
+                _ => None,
+            })
+            .collect();
+        let mut active_attestations: BTreeSet<ArtifactHash> = attestation_edges
+            .iter()
+            .map(|(hash, _)| hash.clone())
+            .filter(|hash| !superseded.contains(hash))
+            .collect();
+        let attestation_superseded: BTreeSet<ArtifactHash> = loop {
+            let named: BTreeSet<ArtifactHash> = attestation_edges
+                .iter()
+                .filter(|(hash, _)| active_attestations.contains(hash))
+                .filter_map(|(_, previous)| previous.clone())
+                .collect();
+            let next: BTreeSet<ArtifactHash> = active_attestations
+                .difference(&named)
+                .cloned()
+                .collect();
+            if next == active_attestations {
+                break named;
             }
-        }
+            active_attestations = next;
+        };
         let current_moderators: BTreeSet<String> = self
             .objects
             .iter()
@@ -2419,6 +2445,88 @@ mod tests {
         assert!(view.objects.contains(&post_hash));
         assert!(view.hidden.is_empty());
         assert_eq!(view.moderation_log.len(), 1);
+    }
+
+    #[test]
+    fn superseded_revocation_no_longer_revokes() {
+        // #4003: a revocation attestation that is itself superseded has
+        // no effect, so the grant it revoked is authority again.
+        let owner = key(41);
+        let moderator = key(42);
+        let author = key(43);
+        let other = key(44);
+        let moderator_key = hex_encode(&moderator.verifying_key().to_bytes());
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&owner)).unwrap();
+        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let post_hash = graph
+            .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
+            .unwrap();
+        let attestation = |seq: u64, member: String, granted: bool, supersedes: Option<ArtifactHash>| {
+            SignedBoardObject::sign(
+                &owner,
+                seq,
+                "",
+                BoardObject::RoleAttestation(RoleAttestation {
+                    board: root_hash.clone(),
+                    member,
+                    role: BoardRole::Moderator,
+                    granted,
+                    supersedes,
+                }),
+            )
+            .unwrap()
+        };
+        let grant_hash = graph
+            .insert(attestation(2, moderator_key.clone(), true, None))
+            .unwrap();
+        graph
+            .insert(moderation(
+                &moderator,
+                1,
+                root_hash.clone(),
+                post_hash.clone(),
+                ModerationActionKind::Hide,
+                Some("spam"),
+            ))
+            .unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert_eq!(view.hidden.len(), 1);
+
+        // Revoke: the moderator's Hide stops applying.
+        let revocation_hash = graph
+            .insert(attestation(3, moderator_key.clone(), false, Some(grant_hash.clone())))
+            .unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert!(view.objects.contains(&post_hash));
+        assert!(view.hidden.is_empty());
+
+        // Nullify the revocation with a generic Supersede whose
+        // replacement is an unrelated attestation: the original grant
+        // is the current frontier again and the Hide applies once more.
+        let other_grant_hash = graph
+            .insert(attestation(
+                4,
+                hex_encode(&other.verifying_key().to_bytes()),
+                true,
+                None,
+            ))
+            .unwrap();
+        let supersede = SignedBoardObject::sign(
+            &owner,
+            5,
+            "",
+            BoardObject::Supersede(Supersede {
+                board: root_hash.clone(),
+                previous: revocation_hash,
+                replacement: other_grant_hash,
+            }),
+        )
+        .unwrap();
+        graph.insert(supersede).unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert_eq!(view.hidden.len(), 1);
+        assert!(!view.objects.contains(&post_hash));
     }
 
     #[test]
