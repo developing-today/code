@@ -31,6 +31,13 @@ Each roadmap file groups its items by horizon.
 | Later   | The direction is chosen, the shape is not. Details are allowed to be missing. |
 | Ideas   | Written down so it is not lost. No commitment, and it may be dropped.         |
 
+### Milestones and iterations
+
+For roadmap work, the fleet does not use GitHub milestones or Project iterations.
+Horizon (the Project field and the [#899 priority ladder](https://github.com/developing-today/code/issues/899)), together with Project start and target dates, is the planning mechanism; do not create milestones for roadmap work. Revisit this decision if a release train needs a named cut.
+
+The existing open milestone in `dezren39/nix` is an exception, not a precedent for roadmap tracking; this decision does not change it.
+
 Each item has a status.
 
 | Status        | Meaning                                                               |
