@@ -1214,9 +1214,16 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
             req.name,
             secs
         );
+        // Structured refusal (#2244 P0-A): machine-readable reason and
+        // retry value in the body, `Retry-After` header alongside.
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            format!("Save rate limited. Try again in {secs}s."),
+            [(header::RETRY_AFTER, secs.to_string())],
+            Json(serde_json::json!({
+                "error": format!("Save rate limited. Try again in {secs}s."),
+                "reason": "rate_limited",
+                "retry_after_ms": secs.saturating_mul(1_000),
+            })),
         )
             .into_response();
     }
