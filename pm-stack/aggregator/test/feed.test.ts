@@ -123,6 +123,28 @@ describe("feed project-pool section gate (#2399)", () => {
     ).toHaveLength(2);
   });
 
+  test("number must be a positive integer, bad values drop individually (#3514)", () => {
+    // Real GraphQL numbers are positive integers; NaN/Infinity/1.5/-3/0
+    // used to pass the bare typeof gate and render as fabricated refs.
+    expect(isProjectPoolItem(EDGElESS)).toBe(true);
+    for (const bad of [1.5, -3, 0, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(isProjectPoolItem({ ...EDGElESS, number: bad })).toBe(false);
+    }
+    expect(
+      poolFromFeed({
+        projects: [
+          EDGElESS,
+          { ...EDGElESS, number: 1.5 },
+          { ...EDGElESS, number: -3 },
+          { ...EDGElESS, number: 0 },
+          { ...EDGElESS, number: Number.NaN },
+          { ...EDGElESS, number: Number.POSITIVE_INFINITY },
+          GRAPHED,
+        ] as unknown as never,
+      }),
+    ).toHaveLength(2);
+  });
+
   test("poolFromFeed is fail-soft: garbage sections yield no items, bad items drop", () => {
     expect(poolFromFeed(null)).toEqual([]);
     expect(poolFromFeed(undefined)).toEqual([]);
@@ -251,6 +273,63 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     expect(out.droppedPools).toBe(0);
     expect(out.droppedWindows).toBe(2);
     expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  // #3427: value-malformed windows (impossible resetsAt, negative
+  // limit/used, out-of-range percent) used to pass the type-only guard
+  // and mislead guidance/health. They now drop individually and count,
+  // exactly like shape failures; valid windows are untouched.
+  test("Feb-30 resetsAt window drops individually", () => {
+    const bad = { ...WINDOW, resetsAt: "2026-02-30T00:00:00Z" };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("negative used window drops individually", () => {
+    const bad = { ...WINDOW, used: -5 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("negative limit window drops individually", () => {
+    const bad = { ...WINDOW, limit: -100 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("percent -50 window drops individually", () => {
+    const bad = { ...WINDOW, percent: -50 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("percent 15000 window drops individually", () => {
+    const bad = { ...WINDOW, percent: 15000 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("valid windows are untouched and droppedWindows counts every drop", () => {
+    const feb30 = { ...WINDOW, name: "feb30", resetsAt: "2026-02-30T00:00:00Z" };
+    const negUsed = { ...WINDOW, name: "neg-used", used: -1 };
+    const negLimit = { ...WINDOW, name: "neg-limit", limit: -1 };
+    const negPct = { ...WINDOW, name: "neg-pct", percent: -50 };
+    const hugePct = { ...WINDOW, name: "huge-pct", percent: 15000 };
+    const pool = { ...POOL, windows: [WINDOW, feb30, negUsed, negLimit, negPct, hugePct] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(5);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+    expect(out.view.dropped).toEqual({ pools: 0, windows: 5, burn: 0 });
   });
 
   test("malformed burn segments drop individually", () => {
@@ -727,6 +806,87 @@ describe("feed chargesAttention gate + sanitization (#2439)", () => {
     const loaded = await loadFrom(feedWithCa([UNMATCHED]));
     expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
     expect(loaded?.chargesAttentionDropped).toBeUndefined();
+  });
+});
+
+describe("charge gates reject impossible rows (#3458)", () => {
+  const CHOICES = { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] };
+  const ROW = {
+    at: "2026-10-30",
+    label: "Mystery AI Inc",
+    amountUsd: 42.5,
+    method: "Visa …7535",
+    source: "plaid",
+  };
+  const UNMATCHED = {
+    merchant: "Mystery AI Inc",
+    normalized: "mystery ai",
+    amountUsd: 42.5,
+    at: "2026-10-30",
+    source: "plaid",
+  };
+  const baseFeed = (extra: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: CHOICES },
+    attention: [],
+    ...(extra as Record<string, unknown>),
+  });
+  const load = async (feed: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-3458-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feed));
+    return loadFeed(file);
+  };
+
+  test("isChargeRow rejects non-positive amounts and non-calendar dates, accepts a valid row", () => {
+    expect(isChargeRow(ROW)).toBe(true);
+    expect(isChargeRow({ ...ROW, amountUsd: -1 })).toBe(false);
+    expect(isChargeRow({ ...ROW, amountUsd: 0 })).toBe(false);
+    expect(isChargeRow({ ...ROW, at: "banana" })).toBe(false);
+    expect(isChargeRow({ ...ROW, at: "2026-02-30" })).toBe(false);
+  });
+
+  test("isUnmatchedCharge rejects non-positive amounts and non-calendar dates, accepts a valid row", () => {
+    expect(isUnmatchedCharge(UNMATCHED)).toBe(true);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: -5 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: 0 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: "banana" })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: "2026-02-30" })).toBe(false);
+  });
+
+  test("loadFeed drops impossible charges individually and surfaces chargesDropped", async () => {
+    const loaded = await load(
+      baseFeed({
+        charges: [
+          ROW,
+          { ...ROW, amountUsd: -1 },
+          { ...ROW, amountUsd: 0 },
+          { ...ROW, at: "banana" },
+          { ...ROW, at: "2026-02-30" },
+        ],
+      }),
+    );
+    expect(loaded).not.toBeNull();
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBe(4);
+  });
+
+  test("loadFeed drops impossible chargesAttention individually and surfaces chargesAttentionDropped", async () => {
+    const loaded = await load(
+      baseFeed({
+        chargesAttention: [
+          UNMATCHED,
+          { ...UNMATCHED, amountUsd: -1 },
+          { ...UNMATCHED, amountUsd: 0 },
+          { ...UNMATCHED, at: "banana" },
+          { ...UNMATCHED, at: "2026-02-30" },
+        ],
+      }),
+    );
+    expect(loaded).not.toBeNull();
+    expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
+    expect(loaded?.chargesAttentionDropped).toBe(4);
   });
 });
 

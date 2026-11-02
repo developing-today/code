@@ -1792,10 +1792,15 @@ impl Typing {
 }
 
 /// Terminal text from the world: control characters are dropped, so text from
-/// one participant cannot drive another participant's terminal.
+/// one participant cannot drive another participant's terminal. Unicode
+/// format characters (Cf, per the shared `crate::is_format_char` set) are
+/// dropped for the same reason: a bidi override or zero-width character in
+/// one participant's text could otherwise reorder or falsify the terminal
+/// output around it (design #3455). The accepted cost is that `ZWJ`-joined
+/// emoji render as separate glyphs here; the stored text is untouched.
 fn terminal_text(data: &str) -> String {
     data.chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
         .collect::<String>()
         .replace('\n', "\r\n")
 }
@@ -2953,6 +2958,21 @@ mod tests {
             terminal_text("a\x1b]52;c;AAAA\x07b\r\nc\td"),
             "a]52;c;AAAAb\r\nc\td"
         );
+    }
+
+    #[test]
+    fn terminal_text_drops_format_characters_but_keeps_layout() {
+        // Bidi overrides and zero-width characters never reach the terminal,
+        // even without any control character present (#3455 Phase 3b).
+        assert_eq!(terminal_text("a\u{202e}b"), "ab");
+        assert_eq!(terminal_text("a\u{200b}b"), "ab");
+        assert_eq!(terminal_text("a\u{feff}b"), "ab");
+        // The shared Cf set is the gate, not a bidi-only subset.
+        assert!(!terminal_text("\u{00ad}").chars().any(|c| c == '\u{00ad}'));
+        // Layout survivors are unchanged: LF/TAB are kept (as CRLF/TAB).
+        assert_eq!(terminal_text("a\nb\tc"), "a\r\nb\tc");
+        // Ordinary text, including non-joiner emoji bases, is byte-identical.
+        assert_eq!(terminal_text("naïve-✦サーバー"), "naïve-✦サーバー");
     }
 
     #[test]

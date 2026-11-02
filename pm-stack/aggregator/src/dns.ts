@@ -164,6 +164,10 @@ export function isDnsSection(v: unknown): v is DnsSection {
     // renderers cannot render.
     typeof s.totalAnnualListUsd === "number" &&
     Number.isFinite(s.totalAnnualListUsd) &&
+    // Money is bounded below as well as finite (#4226): a negative
+    // total renders as negative spend and records a negative
+    // snapshot value downstream.
+    s.totalAnnualListUsd >= 0 &&
     Array.isArray(s.entries) &&
     s.entries.length > 0 &&
     s.entries.every(
@@ -176,7 +180,10 @@ export function isDnsSection(v: unknown): v is DnsSection {
         // but a present value must be a finite number (#2412).
         ((e as DnsEntry).priceUsd === null ||
           (e as DnsEntry).priceUsd === undefined ||
-          (typeof (e as DnsEntry).priceUsd === "number" && Number.isFinite((e as DnsEntry).priceUsd))) &&
+          (typeof (e as DnsEntry).priceUsd === "number" &&
+            Number.isFinite((e as DnsEntry).priceUsd) &&
+            // A present price must also be non-negative (#4226).
+            (e as DnsEntry).priceUsd >= 0)) &&
         // status feeds summarizeDns buckets; an unknown/missing status
         // under-counts silently, so the gate owns the enum (#2412).
         ((e as DnsEntry).status === "active" ||
