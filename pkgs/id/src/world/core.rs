@@ -567,7 +567,9 @@ impl WorldCore {
                         events.last().is_none_or(|last| last.sequence == sequence)
                             && events
                                 .windows(2)
-                                .all(|pair| pair[1].sequence == pair[0].sequence + 1),
+                                .all(|pair| {
+                                    pair[0].sequence.checked_add(1) == Some(pair[1].sequence)
+                                }),
                         "journal checkpoint events are out of order"
                     );
                     core.sequence = sequence;
