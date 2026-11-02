@@ -121,12 +121,22 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 	a.mu.Lock()
 	a.progs = append(a.progs, p)
 	a.mu.Unlock()
-	go func() {
-		p.Wait()
-		a.remove(p)
-	}()
+	// Deregister when the session ends, not via p.Wait(): wish calls
+	// p.Run() — which initializes the channel Wait receives from — only
+	// after this handler returns, so an early Wait can block on a nil
+	// channel forever (and race with Run's initialization). The session
+	// always outlives the program (wish runs p.Run() synchronously in
+	// the session handler), so session-end pruning covers every session.
+	go a.watchSession(s.Context(), p)
 
 	return p
+}
+
+// watchSession removes p from the registry once ctx ends. It never touches
+// the program itself, so it is safe to start before the program runs.
+func (a *app) watchSession(ctx context.Context, p sender) {
+	<-ctx.Done()
+	a.remove(p)
 }
 
 func main() {
