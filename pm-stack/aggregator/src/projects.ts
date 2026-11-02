@@ -204,6 +204,7 @@ export async function fetchProjectPool(
 ): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
+  let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
   for (let page = 0; page < 10; page++) {
     const res = await fetchFn("https://api.github.com/graphql", {
       method: "POST",
@@ -219,9 +220,12 @@ export async function fetchProjectPool(
     const json: unknown = await res.json();
     if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
     out.push(...parseProjectItems(json));
-    const info = projectPageInfo(json);
-    if (!info.hasNextPage || !info.endCursor) break;
-    cursor = info.endCursor;
+    lastPageInfo = projectPageInfo(json);
+    if (!lastPageInfo.hasNextPage || !lastPageInfo.endCursor) break;
+    cursor = lastPageInfo.endCursor;
+  }
+  if (lastPageInfo?.hasNextPage && lastPageInfo.endCursor) {
+    throw new Error(`github project pool truncated at 10-page cap (totalCount: ${lastPageInfo.totalCount})`);
   }
   // Epic membership needs the whole pool (parents may sit on other
   // pages), so it resolves once over the aggregate, not per page.

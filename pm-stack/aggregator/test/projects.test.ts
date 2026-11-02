@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
+import { derivedProjectState, fetchProjectPool, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -70,6 +70,58 @@ const GQL = {
     },
   },
 };
+
+function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount = 25) {
+  return {
+    data: {
+      node: {
+        ...GQL.data.node,
+        items: {
+          ...GQL.data.node.items,
+          totalCount,
+          pageInfo: { hasNextPage, endCursor },
+        },
+      },
+    },
+  };
+}
+
+describe("fetchProjectPool pagination", () => {
+  test("throws rather than returning a partial pool when page ten has another page", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+    };
+
+    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
+    expect(calls).toBe(10);
+  });
+
+  test("returns every item from a finite multi-page pool", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify(projectPage(calls < 3, calls < 3 ? `cursor-${calls}` : null, 6)));
+    };
+
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(3);
+    expect(items).toHaveLength(6);
+  });
+
+  test("returns a single-page pool unchanged", async () => {
+    let calls = 0;
+    const fetchFn: typeof fetch = async () => {
+      calls++;
+      return new Response(JSON.stringify(projectPage(false, null, 3)));
+    };
+
+    const items = await fetchProjectPool("test-token", fetchFn);
+    expect(calls).toBe(1);
+    expect(items).toHaveLength(2);
+  });
+});
 
 const PROV = {
   board: "x",
