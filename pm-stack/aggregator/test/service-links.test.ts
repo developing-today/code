@@ -77,6 +77,16 @@ describe("service links render (#1136)", () => {
     expect(html).toContain("Grist ↗");
   });
 
+  test("roadmap grain links preserve the active view query (#1276, Codex P2 on PR #4013)", () => {
+    const q = "view=vw-1&vf.repo=developing-today%2Fcode";
+    const html = renderRoadmap(FIXTURE_ROADMAP, new Map(), PROV, "quarter", undefined, undefined, undefined, undefined, undefined, q);
+    expect(html).toContain(`href="/roadmap?h=month&${q}"`);
+    expect(html).toContain(`href="/roadmap?h=quarter&${q}"`);
+    const plain = renderRoadmap(FIXTURE_ROADMAP, new Map(), PROV);
+    expect(plain).toContain('href="/roadmap?h=month"');
+    expect(plain).not.toContain("vf.repo");
+  });
+
   test("item pages carry a Live services line", () => {
     const url = kaneoTaskUrl("w", "p", "t1");
     const html = renderItem("Card title", "kaneo:code/t1", [], [], new Map(), [], PROV, {
