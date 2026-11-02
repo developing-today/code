@@ -717,3 +717,206 @@ fn recovery_continues_past_a_json_named_subdirectory() {
     assert!(subdir.is_dir(), "the subdirectory stays in place");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- #4578: one filesystem identity contract for the intent store ---
+
+fn empty_file_store(tag: &str) -> (PathBufForTests, FileIntentStore) {
+    let dir = std::env::temp_dir().join(format!(
+        "id-currency-poc-intents-{tag}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = FileIntentStore::open(dir.clone()).expect("open store");
+    (dir, store)
+}
+
+fn canonical_name(conversion_id: u128) -> String {
+    format!("{conversion_id:032x}.json")
+}
+
+fn json_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .expect("read store dir")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn duplicate_copies_of_one_intent_reconcile_exactly_once() {
+    // The same record stored three times (canonical + two stray
+    // copies, e.g. after an operator backup/restore) is ONE intent:
+    // the listing yields it once and recovery reconciles it once.
+    let (dir, mut store, mut backend) = file_store_with_recorded_intent("dup4578");
+    let canonical = dir.join(canonical_name(777));
+    let bytes = std::fs::read(&canonical).expect("read canonical intent");
+    std::fs::write(dir.join("copy-a.json"), &bytes).expect("write copy a");
+    std::fs::write(dir.join("copy-b.json"), &bytes).expect("write copy b");
+
+    let listed = store.unresolved().expect("listing with duplicates");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].conversion_id, 777);
+    assert!(
+        store.unreadable_entries().is_empty(),
+        "identical duplicates are not unreadable entries"
+    );
+
+    let outcomes = reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit)
+        .expect("reconcile with duplicates");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
+    assert_eq!(backend.transfers_with_user_data_128(777).len(), 3);
+
+    // The state-advancing put canonicalized the store: the stray
+    // copies of the superseded record are gone, one file remains.
+    assert_eq!(json_files(&dir), vec![canonical]);
+    assert_eq!(
+        store
+            .get(777)
+            .expect("get after reconcile")
+            .map(|r| r.state),
+        Some(IntentState::Posted)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn misnamed_record_is_found_by_get_and_blocks_conflicting_prepare() {
+    // A parseable record stored ONLY under a non-canonical name is
+    // still the conversion's record: get() must find it, so
+    // prepare()'s never-replace guard cannot be bypassed into
+    // writing a conflicting canonical twin.
+    let (dir, mut store) = empty_file_store("misnamed4578");
+    let original = bare_record(
+        9,
+        vec![funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&original).expect("seed put");
+    let canonical = dir.join(canonical_name(9));
+    let misnamed = dir.join("misnamed.json");
+    std::fs::rename(&canonical, &misnamed).expect("rename to a non-canonical name");
+
+    assert_eq!(store.get(9).expect("get misnamed"), Some(original.clone()));
+
+    let mut executor = ConversionExecutor::new(funded_ledger(), store);
+    let mut conflicting = request();
+    conflicting.conversion_id = 9;
+    conflicting.transfer_ids = vec![701, 702, 703];
+    conflicting.amount_in = 5_000;
+    let error = executor
+        .prepare(&conflicting)
+        .expect_err("conflicting prepare must be refused");
+    assert!(
+        error.to_string().contains("already has a persisted intent"),
+        "unexpected prepare error: {error}"
+    );
+    // No canonical twin was written; the misnamed record is intact.
+    assert_eq!(json_files(&dir), vec![misnamed]);
+    assert_eq!(
+        executor.store.get(9).expect("get after refusal"),
+        Some(original)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn misnamed_only_record_refuses_conflicting_put_and_canonicalizes_matching_put() {
+    let (dir, mut store) = empty_file_store("put4578");
+    let original = bare_record(
+        9,
+        vec![funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&original).expect("seed put");
+    let canonical = dir.join(canonical_name(9));
+    let misnamed = dir.join("stray.json");
+    std::fs::rename(&canonical, &misnamed).expect("rename to a non-canonical name");
+
+    // A conflicting put over the misnamed record fails closed and
+    // writes nothing.
+    let conflicting = bare_record(
+        9,
+        vec![funding_transfer(502, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    let error = store
+        .put(&conflicting)
+        .expect_err("conflicting put must be refused");
+    assert!(
+        error.to_string().contains("refusing to write conversion 9"),
+        "unexpected put error: {error}"
+    );
+    assert_eq!(json_files(&dir), vec![misnamed.clone()]);
+
+    // A state-advancing put of the SAME record succeeds and
+    // canonicalizes: the record now lives only at its canonical
+    // path.
+    let mut advanced = original.clone();
+    advanced.state = IntentState::Posted;
+    store.put(&advanced).expect("state-advancing put");
+    assert_eq!(json_files(&dir), vec![canonical]);
+    assert_eq!(store.get(9).expect("get canonicalized"), Some(advanced));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn conflicting_copies_fail_closed_and_are_reported() {
+    // Two DIFFERENT records stored under one conversion_id: the
+    // identity is ambiguous. get()/put() fail closed, the listing
+    // skips the conversion and reports both copies, and other
+    // conversions reconcile normally.
+    let (dir, mut store, mut backend) = file_store_with_recorded_intent("conflict4578");
+    let record_a = bare_record(
+        11,
+        vec![funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&record_a).expect("seed canonical copy");
+    let canonical_11 = dir.join(canonical_name(11));
+    let record_b = bare_record(
+        11,
+        vec![funding_transfer(502, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    let (other_dir, mut other_store) = empty_file_store("conflict4578-b");
+    other_store.put(&record_b).expect("seed other copy");
+    let other_copy = dir.join("other.json");
+    std::fs::copy(other_dir.join(canonical_name(11)), &other_copy).expect("plant conflicting copy");
+    let _ = std::fs::remove_dir_all(&other_dir);
+
+    let get_error = store.get(11).expect_err("ambiguous get must fail closed");
+    assert!(
+        get_error.to_string().contains("conflicting records"),
+        "unexpected get error: {get_error}"
+    );
+    let mut advanced_a = record_a.clone();
+    advanced_a.state = IntentState::Posted;
+    assert!(
+        store.put(&advanced_a).is_err(),
+        "ambiguous put must fail closed"
+    );
+
+    let listed = store
+        .unresolved()
+        .expect("listing with a conflicted conversion");
+    assert_eq!(
+        listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(),
+        vec![777],
+        "the conflicted conversion is skipped, the good one is listed"
+    );
+    let reported: Vec<_> = store
+        .unreadable_entries()
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect();
+    assert!(
+        reported.contains(&canonical_11),
+        "canonical copy reported: {reported:?}"
+    );
+    assert!(
+        reported.contains(&other_copy),
+        "stray copy reported: {reported:?}"
+    );
+
+    let outcomes = reconcile(&mut backend, &mut store, RecoveryPolicy::Resubmit)
+        .expect("reconcile past the conflicted conversion");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
