@@ -40,6 +40,22 @@ impl IntentState {
     pub fn is_unresolved(self) -> bool {
         matches!(self, IntentState::Recorded | IntentState::Submitted)
     }
+
+    /// Deterministic precedence between copies of one record that
+    /// differ only in state (#4578): the lifecycle advances
+    /// `Recorded` -> `Submitted`, and a terminal decision outranks an
+    /// in-flight state — `Posted` (a ledger fact) above `Abandoned`
+    /// (a decision not to resubmit), so a decision recorded without
+    /// knowledge of a completed posting never masks it, and an
+    /// abandon decision is never undone by an older in-flight copy.
+    pub fn precedence(self) -> u8 {
+        match self {
+            IntentState::Recorded => 0,
+            IntentState::Submitted => 1,
+            IntentState::Abandoned => 2,
+            IntentState::Posted => 3,
+        }
+    }
 }
 
 /// The write-ahead record for one conversion.
@@ -261,15 +277,64 @@ impl IntentScan {
             .collect()
     }
 
+    /// The scanned entry sitting at `path`, whatever conversion its
+    /// content names (#4578): a conversion's canonical file can hold
+    /// ANOTHER conversion's record (a misnamed write or an operator
+    /// restore), and that occupancy is a fact about the path, not
+    /// about the content identity `copies_for` groups by.
+    fn entry_at(&self, path: &Path) -> Option<&ScannedIntent> {
+        self.entries.iter().find(|entry| entry.path == path)
+    }
+
     /// The one distinct record among `copies`, or `None` when the
     /// copies disagree — an ambiguous identity (#4578).
+    ///
+    /// Copies that differ ONLY in state are one record at its most
+    /// advanced state (by [`IntentState::precedence`]): a
+    /// state-advancing `put` writes the new canonical record before
+    /// removing superseded copies, so a crash — or a failed removal —
+    /// in between leaves exactly that residue, and the conversion
+    /// must stay readable and reconcilable instead of failing closed
+    /// forever (Codex P2 on PR #4622). Copies that differ in any
+    /// other field are genuinely conflicting records: ambiguous.
     fn distinct(copies: &[&ScannedIntent]) -> Option<IntentRecord> {
         let first = &copies.first()?.record;
-        copies
-            .iter()
-            .all(|copy| copy.record == *first)
-            .then(|| first.clone())
+        let mut resolved = first.clone();
+        for copy in copies {
+            let mut comparable = copy.record.clone();
+            comparable.state = first.state;
+            if comparable != *first {
+                return None;
+            }
+            if copy.record.state.precedence() > resolved.state.precedence() {
+                resolved.state = copy.record.state;
+            }
+        }
+        Some(resolved)
     }
+}
+
+/// The fail-closed error for a canonical file that currently stores
+/// a DIFFERENT conversion's record (#4578, Codex P1 on PR #4622):
+/// treating the conversion as absent would let `prepare()` pass its
+/// never-replace guard, and overwriting would destroy the occupant's
+/// only write-ahead record.
+fn canonical_occupant_error(
+    conversion_id: u128,
+    canonical: &Path,
+    occupant_id: u128,
+) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "intent store: canonical intent file {} for conversion {conversion_id} \
+             currently stores conversion {occupant_id}'s record; refusing to treat \
+             conversion {conversion_id} as absent or overwrite the occupant — \
+             reconcile the file manually (its content names the conversion it \
+             belongs to)",
+            canonical.display()
+        ),
+    )
 }
 
 /// The fail-closed error for an ambiguous conversion identity: two
@@ -299,6 +364,19 @@ impl IntentStore for FileIntentStore {
         // that differs in anything else is a conflicting record, and
         // a conflicting put fails closed and writes nothing.
         let scan = self.scan()?;
+        // Canonical occupancy (#4578): a record belonging to another
+        // conversion sitting at this conversion's canonical path is
+        // never overwritten — it may be that conversion's only
+        // write-ahead record.
+        if let Some(occupant) = scan.entry_at(&canonical) {
+            if occupant.record.conversion_id != record.conversion_id {
+                return Err(canonical_occupant_error(
+                    record.conversion_id,
+                    &canonical,
+                    occupant.record.conversion_id,
+                ));
+            }
+        }
         let copies = scan.copies_for(record.conversion_id);
         let mut stray_paths: Vec<PathBuf> = Vec::new();
         if !copies.is_empty() {
@@ -382,6 +460,20 @@ impl IntentStore for FileIntentStore {
                     bad.reason
                 ),
             ));
+        }
+        // Canonical occupancy (#4578): if this conversion's
+        // canonical file holds another conversion's record, the
+        // conversion is NOT absent — answering None here would let
+        // prepare()'s never-replace guard pass and put() overwrite
+        // the occupant's only record. Fail closed instead.
+        if let Some(occupant) = scan.entry_at(&canonical) {
+            if occupant.record.conversion_id != conversion_id {
+                return Err(canonical_occupant_error(
+                    conversion_id,
+                    &canonical,
+                    occupant.record.conversion_id,
+                ));
+            }
         }
         let copies = scan.copies_for(conversion_id);
         if copies.is_empty() {

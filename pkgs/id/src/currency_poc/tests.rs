@@ -920,3 +920,94 @@ fn conflicting_copies_fail_closed_and_are_reported() {
     assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- #4578 / PR #4622 Codex findings: canonical occupancy (P1) and
+// --- state-only divergence after an interrupted canonicalization (P2)
+
+#[test]
+fn canonical_file_holding_another_conversions_record_blocks_get_and_put() {
+    // Conversion 9's only record sits under conversion 10's canonical
+    // file name (a misnamed write / operator restore). Conversion 10
+    // must NOT read as absent (that would pass prepare()'s
+    // never-replace guard) and must NOT be written over the occupant.
+    let (dir, mut store) = empty_file_store("occupant4578");
+    let occupant = bare_record(
+        9,
+        vec![funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&occupant).expect("seed occupant");
+    let misplaced = dir.join(canonical_name(10));
+    std::fs::rename(dir.join(canonical_name(9)), &misplaced).expect("misplace occupant");
+    let occupant_bytes = std::fs::read(&misplaced).expect("read occupant bytes");
+
+    let get_error = store.get(10).expect_err("occupied get must fail closed");
+    assert!(
+        get_error.to_string().contains("currently stores conversion 9"),
+        "unexpected get error: {get_error}"
+    );
+    let intruder = bare_record(
+        10,
+        vec![funding_transfer(601, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    let put_error = store.put(&intruder).expect_err("occupied put must fail closed");
+    assert!(
+        put_error.to_string().contains("currently stores conversion 9"),
+        "unexpected put error: {put_error}"
+    );
+    assert_eq!(
+        std::fs::read(&misplaced).expect("re-read occupant"),
+        occupant_bytes,
+        "the occupant's only record is byte-identical after both refusals"
+    );
+    // The occupant itself is unaffected: content identity still finds
+    // it, and the listing yields it exactly once.
+    assert_eq!(store.get(9).expect("get occupant"), Some(occupant));
+    let listed = store.unresolved().expect("listing with an occupant");
+    assert_eq!(listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(), vec![9]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn state_only_divergent_copies_resolve_to_the_most_advanced_state() {
+    // A state-advancing put writes the new canonical record BEFORE
+    // removing superseded copies; a crash in between leaves copies
+    // that differ only in state. That residue is one record at its
+    // most advanced state — readable and listed once — not an
+    // ambiguous identity that bricks the conversion.
+    let (dir, mut store) = empty_file_store("states4578");
+    let recorded = bare_record(
+        11,
+        vec![funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&recorded).expect("seed recorded");
+    // Plant the post-crash residue by hand: the canonical file holds
+    // the Submitted copy, a stray still holds the Recorded copy.
+    let mut submitted = recorded.clone();
+    submitted.state = IntentState::Submitted;
+    let (other_dir, mut other_store) = empty_file_store("states4578-b");
+    other_store.put(&submitted).expect("seed submitted");
+    std::fs::copy(other_dir.join(canonical_name(11)), dir.join(canonical_name(11)))
+        .expect("plant advanced canonical copy");
+    let _ = std::fs::remove_dir_all(&other_dir);
+    std::fs::copy(dir.join(canonical_name(11)), dir.join("stray.json"))
+        .expect("plant stray copy");
+    // Downgrade the stray to the Recorded copy's bytes: rewrite it
+    // from a fresh store holding only the Recorded record.
+    let (old_dir, mut old_store) = empty_file_store("states4578-c");
+    old_store.put(&recorded).expect("seed recorded copy");
+    std::fs::copy(old_dir.join(canonical_name(11)), dir.join("stray.json"))
+        .expect("plant recorded stray copy");
+    let _ = std::fs::remove_dir_all(&old_dir);
+
+    assert_eq!(store.get(11).expect("get diverged copies"), Some(submitted));
+    let listed = store.unresolved().expect("listing diverged copies");
+    assert_eq!(listed.len(), 1, "one conversion, listed once");
+    assert_eq!(listed[0].state, IntentState::Submitted);
+    // And a state-advancing put still canonicalizes the residue away.
+    let mut posted = recorded.clone();
+    posted.state = IntentState::Posted;
+    store.put(&posted).expect("advancing put over the residue");
+    assert_eq!(json_files(&dir), vec![dir.join(canonical_name(11))]);
+    assert_eq!(store.get(11).expect("get canonicalized"), Some(posted));
+    let _ = std::fs::remove_dir_all(&dir);
+}
