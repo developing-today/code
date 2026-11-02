@@ -362,6 +362,49 @@ export const richSchema = new Schema({
           return ["pre", { "data-front-matter": node.attrs.text as string }];
         },
       },
+      // #1347: footnote reference atom carrying `label`; the markdown
+      // codec reads/writes it (markdown.rs). Display shows the
+      // reference as inert text — never rendered as live markup.
+      footnote_reference: {
+        inline: true,
+        group: "inline",
+        atom: true,
+        selectable: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "span[data-footnote-reference]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteReference ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          const label = node.attrs.label as string;
+          return ["span", { "data-footnote-reference": label }, `[^${label}]`];
+        },
+      },
+      // #1347: footnote definition block carrying `label` plus block
+      // children (paragraphs, lists, code blocks per #1031); the
+      // markdown codec reads/writes it. The label travels in the data
+      // attribute only — children render normally.
+      footnote_definition: {
+        group: "block",
+        content: "block+",
+        defining: true,
+        attrs: { label: { default: "" } },
+        parseDOM: [
+          {
+            tag: "div[data-footnote-definition]",
+            getAttrs(dom) {
+              return { label: (dom as HTMLElement).dataset.footnoteDefinition ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["div", { "data-footnote-definition": node.attrs.label as string }, 0];
+        },
+      },
     }),
   marks: basicSchema.spec.marks.append({
     strikethrough: {
