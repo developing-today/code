@@ -96,6 +96,7 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts } from "./render.ts";
+import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
@@ -263,12 +264,6 @@ async function discussTitle(objectRef: string): Promise<{ title: string; githubR
   const row = rows.find((r) => r.subject === objectRef);
   if (row) return { title: `Comments — ${row.title}`, githubRefs: row.links.map((l) => l.ref) };
   return { title: `Comments — ${objectRef}`, githubRefs: [] };
-}
-
-async function readJsonBody(req: Request): Promise<unknown> {
-  const text = await req.text();
-  if (text.length > 100_000) throw new Error("body too large");
-  return JSON.parse(text);
 }
 
 function json(body: unknown, status = 200): Response {

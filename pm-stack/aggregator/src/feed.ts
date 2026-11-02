@@ -11,7 +11,15 @@ import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
-import { arrayOf, isFiniteNumber, isIsoDate, isRecord, isStringArray, isTimestampNotFuture } from "./validate.ts";
+import {
+  arrayOf,
+  isFiniteNumber,
+  isIsoDate,
+  isNonNegative,
+  isRecord,
+  isStringArray,
+  isTimestampNotFuture,
+} from "./validate.ts";
 import type {
   AaFeedSection,
   BurnSegment,
@@ -55,6 +63,9 @@ export interface FleetFeed {
   /** Rows loadFeed's charges sanitization dropped (#2445), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   chargesDropped?: number;
+  /** PAYG lines loadFeed's sanitization dropped (#2450), set only
+   * when drops occurred; absent on raw parsed feeds and clean loads. */
+  paygDropped?: number;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -191,7 +202,60 @@ function isGoalMeasurement(v: unknown): boolean {
     Array.isArray(g.linedUp) &&
     Array.isArray(g.stalled) &&
     Array.isArray(g.gaps) &&
+    // #2417: todayFromSection dereferences every lined-up / stalled
+    // element, so a non-record element must fail here, at the gate —
+    // presence of the arrays alone let [null] through to a TypeError.
+    g.linedUp.every(isRecord) &&
+    g.stalled.every(isRecord) &&
     (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
+  );
+}
+
+/**
+ * Element gates for the section's remaining arrays (#2417). The
+ * section gate used to check only that these arrays exist; poisoned
+ * elements (null, primitives, shapeless objects) then reached
+ * consumers that dereference them — buildAttention on tier items,
+ * the projects view on dependencies, the today view on actions —
+ * and threw TypeErrors instead of taking the designed invalid-section
+ * fallback. The rules stay at the depth consumers need:
+ *
+ * - Tier items: a plain record with a string `id`. Deeper fields are
+ *   the per-item sanitizer's job (src/tier-items.ts, #1290) — a
+ *   malformed extension drops there, never the item, so the gate
+ *   must not reject on them.
+ * - Dependencies: the declared consumed shape — required string
+ *   `task`, `status` in the DependencyRef union, and the optional
+ *   ref/worker fields string-typed when present.
+ * - Actions: the four rendered string fields (at, kind, target,
+ *   summary).
+ */
+function isTierElement(v: unknown): boolean {
+  return isRecord(v) && typeof v.id === "string";
+}
+
+const DEPENDENCY_STATUSES: readonly string[] = ["in-progress", "queued", "stalled", "done", "unknown"];
+
+function isDependencyElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.task === "string" &&
+    typeof v.status === "string" &&
+    DEPENDENCY_STATUSES.includes(v.status) &&
+    (v.ref === undefined || typeof v.ref === "string") &&
+    (v.taskRef === undefined || typeof v.taskRef === "string") &&
+    (v.workerSessionId === undefined || typeof v.workerSessionId === "string") &&
+    (v.workerLabel === undefined || typeof v.workerLabel === "string")
+  );
+}
+
+function isActionElement(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    typeof v.at === "string" &&
+    typeof v.kind === "string" &&
+    typeof v.target === "string" &&
+    typeof v.summary === "string"
   );
 }
 
@@ -231,11 +295,15 @@ export function orchestrationSectionProblem(v: unknown): string | null {
   if (!isProvenance(s.provenance)) return "provenance";
   if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
   if (!Array.isArray(s.tiers.needsDrew)) return "tiers.needsDrew";
+  if (!s.tiers.needsDrew.every(isTierElement)) return "tiers.needsDrew (per-item shape)";
   if (!Array.isArray(s.tiers.needsOrchestrator)) return "tiers.needsOrchestrator";
+  if (!s.tiers.needsOrchestrator.every(isTierElement)) return "tiers.needsOrchestrator (per-item shape)";
   if (!Array.isArray(s.dependencies)) return "dependencies";
+  if (!s.dependencies.every(isDependencyElement)) return "dependencies (per-dependency shape)";
   if (!Array.isArray(s.goals)) return "goals";
   if (!s.goals.every(isGoalMeasurement)) return "goals (per-goal shape)";
   if (!Array.isArray(s.actions)) return "actions";
+  if (!s.actions.every(isActionElement)) return "actions (per-action shape)";
   return null;
 }
 
@@ -404,15 +472,20 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-/** One historical burn segment as renderQuota maps it (#2429). */
+/** One historical burn segment as renderQuota maps it (#2429).
+ *  Values, not just types (#3428): from/to must be real ISO calendar
+ *  dates, tokens may not be negative, and the range may not be
+ *  inverted — a segment failing any of these is not measured history
+ *  and drops individually in sanitizeQuotaView (#2429 counting). */
 export function isBurnSegment(v: unknown): v is BurnSegment {
   if (!isRecord(v)) return false;
   return (
     typeof v.provider === "string" &&
     typeof v.pool === "string" &&
-    typeof v.from === "string" &&
-    typeof v.to === "string" &&
-    isFiniteNumber(v.tokens)
+    isIsoDate(v.from) &&
+    isIsoDate(v.to) &&
+    isNonNegative(v.tokens) &&
+    Date.parse(v.from) <= Date.parse(v.to)
   );
 }
 
@@ -564,6 +637,51 @@ export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
   return { rows, dropped: v.length - rows.length };
 }
 
+/** A PAYG line safe for both the attention derivation and the quota renderer. */
+export function isPaygLine(v: unknown): v is PaygLine {
+  if (!isRecord(v)) return false;
+  const nullableFinite = (value: unknown) => value === null || isFiniteNumber(value);
+  const isEstimate = (value: unknown) => {
+    if (value === null) return true;
+    return (
+      isRecord(value) &&
+      isFiniteNumber(value.low) &&
+      isFiniteNumber(value.high) &&
+      typeof value.period === "string" &&
+      (value.note === undefined || typeof value.note === "string")
+    );
+  };
+  return (
+    typeof v.id === "string" &&
+    typeof v.label === "string" &&
+    nullableFinite(v.accruedUsd) &&
+    (v.collectedUsd === undefined || nullableFinite(v.collectedUsd)) &&
+    (v.estimate === undefined || isEstimate(v.estimate)) &&
+    nullableFinite(v.unbilledUsd) &&
+    typeof v.note === "string" &&
+    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.sourceClass === "api" ||
+      v.sourceClass === "console" ||
+      v.sourceClass === "manual" ||
+      v.sourceClass === "estimate" ||
+      v.sourceClass === "invoice")
+  );
+}
+
+export interface PaygSanitization {
+  /** Sanitized rows, or undefined when the optional section is absent/dropped whole. */
+  rows?: PaygLine[];
+  dropped: number;
+}
+
+/** Drop malformed PAYG rows at the shared feed boundary (#2450). */
+export function sanitizePayg(v: unknown): PaygSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isPaygLine);
+  return { rows, dropped: v.length - rows.length };
+}
+
 export async function loadFeed(path: string): Promise<FleetFeed | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -581,6 +699,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const charges =
       parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    const payg = sanitizePayg(parsed.payg);
     // Charges rows get the same drop-and-count treatment at this same
     // shared gate (#2445): the section is optional, so absence stays
     // absent; a non-array section drops whole (counted as one dropped
@@ -596,8 +715,14 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
         chargesPart = { charges: rows.values, ...(rows.dropped > 0 ? { chargesDropped: rows.dropped } : {}) };
       }
     }
+    // The raw optional PAYG section may be malformed or absent. Remove
+    // it (and any stale count) before projecting only the sanitized rows
+    // and this load's own drop count.
+    const feed = { ...parsed };
+    delete feed.payg;
+    delete feed.paygDropped;
     return {
-      ...parsed,
+      ...feed,
       meta,
       quota: san.view,
       quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
@@ -605,6 +730,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(payg.rows !== undefined ? { payg: payg.rows } : {}),
+      ...(payg.dropped > 0 ? { paygDropped: payg.dropped } : {}),
       ...chargesPart,
     };
   } catch {

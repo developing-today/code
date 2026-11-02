@@ -431,19 +431,54 @@ Everything defaults to **fixtures** and works with no configuration:
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
-## What each facet reads
+## Capability provenance matrix (#1200)
 
-| Facet            | Live reader (when `PM_AGG_SOURCE=live`)                                                                                                | Fallback                            |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| Board            | Kaneo REST (`/api/task/tasks/<project>`, all four projects) + registry links                                                           | fixtures                            |
-| Roadmap          | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`) + registry links                                                                 | fixtures (the real Grist seed rows) |
-| Registry links   | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows                                                            | Kaneo external links / text refs    |
-| Items (refs)     | Projector `GET /items?refs=…`                                                                                                          | fixtures                            |
-| Comments         | Projector `GET /comments?refs=…`                                                                                                       | fixtures                            |
-| Quota (#851)     | Fleet feed file (`fleet-feed.json`; see "The fleet feed" below)                                                                        | fixtures when no feed exists        |
-| Attention (#852) | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed                                                           | fixtures when neither is reachable  |
-| DNS (#906)       | Fleet feed `dns` section, parsed collector-side from the #902 register                                                                 | fixtures when no section exists     |
-| Registry (#906)  | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file | fixtures when the feed is absent    |
+The single source of truth for what the aggregator reads, facet by
+facet. **Live source** is what the facet reads in the deployed
+configuration (`PM_AGG_SOURCE=live`, rendered by `install.sh`;
+`PM_PROJECTOR_URL` pinned by the NixOS module). **Deployment** states
+what the stack definition declares — configuration, not observed
+runtime; the one observed check on record is dated in the notes under
+the table. Everything else in this README and in `program.ts` must
+agree with this table; `scripts/check-provenance-matrix.ts` verifies
+the load-bearing claims against the code and configuration (see
+"Keeping the matrix honest" below).
+
+| Facet | Live source (provenance) | Fallback | Deployment |
+| ----- | ------------------------ | -------- | ---------- |
+| Board | Kaneo REST (`/api/task/tasks/<project>`, all four projects), enriched with projector registry links | fixtures | Kaneo container (compose, `pm-stack/`) |
+| Roadmap | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`), enriched with projector registry links | fixtures (the real Grist seed rows) | Grist container (compose, `pm-stack/`) |
+| Registry links | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows | Kaneo external links / text refs | projector (below) |
+| Items (refs) | Fleet feed's GitHub Project pool FIRST (#910 stage 5); refs outside the pool resolve via projector `GET /items?refs=…` | fixtures, per ref | feed collector (sandbox) + projector |
+| Comments (GitHub projection) | Projector `GET /comments?refs=…` | fixtures | projector (below) |
+| Dashboard comments | Aggregator-local store (`PM_AGG_COMMENTS_FILE`, default `./comments.json`) — written by the dashboard itself, never projected | none (local file) | aggregator unit |
+| Quota (#851) | Fleet feed file (`fleet-feed.json`), overlaid by the quota gatherer's `quota-current.json` | fixtures when no feed exists | collector (sandbox) + gatherer timer |
+| Attention (#852) | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed | fixtures when neither is reachable | OpenCode servers (both hosts) |
+| DNS (#906) | Fleet feed `dns` section, parsed collector-side from the #902 register | fixtures when no section exists | collector (sandbox) |
+| Registry (#906) | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file | fixtures when the feed is absent | aggregator unit + collector |
+| **Projector** (service) | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it |
+| **Pad** (service) | — (the aggregator reads no Pad data; Pad is not a facet source) | — | **Deployed as the planning layer only**: Pad container (compose, `pm-stack/pad/`); named here so its absence from the facet rows is a stated fact, not an omission |
+
+Observed runtime (checked 2026-11-02 by the task 4902 worker):
+`systemctl --user is-active pm-projector pm-aggregator` → both
+`active`; the projector's `/health` answered `ok` with 8,134 items
+and 41,169 comments projected. That is a dated observation, not a
+standing claim — re-run the commands before citing it as current.
+
+### Keeping the matrix honest
+
+```bash
+bun run scripts/check-provenance-matrix.ts
+```
+
+The check derives the load-bearing facts from the configuration and
+code — the `PM_PROJECTOR_URL` pin and the `pm-projector` unit in
+`nixos/services/pm-stack/default.nix`, `PM_AGG_SOURCE=live` in
+`install.sh`, the reader wiring in `src/sources/live.ts` (pool-first
+items, projector comments) — and fails if this matrix, the pm-stack
+README pointer, or `/program` (`src/program.ts`) contradicts them.
+Run it after changing any facet's source, the projector's deployment,
+or the matrix itself.
 
 The projector's wire schema is its `schema.sql` (Session J, PR #859):
 snake_case fields, `state` is only `open|closed` with `merged` as a
@@ -601,24 +636,29 @@ projector-ized live per-source feeds.
 
 ## What is fixture-backed vs live
 
-- **Fixture-backed today:** nothing, when the stack is up — board,
-  roadmap, items, comments, quota, and attention all read live
-  sources, each falling back to fixtures independently when its
-  source is unreachable (the fixtures are shaped like the live
-  readers' output and sit behind the same `Source` interface,
-  `src/source.ts`). Roadmap fixtures are
-  the real Grist seed rows; the design record's known refs (#752, #754,
-  #762, #763, nix #501–#508, opencode #365) are real; the rest are
-  illustrative.
-- **Live-capable today:** board (Kaneo), roadmap (Grist), and — since
-  Session J's projector landed (PR #859) — registry links, live item
-  state, and the comment projection via `PM_PROJECTOR_URL`
-  (default `http://127.0.0.1:7801`). Each facet falls back to fixtures
-  independently when its service is unreachable. The live board is the
-  curated in-flight set (in-progress / in-review / recent done columns;
-  the to-do backlog is excluded). Kaneo project slugs map to repos as
-  in `pm-stack/kaneo-projects.json` (Session H): `code`, `opencode`,
-  `openchamber` under `developing-today/`, `nix` under `dezren39/`.
+Per the capability provenance matrix above: in the deployed
+configuration nothing is fixture-backed by default — every facet
+reads its live source, and each falls back to fixtures independently
+when its source is unreachable (the fixtures are shaped like the
+live readers' output and sit behind the same `Source` interface,
+`src/source.ts`). Two facets deserve the explicit sentence the
+matrix's brevity drops:
+
+- **Items** resolve pool-first: the fleet feed's GitHub Project pool
+  is the primary source (#910 stage 5), the projector serves refs
+  outside the pool, and fixtures are the last resort per ref.
+- **Comments** (the GitHub projection) read live from the projector,
+  which is a deployed service of this stack — see the matrix's
+  Projector row for the deployment evidence and the dated observed
+  check. Roadmap fixtures are the real Grist seed rows; the design
+  record's known refs (#752, #754, #762, #763, nix #501–#508,
+  opencode #365) are real; the rest are illustrative.
+
+The live board is the curated in-flight set (in-progress / in-review
+/ recent done columns; the to-do backlog is excluded). Kaneo project
+slugs map to repos as in `pm-stack/kaneo-projects.json` (Session H):
+`code`, `opencode`, `openchamber` under `developing-today/`, `nix`
+under `dezren39/`.
 
 ## Honesty + freshness (#1139, #1267, #1138)
 

@@ -452,7 +452,9 @@ export function refKey(ref: GhRef): RefKey {
 export function parseRef(key: RefKey): GhRef {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(key);
   if (!m) throw new Error(`not a repo-qualified ref: ${key}`);
-  return { repo: m[1], number: Number(m[2]) };
+  const number = Number(m[2]);
+  if (!Number.isSafeInteger(number)) throw new Error(`ref number is not a safe integer: ${key}`);
+  return { repo: m[1], number };
 }
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;

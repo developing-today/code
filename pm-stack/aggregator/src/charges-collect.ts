@@ -116,7 +116,7 @@ export function mergeChargeRows(autoRows: ChargeRow[], handFedRows: ChargeRow[])
 }
 
 /** Stable identity of one unmatched charge for the surfaced-once state. */
-export function unmatchedKey(u: UnmatchedCharge): string {
+export function unmatchedKey(u: Pick<UnmatchedCharge, "normalized" | "amountUsd" | "at">): string {
   return `${u.normalized}|${u.amountUsd.toFixed(2)}|${u.at}`;
 }
 

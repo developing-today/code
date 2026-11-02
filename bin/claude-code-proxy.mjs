@@ -503,7 +503,9 @@ const chains = new Map();
 const enqueue = (key, job) => {
   const prev = chains.get(key) || Promise.resolve();
   const run = prev.then(job, job);
-  chains.set(key, run.catch(() => {}));
+  const stored = run.catch(() => {});
+  chains.set(key, stored);
+  stored.then(() => { if (chains.get(key) === stored) chains.delete(key); });
   return run;
 };
 
@@ -700,7 +702,8 @@ const server = http.createServer((req, res) => {
       endpoint: '/v1/chat/completions',
       sessions: {
         live: [...liveSessions.values()].filter(s => !s.dead).length,
-        stored: sessionStore.size
+        stored: sessionStore.size,
+        chains: chains.size
       }
     }, null, 2));
     return;

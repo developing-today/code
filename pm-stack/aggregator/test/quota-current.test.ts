@@ -647,3 +647,121 @@ describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
     expect(main.windows[0].percent).toBe(11);
   });
 });
+
+describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
+  test("a fresh ok read at 150% does not wall the pool: the window drops and prior windows stand", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ serviceId: "anthropic:claude-pro", windows: [win("weekly", 150, iso(5 * 60_000))] })]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(poolOut.state).toBe("healthy");
+    expect(poolOut.freshness?.state).toBe("ok");
+    expect(out.choices.doNotStart).not.toContain("anthropic:claude-pro");
+  });
+
+  test("a fresh ok read at -20% drops the same way instead of publishing negative usage", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ serviceId: "anthropic:claude-pro", windows: [win("weekly", -20, iso(5 * 60_000))] })]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 68]]);
+    expect(poolOut.state).toBe("healthy");
+  });
+
+  test("a mixed entry applies only its in-range windows", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "anthropic:claude-pro",
+          windows: [win("5h", 42, iso(5 * 60_000)), win("weekly", 150, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([["5-hour", 42]]);
+  });
+
+  test("the boundary values 0 and 100 stay usable", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "anthropic:claude-pro",
+          windows: [win("5h", 0, iso(5 * 60_000)), win("weekly", 100, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 0],
+      ["weekly", 100],
+    ]);
+  });
+
+  describe("overlayTursoUsage percent gate", () => {
+    const tursoSvc = (): SaasService => ({
+      id: "turso",
+      name: "Turso",
+      group: "database",
+      plan: "Starter Free $0",
+      status: "active",
+      metrics: [{ id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true }],
+      paygEstimate: null,
+      measuredAt: "2026-10-20T00:00:00.000Z",
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b)",
+      nextDate: "2026-10-31 cycle end",
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+    });
+    const tursoPct = (pct: unknown) => {
+      const at = iso(5 * 60_000);
+      const out = overlayTursoUsage(
+        [tursoSvc()],
+        file([
+          entry({
+            serviceId: "turso",
+            providerId: "turso",
+            source: "turso-api",
+            measuredAt: at,
+            windows: [
+              {
+                name: "databases",
+                value: 3,
+                pctOfLimit: pct as number,
+                valueLabel: null,
+                windowSeconds: 2_678_400,
+                resetsAt: "2026-11-01T04:00:00.000Z",
+                measuredAt: at,
+                source: "turso-api",
+                state: "ok" as const,
+              },
+            ],
+          }),
+        ]),
+        NOW,
+      );
+      return out[0].metrics.find((m) => m.id === "databases")!;
+    };
+
+    test("percent is omitted for out-of-range or non-numeric pctOfLimit, present in range", () => {
+      for (const bad of [150, -20, "42", Number.NaN]) {
+        const metric = tursoPct(bad);
+        expect(metric.used).toBe(3);
+        expect(metric).not.toHaveProperty("percent");
+      }
+      expect(tursoPct(42).percent).toBe(42);
+      expect(tursoPct(0).percent).toBe(0);
+      expect(tursoPct(100).percent).toBe(100);
+    });
+  });
+});

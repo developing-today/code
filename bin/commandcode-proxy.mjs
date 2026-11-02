@@ -812,7 +812,9 @@ const acp = {
       () => this.runChatLocked({ sessionKey, model, firstPrompt, deltaPrompt, ephemeral, onDelta, agency, lockKey }),
       () => this.runChatLocked({ sessionKey, model, firstPrompt, deltaPrompt, ephemeral, onDelta, agency, lockKey })
     );
-    this.locks.set(lockKey, run.catch(() => {}));
+    const stored = run.catch(() => {});
+    this.locks.set(lockKey, stored);
+    stored.then(() => { if (this.locks.get(lockKey) === stored) this.locks.delete(lockKey); });
     return run;
   },
 
@@ -870,6 +872,7 @@ const server = http.createServer((req, res) => {
         pid: acp.proc ? acp.proc.pid : null,
         starts: acp.starts,
         liveThreads: acp.liveSessions.size,
+        locks: acp.locks.size,
         storedMappings: sessionStore.size
       }
     }, null, 2));
