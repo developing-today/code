@@ -897,6 +897,30 @@ mod tests {
     }
 
     #[test]
+    fn version_zero_snapshot_is_refused_before_any_entry() {
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let source = source_of(&key);
+        let mut receiver = receiver(&dir, &key);
+        receiver.begin_session(NONCE);
+        // Version 0 is below the supported journal range: acceptance
+        // must refuse it, because a committed v0 journal is one
+        // validate_committed_journal rejects at the next open -
+        // accepting it would brick the replica (and destroy any valid
+        // journal it replaced).
+        let envelope =
+            ReplicationEnvelope::snapshot(WORLD, source, 0, NONCE, [0; 32], journal_payload(0))
+                .unwrap();
+        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            ReplicationError::UnsupportedJournalVersion(0).to_string()
+        );
+        assert_eq!(receiver.committed_cursor(), None);
+        assert_eq!(receiver.read_journal().unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
     fn oversized_payload_is_refused() {
         let dir = TempDir::new().unwrap();
         let key = signing_key(1);
