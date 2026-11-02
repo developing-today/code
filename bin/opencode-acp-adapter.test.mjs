@@ -260,3 +260,22 @@ test('session/cancel aborts on the serve and the prompt resolves cancelled', asy
     'stub serve saw POST abort',
   );
 });
+
+test('a cancel arriving after a finished prompt does not mark the next prompt cancelled (#4618)', async (t) => {
+  const { acp } = await setup(t, textEvents());
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const first = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'first' }],
+  });
+  assert.equal(first.stopReason, 'end_turn');
+  acp.notify('session/cancel', { sessionId: SESSION_ID });
+  // Let the stray cancel handler run against a completed prompt before the
+  // next prompt starts; the regression is deterministic without a pause.
+  await sleep(50);
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'second' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
+});
