@@ -374,17 +374,21 @@ impl SignedArtifact {
                         "a declaration names at most {MAX_HOME_SERVERS} servers"
                     )));
                 }
-                for (index, server) in body.servers.iter().enumerate() {
-                    check_target(&server.endpoint)
+                // Duplicate refusal compares the validated endpoint
+                // identities, not the raw strings: one node can be named
+                // by its bare ID or by an endpoint ticket for that ID.
+                let mut targets: Vec<EndpointAddr> = Vec::with_capacity(body.servers.len());
+                for server in &body.servers {
+                    let target = check_target(&server.endpoint)
                         .map_err(|error| forbidden(format!("{error:#}")))?;
-                    if body.servers[..index]
-                        .iter()
-                        .any(|prior| prior.endpoint == server.endpoint)
-                    {
+                    if targets.iter().any(|prior| prior.id == target.id) {
                         return Err(forbidden(
                             "a declaration names each endpoint at most once",
                         ));
                     }
+                    targets.push(target);
+                }
+                for server in &body.servers {
                     if server.world_id.is_empty() || server.world_id.len() > MAX_WORLD_ID_BYTES {
                         return Err(forbidden(format!(
                             "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
@@ -1982,6 +1986,18 @@ mod tests {
             home_server(endpoint_of(7), "lobby"),
         ]);
         assert!(duplicate.parsed().is_err());
+
+        // The same node named once by bare ID and once by an endpoint
+        // ticket for that ID is still a duplicate.
+        let ticket = iroh_tickets::endpoint::EndpointTicket::new(EndpointAddr::from(
+            SecretKey::from_bytes(&[7; 32]).public(),
+        ))
+        .to_string();
+        let aliased = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(ticket, "lobby"),
+        ]);
+        assert!(aliased.parsed().is_err());
     }
 
     #[test]
