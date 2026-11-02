@@ -39,6 +39,7 @@ on:
         type: string
         required: false
         default: ""
+  workflow_dispatch:
 
 jobs:
   # Exactly one job. Permissions are the CALLER's: a reusable
