@@ -1146,6 +1146,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 crate::world_net::WorldProtocol::new(hub.clone()),
             )
             .accept(
+                crate::world_replication_net::REPLICATION_ALPN,
+                crate::world_replication_net::WorldReplicationProtocol::new(
+                    hub.clone(),
+                    ed25519_dalek::SigningKey::from_bytes(&key.to_bytes()),
+                ),
+            )
+            .accept(
                 crate::envelope_net::ENVELOPE_ALPN,
                 crate::envelope_net::EnvelopeProtocol::new(hub.clone()),
             )

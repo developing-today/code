@@ -45,6 +45,7 @@ impl WorldHandle {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
         let (revocations, _) = broadcast::channel(256);
+        let (replication_sender, _) = broadcast::channel(256);
         let (view_changed_sender, view_changed) = watch::channel(core.sequence);
         // Records are recomputed from the (restored) program, so they are a
         // pure function of the journal and need no storage of their own here.
@@ -79,6 +80,7 @@ impl WorldHandle {
             event_sender: events.clone(),
             revocation_sender: revocations.clone(),
             records_sender,
+            replication_sender,
             view_changed: view_changed_sender,
             presence: HashMap::new(),
             active_subs: BTreeSet::new(),
@@ -122,6 +124,26 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped metrics response")
+    }
+
+    /// Capture a durable journal image and subscribe atomically to later
+    /// appends and reset snapshots. The returned receiver is live before the
+    /// snapshot is taken, preventing a write from being missed between them.
+    pub(crate) async fn replication_feed(
+        &self,
+    ) -> Result<(
+        String,
+        JournalSnapshot,
+        broadcast::Receiver<ReplicationUpdate>,
+    )> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ReplicationFeed { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped replication feed response")?
     }
     /// The latest `(sequence, records)` published by the world program.
     /// Callers must authorize the reader first (see [`Self::participant_id`]).
@@ -801,10 +823,8 @@ impl WorldHandle {
         installed_by: Option<u64>,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
-        self.install_program_with_trust(
-            module_hash, seed, provenance, installed_by, None, program,
-        )
-        .await
+        self.install_program_with_trust(module_hash, seed, provenance, installed_by, None, program)
+            .await
     }
 
     /// As [`Self::install_program_by`], also recording the module trust
