@@ -169,9 +169,13 @@ describe("server boots from fixtures", () => {
     expect(fragment).toContain("datastar-patch-elements");
     expect(fragment).toContain('id="queue-main"');
     const api = (await (await fetch(`http://127.0.0.1:${port}/api/queue.json`)).json()) as {
-      inProgress: unknown[]; blocked: unknown[]; doneRecently: unknown[]; nextUp: unknown[];
+      inProgress: unknown[];
+      blocked: unknown[];
+      doneRecently: unknown[];
+      nextUp: unknown[];
     };
-    for (const key of ["inProgress", "blocked", "doneRecently", "nextUp"] as const) expect(Array.isArray(api[key])).toBe(true);
+    for (const key of ["inProgress", "blocked", "doneRecently", "nextUp"] as const)
+      expect(Array.isArray(api[key])).toBe(true);
   });
 
   test("machine-first JSON endpoints", async () => {

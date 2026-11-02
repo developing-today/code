@@ -223,11 +223,7 @@ function resolveComponent(path: string, budget: SymlinkBudget, depth: number): s
     if (lstatSync(path).isSymbolicLink()) {
       const target = readlinkSync(path);
       const parent = path.slice(0, path.lastIndexOf("/")) || "/";
-      const absolute = target.startsWith("/")
-        ? target
-        : parent === "/"
-          ? `/${target}`
-          : `${parent}/${target}`;
+      const absolute = target.startsWith("/") ? target : parent === "/" ? `/${target}` : `${parent}/${target}`;
       // The budget is shared across the WHOLE resolution, not per
       // recursion: a chain of dangling links shaped
       // lN -> l(N-1)/../l(N-1) doubles the expansions per level while
@@ -237,9 +233,7 @@ function resolveComponent(path: string, budget: SymlinkBudget, depth: number): s
       // bound inside realpathSync has the same shape.
       budget.expansions += 1;
       if (budget.expansions > 40) {
-        throw new ValidationError(
-          `directory: too many symlink expansions resolving "${path}"`,
-        );
+        throw new ValidationError(`directory: too many symlink expansions resolving "${path}"`);
       }
       return canonicalizeDirectory(absolute, budget, depth + 1);
     }

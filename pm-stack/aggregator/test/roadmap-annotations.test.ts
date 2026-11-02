@@ -25,7 +25,9 @@ describe("roadmap annotations (#1284)", () => {
     expect(validateNewRoadmapAnnotation(input("grist:doc/Roadmap/1", "2026-02-30", "slipped"))).toMatchObject({
       ok: false,
     });
-    expect(validateNewRoadmapAnnotation({ ...input("grist:doc/Roadmap/1", "2026-11-01", "slipped"), kind: "note" })).toMatchObject({
+    expect(
+      validateNewRoadmapAnnotation({ ...input("grist:doc/Roadmap/1", "2026-11-01", "slipped"), kind: "note" }),
+    ).toMatchObject({
       ok: false,
     });
   });

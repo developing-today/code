@@ -141,8 +141,17 @@ describe("summarizeItemCoverage (#1141)", () => {
 
 describe("fixture-resolved badges render unverified (#1141)", () => {
   const PROV = {
-    board: "x", roadmap: "x", items: "x", comments: "x", quota: "x", usage: "x",
-    attention: "x", orchestration: "x", dns: "x", registry: "x", aa: "x",
+    board: "x",
+    roadmap: "x",
+    items: "x",
+    comments: "x",
+    quota: "x",
+    usage: "x",
+    attention: "x",
+    orchestration: "x",
+    dns: "x",
+    registry: "x",
+    aa: "x",
   } as Provenance;
 
   test("item page: fixture badge is hollow + named unverified; pool badge is untouched", () => {

@@ -19,7 +19,13 @@ import {
 
 const NOW = new Date("2026-10-29T12:00:00Z"); // cutoff month: 2025-09
 
-function rec(ts: string, serviceId: string, metricId: string, value: number, extra: Partial<SnapshotRecord> = {}): SnapshotRecord {
+function rec(
+  ts: string,
+  serviceId: string,
+  metricId: string,
+  value: number,
+  extra: Partial<SnapshotRecord> = {},
+): SnapshotRecord {
   return {
     ts,
     serviceId,
@@ -89,8 +95,24 @@ describe("compactRecordsToRollups / expandRollup", () => {
 
   test("estimate pairs compact by low/high and expand back to pairs", () => {
     const records: SnapshotRecord[] = [
-      { ts: "2025-06-02T12:00:00Z", serviceId: "svc-c", metricId: "payg-estimate", value: { low: 1, high: 5 }, unit: "usd-est", source: "estimate", observedBy: "test" },
-      { ts: "2025-06-12T12:00:00Z", serviceId: "svc-c", metricId: "payg-estimate", value: { low: 3, high: 4 }, unit: "usd-est", source: "estimate", observedBy: "test" },
+      {
+        ts: "2025-06-02T12:00:00Z",
+        serviceId: "svc-c",
+        metricId: "payg-estimate",
+        value: { low: 1, high: 5 },
+        unit: "usd-est",
+        source: "estimate",
+        observedBy: "test",
+      },
+      {
+        ts: "2025-06-12T12:00:00Z",
+        serviceId: "svc-c",
+        metricId: "payg-estimate",
+        value: { low: 3, high: 4 },
+        unit: "usd-est",
+        source: "estimate",
+        observedBy: "test",
+      },
     ];
     const [r] = compactRecordsToRollups("2025-06", records);
     expect(r.valueMin).toEqual({ low: 1, high: 5 });
@@ -105,9 +127,7 @@ describe("SnapshotStore prototype-spelled service ids", () => {
     const serviceIds = ["__proto__", "constructor", "toString"];
     try {
       await mkdir(dir, { recursive: true });
-      const records = serviceIds.map((serviceId) =>
-        rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40),
-      );
+      const records = serviceIds.map((serviceId) => rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40));
       await writeFile(join(dir, "usage-2025-06.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
       const grouped = await new SnapshotStore(dir).byService();
@@ -135,9 +155,7 @@ describe("SnapshotStore prototype-spelled service ids", () => {
 
     try {
       await mkdir(dir, { recursive: true });
-      const records = serviceIds.map((serviceId) =>
-        rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40),
-      );
+      const records = serviceIds.map((serviceId) => rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40));
       await writeFile(join(dir, "usage-2025-06.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
 
       const report = await new SnapshotStore(dir).compact({ now: NOW, dryRun: true });
@@ -188,11 +206,7 @@ describe("SnapshotStore.compact", () => {
       const report = await store.compact({ now: NOW });
       expect(report.months).toHaveLength(2);
       const names = (await readdir(dir)).sort();
-      expect(names).toEqual([
-        rollupFileFor("2025-06"),
-        rollupFileFor("2025-09"),
-        "usage-2025-10.jsonl",
-      ]);
+      expect(names).toEqual([rollupFileFor("2025-06"), rollupFileFor("2025-09"), "usage-2025-10.jsonl"]);
 
       // The existing reading path reads the compacted store: svc-a's
       // last June value and its resetsAt survive, the max is visible,
@@ -284,9 +298,7 @@ describe("Codex review regressions (PR #2379)", () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
     try {
       const store = new SnapshotStore(dir);
-      const batch = [1, 2, 3, 4].map((v, i) =>
-        rec(`2025-06-0${i + 2}T12:00:00Z`, "svc-a", "weekly", v),
-      );
+      const batch = [1, 2, 3, 4].map((v, i) => rec(`2025-06-0${i + 2}T12:00:00Z`, "svc-a", "weekly", v));
       expect(await store.append(batch)).toBe(4);
       await store.compact({ now: NOW });
       // The batch's non-extreme observations (2, 3) are no longer in
@@ -365,9 +377,7 @@ describe("Codex review regressions (PR #2379)", () => {
     try {
       const a = new SnapshotStore(dir);
       const b = new SnapshotStore(dir);
-      const batches = Array.from({ length: 6 }, (_, i) => [
-        rec(`2025-06-1${i}T12:00:00Z`, "svc-a", "weekly", i + 1),
-      ]);
+      const batches = Array.from({ length: 6 }, (_, i) => [rec(`2025-06-1${i}T12:00:00Z`, "svc-a", "weekly", i + 1)]);
       await Promise.all([
         (async () => {
           for (const batch of batches) await a.append(batch);

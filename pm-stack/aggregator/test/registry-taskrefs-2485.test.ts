@@ -26,9 +26,7 @@ describe("registry task-ref validation (#2485)", () => {
     expect(isSessionRecord(rec({ id: "good", taskRefs: ["developing-today/code#2485"] }))).toBe(true);
     expect(isSessionRecord(rec({ id: "short", taskRefs: ["code#2480"] }))).toBe(false);
     expect(isSessionRecord(rec({ id: "number", taskRefs: [42] as unknown as string[] }))).toBe(false);
-    expect(
-      isSessionRecord(rec({ id: "large", taskRefs: ["owner/repo#12345678901234567890123"] })),
-    ).toBe(false);
+    expect(isSessionRecord(rec({ id: "large", taskRefs: ["owner/repo#12345678901234567890123"] }))).toBe(false);
   });
 
   test("launch parsing drops malformed refs but preserves well-formed records", () => {

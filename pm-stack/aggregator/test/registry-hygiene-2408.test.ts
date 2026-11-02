@@ -34,9 +34,9 @@ describe("isSessionRecord taskRefs hygiene (#2408)", () => {
     expect(isSessionRecord({ id: "a", source: "s", label: "l" })).toBe(true);
     expect(isSessionRecord({ ...valid, taskRefs: [] })).toBe(true);
     expect(isSessionRecord(valid)).toBe(true);
-    expect(
-      isSessionRecord({ ...valid, taskRefs: ["developing-today/code#123", "developing-today/code#2408"] }),
-    ).toBe(true);
+    expect(isSessionRecord({ ...valid, taskRefs: ["developing-today/code#123", "developing-today/code#2408"] })).toBe(
+      true,
+    );
   });
 
   test("rejects non-array taskRefs (number, string, object)", () => {

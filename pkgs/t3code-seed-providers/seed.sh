@@ -37,9 +37,9 @@ STATE="${T3CODE_HOME:-$HOME/.local/share/t3code}/userdata"
 SETTINGS="$STATE/settings.json"
 mkdir -p "$STATE"
 if [ -L "$SETTINGS" ]; then
-    echo "t3code-seed-providers: refusing symlinked settings.json; " \
-        "leaving it and its target unchanged: $SETTINGS" >&2
-    exit 0
+  echo "t3code-seed-providers: refusing symlinked settings.json; " \
+    "leaving it and its target unchanged: $SETTINGS" >&2
+  exit 0
 fi
 [ -e "$SETTINGS" ] || echo '{}' >"$SETTINGS"
 

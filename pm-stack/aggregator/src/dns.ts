@@ -117,7 +117,14 @@ export function dnsSectionFromRegisterJson(
   const entries: DnsEntry[] = [];
   for (const raw of domains as Partial<DnsRegisterJsonDomain>[]) {
     if (typeof raw !== "object" || raw === null) return null;
-    const { domain, registrar, dns_hosted_at: dnsHost, next_renewal: renewal, auto_renew: autoRenew, renewal_price_usd: price } = raw;
+    const {
+      domain,
+      registrar,
+      dns_hosted_at: dnsHost,
+      next_renewal: renewal,
+      auto_renew: autoRenew,
+      renewal_price_usd: price,
+    } = raw;
     if (typeof domain !== "string" || domain.length === 0 || seen.has(domain)) return null;
     if (typeof registrar !== "string" || typeof dnsHost !== "string") return null;
     if (typeof renewal !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(renewal)) return null;

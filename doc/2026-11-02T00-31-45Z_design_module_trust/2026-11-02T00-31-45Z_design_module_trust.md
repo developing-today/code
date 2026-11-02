@@ -9,7 +9,7 @@ implemented and its intentional limitations.
 
 Worlds run wasm/native modules installed over the session protocol by
 whoever holds the world admin token. Observed provenance (#225) records
-what is running, but nothing decided whether an artifact *should* run:
+what is running, but nothing decided whether an artifact _should_ run:
 there was no admin trust list for module signing keys and no signature
 verification at install time.
 

@@ -54,9 +54,7 @@ export async function handleLaunchFailure(
   deleteSession?: (sessionId: string) => Promise<void>,
 ): Promise<string> {
   const msg = e instanceof Error ? e.message : String(e);
-  const sessionContext = sessionId == null
-    ? ""
-    : `; OpenCode session ${sessionId} may still be live`;
+  const sessionContext = sessionId == null ? "" : `; OpenCode session ${sessionId} may still be live`;
   let cancelError: string | null = null;
   try {
     await queue.cancelTask(taskId, `dispatch launch failed: ${msg}${sessionContext}`);
@@ -77,11 +75,12 @@ export async function handleLaunchFailure(
     }
   }
   if (issueNumber != null) {
-    const sessionNote = sessionId == null
-      ? ""
-      : cleanupError == null
-        ? `\n\nOpenCode session ${sessionId} may still be live; session cleanup succeeded.`
-        : `\n\nOpenCode session ${sessionId} may still be live; session cleanup failed: ${cleanupError}`;
+    const sessionNote =
+      sessionId == null
+        ? ""
+        : cleanupError == null
+          ? `\n\nOpenCode session ${sessionId} may still be live; session cleanup succeeded.`
+          : `\n\nOpenCode session ${sessionId} may still be live; session cleanup failed: ${cleanupError}`;
     const note =
       cancelError == null
         ? `Dispatch launch FAILED and queue task #${taskId} was cancelled.${sessionNote}\n\nError: ${msg}`

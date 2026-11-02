@@ -63,13 +63,7 @@ export function cancelledActionIds(actions: DashAction[]): Set<string> {
   const out = new Set<string>();
   for (let i = actions.length - 1; i >= 0; i--) {
     const a = actions[i];
-    if (
-      a.verb === "restore" &&
-      a.state !== "superseded" &&
-      a.state !== "rejected" &&
-      a.supersedes &&
-      !out.has(a.id)
-    )
+    if (a.verb === "restore" && a.state !== "superseded" && a.state !== "rejected" && a.supersedes && !out.has(a.id))
       out.add(a.supersedes);
   }
   return out;

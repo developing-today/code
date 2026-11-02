@@ -355,8 +355,7 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
         if (!q) return `unknown question id "${a.questionId}" for this item`;
         switch (q.type) {
           case "yesno":
-            if (a.value !== "yes" && a.value !== "no")
-              return `answer for "${q.id}" must be "yes" or "no"`;
+            if (a.value !== "yes" && a.value !== "no") return `answer for "${q.id}" must be "yes" or "no"`;
             break;
           case "single":
             if (typeof a.value !== "string" || !q.options?.some((o) => o.id === a.value))

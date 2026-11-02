@@ -203,10 +203,7 @@ export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCurso
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
  * the collector can fail-soft and omit the section. Never logs the token. */
-export async function fetchProjectPool(
-  token: string,
-  fetchFn: typeof fetch = fetch,
-): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;

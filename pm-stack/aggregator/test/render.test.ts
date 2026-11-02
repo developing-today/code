@@ -379,8 +379,18 @@ describe("freshness chips (#1138)", () => {
       services: [
         { def: { id: "kaneo", name: "Kaneo", probe: "http" }, state: "up", ok: true, detail: "HTTP 200" },
         { def: { id: "pad", name: "Pad", probe: "http" }, state: "up", ok: true, detail: "HTTP 200" },
-        { def: { id: "fleet-feed", name: "Fleet-feed collector", probe: "feed" }, state: "up", ok: true, detail: "fresh" },
-        { def: { id: "orchestration", name: "Orchestration pass", probe: "section" }, state: "up", ok: true, detail: "live" },
+        {
+          def: { id: "fleet-feed", name: "Fleet-feed collector", probe: "feed" },
+          state: "up",
+          ok: true,
+          detail: "fresh",
+        },
+        {
+          def: { id: "orchestration", name: "Orchestration pass", probe: "section" },
+          state: "up",
+          ok: true,
+          detail: "live",
+        },
       ],
       feed: { ageMs: 4 * 60_000 },
       jobs: { orchestration: { state: "live", ageMs: 39 * 60_000 } },
@@ -415,14 +425,31 @@ describe("freshness chips (#1138)", () => {
         providers: [{ state: "error" }, { state: "error" }],
       },
     } as unknown as QuotaView;
-    const degradedHtml = renderToday(today, attention, quotaErrors, await src.coverage(), src.provenance(), undefined, degraded);
+    const degradedHtml = renderToday(
+      today,
+      attention,
+      quotaErrors,
+      await src.coverage(),
+      src.provenance(),
+      undefined,
+      degraded,
+    );
     expect(degradedHtml).toContain("Kaneo down");
     expect(degradedHtml).toContain("feed 16m");
     expect(degradedHtml).toContain("orchestrator stale");
     expect(degradedHtml).toContain("quota errors 2");
     expect(degradedHtml).toMatch(/today-health-link warn[^>]*>feed 16m<\/a>/);
 
-    const unknownHtml = renderToday(today, attention, quota, await src.coverage(), src.provenance(), undefined, null, true);
+    const unknownHtml = renderToday(
+      today,
+      attention,
+      quota,
+      await src.coverage(),
+      src.provenance(),
+      undefined,
+      null,
+      true,
+    );
     expect(unknownHtml).toContain("stack unknown");
     expect(unknownHtml).toContain("feed unknown");
     expect(unknownHtml).toContain("orchestrator unknown");

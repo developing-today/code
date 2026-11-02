@@ -87,9 +87,7 @@ function labelTokenSequences(label: string): string[][] {
   const base = normalized.split(" ");
   const out = new Map<string, string[]>([[normalized, base]]);
   for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
-    const group = [canonical, ...aliases]
-      .map((name) => normalizeMerchantName(name))
-      .filter(Boolean);
+    const group = [canonical, ...aliases].map((name) => normalizeMerchantName(name)).filter(Boolean);
     if (group.includes(normalized)) {
       for (const name of group) out.set(name, name.split(" "));
     }

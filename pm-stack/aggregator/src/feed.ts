@@ -145,7 +145,10 @@ export function sanitizeCollectionError(value: unknown): string {
     .replace(/\bBasic\s+[A-Za-z0-9+/=]+/gi, "Basic [redacted]")
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
-    .replace(/\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "$1[redacted]")
+    .replace(
+      /\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      "$1[redacted]",
+    )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
     .replace(/[\r\n\t]+/g, " ")
@@ -153,14 +156,8 @@ export function sanitizeCollectionError(value: unknown): string {
   return message || "collection failed";
 }
 
-export function feedSectionStatus(
-  status: FeedSectionStatus,
-  at: string,
-  error?: unknown,
-): FeedSectionCollectionStatus {
-  return status === "error"
-    ? { status, at, error: sanitizeCollectionError(error) }
-    : { status, at };
+export function feedSectionStatus(status: FeedSectionStatus, at: string, error?: unknown): FeedSectionCollectionStatus {
+  return status === "error" ? { status, at, error: sanitizeCollectionError(error) } : { status, at };
 }
 
 /** Tolerate malformed optional metadata without rejecting an otherwise

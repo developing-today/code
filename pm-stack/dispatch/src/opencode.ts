@@ -49,11 +49,7 @@ export class OpenCodeClient {
     return parsed;
   }
 
-  async createSession(opts: {
-    directory: string;
-    title: string;
-    model: ModelRef | null;
-  }): Promise<{ id: string }> {
+  async createSession(opts: { directory: string; title: string; model: ModelRef | null }): Promise<{ id: string }> {
     const body: Record<string, unknown> = {
       title: opts.title,
       location: { directory: opts.directory },

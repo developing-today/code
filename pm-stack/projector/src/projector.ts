@@ -93,7 +93,7 @@ function commentCommon(
     submitted_at: null,
     commit_id: null,
     deleted: 0,
-    source_updated_at: kind === "review" ? createdAt : updatedAt ?? createdAt,
+    source_updated_at: kind === "review" ? createdAt : (updatedAt ?? createdAt),
   };
 }
 

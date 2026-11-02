@@ -9,9 +9,7 @@ function parseAggregatorPort(value: string | undefined): number {
   const normalized = s(value, "4870");
   const port = Number(normalized);
   if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
-    throw new Error(
-      `Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`,
-    );
+    throw new Error(`Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
   }
   return port;
 }

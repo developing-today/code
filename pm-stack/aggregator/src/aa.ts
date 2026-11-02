@@ -1117,8 +1117,7 @@ export function aaSectionFromSupabase(
 export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<AaSection> & Partial<AaAbsentSection>;
-  if (s.status === "absent")
-    return typeof s.reason === "string" && isIsoDate(s.generatedAt);
+  if (s.status === "absent") return typeof s.reason === "string" && isIsoDate(s.generatedAt);
   if (s.status !== "ok") return false;
   return (
     isIsoDate(s.generatedAt) &&

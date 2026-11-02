@@ -315,9 +315,9 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
 
   test("answers do not shield a present optionId from membership checking", () => {
     const answers = [{ questionId: "notes", value: "hi" }];
-    expect(
-      checkActionAgainstItem(actionInput({ payload: { answers, optionId: "yaml" } }), item, NOW),
-    ).toContain("not one of this item's published options");
+    expect(checkActionAgainstItem(actionInput({ payload: { answers, optionId: "yaml" } }), item, NOW)).toContain(
+      "not one of this item's published options",
+    );
     expect(checkActionAgainstItem(actionInput({ payload: { answers, optionId: "csv" } }), item, NOW)).toBeNull();
   });
 

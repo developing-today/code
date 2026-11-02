@@ -13,7 +13,10 @@ SCRIPT="$SELF_DIR/laptop-repo-keeper.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 failures=0
-fail() { echo "FAIL: $1" >&2; failures=$((failures + 1)); }
+fail() {
+  echo "FAIL: $1" >&2
+  failures=$((failures + 1))
+}
 check() {
   if [ "$2" != "$3" ]; then fail "$1 — expected [$2], got [$3]"; fi
 }

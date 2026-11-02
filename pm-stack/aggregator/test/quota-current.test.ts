@@ -328,8 +328,16 @@ describe("quota-current overlay", () => {
     const doc = JSON.parse(
       JSON.stringify(
         file([
-          entry({ serviceId: "openai:codex", measuredAt: iso(1 * 60_000), windows: [win("7-day", 55, iso(1 * 60_000))] }),
-          entry({ serviceId: "openai:codex", measuredAt: iso(5 * 60_000), windows: [win("7-day", 80, iso(5 * 60_000))] }),
+          entry({
+            serviceId: "openai:codex",
+            measuredAt: iso(1 * 60_000),
+            windows: [win("7-day", 55, iso(1 * 60_000))],
+          }),
+          entry({
+            serviceId: "openai:codex",
+            measuredAt: iso(5 * 60_000),
+            windows: [win("7-day", 80, iso(5 * 60_000))],
+          }),
         ]),
       ),
     );
@@ -348,9 +356,7 @@ describe("quota-current overlay", () => {
 
   test("a sole ok entry whose windows are entirely malformed surfaces as an error, never as fresh provenance", () => {
     const doc = JSON.parse(
-      JSON.stringify(
-        file([entry({ serviceId: "openai:codex", windows: [win("7-day", 55, iso(5 * 60_000))] })]),
-      ),
+      JSON.stringify(file([entry({ serviceId: "openai:codex", windows: [win("7-day", 55, iso(5 * 60_000))] })])),
     );
     doc.providers[0].windows = [null, { bogus: true }];
 
@@ -779,7 +785,9 @@ describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
       group: "database",
       plan: "Starter Free $0",
       status: "active",
-      metrics: [{ id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true }],
+      metrics: [
+        { id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true },
+      ],
       paygEstimate: null,
       measuredAt: "2026-10-20T00:00:00.000Z",
       sourceClass: "manual",

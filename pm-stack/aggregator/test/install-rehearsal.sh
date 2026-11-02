@@ -62,12 +62,12 @@ if TEST_LOG="$LOG" HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   exit 1
 fi
 TEST_LOG="$LOG" \
-TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
-HOME="$HOME_TEST" PATH="$BIN:$PATH" \
+  TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
+  HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$INSTALL_SRC/install.sh" >"$TMP/install.out"
 TEST_LOG="$LOG" \
-TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
-HOME="$HOME_TEST" PATH="$BIN:$PATH" \
+  TEST_LIVE_VERSION="$(git -C "$PKG" rev-parse HEAD)" \
+  HOME="$HOME_TEST" PATH="$BIN:$PATH" \
   bash "$INSTALL_SRC/install.sh" >"$TMP/install-second.out"
 
 test -f "$STATE/.env"

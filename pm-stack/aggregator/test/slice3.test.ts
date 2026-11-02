@@ -4,7 +4,13 @@ import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommentsStore, validateNewComment } from "../src/comments.ts";
-import { dnsSectionFromRegister, dnsSectionFromRegisterJson, isDnsSection, parseDnsRegister, summarizeDns } from "../src/dns.ts";
+import {
+  dnsSectionFromRegister,
+  dnsSectionFromRegisterJson,
+  isDnsSection,
+  parseDnsRegister,
+  summarizeDns,
+} from "../src/dns.ts";
 import type { SessionFeedEntry } from "../src/model.ts";
 import { PAGES } from "../src/pages.ts";
 import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
@@ -138,9 +144,33 @@ describe("dns register parser", () => {
     const json = JSON.stringify({
       generated_at: "2026-11-01T16:26:34Z",
       domains: [
-        { domain: "first.de", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-02-09", auto_renew: true, renewal_price_usd: 4.07, source: "porkbun-api" },
-        { domain: "active.example", registrar: "Porkbun", dns_hosted_at: "Cloudflare", next_renewal: "2027-02-24", auto_renew: false, renewal_price_usd: 29.35, source: "porkbun-api" },
-        { domain: "jsononly.example", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-03-01", auto_renew: null, renewal_price_usd: null, source: "register-markdown" },
+        {
+          domain: "first.de",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-02-09",
+          auto_renew: true,
+          renewal_price_usd: 4.07,
+          source: "porkbun-api",
+        },
+        {
+          domain: "active.example",
+          registrar: "Porkbun",
+          dns_hosted_at: "Cloudflare",
+          next_renewal: "2027-02-24",
+          auto_renew: false,
+          renewal_price_usd: 29.35,
+          source: "porkbun-api",
+        },
+        {
+          domain: "jsononly.example",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-03-01",
+          auto_renew: null,
+          renewal_price_usd: null,
+          source: "register-markdown",
+        },
       ],
     });
     const section = dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "test-json", mdEntries);
@@ -167,12 +197,39 @@ describe("dns register parser", () => {
     expect(dnsSectionFromRegisterJson("{not json", "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
     expect(dnsSectionFromRegisterJson('{"domains":[]}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
     expect(dnsSectionFromRegisterJson('{"generated_at":"x"}', "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
-    const badRow = JSON.stringify({ domains: [{ domain: "x.dev", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "soon", auto_renew: true, renewal_price_usd: 1 }] });
+    const badRow = JSON.stringify({
+      domains: [
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "soon",
+          auto_renew: true,
+          renewal_price_usd: 1,
+        },
+      ],
+    });
     expect(dnsSectionFromRegisterJson(badRow, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
-    const dup = JSON.stringify({ domains: [
-      { domain: "x.dev", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-01-01", auto_renew: true, renewal_price_usd: 1 },
-      { domain: "x.dev", registrar: "Porkbun", dns_hosted_at: "Porkbun", next_renewal: "2027-01-02", auto_renew: true, renewal_price_usd: 2 },
-    ] });
+    const dup = JSON.stringify({
+      domains: [
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-01-01",
+          auto_renew: true,
+          renewal_price_usd: 1,
+        },
+        {
+          domain: "x.dev",
+          registrar: "Porkbun",
+          dns_hosted_at: "Porkbun",
+          next_renewal: "2027-01-02",
+          auto_renew: true,
+          renewal_price_usd: 2,
+        },
+      ],
+    });
     expect(dnsSectionFromRegisterJson(dup, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
   });
 
@@ -213,7 +270,6 @@ describe("dns register parser", () => {
       expect(isDnsSection({ ...good, generatedAt })).toBe(false);
     }
   });
-
 });
 
 // --- Identity registry (#906 §3) ---------------------------------------------
@@ -728,7 +784,10 @@ describe("slice-3 routes", () => {
     expect((await post(reshuffledRef, "Follow-up under the new row id")).status).toBe(201);
 
     const json = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
-      rows: { subject: string; annotations: { body: string; date: string; kind: string; author: { label: string } }[] }[];
+      rows: {
+        subject: string;
+        annotations: { body: string; date: string; kind: string; author: { label: string } }[];
+      }[];
       annotationAliases: Record<string, string>;
     };
     const reshuffledRow = json.rows.find((row) => row.subject === reshuffledRef)!;
@@ -736,13 +795,17 @@ describe("slice-3 routes", () => {
       "Moved after review",
       "Follow-up under the new row id",
     ]);
-    expect(reshuffledRow.annotations[0]).toMatchObject({ date: "2026-10-12", kind: "decision", author: { label: "Drew" } });
+    expect(reshuffledRow.annotations[0]).toMatchObject({
+      date: "2026-10-12",
+      kind: "decision",
+      author: { label: "Drew" },
+    });
     expect(json.annotationAliases[reshuffledRef]).toBe(stableRef);
 
     const detail = await (await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent(reshuffledRef)}`)).text();
     expect(detail).toContain("Roadmap annotations");
     expect(detail).toContain("Follow-up under the new row id");
-    expect(detail).toContain("name=\"date\"");
+    expect(detail).toContain('name="date"');
     const timeline = await (await fetch(`http://127.0.0.1:${port}/roadmap`)).text();
     expect(timeline).toContain("Moved after review");
   });

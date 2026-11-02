@@ -109,10 +109,7 @@ describe("apiTokenFor installation resolution", () => {
 
   test("keeps the plain-token fallback for absent or empty static IDs", async () => {
     for (const raw of [undefined, ""]) {
-      const auth = await apiTokenFor(
-        { GITHUB_APP_INSTALL_ID: raw, GITHUB_TOKEN: "plain-token" },
-        "acme/no-app",
-      );
+      const auth = await apiTokenFor({ GITHUB_APP_INSTALL_ID: raw, GITHUB_TOKEN: "plain-token" }, "acme/no-app");
       expect(auth).toEqual({ kind: "token", token: "plain-token" });
     }
   });
@@ -127,7 +124,8 @@ describe("apiTokenFor installation resolution", () => {
     const fetchFn = async (url: string) => {
       calls.push(url);
       if (url === "https://api.github.com/repos/acme/static/installation") return new Response("{}", { status: 404 });
-      if (url === "https://api.github.com/app/installations/42/access_tokens") return Response.json({ token: "static-token" });
+      if (url === "https://api.github.com/app/installations/42/access_tokens")
+        return Response.json({ token: "static-token" });
       return new Response("{}", { status: 404 });
     };
     const auth = await apiTokenFor(env, "acme/static", fetchFn as unknown as typeof fetch);

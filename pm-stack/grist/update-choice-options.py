@@ -57,7 +57,9 @@ def merge_choices(widget_options: dict, additions: list[str]) -> tuple[dict, lis
     return merged, added
 
 
-def api(base: str, key: str, method: str, path: str, body: dict | None = None) -> object:
+def api(
+    base: str, key: str, method: str, path: str, body: dict | None = None
+) -> object:
     req = urllib.request.Request(
         base.rstrip("/") + path,
         method=method,
@@ -84,8 +86,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--doc", required=True)
     parser.add_argument("--table", required=True)
     parser.add_argument("--column", required=True)
-    parser.add_argument("--add", action="append", required=True, dest="additions",
-                        help="choice to add; repeat for multiple")
+    parser.add_argument(
+        "--add",
+        action="append",
+        required=True,
+        dest="additions",
+        help="choice to add; repeat for multiple",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -97,24 +104,42 @@ def main(argv: list[str] | None = None) -> int:
     current = get_widget_options(args.base, key, args.doc, args.table, args.column)
     merged, added = merge_choices(current, args.additions)
     if not added:
-        print(f"nothing to add: {args.table}.{args.column} already has {merged['choices']}")
+        print(
+            f"nothing to add: {args.table}.{args.column} already has {merged['choices']}"
+        )
         return 0
-    print(f"adding {added} to {args.table}.{args.column}: {current.get('choices')} -> {merged['choices']}")
+    print(
+        f"adding {added} to {args.table}.{args.column}: {current.get('choices')} -> {merged['choices']}"
+    )
     if args.dry_run:
         print("dry run: no PATCH sent")
         return 0
 
-    api(args.base, key, "PATCH", f"/api/docs/{args.doc}/tables/{args.table}/columns",
-        {"columns": [{"id": args.column, "fields": {"widgetOptions": json.dumps(merged)}}]})
+    api(
+        args.base,
+        key,
+        "PATCH",
+        f"/api/docs/{args.doc}/tables/{args.table}/columns",
+        {
+            "columns": [
+                {"id": args.column, "fields": {"widgetOptions": json.dumps(merged)}}
+            ]
+        },
+    )
 
     readback = get_widget_options(args.base, key, args.doc, args.table, args.column)
     if readback.get("choices") != merged["choices"]:
-        print(f"verification failed: read-back choices {readback.get('choices')} != {merged['choices']}",
-              file=sys.stderr)
+        print(
+            f"verification failed: read-back choices {readback.get('choices')} != {merged['choices']}",
+            file=sys.stderr,
+        )
         return 1
     for k, v in merged.items():
         if k != "choices" and readback.get(k) != v:
-            print(f"verification failed: widgetOptions[{k!r}] not preserved", file=sys.stderr)
+            print(
+                f"verification failed: widgetOptions[{k!r}] not preserved",
+                file=sys.stderr,
+            )
             return 1
     print(f"verified by read-back: {readback['choices']}")
     return 0

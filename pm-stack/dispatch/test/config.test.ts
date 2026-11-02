@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  APP_INSTALLED_REPOS,
-  FLEET_REPOS,
-  REPO_DIRS,
-  REPO_QUEUES,
-  loadConfig,
-} from "../src/config.ts";
+import { APP_INSTALLED_REPOS, FLEET_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig } from "../src/config.ts";
 
 describe("fleet config", () => {
   for (const value of ["abc", "4879.5", "0", "-1", "99999", "0x1234", "1e4"]) {
@@ -28,10 +22,7 @@ describe("fleet config", () => {
   }
 
   test("keeps a normal DISPATCH_HOSTS list unchanged", () => {
-    expect(loadConfig({ DISPATCH_HOSTS: "0.0.0.0, 127.0.0.1" }).hosts).toEqual([
-      "0.0.0.0",
-      "127.0.0.1",
-    ]);
+    expect(loadConfig({ DISPATCH_HOSTS: "0.0.0.0, 127.0.0.1" }).hosts).toEqual(["0.0.0.0", "127.0.0.1"]);
   });
 
   test("the allowlist default is exactly the six fleet repos", () => {

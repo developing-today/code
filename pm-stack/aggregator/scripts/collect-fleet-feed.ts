@@ -114,12 +114,7 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import {
-  droppedJulesItemCount,
-  julesSummary,
-  mapJulesItems,
-  type JulesReviewState,
-} from "../src/sources/jules.ts";
+import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -684,8 +679,12 @@ async function main(): Promise<void> {
   try {
     const jsonText = await readFile(dnsRegisterJsonPath, "utf8");
     dns =
-      dnsSectionFromRegisterJson(jsonText, now.toISOString(), "register.json (#902 pipeline) via fleet feed collector", mdEntries) ??
-      undefined;
+      dnsSectionFromRegisterJson(
+        jsonText,
+        now.toISOString(),
+        "register.json (#902 pipeline) via fleet feed collector",
+        mdEntries,
+      ) ?? undefined;
     if (!dns) jsonProblem = "register.json did not produce a valid DNS section";
   } catch (err) {
     jsonProblem = err instanceof Error ? err.message : String(err);
@@ -694,9 +693,13 @@ async function main(): Promise<void> {
     dnsSourcePath = dnsRegisterJsonPath;
     markSection("dns", "ok");
   } else {
-    console.error(`collector: DNS register.json unusable (${jsonProblem ?? "unknown reason"}); FALLING BACK to the register Markdown parse`);
+    console.error(
+      `collector: DNS register.json unusable (${jsonProblem ?? "unknown reason"}); FALLING BACK to the register Markdown parse`,
+    );
     if (mdText) {
-      dns = dnsSectionFromRegister(mdText, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ?? undefined;
+      dns =
+        dnsSectionFromRegister(mdText, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
+        undefined;
       if (!dns) {
         console.error("collector: DNS register parsed to zero entries; section omitted");
         markSection("dns", "error", "register did not produce a valid DNS section");
@@ -724,7 +727,11 @@ async function main(): Promise<void> {
       console.error(
         `collector: orchestration.json failed its structural check (${orchestrationSectionProblem(parsed)}); section omitted`,
       );
-      markSection("orchestration", "error", `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`);
+      markSection(
+        "orchestration",
+        "error",
+        `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`,
+      );
     }
   } catch (err) {
     // No orchestration file yet (the job has not run) is the normal
@@ -751,9 +758,7 @@ async function main(): Promise<void> {
       markSection("projects", "ok");
     }
   } catch (err) {
-    console.error(
-      `collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`,
-    );
+    console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
     projects = undefined;
     markSection("projects", "error", err);
   }
@@ -811,9 +816,7 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error(
-      `collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`,
-    );
+    console.error(`collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`);
     coverage = undefined;
     markSection("coverage", "error", err);
   }

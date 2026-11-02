@@ -182,8 +182,9 @@ export function isNotChargeSubject(subject: string): boolean {
  * and the wrong amount then defeated cross-source dedupe); any $
  * amount in the body is the last resort. */
 export function amountFromBody(text: string): string | undefined {
-  const explicitPaid =
-    /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1];
+  const explicitPaid = /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(
+    text,
+  )?.[1];
   if (explicitPaid !== undefined) return explicitPaid;
 
   // Verb evidence ("You were charged $20.00", "Paid $20.00") is explicit

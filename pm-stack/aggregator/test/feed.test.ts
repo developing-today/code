@@ -118,9 +118,10 @@ describe("feed project-pool section gate (#2399)", () => {
     delete bare.author;
     delete bare.updatedAt;
     expect(isProjectPoolItem(bare)).toBe(true);
-    expect(poolFromFeed({ projects: [EDGElESS, { ...EDGElESS, labels: "blocked" }, GRAPHED] as unknown as never })).toHaveLength(2);
+    expect(
+      poolFromFeed({ projects: [EDGElESS, { ...EDGElESS, labels: "blocked" }, GRAPHED] as unknown as never }),
+    ).toHaveLength(2);
   });
-
 
   test("poolFromFeed is fail-soft: garbage sections yield no items, bad items drop", () => {
     expect(poolFromFeed(null)).toEqual([]);

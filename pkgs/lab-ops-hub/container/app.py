@@ -530,9 +530,9 @@ def validate_crawl_url(raw):
                     # (the alef + fullwidth-1 label returns the
                     # Worker's xn--1-zhc, not the unmapped
                     # xn--4db2378j) - Codex round 2 on PR #3781.
-                    return "xn--" + unicodedata.normalize(
-                        "NFKC", candidate
-                    ).encode("punycode").decode("ascii")
+                    return "xn--" + unicodedata.normalize("NFKC", candidate).encode(
+                        "punycode"
+                    ).decode("ascii")
 
             return_host = (
                 ".".join(
@@ -1380,10 +1380,12 @@ def _fetch_crawl(url):
             sock = getattr(raw, "_sock", None)
             if sock is not None:
                 sock.settimeout(remaining)
-            chunk = res.read1(min(
-                _CRAWL_READ_CHUNK_BYTES,
-                _CRAWL_MAX_BODY_BYTES - len(body),
-            ))
+            chunk = res.read1(
+                min(
+                    _CRAWL_READ_CHUNK_BYTES,
+                    _CRAWL_MAX_BODY_BYTES - len(body),
+                )
+            )
             if time.monotonic() >= deadline:
                 raise TimeoutError("crawl exceeded its total deadline")
             if not chunk:
