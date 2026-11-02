@@ -14,6 +14,7 @@ import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, fin
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { EventsStore, emitEvent } from "./events.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
@@ -100,7 +101,7 @@ import {
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts } from "./render.ts";
+import { renderAlerts, esc } from "./render.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
@@ -139,6 +140,14 @@ async function coverageSnapshot(
 }
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
+const eventsStore = new EventsStore(cfg.eventsFile);
+
+/** #1739: the event log's fire-and-forget sink for source-side
+ *  writers (orchestration publishes, registry merges). Never awaited,
+ *  never throws: a failed event write loses the event, nothing else. */
+function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
+  void emitEvent(eventsStore, event);
+}
 
 function pickSource(): Source {
   // #1290: the live source reads the standing delegation default from
@@ -147,6 +156,7 @@ function pickSource(): Source {
   return cfg.source === "live"
     ? liveSource(cfg, {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+        onEvent: recordStreamEvent,
       })
     : fixtureSource();
 }
@@ -916,10 +926,58 @@ async function handler(req: Request): Promise<Response> {
         byRun: body.byRun,
         note: typeof body.note === "string" ? body.note : undefined,
       });
+      if (updated) {
+        // #1739: the action-result route is one of the event log's
+        // writers — the outcome lands in the cross-stack stream.
+        // Fire-and-forget: the response never waits on, and is never
+        // failed by, the event append.
+        recordStreamEvent({
+          actor: body.byRun,
+          kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
+          ref: updated.objectRef,
+          summary:
+            `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
+            (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+        });
+      }
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  if (path === "/api/events.json") {
+    // #1739: the cross-stack event stream, newest first, with
+    // kind/ref/actor filters — the machine twin of /events below.
+    const events = await eventsStore.list({
+      kind: url.searchParams.get("kind") ?? undefined,
+      ref: url.searchParams.get("ref") ?? undefined,
+      actor: url.searchParams.get("actor") ?? undefined,
+    });
+    return json({ events });
+  }
+  if (path === "/events") {
+    // #1739: the human page over the same stream /api/events.json
+    // serves — same records, same filters (?kind=&ref=&actor=).
+    const filter = {
+      kind: url.searchParams.get("kind") ?? undefined,
+      ref: url.searchParams.get("ref") ?? undefined,
+      actor: url.searchParams.get("actor") ?? undefined,
+    };
+    const events = await eventsStore.list(filter);
+    const rows = events
+      .map(
+        (e) =>
+          `<tr><td>${esc(e.at)}</td><td>${esc(e.actor)}</td><td>${esc(e.kind)}</td>` +
+          `<td>${esc(e.ref)}</td><td>${esc(e.summary)}</td></tr>`,
+      )
+      .join("\n");
+    return html(
+      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title></head><body>` +
+        `<h1>Events</h1><p>${events.length} event(s), newest first. ` +
+        `Machine twin: <a href="/api/events.json">/api/events.json</a> (filters: kind, ref, actor).</p>` +
+        `<table><thead><tr><th>at</th><th>actor</th><th>kind</th><th>ref</th><th>summary</th></tr></thead>` +
+        `<tbody>${rows}</tbody></table></body></html>`,
+    );
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
