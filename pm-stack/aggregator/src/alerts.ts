@@ -86,10 +86,16 @@ export interface PublicPushSubscription {
 /** #3693: strip the push-encryption secrets before serializing a
  * subscription to an HTTP response. */
 export function toPublicSubscription(sub: PushSubscriptionRow): PublicPushSubscription {
-  const { p256dh: _p256dh, auth: _auth, ...pub } = sub;
-  void _p256dh;
-  void _auth;
-  return pub;
+  return {
+    id: sub.id,
+    endpoint: sub.endpoint,
+    classes: sub.classes,
+    quiet: sub.quiet,
+    user_agent: sub.user_agent,
+    created_at: sub.created_at,
+    last_seen_at: sub.last_seen_at,
+    gone_count: sub.gone_count,
+  };
 }
 
 // --- Pure helpers (unit-tested) ---------------------------------------------
