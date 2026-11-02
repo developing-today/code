@@ -209,7 +209,12 @@ function isGoalMeasurement(v: unknown): boolean {
     // #2417: todayFromSection dereferences every lined-up / stalled
     // element, so a non-record element must fail here, at the gate —
     // presence of the arrays alone let [null] through to a TypeError.
-    g.linedUp.every(isRecord) &&
+    g.linedUp.every(
+      (task) =>
+        isRecord(task) &&
+        (task.blockedBy === undefined ||
+          (Array.isArray(task.blockedBy) && task.blockedBy.every(isDependencyElement))),
+    ) &&
     g.stalled.every(isRecord) &&
     (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
   );

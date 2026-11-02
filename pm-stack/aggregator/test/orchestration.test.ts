@@ -153,6 +153,60 @@ describe("orchestration section validation", () => {
     expect(isOrchestrationSection(nullGoal)).toBe(false);
   });
 
+  test("validates optional blockedBy dependencies on lined-up goals", () => {
+    const goal = SECTION.goals[0]!;
+    const linedUpTask = {
+      title: "Write the thing",
+      status: "blocked",
+      horizon: "today",
+      horizonWhy: "Waiting on a prerequisite",
+    };
+
+    for (const blockedBy of ["not-an-array", [null], [{}]]) {
+      const malformed = {
+        ...SECTION,
+        goals: [{ ...goal, linedUp: [{ ...linedUpTask, blockedBy }] }],
+      };
+      expect(isOrchestrationSection(malformed)).toBe(false);
+      expect(orchestrationSectionProblem(malformed)).toBe("goals (per-goal shape)");
+      expect(normalizeOrchestrationSection(malformed)).toBeNull();
+    }
+
+    const valid = {
+      ...SECTION,
+      goals: [
+        {
+          ...goal,
+          linedUp: [
+            {
+              ...linedUpTask,
+              blockedBy: [
+                {
+                  task: "Implement the control plane",
+                  status: "in-progress",
+                  ref: "developing-today/code#3404",
+                  workerSessionId: "session-123",
+                  workerLabel: "OpenCode laptop",
+                },
+                { task: "Add hosted storage", status: "queued" },
+                { task: "Resolve the design", status: "stalled" },
+                { task: "Merge the schema change", status: "done" },
+                { task: "Confirm provider behavior", status: "unknown" },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(isOrchestrationSection(valid)).toBe(true);
+
+    const absent = {
+      ...SECTION,
+      goals: [{ ...goal, linedUp: [linedUpTask] }],
+    };
+    expect(isOrchestrationSection(absent)).toBe(true);
+  });
+
   test("rejects poisoned dependency elements and bad dependency shapes", () => {
     const nullDep = { ...SECTION, dependencies: [null] };
     expect(isOrchestrationSection(nullDep)).toBe(false);
