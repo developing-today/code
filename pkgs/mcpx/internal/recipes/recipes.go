@@ -51,8 +51,8 @@ type Placeholder struct {
 	Name        string `json:"name"`
 	Type        Type   `json:"type"`
 	Description string `json:"description,omitempty"`
-	// Default is the literal as written in the declaration, already valid
-	// for the type. Absent means there is none.
+	// Default is the literal as written in the declaration. It is validated
+	// against the type when the recipe is rendered. Absent means there is none.
 	Default *string `json:"default,omitempty"`
 	// Required is false when a default was given or the name was marked
 	// optional with a trailing question mark.
@@ -473,7 +473,15 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 			}
 			lits[p.Name] = lit
 		case p.Default != nil:
-			lits[p.Name] = *p.Default
+			v, ok := decodeLiteral(p, *p.Default)
+			if !ok {
+				return "", fmt.Errorf("%s default must be a valid %s: %q", p.Name, p.Type, *p.Default)
+			}
+			lit, err := literal(p, v)
+			if err != nil {
+				return "", fmt.Errorf("%s default must be a valid %s: %w", p.Name, p.Type, err)
+			}
+			lits[p.Name] = lit
 		case !p.Required:
 			lits[p.Name] = "undefined"
 		default:
