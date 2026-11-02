@@ -35,6 +35,7 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+pub mod signed;
 mod util;
 
 #[cfg(test)]
