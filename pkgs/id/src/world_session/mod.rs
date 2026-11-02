@@ -570,9 +570,25 @@ impl WorldService {
         // the upload path, so it needs no publisher signature — requiring one
         // would disable source-only program updates entirely (Codex review
         // on PR #4088).
-        if !compiled_from_source {
+        let trust_decision = if compiled_from_source {
+            crate::world::TrustDecision {
+                basis: crate::world::TrustBasis::ServerCompiled,
+                publisher: None,
+            }
+        } else {
             verify_module_signature(&self.trusted_module_keys, &wasm, signature)?;
-        }
+            if self.trusted_module_keys.is_empty() {
+                crate::world::TrustDecision {
+                    basis: crate::world::TrustBasis::NoTrustList,
+                    publisher: None,
+                }
+            } else {
+                crate::world::TrustDecision {
+                    basis: crate::world::TrustBasis::SignatureVerified,
+                    publisher: signature.map(|sig| sig.public_key.clone()),
+                }
+            }
+        };
         let is_native = crate::world_native::is_native_module(&wasm);
         if is_native && !self.native {
             return Err(InstallError::InvalidModule);
@@ -678,10 +694,12 @@ impl WorldService {
         };
         let installed = self
             .world
-            .install_program_with_provenance(
+            .install_program_with_trust(
                 module_hash.clone(),
                 seed,
                 Some(provenance.unwrap_or(crate::world::ModuleProvenance::Artifact)),
+                None,
+                Some(trust_decision),
                 guest,
             )
             .await

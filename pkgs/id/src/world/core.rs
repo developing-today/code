@@ -465,6 +465,7 @@ impl WorldCore {
                             module_hash,
                             seed,
                             provenance,
+                            ..
                         } => {
                             core.active_module_hash = Some(module_hash.clone());
                             core.active_module_provenance = provenance.clone();
