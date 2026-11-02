@@ -170,6 +170,7 @@ export const loadConfig = (file) => {
     fail(`config: field 'proxies' must be an array, got ${JSON.stringify(raw.proxies)}`);
 
   const seenNames = new Set();
+  const seenPorts = new Map();
   for (const [i, p] of (raw.proxies || []).entries()) {
     if (!isPlainObject(p)) fail(`proxies[${i}]: entry must be an object, got ${JSON.stringify(p)}`);
     const where = typeof p.name === 'string' && p.name ? `proxies[${i}] ('${p.name}')` : `proxies[${i}]`;
@@ -210,6 +211,20 @@ export const loadConfig = (file) => {
       fail(`${where}: field 'healthPath' must be a string starting with '/', got ${JSON.stringify(p.healthPath)}`);
     checkString(where, 'cwd', p.cwd);
     if (p.wireCommand !== undefined) checkStringArray(where, 'wireCommand', p.wireCommand, { nonEmpty: true });
+    // Each proxy claims two ports on its host at runtime — the canonical
+    // port and the alternate (canonicalPort + altPortOffset) — and reconcile
+    // health-checks and spawns on exactly those two, keying health on the
+    // port alone. Two proxies on the same host must therefore never claim
+    // the same port in any role (#4094); the same port on a different host
+    // is a different claim and stays valid.
+    const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
+    for (const [field, port] of [['canonicalPort', p.canonicalPort], ['altPort', p.canonicalPort + altPortOffset]]) {
+      const claim = `${host}:${port}`;
+      const prior = seenPorts.get(claim);
+      if (prior)
+        fail(`${where}: field '${field}' port ${port} on host '${host}' is already claimed by proxy '${prior.name}' as its ${prior.field}`);
+      seenPorts.set(claim, { name: p.name, field });
+    }
   }
 
   const cfg = {
