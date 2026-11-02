@@ -185,6 +185,12 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
     // Strip trailing 'Z' and optional fractional seconds
     let s = s.strip_suffix('Z').unwrap_or(s);
     let s = if let Some(dot_pos) = s.rfind('.') {
+        // The fraction is a component too: it must be digits, not junk
+        // silently truncated away (#1879).
+        let fraction = &s[dot_pos + 1..];
+        if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
         &s[..dot_pos]
     } else {
         s
@@ -196,8 +202,18 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
         return None;
     }
 
-    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
-    let time_parts: Vec<u64> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
+    // Every component must parse: a non-numeric segment makes the whole
+    // timestamp malformed (#1879). Dropping failed segments let junk like
+    // "2026-03-12-draft" collapse onto the valid "2026-03-12" and parse
+    // as the same instant.
+    let date_parts: Vec<u64> = parts[0]
+        .split('-')
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    let time_parts: Vec<u64> = parts[1]
+        .split(':')
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
 
     if date_parts.len() != 3 || time_parts.len() != 3 {
         return None;
@@ -786,7 +802,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     let mut modified_map: HashMap<String, u64> = HashMap::new();
     let mut deleted_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut user_tags_map: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
-    let mut display_name_map: HashMap<String, String> = HashMap::new();
+    let mut display_name_map: HashMap<String, (u8, String)> = HashMap::new();
     for tag in &all_meta_tags {
         if tag.key == "created" {
             if let Some(ref v) = tag.value
@@ -805,16 +821,14 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         } else if tag.key == "deleted" {
             deleted_set.insert(tag.subject.display_lossy());
         }
-        // Resolve display name from name/file/path tags (prefer name > file > path)
-        if matches!(tag.key.as_bytes(), b"name" | b"file" | b"path") {
-            let subj = tag.subject.display_lossy();
-            if !display_name_map.contains_key(&subj)
-                && let Some(ref v) = tag.value
-                && let Some(s) = v.as_str()
-            {
-                display_name_map.insert(subj, s.to_owned());
-            }
-        }
+        // Resolve display name from name/file/path tags (prefer name > file > path),
+        // regardless of the order in which the tags were returned.
+        record_display_name(
+            &mut display_name_map,
+            tag.subject.display_lossy(),
+            tag.key.as_bytes(),
+            tag.value.as_ref().and_then(|value| value.as_str()),
+        );
         // Collect user-visible tags (not system tags)
         if !is_system_tag_key(&tag.key) {
             user_tags_map
@@ -869,7 +883,9 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         let created_at = created_map.get(&name).copied();
         let modified_at = modified_map.get(&name).copied();
         let tags = user_tags_map.remove(&name).unwrap_or_default();
-        let display_name = display_name_map.get(&name).cloned();
+        let display_name = display_name_map
+            .get(&name)
+            .map(|(_, display_name)| display_name.clone());
 
         files.push(FileInfo {
             name,
@@ -920,6 +936,30 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     });
 
     files
+}
+
+fn record_display_name(
+    display_name_map: &mut std::collections::HashMap<String, (u8, String)>,
+    subject: String,
+    key: &[u8],
+    value: Option<&str>,
+) {
+    let priority = match key {
+        b"name" => 0,
+        b"file" => 1,
+        b"path" => 2,
+        _ => return,
+    };
+    let Some(value) = value else {
+        return;
+    };
+
+    let should_replace = display_name_map
+        .get(&subject)
+        .is_none_or(|(current_priority, _)| priority < *current_priority);
+    if should_replace {
+        display_name_map.insert(subject, (priority, value.to_owned()));
+    }
 }
 
 /// Get a paginated, optionally filtered file list.
@@ -1205,21 +1245,34 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         req.name
     );
 
-    // Check save rate limit
-    if let Err(remaining) = state.save_limiter.check(&req.name).await {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let secs = remaining.as_secs_f64().ceil() as u64;
-        tracing::info!(
-            "[routes] Save rate limited for '{}': {}s remaining",
-            req.name,
-            secs
-        );
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            format!("Save rate limited. Try again in {secs}s."),
-        )
-            .into_response();
-    }
+    // Check save rate limit and reserve the filename for this save
+    // (#2466): a second save of the same file arriving while this one is
+    // in flight is refused here instead of racing to the filename tag.
+    // The permit releases the reservation on every exit path below.
+    let permit = match state.save_limiter.acquire(&req.name).await {
+        Ok(permit) => permit,
+        Err(remaining) => {
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let secs = remaining.as_secs_f64().ceil() as u64;
+            tracing::info!(
+                "[routes] Save rate limited for '{}': {}s remaining",
+                req.name,
+                secs
+            );
+            // Structured refusal (#2244 P0-A): machine-readable reason and
+            // retry value in the body, `Retry-After` header alongside.
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, secs.to_string())],
+                Json(serde_json::json!({
+                    "error": format!("Save rate limited. Try again in {secs}s."),
+                    "reason": "rate_limited",
+                    "retry_after_ms": secs.saturating_mul(1_000),
+                })),
+            )
+                .into_response();
+        }
+    };
 
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
@@ -1329,8 +1382,9 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         .notify_new_version(&req.name, &new_hash_str)
         .await;
 
-    // Record successful save for rate limiting
-    state.save_limiter.record(&req.name).await;
+    // Record successful save for rate limiting (also releases the
+    // in-flight reservation as the permit drops)
+    permit.complete().await;
 
     Json(SaveResponse {
         hash: new_hash_str,
@@ -3275,6 +3329,9 @@ mod tests {
             "auto-2026-report.md",
             "auto-",
             "auto-draft",
+            // Regression (#1879): a near-miss timestamp with a junk date
+            // suffix used to parse as valid and classify as Auto.
+            "auto-2026-03-12-draftT06:42:30",
         ] {
             let (kind, ts) = classify_tag(name);
             assert_eq!(kind, FileKind::Primary, "{name}");
@@ -3311,7 +3368,7 @@ mod tests {
     #[test]
     fn test_parse_iso_timestamp_valid() {
         // 2026-03-12T06:42:30.015Z → should produce a valid timestamp
-        let ts = parse_iso_timestamp("auto-2026-03-12T06:42:30.015Z");
+        let ts = parse_iso_timestamp("2026-03-12T06:42:30.015Z");
         assert!(ts.is_some());
         let t = ts.unwrap();
         // 2026-03-12 is after 2025-01-01 (approx 1735689600)
@@ -3320,9 +3377,34 @@ mod tests {
 
     #[test]
     fn test_parse_iso_timestamp_invalid() {
-        assert!(parse_iso_timestamp("auto-not-a-date").is_none());
-        assert!(parse_iso_timestamp("auto-").is_none());
+        assert!(parse_iso_timestamp("not-a-date").is_none());
+        assert!(parse_iso_timestamp("").is_none());
         assert!(parse_iso_timestamp("noprefix").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_rejects_malformed_components() {
+        // Regression (#1879): a non-numeric component used to be dropped,
+        // so malformed timestamps parsed as the valid instant they
+        // surrounded. The valid control is 2026-03-12T06:42:30Z.
+        assert_eq!(
+            parse_iso_timestamp("2026-03-12T06:42:30Z"),
+            Some(1_773_297_750)
+        );
+        // Junk suffix on the date side.
+        assert!(parse_iso_timestamp("2026-03-12-draftT06:42:30").is_none());
+        // Junk components on the time side.
+        assert!(parse_iso_timestamp("2026-03-12T06:xx:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42:xx:30").is_none());
+        // Extra components, numeric or not (the count check alone is not
+        // enough when a bad segment can be dropped to reach three).
+        assert!(parse_iso_timestamp("2026-03-12-99T06:42:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42:30:30").is_none());
+        // Missing components.
+        assert!(parse_iso_timestamp("2026-03T06:42:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42").is_none());
+        // Junk fractional seconds.
+        assert!(parse_iso_timestamp("2026-03-12T06:42:30.abcZ").is_none());
     }
 
     #[test]
@@ -3358,7 +3440,7 @@ mod tests {
     #[test]
     fn test_parse_iso_timestamp_epoch() {
         // 1970-01-01T00:00:00.000Z should be 0
-        let ts = parse_iso_timestamp("auto-1970-01-01T00:00:00.000Z");
+        let ts = parse_iso_timestamp("1970-01-01T00:00:00.000Z");
         assert_eq!(ts, Some(0));
     }
 
@@ -3613,5 +3695,53 @@ mod tests {
         assert_eq!(page_items[199], 199);
         assert_eq!(page, 1);
         assert_eq!(per_page, MAX_PER_PAGE);
+    }
+
+    fn resolve_display_name(tags: &[(&str, &str)]) -> Option<String> {
+        let mut display_name_map = std::collections::HashMap::new();
+        for (key, value) in tags {
+            record_display_name(
+                &mut display_name_map,
+                "document.md".to_owned(),
+                key.as_bytes(),
+                Some(value),
+            );
+        }
+        display_name_map
+            .remove("document.md")
+            .map(|(_, display_name)| display_name)
+    }
+
+    #[test]
+    fn test_display_name_priority_is_independent_of_tag_order() {
+        // Alpha order sorts the `file` key before `name` and `path`.
+        assert_eq!(
+            resolve_display_name(&[
+                ("file", "basename.md"),
+                ("name", "Friendly title"),
+                ("path", "/source/basename.md"),
+            ]),
+            Some("Friendly title".to_owned())
+        );
+        assert_eq!(
+            resolve_display_name(&[("file", "basename.md"), ("path", "/source/basename.md")]),
+            Some("basename.md".to_owned())
+        );
+        assert_eq!(
+            resolve_display_name(&[("path", "/source/basename.md")]),
+            Some("/source/basename.md".to_owned())
+        );
+
+        // A single identity tag continues to supply the display name.
+        for (key, value) in [
+            ("name", "Friendly title"),
+            ("file", "basename.md"),
+            ("path", "/source/basename.md"),
+        ] {
+            assert_eq!(
+                resolve_display_name(&[(key, value)]),
+                Some(value.to_owned())
+            );
+        }
     }
 }

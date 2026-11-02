@@ -468,3 +468,259 @@ export function validateTaskBody(body: Record<string, unknown>): Validated<{ tit
 export function uploadKey(name: string, now: number, rand: string = crypto.randomUUID()): string {
   return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
 }
+
+// --- HTML extraction (#569) -------------------------------------------------
+// extractHtml mirrors the container crawler's Extractor (container/app.py,
+// an html.parser.HTMLParser) so the Worker fallback in index.ts and the
+// container return identical {title, links, text} for the same page:
+// - links counts every <a> start tag (bare <a> and <a/> included), never
+//   anchors inside scripts, styles, or comments;
+// - title is the concatenated character data of <title> (entities decoded),
+//   and title data never leaks into text;
+// - text is the remaining character data with script/style content
+//   skipped (an unclosed script/style swallows the rest of the document,
+//   as HTMLParser's CDATA mode does), chunks joined with one space and
+//   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
+//   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
+//   both test/extractor.test.ts and test/test_extractor_parity.py.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  copy: "©", reg: "®", trade: "™", hellip: "…", mdash: "—", ndash: "–",
+  lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", laquo: "«", raquo: "»",
+  times: "×", divide: "÷", plusmn: "±", deg: "°", middot: "·",
+  bull: "•", dagger: "†", permil: "‰", euro: "€", pound: "£", yen: "¥",
+  cent: "¢", curren: "¤", sect: "§", para: "¶", micro: "µ", sup1: "¹",
+  sup2: "²", sup3: "³", frac12: "½", frac14: "¼", frac34: "¾",
+  iexcl: "¡", iquest: "¿", szlig: "ß", agrave: "à", aacute: "á",
+  acirc: "â", atilde: "ã", auml: "ä", aring: "å", aelig: "æ",
+  ccedil: "ç", egrave: "è", eacute: "é", ecirc: "ê", euml: "ë",
+  igrave: "ì", iacute: "í", icirc: "î", iuml: "ï", ntilde: "ñ",
+  ograve: "ò", oacute: "ó", ocirc: "ô", otilde: "õ", ouml: "ö",
+  ugrave: "ù", uacute: "ú", ucirc: "û", uuml: "ü", yacute: "ý",
+  yuml: "ÿ", Agrave: "À", Aacute: "Á", Auml: "Ä", Ccedil: "Ç",
+  Egrave: "È", Eacute: "É", Euml: "Ë", Ntilde: "Ñ", Ograve: "Ò",
+  Oacute: "Ó", Ouml: "Ö", Ugrave: "Ù", Uacute: "Ú", Uuml: "Ü",
+};
+
+// HTML numeric character-reference normalization: the same remapping
+// html.unescape applies for the container's HTMLParser. C1 controls
+// 0x80-0x9F map to their Windows-1252 characters; NUL, surrogates, and
+// out-of-range values become U+FFFD.
+const NUMERIC_REF_REMAP: Record<number, number> = {
+  0x80: 0x20ac, 0x81: 0x0081, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e,
+  0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6, 0x89: 0x2030,
+  0x8a: 0x0160, 0x8b: 0x2039, 0x8c: 0x0152, 0x8d: 0x008d, 0x8e: 0x017d,
+  0x8f: 0x008f, 0x90: 0x0090, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201c,
+  0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014, 0x98: 0x02dc,
+  0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153, 0x9d: 0x009d,
+  0x9e: 0x017e, 0x9f: 0x0178,
+};
+
+function normalizeNumericRef(code: number): number {
+  if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return 0xfffd;
+  return NUMERIC_REF_REMAP[code] ?? code;
+}
+
+export function decodeHtmlEntities(data: string): string {
+  return data.replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, body: string) => {
+    if (body.startsWith("#")) {
+      const hex = body[1] === "x" || body[1] === "X";
+      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+      return String.fromCodePoint(normalizeNumericRef(code));
+    }
+    // Own-property lookup only: a plain index would resolve inherited
+    // Object properties (&constructor;, &toString;) to JavaScript
+    // functions, where HTMLParser leaves unknown names literal.
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body)
+      ? NAMED_ENTITIES[body]
+      : whole;
+  });
+}
+
+// A '/' marks a start tag self-closing only where a new attribute could
+// begin (after the tag name, whitespace, or a quoted value) AND it is
+// the final character before '>': <script / > is an open script tag to
+// HTMLParser, not a self-closing one. A '/' ending an UNQUOTED attribute
+// value is part of the value: <script src=/x/> is likewise an open
+// script tag, not a self-closing one.
+function isSelfClosingTag(inner: string, nameEnd: number): boolean {
+  let k = nameEnd;
+  const len = inner.length;
+  while (k < len) {
+    while (k < len && /\s/.test(inner[k])) k += 1;
+    if (k >= len) return false;
+    if (inner[k] === "/") return k === len - 1;
+    while (k < len && !/[\s=/]/.test(inner[k])) k += 1; // attribute name
+    let m = k;
+    while (m < len && /\s/.test(inner[m])) m += 1;
+    if (m < len && inner[m] === "=") {
+      m += 1;
+      while (m < len && /\s/.test(inner[m])) m += 1;
+      if (m < len && (inner[m] === '"' || inner[m] === "'")) {
+        const q = inner[m];
+        m += 1;
+        while (m < len && inner[m] !== q) m += 1;
+        if (m < len) m += 1;
+      } else {
+        // Unquoted value: everything up to whitespace ('/' included).
+        while (m < len && !/\s/.test(inner[m])) m += 1;
+      }
+      k = m;
+    }
+  }
+  return false;
+}
+
+export function extractHtml(html: string): { title: string; links: number; text: string } {
+  let title = "";
+  let links = 0;
+  const textChunks: string[] = [];
+  let skipDepth = 0;
+  // Raw-text mode: script/style are HTMLParser CDATA elements, and
+  // HTMLParser likewise reports <title> content as raw character data
+  // (markup inside a title is literal and never counts as links).
+  let cdataTag: "script" | "style" | "title" | null = null;
+
+  const handleData = (raw: string) => {
+    if (raw === "") return;
+    const data = decodeHtmlEntities(raw);
+    if (cdataTag === "title") title += data;
+    else if (skipDepth === 0) textChunks.push(data);
+  };
+  const handleStartTag = (tag: string, selfClosing: boolean) => {
+    if (tag === "title") {
+      if (!selfClosing) cdataTag = "title";
+    } else if (tag === "a") links += 1;
+    else if (tag === "script" || tag === "style") {
+      skipDepth += 1;
+      if (selfClosing) skipDepth -= 1;
+      else cdataTag = tag;
+    }
+  };
+  const handleEndTag = (tag: string) => {
+    if ((tag === "script" || tag === "style") && skipDepth > 0) skipDepth -= 1;
+  };
+
+  let i = 0;
+  const n = html.length;
+  while (i < n) {
+    if (cdataTag !== null) {
+      // HTMLParser CDATA mode: only the matching close tag is markup.
+      const close = new RegExp(`</${cdataTag}(?=[\\s/>])`, "i").exec(html.slice(i));
+      if (close === null) {
+        handleData(html.slice(i));
+        i = n;
+        break;
+      }
+      handleData(html.slice(i, i + close.index));
+      i += close.index;
+      // Consume the close tag here, tolerantly: HTMLParser accepts
+      // recoverable end tags carrying trailing attributes
+      // (</script foo>), which the strict end-tag pattern in the normal
+      // path rejects -- skipDepth would stay set and the rest of the
+      // document would be discarded.
+      const closeTag = new RegExp(`</${cdataTag}[^>]*>`, "i").exec(html.slice(i));
+      const closedTag = cdataTag;
+      cdataTag = null;
+      if (closeTag !== null) {
+        handleEndTag(closedTag);
+        i += closeTag[0].length;
+      }
+      continue;
+    }
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      handleData(html.slice(i));
+      break;
+    }
+    if (lt > i) handleData(html.slice(i, lt));
+    i = lt;
+    if (html.startsWith("<!--", i)) {
+      // Comment ends per HTMLParser: --> or --!>, plus the abrupt
+      // empty-comment forms <!--> and <!--->.
+      if (html.startsWith(">", i + 4)) {
+        i += 5;
+        continue;
+      }
+      if (html.startsWith("->", i + 4)) {
+        i += 6;
+        continue;
+      }
+      const m = /--!?>/.exec(html.slice(i + 4));
+      i = m === null ? n : i + 4 + m.index + m[0].length;
+      continue;
+    }
+    const next = html[i + 1] ?? "";
+    if (next === "!" || next === "?") {
+      const end = html.indexOf(">", i + 2);
+      i = end === -1 ? n : end + 1;
+      continue;
+    }
+    if (next === "/") {
+      // End tags may carry (invalid but recoverable) attributes, which
+      // HTMLParser consumes rather than emitting as text: </p foo>
+      // still closes the paragraph. The match is bounded at the next
+      // '>' up front: an unbounded name-plus-remainder pattern
+      // backtracks quadratically on an incomplete end tag at EOF
+      // (</p followed by a long letter run and no '>').
+      const gt = html.indexOf(">", i);
+      const m =
+        gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
+      if (m === null) {
+        if (gt === -1 && /^<\/[a-zA-Z]/.test(html.slice(i))) {
+          // Incomplete end tag at EOF: HTMLParser drops it.
+          i = n;
+          continue;
+        }
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleEndTag(m[1].toLowerCase());
+      i = gt + 1;
+      continue;
+    }
+    if (/[a-zA-Z]/.test(next)) {
+      // Start tag: scan to the closing '>' without letting a quoted
+      // attribute value end the tag early.
+      let j = i + 1;
+      let quote = "";
+      let lastSig = "";
+      while (j < n) {
+        const ch = html[j];
+        if (quote !== "") {
+          if (ch === quote) {
+            quote = "";
+            lastSig = ch;
+          }
+        } else if ((ch === '"' || ch === "'") && lastSig === "=") {
+          // A quote opens a quoted value only where a value begins
+          // (right after '='); a quote inside an unquoted value, as in
+          // <a href=/it's>, is data, as HTMLParser tokenizes it.
+          quote = ch;
+        } else if (ch === ">") break;
+        else if (!/\s/.test(ch)) lastSig = ch;
+        j += 1;
+      }
+      if (j >= n) {
+        handleData(html.slice(i)); // unterminated tag: HTMLParser emits it as data
+        break;
+      }
+      const inner = html.slice(i + 1, j);
+      const nameMatch = /^([a-zA-Z][^\s/>]*)/.exec(inner);
+      if (nameMatch === null) {
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleStartTag(nameMatch[1].toLowerCase(), isSelfClosingTag(inner, nameMatch[1].length));
+      i = j + 1;
+      continue;
+    }
+    handleData("<");
+    i += 1;
+  }
+
+  const text = textChunks.join(" ").replace(/\s+/g, " ").trim();
+  return { title: title.trim(), links, text };
+}

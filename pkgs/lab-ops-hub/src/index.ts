@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   computeBudget,
   crawlFetcher,
+  extractHtml,
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
   readResponseTextCapped,
@@ -206,13 +207,10 @@ async function crawlFallback(url: string) {
   // Cap the body read at the container's 2,000,000 bytes (#481): res.text()
   // would buffer a huge page whole in the Worker's memory.
   const html = await readResponseTextCapped(res);
-  const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? "";
-  const links = (html.match(/<a\s/gi) ?? []).length;
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Extraction matches the container Extractor exactly (#569):
+  // extractHtml in lib.ts mirrors its HTMLParser semantics and both
+  // doors are pinned by the paired fixtures in test/.
+  const { title, links, text } = extractHtml(html);
   return { title, excerpt: text.slice(0, 500), links, status_code: res.status, text: text.slice(0, 20000) };
 }
 

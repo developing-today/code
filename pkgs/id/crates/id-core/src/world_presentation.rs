@@ -202,12 +202,7 @@ impl ScreenPatch {
             cells[start..end].clone_from_slice(&run.cells);
             covered_until = end;
         }
-        Some(ScreenSurface {
-            version: prev.version,
-            width: prev.width,
-            height: prev.height,
-            cells,
-        })
+        ScreenSurface::from_cells(usize::from(prev.width), usize::from(prev.height), cells).ok()
     }
 
     /// Whether the patch changes nothing (the two screens are identical).
@@ -667,6 +662,29 @@ mod tests {
             }],
         };
         assert_eq!(bad.apply(&small), None, "run past the last cell");
+    }
+
+    #[test]
+    fn patch_refuses_a_result_that_is_not_a_valid_screen() {
+        let previous = grid(2, 1, " ");
+        let invalid = ScreenPatch {
+            version: 1,
+            width: 2,
+            height: 1,
+            runs: vec![CellRun {
+                start: 0,
+                cells: vec![
+                    ScreenCell {
+                        symbol: "界".to_owned(),
+                        columns: 2,
+                        ..cell("界")
+                    },
+                    cell("x"),
+                ],
+            }],
+        };
+
+        assert_eq!(invalid.apply(&previous), None);
     }
 
     #[test]

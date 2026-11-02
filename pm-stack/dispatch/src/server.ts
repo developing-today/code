@@ -32,6 +32,7 @@ import {
 } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
 import { handleLaunchFailure } from "./launch_failure.ts";
+import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient } from "./opencode.ts";
 
@@ -111,6 +112,7 @@ async function launchSession(
   task: TaskRow,
   issue: IssueRef | null,
   directory: string,
+  warnings: string[],
 ): Promise<string> {
   const session = await opencode.createSession({
     directory,
@@ -156,27 +158,24 @@ async function launchSession(
   }
 
   if (issue) {
-    // Post-launch annotations are best-effort: the session is already
-    // running and the task already claimed, so a GitHub failure here
-    // must not reject the launch — callers cancel the task on a
-    // rejected launch (#2901), which would orphan a live session.
-    // Noted on the task instead, like the lane-ledger failure above.
-    try {
-      await github.comment(
+    // Post-claim annotations are best-effort and individually guarded
+    // (#2660, design #2668 phase 2): the claim PATCH above is the
+    // commit point, so a GitHub failure here must not reject the
+    // launch — callers cancel the task on a rejected launch (#2901),
+    // which would orphan a live session. annotateLaunch records each
+    // failure on the task, still runs the remaining steps, and
+    // returns warnings the wait:true response surfaces.
+    warnings.push(
+      ...(await annotateLaunch(
+        github,
+        requireQueue(),
         req.repo,
         issue.number,
+        task.id,
         `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
-      );
-      await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
-    } catch (e) {
-      try {
-        await requireQueue().patchTask(task.id, {
-          last_error: `launch annotation failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
-        });
-      } catch {
-        /* nothing more to do — the claim stands */
-      }
-    }
+        ["queue/claimed", "work/assigned"],
+      )),
+    );
   }
   return session.id;
 }
@@ -235,7 +234,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   if (!body.wait) {
     void (async () => {
       try {
-        await launchSession(caller, body, task, issue, directory);
+        await launchSession(caller, body, task, issue, directory, warnings);
       } catch (e) {
         // Mirror the wait:true failure path exactly (#2901): cancel the
         // task and note the failure on the issue — never leave a queued
@@ -254,7 +253,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
 
   let sessionId: string;
   try {
-    sessionId = await launchSession(caller, body, task, issue, directory);
+    sessionId = await launchSession(caller, body, task, issue, directory, warnings);
   } catch (e) {
     // Never leave a queued/claimed task behind for a session that did
     // not launch: cancel it and note the failure on the issue (the

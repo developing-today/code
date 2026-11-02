@@ -97,6 +97,22 @@ fn entry_fields(entry: &Entry) -> Vec<(&'static str, Value)> {
             fields.push(("claims", json!(named.join(","))));
         }
         Entry::Remove { document, .. } => fields.push(("document", json!(document.to_hex()))),
+        Entry::NoteCreate { content, .. } => fields.extend([
+            ("content", json!(content.content.to_hex())),
+            ("size", json!(content.size)),
+            ("media_type", json!(content.media_type)),
+        ]),
+        Entry::NoteRevise {
+            note,
+            content,
+            parents,
+            ..
+        } => {
+            fields.push(("note", json!(note.to_hex())));
+            fields.push(("content", json!(content.content.to_hex())));
+            let named: Vec<String> = parents.iter().map(Hash::to_hex).collect();
+            fields.push(("parents", json!(named.join(","))));
+        }
     }
     fields
 }

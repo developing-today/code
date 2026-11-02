@@ -472,17 +472,88 @@ def validate_crawl_url(raw):
             # codepoint returns the judged host with the codepoint
             # deleted, as the Worker returns it (#652). A host whose
             # spelling was folded at extraction time (the Kelvin
-            # sign, #667) gets the same rebuild. (IP literals
-            # take the canonical-address return below instead, and
-            # WHATWG serializes those without a root dot, as here.)
+            # sign, #667) gets the same rebuild. A non-ASCII (IDN)
+            # host gets the same rebuild with the host in its A-label
+            # (punycode) form — the form the Worker's u.hostname
+            # carries — instead of returning the raw U-label spelling
+            # the fetcher would then resolve under a different name
+            # than the Worker certified (#659). The A-labels are NOT
+            # the encoded_labels already computed for the RFC 1035 length
+            # check above: those punycode the NFKC-mapped judged
+            # label, and NFKC is not UTS-46 mapping — it reorders
+            # combining marks before U+0345 can map (so
+            # ᾴ came back xn--hxa0a for the Worker's
+            # xn--kxad), it maps U+03F2 to U+03C2 where UTS-46 maps
+            # it to U+03C3 (xn--3xa for xn--4xa), and it never
+            # NFC-composes a base letter with a combining mark an
+            # ignored codepoint's deletion brought together
+            # (e­́ came back xn--e-xbb for xn--9ca) — each a
+            # different domain than the Worker certified, not a
+            # different spelling of one (Codex review of PR #3781).
+            # Instead each label is re-encoded from the ORIGINAL
+            # spelling (host_before_mapping, separators translated,
+            # root dot stripped, ignored codepoints deleted exactly
+            # as in judging) with the stdlib IDNA codec: nameprep
+            # applies the UTS-46-compatible mapping BEFORE
+            # normalization, in the Worker's order (#596's U+0345
+            # map included). A label the codec refuses — it judges
+            # by Unicode 3.2 tables — falls back to the
+            # NFKC-normalized punycode of the same original label
+            # (NFKC, not NFC, so the fallback still applies the
+            # compatibility mappings the Worker applies).
+            # (IP literals take the canonical-address return below
+            # instead, and WHATWG serializes those without a root
+            # dot, as here.)
+            _return_source = host_before_mapping.translate(
+                {0x3002: ".", 0xFF0E: ".", 0xFF61: "."}
+            )
+            if has_root_dot and _return_source.endswith("."):
+                _return_source = _return_source[:-1]
+            _original_labels = _return_source.split(".")
+
+            def _return_label(judged_label, original_label):
+                if judged_label.isascii():
+                    return judged_label
+                candidate = original_label.translate(
+                    {cp: None for cp in _UTS46_IGNORED}
+                )
+                if candidate.isascii():
+                    return judged_label
+                try:
+                    return candidate.encode("idna").decode("ascii")
+                except (UnicodeError, ValueError):
+                    # The fallback still owes the Worker the UTS-46
+                    # compatibility mappings NFC does not perform:
+                    # NFKC maps e.g. the fullwidth digit in an RTL
+                    # label the codec's Unicode 3.2 bidi rules refuse
+                    # (the alef + fullwidth-1 label returns the
+                    # Worker's xn--1-zhc, not the unmapped
+                    # xn--4db2378j) - Codex round 2 on PR #3781.
+                    return "xn--" + unicodedata.normalize(
+                        "NFKC", candidate
+                    ).encode("punycode").decode("ascii")
+
+            return_host = (
+                ".".join(
+                    _return_label(judged_label, original_label)
+                    for judged_label, original_label in zip(
+                        host.split("."), _original_labels
+                    )
+                )
+                if not host.isascii()
+                else host
+            )
             return _url_with_encoded_components(
                 _normalize_validated_url(
-                    _url_with_host(u, host + "." if has_root_dot else host, raw)
+                    _url_with_host(
+                        u, return_host + "." if has_root_dot else return_host, raw
+                    )
                     if percent_decoded
                     or has_literal_separator
                     or host_was_mapped
                     or has_ignored_codepoint
                     or has_extraction_fold
+                    or not host.isascii()
                     else raw
                 )
             )

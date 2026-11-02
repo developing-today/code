@@ -54,6 +54,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
 
 const PORT = parseProxyPort('COMMANDCODE_PROXY_PORT', 18748);
 const HOST = process.env.COMMANDCODE_PROXY_HOST || '127.0.0.1';
@@ -812,7 +813,9 @@ const acp = {
       () => this.runChatLocked({ sessionKey, model, firstPrompt, deltaPrompt, ephemeral, onDelta, agency, lockKey }),
       () => this.runChatLocked({ sessionKey, model, firstPrompt, deltaPrompt, ephemeral, onDelta, agency, lockKey })
     );
-    this.locks.set(lockKey, run.catch(() => {}));
+    const stored = run.catch(() => {});
+    this.locks.set(lockKey, stored);
+    stored.then(() => { if (this.locks.get(lockKey) === stored) this.locks.delete(lockKey); });
     return run;
   },
 
@@ -870,6 +873,7 @@ const server = http.createServer((req, res) => {
         pid: acp.proc ? acp.proc.pid : null,
         starts: acp.starts,
         liveThreads: acp.liveSessions.size,
+        locks: acp.locks.size,
         storedMappings: sessionStore.size
       }
     }, null, 2));
@@ -893,10 +897,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -904,6 +908,8 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);

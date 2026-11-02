@@ -188,7 +188,12 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           source: "kaneo",
           status: col.id,
           priority: t.priority,
-          updatedAt: t.updatedAt ?? t.createdAt,
+          // #1197: never present creation time as update time. When
+          // Kaneo omits updatedAt the item stays undated: downstream
+          // sorts treat missing as oldest and the done policy keeps
+          // undated cards (age unproven), instead of freshness being
+          // fabricated from createdAt.
+          updatedAt: t.updatedAt,
           kaneoUrl: kaneoTaskUrl(p.workspaceId, p.id, t.id),
           links,
         });
@@ -452,7 +457,12 @@ export function titleRefs(title: string): RefKey[] {
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
-  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) add(`${m[1]}#${m[2]}`);
+  const explicitRefSpans: { start: number; end: number }[] = [];
+  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
+    const start = m.index ?? 0;
+    explicitRefSpans.push({ start, end: start + m[0].length });
+    add(`${m[1]}#${m[2]}`);
+  }
   const aliases: { at: number; repo: string }[] = [];
   for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
     aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
@@ -460,6 +470,7 @@ export function titleRefs(title: string): RefKey[] {
   if (aliases.length) {
     for (const m of title.matchAll(/#(\d+)/g)) {
       const at = m.index ?? 0;
+      if (explicitRefSpans.some((span) => span.start <= at && at < span.end)) continue;
       const before = aliases.filter((a) => a.at < at).pop();
       const repo = (before ?? aliases.find((a) => a.at > at))?.repo;
       if (repo) add(`${repo}#${m[1]}`);
@@ -749,9 +760,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     },
     async items(refs) {
       // #910 stage 5: the fleet feed's GitHub Project pool is the
-      // resolution source FIRST — the projector is dead by config and
-      // the Projects-scope token cannot read arbitrary issues, only
-      // the Project (whose items carry their linked issue's state).
+      // resolution source FIRST — the projector (deployed; the NixOS
+      // module pins PM_PROJECTOR_URL to it) serves refs outside the
+      // pool below, and the Projects-scope token cannot read arbitrary
+      // issues, only the Project (whose items carry their linked
+      // issue's state).
       const out = new Map<RefKey, GhItem>();
       const feed = await getFeed();
       // #2399: the pool enters through the single feed gate (fail-soft,
@@ -1031,11 +1044,15 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // #1139 adds the fourth — stale — tracked as a diagnosis on the
       // source so the attention/today surfaces can banner it.
       const feed = await getFeed();
+      const collection = feed?.meta?.sections.orchestration;
       lastOrchestrationDiagnosis = diagnoseOrchestrationSection(feed?.orchestration ?? null);
       if (feed?.orchestration) {
         const section = normalizeOrchestrationSection(feed.orchestration);
         if (section) {
-          provenance.orchestration = `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          provenance.orchestration =
+            collection?.status === "error"
+              ? `error — collector error: ${collection.error ?? "collection failed"}; serving embedded section ${section.runId}`
+              : `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
           // #1290: the per-item extension seam. The section gate above
           // never learns the extension fields; each tier item's
           // extensions are validated here, fail-soft (a malformed
@@ -1058,9 +1075,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         provenance.orchestration = `invalid — orchestration section present but failed validation (${problem}); the today view derives`;
         return null;
       }
-      provenance.orchestration = feed
-        ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
-        : "fixtures (no fleet feed file yet)";
+      provenance.orchestration =
+        collection?.status === "error"
+          ? `error — collector error: ${collection.error ?? "collection failed"}; no orchestration section was embedded`
+          : collection?.status === "skipped"
+            ? "skipped — collector intentionally skipped orchestration collection"
+            : feed
+              ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async dns(): Promise<DnsSection | null> {
@@ -1068,13 +1090,22 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // from #902's register file by the collector. The page renders
       // the register; it never edits it.
       const feed = await getFeed();
+      const collection = feed?.meta?.sections.dns;
       if (feed?.dns && isDnsSection(feed.dns)) {
-        provenance.dns = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · register parsed ${feed.dns.generatedAt})`;
+        provenance.dns =
+          collection?.status === "error"
+            ? `error — collector error: ${collection.error ?? "collection failed"}; serving embedded DNS section`
+            : `live (fleet feed · ${feedAgeText(feed.generatedAt)} · register parsed ${feed.dns.generatedAt})`;
         return feed.dns;
       }
-      provenance.dns = feed
-        ? "not collected yet — the collector has not embedded a register section"
-        : "fixtures (no fleet feed file yet)";
+      provenance.dns =
+        collection?.status === "error"
+          ? `error — collector error: ${collection.error ?? "collection failed"}; no DNS section was embedded`
+          : collection?.status === "skipped"
+            ? "skipped — collector intentionally skipped DNS collection"
+            : feed
+              ? "not collected yet — the collector has not embedded a register section"
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async aa(): Promise<AaFeedSection | null> {
@@ -1083,16 +1114,26 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // section (the page renders the reason); a missing section means
       // the collector has not embedded one yet.
       const feed = await getFeed();
+      const collection = feed?.meta?.sections.aa;
       if (feed?.aa && isAaSection(feed.aa)) {
-        provenance.aa =
+        const detail =
           feed.aa.status === "ok"
             ? `live (fleet feed · ${feedAgeText(feed.generatedAt)} · ainventory batch ${feed.aa.batch.slice(0, 8)} · collected ${feed.aa.generatedAt})`
             : `live (fleet feed · ${feedAgeText(feed.generatedAt)} · AA section absent: ${feed.aa.reason})`;
+        provenance.aa =
+          collection?.status === "error"
+            ? `error — collector error: ${collection.error ?? "collection failed"}; ${detail}`
+            : detail;
         return feed.aa;
       }
-      provenance.aa = feed
-        ? "not collected yet — the collector has not embedded an AA section"
-        : "fixtures (no fleet feed file yet)";
+      provenance.aa =
+        collection?.status === "error"
+          ? `error — collector error: ${collection.error ?? "collection failed"}; no AA section was embedded`
+          : collection?.status === "skipped"
+            ? "skipped — collector intentionally skipped AA collection"
+            : feed
+              ? "not collected yet — the collector has not embedded an AA section"
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
@@ -1189,9 +1230,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const facet = (key: keyof Provenance): ProvenanceFacet => {
         const text = provenance[key];
         let state: ProvenanceFacet["state"];
-        if (text.startsWith("live")) state = "live";
+        if (text.startsWith("error")) state = "error";
+        else if (text.startsWith("live")) state = "live";
         else if (text.startsWith("invalid")) state = "invalid";
-        else if (text.startsWith("none yet") || text.startsWith("not collected yet")) state = "absent";
+        else if (text.startsWith("none yet") || text.startsWith("not collected yet") || text.startsWith("skipped"))
+          state = "absent";
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
         const feedBacked = text.includes("fleet feed");
