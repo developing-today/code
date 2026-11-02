@@ -1424,6 +1424,13 @@ impl WorldClient {
     pub fn close(self) {
         self.conn.close(0_u32.into(), b"done");
     }
+
+    /// Whether this client's connection has closed, locally or by the
+    /// peer: a closed connection can never serve another stream.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.conn.close_reason().is_some()
+    }
 }
 
 /// Client-side coordinator for concurrent world sessions (F13.8, #3845).
@@ -1482,6 +1489,16 @@ impl WorldSessions {
         world: Option<&str>,
     ) -> Result<&mut WorldClient> {
         let key = Self::key(&addr, world);
+        // A root whose connection has closed (server disconnect or
+        // restart) can never serve another stream, and every session
+        // keyed to it rides that dead connection: evict both so this
+        // endpoint redials on its own, instead of staying wedged until
+        // `close_all` also drops healthy sessions on other servers.
+        if self.roots.get(&key.0).is_some_and(WorldClient::is_closed) {
+            self.roots.remove(&key.0);
+            self.sessions
+                .retain(|(endpoint_id, _), _| endpoint_id != &key.0);
+        }
         if !self.sessions.contains_key(&key) {
             if !self.roots.contains_key(&key.0) {
                 let root = WorldClient::connect(&self.endpoint, addr).await?;
@@ -2638,6 +2655,49 @@ mod tests {
             "a join must not append to the journal"
         );
         assert_eq!(records_gen_after, records_gen_before);
+
+        sessions.close_all();
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn coordinator_replaces_a_closed_root_connection_on_reopen() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let s = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        s.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+
+        // The root connection dies, as on a server restart: close it and
+        // wait until the close has landed.
+        let conn = sessions
+            .roots
+            .get(&host.addr.id().to_string())
+            .unwrap()
+            .conn
+            .clone();
+        conn.close(0_u32.into(), b"root connection died");
+        conn.closed().await;
+
+        // The caller drops the failed session and reopens: the coordinator
+        // must redial a fresh root for this endpoint, not reuse the closed
+        // connection (which would wedge this endpoint until close_all).
+        assert!(sessions.close_session(&host.addr, None));
+        let s = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        s.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        assert_eq!(sessions.endpoint_count(), 1);
+        assert_eq!(sessions.session_count(), 1);
 
         sessions.close_all();
         client_ep.close().await;
