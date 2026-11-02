@@ -5852,12 +5852,14 @@ export function renderProgram(
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
+    /** Prebuilt briefs (#1279), e.g. with comment activity folded in. */
+    briefs?: Map<RefKey, ItemBrief>;
   } | null,
 ): string {
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program" })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];

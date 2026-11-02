@@ -40,7 +40,7 @@ import {
   unavailableRoadmapReconciliation,
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
-import type { DashComment, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import type { Comment, DashComment, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -913,6 +913,12 @@ async function handler(req: Request): Promise<Response> {
     const target = area ? `/program?area=${encodeURIComponent(area)}#projects-pool` : "/program#projects-pool";
     return new Response(null, { status: 302, headers: { Location: target } });
   }
+  // #1279: briefs need the latest comment per item, guaranteed per ref —
+  // the bulk comments() read can truncate an item's latest comment away
+  // in a busy batch, so prefer the source's per-ref latest read.
+  const briefCommentsFor = async (refs: RefKey[]): Promise<Comment[]> =>
+    (source.latestComments ? source.latestComments(refs) : source.comments(refs)).catch(() => []);
+
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
@@ -923,7 +929,7 @@ async function handler(req: Request): Promise<Response> {
     // #1279: the JSON twin of the brief panels on the pool cards — the
     // identical brief objects, built with comment activity folded in.
     const [briefComments, orchestration] = await Promise.all([
-      pool.length ? source.comments(pool.map((p) => p.ref)).catch(() => []) : Promise.resolve([]),
+      pool.length ? briefCommentsFor(pool.map((p) => p.ref)) : Promise.resolve([]),
       source.orchestration().catch(() => null),
     ]);
     const briefs = buildBriefs(pool, { comments: briefComments, orchestration });
@@ -958,6 +964,13 @@ async function handler(req: Request): Promise<Response> {
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    // #1279: the pool cards on /program carry the same comment-backed
+    // briefs as the JSON twin — building them here, not the comment-less
+    // fallback projectsBodyHtml would derive on its own.
+    const briefs = buildBriefs(pool, {
+      comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
+      orchestration,
+    });
     return html(
       renderProgram(data, items, prov(), provDetail(), {
         pool,
@@ -966,6 +979,7 @@ async function handler(req: Request): Promise<Response> {
         coverage,
         actionsByObject,
         identities: formOpts.identities,
+        briefs,
       }),
     );
   }

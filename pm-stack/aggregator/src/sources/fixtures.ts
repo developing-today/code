@@ -1392,6 +1392,16 @@ export function fixtureSource(): Source {
       const wanted = new Set(refs);
       return FIXTURE_COMMENTS.filter((x) => wanted.has(x.ref));
     },
+    latestComments: async (refs) => {
+      const wanted = new Set(refs);
+      const byRef = new Map<string, (typeof FIXTURE_COMMENTS)[number]>();
+      for (const c of FIXTURE_COMMENTS) {
+        if (!wanted.has(c.ref) || c.deleted) continue;
+        const cur = byRef.get(c.ref);
+        if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+      }
+      return [...byRef.values()];
+    },
     quota: async () => FIXTURE_QUOTA,
     usage: async () => ({ ...FIXTURE_USAGE, attention: buildAttentionFlags(FIXTURE_QUOTA, FIXTURE_USAGE) }),
     attention: async () => FIXTURE_ATTENTION,
