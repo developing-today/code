@@ -7113,7 +7113,7 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex only: Luna",
+        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor)",
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
@@ -7198,13 +7198,25 @@
         // (antigravity-ls/gemini-3.8-flash -- the tool-capable Gemini
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
+        // 2026-11-02 (Drew, direct order): Meta joins as CO-PRIMARY
+        // alongside Codex. muse-direct/muse-spark-1.3-contributor
+        // takes a primary seat at weight 2, equal with luna-plan's
+        // 2 — round-robin co-primaries. Why now: the Meta pool reset
+        // 2026-11-02T00:00:00Z fresh at 0% (100 pts, required
+        // ~14.9/day to land at reset) while Codex projects
+        // exhaustion tonight; muse-direct was re-enabled this
+        // morning after its 2026-11-01 park. Spark ALSO keeps its
+        // workhorse-weighted seat (spark-plan#xhigh) — this seat is
+        // additive, the same shape as the 2026-10-29 wrapper.
         "targets": [
-          "opencode-route/luna-plan#xhigh"
+          "opencode-route/luna-plan#xhigh",
+          "muse-direct/muse-spark-1.3-contributor"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/luna-plan": 2
+          "opencode-route/luna-plan": 2,
+          "muse-direct/muse-spark-1.3-contributor": 2
         }
       },
       "workhorse": {
