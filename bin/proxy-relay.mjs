@@ -34,7 +34,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { parseProxyPort } from './proxy-port.mjs';
+import { parseProxyPort, parseProxyPortList } from './proxy-port.mjs';
 
 const LISTEN_PORT = parseProxyPort('RELAY_LISTEN_PORT', 0);
 if (!LISTEN_PORT) {
@@ -43,14 +43,7 @@ if (!LISTEN_PORT) {
 }
 const LISTEN_HOST = process.env.RELAY_LISTEN_HOST || '127.0.0.1';
 const TARGET_HOST = process.env.RELAY_TARGET_HOST || '100.99.113.103';
-const TARGET_PORTS = (process.env.RELAY_TARGET_PORTS || '')
-  .split(',')
-  .map((s) => Number(s.trim()))
-  .filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535);
-if (TARGET_PORTS.length === 0) {
-  console.error('RELAY_TARGET_PORTS is required (comma list)');
-  process.exit(1);
-}
+const TARGET_PORTS = parseProxyPortList('RELAY_TARGET_PORTS');
 const PROXY_HOST = process.env.RELAY_PROXY_HOST || 'hatch-egress-proxy';
 const PROXY_PORT = parseProxyPort('RELAY_PROXY_PORT', 3130);
 const NAME = process.env.RELAY_NAME || `relay-${LISTEN_PORT}`;
