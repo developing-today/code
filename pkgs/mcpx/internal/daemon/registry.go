@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -248,6 +249,9 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 	}
 	sort.Strings(r.order)
 	r.loadCache()
+	if err := r.validateViews(); err != nil {
+		return nil, err
+	}
 	r.warnDeadArgumentRules()
 	return r, nil
 }
@@ -378,6 +382,9 @@ func (r *Registry) View(name string) (*config.Resolved, bool) {
 
 // visibleTools applies a view's allow and deny lists to the shared cache.
 func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
+	if view != nil && len(view.ToolViews) > 0 {
+		return viewTools(view, all)
+	}
 	if view == nil || (view.Tools.Empty() && view.ExcludeTools.Empty()) {
 		return all
 	}
@@ -388,6 +395,1032 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 		}
 	}
 	return out
+}
+
+// viewTools materialises a view's declared tool views (#1933 slice 1):
+// exactly the named target tools, under their view names, with any
+// description override and the pinned properties hidden from the
+// exposed inputSchema. Sorted by view name: tools/list order is
+// deterministic or prompt caches miss.
+// ruleToolName returns the identity argument rules (#1986) know a
+// listed tool by. A declared tool view (#1933) is advertised under its
+// alias, but rules are written against -- and enforced on -- the
+// target's real name: resolveAndGuard maps the alias to its From
+// before applyWritePolicy evaluates them. Schema generation must look
+// rules up by that same real name, or a rule keyed by the target would
+// be enforced without being advertised, and one keyed by an alias
+// advertised without ever being enforced.
+func ruleToolName(view *config.Resolved, name string) string {
+	if view != nil {
+		if tv, ok := view.ToolViews[name]; ok {
+			return tv.From
+		}
+	}
+	return name
+}
+
+// effectiveViewSchema is the inputSchema a surface should advertise
+// for a listed tool: the argument rules for the tool's real name
+// (ruleToolName), projected for the view when the tool is reached
+// through a declared tool view — the view's pins satisfy rule
+// requirements on pinned properties, so those requirements are not
+// advertised to a caller who cannot set them (#1933, Codex P2 on
+// PR #2976).
+func effectiveViewSchema(view *config.Resolved, name string, schema json.RawMessage) json.RawMessage {
+	if view == nil {
+		return schema
+	}
+	if tv, ok := view.ToolViews[name]; ok && len(tv.Pin) > 0 {
+		return view.ArgumentRules.EffectiveSchemaPinnedWithHidden(ruleToolName(view, name), schema, tv.Pin, tv.Hide)
+	}
+	return view.ArgumentRules.EffectiveSchema(ruleToolName(view, name), schema)
+}
+
+func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
+	byName := make(map[string]mcpclient.Tool, len(all))
+	for _, t := range all {
+		byName[t.Name] = t
+	}
+	names := make([]string, 0, len(view.ToolViews))
+	for name := range view.ToolViews {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]mcpclient.Tool, 0, len(names))
+	for _, name := range names {
+		if !view.VisibleTool(name) {
+			continue
+		}
+		tv := view.ToolViews[name]
+		t, ok := byName[tv.From]
+		if !ok {
+			continue // load-time validation names this; listing must not invent it
+		}
+		t.Name = name
+		if tv.Description != "" {
+			t.Description = tv.Description
+		}
+		if len(tv.Hide) > 0 {
+			t.InputSchema = hideSchemaPropsPinned(t.InputSchema, tv.Hide, tv.Pin)
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// hideSchemaProps returns the inputSchema with the named properties
+// removed from its properties and required lists. A schema that does
+// not parse is returned unchanged: hiding is presentation, and a
+// malformed schema is the server's own problem, already visible.
+func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
+	return hideSchemaPropsPinned(schema, hide, nil)
+}
+
+// hideSchemaPropsPinned is hideSchemaProps with the view's pinned
+// values: applicator branches whose truth the pins decide (a oneOf
+// discriminator on a pinned property) are evaluated against them
+// before projection, since projecting a decided branch's assertions
+// away changes how many branches a caller matches (Codex P2 on
+// PR #2976).
+func hideSchemaPropsPinned(schema json.RawMessage, hide []string, pinVals map[string]any) json.RawMessage {
+	if len(schema) == 0 {
+		return schema
+	}
+	var m map[string]any
+	// UseNumber: decoding into float64 would silently rewrite large
+	// integers elsewhere in the schema (an enum bound of
+	// 9007199254740993 would come back 9007199254740992) when the
+	// hidden-property edit re-marshals it.
+	dec := json.NewDecoder(strings.NewReader(string(schema)))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		return schema
+	}
+	unique := make(map[string]bool, len(hide))
+	for _, name := range hide {
+		unique[name] = true
+	}
+	projector := schemaProjector{root: m, resRoot: m, hide: hide, hiddenCount: len(unique), refs: map[string]string{}, pinVals: pinVals}
+	collectSchemaRefUses(m, "", "", &projector.docRefs)
+	projector.hidePropsAtPath(m, "")
+	out, err := json.Marshal(m)
+	if err != nil {
+		return schema
+	}
+	return out
+}
+
+func schemaUsesDraft07Dependencies(root map[string]any) bool {
+	dialect, _ := root["$schema"].(string)
+	return strings.Contains(dialect, "draft-07") || strings.Contains(dialect, "draft-06") || strings.Contains(dialect, "draft-04") || strings.Contains(dialect, "draft-03")
+}
+
+// hidePropsAtScope removes the hidden properties from one schema
+// object's properties and required lists, and recurses into its
+// same-instance applicators (allOf, anyOf, oneOf) and the targets of
+// its local references, which constrain the same instance: a member's
+// or referenced schema's requirement on a hidden property would
+// otherwise survive the root projection, and against
+// additionalProperties:false with the property's declaration deleted
+// it advertises a schema no caller can satisfy, even though calls
+// succeed because pins merge before forwarding (Codex P2 on
+// PR #2976). The disjunctive applicators are projected the same way:
+// the merged instance always carries the hidden pins, so a branch's
+// hidden-property requirement is always satisfied at enforcement and
+// projecting it out states the caller's real choice. Dependencies
+// triggered by a hidden property likewise always fire once the pin
+// merges, so they are promoted to unconditional constraints at the
+// scope instead of staying conditional on a property the caller can
+// no longer supply (Codex P2 on PR #2976).
+//
+// A subschema declaring its own $id is a separate schema resource:
+// fragment references inside it resolve against that resource's own
+// definitions, and projected copies are stored in that resource's
+// $defs, never the outer document's (Codex P2 on PR #2976). A hidden
+// property another schema in the same resource still references --
+// for example a sibling property whose schema is
+// {"$ref": "#/properties/tailnet"} -- keeps its schema: the
+// declaration moves into the resource's $defs and every reference to
+// it is rewritten before the caller-facing declaration is deleted
+// (Codex P2 on PR #2976).
+type schemaProjector struct {
+	root        map[string]any
+	resRoot     map[string]any
+	resPath     string
+	path        string
+	hide        []string
+	hiddenCount int
+	refs        map[string]string
+	docRefs     []schemaRefUse
+	pinVals     map[string]any
+}
+
+// schemaRefUse records one local $ref together with the JSON Pointer
+// of the schema resource it sits in ("" for the document root),
+// collected before projection starts so a declaration can tell
+// whether anything still references it while the traversal mutates
+// the document.
+type schemaRefUse struct {
+	resPath string
+	ref     string
+}
+
+func escapePointerSegment(s string) string {
+	s = strings.ReplaceAll(s, "~", "~0")
+	return strings.ReplaceAll(s, "/", "~1")
+}
+
+// literalSchemaValueKey reports whether a schema keyword's value is
+// instance data rather than a schema: a "$ref" key inside a const or
+// enum payload is literal data, never a reference, and the reference
+// walkers must not treat it as one (Codex P2 on PR #2976).
+func literalSchemaValueKey(k string) bool {
+	switch k {
+	case "const", "enum", "default", "examples", "example":
+		return true
+	}
+	return false
+}
+
+func collectSchemaRefUses(v any, path, resPath string, out *[]schemaRefUse) {
+	collectSchemaRefUsesAt(v, path, resPath, false, out)
+}
+
+// collectSchemaRefUsesAt adds nameMap: inside a name map
+// (properties, $defs, ...) every key is a name and every value a
+// schema, so the literal-payload skip does not apply to its entries
+// -- an argument named "const" still has a schema worth walking.
+func collectSchemaRefUsesAt(v any, path, resPath string, nameMap bool, out *[]schemaRefUse) {
+	switch v := v.(type) {
+	case map[string]any:
+		if !nameMap {
+			if path != "" {
+				if id, ok := v["$id"].(string); ok && id != "" {
+					resPath = path
+				}
+			}
+			if ref, ok := v["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
+				*out = append(*out, schemaRefUse{resPath: resPath, ref: ref})
+			}
+		}
+		for k, val := range v {
+			if !nameMap && literalSchemaValueKey(k) {
+				continue
+			}
+			collectSchemaRefUsesAt(val, path+"/"+escapePointerSegment(k), resPath, !nameMap && schemaNameMapKey(k), out)
+		}
+	case []any:
+		for i, val := range v {
+			collectSchemaRefUsesAt(val, path+"/"+strconv.Itoa(i), resPath, false, out)
+		}
+	}
+}
+
+// schemaNameMapKey reports whether a schema keyword's value is a
+// map of NAME -> schema: keys in such a map are property or
+// definition names, never keywords.
+func schemaNameMapKey(k string) bool {
+	switch k {
+	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+		return true
+	}
+	return false
+}
+
+// refUsed reports whether any local reference inside the projector's
+// current resource points at or below the given JSON Pointer.
+func (p *schemaProjector) refUsed(pointer string) bool {
+	for _, u := range p.docRefs {
+		if u.resPath != p.resPath {
+			continue
+		}
+		if u.ref == "#"+pointer || strings.HasPrefix(u.ref, "#"+pointer+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// rewriteResourceRefs rewrites every local reference in the current
+// resource that points at or below oldPointer so it points at or
+// below newPointer instead. Nested resources are not entered: their
+// fragments resolve against themselves.
+func (p *schemaProjector) rewriteResourceRefs(oldPointer, newPointer string) {
+	rewriteSchemaRefs(p.resRoot, true, "#"+oldPointer, "#"+newPointer)
+}
+
+func rewriteSchemaRefs(v any, isResourceRoot bool, oldRef, newRef string) {
+	rewriteSchemaRefsAt(v, isResourceRoot, false, oldRef, newRef)
+}
+
+// rewriteSchemaRefsAt adds nameMap: see collectSchemaRefUsesAt.
+func rewriteSchemaRefsAt(v any, isResourceRoot, nameMap bool, oldRef, newRef string) {
+	switch v := v.(type) {
+	case map[string]any:
+		if !nameMap {
+			if !isResourceRoot {
+				if id, ok := v["$id"].(string); ok && id != "" {
+					return
+				}
+			}
+			if ref, ok := v["$ref"].(string); ok {
+				if ref == oldRef {
+					v["$ref"] = newRef
+				} else if strings.HasPrefix(ref, oldRef+"/") {
+					v["$ref"] = newRef + ref[len(oldRef):]
+				}
+			}
+		}
+		for k, val := range v {
+			if !nameMap && literalSchemaValueKey(k) {
+				continue
+			}
+			rewriteSchemaRefsAt(val, false, !nameMap && schemaNameMapKey(k), oldRef, newRef)
+		}
+	case []any:
+		for _, val := range v {
+			rewriteSchemaRefsAt(val, false, false, oldRef, newRef)
+		}
+	}
+}
+
+func (p *schemaProjector) hidePropsAtPath(m map[string]any, path string) {
+	saved := p.path
+	p.path = path
+	p.hidePropsAtScope(m)
+	p.path = saved
+}
+
+func (p *schemaProjector) hidden(name string) bool {
+	for _, h := range p.hide {
+		if h == name {
+			return true
+		}
+	}
+	return false
+}
+
+// preserveReferenced moves a hidden property's schema into the
+// current resource's $defs and rewrites every reference to it there,
+// reporting whether anything in the resource referenced the
+// declaration at all. Unreferenced declarations need no preservation:
+// the caller simply deletes them.
+func (p *schemaProjector) preserveReferenced(props map[string]any, name string) bool {
+	pointer := p.path + "/properties/" + escapePointerSegment(name)
+	// References inside a resource are written relative to that
+	// resource, so matching and rewriting use the pointer relative
+	// to the resource root, not the document-absolute one (Codex P2
+	// on PR #2976).
+	rel := pointer
+	if p.resPath != "" && strings.HasPrefix(pointer, p.resPath+"/") {
+		rel = pointer[len(p.resPath):]
+	}
+	if !p.refUsed(rel) {
+		return false
+	}
+	defs, ok := p.resRoot["$defs"].(map[string]any)
+	if !ok && p.resRoot["$defs"] != nil {
+		return false
+	}
+	if !ok {
+		defs = map[string]any{}
+		p.resRoot["$defs"] = defs
+	}
+	defName := "_mcpx_hidden_" + name
+	for i := 1; ; i++ {
+		if _, exists := defs[defName]; !exists {
+			break
+		}
+		defName = fmt.Sprintf("_mcpx_hidden_%s_%d", name, i)
+	}
+	defs[defName] = cloneSchemaValue(props[name])
+	p.rewriteResourceRefs(rel, "/$defs/"+escapePointerSegment(defName))
+	return true
+}
+
+// branchVerdict evaluates one same-instance applicator branch
+// against the pinned values alone, using the config projector's
+// verdict machinery with references resolved against the current
+// resource and the document's dialect preserved.
+func (p *schemaProjector) branchVerdict(sub any) (bool, bool) {
+	verdictRoot := make(map[string]any, len(p.resRoot)+1)
+	for k, v := range p.resRoot {
+		verdictRoot[k] = v
+	}
+	if dialect, ok := p.root["$schema"]; ok {
+		verdictRoot["$schema"] = dialect
+	}
+	return config.PinnedBranchVerdict(sub, p.pinVals, verdictRoot)
+}
+
+// branchConjunctVerdict evaluates one applicator branch's
+// pinned-only conjuncts against the pinned values, for branches
+// whose full verdict the caller-dependent remainder leaves
+// undecided.
+func (p *schemaProjector) branchConjunctVerdict(sub any) (bool, bool) {
+	verdictRoot := make(map[string]any, len(p.resRoot)+1)
+	for k, v := range p.resRoot {
+		verdictRoot[k] = v
+	}
+	if dialect, ok := p.root["$schema"]; ok {
+		verdictRoot["$schema"] = dialect
+	}
+	return config.PinnedConjunctVerdict(sub, p.pinVals, verdictRoot)
+}
+
+// relPointer renders a document-absolute JSON Pointer relative to
+// the projector's current schema resource: references inside a
+// resource are written against the resource root.
+func (p *schemaProjector) relPointer(pointer string) string {
+	if p.resPath != "" && strings.HasPrefix(pointer, p.resPath+"/") {
+		return pointer[len(p.resPath):]
+	}
+	return pointer
+}
+
+// preserveDroppedBranch keeps an applicator branch the pins
+// decided (and the projection therefore discards) when another
+// schema in the same resource still references into it: the
+// branch moves into the resource's $defs and every reference to
+// it is rewritten there, so discarding the branch cannot strand
+// a reference (Codex P2 on PR #2976).
+func (p *schemaProjector) preserveDroppedBranch(key string, i int, sub any) {
+	rel := p.relPointer(p.path + "/" + key + "/" + strconv.Itoa(i))
+	if !p.refUsed(rel) {
+		return
+	}
+	defs, ok := p.resRoot["$defs"].(map[string]any)
+	if !ok && p.resRoot["$defs"] != nil {
+		return
+	}
+	if !ok {
+		defs = map[string]any{}
+		p.resRoot["$defs"] = defs
+	}
+	base := "_mcpx_branch_" + key + "_" + strconv.Itoa(i)
+	defName := base
+	for n := 1; ; n++ {
+		if _, exists := defs[defName]; !exists {
+			break
+		}
+		defName = fmt.Sprintf("%s_%d", base, n)
+	}
+	defs[defName] = cloneSchemaValue(sub)
+	p.rewriteResourceRefs(rel, "/$defs/"+escapePointerSegment(defName))
+}
+
+func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
+	savedResRoot, savedResPath := p.resRoot, p.resPath
+	if id, ok := m["$id"].(string); ok && id != "" {
+		p.resRoot = m
+		p.resPath = p.path
+	}
+	defer func() { p.resRoot, p.resPath = savedResRoot, savedResPath }()
+	var promotedSubs []any
+	if negated, hasNot := m["not"]; hasNot && len(p.pinVals) > 0 {
+		if valid, decided := p.branchVerdict(negated); decided {
+			if valid {
+				// The inner schema always matches after pins merge,
+				// so its negation rejects every caller instance.
+				m["not"] = map[string]any{}
+			} else {
+				// The inner schema never matches after pins merge;
+				// its negation imposes no caller constraint.
+				delete(m, "not")
+			}
+		} else if valid, decided := p.branchConjunctVerdict(negated); decided && !valid {
+			// A pinned-only conjunct already makes the inner schema
+			// impossible, even though other parts depend on the caller.
+			delete(m, "not")
+		} else if sm, ok := negated.(map[string]any); ok {
+			// Preserve the caller-dependent remainder, but project its
+			// hidden-pin contribution before the outer negation is applied.
+			p.hidePropsAtPath(sm, p.path+"/not")
+		}
+	}
+	if condition, hasIf := m["if"]; len(p.pinVals) > 0 && hasIf {
+		valid, decided := p.branchVerdict(condition)
+		if !decided {
+			// A condition may also inspect caller properties, but a
+			// pinned-only conjunct can still make it impossible. Fold
+			// that false verdict before name projection removes the pin
+			// assertion and changes the selected branch (Codex P2 on
+			// PR #2976).
+			if conjunctValid, conjunctDecided := p.branchConjunctVerdict(condition); conjunctDecided && !conjunctValid {
+				valid, decided = false, true
+			}
+		}
+		if decided {
+			// The pin fixes the conditional before enforcement.
+			// Replace the predicate with its fixed verdict so
+			// references into the selected then/else schema keep
+			// their original locations.
+			m["if"] = valid
+			selected := "else"
+			if valid {
+				selected = "then"
+			}
+			if sm, ok := m[selected].(map[string]any); ok {
+				p.hidePropsAtPath(sm, p.path+"/"+selected)
+			}
+		} else {
+			// Mixed conditions still need their fixed pin
+			// contribution projected, and these schemas share the
+			// enclosing instance scope.
+			for _, key := range []string{"if", "then", "else"} {
+				if sm, ok := m[key].(map[string]any); ok {
+					p.hidePropsAtPath(sm, p.path+"/"+key)
+				}
+			}
+		}
+	}
+
+	if props, ok := m["properties"].(map[string]any); ok {
+		for _, h := range p.hide {
+			if _, present := props[h]; present {
+				p.preserveReferenced(props, h)
+				delete(props, h)
+			}
+		}
+	}
+	if p.hiddenCount > 0 {
+		adjustPropertyCounts(m, p.hiddenCount)
+	}
+	if req, ok := m["required"].([]any); ok {
+		kept := req[:0]
+		for _, r := range req {
+			name, _ := r.(string)
+			if !p.hidden(name) {
+				kept = append(kept, r)
+			}
+		}
+		if len(kept) == 0 {
+			delete(m, "required")
+		} else {
+			m["required"] = kept
+		}
+	}
+	var promoted []string
+	if deps, ok := m["dependentRequired"].(map[string]any); ok {
+		keptDeps := map[string]any{}
+		triggers := make([]string, 0, len(deps))
+		for prop := range deps {
+			triggers = append(triggers, prop)
+		}
+		sort.Strings(triggers)
+		for _, prop := range triggers {
+			names, ok := deps[prop].([]any)
+			if !ok {
+				if !p.hidden(prop) {
+					keptDeps[prop] = deps[prop]
+				}
+				continue
+			}
+			kept := make([]any, 0, len(names))
+			for _, n := range names {
+				if name, isStr := n.(string); isStr && p.hidden(name) {
+					continue
+				}
+				kept = append(kept, n)
+			}
+			if p.hidden(prop) {
+				// The pin always supplies the trigger, so its
+				// remaining dependencies promote to unconditional
+				// requirements at this scope.
+				for _, n := range kept {
+					if name, isStr := n.(string); isStr {
+						promoted = append(promoted, name)
+					}
+				}
+				continue
+			}
+			if len(kept) > 0 {
+				keptDeps[prop] = kept
+			}
+		}
+		if len(keptDeps) > 0 {
+			m["dependentRequired"] = keptDeps
+		} else {
+			delete(m, "dependentRequired")
+		}
+	}
+	if subs, ok := m["dependentSchemas"].(map[string]any); ok {
+		keptSubs := map[string]any{}
+		triggers := make([]string, 0, len(subs))
+		for prop := range subs {
+			triggers = append(triggers, prop)
+		}
+		sort.Strings(triggers)
+		for _, prop := range triggers {
+			sub := subs[prop]
+			if sm, isMap := sub.(map[string]any); isMap {
+				p.hidePropsAtPath(sm, p.path+"/dependentSchemas/"+escapePointerSegment(prop))
+				if p.hidden(prop) {
+					if len(sm) > 0 {
+						promotedSubs = append(promotedSubs, sm)
+					}
+					continue
+				}
+				keptSubs[prop] = sub
+				continue
+			}
+			if p.hidden(prop) {
+				// A boolean dependent schema the pin always
+				// triggers applies unconditionally: true
+				// constrains nothing, false rejects everything.
+				if b, isBool := sub.(bool); isBool && !b {
+					promotedSubs = append(promotedSubs, sub)
+				}
+				continue
+			}
+			keptSubs[prop] = sub
+		}
+		if len(keptSubs) > 0 {
+			m["dependentSchemas"] = keptSubs
+		} else {
+			delete(m, "dependentSchemas")
+		}
+	}
+	if schemaUsesDraft07Dependencies(p.root) {
+		if deps, ok := m["dependencies"].(map[string]any); ok {
+			keptDeps := map[string]any{}
+			triggers := make([]string, 0, len(deps))
+			for prop := range deps {
+				triggers = append(triggers, prop)
+			}
+			sort.Strings(triggers)
+			for _, prop := range triggers {
+				dep := deps[prop]
+				switch d := dep.(type) {
+				case []any:
+					kept := make([]any, 0, len(d))
+					for _, name := range d {
+						if s, ok := name.(string); ok && p.hidden(s) {
+							continue
+						}
+						kept = append(kept, name)
+					}
+					if p.hidden(prop) {
+						for _, name := range kept {
+							if s, ok := name.(string); ok {
+								promoted = append(promoted, s)
+							}
+						}
+					} else if len(kept) > 0 {
+						keptDeps[prop] = kept
+					}
+				case map[string]any:
+					p.hidePropsAtPath(d, p.path+"/dependencies/"+escapePointerSegment(prop))
+					if p.hidden(prop) {
+						if len(d) > 0 {
+							promotedSubs = append(promotedSubs, d)
+						}
+					} else {
+						keptDeps[prop] = dep
+					}
+				case bool:
+					if p.hidden(prop) {
+						if !d {
+							promotedSubs = append(promotedSubs, d)
+						}
+					} else {
+						keptDeps[prop] = dep
+					}
+				default:
+					keptDeps[prop] = dep
+				}
+			}
+			if len(keptDeps) > 0 {
+				m["dependencies"] = keptDeps
+			} else {
+				delete(m, "dependencies")
+			}
+		}
+	}
+	if len(promoted) > 0 {
+		req, _ := m["required"].([]any)
+		seen := map[string]bool{}
+		for _, n := range req {
+			if name, ok := n.(string); ok {
+				seen[name] = true
+			}
+		}
+		for _, name := range promoted {
+			if !seen[name] {
+				seen[name] = true
+				req = append(req, name)
+			}
+		}
+		m["required"] = req
+	}
+	unsatisfiable := false
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		subs, ok := m[key].([]any)
+		if !ok {
+			continue
+		}
+		kept := make([]any, 0, len(subs))
+		keptIndices := make([]int, 0, len(subs))
+		decidedValid := 0
+		var remaps [][2]string
+		for i, sub := range subs {
+			if len(p.pinVals) > 0 {
+				valid, decided := p.branchVerdict(sub)
+				if !decided {
+					// The branch may still be
+					// settled against the caller
+					// by its pinned-only conjuncts:
+					// a branch whose pinned
+					// discriminator assertion
+					// fails can never match the
+					// merged instance, even though
+					// the branch also examines
+					// caller properties the full
+					// verdict must decline (Codex
+					// P2 on PR #2976).
+					if cv, cd := p.branchConjunctVerdict(sub); cd && !cv {
+						valid, decided = false, true
+					}
+				}
+				if decided {
+					if valid {
+						decidedValid++
+					} else if key == "allOf" {
+						unsatisfiable = true
+					}
+					p.preserveDroppedBranch(key, i, sub)
+					continue
+				}
+			}
+			if sm, ok := sub.(map[string]any); ok {
+				p.hidePropsAtPath(sm, p.path+"/"+key+"/"+strconv.Itoa(i))
+			}
+			if len(kept) != i {
+				remaps = append(remaps, [2]string{
+					p.relPointer(p.path + "/" + key + "/" + strconv.Itoa(i)),
+					p.relPointer(p.path + "/" + key + "/" + strconv.Itoa(len(kept))),
+				})
+			}
+			kept = append(kept, sub)
+			keptIndices = append(keptIndices, i)
+		}
+		switch key {
+		case "allOf":
+			if len(kept) > 0 {
+				m[key] = kept
+			} else {
+				delete(m, key)
+			}
+		case "anyOf":
+			if decidedValid > 0 {
+				// One branch always matches once the pins
+				// merge: the disjunction constrains nothing.
+				// Preserve projected alternatives referenced from
+				// elsewhere in this resource before dropping the choice.
+				for i, sub := range kept {
+					p.preserveDroppedBranch(key, keptIndices[i], sub)
+				}
+				delete(m, key)
+			} else if len(kept) == 0 {
+				unsatisfiable = true
+				delete(m, key)
+			} else {
+				m[key] = kept
+			}
+		case "oneOf":
+			if decidedValid > 1 {
+				unsatisfiable = true
+				delete(m, key)
+			} else if decidedValid == 1 {
+				// The decided branch is the one match, so the
+				// caller must match none of the rest.
+				delete(m, key)
+				if len(kept) > 0 {
+					promotedSubs = append(promotedSubs, map[string]any{
+						"not": map[string]any{"anyOf": kept},
+					})
+				}
+			} else if len(kept) == 0 {
+				unsatisfiable = true
+				delete(m, key)
+			} else {
+				m[key] = kept
+			}
+		}
+		for _, rm := range remaps {
+			p.rewriteResourceRefs(rm[0], rm[1])
+		}
+	}
+	if unsatisfiable {
+		m["not"] = map[string]any{}
+	}
+	if len(promotedSubs) > 0 {
+		if subs, ok := m["allOf"].([]any); ok {
+			m["allOf"] = append(subs, promotedSubs...)
+		} else if _, exists := m["allOf"]; !exists {
+			m["allOf"] = promotedSubs
+		} else {
+			m["allOf"] = append([]any{m["allOf"]}, promotedSubs...)
+		}
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
+		resKey := p.resPath + "|" + ref
+		if projected, ok := p.refs[resKey]; ok {
+			m["$ref"] = projected
+			return
+		}
+		if target, ok := resolveSchemaPointer(p.resRoot, ref); ok {
+			if tm, ok := target.(map[string]any); ok {
+				defs, ok := p.resRoot["$defs"].(map[string]any)
+				if !ok && p.resRoot["$defs"] != nil {
+					return
+				}
+				if !ok {
+					defs = map[string]any{}
+					p.resRoot["$defs"] = defs
+				}
+				name := "_mcpx_projection"
+				for i := 1; ; i++ {
+					if _, exists := defs[name]; !exists {
+						break
+					}
+					name = fmt.Sprintf("_mcpx_projection_%d", i)
+				}
+				projected := "#/$defs/" + name
+				p.refs[resKey] = projected // register before recursion, including cycles
+				clone := cloneSchemaValue(tm).(map[string]any)
+				defs[name] = clone
+				m["$ref"] = projected
+				p.hidePropsAtPath(clone, p.resPath+"/$defs/"+escapePointerSegment(name))
+			}
+		}
+	}
+}
+
+// adjustPropertyCounts projects minProperties/maxProperties at one
+// same-instance scope. The pins supply those properties on every call,
+// even when declared in a different conjunct -- they merge before
+// forwarding -- so the merged instance always carries hiddenCount more
+// properties than the caller supplied. Counting constraints left
+// unadjusted count caller arguments instead: minProperties:1 over a
+// sole pinned property advertises a schema no caller can satisfy
+// even though {} succeeds once the pin merges (Codex P2 on
+// PR #2976). A min that reaches zero is no constraint and is
+// dropped; a max below zero makes the schema unsatisfiable because
+// the pins alone exceed the upstream maximum.
+func adjustPropertyCounts(m map[string]any, hiddenCount int) {
+	for _, key := range []string{"minProperties", "maxProperties"} {
+		num, ok := m[key].(json.Number)
+		if !ok {
+			continue
+		}
+		n, err := num.Int64()
+		if err != nil {
+			continue
+		}
+		n -= int64(hiddenCount)
+		if key == "minProperties" && n <= 0 {
+			delete(m, key)
+			continue
+		}
+		if n < 0 {
+			// No caller input can satisfy this constraint after the pins
+			// merge. An empty schema matches every instance, so its
+			// negation rejects every instance without disturbing allOf.
+			m["not"] = map[string]any{}
+			n = 0
+		}
+		m[key] = json.Number(strconv.FormatInt(n, 10))
+	}
+}
+
+func cloneSchemaValue(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, value := range v {
+			out[k] = cloneSchemaValue(value)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, value := range v {
+			out[i] = cloneSchemaValue(value)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// schemaProps is the property name set of a tool's inputSchema.
+// Declarations are collected through same-instance composition
+// (allOf/anyOf/oneOf, if/then/else) and local references before a
+// name counts as undeclared: a target that declares an argument
+// inside allOf accepts that argument exactly as if it were declared
+// at the root, and generated clients already support such schemas --
+// treating the pin as unknown would reject a valid view at load
+// (Codex P2 on PR #2976).
+func schemaProps(schema json.RawMessage) map[string]bool {
+	out := map[string]bool{}
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		return out
+	}
+	collectSchemaProps(m, m, out, map[string]bool{})
+	return out
+}
+
+func collectSchemaProps(m, root map[string]any, out map[string]bool, resolving map[string]bool) {
+	if props, ok := m["properties"].(map[string]any); ok {
+		for name := range props {
+			out[name] = true
+		}
+	}
+	for _, k := range []string{"allOf", "anyOf", "oneOf"} {
+		if subs, ok := m[k].([]any); ok {
+			for _, sub := range subs {
+				if sm, ok := sub.(map[string]any); ok {
+					collectSchemaProps(sm, root, out, resolving)
+				}
+			}
+		}
+	}
+	for _, k := range []string{"if", "then", "else"} {
+		if sub, ok := m[k].(map[string]any); ok {
+			collectSchemaProps(sub, root, out, resolving)
+		}
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
+		if target, ok := resolveSchemaPointer(root, ref); ok {
+			if tm, ok := target.(map[string]any); ok {
+				resolving[ref] = true
+				collectSchemaProps(tm, root, out, resolving)
+				delete(resolving, ref)
+			}
+		}
+	}
+}
+
+// resolveSchemaPointer resolves a local JSON Pointer reference ("#"
+// or "#/a/b") against the document root.
+func resolveSchemaPointer(root map[string]any, ref string) (any, bool) {
+	if ref == "#" {
+		return root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var cur any = root
+	for _, seg := range strings.Split(ref[2:], "/") {
+		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// validateViews checks declared tool views against the target tools
+// the cache knows (#1933 slice 1): an unknown from target, or a pin
+// of an argument the target's schema does not declare, is a load
+// error naming the view -- never a silent no-op. A server whose
+// schemas are not cached yet cannot be checked and is skipped; the
+// listing path invents nothing for a missing target either way. An
+// expired cache is skipped for the same reason: its contents are
+// stale, so treating them as authoritative would let an old
+// catalogue veto a reload that uses a tool or argument the upstream
+// added after the cache was fetched, until an operator refreshed
+// the server by hand (Codex P2 on PR #2976). Validation defers
+// until the catalogue is refreshed.
+func validateViews(order []string, views map[string]*config.Resolved, pools map[string]*pool.Pool) error {
+	for _, name := range order {
+		view := views[name]
+		if len(view.ToolViews) == 0 {
+			continue
+		}
+		p, ok := pools[name]
+		if !ok || p == nil {
+			continue
+		}
+		all, _, _ := p.CachedSchemas()
+		if len(all) == 0 || p.SchemaExpired() {
+			continue
+		}
+		byName := make(map[string]mcpclient.Tool, len(all))
+		for _, t := range all {
+			byName[t.Name] = t
+		}
+		viewNames := make([]string, 0, len(view.ToolViews))
+		for vn := range view.ToolViews {
+			viewNames = append(viewNames, vn)
+		}
+		sort.Strings(viewNames)
+		for _, vn := range viewNames {
+			tv := view.ToolViews[vn]
+			t, ok := byName[tv.From]
+			if !ok {
+				return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
+			}
+			props := schemaProps(t.InputSchema)
+			pins := make([]string, 0, len(tv.Pin))
+			for k := range tv.Pin {
+				pins = append(pins, k)
+			}
+			sort.Strings(pins)
+			for _, k := range pins {
+				if !props[k] {
+					return fmt.Errorf("server %q: toolView %q: pin %q is not an argument of %q", name, vn, k, tv.From)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Registry) validateViews() error {
+	return validateViews(r.order, r.views, r.pools)
+}
+
+// mergePinnedArgs returns the call arguments with a view's pinned
+// values merged over them (#1933 slice 1): a pinned argument wins
+// over whatever the caller supplied, because pinning is the view
+// author's decision, not a default. Args that are not a JSON object
+// cannot carry named arguments and pass through unless there is
+// nothing to pin.
+func mergePinnedArgs(args any, pin map[string]any) any {
+	if len(pin) == 0 {
+		return args
+	}
+	merged := map[string]any{}
+	switch a := args.(type) {
+	case nil:
+	case map[string]any:
+		for k, v := range a {
+			merged[k] = v
+		}
+	case json.RawMessage:
+		if len(a) > 0 {
+			_ = json.Unmarshal(a, &merged)
+		}
+	default:
+		b, err := json.Marshal(a)
+		if err != nil {
+			return args
+		}
+		if err := json.Unmarshal(b, &merged); err != nil {
+			return args
+		}
+	}
+	for k, v := range pin {
+		merged[k] = v
+	}
+	return merged
 }
 
 // Pool looks a server up by name or namespace.
@@ -682,7 +1715,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 				Call:         "tools." + view.Namespace + "." + fn + "(args)",
 				Native:       view.Namespace + "_" + fn,
 				Description:  t.Description,
-				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
+				InputSchema:  effectiveViewSchema(view, t.Name, t.InputSchema),
 				Execution:    t.Execution,
 				Title:        t.Title,
 				OutputSchema: t.OutputSchema,
@@ -1110,7 +2143,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 				Name:         t.Name,
 				Description:  t.Description,
 				Tags:         toolTags(view, t.Name),
-				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
+				InputSchema:  effectiveViewSchema(view, t.Name, t.InputSchema),
 				OutputSchema: t.OutputSchema,
 			})
 		}
@@ -1222,12 +2255,12 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	key, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
 	defer r.joinAsk(ctx, server, key)()
-	res, err := p.Call(withRequestedCallTimeout(ctx), key, tool, args)
+	res, err := p.Call(withRequestedCallTimeout(ctx), key, effTool, effArgs)
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
@@ -1238,38 +2271,47 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 // consumer policies. Every path that calls a tool goes through it: the ask
 // path once skipped both, so a destructive-tool guard was off for exactly the
 // clients that declared they could answer it.
-func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (string, error) {
+func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (string, string, any, error) {
+	// A call through a declared tool view (#1933 slice 1) names the
+	// view; everything past this point -- policies, the destructive
+	// floor, the pool, history -- works with the target's real name
+	// and the effective arguments, pins merged over the caller's.
+	effTool, effArgs := tool, args
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
 		// Before the child is touched: a server waiting for a secret is not
 		// started just to fail.
 		if err := r.refuseBlocked(server); err != nil {
-			return "", err
+			return "", "", nil, err
 		}
 		if !view.VisibleTool(tool) {
 			if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
-				return "", fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+				return "", "", nil, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
 			}
-			return "", HiddenTool{Server: server, Tool: tool}
+			return "", "", nil, HiddenTool{Server: server, Tool: tool}
+		}
+		if tv, isView := view.ToolViews[tool]; isView {
+			effTool = tv.From
+			effArgs = mergePinnedArgs(args, tv.Pin)
 		}
 	}
 	key := r.keyFor(p, cc)
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
 	key = r.disambiguate(ctx, p, cc, key)
-	asked, err := r.applyWritePolicy(ctx, p, server, tool, cc, args)
+	asked, err := r.applyWritePolicy(ctx, p, server, effTool, cc, effArgs)
 	if err != nil {
-		return "", err
+		return "", "", nil, err
 	}
 	if !asked {
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
-		if err := r.confirmDestructive(ctx, p, tool, cc); err != nil {
-			return "", err
+		if err := r.confirmDestructive(ctx, p, effTool, cc); err != nil {
+			return "", "", nil, err
 		}
 	}
-	return key, nil
+	return key, effTool, effArgs, nil
 }
 
 // ReadResource dispatches a resource read.

@@ -7,6 +7,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -148,6 +150,13 @@ type Extras struct {
 	// ExcludeTools removes tools from the exposed set, and wins over Tools.
 	// A removed tool is neither listed nor callable.
 	ExcludeTools []string `json:"excludeTools,omitempty"`
+	// ToolViews declares renamed views over an alias target's tools
+	// (#1933 slice 1): each entry exposes one target tool under a new
+	// name, optionally pinning arguments and hiding the pinned
+	// properties from the exposed schema. Only meaningful on an
+	// aliasOf server; a non-empty map replaces the allowlist -- only
+	// the named views are exposed.
+	ToolViews map[string]ToolView `json:"toolViews,omitempty"`
 	// WritePolicy overrides the daemon policy.write setting for this
 	// server alone: ask, allow or deny (#1979). Empty means inherit the
 	// daemon mode.
@@ -166,6 +175,21 @@ type Extras struct {
 	RequiresServers []string `json:"requiresServers,omitempty"`
 	// Preconditions maps specific tool names to preconditions.
 	Preconditions map[string]Precondition `json:"preconditions,omitempty"`
+}
+
+// ToolView is one declared view of a target tool (#1933 slice 1).
+type ToolView struct {
+	// From is the target tool's real name on the aliased server.
+	From string `json:"from"`
+	// Pin fixes argument values the caller cannot set or override:
+	// a call through the view merges them over the caller's args.
+	Pin map[string]any `json:"pin,omitempty"`
+	// Hide removes pinned properties from the exposed inputSchema,
+	// so the caller never sees an argument they cannot change.
+	// Every entry must also be pinned.
+	Hide []string `json:"hide,omitempty"`
+	// Description overrides the target tool's description.
+	Description string `json:"description,omitempty"`
 }
 
 // Precondition specifies requirements for a tool or server.
@@ -470,6 +494,9 @@ type Resolved struct {
 	RequiresSecrets []string
 	RequiresServers []string
 	Preconditions   map[string]Precondition
+	// ToolViews is this view's declared tool views (#1933 slice 1),
+	// from its own mcpx block; empty for almost every server.
+	ToolViews map[string]ToolView
 
 	// WritePolicy is this server's resolved writePolicy override, from
 	// its own mcpx block or the pool block; empty means inherit the
@@ -575,6 +602,23 @@ func (r *Resolved) PassesPreconditions(tool string, isServerActive func(string) 
 // lists and passes declared preconditions. Filtering is a property of the view,
 // not of the process: two aliases of one server expose different subsets while sharing a single child.
 func (r *Resolved) VisibleTool(name string) bool {
+	if len(r.ToolViews) > 0 {
+		// #1933 slice 1: a view exposes its declared views and
+		// nothing else -- the map IS the allowlist, under view
+		// names. The target's real name is not callable through
+		// the view.
+		tv, ok := r.ToolViews[name]
+		if !ok {
+			return false
+		}
+		if r.ExcludeTools.Match(tv.From) || r.ExcludeTools.Match(name) {
+			return false
+		}
+		if ok, _ := r.PassesPreconditions(tv.From, nil); !ok {
+			return false
+		}
+		return true
+	}
 	if r.ExcludeTools.Match(name) {
 		return false
 	}
@@ -767,6 +811,36 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		max = 1
 	}
 
+	if len(ex.ToolViews) > 0 {
+		// #1933 slice 1: structural validation that needs no schemas.
+		// Unknown targets and pins of non-schema arguments are
+		// checked against the target's tools when the daemon loads
+		// (registry view validation); what can be known here is
+		// known here.
+		if s.AliasOf == "" {
+			return nil, fmt.Errorf("server %q: toolViews requires aliasOf; a tool view renames another server's tools", name)
+		}
+		viewNames := make([]string, 0, len(ex.ToolViews))
+		for vn := range ex.ToolViews {
+			viewNames = append(viewNames, vn)
+		}
+		sort.Strings(viewNames)
+		for _, vn := range viewNames {
+			tv := ex.ToolViews[vn]
+			if vn == "" {
+				return nil, fmt.Errorf("server %q: toolView name must not be empty", name)
+			}
+			if tv.From == "" {
+				return nil, fmt.Errorf("server %q: toolView %q: from is required", name, vn)
+			}
+			for _, h := range tv.Hide {
+				if _, ok := tv.Pin[h]; !ok {
+					return nil, fmt.Errorf("server %q: toolView %q: hide lists %q, which is not pinned; hide removes pinned properties", name, vn, h)
+				}
+			}
+		}
+	}
+
 	if ex.Namespace != "" && codegen.ReservedNamespace(ex.Namespace) {
 		return nil, fmt.Errorf("server %q: namespace %q is a reserved word or a name the generated client already uses; pick another",
 			name, ex.Namespace)
@@ -795,6 +869,7 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		RequiresSecrets: ex.RequiresSecrets,
 		RequiresServers: ex.RequiresServers,
 		Preconditions:   ex.Preconditions,
+		ToolViews:       ex.ToolViews,
 	}
 	if r.Min > r.Max {
 		r.Min = r.Max
@@ -1090,8 +1165,24 @@ func originsOf(c *Config, path string) map[string]string {
 func parse(b []byte) (*Config, error) {
 	c := &Config{}
 	stripped := stripComments(b)
-	if err := json.Unmarshal(stripped, c); err != nil {
+	// UseNumber: a tool view's pin (#1933) is forwarded verbatim on
+	// every call through the view, and the caller cannot override it.
+	// Decoding an integer pin past the exact float64 range through
+	// float64 would silently forward a different value on every call
+	// (9007199254740993 would arrive as 9007199254740992), so numbers
+	// in free-form values stay exact.
+	dec := json.NewDecoder(bytes.NewReader(stripped))
+	dec.UseNumber()
+	if err := dec.Decode(c); err != nil {
 		return nil, err
+	}
+	// A single Decode stops at the end of the first document, so
+	// trailing garbage or a concatenated second document would be
+	// silently dropped -- and checkKeys, whose own Unmarshal fails on
+	// the same bytes, assumes this decode validated the whole file.
+	// Require EOF instead (Codex, PR #2976).
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("config has data after the first JSON document")
 	}
 	if err := checkKeys(stripped, c); err != nil {
 		return nil, err
