@@ -74,10 +74,12 @@ impl<'de> Deserialize<'de> for ArtifactHash {
 }
 
 /// Typed reference to a signed game-post object; game execution is out of scope.
+/// In v1, the target must be a same-board `BoardObject::Post`. If a dedicated
+/// game-post object kind is added, update the graph's kind check with it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GamePostRef {
-    /// Hash of the immutable signed game-post object.
+    /// Hash of the immutable signed object represented in the board graph.
     pub object: ArtifactHash,
 }
 
@@ -645,6 +647,9 @@ impl BoardGraph {
                 }
                 for attachment in &value.attachments {
                     self.require_scoped(attachment, &value.board, "attachment")?;
+                }
+                if let Some(embed_ref) = &value.embed_ref {
+                    self.require_scoped(&embed_ref.object, &value.board, "post")?;
                 }
             }
             BoardObject::Attachment(value) => {
@@ -1611,6 +1616,29 @@ mod tests {
         .unwrap()
     }
 
+    fn post_with_embed_ref(
+        key: &SigningKey,
+        board: ArtifactHash,
+        thread: ArtifactHash,
+        embed_ref: ArtifactHash,
+        body: &str,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::Post(Post {
+                board,
+                thread,
+                parent_post: None,
+                body: body.to_owned(),
+                attachments: Vec::new(),
+                embed_ref: Some(GamePostRef { object: embed_ref }),
+            }),
+        )
+        .unwrap()
+    }
+
     fn theme(key: &SigningKey, seq: u64, forked_from: Option<ArtifactHash>) -> SignedBoardObject {
         let mut tokens = BTreeMap::new();
         tokens.insert("accent".to_owned(), "#cc5500".to_owned());
@@ -1734,6 +1762,79 @@ mod tests {
                 .insert(post(&creator, root_hash, foreign_thread, "cross-board"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn post_embed_ref_must_name_a_same_board_post() {
+        let creator = key(6);
+        let other = key(7);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let thread_hash = graph
+            .insert(thread(&creator, root_hash.clone(), "main"))
+            .unwrap();
+
+        let missing = ArtifactHash::new("a".repeat(64)).unwrap();
+        assert!(
+            graph
+                .insert(post_with_embed_ref(
+                    &creator,
+                    root_hash.clone(),
+                    thread_hash.clone(),
+                    missing,
+                    "dangling embed",
+                ))
+                .is_err()
+        );
+
+        assert!(
+            graph
+                .insert(post_with_embed_ref(
+                    &creator,
+                    root_hash.clone(),
+                    thread_hash.clone(),
+                    thread_hash.clone(),
+                    "wrong kind embed",
+                ))
+                .is_err()
+        );
+
+        let foreign_root = graph.insert(board(&other)).unwrap();
+        let foreign_thread = graph
+            .insert(thread(&other, foreign_root.clone(), "foreign"))
+            .unwrap();
+        let foreign_post = graph
+            .insert(post(&other, foreign_root, foreign_thread, "foreign target"))
+            .unwrap();
+        assert!(
+            graph
+                .insert(post_with_embed_ref(
+                    &creator,
+                    root_hash.clone(),
+                    thread_hash.clone(),
+                    foreign_post,
+                    "cross-board embed",
+                ))
+                .is_err()
+        );
+
+        let local_post = graph
+            .insert(post(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                "local target",
+            ))
+            .unwrap();
+        graph
+            .insert(post_with_embed_ref(
+                &creator,
+                root_hash,
+                thread_hash,
+                local_post,
+                "valid embed",
+            ))
+            .unwrap();
     }
 
     #[test]
