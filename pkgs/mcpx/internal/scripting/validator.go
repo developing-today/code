@@ -519,9 +519,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// expression keyword -- otherwise its body
 					// brace consumes the containing class
 					// expression's frame (Codex P2 on #3354:
+					// The expression position also carries across an
+					// 'async' modifier in any context: for a 'function'
+					// whose previous identifier is 'async' (no line
+					// break between them), the position is whatever
+					// precedes 'async' — so an async function in
+					// assignment position inside a heritage callback
+					// body (class C extends {C:()=>{const x=async
+					// function(){} /2;},..}.Base {}) is an expression,
+					// not a declaration (Codex P2 on #3354).
 					// class C extends {x:[class extends class {}
 					// {} / 2]}.x {} and the function permutation).
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) {
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
@@ -557,6 +566,31 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		}
 
 		if isLineTerminator(ch) {
+			if inString == '\'' || inString == '"' {
+				if isEscaped {
+					// A backslash before a line terminator inside
+					// a quoted string is a line continuation: the
+					// pair is string content, not the end of the
+					// literal (Codex P2 on #3354: backslash + lone
+					// CR regressed when CR became a terminator).
+					// CRLF is one continuation: consume its LF
+					// too, and count the pair as one line.
+					isEscaped = false
+					line++
+					if ch == '\r' && i+1 < n && chars[i+1] == '\n' {
+						i++
+					}
+					continue
+				}
+				if ch == '\u2028' || ch == '\u2029' {
+					// Since ES2019 a line/paragraph separator is
+					// ordinary content inside a quoted string,
+					// not the end of the literal (Codex P2 on
+					// #3354: "a<LS>b" is a valid string).
+					line++
+					continue
+				}
+			}
 			// Every JavaScript line terminator (LF, CR, CRLF, LS,
 			// PS) is a line break for ASI and comment termination,
 			// not just LF: a lone CR between 'async' and 'function'
