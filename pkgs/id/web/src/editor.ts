@@ -209,11 +209,14 @@ export const richSchema = new Schema({
             tag: "ol",
             getAttrs(dom) {
               // Match <ol class=contains-task-list> (ordered task list);
-              // its start is the list's order.
+              // its start is the list's order, read through the same
+              // validated parse as ordered_list (#4100; the raw el.start
+              // reflection admits fractional/negative/hex starts the u64
+              // markdown codec cannot represent).
               const el = dom as HTMLOListElement;
-              if (el.classList.contains("contains-task-list")) return { order: el.start };
+              if (el.classList.contains("contains-task-list")) return { order: parseOrderedListStart(el.getAttribute("start")) };
               const firstLi = el.querySelector("li");
-              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: el.start };
+              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: parseOrderedListStart(el.getAttribute("start")) };
               return false;
             },
           },
