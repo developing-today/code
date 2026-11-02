@@ -347,7 +347,11 @@ export const AA_EFFORT_ORDER: Record<string, number> = {
 /** Sort effort labels along the ladder (unknown labels last, alpha). */
 export function effortRank(effort: string | null): number {
   if (effort == null) return 99;
-  return AA_EFFORT_ORDER[effort.toLowerCase()] ?? 50;
+  // #3056 (rule in #2792): the key is data-controlled — own-key guard so
+  // prototype names ("constructor", "__proto__") take the unknown
+  // fallback instead of resolving inherited Object members.
+  const key = effort.toLowerCase();
+  return Object.hasOwn(AA_EFFORT_ORDER, key) ? AA_EFFORT_ORDER[key] : 50;
 }
 
 interface MetricRow {
@@ -856,7 +860,7 @@ export function aaCatalogFromConfig(
       typeof (providerCfg as { name?: unknown }).name === "string"
         ? ((providerCfg as { name: string }).name as string)
         : providerId;
-    const fact = AA_PLAN_FACTS[providerId];
+    const fact = Object.hasOwn(AA_PLAN_FACTS, providerId) ? AA_PLAN_FACTS[providerId] : undefined; // #3056 own-key guard
     for (const [modelId, rawEntry] of Object.entries(models as Record<string, unknown>)) {
       const entry = (typeof rawEntry === "object" && rawEntry !== null ? rawEntry : {}) as RawModelEntry;
       const id = `${providerId}/${modelId}`;
@@ -883,7 +887,7 @@ export function aaCatalogFromConfig(
         plan: fact?.plan ?? null,
         multiplier: fact?.multiplier ?? null,
         planNote: fact?.note ?? null,
-        goCapUsd: providerId.startsWith("opencode-go") ? (AA_GO_CAPS[norm] ?? null) : null,
+        goCapUsd: providerId.startsWith("opencode-go") ? (Object.hasOwn(AA_GO_CAPS, norm) ? AA_GO_CAPS[norm] : null) : null, // #3056 own-key guard
         aaScore: conf?.intelligence ?? rank?.adjustedScore ?? rank?.rawScore ?? null,
         aaCostPerTask: conf?.costPerTaskUsd ?? rank?.costTask ?? null,
         aaTimePerTask: fastestRanking.get(norm)?.timeTaskSec ?? null,
@@ -995,7 +999,7 @@ function caiFromRaw(v: unknown): AaCaiRow | null {
   return {
     modelName: r.modelName,
     family: caiFamily(r.modelName, effort),
-    creator: slug ? (CAI_CREATORS[slug.toLowerCase()] ?? slug) : "",
+    creator: slug ? (Object.hasOwn(CAI_CREATORS, slug.toLowerCase()) ? CAI_CREATORS[slug.toLowerCase()] : slug) : "", // #3056 own-key guard
     effort,
     version: str(r.version),
     score: num(r.score),
