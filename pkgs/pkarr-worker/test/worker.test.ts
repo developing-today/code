@@ -1,6 +1,8 @@
-import { SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env as testBindings, runInDurableObject, SELF } from "cloudflare:test";
+import { describe, expect, it, vi } from "vitest";
+import worker, { type Env } from "../src/index";
 import { parseDnsMessage, signableBytes, z32Decode, z32Encode } from "../src/pkarr";
+import { retentionMilliseconds } from "../src/retention";
 import { buildRelayPayload, dnsPacketWithTxt, dnsQuery, keypairFromSeed } from "./helpers";
 
 const BASE = "https://pkarr.test";
@@ -26,6 +28,39 @@ async function put(key: string, payload: Uint8Array): Promise<Response> {
 
 async function get(key: string): Promise<Response> {
   return SELF.fetch(`${BASE}/pkarr/${key}`);
+}
+
+function mockStore(retentionSeconds: string | undefined) {
+  let payload: Uint8Array | null = null;
+  const alarms: number[] = [];
+  const store = {
+    async putPacket(value: Uint8Array) {
+      payload = value;
+      const now = Date.now();
+      alarms.push(now + retentionMilliseconds(retentionSeconds, now));
+      return "stored" as const;
+    },
+    async getPacket() {
+      return payload;
+    },
+  };
+  return { store, alarms };
+}
+
+function testEnv(store: ReturnType<typeof mockStore>["store"], retentionSeconds: string | undefined): Env {
+  const allow = { limit: async () => ({ success: true }) };
+  return {
+    ORIGIN,
+    RETENTION_SECONDS: retentionSeconds as string,
+    DNS_TTL: "30",
+    PUT_LIMITER: allow,
+    GET_LIMITER: allow,
+    DOH_LIMITER: allow,
+    PKARR_STORE: {
+      idFromName: (name: string) => name,
+      get: () => store,
+    } as unknown as Env["PKARR_STORE"],
+  } as unknown as Env;
 }
 
 describe("z32 codec", () => {
@@ -57,6 +92,52 @@ describe("signable bytes", () => {
   });
 });
 
+describe("RETENTION_SECONDS", () => {
+  it.each([
+    { label: "missing", setting: undefined, expectedMilliseconds: 604_800_000 },
+    { label: "zero", setting: "0", expectedMilliseconds: 604_800_000 },
+    { label: "negative", setting: "-1", expectedMilliseconds: 604_800_000 },
+    { label: "unit suffix", setting: "7d", expectedMilliseconds: 604_800_000 },
+    { label: "whitespace", setting: "  ", expectedMilliseconds: 604_800_000 },
+    { label: "scientific notation", setting: "1e9", expectedMilliseconds: 604_800_000 },
+    { label: "fractional seconds", setting: "3600.5", expectedMilliseconds: 604_800_000 },
+    { label: "plus sign", setting: "+3600", expectedMilliseconds: 604_800_000 },
+    { label: "out-of-range value", setting: "8640000000000", expectedMilliseconds: 604_800_000 },
+    { label: "seven-day default", setting: "604800", expectedMilliseconds: 604_800_000 },
+    { label: "valid decimal seconds", setting: "3600", expectedMilliseconds: 3_600_000 },
+  ])("$label still supports PUT then GET and schedules the expected retention", async ({
+    setting,
+    expectedMilliseconds,
+  }) => {
+    const now = 1_800_000_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const { store, alarms } = mockStore(setting);
+      const env = testEnv(store, setting);
+      const kp = keypair(25);
+      const key = z32(kp.publicKey);
+      const payload = buildRelayPayload(kp, TS, dnsPacketWithTxt(`_iroh.${key}`, "retention-test"));
+
+      const putResponse = await worker.fetch(
+        new Request(`${BASE}/pkarr/${key}`, {
+          method: "PUT",
+          headers: { "content-type": "application/x-pkarr-signed-packet" },
+          body: payload,
+        }),
+        env,
+      );
+      expect(putResponse.status).toBe(204);
+
+      const getResponse = await worker.fetch(new Request(`${BASE}/pkarr/${key}`), env);
+      expect(getResponse.status).toBe(200);
+      expect(new Uint8Array(await getResponse.arrayBuffer())).toEqual(payload);
+      expect(alarms).toEqual([now + expectedMilliseconds]);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
+
 describe("pkarr HTTP relay", () => {
   it("publishes and resolves a signed packet verbatim", async () => {
     const kp = keypair(11);
@@ -68,6 +149,13 @@ describe("pkarr HTTP relay", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("application/x-pkarr-signed-packet");
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(payload);
+
+    const bindings = testBindings as unknown as Env;
+    const stub = bindings.PKARR_STORE.get(bindings.PKARR_STORE.idFromName(key));
+    const alarmAt = await runInDurableObject(stub, (_instance, state) => state.storage.getAlarm());
+    expect(alarmAt).not.toBeNull();
+    expect(alarmAt! - Date.now()).toBeGreaterThan(604_790_000);
+    expect(alarmAt! - Date.now()).toBeLessThanOrEqual(604_800_000);
   });
 
   it("returns 404 for an unknown key", async () => {
