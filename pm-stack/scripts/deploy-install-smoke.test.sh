@@ -106,7 +106,18 @@ cat >"$STUB_BIN/systemctl" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'systemctl %s\n' "$*" >>"${PM_TEST_COMMAND_LOG:?}"
+# Model ExecMainStartTimestampMonotonic: a value that changes on restart,
+# so installers that prove a fresh process start (ready-for-agent) can pass.
+start_ts_file="${PM_TEST_ROOT:?}/.systemctl-start-ts"
 case " $* " in
+  *' restart '*)
+    cur=1000
+    if [[ -f "$start_ts_file" ]]; then cur="$(cat "$start_ts_file")"; fi
+    printf '%s\n' "$((cur + 1000))" >"$start_ts_file"
+    ;;
+  *' show '*ExecMainStartTimestampMonotonic*)
+    if [[ -f "$start_ts_file" ]]; then cat "$start_ts_file"; else printf '1000\n'; fi
+    ;;
   *' is-active '*|*' status '*) printf 'active\n' ;;
 esac
 exit 0
@@ -350,7 +361,7 @@ else
   fail 'ready-for-agent install smoke completes using temporary HOME and stubs'
 fi
 if [[ -f "$READY_HOME/.config/systemd/user/ready-for-agent.service" ]] &&
-   contains "$READY_OUTPUT" 'ready-for-agent is up'; then
+   contains "$READY_OUTPUT" 'is running after restart'; then
   pass 'ready-for-agent copies its unit and passes the fake UI health check'
 else
   fail 'ready-for-agent copies its unit and passes the fake UI health check'
