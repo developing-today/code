@@ -143,16 +143,20 @@ const tryTargets = async (ports) => {
 // take the local listener down with it. So GET /health is answered
 // locally; everything else is forwarded untouched.
 const LOCAL_HEALTH = (reqLine) => /^GET \/health(\?\S*)? HTTP\//.test(reqLine);
+const FIRST_LINE_TIMEOUT_MS = 10_000;
 
 const server = net.createServer((client) => {
   client.on('error', () => client.destroy());
   // Peek at the first request line before connecting upstream.
   let buf = Buffer.alloc(0);
+  const firstLineTimer = setTimeout(() => client.destroy(), FIRST_LINE_TIMEOUT_MS);
+  client.once('close', () => clearTimeout(firstLineTimer));
   const onData = (chunk) => {
     buf = Buffer.concat([buf, chunk]);
     const headEnd = buf.indexOf('\r\n');
     if (headEnd === -1 && buf.length < 8192) return;
     client.removeListener('data', onData);
+    clearTimeout(firstLineTimer);
     const firstLine = buf.slice(0, headEnd === -1 ? buf.length : headEnd).toString('latin1');
     if (LOCAL_HEALTH(firstLine)) {
       client.end(
@@ -173,6 +177,9 @@ const server = net.createServer((client) => {
       .then((upstream) => {
         upstream.on('error', () => { client.destroy(); upstream.destroy(); });
         upstream.write(buf);
+        // This is now a transparent TCP pipe, not a first-line peek. Forwarded
+        // flows may be legitimately long-lived or idle; tunnel/upstream
+        // endpoints own their timeouts, so do not add a post-pipe idle timeout.
         client.pipe(upstream);
         upstream.pipe(client);
       })
