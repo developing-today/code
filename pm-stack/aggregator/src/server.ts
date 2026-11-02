@@ -552,15 +552,16 @@ async function queueContext() {
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
 async function overviewContext() {
-  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
+  const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.quota().catch(() => emptyQuotaView()),
     healthContext(),
     boardContext(),
+    source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, actionsByObject };
+  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
 }
 
 
