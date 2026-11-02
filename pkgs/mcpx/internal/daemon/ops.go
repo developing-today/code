@@ -397,7 +397,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		fwd["context"] = map[string]any{"arguments": req.Arguments}
 	}
 	params, _ := json.Marshal(fwd)
-	raw, upstream, err := p.Complete(r.Context(), s.reg.keyFor(p, cc), params)
+	raw, upstream, err := p.Complete(r.Context(), s.reg.resolvedFor(p, cc), params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

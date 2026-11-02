@@ -81,6 +81,17 @@ type Instance struct {
 	// key is the scope-resolved identity this instance serves. One live
 	// instance per distinct key.
 	key string
+	// root is the scope-resolved directory stored at creation
+	// (decision 0004 §2): the spawn cwd for stdio instances without a
+	// config cwd, read from the instance at every (re)start and never
+	// re-resolved at redial. "" when the scope has no root.
+	root string
+	// execStamp and execIdentity identify the executable actually used by
+	// this instance. Scope-rooted relative commands can differ per instance,
+	// so their exec watch cannot use one pool-wide identity.
+	execStamp    config.ExecStamp
+	execIdentity string
+	execMissing  bool
 	// holders counts current callers. Exclusive sharing admits one; shared
 	// sharing admits any number.
 	holders   int
@@ -113,6 +124,10 @@ type Instance struct {
 
 // Trace is this instance's identifier, carried by every record about it.
 func (i *Instance) Trace() string { return i.trace }
+
+// Root is the scope-resolved directory this instance was created with
+// (decision 0004 §2), "" when its scope has none.
+func (i *Instance) Root() string { return i.root }
 
 // PID returns the child process id for stdio instances, 0 otherwise.
 func (i *Instance) PID() int {
@@ -215,9 +230,10 @@ type Pool struct {
 
 	// watched counts, per upstream resource URI, the subscribers that want
 	// its updates; watchKey is the scope key they were resolved under.
-	watchMu  sync.Mutex
-	watched  map[string]int
-	watchKey string
+	watchMu   sync.Mutex
+	watched   map[string]int
+	watchKey  string
+	watchRoot string
 
 	// noLegacy is set once a legacy-only start failed under protocol:
 	// follow; legacy callers then share the modern session.
@@ -250,12 +266,16 @@ func (p *Pool) Namespace() string { return p.cfg.Namespace }
 
 var errClosed = errors.New("pool closed")
 
-// Acquire borrows an instance for a resolved scope key.
+// Acquire borrows an instance for a resolved scope.
 //
 // The key decides *which* process; Sharing decides whether that process may
 // serve more than one caller at once. Those are independent, which is why they
-// are separate config axes.
-func (p *Pool) Acquire(ctx context.Context, key string) (*Lease, error) {
+// are separate config axes. The resolved root rides along so a new
+// instance is created rooted (decision 0004 §2); an existing instance
+// keeps the root it was created with, which cannot differ, since the
+// root is a pure function of the key.
+func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, error) {
+	key := rs.Key
 	exclusive := p.cfg.Sharing == config.SharingExclusive
 	legacy := p.followLegacy(ctx)
 
@@ -298,7 +318,7 @@ func (p *Pool) Acquire(ctx context.Context, key string) (*Lease, error) {
 			}
 			p.mu.Unlock()
 
-			in, err := p.startLane(ctx, legacy)
+			in, err := p.startLane(ctx, legacy, rs)
 
 			p.mu.Lock()
 			p.starting--
@@ -518,7 +538,9 @@ func (p *Pool) reapDeadLocked() {
 	p.instances = kept
 }
 
-func (p *Pool) start(ctx context.Context) (*Instance, error) { return p.startLane(ctx, false) }
+func (p *Pool) start(ctx context.Context) (*Instance, error) {
+	return p.startLane(ctx, false, config.ResolvedScope{})
+}
 
 // installServerHooks wires what a server may ask of mcpx into the options its
 // session is opened with. It must run before the handshake, where a server
@@ -582,13 +604,23 @@ func (p *Pool) subscribeServerEvents(cl *mcpclient.Client) {
 }
 
 // startLane starts an instance; legacy starts it legacy-only, for a legacy
-// caller under protocol: follow.
-func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
+// caller under protocol: follow. rs is the resolved scope the instance
+// serves: its root is stored on the instance at creation and read back
+// for every restart, never re-resolved (decision 0004 §2).
+func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedScope) (*Instance, error) {
 	sctx, cancel := context.WithTimeout(ctx, p.cfg.StartTimeout)
 	defer cancel()
 	launched := time.Now()
 
-	tr, err := p.dial(sctx)
+	spawnCwd, cwdSource := SpawnCwd(p.cfg.Cwd, rs.Root)
+	if !p.cfg.Stdio() {
+		// No process, no cwd: the root is recorded, but nothing spawns
+		// anywhere, so the daemon-cwd source is the honest one.
+		spawnCwd, cwdSource = "", "daemon"
+	}
+	execStamp, execIdentity, _ := p.cfg.ExecStateAt(spawnCwd)
+
+	tr, err := p.dial(sctx, rs.Root)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -628,7 +660,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(sctx); err != nil {
+		} else if tr, err = p.dial(sctx, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -659,7 +691,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(sctx); err != nil {
+		if tr, err = p.dial(sctx, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -709,16 +741,26 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	p.mu.Unlock()
 
 	in := &Instance{
-		ID:         id,
-		Client:     cl,
-		transport:  tr,
-		trace:      newTraceID("srv"),
-		startedAt:  time.Now(),
-		lastUsed:   time.Now(),
-		eraSource:  source,
-		legacyLane: legacy,
+		ID:           id,
+		Client:       cl,
+		transport:    tr,
+		key:          rs.Key,
+		root:         rs.Root,
+		execStamp:    execStamp,
+		execIdentity: execIdentity,
+		trace:        newTraceID("srv"),
+		startedAt:    time.Now(),
+		lastUsed:     time.Now(),
+		eraSource:    source,
+		legacyLane:   legacy,
 	}
 	ref.set(in)
+	// One line per spawn (decision 0004 §6): which server, serving
+	// which scope key, rooted where, and where its cwd came from.
+	lifecycle("server.spawn", map[string]any{
+		"server": p.cfg.Name, "instance": in.ID, "key": rs.Key,
+		"root": rs.Root, "cwd": spawnCwd, "cwdSource": cwdSource,
+	})
 	// A replacement instance -- after a restart, a crash, an eviction --
 	// knows nothing of what its predecessor was subscribed to.
 	p.resubscribe(sctx, in)
@@ -726,7 +768,8 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		"server": p.cfg.Name, "instance": in.ID, "pid": in.PID(),
 		"trace": in.trace, "sharing": string(p.cfg.Sharing), "scope": string(p.cfg.Scope),
 		"transport": transportName(p.cfg),
-		"era":       string(cl.Era), "negotiated": cl.Negotiated, "eraSource": source,
+		"key":       rs.Key, "root": rs.Root, "cwdSource": cwdSource,
+		"era": string(cl.Era), "negotiated": cl.Negotiated, "eraSource": source,
 		// Time to ready, not time to spawn: the event fires after the
 		// handshake has answered, so this is when the server could first
 		// take a call.
@@ -876,10 +919,28 @@ func (p *Pool) connectSSE(ctx context.Context, tr mcpclient.Transport, opts mcpc
 	return cl, sse, nil
 }
 
+// SpawnCwd is the spawn-cwd decision of decision 0004 §3 as a pure
+// function: an explicit config cwd wins, then the instance's resolved
+// scope root, else unset, so the child inherits the daemon's cwd.
+// source names the rule that fired: "config", "scope" or "daemon".
+func SpawnCwd(configCwd, root string) (cwd, source string) {
+	switch {
+	case configCwd != "":
+		return configCwd, "config"
+	case root != "":
+		return root, "scope"
+	default:
+		return "", "daemon"
+	}
+}
+
 // dial creates the transport for one instance. ctx is the caller's
 // startup context: it bounds any nix: program-spec resolution at spawn,
-// so a slow build cannot outlive the startup budget that owns it.
-func (p *Pool) dial(ctx context.Context) (mcpclient.Transport, error) {
+// so a slow build cannot outlive the startup budget that owns it. root
+// is the spawning instance's resolved scope root, stored on the
+// instance at creation -- never re-resolved here (decision 0004 §2).
+func (p *Pool) dial(ctx context.Context, root string) (mcpclient.Transport, error) {
+	spawnCwd, _ := SpawnCwd(p.cfg.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
@@ -890,7 +951,7 @@ func (p *Pool) dial(ctx context.Context) (mcpclient.Transport, error) {
 			Command:    p.cfg.Command,
 			Args:       p.cfg.Args,
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
-			Cwd:        p.cfg.Cwd,
+			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
 		})
@@ -900,7 +961,7 @@ func (p *Pool) dial(ctx context.Context) (mcpclient.Transport, error) {
 			Command:    p.cfg.Command,
 			Args:       p.cfg.Args,
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
-			Cwd:        p.cfg.Cwd,
+			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
 		})
@@ -1057,7 +1118,7 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	// for anything narrower it is a throwaway, stopped again below so a
 	// per-session server does not keep a process nobody asked for.
 	key := p.schemaKey()
-	lease, err := p.Acquire(ctx, key)
+	lease, err := p.Acquire(ctx, config.ResolvedScope{Key: key})
 	if err != nil {
 		return p.refreshFailed(staleGen, err)
 	}
@@ -1268,13 +1329,13 @@ func (p *Pool) CachedPrompts() []mcpclient.Prompt {
 }
 
 // GetPrompt renders one prompt on a leased instance.
-func (p *Pool) GetPrompt(ctx context.Context, sessionKey, name string, args map[string]string) (json.RawMessage, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) GetPrompt(ctx context.Context, rs config.ResolvedScope, name string, args map[string]string) (json.RawMessage, error) {
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
 	defer lease.Release()
-	cctx, finish := p.upstream(ctx, sessionKey, lease)
+	cctx, finish := p.upstream(ctx, rs.Key, lease)
 	res, err := lease.Client().GetPrompt(cctx, name, args)
 	return res, finish(err)
 }
@@ -1360,8 +1421,9 @@ func (p *Pool) Preference() mcpclient.Preference {
 }
 
 // Call runs a tool on a leased instance.
-func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (json.RawMessage, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) Call(ctx context.Context, rs config.ResolvedScope, tool string, args any) (json.RawMessage, error) {
+	sessionKey := rs.Key
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
@@ -1406,14 +1468,14 @@ func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (jso
 }
 
 // ReadResource reads a resource URI on a leased instance.
-func (p *Pool) ReadResource(ctx context.Context, sessionKey, uri string) (json.RawMessage, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) ReadResource(ctx context.Context, rs config.ResolvedScope, uri string) (json.RawMessage, error) {
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
 	defer lease.Release()
 
-	cctx, finish := p.upstream(ctx, sessionKey, lease)
+	cctx, finish := p.upstream(ctx, rs.Key, lease)
 	res, err := lease.Client().ReadResource(cctx, uri)
 	return res, p.replacedErr(lease.inst, finish(err))
 }
@@ -1475,6 +1537,7 @@ type InstanceStatus struct {
 	PID       int    `json:"pid,omitempty"`
 	Holders   int    `json:"holders"`
 	Key       string `json:"key,omitempty"`
+	Root      string `json:"root,omitempty"`
 	Calls     int64  `json:"calls"`
 	UptimeSec int    `json:"uptimeSec"`
 	IdleSec   int    `json:"idleSec"`
@@ -1519,6 +1582,7 @@ func (p *Pool) Status() Status {
 			PID:       in.PID(),
 			Holders:   in.holders,
 			Key:       in.key,
+			Root:      in.root,
 			Calls:     in.calls.Load(),
 			UptimeSec: int(now.Sub(in.startedAt).Seconds()),
 			IdleSec:   int(now.Sub(in.lastUsed).Seconds()),
@@ -1618,11 +1682,13 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 		return res
 	}
 	var keys []string
+	roots := map[string]string{}
 	seen := map[string]bool{}
 	for _, in := range stop {
 		if !seen[in.key] {
 			seen[in.key] = true
 			keys = append(keys, in.key)
+			roots[in.key] = in.root
 		}
 	}
 	for _, in := range retiring {
@@ -1649,7 +1715,7 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 			res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "owning process has exited"})
 			continue
 		}
-		id, err := p.startFor(ctx, key)
+		id, err := p.startFor(ctx, config.ResolvedScope{Key: key, Root: roots[key]})
 		if err != nil {
 			res.Failed = append(res.Failed, RestartFailure{Key: key, Error: err.Error()})
 			continue
@@ -1668,8 +1734,8 @@ type RestartFailure struct {
 // startFor brings up the instance for key and lets it go idle. Acquire, not
 // start, so capacity, a concurrent caller and a subscription monitor
 // replacing the same key all converge on one process.
-func (p *Pool) startFor(ctx context.Context, key string) (string, error) {
-	lease, err := p.Acquire(ctx, key)
+func (p *Pool) startFor(ctx context.Context, rs config.ResolvedScope) (string, error) {
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return "", err
 	}
