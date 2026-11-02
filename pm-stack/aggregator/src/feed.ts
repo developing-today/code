@@ -11,7 +11,15 @@ import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
-import { arrayOf, isFiniteNumber, isIsoDate, isRecord, isStringArray, isTimestampNotFuture } from "./validate.ts";
+import {
+  arrayOf,
+  isFiniteNumber,
+  isIsoDate,
+  isNonNegative,
+  isRecord,
+  isStringArray,
+  isTimestampNotFuture,
+} from "./validate.ts";
 import type {
   AaFeedSection,
   BurnSegment,
@@ -404,15 +412,20 @@ export function isQuotaPool(v: unknown): v is QuotaPool {
   return true;
 }
 
-/** One historical burn segment as renderQuota maps it (#2429). */
+/** One historical burn segment as renderQuota maps it (#2429).
+ *  Values, not just types (#3428): from/to must be real ISO calendar
+ *  dates, tokens may not be negative, and the range may not be
+ *  inverted — a segment failing any of these is not measured history
+ *  and drops individually in sanitizeQuotaView (#2429 counting). */
 export function isBurnSegment(v: unknown): v is BurnSegment {
   if (!isRecord(v)) return false;
   return (
     typeof v.provider === "string" &&
     typeof v.pool === "string" &&
-    typeof v.from === "string" &&
-    typeof v.to === "string" &&
-    isFiniteNumber(v.tokens)
+    isIsoDate(v.from) &&
+    isIsoDate(v.to) &&
+    isNonNegative(v.tokens) &&
+    Date.parse(v.from) <= Date.parse(v.to)
   );
 }
 
