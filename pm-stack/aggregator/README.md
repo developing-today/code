@@ -418,11 +418,16 @@ bun test
 
 ## Configuration (env, secrets by NAME only)
 
-Everything defaults to **fixtures** and works with no configuration:
+Everything defaults to **fixtures** and works with no configuration,
+except the default Source itself: serving fixtures without an explicit
+`PM_AGG_SOURCE` requires the dev-mode switch `PM_AGG_DEV=1` (#1195), so
+a deployment that forgets `PM_AGG_SOURCE=live` fails at startup instead
+of silently showing canned data. `bun run dev` sets the switch for you.
 
 | Env var                    | Default                                             | Purpose                                                                                                                                                               |
 | -------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PM_AGG_SOURCE`            | `fixtures`                                          | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                                                                                                |
+| `PM_AGG_SOURCE`            | `fixtures` (dev-gated, see below)                   | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet; explicit `fixtures` stays available for deliberate fixture work; unset/invalid without `PM_AGG_DEV=1` refuses to start (#1195) |
+| `PM_AGG_DEV`               | —                                                   | Set to `1` for local development: allows the implicit (unset or invalid `PM_AGG_SOURCE`) fixture default; never set in deployment — `install.sh` renders `PM_AGG_SOURCE=live` instead |
 | `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                                             |
 | `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                      |
 | `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                           |

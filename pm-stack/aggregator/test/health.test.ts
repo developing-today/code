@@ -20,7 +20,7 @@ import { renderHealth } from "../src/render.ts";
 // fake fetchers; no service is ever killed on the laptop for a test.
 
 const NOW = Date.parse("2026-10-27T06:00:00Z");
-const cfg = loadConfig({});
+const cfg = loadConfig({ PM_AGG_DEV: "1" });
 
 function feedAt(ageMs: number): FleetFeed {
   const generatedAt = new Date(NOW - ageMs).toISOString();
