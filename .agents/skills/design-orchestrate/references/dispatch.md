@@ -1,6 +1,6 @@
 # Dispatching, watching and restarting workers
 
-Read before dispatching the first worker. `implementation-orchestrate` uses the same rules for its builders and points here. The binding rules are in [collaboration.md](/planning/workflow/collaboration.md); this file is the procedure.
+Read before dispatching the first worker. `implementation-orchestrate` uses the same rules for its builders and points here. The binding rules are in [collaboration.md](../../../../planning/workflow/collaboration.md); this file is the procedure.
 
 ## Names, branches and worktrees
 

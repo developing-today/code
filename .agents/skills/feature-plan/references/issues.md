@@ -1,6 +1,6 @@
 # Implement issues, the orchestration issue and recording
 
-Read in steps 12 to 14. The bodies follow the [implement](/planning/workflow/templates/issue-implement.md) and [orchestration](/planning/workflow/templates/issue-orchestration.md) issue templates; the marker search is in the [templates README](/planning/workflow/templates/README.md). This file says how to fill, check, create and record them without duplicates.
+Read in steps 12 to 14. The bodies follow the [implement](../../../../planning/workflow/templates/issue-implement.md) and [orchestration](../../../../planning/workflow/templates/issue-orchestration.md) issue templates; the marker search is in the [templates README](../../../../planning/workflow/templates/README.md). This file says how to fill, check, create and record them without duplicates.
 
 ## 1. Titles, markers and branches
 
@@ -32,7 +32,7 @@ Save each draft as `$LIVE/issues/step-<n>.md`.
 
 ## 4. The zero-context read
 
-Give each draft body, and nothing else, to its own fresh [zero-context reader](/planning/workflow/templates/prompts/zero-context-reader.md), all in parallel. Fix every blocking question and unresolvable link in the draft, not in a comment. Re-read a changed draft with a new reader, at most three rounds; a question still standing after that gets its answer written into the body as a default. Save each return as `$LIVE/issues/step-<n>.zcr-<round>.md`.
+Give each draft body, and nothing else, to its own fresh [zero-context reader](../../../../planning/workflow/templates/prompts/zero-context-reader.md), all in parallel. Fix every blocking question and unresolvable link in the draft, not in a comment. Re-read a changed draft with a new reader, at most three rounds; a question still standing after that gets its answer written into the body as a default. Save each return as `$LIVE/issues/step-<n>.zcr-<round>.md`.
 
 ## 5. Creating (step 12)
 
@@ -60,7 +60,7 @@ Keep the template's S8 lines and delete the S6 ones. "The graph" lists every ste
 3. Step 9, contingent — no issue until: the benchmark in step 7 exceeds 200 ms.
 ```
 
-"Read first" links the plan (trunk link and permalink, as in section 2), the consolidated design record, `human-review.md` and the [implementation-orchestrate skill](/.agents/skills/implementation-orchestrate/SKILL.md). Run the marker search, give the body to a fresh zero-context reader, fix, then publish with `--parent <plan issue number>`. Comment its URL on every implement issue and on the plan issue (`gh issue comment <n> --body "Orchestrated by <url>"`).
+"Read first" links the plan (trunk link and permalink, as in section 2), the consolidated design record, `human-review.md` and the [implementation-orchestrate skill](../../implementation-orchestrate/SKILL.md). Run the marker search, give the body to a fresh zero-context reader, fix, then publish with `--parent <plan issue number>`. Comment its URL on every implement issue and on the plan issue (`gh issue comment <n> --body "Orchestrated by <url>"`).
 
 ## 7. Recording (step 14)
 
