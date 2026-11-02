@@ -46,6 +46,30 @@ describe("matchCharges", () => {
     expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
   });
 
+  test("same-source Plaid charges are not deduped", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "plaid", at: "2026-10-28", merchant: "OPENAI", amountUsd: 20 },
+      { source: "plaid", at: "2026-10-29", merchant: "OPENAI", amountUsd: 20 },
+    ];
+    expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
+  });
+
+  test("same-source Gmail charges are not deduped", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "gmail", at: "2026-10-28", merchant: "OPENAI", amountUsd: 20 },
+      { source: "gmail", at: "2026-10-29", merchant: "OPENAI", amountUsd: 20 },
+    ];
+    expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
+  });
+
+  test("distinct empty-normalized merchants are not deduped", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "plaid", at: "2026-10-28", merchant: "1234567", amountUsd: 20 },
+      { source: "gmail", at: "2026-10-29", merchant: "9876543", amountUsd: 20 },
+    ];
+    expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
+  });
+
   test("matched charges take the service name as their label", () => {
     const candidates: ChargeCandidate[] = [
       { source: "plaid", at: "2026-10-11", merchant: "ANTHROPIC PBC", amountUsd: 100 },
