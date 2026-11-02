@@ -56,13 +56,18 @@ describe("dns register parser", () => {
   });
 
   test("auto-renew summary counts ON, OFF, and unknown values from entries", () => {
+    const missingAutoRenew = {
+      ...FIXTURE_DNS.entries[0],
+      autoRenew: undefined as unknown as string,
+    };
     const entries = [
       { ...FIXTURE_DNS.entries[0], autoRenew: "ON" },
       { ...FIXTURE_DNS.entries[1], autoRenew: "OFF" },
       { ...FIXTURE_DNS.entries[2], autoRenew: "unknown" },
+      missingAutoRenew,
     ];
     const summary = summarizeDns({ ...FIXTURE_DNS, entries }, new Date("2026-12-28T00:00:00Z"));
-    expect(summary.autoRenew).toEqual({ on: 1, off: 1, unknown: 1 });
+    expect(summary.autoRenew).toEqual({ on: 1, off: 1, unknown: 2 });
   });
 
   test("summary ages renewals by the Chicago day, not UTC (#1684)", () => {

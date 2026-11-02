@@ -127,7 +127,7 @@ export function summarizeDns(section: DnsSection, now = new Date(), soonDays = 4
   const cutoff = addDaysYmd(today, soonDays);
   const autoRenew = entries.reduce(
     (counts, entry) => {
-      const value = entry.autoRenew.trim().toLowerCase();
+      const value = typeof entry.autoRenew === "string" ? entry.autoRenew.trim().toLowerCase() : "";
       if (value === "on") counts.on++;
       else if (value === "off") counts.off++;
       else counts.unknown++;
