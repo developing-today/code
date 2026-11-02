@@ -60,6 +60,20 @@ const MSG = {
 const packr = new Packr({ useRecords: false, structuredClone: true });
 const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
 
+/** Per-message step bound, mirroring the server MAX_STEPS_PER_MESSAGE
+ * (pkgs/id/src/web/collab.rs). A single editor transaction can legitimately
+ * exceed it - indenting N lines produces N steps (web/src/indent.ts) - so
+ * the client sends at most this many steps per Steps message and flushes
+ * the remainder as the server confirms each batch (see the Update handler),
+ * instead of wedging the session on a rejected oversized batch. */
+export const MAX_STEPS_PER_MESSAGE = 1000;
+
+/** The next batch of pending steps to send: at most MAX_STEPS_PER_MESSAGE,
+ * in order. Remaining steps stay unconfirmed and are sent by later flushes. */
+export function stepBatch<T>(steps: readonly T[]): T[] {
+  return steps.slice(0, MAX_STEPS_PER_MESSAGE);
+}
+
 export interface CollabConnection {
   ws: WebSocket;
   docId: string;
@@ -197,8 +211,16 @@ export function initCollab(
     const sendable = getSendableSteps(editorInstance.view);
     console.log("[collab] sendable:", sendable);
     if (sendable) {
-      console.log("[collab] Sending", sendable.steps.length, "steps, version:", sendable.version);
-      send(MSG.STEPS, sendable.version, sendable.steps, sendable.clientID);
+      const batch = stepBatch(sendable.steps);
+      console.log(
+        "[collab] Sending",
+        batch.length,
+        "of",
+        sendable.steps.length,
+        "steps, version:",
+        sendable.version,
+      );
+      send(MSG.STEPS, sendable.version, batch, sendable.clientID);
     }
   };
 
@@ -290,6 +312,12 @@ export function initCollab(
             const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
             editorInstance.view.dispatch(tr);
             console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
+            // If this update confirmed one of our batches and more steps are
+            // still pending (an oversized transaction chunked by stepBatch),
+            // send the next batch now - no new editor:change event fires for
+            // a confirmation, so without this the remainder would stall
+            // until the next local edit.
+            handleEditorChange();
           } catch (err) {
             // Step application failed — editor state is desynchronized.
             // Trigger reconnect to get fresh Init + catch-up from server.
