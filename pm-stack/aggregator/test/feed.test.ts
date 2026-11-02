@@ -23,7 +23,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
-import type { PaygLine, QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
+import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -233,6 +233,13 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     percent: 25,
   };
   const POOL: QuotaPool = { id: "opencode-go", provider: "opencode", plan: "go", state: "healthy", windows: [WINDOW] };
+  const CREDENTIAL: QuotaCredentialRow = {
+    label: "OpenAI 2",
+    providerId: "openai",
+    windows: [WINDOW],
+    freshness: { measuredAt: "2026-10-01T00:00:00Z", source: "quota-current", state: "ok" },
+  };
+  const ACTIVE_SESSION = { session: "session-1", model: "gpt-5", tokens: 42 };
   const CHOICES = { hasHeadroom: ["opencode-go"], burnBeforeReset: [], doNotStart: [] };
   const feedWith = (quota: unknown) => ({
     version: 1,
@@ -329,7 +336,53 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     const out = sanitizeQuotaView(quotaWith([pool]) as never);
     expect(out.droppedWindows).toBe(5);
     expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
-    expect(out.view.dropped).toEqual({ pools: 0, windows: 5, burn: 0 });
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 0, windows: 5, activeSessions: 0, burn: 0 });
+  });
+
+  test("malformed credential rows and active sessions drop individually and render safely", () => {
+    const malformedCredentialRows: unknown[] = [
+      { label: "missing freshness", providerId: "openai", windows: [WINDOW] },
+      { ...CREDENTIAL, freshness: null },
+      { ...CREDENTIAL, label: 42 },
+      CREDENTIAL,
+    ];
+    const malformedSessions = [
+      null,
+      { session: "missing-tokens", model: "gpt-5" },
+      ACTIVE_SESSION,
+      { session: "non-finite", model: "gpt-5", tokens: Number.POSITIVE_INFINITY },
+    ];
+    const pool = { ...POOL, credentials: malformedCredentialRows, activeSessions: malformedSessions };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+
+    expect(out.droppedPools).toBe(0);
+    expect(out.droppedCredentials).toBe(3);
+    expect(out.droppedActiveSessions).toBe(3);
+    expect(out.view.pools[0]).toEqual({ ...POOL, credentials: [CREDENTIAL], activeSessions: [ACTIVE_SESSION] });
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 3, windows: 0, activeSessions: 3, burn: 0 });
+    const html = renderQuota(out.view, {} as never);
+    expect(html).toContain("credential OpenAI 2");
+    expect(html).toContain("burning: session-1 (gpt-5) 42 tok");
+  });
+
+  test("a present non-array activeSessions section becomes empty and counts once", () => {
+    const out = sanitizeQuotaView(quotaWith([{ ...POOL, activeSessions: "not-an-array" }]) as never);
+
+    expect(out.droppedPools).toBe(0);
+    expect(out.droppedActiveSessions).toBe(1);
+    expect(out.view.pools[0]).toEqual({ ...POOL, activeSessions: [] });
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 0, windows: 0, activeSessions: 1, burn: 0 });
+    expect(() => renderQuota(out.view, {} as never)).not.toThrow();
+  });
+
+  test("well-formed credential and active-session rows remain unchanged", () => {
+    const quota = quotaWith([{ ...POOL, credentials: [CREDENTIAL], activeSessions: [ACTIVE_SESSION] }]) as QuotaView;
+    const out = sanitizeQuotaView(quota);
+
+    expect(out.view).toEqual(quota);
+    expect(out.droppedCredentials).toBe(0);
+    expect(out.droppedActiveSessions).toBe(0);
+    expect(renderQuota(out.view, {} as never)).toContain("credential OpenAI 2");
   });
 
   test("malformed burn segments drop individually", () => {
@@ -374,10 +427,16 @@ describe("feed quota section gate + sanitization (#2429)", () => {
   });
 
   test("a fully well-formed quota view is unchanged", () => {
-    const q = quotaWith([POOL], { burn: [] }) as unknown as QuotaView;
+    const q = quotaWith(
+      [{ ...POOL, credentials: [CREDENTIAL], activeSessions: [ACTIVE_SESSION] }],
+      { burn: [] },
+    ) as unknown as QuotaView;
     const out = sanitizeQuotaView(q);
-    expect(out.droppedPools + out.droppedWindows + out.droppedBurn).toBe(0);
+    expect(
+      out.droppedPools + out.droppedCredentials + out.droppedWindows + out.droppedActiveSessions + out.droppedBurn,
+    ).toBe(0);
     expect(out.view).toEqual(q);
+    expect(renderQuota(out.view, {} as never)).toContain("credential OpenAI 2");
   });
 
   test("choices are reconciled to surviving pools with usable windows", () => {
@@ -385,26 +444,33 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     const out = sanitizeQuotaView(quotaWith([noWindows]) as never);
     expect(out.view.pools.length).toBe(1);
     expect(out.view.choices).toEqual({ hasHeadroom: [], burnBeforeReset: [], doNotStart: [] });
-    expect(out.view.dropped).toEqual({ pools: 0, windows: 1, burn: 0 });
+    expect(out.view.dropped).toEqual({ pools: 0, credentials: 0, windows: 1, activeSessions: 0, burn: 0 });
   });
 
   test("a dropped pool leaves the retained choices and surfaces dropped on the view", () => {
     const out = sanitizeQuotaView(quotaWith([null, POOL]) as never);
     expect(out.view.choices.hasHeadroom).toEqual(["opencode-go"]);
-    expect(out.view.dropped).toEqual({ pools: 1, windows: 0, burn: 0 });
+    expect(out.view.dropped).toEqual({ pools: 1, credentials: 0, windows: 0, activeSessions: 0, burn: 0 });
   });
 
   test("loadFeed returns the sanitized remainder with drop counts attached", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-feed-quota-"));
     const file = join(dir, "feed.json");
-    const pool = { ...POOL, windows: [WINDOW, null] };
+    const pool = {
+      ...POOL,
+      windows: [WINDOW, null],
+      credentials: [{ label: "missing freshness", providerId: "openai", windows: [WINDOW] }, CREDENTIAL],
+      activeSessions: [null, ACTIVE_SESSION],
+    };
     writeFileSync(file, JSON.stringify(feedWith(quotaWith([null, pool]))));
     const loaded = await loadFeed(file);
     expect(loaded).not.toBeNull();
     expect(loaded?.quota.pools.length).toBe(1);
     expect(loaded?.quota.pools[0]?.windows).toEqual([WINDOW]);
-    expect(loaded?.quotaDropped).toEqual({ pools: 1, windows: 1, burn: 0 });
-    expect(loaded?.quota.dropped).toEqual({ pools: 1, windows: 1, burn: 0 });
+    expect(loaded?.quota.pools[0]?.credentials).toEqual([CREDENTIAL]);
+    expect(loaded?.quota.pools[0]?.activeSessions).toEqual([ACTIVE_SESSION]);
+    expect(loaded?.quotaDropped).toEqual({ pools: 1, credentials: 1, windows: 1, activeSessions: 1, burn: 0 });
+    expect(loaded?.quota.dropped).toEqual({ pools: 1, credentials: 1, windows: 1, activeSessions: 1, burn: 0 });
   });
 
   test("loadFeed rejects a feed missing burn/choices (fixture-fallback path)", async () => {
