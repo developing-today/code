@@ -169,6 +169,8 @@ const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
+const opencodeRuntimeConfigPath =
+  process.env.AA_OPENCODE_RUNTIME_CONFIG_PATH ?? join(HOME, ".local", "state", "opencode", "opencode-runtime.jsonc");
 const serverUrl = process.env.OPENCODE_SERVER_URL ?? process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 /** Session source label for the scraped server: the collector's home host
  * decides — the laptop collector labels its local server
@@ -505,7 +507,15 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     console.error("collector: opencode.jsonc unreadable; AA coverage omitted this run");
   }
-  const section = aaSectionFromSupabase(raw, configText, generatedAt);
+  // #4544: the sync-models-owned provider catalogs live in the runtime
+  // overlay; read it when present so AA coverage sees the effective config.
+  let runtimeText: string | null = null;
+  try {
+    runtimeText = await readFile(opencodeRuntimeConfigPath, "utf8");
+  } catch {
+    runtimeText = null;
+  }
+  const section = aaSectionFromSupabase(raw, configText, generatedAt, runtimeText);
   if (!section) return degrade("Supabase payload failed its structural check");
   await writeAaLastGood({ batch: section.batch, configFingerprint: fingerprint, section });
   return section;

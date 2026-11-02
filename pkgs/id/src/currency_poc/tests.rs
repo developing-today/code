@@ -231,6 +231,86 @@ fn linked_chain_failure_marks_other_legs_linked_event_failed() {
 }
 
 #[test]
+fn single_unterminated_linked_transfer_rejected() {
+    // #4121: a lone transfer with `linked: true` promises a following
+    // leg; the batch ending there leaves the chain open, so nothing
+    // posts and no balance moves.
+    let mut ledger = funded_ledger();
+    let before = ledger.account_balance(USER_SRC).unwrap();
+    let open = Transfer {
+        linked: true,
+        ..funding_transfer(700, USER_SRC, LP_SRC, 100, SRC)
+    };
+    let results = ledger.create_transfers(&[open]);
+    assert_eq!(results, vec![Err(TransferError::LinkedEventChainOpen)]);
+    assert!(ledger.lookup_transfer(700).is_none());
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), before);
+}
+
+#[test]
+fn multi_leg_unterminated_chain_rejected_atomically() {
+    // #4121: every leg of an open chain reports an error — the final
+    // leg `LinkedEventChainOpen`, the earlier legs
+    // `LinkedEventFailed` — and no leg is stored.
+    let mut ledger = funded_ledger();
+    let before_user = ledger.account_balance(USER_SRC).unwrap();
+    let before_lp = ledger.account_balance(LP_SRC).unwrap();
+    let chain = vec![
+        Transfer {
+            linked: true,
+            ..funding_transfer(710, USER_SRC, LP_SRC, 100, SRC)
+        },
+        Transfer {
+            linked: true,
+            ..funding_transfer(711, USER_SRC, LP_SRC, 200, SRC)
+        },
+    ];
+    let results = ledger.create_transfers(&chain);
+    assert_eq!(
+        results,
+        vec![
+            Err(TransferError::LinkedEventFailed),
+            Err(TransferError::LinkedEventChainOpen),
+        ]
+    );
+    assert!(ledger.lookup_transfer(710).is_none());
+    assert!(ledger.lookup_transfer(711).is_none());
+    assert_eq!(ledger.account_balance(USER_SRC).unwrap(), before_user);
+    assert_eq!(ledger.account_balance(LP_SRC).unwrap(), before_lp);
+}
+
+#[test]
+fn unterminated_chain_does_not_block_terminated_chains() {
+    // #4121: the rejection is per-chain. A terminated chain earlier in
+    // the same batch still posts, and a properly terminated chain
+    // submitted in a later batch posts normally — including one that
+    // reuses the rejected open chain's transfers, terminated.
+    let mut ledger = funded_ledger();
+    let batch = vec![
+        Transfer {
+            linked: true,
+            ..funding_transfer(720, USER_SRC, LP_SRC, 100, SRC)
+        },
+        funding_transfer(721, USER_SRC, LP_SRC, 50, SRC),
+        Transfer {
+            linked: true,
+            ..funding_transfer(722, USER_SRC, LP_SRC, 200, SRC)
+        },
+    ];
+    let results = ledger.create_transfers(&batch);
+    assert_eq!(results[0], Ok(()));
+    assert_eq!(results[1], Ok(()));
+    assert_eq!(results[2], Err(TransferError::LinkedEventChainOpen));
+    assert!(ledger.lookup_transfer(720).is_some());
+    assert!(ledger.lookup_transfer(721).is_some());
+    assert!(ledger.lookup_transfer(722).is_none());
+
+    let retry = ledger.create_transfers(&[funding_transfer(722, USER_SRC, LP_SRC, 200, SRC)]);
+    assert_eq!(retry, vec![Ok(())]);
+    assert!(ledger.lookup_transfer(722).is_some());
+}
+
+#[test]
 fn crash_after_submission_recovers_without_double_posting() {
     // #2063 §4: crash between submission and the Posted state write.
     // The legs are in the ledger; the record still says Submitted.

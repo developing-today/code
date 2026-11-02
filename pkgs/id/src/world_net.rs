@@ -9,6 +9,7 @@
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
 
+use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -1423,6 +1424,138 @@ impl WorldClient {
     pub fn close(self) {
         self.conn.close(0_u32.into(), b"done");
     }
+
+    /// Whether this client's connection has closed, locally or by the
+    /// peer: a closed connection can never serve another stream.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.conn.close_reason().is_some()
+    }
+}
+
+/// Client-side coordinator for concurrent world sessions (F13.8, #3845).
+///
+/// [`WorldClient`] is the transport primitive for one server endpoint: one
+/// connection, and sessions as streams on it, each bound to one world for
+/// its lifetime. `WorldSessions` is the client-side owner above it: it
+/// keeps one root connection per distinct server endpoint and retains
+/// independently opened session handles keyed by (endpoint, world), so a
+/// single client can hold live sessions to several worlds — on one server
+/// or across servers — at once.
+///
+/// Boundaries (per the F13.8 design record): a connection never spans
+/// distinct servers (one root [`WorldClient`] per endpoint); hosting is
+/// never started implicitly; every session is opened through the existing
+/// capability-bearing `open_session` path, so per-world capability checks
+/// are unchanged; the sequential `open_session` and one-shot CLI paths are
+/// untouched.
+#[derive(Debug)]
+pub struct WorldSessions {
+    endpoint: Endpoint,
+    /// Root connections, keyed by endpoint id.
+    roots: HashMap<String, WorldClient>,
+    /// Live sessions, keyed by (endpoint id, world name; `""` = host default).
+    sessions: HashMap<(String, String), WorldClient>,
+}
+
+impl WorldSessions {
+    /// A coordinator dialing from `endpoint`.
+    #[must_use]
+    pub fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            roots: HashMap::new(),
+            sessions: HashMap::new(),
+        }
+    }
+
+    fn key(addr: &EndpointAddr, world: Option<&str>) -> (String, String) {
+        (addr.id.to_string(), world.unwrap_or_default().to_owned())
+    }
+
+    /// Open the session for (`addr`, `world`), or return the live one.
+    ///
+    /// The first session to an endpoint dials its root connection; later
+    /// sessions to the same endpoint reuse it via
+    /// [`WorldClient::open_session`]. A session to a different endpoint
+    /// always dials a separate connection.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the endpoint is unreachable or the host refuses a session.
+    pub async fn open_session(
+        &mut self,
+        addr: EndpointAddr,
+        world: Option<&str>,
+    ) -> Result<&mut WorldClient> {
+        let key = Self::key(&addr, world);
+        // A root whose connection has closed (server disconnect or
+        // restart) can never serve another stream, and every session
+        // keyed to it rides that dead connection: evict both so this
+        // endpoint redials on its own, instead of staying wedged until
+        // `close_all` also drops healthy sessions on other servers.
+        if self.roots.get(&key.0).is_some_and(WorldClient::is_closed) {
+            self.roots.remove(&key.0);
+            self.sessions
+                .retain(|(endpoint_id, _), _| endpoint_id != &key.0);
+        }
+        if !self.sessions.contains_key(&key) {
+            if !self.roots.contains_key(&key.0) {
+                let root = WorldClient::connect(&self.endpoint, addr).await?;
+                self.roots.insert(key.0.clone(), root);
+            }
+            let session = self
+                .roots
+                .get(&key.0)
+                .expect("root inserted above")
+                .open_session(world)
+                .await?;
+            self.sessions.insert(key.clone(), session);
+        }
+        Ok(self.sessions.get_mut(&key).expect("session inserted above"))
+    }
+
+    /// The live session for (`addr`, `world`), if one is open.
+    pub fn session(
+        &mut self,
+        addr: &EndpointAddr,
+        world: Option<&str>,
+    ) -> Option<&mut WorldClient> {
+        self.sessions.get_mut(&Self::key(addr, world))
+    }
+
+    /// Whether a session for (`addr`, `world`) is currently open.
+    #[must_use]
+    pub fn has_session(&self, addr: &EndpointAddr, world: Option<&str>) -> bool {
+        self.sessions.contains_key(&Self::key(addr, world))
+    }
+
+    /// Number of distinct server endpoints with a root connection.
+    #[must_use]
+    pub fn endpoint_count(&self) -> usize {
+        self.roots.len()
+    }
+
+    /// Number of live sessions across all endpoints.
+    #[must_use]
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Drop one session. Its stream closes; sibling sessions on the same
+    /// connection are unaffected (unlike [`WorldClient::close`], which
+    /// closes the whole connection).
+    pub fn close_session(&mut self, addr: &EndpointAddr, world: Option<&str>) -> bool {
+        self.sessions.remove(&Self::key(addr, world)).is_some()
+    }
+
+    /// Drop every session and close every root connection.
+    pub fn close_all(&mut self) {
+        self.sessions.clear();
+        for (_, root) in self.roots.drain() {
+            root.close();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2337,6 +2470,236 @@ mod tests {
         assert_eq!(accepted, MAX_SESSIONS_PER_CONNECTION);
         assert_eq!(reset, total - MAX_SESSIONS_PER_CONNECTION);
 
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    /// Host a multi-world hub (MemoryOpener) on one endpoint; returns the
+    /// router, the hub, and the loopback address peers should dial.
+    async fn hub_host() -> (Router, WorldHub, EndpointAddr, Endpoint) {
+        let ep = endpoint().await;
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: Arc<dyn crate::world_hub::WorldOpener> = opener;
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(hub.clone()))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        (router, hub, addr, ep)
+    }
+
+    /// Mint a capability for `world` on `addr` through a throwaway client.
+    async fn invite_for(
+        client_ep: &Endpoint,
+        addr: &EndpointAddr,
+        world: Option<&str>,
+        name: &str,
+    ) -> String {
+        let root = WorldClient::connect(client_ep, addr.clone()).await.unwrap();
+        let mut inviter = root.open_session(world).await.unwrap();
+        let capability = inviter.invite("admin", name, None, None).await.unwrap();
+        drop(inviter);
+        root.close();
+        capability
+    }
+
+    #[tokio::test]
+    async fn coordinator_holds_two_worlds_on_one_endpoint_concurrently() {
+        let (router, hub, addr, host_ep) = hub_host().await;
+        let client_ep = endpoint().await;
+        let cap_alpha = invite_for(&client_ep, &addr, Some("alpha"), "ann").await;
+        let cap_beta = invite_for(&client_ep, &addr, Some("beta"), "bob").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        // Join both worlds and keep both sessions live at once.
+        for (world, cap) in [("alpha", &cap_alpha), ("beta", &cap_beta)] {
+            let s = sessions
+                .open_session(addr.clone(), Some(world))
+                .await
+                .unwrap();
+            s.send_json(&join(cap, None)).await.unwrap();
+            assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        }
+        assert_eq!(sessions.endpoint_count(), 1);
+        assert_eq!(sessions.session_count(), 2);
+        assert_eq!(hub.open_count(), 2);
+
+        // Chat in alpha is delivered to the alpha session only: the beta
+        // session stays silent, proving the two live sessions do not
+        // cross-talk on the shared connection.
+        let alpha = sessions.session(&addr, Some("alpha")).unwrap();
+        alpha
+            .send_json(&serde_json::json!({"type": "chat", "text": "alpha only"}))
+            .await
+            .unwrap();
+        let frame = next(alpha).await.unwrap();
+        assert_eq!(frame["type"], "event");
+        assert!(frame.to_string().contains("alpha only"));
+        let beta = sessions.session(&addr, Some("beta")).unwrap();
+        let silent =
+            tokio::time::timeout(std::time::Duration::from_millis(500), beta.recv_json()).await;
+        assert!(
+            silent.is_err(),
+            "beta session received alpha's chat: {silent:?}"
+        );
+
+        // Re-opening an already-live session returns it, not a new stream:
+        // the same joined session still chats and receives its own event.
+        let again = sessions
+            .open_session(addr.clone(), Some("alpha"))
+            .await
+            .unwrap();
+        again
+            .send_json(&serde_json::json!({"type": "chat", "text": "still alpha"}))
+            .await
+            .unwrap();
+        let frame = next(again).await.unwrap();
+        assert!(frame.to_string().contains("still alpha"));
+        assert_eq!(sessions.session_count(), 2);
+
+        sessions.close_all();
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        host_ep.close().await;
+    }
+
+    #[tokio::test]
+    async fn coordinator_spans_distinct_server_endpoints() {
+        let host_a = host(Some("admin")).await;
+        let host_b = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        for host in [&host_a, &host_b] {
+            let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+            let s = sessions
+                .open_session(host.addr.clone(), None)
+                .await
+                .unwrap();
+            s.send_json(&join(&cap, None)).await.unwrap();
+            assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        }
+        // Distinct servers: two root connections, never one shared.
+        assert_eq!(sessions.endpoint_count(), 2);
+        assert_eq!(sessions.session_count(), 2);
+
+        // A chat on server A reaches only server A's session.
+        let a = sessions.session(&host_a.addr, None).unwrap();
+        a.send_json(&serde_json::json!({"type": "chat", "text": "on a"}))
+            .await
+            .unwrap();
+        let frame = next(a).await.unwrap();
+        assert!(frame.to_string().contains("on a"));
+
+        sessions.close_all();
+        client_ep.close().await;
+        host_a.router.shutdown().await.unwrap();
+        host_b.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn second_join_through_coordinator_does_not_mutate_the_journal() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+
+        // Journal state before any join: the world's committed sequence and
+        // its records generation.
+        let mut probe = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let (_, _, seq_before) = probe.info(&cap).await.unwrap();
+        probe.close();
+        let (records_gen_before, _) = host.world.records();
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let first = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        first.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(first).await.unwrap()["type"], "snapshot");
+
+        // A second, independent client joins the same world while the first
+        // session stays live.
+        let mut second = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        second.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(&mut second).await.unwrap()["type"], "snapshot");
+        second.close();
+
+        let mut probe = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let (_, _, seq_after) = probe.info(&cap).await.unwrap();
+        probe.close();
+        let (records_gen_after, _) = host.world.records();
+        assert_eq!(
+            seq_after, seq_before,
+            "a join must not append to the journal"
+        );
+        assert_eq!(records_gen_after, records_gen_before);
+
+        sessions.close_all();
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn coordinator_replaces_a_closed_root_connection_on_reopen() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let s = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        s.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+
+        // The root connection dies, as on a server restart: close it and
+        // wait until the close has landed.
+        let conn = sessions
+            .roots
+            .get(&host.addr.id.to_string())
+            .unwrap()
+            .conn
+            .clone();
+        conn.close(0_u32.into(), b"root connection died");
+        conn.closed().await;
+
+        // The caller drops the failed session and reopens: the coordinator
+        // must redial a fresh root for this endpoint, not reuse the closed
+        // connection (which would wedge this endpoint until close_all).
+        assert!(sessions.close_session(&host.addr, None));
+        let s = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        s.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        assert_eq!(sessions.endpoint_count(), 1);
+        assert_eq!(sessions.session_count(), 1);
+
+        sessions.close_all();
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
     }

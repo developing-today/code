@@ -49,7 +49,6 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use crate::frames::MAX_FRAME_BYTES;
 use crate::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
 
 /// Resolve the `ns` request parameter to a namespace pair.
