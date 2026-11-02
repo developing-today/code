@@ -1718,7 +1718,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_after_hashes_are_refused() {
+    fn test_duplicate_after_hashes_are_refused() {
         let mut log = ArtifactLog::default();
         let first = log.sign(&key(1), &document("first")).unwrap();
         log.insert(first.clone()).unwrap();
