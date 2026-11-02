@@ -1012,6 +1012,133 @@ class TestBackups(ColdStoreTestBase):
         self.assertEqual(first, second)
         self.assertEqual(len(self.fake.folders), count)
 
+    def test_put_backup_verification_mismatch_does_not_ledger(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        upload = self.store._resumable_upload
+
+        def corrupt_after_upload(src, name, folder_id):
+            file_id = upload(src, name, folder_id)
+            self.fake.files[file_id] = b"corrupt stored bytes"
+            return file_id
+
+        with mock.patch.object(
+            self.store, "_resumable_upload", side_effect=corrupt_after_upload
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "verification mismatch"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-upload'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [])
+
+    def test_put_backup_readback_failure_does_not_ledger(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        request = cold_store.http_request
+
+        def fail_metadata_readback(method, url, *args, **kwargs):
+            if method == "GET" and "/files/" in url and "md5Checksum" in url:
+                return 503, {}, b"unavailable"
+            return request(method, url, *args, **kwargs)
+
+        with mock.patch(
+            "cold_store.http_request", side_effect=fail_metadata_readback
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "files.get after backup upload failed"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-upload'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [])
+
+    def test_put_backup_verification_mismatch_trashes_upload(self):
+        # Codex P2 on PR #4330: a failed verification must not leave the
+        # uploaded file live in Drive unledgered - trash it on the way out.
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        upload = self.store._resumable_upload
+        uploaded = []
+
+        def corrupt_after_upload(src, name, folder_id):
+            file_id = upload(src, name, folder_id)
+            uploaded.append(file_id)
+            self.fake.files[file_id] = b"corrupt stored bytes"
+            return file_id
+
+        with mock.patch.object(
+            self.store, "_resumable_upload", side_effect=corrupt_after_upload
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "verification mismatch"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        self.assertEqual(len(uploaded), 1)
+        self.assertTrue(self.fake.file_meta[uploaded[0]]["trashed"])
+        self.assertEqual(
+            [c["id"] for c in self.fake.trashed_calls], uploaded
+        )
+
+    def test_put_backup_readback_failure_trashes_upload(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        request = cold_store.http_request
+
+        def fail_metadata_readback(method, url, *args, **kwargs):
+            if method == "GET" and "/files/" in url and "md5Checksum" in url:
+                return 503, {}, b"unavailable"
+            return request(method, url, *args, **kwargs)
+
+        with mock.patch(
+            "cold_store.http_request", side_effect=fail_metadata_readback
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "files.get after backup upload failed"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        self.assertEqual(len(self.fake.trashed_calls), 1)
+        trashed_id = self.fake.trashed_calls[0]["id"]
+        self.assertTrue(self.fake.file_meta[trashed_id]["trashed"])
+
+    def test_put_backup_failed_trash_still_raises_and_names_orphan(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        upload = self.store._resumable_upload
+        uploaded = []
+
+        def corrupt_after_upload(src, name, folder_id):
+            file_id = upload(src, name, folder_id)
+            uploaded.append(file_id)
+            self.fake.files[file_id] = b"corrupt stored bytes"
+            return file_id
+
+        request = cold_store.http_request
+
+        def fail_trash(method, url, *args, **kwargs):
+            if method == "PATCH":
+                return 500, {}, b"nope"
+            return request(method, url, *args, **kwargs)
+
+        with mock.patch.object(
+            self.store, "_resumable_upload", side_effect=corrupt_after_upload
+        ):
+            with mock.patch(
+                "cold_store.http_request", side_effect=fail_trash
+            ):
+                with self.assertRaisesRegex(
+                    cold_store.ColdStoreError,
+                    "verification mismatch.*ALSO failed to trash",
+                ):
+                    self.store.put_backup("supabase", str(dump))
+        self.assertEqual(len(uploaded), 1)
+
     def test_put_backup_naming_routing_ledger(self):
         dump = self.write_src("dump.sql", b"-- fake supabase dump\n" * 10)
         result = self.store.put_backup("supabase", str(dump))

@@ -49,6 +49,16 @@ pub struct WorldCore {
     /// rebuilt by journal replay and preserved across compaction by the
     /// checkpoint's `transfers` field.
     pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+    /// Author keys bound to participants for signed move capture (#2814):
+    /// participant id to the player's ed25519 verifying key bytes. A bound
+    /// participant's inputs must arrive player-signed (see
+    /// [`signed`](super::signed)). Runtime state in this first pass;
+    /// journal persistence of bindings is a follow-up.
+    pub(crate) author_keys: HashMap<u64, [u8; 32]>,
+    /// Each bound participant's expected signed-move chain position.
+    pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
+    /// Accepted signed moves, in world sequence order.
+    pub(crate) signed_moves: Vec<signed::SignedMoveRecord>,
 }
 
 /// The abuse-evaluator policy for world chat: the historical caps
@@ -144,6 +154,9 @@ impl WorldCore {
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
+            author_keys: HashMap::new(),
+            move_chains: HashMap::new(),
+            signed_moves: Vec::new(),
         };
         core.sync_ledger_ceiling();
         Ok(core)
@@ -1188,8 +1201,153 @@ impl WorldCore {
         self.commit_prepared(event)
     }
 
+    /// Bind `author_key` (the player's ed25519 verifying key) to the
+    /// participant the capability names, opting that participant into
+    /// signed play (#2814): from now on its inputs must arrive as
+    /// player-signed moves via [`WorldCore::input_signed`], and the
+    /// unsigned path refuses them. Re-binding the same key is a no-op;
+    /// binding a different key is refused (key rotation is out of scope).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the capability does not authorize input, or a different
+    /// key is already bound to the participant.
+    pub fn bind_author_key(
+        &mut self,
+        token: &JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<u64> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        if let Some(bound) = self.author_keys.get(&participant_id) {
+            ensure!(
+                *bound == author_key,
+                "participant {participant_id} already has a different author key bound"
+            );
+        } else {
+            self.author_keys.insert(participant_id, author_key);
+            self.move_chains.entry(participant_id).or_default();
+        }
+        Ok(participant_id)
+    }
+
+    /// Validate a player-signed input and prepare its event, verifying
+    /// the signed move against the participant's bound key and current
+    /// chain position without advancing the chain (see
+    /// [`WorldCore::record_signed_move`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input`], plus: the participant has no
+    /// bound author key, or the signed move fails
+    /// [`signed::MoveChain::verify`].
+    pub(crate) fn prepare_input_signed(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<(WorldEvent, crate::chain::Event)> {
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        self.ensure_uses_left(participant_id)?;
+        ensure!(
+            input.len() <= self.limits.input_bytes,
+            "world input exceeds {} bytes",
+            self.limits.input_bytes
+        );
+        ensure!(!input.is_empty(), "world input must not be empty");
+        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "participant {participant_id} has no bound author key; bind one before signed play"
+            )
+        })?;
+        let chain = self
+            .move_chains
+            .get(&participant_id)
+            .cloned()
+            .unwrap_or_default();
+        let signed = chain.verify(signed_move, &self.world_id, input, &author)?;
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        Ok((
+            WorldEvent {
+                sequence,
+                participant_id,
+                kind: WorldEventKind::Input(input.to_vec()),
+            },
+            signed,
+        ))
+    }
+
+    /// Record a signed move whose prepared event has just committed:
+    /// advance the author's chain past it and keep the cross-referenced
+    /// record. The actor calls this immediately after
+    /// [`WorldCore::commit_prepared`] for the prepared event, while no
+    /// other input can interleave.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the participant has no bound author key, or the signed
+    /// move is no longer the author's expected next move at commit time.
+    pub(crate) fn record_signed_move(
+        &mut self,
+        event: &WorldEvent,
+        signed: &crate::chain::Event,
+    ) -> Result<()> {
+        let participant_id = event.participant_id;
+        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
+            anyhow::anyhow!("participant {participant_id} has no bound author key")
+        })?;
+        let chain = self.move_chains.entry(participant_id).or_default();
+        ensure!(
+            signed.header.seq_num == chain.next_seq()
+                && signed.header.backlink == chain.frontier(),
+            "signed move is no longer the author's expected next move at commit"
+        );
+        chain.accept(signed);
+        self.signed_moves.push(signed::SignedMoveRecord {
+            world_sequence: event.sequence,
+            participant_id,
+            author,
+            author_seq: signed.header.seq_num,
+            event_id: signed.id,
+            bytes: signed.bytes.clone(),
+        });
+        Ok(())
+    }
+
+    /// Commit a player-signed game input (#2814): the move is verified
+    /// against the participant's bound key and chain position, committed
+    /// as a normal input event, and recorded as signed evidence.
+    ///
+    /// # Errors
+    ///
+    /// As [`WorldCore::prepare_input_signed`].
+    pub fn input_signed(
+        &mut self,
+        token: &JoinCapability,
+        input: &[u8],
+        signed_move: &[u8],
+    ) -> Result<WorldEvent> {
+        let (event, signed) = self.prepare_input_signed(token, input, signed_move)?;
+        let event = self.commit_prepared(event)?;
+        self.record_signed_move(&event, &signed)?;
+        Ok(event)
+    }
+
+    /// Accepted signed moves, in world sequence order (#2814): the
+    /// evidence base an attestation witness replays.
+    #[must_use]
+    pub fn signed_moves(&self) -> &[signed::SignedMoveRecord] {
+        &self.signed_moves
+    }
+
     pub(crate) fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        ensure!(
+            !self.author_keys.contains_key(&participant_id),
+            "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
