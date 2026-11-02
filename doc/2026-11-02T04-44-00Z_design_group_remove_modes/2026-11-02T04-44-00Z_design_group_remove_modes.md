@@ -33,3 +33,9 @@ The replicated `MemberOp` event changes to carry a concrete mode. Deserializatio
 5. Run targeted group tests and relevant `pkgs/id` checks.
 
 The work remains scoped to the remove path; sibling groups APIs and broader membership/policy redesign are excluded.
+
+---
+
+## 2026-11-02T04-52-00Z Update: initial server-policy defaults
+
+The initial `RemovePolicy::default()` allows the four concrete modes and all four successor categories, while selecting `Revoke` for `ServerDefault`. This preserves existing explicit `Transfer(Member)` use while making an unspecified removal least-authority and behavior-compatible with the current outcome for a removed grantor. A group's policy can narrow the allowed lists; the old group-wide `Delegation` setting does not silently override an explicit removal mode.

@@ -34,7 +34,8 @@ pub use delegation::Grant;
 pub use fold::{DeviceGrant, FoldError, GroupView, Outcome, Projection, Refusal, fold};
 pub use friendship::{Pair, friendship_id};
 pub use policy::{
-    Delegation, History, Join, OnMemberRemoved, Policy, Removal, RoleRules, Scheme, Template,
+    Delegation, History, Join, OnMemberRemoved, Policy, Removal, RemoveMode, RemoveModeKind,
+    RemovePolicy, RemoveSuccessor, RoleRules, Scheme, SuccessorKind, Template, TransferOpts,
 };
 
 /// The kind of a `device.add` event (P8.3).
