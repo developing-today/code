@@ -22,8 +22,8 @@ use std::collections::BTreeSet;
 
 use id::world::{WorldCore, WorldHandle, WorldLimits, WorldProgram, WorldScopes};
 use id::world_caps::{
-    CapError, CapLedger, Decision, MAX_ARGS_BYTES, MAX_WANTS_BYTES, parse_wants,
-    validate_schedule_id,
+    CapError, CapLedger, Decision, MAX_ARGS_BYTES, MAX_WANTS_BYTES, UNKNOWN_CAP_USAGE_KEY,
+    parse_wants, validate_schedule_id,
 };
 
 /// A program that asks for far more than the world grants: unknown names,
@@ -133,8 +133,15 @@ async fn a_hostile_program_is_refused_without_taking_the_node_down() {
         "expected 64 refusals, saw {denied_total}"
     );
     assert!(
-        report.usage.get("telepathy").is_some_and(|u| u.denied > 0),
-        "the unknown capability was refused and counted"
+        report.usage.get("telepathy").is_none(),
+        "unknown names must not mint per-name usage entries"
+    );
+    assert!(
+        report
+            .usage
+            .get(UNKNOWN_CAP_USAGE_KEY)
+            .is_some_and(|u| u.denied > 0),
+        "the unknown capability was refused and counted in the shared bucket"
     );
 
     // A second chat still works: the world stayed responsive throughout.
