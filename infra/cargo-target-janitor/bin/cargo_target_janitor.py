@@ -111,8 +111,8 @@ def worktree_branches(primary: Path) -> dict[Path, str | None]:
     return result
 
 
-def queue_claims(helper: Path) -> set[int]:
-    """Read only the pilot's claimed IDs through the existing transient-key helper."""
+def load_queue_client(helper: Path):
+    """Load the existing helper and its transient key once per run."""
     if not helper.is_file():
         raise SafetyError(f"queue helper unavailable: {helper}")
     spec = importlib.util.spec_from_file_location("repo_queue_helper", helper)
@@ -122,6 +122,12 @@ def queue_claims(helper: Path) -> set[int]:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     key = module.get_service_key()  # never print or persist this value
+    return module, key
+
+
+def queue_claims(client) -> set[int]:
+    """Read only the pilot's claimed IDs through the existing helper."""
+    module, key = client
     query = (
         "tasks?select=id,queue,status,payload&"
         f"queue=eq.{QUEUE}&status=eq.claimed&limit=1000"
@@ -133,16 +139,10 @@ def queue_claims(helper: Path) -> set[int]:
             and (row.get("payload") or {}).get("repo") == REPO}
 
 
-def queue_task_states(helper: Path, task_ids: set[int]) -> dict[int, str]:
+def queue_task_states(client, task_ids: set[int]) -> dict[int, str]:
     if not task_ids:
         return {}
-    spec = importlib.util.spec_from_file_location("repo_queue_helper", helper)
-    if spec is None or spec.loader is None:
-        raise SafetyError("cannot load repo-queue helper")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    key = module.get_service_key()
+    module, key = client
     ids = ",".join(str(task_id) for task_id in sorted(task_ids))
     rows = module.http(
         "GET", f"tasks?select=id,status&queue=eq.{QUEUE}&id=in.%28{ids}%29&limit=1000",
@@ -292,7 +292,8 @@ def main() -> int:
     try:
         # Snapshot every independent liveness source before producing a plan.
         branches = worktree_branches(args.primary)
-        claimed = queue_claims(args.queue_helper)
+        queue_client = load_queue_client(args.queue_helper)
+        claimed = queue_claims(queue_client)
         prs = open_pr_branches()
         cwds = active_process_cwds()
         task_ids = set()
@@ -305,7 +306,7 @@ def main() -> int:
             task_id = task_id_from(branch or "") or task_id_from(entry.name)
             if task_id is not None and (entry / "pkgs/id/target").is_dir():
                 task_ids.add(task_id)
-        statuses = queue_task_states(args.queue_helper, task_ids)
+        statuses = queue_task_states(queue_client, task_ids)
         now = time.time()
         targets = discover_targets(args.fleet_root, branches, claimed, statuses, prs,
                                    cwds, now - args.stale_hours * 3600)
@@ -346,7 +347,7 @@ def main() -> int:
         remaining_estimate = total
         for target in selected:
             # Fresh queue, PR, and process state immediately before each removal.
-            fresh_claimed = queue_claims(args.queue_helper)
+            fresh_claimed = queue_claims(queue_client)
             fresh_prs = open_pr_branches()
             fresh_cwds = active_process_cwds()
             path = target.path
@@ -358,7 +359,7 @@ def main() -> int:
             if target.task_id in fresh_claimed:
                 raise SafetyError(f"task {target.task_id} became live; stopping before {path}")
             if target.reason == "terminal-task":
-                fresh_status = queue_task_states(args.queue_helper, {target.task_id}).get(target.task_id)
+                fresh_status = queue_task_states(queue_client, {target.task_id}).get(target.task_id)
                 if fresh_status not in {"done", "failed", "cancelled"}:
                     raise SafetyError(f"task {target.task_id} is no longer terminal; stopping")
             if target.reason == "worktree-gone":
