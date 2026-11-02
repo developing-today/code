@@ -178,14 +178,22 @@ pub fn causal_past(start: &[Hash], parents: &HashMap<Hash, Vec<Hash>>) -> HashSe
 
 /// The live claims, given the applied tag events and the parent links of every event the store
 /// holds. A claim is live unless an applied clear names it and has it in its causal past.
+/// If the applied list repeats an event ID, only the last entry for that ID is folded —
+/// the same normalization [`compacted_claims`] gets from its by-ID map (#4359).
 ///
 /// This walks the causal past of each clear, so it costs O(clears x history). It is the reference
 /// for [`compacted_claims`]. The result is sorted by claim ID.
 #[must_use]
 pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
+    // Fold only the last entry for each event ID, as `compacted_claims` does through
+    // its by-ID map: a repeated ID -- even carrying a different operation -- is one event.
+    let mut by_id: BTreeMap<[u8; 32], &Applied> = BTreeMap::new();
+    for event in applied {
+        by_id.insert(*event.id.as_bytes(), event);
+    }
     let mut sets: BTreeMap<[u8; 32], Claim> = BTreeMap::new();
     let mut removed: HashSet<Hash> = HashSet::new();
-    for event in applied {
+    for event in by_id.values().copied() {
         if let TagOp::Set {
             subject,
             name,
@@ -204,7 +212,7 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
             );
         }
     }
-    for event in applied {
+    for event in by_id.values().copied() {
         let TagOp::Clear { claims } = &event.op else {
             continue;
         };
@@ -437,5 +445,25 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].value, Some("B".to_owned()));
         assert_eq!(live, live_claims(&applied, &parents));
+    }
+
+    #[test]
+    fn test_same_id_entries_with_different_operations_fold_as_the_last() {
+        // #4359: a repeated ID carrying a different operation is still one event:
+        // the last entry decides, in both folds. Set-then-clear leaves no claim;
+        // clear-then-set leaves the claim live.
+        let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(1), vec![])]);
+        let set_then_clear = [set(1, 9, "city"), clear(1, &[])];
+        assert!(compacted_claims(&set_then_clear, &parents).is_empty());
+        assert_eq!(
+            compacted_claims(&set_then_clear, &parents),
+            live_claims(&set_then_clear, &parents)
+        );
+        let clear_then_set = [clear(1, &[]), set(1, 9, "city")];
+        assert_eq!(compacted_claims(&clear_then_set, &parents).len(), 1);
+        assert_eq!(
+            compacted_claims(&clear_then_set, &parents),
+            live_claims(&clear_then_set, &parents)
+        );
     }
 }
