@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn fit_treats_a_zero_viewport_dimension_as_one() {
+    fn test_fit_treats_a_zero_viewport_dimension_as_one() {
         let screen = grid(4, 2, " ");
         for (requested, expected) in [((0, 2), (1, 2)), ((4, 0), (4, 1)), ((0, 0), (1, 1))] {
             let fitted = screen.fit(requested.0, requested.1);
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn fit_to_the_source_dimensions_is_the_identity() {
+    fn test_fit_to_the_source_dimensions_is_the_identity() {
         let screen = grid(4, 2, "x");
         assert_eq!(screen.fit(4, 2), screen);
     }
