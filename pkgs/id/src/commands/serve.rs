@@ -196,14 +196,21 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 /// # Returns
 ///
 /// `true` if the process exists, `false` otherwise.
-#[allow(clippy::cast_possible_wrap)] // PID is always positive, wrap is safe for kill()
+#[allow(clippy::cast_possible_wrap)] // The Unix branch validates the PID before casting.
 #[allow(unsafe_code)] // Required for libc::kill
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
+        // PIDs read from the serve lock are untrusted u32 values. Zero checks
+        // the caller's process group, while values above i32::MAX wrap to
+        // negative process selectors, so neither can identify one process.
+        if pid == 0 || pid > i32::MAX as u32 {
+            return false;
+        }
+
         // SAFETY: libc::kill with signal 0 only checks process existence without
-        // sending any signal. The pid cast from u32 to i32 is safe because valid
-        // PIDs on Unix are always positive and fit in i32.
+        // sending any signal. The check above ensures pid is positive and fits
+        // in i32 before the cast.
         // #2384: a failed probe is not proof of death — EPERM means the
         // process exists but is owned by another user, so it is alive;
         // only ESRCH (no such process) and other errnos mean dead. This
@@ -1989,6 +1996,23 @@ mod tests {
     fn test_is_process_alive_current_process() {
         let pid = std::process::id();
         assert!(is_process_alive(pid));
+    }
+
+    #[test]
+    fn test_is_process_alive_pid_zero() {
+        #[cfg(unix)]
+        {
+            assert!(!is_process_alive(0));
+        }
+    }
+
+    #[test]
+    fn test_is_process_alive_pid_out_of_i32_range() {
+        #[cfg(unix)]
+        {
+            assert!(!is_process_alive(i32::MAX as u32 + 1));
+            assert!(!is_process_alive(u32::MAX));
+        }
     }
 
     #[test]
