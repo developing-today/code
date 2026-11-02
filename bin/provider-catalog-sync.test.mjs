@@ -288,7 +288,9 @@ test('parseArgs accepts the documented controls', () => {
 
 function runCli(args, env = {}) {
   const clean = { ...process.env, ...env };
-  delete clean.OPENCODE_CONFIG_PATH;
+  // Scrub the ambient overlay variable unless a test passes it explicitly
+  // (#4588: the explicit-pass case is the regression under test).
+  if (!Object.hasOwn(env, 'OPENCODE_CONFIG_PATH')) delete clean.OPENCODE_CONFIG_PATH;
   return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: clean });
 }
 
