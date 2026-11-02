@@ -448,7 +448,7 @@ const githubMetrics: MetricExtractor = (section) => {
 const modalMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const credits = /\$(\d+(?:\.\d+)?) monthly compute-credit/.exec(plan);
+  const credits = /\$([\d,]+(?:\.\d+)?) monthly compute-credit/.exec(plan);
   // Monthly console read (§2.2, #1111): the Usage bullet carries the
   // dated used figure, e.g. "$12.50 compute credits used on 2026-10-24"
   // or "used $12.50". Plan bullet holds the $30/mo grant (the limit).
@@ -456,18 +456,18 @@ const modalMetrics: MetricExtractor = (section) => {
   // deliberately NOT numbers: no fallback below matches a bare number,
   // so they stay null instead of masquerading as dollars (Codex P2).
   const usedMatch =
-    /\$(\d+(?:\.\d+)?)\s*(?:monthly\s*)?compute\s+credits?\s*used/i.exec(usage) ??
-    /(\d+(?:\.\d+)?)\s*credits?\s*used/i.exec(usage) ??
-    /used[:\s]+\$(\d+(?:\.\d+)?)/i.exec(usage) ??
-    /used[:\s]+(\d+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
-  const used = usedMatch ? Number(usedMatch[1]) : null;
+    /\$([\d,]+(?:\.\d+)?)\s*(?:monthly\s*)?compute\s+credits?\s*used/i.exec(usage) ??
+    /([\d,]+(?:\.\d+)?)\s*credits?\s*used/i.exec(usage) ??
+    /used[:\s]+\$([\d,]+(?:\.\d+)?)/i.exec(usage) ??
+    /used[:\s]+([\d,]+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
+  const used = usedMatch ? Number(usedMatch[1].replace(/,/g, "")) : null;
   return [
     metric({
       id: "compute-credits",
       label: "Compute credits / month",
       unit: "usd",
       used,
-      limit: credits ? Number(credits[1]) : 30,
+      limit: credits ? Number(credits[1].replace(/,/g, "")) : 30,
       highlight: true,
       note:
         used != null
@@ -483,14 +483,14 @@ const modalMetrics: MetricExtractor = (section) => {
  * read 2026-10-26)". No metrics until a dated count is recorded. */
 const bitwardenMetrics: MetricExtractor = (section) => {
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const secrets = /(\d+)\s*secrets?/i.exec(usage);
-  const projects = /(\d+)\s*projects?/i.exec(usage);
+  const secrets = /([\d,]+)\s*secrets?/i.exec(usage);
+  const projects = /([\d,]+)\s*projects?/i.exec(usage);
   return [
     metric({
       id: "secrets-count",
       label: "Secrets",
       unit: "count",
-      used: secrets ? Number(secrets[1]) : null,
+      used: secrets ? Number(secrets[1].replace(/,/g, "")) : null,
       highlight: true,
       note: "bws count-only read (§2.2); names/values never enter the hub.",
     }),
@@ -498,7 +498,7 @@ const bitwardenMetrics: MetricExtractor = (section) => {
       id: "projects-count",
       label: "Projects",
       unit: "count",
-      used: projects ? Number(projects[1]) : null,
+      used: projects ? Number(projects[1].replace(/,/g, "")) : null,
       highlight: true,
       note: "bws count-only read (§2.2); names/values never enter the hub.",
     }),
