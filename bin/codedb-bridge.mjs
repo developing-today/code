@@ -47,6 +47,21 @@ export const parseDaemonUrl = (raw) => {
       `CODEDB_DAEMON_URL="${value}" must be an http:// origin with no path (the bridge appends /explore/* routes itself)`
     );
   }
+  if (url.search) {
+    throw new Error(
+      `CODEDB_DAEMON_URL="${value}" must not carry a query string (query "${url.search}") - a query has no meaning for a daemon origin and would be silently dropped`
+    );
+  }
+  if (url.hash) {
+    throw new Error(
+      `CODEDB_DAEMON_URL="${value}" must not carry a fragment (fragment "${url.hash}") - a fragment has no meaning for a daemon origin and would be silently dropped`
+    );
+  }
+  if (url.username || url.password) {
+    throw new Error(
+      `CODEDB_DAEMON_URL="${value}" must not carry userinfo (embedded credentials) - the daemon has no authentication, so credentials would be silently dropped`
+    );
+  }
   return url.origin;
 };
 

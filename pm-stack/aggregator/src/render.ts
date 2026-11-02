@@ -2054,9 +2054,16 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const refs = r.taskRefs.length
-    ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
-    : "";
+  const renderedRefs = r.taskRefs.flatMap((ref) => {
+    try {
+      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
+    } catch {
+      // A malformed ref may still exist in an older or ungated in-memory
+      // record. Keep the session visible and omit only the invalid link.
+      return [];
+    }
+  });
+  const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
   // registry identity; historical records render no controls.
   const badges = actionBadgesHtml(act?.actions);
@@ -2802,21 +2809,22 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       var allResults = [];
       try {
         // The endpoint accepts at most 100 actions per request and
-        // readJsonBody rejects bodies over 100,000 chars (server.ts),
-        // so the SAME snapshot is packed greedily under BOTH limits
-        // and the slices' per-item results are aggregated.
+        // readJsonBody rejects bodies over 100,000 UTF-8 bytes, so the
+        // SAME snapshot is packed greedily under BOTH limits and the
+        // slices' per-item results are aggregated.
         var chunks = [];
         var cur = [];
-        var curLen = 16; // the {"actions":[]} envelope
+        var encoder = new TextEncoder();
+        var curBytes = 14; // UTF-8 bytes in the {"actions":[]} envelope
         batch.actions.forEach(function (a) {
-          var len = JSON.stringify(a).length + 1;
-          if (cur.length && (cur.length >= 100 || curLen + len > 90000)) {
+          var bytes = encoder.encode(JSON.stringify(a)).byteLength + 1; // include a comma for headroom
+          if (cur.length && (cur.length >= 100 || curBytes + bytes > 90000)) {
             chunks.push(cur);
             cur = [];
-            curLen = 16;
+            curBytes = 14;
           }
           cur.push(a);
-          curLen += len;
+          curBytes += bytes;
         });
         if (cur.length) chunks.push(cur);
         for (var ci = 0; ci < chunks.length; ci++) {

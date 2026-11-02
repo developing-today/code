@@ -158,7 +158,13 @@ export function parseSubscriptionQuota(payload) {
 /** Parse a billing-banner payload into remaining free credits (USD). */
 export function parseBillingBanner(payload) {
   const minor = payload?.remaining_minor_units;
-  if (typeof minor !== "number" || !Number.isFinite(minor) || minor < 0) {
+  // Minor units are a count of cents: only a nonnegative safe integer is a
+  // well-shaped value. A fractional value (1050.5) is shape drift, not
+  // a fractional dollar amount of credit — fail closed (#2510). No domain-specific maximum is
+  // imposed: there is no authoritative upstream bound, and
+  // Number.MAX_SAFE_INTEGER (via isSafeInteger) is a representation-safety
+  // limit, not a business cap.
+  if (typeof minor !== "number" || !Number.isSafeInteger(minor) || minor < 0) {
     throw new ExportError("unparseable", 6, "billing-banner: remaining_minor_units missing/invalid");
   }
   if (payload.currency !== "USD") {

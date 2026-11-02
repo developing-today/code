@@ -114,7 +114,12 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
+import {
+  droppedJulesItemCount,
+  julesSummary,
+  mapJulesItems,
+  type JulesReviewState,
+} from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -620,16 +625,28 @@ async function main(): Promise<void> {
 
   // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
   let jules: JulesSummary | undefined;
+  let julesState: unknown;
+  let julesReadable = false;
   try {
-    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as JulesReviewState;
+    julesState = JSON.parse(await readFile(julesStatePath, "utf8")) as unknown;
+    julesReadable = true;
+  } catch (err) {
+    console.error("collector: jules-review state unreadable; no Jules sessions this run");
+    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
+  }
+  if (julesReadable) {
+    const state = julesState as JulesReviewState;
     const entries = mapJulesItems(state);
     if (entries.length) attention = [...attention, ...entries];
     for (const e of entries) registry.push(recordFromSessionEntry(e));
     jules = julesSummary(state);
+    const dropped = droppedJulesItemCount(state);
+    if (dropped > 0) {
+      console.error(
+        `collector: jules-review state malformed; skipped ${dropped} item(s), kept ${entries.length} session(s)`,
+      );
+    }
     markSection("julesSummary", "ok");
-  } catch (err) {
-    console.error("collector: jules-review state unreadable; no Jules sessions this run");
-    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- Muse launch records (#906 §3) --------------------------------

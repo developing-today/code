@@ -958,3 +958,45 @@ test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t
   assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
   await alive.text();
 });
+
+test('warm chain map self-deletes settled entries; same-key turns stay ordered (#2407)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const chainsNow = async () => (await (await fetch('http://127.0.0.1:' + port + '/health')).json()).warm.chains;
+  const waitChainsEmpty = async () => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const n = await chainsNow();
+      if (n === 0) return;
+      if (Date.now() > deadline) assert.fail('warmChains map must be empty after settle, got ' + n);
+      await new Promise(r => setTimeout(r, 50));
+    }
+  };
+
+  // Two distinct conversation keys through enqueueWarm.
+  for (const first of ['leak alpha', 'leak gamma']) {
+    const res = JSON.parse(await chat(port, { model: 'muse-spark-1.3', messages: [{ role: 'user', content: first }] }));
+    assert.equal(res.choices[0].message.content, 'RE:' + first);
+  }
+  await waitChainsEmpty();
+
+  // Same key: turn 2 enqueued while turn 1 is in flight runs after it, on
+  // the same single MSP session, in order.
+  const p1 = chat(port, { model: 'muse-spark-1.3', messages: [{ role: 'user', content: 'order one' }] });
+  await new Promise(r => setTimeout(r, 50));
+  const p2 = chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [
+      { role: 'user', content: 'order one' },
+      { role: 'assistant', content: 'RE:order one' },
+      { role: 'user', content: 'order two' }
+    ]
+  });
+  const [t1, t2] = await Promise.all([p1.then(r => JSON.parse(r)), p2.then(r => JSON.parse(r))]);
+  assert.equal(t1.choices[0].message.content, 'RE:order one');
+  assert.equal(t2.choices[0].message.content, 'RE:order two');
+  const log = fs.readFileSync(logFile, 'utf-8').trim().split('\n');
+  const turns = log.filter(l => l.startsWith('TURN')).map(l => l.slice(5));
+  assert.deepEqual(turns.slice(-2), ['order one', 'order two'], 'same-key turns must run in enqueue order');
+  await waitChainsEmpty();
+});
