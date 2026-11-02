@@ -598,12 +598,15 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
-/// The server's capability ceiling: the named capabilities, or the whole catalog
-/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+/// The server's capability ceiling: the named capabilities, or the default
+/// ceiling ([`crate::world_caps::default_ceiling_names`]) when no list is
+/// given — providers whose manifest default is `Excluded` do not join a
+/// server by registration alone (#838). Like a world ceiling, it names
+/// capabilities; `*` is refused.
 #[cfg(feature = "world")]
 fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
     match names {
-        None => Ok(crate::world_caps::catalog_names()),
+        None => Ok(crate::world_caps::default_ceiling_names()),
         Some(names) => {
             crate::world_caps::validate_ceiling_names(names)?;
             Ok(names.iter().cloned().collect())
@@ -2413,10 +2416,10 @@ mod tests {
 
     #[cfg(feature = "world")]
     #[test]
-    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+    fn the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
         assert_eq!(
             allowed_caps(None).unwrap(),
-            crate::world_caps::catalog_names()
+            crate::world_caps::default_ceiling_names()
         );
         let named = ["time.now".to_owned(), "chat.say".to_owned()];
         assert_eq!(

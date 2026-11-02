@@ -1064,10 +1064,11 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; an unrestricted
-    // ceiling is the whole catalog, which we fold back to "no ceiling".
+    // The report carries the world's own ceiling as a list; a ceiling equal
+    // to the default ceiling folds back to "no ceiling" (an apply then
+    // restores the default ceiling, #838).
     let ceiling = if caps.ceiling
-        == crate::world_caps::catalog_names()
+        == crate::world_caps::default_ceiling_names()
             .into_iter()
             .collect::<Vec<_>>()
     {
@@ -1187,9 +1188,11 @@ async fn apply_steps(
                 }
             }
             ApplyStep::SetCeiling { ceiling } => {
-                // `None` means "no ceiling": restore the whole catalog.
+                // `None` means "no ceiling": restore the default ceiling —
+                // providers with an `Excluded` manifest default stay out
+                // until a ceiling names them (#838).
                 let names = ceiling.clone().unwrap_or_else(|| {
-                    crate::world_caps::catalog_names()
+                    crate::world_caps::default_ceiling_names()
                         .into_iter()
                         .collect::<Vec<_>>()
                 });
