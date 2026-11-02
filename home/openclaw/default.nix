@@ -28,6 +28,8 @@ let
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
   opencodeRouteProxyPort = 18750;
+  # Fixed loopback port of the dedicated embedding server below (#1300).
+  embeddingPort = 18791;
   localProvider = port: models: {
     baseUrl = "http://127.0.0.1:${toString port}/v1";
     # The laptop proxies are loopback-only and do not check an API key;
@@ -68,9 +70,31 @@ in
   # commandcode-proxy unit crash-loops on its already-taken port (#883).
   # The gateway reaches the proxies by port, not by unit; only mcpx and
   # the opencode-route proxy are real unit dependencies.
+  # Stable local embedding endpoint for memory-lancedb (#1300 phase 1):
+  # a dedicated llama-server on a FIXED loopback port, reusing the
+  # llama.cpp build and the Qwen3-Embedding-0.6B GGUF that OpenCode's
+  # messaging embeddings already keep in ~/.cache/opencode (OpenCode's
+  # own per-process embedding servers use dynamic ports, which a static
+  # gateway config cannot point at). If that cache is ever cleared, the
+  # ConditionPathExists below fails this unit loudly instead of the
+  # gateway silently losing vector recall.
+  systemd.user.services.openclaw-embedding = {
+    Unit = {
+      Description = "Local embedding server for OpenClaw memory (llama.cpp)";
+      ConditionPathExists = "${homeDir}/.cache/opencode/models/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    };
+    Service = {
+      ExecStart = "${homeDir}/.cache/opencode/bin/llama.cpp/b11669/llama-b11669/llama-server --embedding --model ${homeDir}/.cache/opencode/models/Qwen3-Embedding-0.6B-Q8_0.gguf --host 127.0.0.1 --port ${toString embeddingPort}";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
+        "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "design-code-proxy.service"
@@ -79,6 +103,7 @@ in
         "mcpx.service"
       ];
       Wants = [
+        "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "mcpx.service"
       ];
@@ -195,6 +220,7 @@ in
       "lobster" # typed workflow runtime for resumable automations
       "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
+      "memory-lancedb" # LanceDB long-term memory; owns plugins.slots.memory (#1300 phase 1)
     ];
 
     # Instance-local skills that encode how this fleet works.
@@ -386,7 +412,14 @@ in
         dispatch.enabled = true;
       };
 
-      plugins.entries = {
+      plugins = {
+        # memory-lancedb owns the memory slot (#1300 phase 1, approved
+        # by Drew 2026-10-26). Reversible: remove this slot line (and
+        # the runtime plugin above) to fall back to the built-in
+        # memory backend.
+        slots.memory = "memory-lancedb";
+
+        entries = {
         acpx = {
           enabled = true;
           config = {
@@ -426,6 +459,24 @@ in
         slack.enabled = true;
         codex.enabled = true;
         copilot.enabled = true;
+        "memory-lancedb" = {
+          enabled = true;
+          config = {
+            embedding = {
+              # Direct OpenAI-compatible path against the fixed local
+              # llama-server above. The apiKey is a placeholder label,
+              # not a credential: the loopback server checks no key
+              # (same posture as localProvider).
+              apiKey = "local-embedding";
+              baseUrl = "http://127.0.0.1:${toString embeddingPort}/v1";
+              model = "Qwen3-Embedding-0.6B-Q8_0";
+              dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
+            };
+            autoRecall = true;
+            autoCapture = false;
+          };
+        };
+        };
       };
 
       # Direct MCP wiring to the fleet's most useful servers (the same
