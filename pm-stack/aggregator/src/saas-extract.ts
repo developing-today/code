@@ -311,14 +311,14 @@ const cloudflareMetrics: MetricExtractor = (section) => {
       limit: allowance(both, /([\d,.]+[kMB]?) GB-hours disk/),
     }),
   );
-  const counts = /(\d+) Workers, (\d+) R2 buckets[^;]*; (\d+) D1, (\d+) KV, (\d+) Queues/.exec(usage);
+  const counts = /([\d,]+) Workers, ([\d,]+) R2 buckets[^;]*; ([\d,]+) D1, ([\d,]+) KV, ([\d,]+) Queues/.exec(usage);
   if (counts) {
     out.push(
-      metric({ id: "workers-count", label: "Workers deployed", unit: "count", used: Number(counts[1]) }),
-      metric({ id: "r2-buckets", label: "R2 buckets", unit: "count", used: Number(counts[2]) }),
-      metric({ id: "d1-count", label: "D1 databases", unit: "count", used: Number(counts[3]) }),
-      metric({ id: "kv-count", label: "KV namespaces", unit: "count", used: Number(counts[4]) }),
-      metric({ id: "queues-count", label: "Queues", unit: "count", used: Number(counts[5]) }),
+      metric({ id: "workers-count", label: "Workers deployed", unit: "count", used: Number(counts[1].replace(/,/g, "")) }),
+      metric({ id: "r2-buckets", label: "R2 buckets", unit: "count", used: Number(counts[2].replace(/,/g, "")) }),
+      metric({ id: "d1-count", label: "D1 databases", unit: "count", used: Number(counts[3].replace(/,/g, "")) }),
+      metric({ id: "kv-count", label: "KV namespaces", unit: "count", used: Number(counts[4].replace(/,/g, "")) }),
+      metric({ id: "queues-count", label: "Queues", unit: "count", used: Number(counts[5].replace(/,/g, "")) }),
     );
   }
   return out.filter((m) => m.used != null || m.limit != null);
@@ -327,14 +327,14 @@ const cloudflareMetrics: MetricExtractor = (section) => {
 const tursoMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const db = /(\d+) DB/.exec(usage);
+  const db = /([\d,]+) DB/.exec(usage);
   const zero = /0 B, 0 usage/.test(usage);
   return [
     metric({
       id: "databases",
       label: "Databases",
       unit: "count",
-      used: db ? Number(db[1]) : null,
+      used: db ? Number(db[1].replace(/,/g, "")) : null,
       limit: allowance(plan, /(100) DBs/),
       highlight: true,
     }),
@@ -398,7 +398,7 @@ const supabaseMetrics: MetricExtractor = () => [
 const githubMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
-  const comped = /(\d[\d,]*) Linux \+ (\d+) macOS minutes/.exec(usage);
+  const comped = /([\d,]+) Linux \+ ([\d,]+) macOS minutes/.exec(usage);
   const out: UsageMetric[] = [
     metric({
       id: "actions-billable-minutes",
@@ -437,7 +437,7 @@ const githubMetrics: MetricExtractor = (section) => {
         id: "actions-comped-minutes",
         label: "Actions minutes (comped, October)",
         unit: "minutes",
-        used: Number(comped[1].replace(/,/g, "")) + Number(comped[2]),
+        used: Number(comped[1].replace(/,/g, "")) + Number(comped[2].replace(/,/g, "")),
         note: "Fully comped/discounted — net $0; comped minutes do not consume the plan allowance.",
       }),
     );
