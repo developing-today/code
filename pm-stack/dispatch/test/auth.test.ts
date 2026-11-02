@@ -4,6 +4,7 @@ import {
   AuthError,
   assertCallerRepo,
   authenticate,
+  parseJwt,
   timingSafeStringEqual,
   verifyOidcToken,
   type Jwks,
@@ -28,6 +29,10 @@ function signJwt(claims: Record<string, unknown>): string {
   const signer = createSign("RSA-SHA256");
   signer.update(`${header}.${payload}`);
   return `${header}.${payload}.${b64url(signer.sign(privateKey))}`;
+}
+
+function jwtWithSegments(header: unknown, payload: unknown): string {
+  return `${b64url(JSON.stringify(header)!)}.${b64url(JSON.stringify(payload)!)}.signature`;
 }
 
 const NOW = 1_800_000_000_000; // fixed "now" for claim checks
@@ -77,6 +82,28 @@ describe("bearer auth via authenticate", () => {
 });
 
 describe("OIDC verification", () => {
+  test("rejects non-object JWT header and payload segments as malformed credentials", async () => {
+    const header = { alg: "RS256", typ: "JWT", kid: "test-kid-1" };
+    const cases: Array<[string, unknown, unknown]> = [
+      ["null header", null, baseClaims],
+      ["array header", [], baseClaims],
+      ["number header", 42, baseClaims],
+      ["string header", "header", baseClaims],
+      ["boolean header", true, baseClaims],
+      ["null payload", header, null],
+      ["array payload", header, [baseClaims]],
+      ["number payload", header, 42],
+      ["string payload", header, "payload"],
+      ["boolean payload", header, true],
+    ];
+
+    for (const [name, tokenHeader, payload] of cases) {
+      const token = jwtWithSegments(tokenHeader, payload);
+      expect(parseJwt(token), name).toBeNull();
+      await expect(verifyOidcToken(token, oidcOpts), name).rejects.toBeInstanceOf(AuthError);
+    }
+  });
+
   test("accepts a well-formed token and returns the identity", async () => {
     const id = await verifyOidcToken(signJwt(baseClaims), oidcOpts);
     expect(id.type).toBe("oidc");
