@@ -67,23 +67,30 @@ const INTEGER_MAX: Partial<Record<FieldType, number>> = {
 const encoder = new TextEncoder();
 const byteLength = (text: string): number => encoder.encode(text).length;
 
-function parseField(raw: RawField): Field {
+function parseField(raw: unknown): Field {
   if (typeof raw === "string") {
     const optional = raw.endsWith("?");
     const kind = optional ? raw.slice(0, -1) : raw;
     if (!FIELD_TYPES.has(kind)) throw new Error(`unknown field type \`${kind}\``);
     return { kind: kind as FieldType, optional, nullable: optional };
   }
-  if (!FIELD_TYPES.has(raw.type)) throw new Error(`unknown field type \`${raw.type}\``);
+  if (!isObject(raw)) throw new Error("field spec must be a string or object");
+  const kind = raw.type;
+  if (typeof kind !== "string" || !FIELD_TYPES.has(kind)) {
+    throw new Error(`unknown field type \`${String(kind)}\``);
+  }
   const optional = raw.optional ?? false;
+  if (typeof optional !== "boolean") throw new Error("optional must be a boolean");
+  const nullable = raw.nullable ?? optional;
+  if (typeof nullable !== "boolean") throw new Error("nullable must be a boolean");
   return {
-    kind: raw.type,
+    kind: kind as FieldType,
     optional,
-    nullable: raw.nullable ?? optional,
-    min: raw.min,
-    max: raw.max,
-    maxBytes: raw.max_bytes,
-    allowed: raw.enum,
+    nullable,
+    min: raw.min as number | undefined,
+    max: raw.max as number | undefined,
+    maxBytes: raw.max_bytes as number | undefined,
+    allowed: raw.enum as string[] | undefined,
   };
 }
 
@@ -91,6 +98,32 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const isInteger = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value);
+
+/** Parse a contract document, validating every client and server field spec. */
+export function parseShellContract(value: unknown): ShellContract {
+  if (!isObject(value)) throw new Error("shell contract must be an object");
+
+  for (const side of ["client_frames", "server_frames"] as const) {
+    const frames = value[side];
+    if (!isObject(frames)) throw new Error(`${side} must be an object`);
+
+    for (const [frameName, frame] of Object.entries(frames)) {
+      if (!isObject(frame) || !isObject(frame.fields)) {
+        throw new Error(`${frameName}: frame fields must be an object`);
+      }
+      for (const [fieldName, raw] of Object.entries(frame.fields)) {
+        try {
+          parseField(raw);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(`${frameName}.${fieldName}: ${detail}`);
+        }
+      }
+    }
+  }
+
+  return value as unknown as ShellContract;
+}
 
 function lookup(
   contract: ShellContract,
@@ -185,7 +218,13 @@ function checkFields(
     if (!Object.hasOwn(spec.fields, key)) return `\`${kind}\` has no field \`${key}\``;
   }
   for (const [name, raw] of Object.entries(spec.fields)) {
-    const field = parseField(raw);
+    let field: Field;
+    try {
+      field = parseField(raw);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return `\`${kind}.${name}\` has an invalid field spec: ${detail}`;
+    }
     const present = Object.hasOwn(object, name) && object[name] !== undefined;
     const value = present ? object[name] : undefined;
     if (!present && field.optional) continue;
