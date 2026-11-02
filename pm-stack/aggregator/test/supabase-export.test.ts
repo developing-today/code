@@ -96,6 +96,56 @@ describe("applySupabaseExport", () => {
     expect(supabaseCard(unmeasured).billedUsd).toBeNull();
   });
 
+  test("negative billing is unknown without discarding valid metric measurements", () => {
+    const out = applySupabaseExport(
+      extractSaasServices(VIEW),
+      freshDoc({ billing: { plan: "free", billedUsd: -42.5, measured: true } }),
+      NOW,
+    );
+    expect(supabaseCard(out).billedUsd).toBeNull();
+    expect(supabaseCard(out).sourceClass).toBe("api");
+    expect(metricOf(out, "db-size").used).toBe(1.154);
+  });
+
+  test("a non-string measuredAt is a no-op before Date.parse coercion", () => {
+    const base = extractSaasServices(VIEW);
+    const expected = structuredClone(base);
+    const out = applySupabaseExport(
+      base,
+      freshDoc({ measuredAt: ["2026-10-29T14:55:00Z"] as unknown as string }),
+      NOW,
+    );
+    expect(out).toEqual(expected);
+  });
+
+  test("a negative used value leaves that metric at its recorded fallback", () => {
+    const base = extractSaasServices(VIEW);
+    const recordedDb = structuredClone(metricOf(base, "db-size"));
+    const out = applySupabaseExport(
+      base,
+      freshDoc({
+        metrics: [
+          { id: "db-size", used: -3.25, limit: 0.5 },
+          { id: "storage", used: 0.25, limit: 1, unit: "gb" },
+        ],
+      }),
+      NOW,
+    );
+    expect(metricOf(out, "db-size")).toEqual(recordedDb);
+    expect(metricOf(out, "storage").used).toBe(0.25);
+  });
+
+  test("a negative limit leaves that metric at its recorded fallback", () => {
+    const base = extractSaasServices(VIEW);
+    const recordedDb = structuredClone(metricOf(base, "db-size"));
+    const out = applySupabaseExport(
+      base,
+      freshDoc({ metrics: [{ id: "db-size", used: 0.25, limit: -0.5 }] }),
+      NOW,
+    );
+    expect(metricOf(out, "db-size")).toEqual(recordedDb);
+  });
+
   test("a stale export falls back to exactly today's card", () => {
     const base = extractSaasServices(VIEW);
     const out = applySupabaseExport(base, freshDoc({ measuredAt: "2026-10-29T12:00:00Z" }), NOW);
