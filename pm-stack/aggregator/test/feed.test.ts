@@ -253,6 +253,63 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
   });
 
+  // #3427: value-malformed windows (impossible resetsAt, negative
+  // limit/used, out-of-range percent) used to pass the type-only guard
+  // and mislead guidance/health. They now drop individually and count,
+  // exactly like shape failures; valid windows are untouched.
+  test("Feb-30 resetsAt window drops individually", () => {
+    const bad = { ...WINDOW, resetsAt: "2026-02-30T00:00:00Z" };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("negative used window drops individually", () => {
+    const bad = { ...WINDOW, used: -5 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("negative limit window drops individually", () => {
+    const bad = { ...WINDOW, limit: -100 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("percent -50 window drops individually", () => {
+    const bad = { ...WINDOW, percent: -50 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("percent 15000 window drops individually", () => {
+    const bad = { ...WINDOW, percent: 15000 };
+    const pool = { ...POOL, windows: [WINDOW, bad] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(1);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("valid windows are untouched and droppedWindows counts every drop", () => {
+    const feb30 = { ...WINDOW, name: "feb30", resetsAt: "2026-02-30T00:00:00Z" };
+    const negUsed = { ...WINDOW, name: "neg-used", used: -1 };
+    const negLimit = { ...WINDOW, name: "neg-limit", limit: -1 };
+    const negPct = { ...WINDOW, name: "neg-pct", percent: -50 };
+    const hugePct = { ...WINDOW, name: "huge-pct", percent: 15000 };
+    const pool = { ...POOL, windows: [WINDOW, feb30, negUsed, negLimit, negPct, hugePct] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedWindows).toBe(5);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+    expect(out.view.dropped).toEqual({ pools: 0, windows: 5, burn: 0 });
+  });
+
   test("malformed burn segments drop individually", () => {
     const seg = {
       provider: "opencode",
