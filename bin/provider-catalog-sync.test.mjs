@@ -19,6 +19,9 @@ import {
   catalogSyncBranch,
   assertNotDefaultBranch,
   openPrCommands,
+  runSync,
+  deepMergeProviders,
+  SYNC_OWNED_PROVIDERS,
 } from './provider-catalog-sync.mjs';
 
 const FIXTURE = `{
@@ -334,4 +337,57 @@ test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes',
   const applied = runCli([...base, '--apply']);
   assert.equal(applied.status, 0, `apply: ${applied.stdout} ${applied.stderr}`);
   assert.ok(fs.readFileSync(configPath, 'utf8').includes('acme-2'));
+});
+
+// ---------------------------------------------------------------------------
+// #4544: runtime overlay (sync-models-owned catalogs outside the tracked
+// configured default)
+// ---------------------------------------------------------------------------
+
+test('SYNC_OWNED_PROVIDERS names exactly the five sync-models-owned providers (#4544)', () => {
+  assert.deepEqual(
+    [...SYNC_OWNED_PROVIDERS].sort(),
+    ['antigravity-direct', 'cloudflare-gateway', 'google', 'openai', 'openai-codex'],
+  );
+});
+
+test('deepMergeProviders merges catalogs per model, overlay wins on conflict (#4544)', () => {
+  const base = { google: { models: { a: { name: 'A' }, b: { name: 'B', limit: { context: 1 } } } }, x: { models: { m: {} } } };
+  const over = { google: { models: { b: { name: 'B2' }, c: { name: 'C' } } } };
+  const merged = deepMergeProviders(base, over);
+  assert.deepEqual(Object.keys(merged.google.models).sort(), ['a', 'b', 'c']);
+  assert.equal(merged.google.models.b.name, 'B2');
+  assert.equal(merged.google.models.a.name, 'A');
+  assert.deepEqual(Object.keys(merged.x.models), ['m']);
+});
+
+test('runSync diffs the merged effective config when a runtime overlay exists (#4544)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-sync-overlay-'));
+  const configPath = path.join(dir, 'opencode.jsonc');
+  // Tracked default post-split: no google block at all (it was models-only).
+  fs.writeFileSync(configPath, '{ "provider": { "deepseek": { "models": { "ds-1": {} } } } }');
+  const overlayPath = path.join(dir, 'opencode-runtime.jsonc');
+  fs.writeFileSync(
+    overlayPath,
+    JSON.stringify({ provider: { google: { models: { 'gem-a': {}, 'gem-b': {} } } } }),
+  );
+  const modelsDev = path.join(dir, 'models-dev.json');
+  fs.writeFileSync(modelsDev, '{}');
+  const { report } = await runSync({
+    configPath,
+    modelsDevSpec: modelsDev,
+    sourceDir: null,
+    runtimeConfigPath: overlayPath,
+  });
+  assert.equal(report.runtime_overlay, overlayPath);
+  assert.equal(report.providers.google.config_count, 2);
+  // Without the overlay the same tracked file has no google provider at all.
+  const bare = await runSync({
+    configPath,
+    modelsDevSpec: modelsDev,
+    sourceDir: null,
+    runtimeConfigPath: path.join(dir, 'absent.jsonc'),
+  });
+  assert.equal(bare.report.runtime_overlay, null);
+  assert.equal(bare.report.providers.google, undefined);
 });
