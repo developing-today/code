@@ -1,6 +1,6 @@
 # Meta design template
 
-Use at S0 (`request-intake`): `init` writes a package's first `design.md` in this shape, the intake agent writes the first-pass review order, and S5 (`issue-handoff` fanout) fills "Initial research stages". After intake it changes only through PRs. Waves and the run table are generated views (`ready`, `render`, `status --live`); never type a run status by hand.
+Use at S0 (`request-intake`): `init` writes a package's first `design.md` in this shape, the intake agent writes the first-pass review order, and S5 (`issue-handoff` fanout) fills "Initial research stages". After intake it changes only through PRs. Waves and run status are generated views (`ready`, `render`, `status --live`); never type a run status by hand.
 
 ```markdown
 # Meta design: <request title>
@@ -11,7 +11,7 @@ Use at S0 (`request-intake`): `init` writes a package's first `design.md` in thi
 
 ## Review order
 
-First pass at the order in which to prepare, research and design the concepts. Default, when nothing blocks anything and nothing stands out: run one agent per concept, all at once, and track each in the run table.
+First pass at the order in which to prepare, research and design the concepts. Default, when nothing blocks anything and nothing stands out: run one agent per concept, all at once, and track each in run status.
 
 1. **C001** <title> — <why here: crucial, horizon now, required by C002>.
 2. **C002** <title> — requires C001: <reason>.
@@ -21,19 +21,24 @@ First pass at the order in which to prepare, research and design the concepts. D
 
 <!-- workflow:view waves -->
 
-- **Wave 1**: C001, C003
-- **Wave 2**: C002 (requires C001)
+- Wave 1 can start now: everything it requires is done. Later waves assume the earlier ones finish. Concepts that share files never share a wave. Leases and open branches are live data, so run `ready` before dispatching.
+- **Done:** none
+- **Running:** none
+- **Wave 1:** [C001](main.md#c001), [C003](main.md#c003)
+- **Wave 2:** [C002](main.md#c002)
+  - [C002](main.md#c002) is better after [C001](main.md#c001): <rework if C002 starts early>
 
 <!-- /workflow:view waves -->
 
-## Run table
+## Review status
 
-<!-- workflow:view run-table -->
+<!-- workflow:view run-status -->
 
-- **C001** <title> — S1 `not-started` · branch none · PR none · updated <UTC>
-- **C002** <title> — S1 `not-started` · branch none · PR none · updated <UTC>
+- S0 is `validated` when `render` runs, because render only runs on a package that passes `check`. Other stages show the `tasks` entries that record `concept`, `stage` and `status`. `pushed`, `pr-open` and `merged` come from git and GitHub through `status --live`, so they never appear here.
+- **C001** [<title>](main.md#c001): S0 `validated` · S1–S8 `not-started`
+- **C002** [<title>](main.md#c002): S0 `validated` · S1 `blocked` (requires C001) · S2–S8 `not-started`
 
-<!-- /workflow:view run-table -->
+<!-- /workflow:view run-status -->
 
 ## Initial research stages
 
