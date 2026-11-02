@@ -760,6 +760,19 @@ export interface CloudflareExportMetric {
   lowerBound?: boolean;
 }
 
+/** One Workers AI neurons/day alert from the export document (#2287):
+ * a UTC day in the cycle-to-date whose grouped per-day total exceeded
+ * the exporter's threshold. Present only when firing. */
+export interface CloudflareExportAlert {
+  kind?: string;
+  date?: string;
+  totalNeurons?: number;
+  threshold?: number;
+  topModels?: { model?: string; neurons?: number }[];
+  /** Day total is a lower bound (grouped query hit its limit). */
+  lowerBound?: boolean;
+}
+
 /** The file-export document written by pm-stack/cloudflare-export. */
 export interface CloudflareExportDoc {
   service?: string;
@@ -769,6 +782,7 @@ export interface CloudflareExportDoc {
   cycleStart?: string;
   billing?: { status?: string };
   metrics?: CloudflareExportMetric[];
+  alerts?: CloudflareExportAlert[];
 }
 
 /** Freshness bound for preferring export values: the #1151 tick is
@@ -830,8 +844,34 @@ export function applyCloudflareExport(
     doc.billing?.status === "invoice-only"
       ? "; billing invoice-only (subscriptions/billing 403 with the day-to-day token)"
       : ""
-  }`;
+  }${cloudflareAlertsNote(doc.alerts)}`;
   return services;
+}
+
+/** Render the export document's Workers AI neurons/day alerts (#2287)
+ * loudly onto the card's sourceNote. Absent/empty/malformed alerts
+ * render nothing — a document without alerts renders exactly as
+ * before. Only called for a fresh ok document (the caller's gates). */
+function cloudflareAlertsNote(alerts: CloudflareExportAlert[] | undefined): string {
+  if (!Array.isArray(alerts)) return "";
+  const parts: string[] = [];
+  for (const a of alerts) {
+    if (!a || a.kind !== "workers-ai-neurons-day") continue;
+    const top = Array.isArray(a.topModels)
+      ? a.topModels
+          .filter((m) => m && typeof m.model === "string")
+          .map((m) => `${m.model} ${typeof m.neurons === "number" ? m.neurons : "?"}`)
+          .join(", ")
+      : "";
+    parts.push(
+      `⚠ ALERT workers-ai-neurons-day: ${typeof a.date === "string" ? a.date : "unknown date"} burned ${
+        typeof a.totalNeurons === "number" ? a.totalNeurons : "?"
+      } neurons, over the ${typeof a.threshold === "number" ? a.threshold : "?"} threshold${
+        a.lowerBound ? " (total is a lower bound)" : ""
+      }${top ? `; top models: ${top}` : ""}`,
+    );
+  }
+  return parts.length ? `; ${parts.join("; ")}` : "";
 }
 
 // --- Supabase live export overlay (#1050) -----------------------------------
