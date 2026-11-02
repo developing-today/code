@@ -54,8 +54,11 @@ export interface ItemRow {
   title: string;
   state: "open" | "closed";
   state_reason: string | null;
-  draft: number;
-  merged: number;
+  // draft / merged are null when the source payload's shape does not carry
+  // merge fields at all (issue-shaped payloads, #4158): an upsert then
+  // preserves the stored values instead of resetting them to defaults.
+  draft: number | null;
+  merged: number | null;
   author: string | null;
   labels: string;
   assignees: string;
@@ -104,33 +107,18 @@ const now = () => new Date().toISOString();
 
 /** Upsert an item. Monotonic: a stale source (older updated_at) never overwrites. */
 export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Promise<void> {
+  // Two steps, so "the payload shape does not carry merge fields" (null
+  // draft/merged, #4158) stays distinguishable from an explicit 0 on the
+  // update path: the INSERT materializes defaults for a brand-new row, the
+  // UPDATE preserves the stored merge fields whenever the incoming row
+  // does not carry them. (A single INSERT ... ON CONFLICT cannot do this:
+  // excluded.draft would already be the COALESCE'd insert value.)
   await db.execute({
-    sql: `INSERT INTO pmp_items (
+    sql: `INSERT OR IGNORE INTO pmp_items (
             ref, repo, number, kind, url, api_url, title, state, state_reason,
             draft, merged, author, labels, assignees, created_at, updated_at,
             closed_at, merged_at, source_updated_at, fetched_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(ref) DO UPDATE SET
-            repo = excluded.repo,
-            number = excluded.number,
-            kind = excluded.kind,
-            url = excluded.url,
-            api_url = excluded.api_url,
-            title = excluded.title,
-            state = excluded.state,
-            state_reason = excluded.state_reason,
-            draft = excluded.draft,
-            merged = excluded.merged,
-            author = excluded.author,
-            labels = excluded.labels,
-            assignees = excluded.assignees,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            closed_at = excluded.closed_at,
-            merged_at = excluded.merged_at,
-            source_updated_at = excluded.source_updated_at,
-            fetched_at = excluded.fetched_at
-          WHERE excluded.source_updated_at >= pmp_items.source_updated_at`,
+          ) VALUES (?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?)`,
     args: [
       i.ref,
       i.repo,
@@ -152,6 +140,42 @@ export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Pr
       i.merged_at,
       i.source_updated_at,
       now(),
+    ],
+  });
+  await db.execute({
+    sql: `UPDATE pmp_items SET
+            repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
+            state = ?, state_reason = ?,
+            draft = COALESCE(?, draft),
+            merged = COALESCE(?, merged),
+            author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
+            closed_at = ?,
+            merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
+            source_updated_at = ?, fetched_at = ?
+          WHERE ref = ? AND ? >= source_updated_at`,
+    args: [
+      i.repo,
+      i.number,
+      i.kind,
+      i.url,
+      i.api_url,
+      i.title,
+      i.state,
+      i.state_reason,
+      i.draft,
+      i.merged,
+      i.author,
+      i.labels,
+      i.assignees,
+      i.created_at,
+      i.updated_at,
+      i.closed_at,
+      i.merged,
+      i.merged_at,
+      i.source_updated_at,
+      now(),
+      i.ref,
+      i.source_updated_at,
     ],
   });
 }
