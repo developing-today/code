@@ -2,7 +2,7 @@
 // inside "Subtotal" as the charged total, and an explicit paid amount
 // wins over an earlier bare total.
 import { describe, expect, test } from "bun:test";
-import { amountFromBody, gmailMessageDay, isNotChargeSubject } from "../scripts/produce-charge-candidates.ts";
+import { amountFromBody, gmailMessageDay, isNotChargeSubject, stagedManifestPeriod } from "../scripts/produce-charge-candidates.ts";
 
 describe("amountFromBody", () => {
   test("records the paid total, not the subtotal", () => {
@@ -126,5 +126,49 @@ describe("gmailMessageDay (#2448)", () => {
   test("one bad message does not stop the batch: later messages still resolve", () => {
     const days = [{ date: "garbage" }, { date: "Sat, 25 Oct 2026 09:30:00 -0500" }, {}].map(gmailMessageDay);
     expect(days).toEqual(["", "2026-10-25", ""]);
+  });
+});
+
+// #4663: the staged manifest period is validated to the file's
+// isRealCalendarDate standard before any candidate work; a manifest
+// that does not describe a real period fails the run instead of
+// writing a candidates file with period {} under a success exit.
+describe("stagedManifestPeriod (#4663)", () => {
+  test("a field-less manifest throws", () => {
+    expect(() => stagedManifestPeriod({})).toThrow("not a real calendar window");
+  });
+
+  test("a manifest missing one field throws", () => {
+    expect(() => stagedManifestPeriod({ start: "2026-11-01" })).toThrow("not a real calendar window");
+    expect(() => stagedManifestPeriod({ end: "2026-11-02" })).toThrow("not a real calendar window");
+  });
+
+  test("malformed and non-calendar dates throw", () => {
+    expect(() => stagedManifestPeriod({ start: "2026-13-40", end: "2026-11-02" })).toThrow(
+      "not a real calendar window",
+    );
+    expect(() => stagedManifestPeriod({ start: "2026-11-01", end: "2026-02-30" })).toThrow(
+      "not a real calendar window",
+    );
+    expect(() => stagedManifestPeriod({ start: "11/01/2026", end: "2026-11-02" })).toThrow(
+      "not a real calendar window",
+    );
+  });
+
+  test("an inverted window throws", () => {
+    expect(() => stagedManifestPeriod({ start: "2026-11-02", end: "2026-11-01" })).toThrow(
+      "not a real calendar window",
+    );
+  });
+
+  test("a valid window passes through, including a single day", () => {
+    expect(stagedManifestPeriod({ start: "2026-11-01", end: "2026-11-02" })).toEqual({
+      start: "2026-11-01",
+      end: "2026-11-02",
+    });
+    expect(stagedManifestPeriod({ start: "2026-11-01", end: "2026-11-01" })).toEqual({
+      start: "2026-11-01",
+      end: "2026-11-01",
+    });
   });
 });

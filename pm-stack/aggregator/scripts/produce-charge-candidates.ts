@@ -72,6 +72,31 @@ async function stagedText(name: string): Promise<string | undefined> {
   return readFile(join(INPUTS_DIR, name), "utf8");
 }
 
+/** #4663: the staged manifest period, validated. The manifest period
+ * is a date input like every other in this file, so it is held to the
+ * same isRealCalendarDate standard as the Plaid and Gmail dates, plus
+ * end >= start ordering. Staging that does not describe a real period
+ * is absent staging: throw, so the run fails visibly instead of
+ * writing a period-less candidates file under a success exit. */
+export function stagedManifestPeriod(manifest: { start?: unknown; end?: unknown }): {
+  start: string;
+  end: string;
+} {
+  const { start, end } = manifest;
+  if (
+    typeof start !== "string" ||
+    typeof end !== "string" ||
+    !isRealCalendarDate(start) ||
+    !isRealCalendarDate(end) ||
+    end < start
+  ) {
+    throw new Error(
+      `staged manifest period is not a real calendar window: start=${JSON.stringify(start)} end=${JSON.stringify(end)}`,
+    );
+  }
+  return { start, end };
+}
+
 /** Plaid categories that are money movement, not merchant charges. */
 const EXCLUDED_CATEGORIES = new Set(["Transfer", "Payment", "Interest", "Bank Fees"]);
 
@@ -369,11 +394,13 @@ async function main(): Promise<void> {
     // Staged mode: the fetcher's manifest period governs — the staged
     // payloads were fetched for exactly that window.
     const manifest = JSON.parse(await readFile(join(INPUTS_DIR, "charge-inputs-manifest.json"), "utf8")) as {
-      start: string;
-      end: string;
+      start?: unknown;
+      end?: unknown;
     };
-    start = manifest.start;
-    end = manifest.end;
+    // #4663: validate before any candidate work — a field-less or
+    // otherwise unreal manifest period must fail the run here, not
+    // surface as a written candidates file with period {}.
+    ({ start, end } = stagedManifestPeriod(manifest));
   }
   const outPath =
     argValue("--out") ??
