@@ -46,6 +46,34 @@ describe("appJwt key formats", () => {
   });
 });
 
+describe("appJwt GITHUB_APP_ID validation", () => {
+  test("rejects app ids that are not positive decimal integers", async () => {
+    for (const raw of ["abc", "0", "-1", "12.5", " 123 ", "9007199254740992", "123456789012345678901234"]) {
+      const result = await appJwt({ GITHUB_APP_ID: raw, GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8") }).catch(
+        (error: unknown) => error,
+      );
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain("GITHUB_APP_ID");
+      expect((result as Error).message).toContain(JSON.stringify(raw));
+    }
+  });
+
+  test("a valid app id keeps issuing a JWT with the identical iss claim", async () => {
+    const jwt = await appJwt({ GITHUB_APP_ID: "123", GITHUB_APP_PRIVATE_KEY: testKeyB64("pkcs8") });
+    const payload = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8")) as { iss?: string };
+    expect(payload.iss).toBe("123");
+  });
+
+  test("missing or empty credentials keep github_app_credentials_missing", async () => {
+    const key = testKeyB64("pkcs8");
+    for (const env of [{}, { GITHUB_APP_ID: "", GITHUB_APP_PRIVATE_KEY: key }, { GITHUB_APP_ID: "123" }]) {
+      const result = await appJwt(env).catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toBe("github_app_credentials_missing");
+    }
+  });
+});
+
 describe("listResource pagination", () => {
   test("follows the Link header's absolute next URL as-is", async () => {
     const calls: string[] = [];
