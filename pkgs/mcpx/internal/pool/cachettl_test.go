@@ -71,6 +71,10 @@ func TestPoolCacheTTLAbsentStale(t *testing.T) {
 func TestPoolCacheTTLPositiveFresh(t *testing.T) {
 	p, s := ttlPool(t, "modern", map[string]string{"ERAMCP_TTL_MS": "60000"})
 	schemas(t, p)
+	_, _, _, fetchedAt, deadline, _ := p.CachedAll()
+	if want := fetchedAt.Add(time.Minute); !deadline.Equal(want) {
+		t.Fatalf("ttlMs=60000: deadline %v, want ordinary hint deadline %v", deadline, want)
+	}
 	schemas(t, p)
 	schemas(t, p)
 	if n := listCalls(t, s); n != 1 {
@@ -136,5 +140,44 @@ func TestPoolCacheLegacyNeverExpires(t *testing.T) {
 	schemas(t, p)
 	if n := listCalls(t, s); n != 1 {
 		t.Fatalf("legacy with ttlMs=0: tools/list called %d times, want 1 (no expiry)", n)
+	}
+}
+
+func TestPoolCacheTTLLargeHintsAreCapped(t *testing.T) {
+	for _, ttl := range []string{
+		"86400000",            // exactly 24 hours
+		"86400001",            // just over the cap
+		"1000000000000",       // ~31 years
+		"10000000000000",      // duration multiplication wraps negative
+		"18446744073710",      // duration multiplication wraps small-positive
+		"9223372036854775807", // maximum int64
+	} {
+		t.Run(ttl, func(t *testing.T) {
+			p, s := ttlPool(t, "modern", map[string]string{"ERAMCP_TTL_MS": ttl})
+			schemas(t, p)
+			_, _, _, fetchedAt, deadline, _ := p.CachedAll()
+			wantDeadline := fetchedAt.Add(24 * time.Hour)
+			if !deadline.Equal(wantDeadline) {
+				t.Fatalf("ttlMs=%s: deadline %v, want bounded deadline %v", ttl, deadline, wantDeadline)
+			}
+			if deadline.Before(fetchedAt) {
+				t.Fatalf("ttlMs=%s: deadline %v precedes fetch time %v", ttl, deadline, fetchedAt)
+			}
+			schemas(t, p)
+			if n := listCalls(t, s); n != 1 {
+				t.Fatalf("ttlMs=%s: tools/list called %d times, want 1 (bounded cache remains fresh)", ttl, n)
+			}
+		})
+	}
+}
+
+func TestPoolCacheSeededDeadlineIsCapped(t *testing.T) {
+	p, _ := ttlPool(t, "modern", nil)
+	fetchedAt := time.Now().Add(-time.Hour)
+	p.SetSchemas(nil, nil, nil, "", fetchedAt, fetchedAt.Add(48*time.Hour), false)
+	_, _, _, gotAt, deadline, _ := p.CachedAll()
+	wantDeadline := fetchedAt.Add(24 * time.Hour)
+	if !gotAt.Equal(fetchedAt) || !deadline.Equal(wantDeadline) {
+		t.Fatalf("seeded cache at %v has deadline %v; want fetch time %v and capped deadline %v", gotAt, deadline, fetchedAt, wantDeadline)
 	}
 }
