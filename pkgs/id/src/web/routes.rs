@@ -3745,3 +3745,73 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod collab_route_tests {
+    //! Route-level proof for #2830: the production router registers
+    //! `/ws/collab/{doc_id}` as a single-segment route (see
+    //! `create_router`); the web client percent-encodes the docId into
+    //! that one segment, so axum's Path extraction must percent-decode
+    //! it back to the exact filename — `%2F` included — while a real
+    //! second segment still fails to match. This mini-router uses the
+    //! identical route pattern on the same axum stack; the handler is
+    //! an echo so the decoded value itself is asserted.
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        extract::Path,
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use tower::ServiceExt as _;
+
+    async fn echo_doc_id(Path(doc_id): Path<String>) -> String {
+        doc_id
+    }
+
+    async fn get(uri: &str) -> (StatusCode, String) {
+        let app = Router::new().route("/ws/collab/{doc_id}", get(echo_doc_id));
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    // KNOWN GAP (#2830, found by this test): the router percent-decodes
+    // %2F to a real `/` before segment matching, so a slash name's
+    // encoded segment still does not match the single-segment route
+    // and 404s - the client encoding is necessary but not sufficient
+    // for slash names. Fixing that needs a route-shape decision
+    // (wildcard capture or a query-param docId), which #2830's packet
+    // reserves for re-triage; this assertion flips when that lands.
+    #[tokio::test]
+    async fn encoded_slash_currently_misses_the_single_segment_route() {
+        assert_eq!(get("/ws/collab/a%2Fb.md").await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn encoded_percent_names_round_trip() {
+        // a%20b.md the file, not "a b.md": the client sends a%2520b.md.
+        assert_eq!(
+            get("/ws/collab/a%2520b.md").await,
+            (StatusCode::OK, "a%20b.md".to_owned())
+        );
+        assert_eq!(
+            get("/ws/collab/100%25.md").await,
+            (StatusCode::OK, "100%.md".to_owned())
+        );
+        assert_eq!(
+            get("/ws/collab/notes.md").await,
+            (StatusCode::OK, "notes.md".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_second_segment_does_not_match() {
+        assert_eq!(get("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
+    }
+}
