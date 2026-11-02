@@ -12,11 +12,13 @@ import {
   SnapshotStore,
   compactRecordsToRollups,
   expandRollup,
+  isSnapshotRecord,
   isSnapshotRollup,
   rollupFileFor,
   shiftMonth,
   withSnapshotStoreLock,
 } from "../src/snapshots.ts";
+import type { SnapshotRollup } from "../src/snapshots.ts";
 
 const NOW = new Date("2026-10-29T12:00:00Z"); // cutoff month: 2025-09
 
@@ -38,6 +40,70 @@ function rec(
     ...extra,
   };
 }
+
+function rollup(overrides: Partial<SnapshotRollup> = {}): SnapshotRollup {
+  const ts = "2025-06-03T12:00:00Z";
+  return {
+    kind: "snapshot-rollup/v1",
+    month: "2025-06",
+    serviceId: "svc-a",
+    metricId: "weekly",
+    unit: "pct",
+    source: "api",
+    observedBy: "test",
+    count: 1,
+    firstTs: ts,
+    lastTs: ts,
+    valueMin: 10,
+    minTs: ts,
+    valueMax: 10,
+    maxTs: ts,
+    valueLast: 10,
+    keys: [],
+    ...overrides,
+  };
+}
+
+describe("isSnapshotRollup", () => {
+  test("rejects impossible month, date, metadata, and value shapes", () => {
+    const invalid: Partial<SnapshotRollup>[] = [
+      { month: "2025-00" },
+      { month: "2025-13" },
+      { firstTs: "2026-02-30T12:00:00Z" },
+      { lastTs: "2026-02-30T12:00:00Z" },
+      { minTs: "2026-02-30T12:00:00Z" },
+      { maxTs: "2026-02-30T12:00:00Z" },
+      { resetsAt: "2026-02-30T12:00:00Z" },
+      { resetsAtTs: "2026-02-30T12:00:00Z" },
+      { limit: -1 },
+      { limit: "100" as unknown as number },
+      { limitTs: "2026-02-30T12:00:00Z" },
+      { valueMin: { low: Number.NaN, high: 2 } },
+      { valueMax: { low: 1, high: Number.POSITIVE_INFINITY } },
+      { valueLast: { low: 2, high: 1 } },
+    ];
+
+    for (const overrides of invalid) {
+      expect(isSnapshotRollup(rollup(overrides))).toBe(false);
+    }
+  });
+
+  test("valid pair-valued rollups with quota metadata expand to valid records", () => {
+    const pair = { low: 10, high: 12 };
+    const valid = rollup({
+      valueMin: pair,
+      valueMax: pair,
+      valueLast: pair,
+      resetsAt: "2025-06-08T00:00:00Z",
+      resetsAtTs: "2025-06-03T12:00:00Z",
+      limit: 100,
+      limitTs: "2025-06-03T12:00:00Z",
+    });
+
+    expect(isSnapshotRollup(valid)).toBe(true);
+    expect(expandRollup(valid).every(isSnapshotRecord)).toBe(true);
+  });
+});
 
 async function seedStore(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
