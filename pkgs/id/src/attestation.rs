@@ -171,6 +171,8 @@ pub fn sign_genesis(
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
         },
     )?)
 }
@@ -200,6 +202,8 @@ pub fn sign_claim(
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
         },
     )?)
 }

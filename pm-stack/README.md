@@ -30,6 +30,17 @@ because upstream ships only an npm package; Pad and Grist run as
 containers per the standing container rule. Grist was chosen over
 Baserow — the evaluation is in the design record.
 
+**Capability provenance:** the tables in this README are deployment
+definitions (what the stack configures), not observed runtime. The
+single per-facet matrix — live source, fallback, and deployment
+status for every aggregator facet, naming the comment projector and
+Pad honestly — is the "Capability provenance matrix" in
+[`aggregator/README.md`](aggregator/README.md), kept in step with the
+code and the NixOS module by
+`aggregator/scripts/check-provenance-matrix.ts`. One consequence
+worth stating here: the aggregator reads no Pad data — Pad is the
+planning layer only.
+
 Public address: **https://kaneo.security.cab** — a Cloudflare Tunnel
 (tunnel name `amd-6-pm-stack`, remotely managed) whose ingress maps
 that hostname to `http://localhost:5173`. The tunnel connector runs as
@@ -264,6 +275,10 @@ cd grist
   **Program roadmap**, table **Roadmap**, rows from
   `seed/roadmap.json` (the PM-stack phases, the cluster register
   headlines, the four-repo fleet).
+- **Choice-list edits:** use `grist/update-choice-options.py` (REST
+  columns PATCH, verified on v1.7.21 under the roadmap ACL) — never
+  `/apply` `UpdateColumn` (blocked by access rules) and never the
+  document SQLite. Runbook: `grist/CHOICE-OPTIONS.md` (#1287).
 
 ## Day-2 operations
 

@@ -45,6 +45,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
@@ -260,6 +262,7 @@ const pullModelsLive = () => new Promise((resolve) => {
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stdout = '';
+  const stdoutDecoder = createStreamDecoder();
   let settled = false;
   const done = (ok, fullIds) => {
     if (settled) return;
@@ -267,7 +270,7 @@ const pullModelsLive = () => new Promise((resolve) => {
     resolve(ok ? fullIds : null);
   };
   const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} done(false); }, MODELS_PULL_TIMEOUT_MS);
-  child.stdout.on('data', d => { stdout += d; });
+  child.stdout.on('data', d => { stdout += stdoutDecoder.push(d); });
   child.stderr.on('data', () => {});
   child.on('error', () => { clearTimeout(timer); done(false); });
   child.on('close', (code) => {
@@ -492,6 +495,8 @@ class AgyWorker {
     this.dead = null; // Error once the process is gone
     this.lineBuffer = '';
     this.stderrTail = '';
+    this.stdoutDecoder = createStreamDecoder();
+    this.stderrDecoder = createStreamDecoder();
     this.turnWaiter = null;
     this.ready = false; // set when the init event arrives
     this.prevUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, cache_read_tokens: 0 };
@@ -536,7 +541,7 @@ class AgyWorker {
 
     child.stdout.on('data', chunk => this._onStdout(chunk));
     child.stderr.on('data', chunk => {
-      this.stderrTail = (this.stderrTail + chunk.toString()).slice(-4000);
+      this.stderrTail = (this.stderrTail + this.stderrDecoder.push(chunk)).slice(-4000);
     });
     child.on('error', err => {
       this._fail(turnError(err.message, { isSpawnError: true }));
@@ -570,7 +575,7 @@ class AgyWorker {
   }
 
   _onStdout(chunk) {
-    this.lineBuffer += chunk.toString();
+    this.lineBuffer += this.stdoutDecoder.push(chunk);
     const lines = this.lineBuffer.split('\n');
     this.lineBuffer = lines.pop() || '';
     for (const line of lines) this._processLine(line);
@@ -856,10 +861,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(20 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 20 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request payload exceeds 20MB limit' }));
         req.destroy();
@@ -867,6 +872,8 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);

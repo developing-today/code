@@ -606,7 +606,7 @@ func daemonSettings() []Setting {
 			Name:     "Save interval", Short: "how often daemon state is written to disk",
 		},
 		{
-			Path: "daemon.port", Kind: KindInt, Default: "0",
+			Path: "daemon.port", Kind: KindInt, Default: "0", Ceiling: 65535,
 			Scope:       ScopeDaemon,
 			Commands:    []string{"daemon", "status"},
 			FlagAliases: []string{"port"},

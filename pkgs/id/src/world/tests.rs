@@ -6,6 +6,25 @@ use std::sync::Arc;
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    #[derive(Debug)]
+    struct SplitClock {
+        wall_ms: AtomicU64,
+        monotonic_ms: AtomicU64,
+        monotonic_origin: Instant,
+    }
+
+    impl Clock for SplitClock {
+        fn now_ms(&self) -> u64 {
+            self.wall_ms.load(Ordering::SeqCst)
+        }
+
+        fn now_instant(&self) -> Instant {
+            self.monotonic_origin + Duration::from_millis(self.monotonic_ms.load(Ordering::SeqCst))
+        }
+    }
 
     fn world(retained_events: usize) -> WorldCore {
         WorldCore::new(
@@ -27,6 +46,7 @@ mod tests {
         ModuleProvenance::SourceBuild(SourceBuildProvenance {
             schema_version: 1,
             compiler_blake3: "compiler".to_owned(),
+            compiler_version: "roc-test 0.0.0".to_owned(),
             platform_blake3: "platform".to_owned(),
             source_blake3: "source".to_owned(),
             target: "wasm32".to_owned(),
@@ -58,6 +78,7 @@ mod tests {
                 module_hash: "h".to_owned(),
                 seed: 3,
                 provenance: Some(sample_source_provenance()),
+                trust: None,
             },
         };
         let encoded = serde_json::to_value(&event).unwrap();
@@ -140,6 +161,165 @@ mod tests {
         );
     }
 
+    fn handoff_event() -> WorldEvent {
+        WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: "{\"handoff\":true}".to_owned(),
+            },
+        }
+    }
+
+    fn export_entry() -> JournalEntry {
+        JournalEntry::EntityExported {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            prior_owner_epoch: 4,
+            source_event: handoff_event(),
+            payload_schema: "entity/v1".to_owned(),
+            program_module_hash: "module".to_owned(),
+            payload: vec![1, 2, 3],
+            payload_digest: "digest".to_owned(),
+        }
+    }
+
+    #[test]
+    fn handoff_entries_require_journal_version_3() {
+        // #3870 phase 1: handoff kinds are the first entries a version-2
+        // binary cannot read, so they pin the header to version 3 — the
+        // same bump-on-first-write contract as the execution profile (#227).
+        assert_eq!(
+            journal_version_required_by(&export_entry()),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let entity_input = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&entity_input),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let plain = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::Chat("hi".to_owned()),
+            },
+        };
+        assert_eq!(journal_version_required_by(&plain), JOURNAL_VERSION);
+        // A checkpoint whose retained events include an EntityInput event
+        // requires version 3 even with no active handoff (PR #3922 Codex).
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            }],
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        // Coordinator records fix their wire shape in this packet too.
+        let started = CoordinatorJournalEntry::HandoffStarted {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            expected_owner_epoch: 4,
+            region_map_epoch: 2,
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            requested_at: 42,
+        };
+        let json = serde_json::to_string(&started).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CoordinatorJournalEntry>(&json).unwrap(),
+            started
+        );
+    }
+
+    #[test]
+    fn handoff_transfers_survive_restore_and_checkpoint_compaction() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            JournalEntry::EntityImported {
+                handoff_id: "cd".repeat(16),
+                entity_ref: "entity-2".to_owned(),
+                source_region: "region-b".to_owned(),
+                target_region: "region-a".to_owned(),
+                prior_owner_epoch: 1,
+                new_owner_epoch: 2,
+                program_module_hash: "module".to_owned(),
+                payload_schema: "entity/v1".to_owned(),
+                payload_digest: "digest-2".to_owned(),
+                destination_event: handoff_event(),
+            },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        let transfers = restored.core.handoff_transfers().to_vec();
+        assert_eq!(transfers.len(), 2);
+        assert_eq!(transfers[0].direction, HandoffDirection::Export);
+        assert_eq!(transfers[0].payload.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(transfers[1].direction, HandoffDirection::Import);
+        assert_eq!(transfers[1].new_owner_epoch, Some(2));
+
+        // Compaction must preserve the active handoffs (fence, payload,
+        // receipt, epochs) and mark the compacted header version 3.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            compacted[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
+    }
+
+    #[test]
+    fn duplicate_handoff_export_in_journal_is_refused() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            export_entry(),
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(error.to_string().contains("twice"), "{error:#}");
+    }
+
     #[test]
     fn execution_profile_survives_checkpoint_compaction_and_restore() {
         let profile = crate::world_limits::WorldExecutionProfile {
@@ -205,6 +385,11 @@ mod tests {
             match &event.kind {
                 WorldEventKind::Input(bytes) => {
                     let text = std::str::from_utf8(bytes)?;
+                    self.script = text.parse().unwrap_or(self.script);
+                    self.asks += 1;
+                }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let text = std::str::from_utf8(input)?;
                     self.script = text.parse().unwrap_or(self.script);
                     self.asks += 1;
                 }
@@ -516,6 +701,76 @@ mod tests {
         );
     }
 
+    fn issued_entry(scopes: u8) -> JournalEntry {
+        let secret = "ef".repeat(32);
+        let digest = hex_encode(&token_digest(&format!("1.{secret}")));
+        JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "ann".to_owned(),
+            },
+            digest,
+            scopes,
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        }
+    }
+
+    fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
+        WorldCore::restore(
+            "scopes",
+            WorldLimits::default(),
+            vec![
+                JournalEntry::Created {
+                    world_id: "scopes".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                issued_entry(scopes),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_restore_refuses_issued_scopes_naming_no_scope() {
+        // 0x80 names no scope; from_bits rejects the whole byte.
+        let error = restore_with_scopes(0x87).unwrap_err();
+        assert!(
+            error.to_string().contains("participant 1"),
+            "error names the participant: {error}"
+        );
+        assert!(
+            error.to_string().contains("name no scope"),
+            "error explains the refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn test_restore_refuses_issued_scopes_without_join() {
+        for scopes in [0, WorldScopes::CHAT.0, WorldScopes::INPUT.0] {
+            let error = restore_with_scopes(scopes).unwrap_err();
+            assert!(
+                error.to_string().contains("join scope"),
+                "scopes {scopes:#04x} refused for missing JOIN: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_restore_accepts_guest_and_admin_bit_scopes() {
+        for scopes in [
+            WorldScopes::GUEST.0,
+            WorldScopes::JOIN.0 | WorldScopes::BUILDER.0,
+            WorldScopes::JOIN.0 | WorldScopes::MODERATOR.0,
+        ] {
+            let restored = restore_with_scopes(scopes).unwrap();
+            let record = restored.core.capabilities.get(&1).unwrap();
+            assert_eq!(record.scopes.bits(), scopes, "scopes round-trip");
+        }
+    }
+
     #[test]
     fn a_restore_closes_presence_the_journal_left_open() {
         let secret = "cd".repeat(32);
@@ -752,15 +1007,15 @@ mod tests {
     #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core
@@ -805,15 +1060,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_follow_the_world_grant_not_a_participant_capability() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let owner_scopes = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
@@ -883,16 +1138,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_speak_for_the_world_not_for_a_present_participant() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "tick-attribution",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "tick-attribution",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger.set_granted(BTreeSet::from([
             "time.tick".to_owned(),
             "chat.say".to_owned(),
@@ -1127,16 +1381,15 @@ mod tests {
     #[tokio::test]
     async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ceiling-ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ceiling-ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core
@@ -1224,6 +1477,32 @@ mod tests {
         }
         assert!(core.chat(&token, "one too many").is_err());
         assert_eq!(core.current_sequence(), u64::from(CHAT_RATE_BURST));
+    }
+
+    #[test]
+    fn chat_refill_uses_monotonic_time_not_wall_clock_corrections() {
+        let clock = Arc::new(SplitClock {
+            wall_ms: AtomicU64::new(100_000),
+            monotonic_ms: AtomicU64::new(0),
+            monotonic_origin: Instant::now(),
+        });
+        let mut core =
+            WorldCore::new_with_clock("test-world", WorldLimits::default(), clock.clone()).unwrap();
+        let (_, token) = join(&mut core, "Guest");
+        for index in 0..CHAT_RATE_BURST {
+            core.chat(&token, &format!("message {index}")).unwrap();
+        }
+        assert!(core.chat(&token, "exhausted").is_err());
+
+        // A forward wall-clock correction does not refill the bucket.
+        clock.wall_ms.store(10_000_000, Ordering::SeqCst);
+        assert!(core.chat(&token, "still exhausted").is_err());
+
+        // A backward wall-clock correction cannot prevent a real ten-second
+        // monotonic interval from refilling it.
+        clock.wall_ms.store(1, Ordering::SeqCst);
+        clock.monotonic_ms.store(10_000, Ordering::SeqCst);
+        assert!(core.chat(&token, "refilled").is_ok());
     }
 
     fn in_an_hour() -> u64 {
@@ -1572,6 +1851,98 @@ mod tests {
             assert!(
                 err.to_string().contains("reserved host identity"),
                 "error must name the reserved id: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_refuses_issued_display_names_mint_could_not_produce() {
+        // #2960: restore inserts journaled participants verbatim, but
+        // mint sanitizes every display name (control/format characters
+        // stripped, 48-char cap, trimmed) and refuses an empty result.
+        // A journaled name mint could never have produced — empty,
+        // control-bearing, over-length, or untrimmed — must refuse the
+        // whole restore, while a legitimately minted journal restores
+        // with byte-identical names.
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let legitimate = JournalEntry::Issued {
+            participant: owner.clone(),
+            digest: hex_encode(&token_digest(owner_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let header = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        // A legitimately minted name restores fine.
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legitimate],
+        )
+        .unwrap();
+        // A name minted before #2112's format stripping — a fixed point
+        // of the legacy sanitizer only, here a ZWJ family emoji — also
+        // restores fine: those journals predate the current sanitizer
+        // and restored successfully before this check existed.
+        let legacy = JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".to_owned(),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legacy],
+        )
+        .unwrap();
+        for bad_name in [
+            String::new(),
+            "a\u{7}\n".to_owned() + &"x".repeat(98),
+            "a".repeat(49),
+            "Ada ".to_owned(),
+            "\u{1}\u{2}".to_owned(),
+        ] {
+            let forged = JournalEntry::Issued {
+                participant: Participant {
+                    id: 1,
+                    display_name: bad_name.clone(),
+                },
+                digest: "ab".repeat(32),
+                scopes: WorldScopes::GUEST.bits(),
+                parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
+                subject: None,
+            };
+            let err = match WorldCore::restore(
+                "test-world",
+                WorldLimits::default(),
+                [header.clone(), forged],
+            ) {
+                Ok(_) => panic!("restore must refuse display name {bad_name:?}"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("display name"),
+                "error must name the display name rule: {err}"
             );
         }
     }
@@ -1955,6 +2326,7 @@ mod tests {
                         module_hash: "ab".repeat(32),
                         seed: 424_242,
                         provenance: None,
+                        trust: None,
                     },
                 },
             },
@@ -2159,6 +2531,7 @@ mod tests {
                 module_hash: "ab".repeat(32),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         for scopes in [WorldScopes::JOIN, WorldScopes::GUEST, WorldScopes::ALL] {
@@ -2169,6 +2542,7 @@ mod tests {
                     module_hash: "ab".repeat(32),
                     seed: 0,
                     provenance: None,
+                    trust: None,
                 }
             );
         }
@@ -2382,6 +2756,11 @@ mod tests {
                 match &event.kind {
                     WorldEventKind::Input(bytes) => {
                         if bytes.as_slice() == b"read" {
+                            self.asks += 1;
+                        }
+                    }
+                    WorldEventKind::EntityInput { input, .. } => {
+                        if input.as_slice() == b"read" {
                             self.asks += 1;
                         }
                     }
@@ -3373,6 +3752,10 @@ mod schedule_tests {
                     let document: serde_json::Value = serde_json::from_slice(bytes)?;
                     self.requests = document["requests"].as_array().cloned().unwrap_or_default();
                 }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let document: serde_json::Value = serde_json::from_slice(input)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
                 WorldEventKind::System { event: text } => {
                     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
                         return Ok(());
@@ -3941,6 +4324,7 @@ mod schedule_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules,
+            transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         };
@@ -4131,6 +4515,7 @@ mod projection_guard_tests {
                 module_hash: "hash".to_owned(),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         let shown = project_event_for(WorldScopes::GUEST, &installed)

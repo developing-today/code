@@ -4,7 +4,7 @@ import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommentsStore, validateNewComment } from "../src/comments.ts";
-import { dnsSectionFromRegister, parseDnsRegister, summarizeDns } from "../src/dns.ts";
+import { dnsSectionFromRegister, isDnsSection, parseDnsRegister, summarizeDns } from "../src/dns.ts";
 import type { SessionFeedEntry } from "../src/model.ts";
 import { PAGES } from "../src/pages.ts";
 import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
@@ -53,6 +53,21 @@ describe("dns register parser", () => {
     const summary = summarizeDns(section!, new Date("2026-12-28T00:00:00Z"), 45);
     expect(summary.nextRenewal?.domain).toBe("first.de");
     expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["first.de"]);
+  });
+
+  test("auto-renew summary counts ON, OFF, and unknown values from entries", () => {
+    const missingAutoRenew = {
+      ...FIXTURE_DNS.entries[0],
+      autoRenew: undefined as unknown as string,
+    };
+    const entries = [
+      { ...FIXTURE_DNS.entries[0], autoRenew: "ON" },
+      { ...FIXTURE_DNS.entries[1], autoRenew: "OFF" },
+      { ...FIXTURE_DNS.entries[2], autoRenew: "unknown" },
+      missingAutoRenew,
+    ];
+    const summary = summarizeDns({ ...FIXTURE_DNS, entries }, new Date("2026-12-28T00:00:00Z"));
+    expect(summary.autoRenew).toEqual({ on: 1, off: 1, unknown: 2 });
   });
 
   test("summary ages renewals by the Chicago day, not UTC (#1684)", () => {
@@ -117,6 +132,36 @@ describe("dns register parser", () => {
     expect(parseDnsRegister("# nothing here\n")).toEqual([]);
     expect(dnsSectionFromRegister("# nothing\n", "2026-10-25T00:00:00Z", "test")).toBeNull();
   });
+
+  test("isDnsSection owns the finite-number + status rules (#2412)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    const noTotal = { ...good! } as Record<string, unknown>;
+    delete noTotal.totalAnnualListUsd;
+    expect(isDnsSection(noTotal)).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: "46.29" })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: null })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: Number.NaN })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: Number.POSITIVE_INFINITY })).toBe(false);
+    const withEntry = (priceUsd: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, priceUsd } : e)),
+    });
+    expect(isDnsSection(withEntry("4.07"))).toBe(false);
+    expect(isDnsSection(withEntry(Number.NaN))).toBe(false);
+    expect(isDnsSection(withEntry(null))).toBe(true);
+    const withStatus = (status: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, status } : e)),
+    });
+    expect(isDnsSection(withStatus("bogus"))).toBe(false);
+    expect(isDnsSection(withStatus(undefined))).toBe(false);
+    expect(isDnsSection(withStatus("active"))).toBe(true);
+    expect(isDnsSection(withStatus("earmarked"))).toBe(true);
+    expect(isDnsSection(withStatus("unused"))).toBe(true);
+  });
+
 });
 
 // --- Identity registry (#906 §3) ---------------------------------------------
@@ -389,14 +434,31 @@ describe("pages manifest + slice-3 renders", () => {
     expect(html).toContain("DNS register");
   });
 
-  test("dns page renders the three views + next renewal", () => {
+  test("dns page renders each domain once with status filters and data-derived auto-renew counts", () => {
     const html = renderDns(FIXTURE_DNS, fixtureSource().provenance());
     expect(html).toContain("Next renewal");
-    expect(html).toContain("1110x.de");
-    expect(html).toContain("Unused but earmarked");
-    expect(html).toContain("Completely unused");
-    expect(html).toContain("grandnag.us");
-    expect(html).toContain("security.cab");
+    for (const entry of FIXTURE_DNS.entries) {
+      expect(html.split(entry.domain).length - 1).toBe(1);
+    }
+    expect(html).toContain('data-dns-filter="active"');
+    expect(html).toContain('data-dns-filter="earmarked"');
+    expect(html).toContain('data-dns-filter="unused"');
+    expect(html).toContain('data-dns-filter="renewing-soon"');
+    expect(html).toContain("Auto-renew</strong><br>3 ON · 0 OFF · 1 unknown");
+    expect(html).not.toContain("Auto-renew is ON across the account portfolio");
+    expect(html).not.toContain("<details><summary>Full register");
+  });
+
+  test("dns next-renewal card links to the actual next-renewal row, not the first row", () => {
+    const past = { ...FIXTURE_DNS.entries[0], domain: "past.example", renewal: "2020-01-01" };
+    const upcoming = { ...FIXTURE_DNS.entries[0], domain: "upcoming.example", renewal: "2999-01-01" };
+    const section = { ...FIXTURE_DNS, entries: [past, upcoming] };
+    const html = renderDns(section, fixtureSource().provenance());
+    expect(html).not.toContain("See the first row");
+    expect(html).toContain('href="#dns-next-renewal"');
+    const rowStart = html.indexOf('id="dns-next-renewal"');
+    expect(rowStart).toBeGreaterThan(-1);
+    expect(html.slice(rowStart, rowStart + 500)).toContain("upcoming.example");
   });
 
   test("dns page without a section says so honestly", () => {
@@ -448,6 +510,7 @@ describe("opencode session-identity tool", () => {
 let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
 const tmp = mkdtempSync(join(tmpdir(), "agg-slice3-"));
+const annotationsFile = join(tmp, "roadmap-annotations.json");
 
 beforeAll(async () => {
   port = 5200 + Math.floor(Math.random() * 800);
@@ -461,6 +524,7 @@ beforeAll(async () => {
       PM_AGG_PORT: String(port),
       PM_AGG_SOURCE: "fixtures",
       PM_AGG_COMMENTS_FILE: commentsFile,
+      PM_AGG_ROADMAP_ANNOTATIONS_FILE: annotationsFile,
       PM_AGG_REGISTRY_FILE: join(tmp, "registry.json"),
     },
     stdout: "pipe",
@@ -499,7 +563,8 @@ describe("slice-3 routes", () => {
     expect(dnsJson.totalAnnualListUsd).toBe(595.62);
     const sessions = await (await fetch(`http://127.0.0.1:${port}/sessions`)).text();
     expect(sessions).toContain("identity registry");
-    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json`)).json()) as {
+    // window=all: fixture last-activity is a fixed date; the default 7-day window ages it out and fails this test on later run dates.
+    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json?window=all`)).json()) as {
       records: { source: string }[];
       identities: { kind: string }[];
     };
@@ -579,5 +644,54 @@ describe("slice-3 routes", () => {
     const html = await (await fetch(`http://127.0.0.1:${port}/item/${id}`)).text();
     expect(html).toContain("Dashboard comments");
     expect(html).toContain("cform");
+  });
+
+  test("roadmap annotations round-trip through API, timeline, drill-down, and JSON; aliases survive reshuffles", async () => {
+    const roadmap = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
+      rows: { subject: string; annotations: { body: string }[] }[];
+    };
+    expect(roadmap.rows.length).toBeGreaterThan(1);
+    const stableRef = roadmap.rows[0].subject;
+    const reshuffledRef = roadmap.rows[1].subject;
+    const post = (objectRef: string, body: string) =>
+      fetch(`http://127.0.0.1:${port}/api/roadmap/annotations`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          objectRef,
+          kind: "decision",
+          date: "2026-10-12",
+          author: { kind: "drew", id: "drew", label: "Drew" },
+          body,
+        }),
+      });
+
+    expect((await post(stableRef, "Moved after review")).status).toBe(201);
+    const alias = await fetch(`http://127.0.0.1:${port}/api/roadmap/annotations/alias`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ aliasRef: reshuffledRef, stableRef }),
+    });
+    expect(alias.status).toBe(200);
+    expect((await post(reshuffledRef, "Follow-up under the new row id")).status).toBe(201);
+
+    const json = (await (await fetch(`http://127.0.0.1:${port}/api/roadmap.json`)).json()) as {
+      rows: { subject: string; annotations: { body: string; date: string; kind: string; author: { label: string } }[] }[];
+      annotationAliases: Record<string, string>;
+    };
+    const reshuffledRow = json.rows.find((row) => row.subject === reshuffledRef)!;
+    expect(reshuffledRow.annotations.map((annotation) => annotation.body)).toEqual([
+      "Moved after review",
+      "Follow-up under the new row id",
+    ]);
+    expect(reshuffledRow.annotations[0]).toMatchObject({ date: "2026-10-12", kind: "decision", author: { label: "Drew" } });
+    expect(json.annotationAliases[reshuffledRef]).toBe(stableRef);
+
+    const detail = await (await fetch(`http://127.0.0.1:${port}/item/${encodeURIComponent(reshuffledRef)}`)).text();
+    expect(detail).toContain("Roadmap annotations");
+    expect(detail).toContain("Follow-up under the new row id");
+    expect(detail).toContain("name=\"date\"");
+    const timeline = await (await fetch(`http://127.0.0.1:${port}/roadmap`)).text();
+    expect(timeline).toContain("Moved after review");
   });
 });

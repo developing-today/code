@@ -19,7 +19,7 @@
 //! Artifacts travel over iroh only: pushed to a home server on
 //! [`PUSH_ALPN`], and pulled by account from the same endpoint on [`PULL_ALPN`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
@@ -34,6 +34,7 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use unicode_normalization::is_nfc;
 
 use crate::connectivity::{DIAL_TIMEOUT, connect, within};
 use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
@@ -285,6 +286,10 @@ impl SignedArtifact {
             self.after.iter().all(|hash| is_hash(hash)),
             "an artifact names a malformed hash in after"
         );
+        let mut seen = HashSet::with_capacity(self.after.len());
+        for hash in &self.after {
+            ensure!(seen.insert(hash), "an artifact names {hash} twice in after");
+        }
         let bytes = signed_bytes(
             &self.author,
             self.seq,
@@ -358,6 +363,9 @@ impl SignedArtifact {
                 if body.media_type.is_empty() || body.media_type.len() > 128 {
                     return Err(forbidden("a document names its media type"));
                 }
+                if !is_nfc(&body.media_type) {
+                    return Err(forbidden("a document's media type is not NFC"));
+                }
                 let size = serde_json::to_vec(&body.content)
                     .map_err(|error| forbidden(format!("{error}")))?
                     .len();
@@ -376,8 +384,14 @@ impl SignedArtifact {
                 if body.name.is_empty() || body.name.len() > 64 {
                     return Err(forbidden("a tag's name is 1 to 64 bytes"));
                 }
+                if !is_nfc(&body.name) {
+                    return Err(forbidden("a tag's name is not NFC"));
+                }
                 if body.value.as_ref().is_some_and(|value| value.len() > 256) {
                     return Err(forbidden("a tag's value is at most 256 bytes"));
+                }
+                if body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
+                    return Err(forbidden("a tag's value is not NFC"));
                 }
                 Ok(Some(Kind::Tag(body)))
             }
@@ -1714,6 +1728,41 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_after_hashes_are_refused() {
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+
+        let doubled = log
+            .sign_after(
+                &key(1),
+                &document("second"),
+                vec![first.hash.clone(), first.hash.clone()],
+            )
+            .unwrap();
+        assert!(doubled.verify().is_err());
+        assert!(log.insert(doubled).is_err());
+
+        let repeated = log
+            .sign_after(
+                &key(1),
+                &document("third"),
+                vec![first.hash.clone(); MAX_AFTER],
+            )
+            .unwrap();
+        assert!(repeated.verify().is_err());
+        assert!(log.insert(repeated).is_err());
+        assert_eq!(log.head_seq(&public(1)), 1);
+
+        let distinct: Vec<String> = (0..MAX_AFTER).map(|i| format!("{i:064x}")).collect();
+        let frontier = log
+            .sign_after(&key(1), &document("fourth"), distinct)
+            .unwrap();
+        assert!(frontier.verify().is_ok());
+        assert_eq!(log.insert(frontier).unwrap(), Stored::New);
+    }
+
+    #[test]
     fn documents_and_tags_are_checked_and_never_applied_as_directory_changes() {
         let huge = Kind::Document(Document {
             media_type: "application/json".to_owned(),
@@ -1759,6 +1808,71 @@ mod tests {
             .unwrap();
         assert_eq!(stored, Stored::New);
         assert_eq!(directory.artifacts().head_seq(&public(1)), 1);
+    }
+
+    #[test]
+    fn parsed_document_media_type_must_be_nfc() {
+        let nfc = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Document(Document {
+                    media_type: "application/json".to_owned(),
+                    content: json!({ "text": "ok" }),
+                }),
+            )
+            .unwrap();
+        assert!(matches!(nfc.parsed(), Ok(Some(Kind::Document(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Document(Document {
+                    media_type: "application/jso\u{301}n".to_owned(),
+                    content: json!({ "text": "ok" }),
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
+    }
+
+    #[test]
+    fn parsed_tag_name_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Tag(Tag {
+                    subject: public(2),
+                    name: "e\u{301}".to_owned(),
+                    value: None,
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
+    }
+
+    #[test]
+    fn parsed_tag_value_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Tag(Tag {
+                    subject: public(2),
+                    name: "author".to_owned(),
+                    value: Some("e\u{301}".to_owned()),
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
     }
 
     #[tokio::test]

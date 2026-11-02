@@ -77,6 +77,12 @@ export function isDnsSection(v: unknown): v is DnsSection {
   return (
     typeof s.generatedAt === "string" &&
     Number.isFinite(Date.parse(s.generatedAt)) &&
+    // totalAnnualListUsd is dereferenced with .toFixed on the /dns and
+    // usage render paths, so the gate must guarantee a finite number
+    // (#2412) — a missing/string/null/NaN total certifies a section the
+    // renderers cannot render.
+    typeof s.totalAnnualListUsd === "number" &&
+    Number.isFinite(s.totalAnnualListUsd) &&
     Array.isArray(s.entries) &&
     s.entries.length > 0 &&
     s.entries.every(
@@ -84,7 +90,17 @@ export function isDnsSection(v: unknown): v is DnsSection {
         typeof e === "object" &&
         e !== null &&
         typeof (e as DnsEntry).domain === "string" &&
-        typeof (e as DnsEntry).renewal === "string",
+        typeof (e as DnsEntry).renewal === "string" &&
+        // priceUsd is number|null in the model: null/absent stays valid,
+        // but a present value must be a finite number (#2412).
+        ((e as DnsEntry).priceUsd === null ||
+          (e as DnsEntry).priceUsd === undefined ||
+          (typeof (e as DnsEntry).priceUsd === "number" && Number.isFinite((e as DnsEntry).priceUsd))) &&
+        // status feeds summarizeDns buckets; an unknown/missing status
+        // under-counts silently, so the gate owns the enum (#2412).
+        ((e as DnsEntry).status === "active" ||
+          (e as DnsEntry).status === "earmarked" ||
+          (e as DnsEntry).status === "unused"),
     )
   );
 }
@@ -96,6 +112,8 @@ export interface DnsSummary {
   unused: DnsEntry[];
   /** Entries renewing within `days` of `now` (spend horizon). */
   renewingSoon: DnsEntry[];
+  /** Counts derived from the register's per-entry auto-renew values. */
+  autoRenew: { on: number; off: number; unknown: number };
 }
 
 export function summarizeDns(section: DnsSection, now = new Date(), soonDays = 45): DnsSummary {
@@ -107,11 +125,22 @@ export function summarizeDns(section: DnsSection, now = new Date(), soonDays = 4
   // vanished from nextRenewal and renewingSoon (#1684).
   const today = chicagoYmd(now);
   const cutoff = addDaysYmd(today, soonDays);
+  const autoRenew = entries.reduce(
+    (counts, entry) => {
+      const value = typeof entry.autoRenew === "string" ? entry.autoRenew.trim().toLowerCase() : "";
+      if (value === "on") counts.on++;
+      else if (value === "off") counts.off++;
+      else counts.unknown++;
+      return counts;
+    },
+    { on: 0, off: 0, unknown: 0 },
+  );
   return {
     nextRenewal: entries.find((e) => e.renewal >= today) ?? entries[0] ?? null,
     active: entries.filter((e) => e.status === "active"),
     earmarked: entries.filter((e) => e.status === "earmarked"),
     unused: entries.filter((e) => e.status === "unused"),
     renewingSoon: entries.filter((e) => e.renewal >= today && e.renewal <= cutoff),
+    autoRenew,
   };
 }

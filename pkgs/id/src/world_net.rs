@@ -9,7 +9,11 @@
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -22,6 +26,8 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+use crate::abuse::{AbuseEvaluator, AbusePolicy, Counters, EndpointId as AbuseEndpointId, NodeId};
+use crate::frames::{charge_frame, read_frame_body, read_frame_len};
 use crate::world_hub::WorldHub;
 use crate::world_session::{
     Inbound, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, module_hash, run_session,
@@ -46,6 +52,8 @@ pub struct WorldModuleInfo {
 
 /// Concurrent sessions allowed on one connection.
 const MAX_SESSIONS_PER_CONNECTION: usize = 16;
+/// Keep operator-visible transport counters for the most recent day.
+const ABUSE_COUNTER_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 
 use crate::world_session::encode_hex;
 
@@ -59,6 +67,19 @@ pub use crate::frames::{read_frame, write_frame};
 #[derive(Clone, Debug)]
 pub struct WorldProtocol {
     hub: WorldHub,
+    /// The shared #2244 P0-A abuse evaluator: one bucket set per remote
+    /// endpoint, shared across every stream and connection that
+    /// endpoint opens, plus the counter registry operators read via
+    /// [`WorldProtocol::abuse_counters`].
+    abuse: Arc<Mutex<AbuseEvaluator>>,
+}
+
+/// Monotonic milliseconds for the abuse evaluator, from a process-wide
+/// epoch. The evaluator only compares deltas, so the epoch is arbitrary.
+fn abuse_now_ms() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 impl WorldProtocol {
@@ -66,12 +87,50 @@ impl WorldProtocol {
     /// into a one-world hub) to Iroh peers.
     #[must_use]
     pub fn new(hub: impl Into<WorldHub>) -> Self {
-        Self { hub: hub.into() }
+        Self::with_local_node(hub, [0; 32])
+    }
+
+    /// Like [`WorldProtocol::new`], with the serving node's id recorded
+    /// as the local side of every counter-registry row. The zero id from
+    /// `new` means "this serving node"; rows are keyed by remote
+    /// endpoint either way.
+    #[must_use]
+    pub fn with_local_node(hub: impl Into<WorldHub>, local_node: NodeId) -> Self {
+        Self {
+            hub: hub.into(),
+            abuse: Arc::new(Mutex::new(AbuseEvaluator::new(
+                AbusePolicy::default(),
+                local_node,
+            ))),
+        }
+    }
+
+    /// Snapshot of the per-(local node, remote endpoint) frame/byte
+    /// counters recorded by the shared evaluator — the operator
+    /// visibility surface for #2244 P0-A charging.
+    #[must_use]
+    pub fn abuse_counters(&self) -> Vec<((NodeId, AbuseEndpointId), Counters)> {
+        self.abuse
+            .lock()
+            .map(|abuse| abuse.counters().snapshot())
+            .unwrap_or_default()
+    }
+
+    fn prune_abuse_state(&self) {
+        if let Ok(mut abuse) = self.abuse.lock() {
+            let now_ms = abuse_now_ms();
+            abuse.prune_idle_endpoints(now_ms);
+            abuse.prune_counters(now_ms, ABUSE_COUNTER_RETENTION_MS);
+        }
     }
 }
 
 impl ProtocolHandler for WorldProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        // Bound stale endpoint and counter state as new connections arrive;
+        // active/drained buckets are retained until eviction is behaviorally
+        // equivalent to starting with a fresh endpoint.
+        self.prune_abuse_state();
         let remote = conn.remote_id();
         tracing::debug!("world: connection from node {remote}");
         let permits = Arc::new(Semaphore::new(MAX_SESSIONS_PER_CONNECTION));
@@ -83,9 +142,11 @@ impl ProtocolHandler for WorldProtocol {
                 continue;
             };
             let hub = self.hub.clone();
+            let abuse = Arc::clone(&self.abuse);
+            let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
             sessions.spawn(async move {
                 let _permit = permit;
-                let mut io = StreamIo::new(send, recv);
+                let mut io = StreamIo::new(send, recv, abuse, remote_endpoint);
                 run_session(&hub, &mut io).await;
                 io.finish();
             });
@@ -104,18 +165,56 @@ struct StreamIo {
     frames: mpsc::Receiver<Inbound>,
     send: SendStream,
     reader: JoinHandle<()>,
+    abuse: Arc<Mutex<AbuseEvaluator>>,
+    remote: AbuseEndpointId,
+    authorized: Arc<AtomicBool>,
 }
 
 impl StreamIo {
-    fn new(send: SendStream, mut recv: RecvStream) -> Self {
+    fn new(
+        send: SendStream,
+        mut recv: RecvStream,
+        abuse: Arc<Mutex<AbuseEvaluator>>,
+        remote: AbuseEndpointId,
+    ) -> Self {
         let (tx, frames) = mpsc::channel(8);
+        let reader_abuse = Arc::clone(&abuse);
+        let reader_authorized = Arc::new(AtomicBool::new(false));
+        let reader_authorized_task = Arc::clone(&reader_authorized);
         let reader = tokio::spawn(async move {
             loop {
-                let inbound = match read_frame(&mut recv).await {
-                    Ok(Some(body)) => match String::from_utf8(body) {
-                        Ok(text) => Inbound::Text(text),
-                        Err(_) => Inbound::Unsupported,
-                    },
+                // Charge after the length prefix, before the body is
+                // allocated (frames::read_frame_len / read_frame_body
+                // split), holding the shared lock only for the
+                // synchronous charge — never across the body read. A
+                // hard refusal sheds this stream only; the peer
+                // connection and its other sessions stay up.
+                let inbound = match read_frame_len(&mut recv).await {
+                    Ok(Some(len)) => {
+                        // The charge runs before the body is read, so
+                        // an authorized stream can wait out a temporary
+                        // refusal with the body still unread (read-side
+                        // backpressure); the lock is never held across
+                        // the wait or the body read.
+                        let admitted = charge_inbound_frame(
+                            &reader_abuse,
+                            remote,
+                            &reader_authorized_task,
+                            len as usize,
+                        )
+                        .await;
+                        if admitted {
+                            match read_frame_body(&mut recv, len).await {
+                                Ok(body) => match String::from_utf8(body) {
+                                    Ok(text) => Inbound::Text(text),
+                                    Err(_) => Inbound::Unsupported,
+                                },
+                                Err(_) => Inbound::Closed,
+                            }
+                        } else {
+                            Inbound::Closed
+                        }
+                    }
                     Ok(None) | Err(_) => Inbound::Closed,
                 };
                 let stop = matches!(inbound, Inbound::Closed);
@@ -128,6 +227,9 @@ impl StreamIo {
             frames,
             send,
             reader,
+            abuse,
+            remote,
+            authorized: reader_authorized,
         }
     }
 
@@ -148,7 +250,94 @@ impl SessionIo for StreamIo {
     }
 
     async fn send(&mut self, frame: String) -> bool {
+        // A throttled write waits for its retry allowance instead of
+        // returning the same `false` used for a closed transport. The
+        // shared lock is released before every wait and before I/O.
+        let admitted = charge_frame_with_backpressure(
+            &self.abuse,
+            self.remote,
+            self.authorized.load(Ordering::Acquire),
+            frame.len(),
+        )
+        .await;
+        if !admitted {
+            return false;
+        }
         write_frame(&mut self.send, frame.as_bytes()).await.is_ok()
+    }
+
+    fn mark_authorized(&mut self) {
+        self.authorized.store(true, Ordering::Release);
+    }
+}
+
+async fn charge_frame_with_backpressure(
+    abuse: &Arc<Mutex<AbuseEvaluator>>,
+    endpoint: AbuseEndpointId,
+    authorized: bool,
+    payload_len: usize,
+) -> bool {
+    loop {
+        let result = match abuse.lock() {
+            Ok(mut abuse) => charge_frame(
+                &mut abuse,
+                endpoint,
+                authorized,
+                payload_len,
+                abuse_now_ms(),
+            ),
+            Err(_) => return false,
+        };
+        match result {
+            Ok(()) => return true,
+            Err(refusal) => {
+                let Some(retry_after_ms) = refusal.0.retry_after_ms else {
+                    return false;
+                };
+                tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+            }
+        }
+    }
+}
+
+/// Charge one inbound frame for a stream reader.
+///
+/// An authorized stream that hits a temporary refusal waits out the
+/// refusal's retry interval and charges again, with the frame body still
+/// unread on the stream: QUIC flow control then paces the sender instead
+/// of the refusal closing the stream mid-transfer (a module upload sends
+/// many chunks back-to-back and would otherwise die at the burst limit,
+/// well below the supported module size). A pre-authorization refusal, a
+/// refusal with no retry offered, and a poisoned evaluator still refuse
+/// immediately — the caller sheds this stream only. The shared lock is
+/// released before every wait.
+async fn charge_inbound_frame(
+    abuse: &Arc<Mutex<AbuseEvaluator>>,
+    endpoint: AbuseEndpointId,
+    authorized: &AtomicBool,
+    payload_len: usize,
+) -> bool {
+    loop {
+        let is_authorized = authorized.load(Ordering::Acquire);
+        let retry_after_ms = match abuse.lock() {
+            Ok(mut abuse) => match charge_frame(
+                &mut abuse,
+                endpoint,
+                is_authorized,
+                payload_len,
+                abuse_now_ms(),
+            ) {
+                Ok(()) => return true,
+                Err(refusal) => refusal.0.retry_after_ms,
+            },
+            Err(_) => return false,
+        };
+        match retry_after_ms {
+            Some(ms) if is_authorized => {
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+            _ => return false,
+        }
     }
 }
 
@@ -1258,6 +1447,144 @@ mod tests {
             .await
             .expect("timed out waiting for a world frame")
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn outbound_throttling_waits_for_refill_instead_of_reporting_closed() {
+        use crate::abuse::{AbusePolicy, BucketLimits};
+
+        let limits = BucketLimits {
+            frames_per_sec: 1_000,
+            frame_burst: 1,
+            bytes_per_sec: 1_000,
+            byte_burst: 1,
+        };
+        let evaluator = Arc::new(Mutex::new(AbuseEvaluator::new(
+            AbusePolicy {
+                authorized: limits,
+                pre_authorization: limits,
+                ..AbusePolicy::default()
+            },
+            [1; 32],
+        )));
+        let remote = [2; 32];
+        assert!(
+            charge_frame_with_backpressure(&evaluator, remote, true, 1).await,
+            "first frame fits the burst"
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                charge_frame_with_backpressure(&evaluator, remote, true, 1),
+            )
+            .await
+            .expect("the retry should complete after the token refills"),
+            "a rate refusal is backpressure, not a closed stream"
+        );
+        assert_eq!(
+            evaluator
+                .lock()
+                .unwrap()
+                .counters()
+                .get(&[1; 32], &remote)
+                .unwrap()
+                .frames,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn inbound_refusal_backpressures_authorized_streams_but_sheds_preauth() {
+        use crate::abuse::{AbusePolicy, BucketLimits};
+
+        let limits = BucketLimits {
+            frames_per_sec: 1_000,
+            frame_burst: 1,
+            bytes_per_sec: 1_000,
+            byte_burst: 1,
+        };
+        let evaluator = Arc::new(Mutex::new(AbuseEvaluator::new(
+            AbusePolicy {
+                authorized: limits,
+                pre_authorization: limits,
+                ..AbusePolicy::default()
+            },
+            [1; 32],
+        )));
+
+        // Pre-authorization: the first frame fits the burst, the next is
+        // refused immediately — no waiting, the stream is shed.
+        let preauth = [3; 32];
+        let flag = AtomicBool::new(false);
+        assert!(charge_inbound_frame(&evaluator, preauth, &flag, 1).await);
+        assert!(
+            !tokio::time::timeout(
+                Duration::from_millis(500),
+                charge_inbound_frame(&evaluator, preauth, &flag, 1),
+            )
+            .await
+            .expect("a pre-auth refusal returns immediately"),
+            "a pre-auth refusal sheds the stream"
+        );
+
+        // Authorized: the same burst refusal becomes backpressure — the
+        // charge completes once the bucket refills instead of failing.
+        let authed = [4; 32];
+        let flag = AtomicBool::new(true);
+        assert!(charge_inbound_frame(&evaluator, authed, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                charge_inbound_frame(&evaluator, authed, &flag, 1),
+            )
+            .await
+            .expect("the retry should complete after the token refills"),
+            "an authorized refusal is backpressure, not a closed stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_join_switches_only_that_stream_to_authorized_limits() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let mut inviter = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        inviter
+            .send_json(&serde_json::json!({
+                "type": "invite",
+                "admin_token": "admin",
+                "display_name": "Guest"
+            }))
+            .await
+            .unwrap();
+        let invite = next(&mut inviter).await.unwrap();
+        let capability = invite["capability"].as_str().unwrap().to_owned();
+        inviter.close();
+
+        let mut client = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        client.send_json(&join(&capability, None)).await.unwrap();
+        assert_eq!(next(&mut client).await.unwrap()["type"], "snapshot");
+
+        // The pre-authorization burst is 30 frames. The join uses one
+        // pre-auth frame; after the capability is validated, this stream
+        // can continue past that limit while chat's own 50-message cap
+        // remains unchanged.
+        for index in 0..31 {
+            client
+                .send_json(&serde_json::json!({
+                    "type": "chat",
+                    "text": format!("authorized {index}")
+                }))
+                .await
+                .unwrap();
+            assert_eq!(next(&mut client).await.unwrap()["type"], "event");
+        }
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
     }
 
     fn join(capability: &str, after: Option<u64>) -> serde_json::Value {

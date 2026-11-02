@@ -163,6 +163,7 @@ impl Author {
             tag,
             document: None,
             removes: None,
+            note: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
@@ -193,6 +194,7 @@ impl Author {
             tag: None,
             document: None,
             removes: None,
+            note: None,
         };
         sign(&self.key, seq, backlink, Some(b"rival"), ext).unwrap()
     }
@@ -1149,7 +1151,12 @@ async fn bridge_session_converges_with_waiting_events_on_both_sides() {
     // Hosted receives only x0 first -> x0 is applied
     hosted.ingest_batch(&[x0.bytes.clone()], NOW_MS);
     assert_eq!(
-        hosted.store.chain(&xena.public()).unwrap().unwrap().next_seq,
+        hosted
+            .store
+            .chain(&xena.public())
+            .unwrap()
+            .unwrap()
+            .next_seq,
         1
     );
 

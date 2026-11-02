@@ -30,7 +30,12 @@ import type { SnapshotRecord } from "../src/model.ts";
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const dirArg = process.argv.indexOf("--dir");
-const storeDir = dirArg >= 0 ? process.argv[dirArg + 1] : (process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots"));
+const dirValue = dirArg >= 0 ? process.argv[dirArg + 1] : undefined;
+if (dirArg >= 0 && (!dirValue?.trim() || dirValue.trimStart().startsWith("--"))) {
+  console.error("backfill-usage-snapshots: --dir requires a directory value (not another option)");
+  process.exit(2);
+}
+const storeDir = dirValue ?? process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(

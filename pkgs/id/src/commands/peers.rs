@@ -58,7 +58,8 @@ use anyhow::{Result, bail};
 use iroh_base::EndpointId;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 
-use crate::discovery::{PeerAnnouncement, resolve_config};
+use crate::discovery::{MAX_PEERS, PeerAnnouncement, resolve_config};
+use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::load_or_create_keypair;
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
@@ -444,9 +445,11 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     let _ = tokio::time::timeout(collect_timeout, async {
         while let Ok(event) = receiver.next().await {
             if let iroh_gossip::api::Event::Received(msg) = event
-                && let Ok(announcement) = postcard::from_bytes::<PeerAnnouncement>(&msg.content)
+                && let Some(announcement) = SignedPeerAnnouncement::decode_frame(&msg.content)
             {
-                peers.insert(announcement.node_id, announcement);
+                if peers.contains_key(&announcement.node_id) || peers.len() < MAX_PEERS {
+                    peers.insert(announcement.node_id, announcement);
+                }
             }
         }
     })

@@ -82,10 +82,11 @@
 //! - **Stdout output**: `-` as output path, `--stdout` flag, or `cat` command
 //! - **Renaming**: Use `source:dest` syntax for any path argument
 
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::groups::Role;
 use crate::groups::policy::Delegation;
@@ -196,6 +197,93 @@ pub struct Cli {
 /// Each variant represents a distinct operation mode for the `id` tool.
 /// Commands are organized by their primary function: storage, retrieval,
 /// search, or system operations.
+/// Names and aliases of the top-level subcommands, taken from the clap
+/// definition itself so the list can never drift from the real parser.
+fn top_level_subcommand_names() -> std::collections::HashSet<String> {
+    let command = Cli::command();
+    let mut names = std::collections::HashSet::new();
+    for sub in command.get_subcommands() {
+        names.insert(sub.get_name().to_owned());
+        names.extend(sub.get_aliases().map(str::to_owned));
+        names.extend(sub.get_visible_aliases().map(str::to_owned));
+    }
+    names
+}
+
+/// Rewrite raw argv so the space form of `--new` never swallows a
+/// subcommand as the instance name (#3144).
+///
+/// `--new` takes an optional value (`num_args = 0..=1`), so clap greedily
+/// consumes the next token: the documented `id --new serve` parsed as
+/// instance name `serve` with no subcommand, created `.iroh/serve/`, and
+/// started the REPL. When the token after a bare `--new` is a top-level
+/// subcommand name (and no subcommand has been seen yet), rewrite that
+/// `--new` to `--new=` — the empty value still means "random name", and
+/// the token is then parsed as the subcommand. Every other form is
+/// passed through untouched: bare `--new`, `--new=<name>`, `--new <name>
+/// <command>`, and a trailing `--new` after the subcommand.
+pub fn normalize_args<I, T>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    // Global options that take a separate value token: the token after
+    // one of these is a value even when it spells a subcommand name.
+    const VALUE_FLAGS: [&str; 5] = [
+        "--log-level",
+        "--data-dir",
+        "-d",
+        "--groups-log",
+        "--event-store",
+    ];
+    let subcommands = top_level_subcommand_names();
+    let raw: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let mut out: Vec<OsString> = Vec::with_capacity(raw.len());
+    let mut seen_subcommand = false;
+    let mut expect_value = false;
+    let mut iter = raw.into_iter().peekable();
+    // The first token is the program name; copy it verbatim.
+    if let Some(prog) = iter.next() {
+        out.push(prog);
+    }
+    while let Some(arg) = iter.next() {
+        if expect_value {
+            out.push(arg);
+            expect_value = false;
+            continue;
+        }
+        let text = arg.to_str().map(str::to_owned);
+        if !seen_subcommand && text.as_deref() == Some("--new") {
+            match iter.peek().and_then(|next| next.to_str()) {
+                Some(next) if subcommands.contains(next) => {
+                    out.push(OsString::from("--new="));
+                }
+                _ => {
+                    // The next token (if any) is the instance name; do
+                    // not mistake it for a subcommand on the next pass.
+                    out.push(arg);
+                    expect_value = true;
+                }
+            }
+            continue;
+        }
+        out.push(arg);
+        if seen_subcommand {
+            continue;
+        }
+        match text.as_deref() {
+            // After `--`, every token is a positional value.
+            Some("--") => seen_subcommand = true,
+            Some(name) if VALUE_FLAGS.contains(&name) => expect_value = true,
+            Some(name) if !name.starts_with('-') && subcommands.contains(name) => {
+                seen_subcommand = true;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Parses a result limit (`--first` / `--last` / peek `--lines`): zero is
 /// rejected with a clear error instead of silently producing an empty result
 /// or a header-only preview (#3059). Clap names the flag in its error prefix,
@@ -211,6 +299,13 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
+    ///
+    /// This is the only command that hosts a world or serves stored
+    /// content (F13.8 client-only boundary): every other command —
+    /// including all `id world ...` subcommands — is a client that
+    /// connects out to a host and never hosts or serves a world. SSH
+    /// world serving is likewise opt-in here, via the
+    /// `--world-ssh-port` family of flags.
     ///
     /// The server runs indefinitely, hosting stored blobs and accepting
     /// new content from remote nodes. Automatically discovers other
@@ -349,6 +444,15 @@ pub enum Command {
         /// `--web-token` when you do.
         #[arg(long, default_value = "127.0.0.1")]
         bind: std::net::IpAddr,
+        /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
+        ///
+        /// Each occurrence adds one listener; the set replaces any
+        /// `[web_bindings]` entries from `defaults.conf` entirely.
+        /// Combining `--web-listen` with an explicitly-set `--bind` or
+        /// `--port` is a startup error naming the conflict. IPv6
+        /// addresses use the bracket form, e.g. `[::1]:3001`.
+        #[arg(long = "web-listen", value_name = "IP:PORT")]
+        web_listen: Vec<SocketAddr>,
         /// Require this token to use the web interface.
         ///
         /// Open `http://host:port/?token=<TOKEN>` once; the browser keeps a
@@ -442,6 +546,13 @@ pub enum Command {
             conflicts_with = "world_module"
         )]
         world_source_only: bool,
+        /// Ed25519 module-signing public key trusted by this server (hex; repeatable).
+        #[arg(
+            long = "world-module-trust-key",
+            value_name = "HEX",
+            requires = "world"
+        )]
+        world_module_trust_keys: Vec<String>,
         /// Execution bounds for world programs.
         #[command(flatten)]
         world_runtime: WorldRuntimeArgs,
@@ -1093,6 +1204,20 @@ pub enum Command {
     /// presents it with `id world join`. Reaching a node proves only which node
     /// you are, never what you may do: the capability is the authority.
     ///
+    /// Every `world` subcommand is a client command (F13.8 client-only
+    /// boundary): it connects out to a host, and opening further world
+    /// sessions starts no world host or authority on this node. Hosting
+    /// begins only through the explicit top-level `id serve` command;
+    /// there is no `--client-only` flag because no world subcommand has
+    /// a hosting mode to switch off. Two subcommands do open local
+    /// listeners without hosting a world: `world ssh-tunnel` without
+    /// `--stdio` listens on a local address (loopback by default) to
+    /// proxy an SSH client to the host, and `world mirror` runs a
+    /// replica endpoint that accepts sync connections for the replica.
+    /// Neither grants any world authority: node connectivity is not
+    /// world authority, and a valid world capability is still required
+    /// for every world operation.
+    ///
     /// # Examples
     ///
     /// ```bash
@@ -1334,6 +1459,31 @@ pub struct WorldRuntimeArgs {
     /// Wall-clock budget for one native worker call, in milliseconds.
     #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
     pub world_native_deadline_ms: u64,
+}
+
+/// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
+/// `id-core`'s `world_limits` and validates through this trait, which the
+/// CLI argument struct implements here in its own crate.
+#[cfg(feature = "world")]
+impl crate::world_limits::WorldLimitArgs for WorldRuntimeArgs {
+    fn world_fuel(&self) -> u64 {
+        self.world_fuel
+    }
+    fn world_memory_mib(&self) -> u64 {
+        self.world_memory_mib
+    }
+    fn world_message_kib(&self) -> u64 {
+        self.world_message_kib
+    }
+    fn world_native_memory_mib(&self) -> u64 {
+        self.world_native_memory_mib
+    }
+    fn world_native_cpu_secs(&self) -> u64 {
+        self.world_native_cpu_secs
+    }
+    fn world_native_deadline_ms(&self) -> u64 {
+        self.world_native_deadline_ms
+    }
 }
 
 /// Subcommands for `id group`. Accounts and groups are 64 hex characters.
@@ -1595,6 +1745,9 @@ pub enum WorldCommand {
         /// `/quit`, ...) instead of sending every line as chat.
         #[arg(long)]
         command_mode: bool,
+        /// Emit local command responses as JSONL records on stdout.
+        #[arg(long, requires = "command_mode")]
+        json: bool,
         /// How to reach the host: `iroh` (NODE is a node ID) or `ssh` (NODE
         /// is `[user@]host[:port]` of the host's world SSH server, and the
         /// frames travel over an SSH exec channel, for networks and jump
@@ -2332,6 +2485,97 @@ mod tests {
         assert!(cli.command.is_none());
         assert!(!cli.debug);
         assert!(cli.log_level.is_none());
+    }
+
+    /// Parse via `normalize_args` on a big-stack thread: building this
+    /// CLI's clap tree is deep enough to overflow the default test
+    /// thread stack (the #3059 parse tests below spawn a thread for the
+    /// same reason).
+    fn parse_normalized(args: &[&str]) -> Cli {
+        let owned: Vec<OsString> = args.iter().map(OsString::from).collect();
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || Cli::parse_from(normalize_args(owned)))
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_cli_parse_new_space_form_subcommand_not_swallowed() {
+        // #3144: `id --new serve` must run serve under a random instance
+        // name, not create an instance literally named "serve".
+        let cli = parse_normalized(&["id", "--new", "serve"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+
+        let cli = parse_normalized(&["id", "--new", "id"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::Id { .. })));
+
+        let cli = parse_normalized(&["id", "--new", "list"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_new_forms_preserved() {
+        // Named space form: the name is kept and the subcommand still runs.
+        let cli = parse_normalized(&["id", "--new", "my-dev", "list"]);
+        assert_eq!(cli.new.as_deref(), Some("my-dev"));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+
+        // Bare --new: random name, no subcommand.
+        let cli = parse_normalized(&["id", "--new"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(cli.command.is_none());
+
+        // Equals form is passed through untouched, even when the name
+        // spells a subcommand.
+        let cli = parse_normalized(&["id", "--new=serve", "list"]);
+        assert_eq!(cli.new.as_deref(), Some("serve"));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+
+        // Trailing --new after the subcommand keeps working.
+        let cli = parse_normalized(&["id", "list", "--new"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+    }
+
+    #[test]
+    fn test_normalize_args_rewrites_only_the_ambiguous_form() {
+        // Same big-stack thread as parse_normalized: collecting the
+        // subcommand names builds the clap tree.
+        let (rewritten, flag_value) = std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                (
+                    normalize_args(["id", "--new", "serve"]),
+                    normalize_args(["id", "--log-level", "list", "--new", "id"]),
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            rewritten,
+            vec![
+                OsString::from("id"),
+                OsString::from("--new="),
+                OsString::from("serve")
+            ]
+        );
+        // A global flag value that spells a subcommand is not a subcommand.
+        assert_eq!(
+            flag_value,
+            vec![
+                OsString::from("id"),
+                OsString::from("--log-level"),
+                OsString::from("list"),
+                OsString::from("--new="),
+                OsString::from("id")
+            ]
+        );
     }
 
     #[test]
@@ -3849,6 +4093,34 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_serve_web_listen_repeatable() {
+        // #2145: --web-listen is repeatable and parses each IP:PORT.
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--web",
+            "--web-listen",
+            "127.0.0.1:4001",
+            "--web-listen",
+            "[::1]:4002",
+        ]);
+        match cli.command {
+            Some(Command::Serve { web_listen, .. }) => {
+                assert_eq!(
+                    web_listen,
+                    vec![
+                        "127.0.0.1:4001".parse::<SocketAddr>().unwrap(),
+                        "[::1]:4002".parse::<SocketAddr>().unwrap(),
+                    ]
+                );
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        // A malformed listener is a parse error, not a silent skip.
+        assert!(Cli::try_parse_from(["id", "serve", "--web-listen", "nope"]).is_err());
+    }
+
+    #[test]
     fn test_cli_parse_serve_security_flags() {
         let cli = Cli::parse_from([
             "id",
@@ -3931,6 +4203,34 @@ mod tests {
                 "trusted.wasm",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn module_trust_keys_are_repeatable_and_require_world_mode() {
+        let first = "11".repeat(32);
+        let second = "22".repeat(32);
+        let parsed = Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "admin",
+            "--world-module-trust-key",
+            &first,
+            "--world-module-trust-key",
+            &second,
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Serve {
+                world_module_trust_keys,
+                ..
+            }) => assert_eq!(world_module_trust_keys, vec![first.clone(), second]),
+            _ => panic!("Expected Serve command"),
+        }
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world-module-trust-key", &first]).is_err()
         );
     }
 
@@ -4199,6 +4499,63 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
         ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "join",
+            &node,
+            "--capability",
+            "c",
+            "--command-mode",
+            "--json",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { json: true, .. })
+        ));
+        assert!(
+            Cli::try_parse_from(["id", "world", "join", &node, "--capability", "c", "--json",])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_world_client_commands_never_dispatch_serve() {
+        // F13.8 client-only boundary (#3846): every `id world ...`
+        // subcommand is a client command. It must parse to
+        // `Command::World`, never to `Command::Serve` — `main` only
+        // dispatches server startup from the `Serve` arm, so a client
+        // argv reaching this parse can never start a listener, and
+        // opening further world sessions starts no host or authority.
+        let node = "a".repeat(64);
+        let client_argvs: Vec<Vec<&str>> = vec![
+            vec!["id", "world", "join", &node, "--capability", "c"],
+            vec![
+                "id", "world", "invite", &node, "--admin-token", "t", "--name", "ann",
+            ],
+            vec!["id", "world", "records", &node, "--capability", "c"],
+            vec!["id", "world", "list", &node, "--admin-token", "t"],
+        ];
+        for argv in client_argvs {
+            let cli = Cli::parse_from(argv.iter().copied());
+            assert!(
+                matches!(cli.command, Some(Command::World(_))),
+                "client argv {argv:?} must parse as a world client command"
+            );
+            assert!(
+                !matches!(cli.command, Some(Command::Serve { .. })),
+                "client argv {argv:?} must never dispatch server startup"
+            );
+        }
+        // Explicit `id serve` remains the only server entry point.
+        let cli = Cli::parse_from(["id", "serve"]);
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+        // There is deliberately no `--client-only` flag (#3846): no
+        // world subcommand has a server mode such a flag could disable.
+        assert!(Cli::try_parse_from([
+            "id", "world", "join", &node, "--capability", "c", "--client-only",
+        ])
+        .is_err());
     }
 
     #[test]
@@ -4546,4 +4903,94 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
     }
+}
+
+/// The `RuntimeLimits::from_args` flag tests, re-homed here from
+/// `world_limits` in the Phase 1 crate split (#3447): they parse this
+/// crate's CLI, so they live with it; the profile/resolve tests stayed
+/// in `id-core`'s `world_limits`.
+#[cfg(all(test, feature = "world"))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod world_limits_args_tests {
+    use std::time::Duration;
+
+    use anyhow::Result;
+    use clap::Parser;
+
+    use super::{Cli, Command};
+    use crate::world_limits::RuntimeLimits;
+
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+
+        fn parse(extra: &[&str]) -> Result<RuntimeLimits> {
+            let mut argv = vec!["id", "serve", "--world", "--world-admin-token", "t"];
+            argv.extend_from_slice(extra);
+            let cli = Cli::try_parse_from(argv).unwrap();
+            let Some(Command::Serve { world_runtime, .. }) = cli.command else {
+                panic!("expected serve");
+            };
+            RuntimeLimits::from_args(&world_runtime)
+        }
+
+        #[test]
+        fn flag_defaults_match_the_built_in_limits() {
+            let limits = parse(&[]).unwrap();
+            let defaults = RuntimeLimits::default();
+            assert_eq!(limits.native.memory_bytes, defaults.native.memory_bytes);
+            assert_eq!(limits.native.cpu_seconds, defaults.native.cpu_seconds);
+            assert_eq!(limits.native.call_deadline, defaults.native.call_deadline);
+            #[cfg(feature = "sandbox")]
+            {
+                assert_eq!(limits.sandbox.fuel, defaults.sandbox.fuel);
+                assert_eq!(limits.sandbox.memory_bytes, defaults.sandbox.memory_bytes);
+                assert_eq!(limits.sandbox.message_bytes, defaults.sandbox.message_bytes);
+                assert_eq!(limits.sandbox.module_bytes, defaults.sandbox.module_bytes);
+            }
+        }
+
+        #[test]
+        fn flags_override_each_bound() {
+            let limits = parse(&[
+                "--world-fuel",
+                "5000",
+                "--world-memory-mib",
+                "32",
+                "--world-message-kib",
+                "64",
+                "--world-native-memory-mib",
+                "64",
+                "--world-native-cpu-secs",
+                "3",
+                "--world-native-deadline-ms",
+                "250",
+            ])
+            .unwrap();
+            assert_eq!(limits.native.memory_bytes, 64 * MIB);
+            assert_eq!(limits.native.cpu_seconds, 3);
+            assert_eq!(limits.native.call_deadline, Duration::from_millis(250));
+            #[cfg(feature = "sandbox")]
+            {
+                assert_eq!(limits.sandbox.fuel, 5000);
+                assert_eq!(
+                    limits.sandbox.memory_bytes,
+                    usize::try_from(32 * MIB).unwrap()
+                );
+                assert_eq!(
+                    limits.sandbox.message_bytes,
+                    usize::try_from(64 * KIB).unwrap()
+                );
+            }
+        }
+
+        #[test]
+        fn out_of_range_values_are_rejected() {
+            assert!(parse(&["--world-fuel", "0"]).is_err());
+            assert!(parse(&["--world-memory-mib", "0"]).is_err());
+            assert!(parse(&["--world-memory-mib", "4096"]).is_err());
+            assert!(parse(&["--world-message-kib", "2048"]).is_err());
+            assert!(parse(&["--world-native-memory-mib", "8"]).is_err());
+            assert!(parse(&["--world-native-cpu-secs", "0"]).is_err());
+            assert!(parse(&["--world-native-deadline-ms", "0"]).is_err());
+        }
 }

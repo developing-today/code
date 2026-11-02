@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
 
 const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
 // Test seam (#692): point the gateway base at a stub upstream via
@@ -201,10 +202,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && (pathname === '/v1/systemone' || pathname === '/systemone' || pathname === '/')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(5 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 5 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request body too large' }));
         req.destroy();
@@ -212,6 +213,8 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       // Parse the client body on its own: a malformed request is a 400,
       // not a 500 from the shared upstream catch below (sibling proxies
       // all parse separately — #690).

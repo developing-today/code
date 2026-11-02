@@ -29,6 +29,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -397,10 +398,25 @@ class ColdStore:
         return {"home": str(self.home), "created": created}
 
     def _write_private_json(self, path: Path, obj: dict) -> None:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(obj, f, indent=2)
-            f.write("\n")
+        # Atomic write (#3279): serialize to a temp file in the same
+        # directory, fsync, then os.replace onto the destination, so a
+        # crash at any point leaves either the old or the new complete
+        # document - never a torn one. Temp file is 0600 (mkstemp) and
+        # the destination keeps 0600 after the replace.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=path.name + ".", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(obj, f, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         os.chmod(path, 0o600)
 
     # ------------------------------------------------------------ credentials
@@ -410,7 +426,14 @@ class ColdStore:
                 f"no credentials at {self.credentials_path} — run `cold-store init`, "
                 "then fill it from Bitwarden (never commit this file)"
             )
-        creds = json.loads(self.credentials_path.read_text())
+        try:
+            creds = json.loads(self.credentials_path.read_text())
+        except json.JSONDecodeError as e:
+            raise ColdStoreError(
+                f"credentials.json at {self.credentials_path} is corrupt "
+                f"(invalid JSON: {e}) - repair or delete the file and "
+                "re-run `cold-store init`, then refill it from Bitwarden"
+            ) from e
         for key in ("client_id", "client_secret"):
             if not creds.get(key):
                 raise ColdStoreError(f"credentials.json is missing {key}")
@@ -418,7 +441,14 @@ class ColdStore:
 
     def load_state(self) -> dict:
         if self.state_path.exists():
-            return json.loads(self.state_path.read_text())
+            try:
+                return json.loads(self.state_path.read_text())
+            except json.JSONDecodeError as e:
+                raise ColdStoreError(
+                    f"state.json at {self.state_path} is corrupt "
+                    f"(invalid JSON: {e}) - repair the file, or delete "
+                    "it and let the next run rebuild folder state"
+                ) from e
         return {}
 
     def save_state(self, state: dict) -> None:
