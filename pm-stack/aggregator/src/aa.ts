@@ -903,7 +903,11 @@ export function aaCatalogFromConfig(
         plan: fact?.plan ?? null,
         multiplier: fact?.multiplier ?? null,
         planNote: fact?.note ?? null,
-        goCapUsd: providerId.startsWith("opencode-go") ? (Object.hasOwn(AA_GO_CAPS, norm) ? AA_GO_CAPS[norm] : null) : null, // #3056 own-key guard
+        goCapUsd: providerId.startsWith("opencode-go")
+          ? Object.hasOwn(AA_GO_CAPS, norm)
+            ? AA_GO_CAPS[norm]
+            : null
+          : null, // #3056 own-key guard
         aaScore: conf?.intelligence ?? rank?.adjustedScore ?? rank?.rawScore ?? null,
         aaCostPerTask: conf?.costPerTaskUsd ?? rank?.costTask ?? null,
         aaTimePerTask: fastestRanking.get(norm)?.timeTaskSec ?? null,
