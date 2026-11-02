@@ -133,6 +133,9 @@ pub(crate) enum WorldCommand {
         /// The builder participant who ordered the install, for the audit
         /// journal. `None` means the admin installed.
         installed_by: Option<u64>,
+        /// The trust decision that admitted the module, for the audit
+        /// journal (#1069). `None` records no decision.
+        trust: Option<crate::world::TrustDecision>,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
@@ -1280,6 +1283,7 @@ impl WorldActor {
                 seed,
                 provenance,
                 installed_by,
+                trust,
                 program: mut replacement,
                 reply,
             } => {
@@ -1301,6 +1305,7 @@ impl WorldActor {
                         module_hash: module_hash.clone(),
                         seed,
                         provenance: provenance.clone(),
+                        trust: trust.clone(),
                     },
                 };
                 let result = self
