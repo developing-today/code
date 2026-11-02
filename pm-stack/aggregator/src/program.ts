@@ -88,7 +88,8 @@ export const PROGRAM: ProgramDoc = {
     },
     {
       title: "Pad — planning",
-      detail: "The planning layer; board cards and roadmap rows link out to Pad notes.",
+      detail:
+        "The standalone planning layer for shared plans and docs; no board-card or roadmap-row Pad links are currently wired.",
     },
     {
       title: "Grist — roadmap & registers",

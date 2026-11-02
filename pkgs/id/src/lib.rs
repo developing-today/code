@@ -210,6 +210,7 @@ pub mod notes;
 pub use id_core::petname;
 pub mod protocol;
 pub mod pull_policy;
+pub mod references;
 pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]

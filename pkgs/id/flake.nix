@@ -669,6 +669,8 @@
             '';
 
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"
@@ -716,6 +718,8 @@
             preBuild = buildWasmHost;
 
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"

@@ -99,6 +99,69 @@ describe("compactRecordsToRollups / expandRollup", () => {
   });
 });
 
+describe("SnapshotStore prototype-spelled service ids", () => {
+  test("prototype-spelled service ids group in byService without throwing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-prototype-"));
+    const serviceIds = ["__proto__", "constructor", "toString"];
+    try {
+      await mkdir(dir, { recursive: true });
+      const records = serviceIds.map((serviceId) =>
+        rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40),
+      );
+      await writeFile(join(dir, "usage-2025-06.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+      const grouped = await new SnapshotStore(dir).byService();
+      for (const serviceId of serviceIds) {
+        expect(Object.hasOwn(grouped, serviceId)).toBe(true);
+        expect(grouped[serviceId]).toHaveLength(1);
+        expect(grouped[serviceId][0].serviceId).toBe(serviceId);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("prototype-spelled service ids compact into own report keys without changing prototypes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-prototype-"));
+    const serviceIds = ["__proto__", "constructor", "toString"];
+    const targets = [Object.prototype, Object, Object.prototype.toString];
+    const originalDescriptors = new Map<object, Map<string, PropertyDescriptor | undefined>>(
+      targets.map((target) => [
+        target,
+        new Map(["before", "after"].map((key) => [key, Object.getOwnPropertyDescriptor(target, key)])),
+      ]),
+    );
+    const prototypeNames = Object.getOwnPropertyNames(Object.prototype);
+
+    try {
+      await mkdir(dir, { recursive: true });
+      const records = serviceIds.map((serviceId) =>
+        rec("2025-06-03T12:00:00Z", serviceId, "weekly", 40),
+      );
+      await writeFile(join(dir, "usage-2025-06.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+      const report = await new SnapshotStore(dir).compact({ now: NOW, dryRun: true });
+      const june = report.months.find((month) => month.month === "2025-06");
+      expect(june).toBeDefined();
+      for (const serviceId of serviceIds) {
+        expect(Object.hasOwn(june!.perService, serviceId)).toBe(true);
+        expect(june!.perService[serviceId]).toEqual({ before: 1, after: 1 });
+      }
+      expect(Object.getPrototypeOf(june!.perService)).toBe(Object.prototype);
+      expect(Object.getOwnPropertyNames(Object.prototype)).toEqual(prototypeNames);
+      expect(({} as { before?: number }).before).toBeUndefined();
+    } finally {
+      for (const [target, descriptors] of originalDescriptors) {
+        for (const [key, descriptor] of descriptors) {
+          if (descriptor) Object.defineProperty(target, key, descriptor);
+          else Reflect.deleteProperty(target, key);
+        }
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("SnapshotStore.compact", () => {
   test("compacts eligible months, keeps recent raw, stays readable, idempotent", async () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));

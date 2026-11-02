@@ -42,6 +42,11 @@ is a live index — last-rendered time + status per page from the render registr
 | `/discuss/<ref>`  | **Comment thread** for one object ref (a `gh:` ref, an `orch:` tier item, a `session:` id, a board item, a roadmap subject) — dashboard comments + the post form.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `/api/comments.json?object=<ref>`                                                                                              |
 | `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream, plus its dashboard comments and the sessions that worked it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | —                                                                                                                              |
 
+Pad is a standalone planning surface; the aggregator has no live Pad-to-item
+association, so item pages do not show or imply Pad planning notes. Pad's
+existing health probe and browser-safe service-home link remain registered in
+`src/topology.ts` and `src/service-links.ts`.
+
 All views are mobile-first (single-column stacking, scrollable tables,
 touch-sized switchers) — verify at phone width, not by resizing a desktop
 window. The canonical tailnet URL is
@@ -87,6 +92,14 @@ manifest, so a new page never touches the chrome. To add one:
    twin when the page has data worth polling.
 4. Wire any new data through `Source` (with its fixture twin), and
    through the fleet feed when the data originates on the sandbox.
+5. Pass the mobile checklist (#1180, 390x844 audit): no page-level
+   horizontal scroll (wide tables live inside `.tblwrap`, `pre` blocks
+   scroll inside themselves); every control-class tap target (nav
+   links, chips, buttons, form controls, checkbox labels) is at least
+   40px tall; the sticky nav never permanently covers content
+   (anchored elements carry `scroll-margin-top`). Inline text links
+   inside prose and table cells are exempt from the 40px floor.
+   Re-run the per-page audit when a page's layout changes materially.
 
 `/dns` is the worked example: the register file lives on the sandbox
 (#902 owns it), the collector parses it into a `dns` feed section
@@ -413,7 +426,7 @@ Everything defaults to **fixtures** and works with no configuration:
 | `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                            |
 | `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                     |
 | `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                          |
-| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by writer jobs + `scripts/backfill-usage-snapshots.ts` |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill |
 | `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                              |
 | `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback                                                                         |
 | `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                                                                               |
@@ -529,8 +542,11 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   billing incidents supply the gateway accrual + card-alert charges).
   The aggregator's `Source.usage()` serves them with snapshot history
   from the §4 store; older feeds without the sections fall back to a
-  direct read of the two source documents. Seed the store once with
-  `bun run scripts/backfill-usage-snapshots.ts` (idempotent).
+  direct read of the two source documents. A five-minute background
+  writer tick lands feed snapshots into the local store; `Source.usage()`
+  and its GET routes are read-only. Seed historical observations once
+  with `bun run scripts/backfill-usage-snapshots.ts` (idempotent one-shot
+  recovery, not normal history startup).
 - **Snapshot writers (hub §4)** — history accumulates three ways, all
   riding the feed: the collector derives records from its own hub
   sections (`src/snapshot-records.ts`) and embeds them in the feed's
@@ -540,9 +556,9 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   `bun run scripts/append-usage-snapshots.ts` (add
   `--from-provider-usage` for the keeper snapshot) or, for
   check-usage, from Python directly — and the collector drains the
-  outbox into the same field. `Source.usage()` ingests feed records
-  into the local store; dedupe on (service, metric, timestamp, value)
-  makes every writer safe to re-run.
+  outbox into the same field. The server's background feed-ingest tick
+  copies feed records into the local store; dedupe on (service, metric,
+  timestamp, value) makes every writer safe to re-run.
 
 ## The quota gatherer (Stage 2 — #1151)
 
@@ -551,10 +567,8 @@ runs on the **laptop** (nothing executes on the sandbox), as the
 `quota-gatherer` systemd **user** timer (units in this package's
 `systemd/`, installed by `install.sh`; linger keeps it
 boot-persistent). The unit runs the script from the laptop's repo
-clone (`~/git/code`) — package re-deploys replace the deployed
-`scripts/` wholesale and must not be able to vanish the gatherer —
-with its outputs pinned by env to the deployed aggregator dir
-`~/pm-stack/aggregator`.
+clone (`~/git/code`) and writes its outputs under
+`~/.local/state/pm-aggregator`, outside the checkout.
 
 Each tick:
 
@@ -574,7 +588,7 @@ Each tick:
   windows carrying value, % of limit, reset, measured-at, source,
   state) — and `quota-gatherer-heartbeat.json` (tick time,
   per-provider state/duration; the heartbeat also rides inside
-  quota-current.json), both in the deployed aggregator dir beside
+  quota-current.json), both in the aggregator state directory beside
   `fleet-feed.json`.
 - appends §4 snapshot records for windows whose value **moved**
   since the last appended record, directly to the snapshot store
@@ -627,7 +641,7 @@ tick visible on /quota.
 The collector runs on the laptop: the `fleet-feed-collector` user
 timer (declared in the pm-stack NixOS module, #3363/#3368) runs
 `scripts/collect-fleet-feed.ts` every ~5 minutes and writes the feed
-straight to the aggregator's state dir. The aggregator states the
+straight to `~/.local/state/pm-aggregator`. The aggregator states the
 feed's age in the page provenance; a stale feed keeps rendering.
 The collector originally ran on the sandbox and pushed the feed
 over the tailnet proxy route (`scripts/push-fleet-feed.sh`); that
@@ -636,12 +650,17 @@ overwriting the laptop feed (its AA section 403'd against the
 retired muse-dev project). The push script remains for manual use
 only.
 
-**Deployment (laptop):** `install.sh` copies the package to
-`~/pm-stack/aggregator`, renders `.env` from
-`~/secrets/pm-stack.sops.yaml` (keys by name), installs
-`../systemd/pm-aggregator.service` as a user unit, and health-checks
-loopback + tailnet. Slice 2 (per #890) replaces the feed with
-projector-ized live per-source feeds.
+**Deployment (laptop):** run `install.sh` from the `~/git/code`
+checkout. The service runs directly from
+`~/git/code/pm-stack/aggregator`; `install.sh` renders the mode-600
+environment file and runtime paths under `~/.local/state/pm-aggregator`
+from `~/secrets/pm-stack.sops.yaml` (keys by name), installs the
+repository-owned systemd units, and health-checks loopback + tailnet.
+The legacy `~/pm-stack/aggregator` symlink to that state directory is a
+compatibility bridge for sandbox feed pushes and must remain until the
+sandbox has pulled the updated push script and delivery is verified.
+Slice 2 (per #890) replaces the feed with projector-ized live
+per-source feeds.
 
 ## What is fixture-backed vs live
 

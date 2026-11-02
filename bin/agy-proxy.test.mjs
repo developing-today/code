@@ -78,6 +78,8 @@ while IFS= read -r line; do
         echo "stub agy: tail run failed" >&2
         exit 3
       fi ;;
+    *SLOWME*)
+      sleep "\${AGY_STUB_SLOW_SECONDS:-0.75}" ;;
     *SIGKILLME*)
       kill -9 $$ ;;
   esac
@@ -132,6 +134,19 @@ const post = (port, body, headers = {}) => fetch(`http://127.0.0.1:${port}/v1/ch
   headers: { 'Content-Type': 'application/json', ...headers },
   body: JSON.stringify(body)
 });
+
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const waitForSessionPids = async (port, minCount) => {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    const pids = health.warm?.sessionPids ?? [];
+    if (pids.length >= minCount) return pids;
+    if (Date.now() > deadline) throw new Error(`expected ${minCount} live session workers, saw ${pids.length}`);
+    await delay(20);
+  }
+};
 
 const parseSse = (sse) => {
   const dataLines = sse.split('\n').filter(l => l.startsWith('data: '));
@@ -293,6 +308,114 @@ test('session requests reuse one resident worker (same pid across turns)', async
   const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
   assert.equal(health.engine, 'agy-stream-json-resident');
   assert.ok(health.warm.sessionPids.includes(Number(pid1)), 'health must list the live session worker pid');
+});
+
+test('TTL eviction skips a worker with a turn in flight, then evicts it after the turn settles', async (t) => {
+  const { port, stop } = await startProxy({
+    AGY_PROXY_WARM_SPARES: '0',
+    AGY_PROXY_SESSION_TTL_MS: '75',
+    AGY_STUB_SLOW_SECONDS: '0.5'
+  });
+  t.after(stop);
+
+  const busyPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME ttl' }] }, {
+    'x-conversation-id': 'ttl-busy'
+  });
+  const [busyPid] = await waitForSessionPids(port, 1);
+  await delay(125); // worker is turn-busy and its spawn timestamp is TTL-expired
+
+  const trigger = await post(port, { messages: [{ role: 'user', content: 'trigger ttl sweep' }] }, {
+    'x-conversation-id': 'ttl-trigger'
+  });
+  assert.equal(trigger.status, 200);
+  await trigger.text();
+
+  const busy = await busyPromise;
+  assert.equal(busy.status, 200, 'the TTL sweep must not kill an in-flight turn');
+  assert.equal(Number(busy.headers.get('x-agy-worker-pid')), busyPid);
+  await busy.text();
+
+  await delay(100); // after turn completion lastUsedAt is refreshed; let that idle TTL expire
+  const after = await post(port, { messages: [{ role: 'user', content: 'trigger post-turn sweep' }] }, {
+    'x-conversation-id': 'ttl-after'
+  });
+  assert.equal(after.status, 200);
+  await after.text();
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.ok(!health.warm.sessionPids.includes(busyPid), 'the now-idle worker is eligible on the next TTL sweep');
+});
+
+test('cap eviction chooses an idle LRU candidate instead of a busy older worker', async (t) => {
+  const { port, stop } = await startProxy({
+    AGY_PROXY_WARM_SPARES: '0',
+    AGY_PROXY_MAX_LIVE_WORKERS: '2',
+    AGY_PROXY_SESSION_TTL_MS: '60000',
+    AGY_STUB_SLOW_SECONDS: '0.8'
+  });
+  t.after(stop);
+
+  const busyPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME cap-busy' }] }, {
+    'x-conversation-id': 'cap-busy'
+  });
+  const [busyPid] = await waitForSessionPids(port, 1);
+  await delay(75);
+
+  const idle = await post(port, { messages: [{ role: 'user', content: 'idle worker' }] }, {
+    'x-conversation-id': 'cap-idle'
+  });
+  assert.equal(idle.status, 200);
+  const idlePid = Number(idle.headers.get('x-agy-worker-pid'));
+  await idle.text();
+  assert.notEqual(idlePid, busyPid);
+
+  const trigger = await post(port, { messages: [{ role: 'user', content: 'trigger cap sweep' }] }, {
+    'x-conversation-id': 'cap-trigger'
+  });
+  assert.equal(trigger.status, 200);
+  await trigger.text();
+
+  const busy = await busyPromise;
+  assert.equal(busy.status, 200, 'cap pressure must not kill the busy LRU worker');
+  assert.equal(Number(busy.headers.get('x-agy-worker-pid')), busyPid);
+  await busy.text();
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.ok(health.warm.sessionPids.includes(busyPid), 'busy worker remains live');
+  assert.ok(!health.warm.sessionPids.includes(idlePid), 'idle worker is selected for eviction');
+});
+
+test('cap eviction does nothing when every live worker has a turn in flight', async (t) => {
+  const { port, stop } = await startProxy({
+    AGY_PROXY_WARM_SPARES: '0',
+    AGY_PROXY_MAX_LIVE_WORKERS: '2',
+    AGY_PROXY_SESSION_TTL_MS: '60000',
+    AGY_STUB_SLOW_SECONDS: '0.8'
+  });
+  t.after(stop);
+
+  const firstPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME all-busy-1' }] }, {
+    'x-conversation-id': 'all-busy-1'
+  });
+  const [firstPid] = await waitForSessionPids(port, 1);
+  await delay(75);
+  const secondPromise = post(port, { messages: [{ role: 'user', content: 'SLOWME all-busy-2' }] }, {
+    'x-conversation-id': 'all-busy-2'
+  });
+  const pids = await waitForSessionPids(port, 2);
+  const secondPid = pids.find(pid => pid !== firstPid);
+  assert.ok(secondPid);
+  await delay(75);
+
+  const trigger = await post(port, { messages: [{ role: 'user', content: 'trigger all-busy sweep' }] }, {
+    'x-conversation-id': 'all-busy-trigger'
+  });
+  assert.equal(trigger.status, 200);
+  await trigger.text();
+
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+  assert.equal(first.status, 200, 'no busy worker is evicted when every candidate is busy');
+  assert.equal(second.status, 200, 'all busy turns survive cap pressure');
+  assert.equal(Number(first.headers.get('x-agy-worker-pid')), firstPid);
+  assert.equal(Number(second.headers.get('x-agy-worker-pid')), secondPid);
 });
 
 test('a pre-warmed spare is ready before the first stateless request', async (t) => {

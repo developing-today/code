@@ -539,11 +539,10 @@ const normTitle = (s: string): string =>
  * The synthetic in-flight entries for one orchestration section,
  * deduped against the board they will be merged into:
  * - a task whose GitHub ref (its own `ref`, or one its title carries)
- *   already appears in a Kaneo card's links is dropped — the Kaneo
- *   card is the record for that work. This is deliberately coarse:
- *   one shared ref drops the whole entry, even when its title names
- *   further refs no Kaneo card carries.
- * - a task whose title matches a Kaneo card's title is dropped.
+ *   already appears in a Kaneo card's links loses only that ref — the
+ *   Kaneo card is the record for that work. Unmatched refs stay linked
+ *   on the in-flight entry.
+ * - a ref-less task whose title matches a Kaneo card's title is dropped.
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
@@ -563,17 +562,18 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
       };
       if (task.ref) add(task.ref);
       for (const ref of titleRefs(task.title)) add(ref);
-      if (refs.some((r) => existingRefs.has(r))) continue;
+      const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
+      if (refs.length > 0 && remainingRefs.length === 0) continue;
       const titleKey = normTitle(task.title);
-      if (existingTitles.has(titleKey)) continue;
-      const key = refs[0] ?? titleKey;
+      if (refs.length === 0 && existingTitles.has(titleKey)) continue;
+      const key = remainingRefs[0] ?? titleKey;
       if (emitted.has(key) || emitted.has(titleKey)) continue;
       emitted.add(key);
       emitted.add(titleKey);
       out.push({
         id: `orch:${slugify(goal.goal)}/${slugify(task.title)}`,
         title: task.title,
-        repo: refs.length ? parseRef(refs[0]).repo : "",
+        repo: remainingRefs.length ? parseRef(remainingRefs[0]).repo : "",
         source: "orchestrator",
         status: "in-flight",
         orchStatus: task.status,
@@ -582,7 +582,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
         // The lane header dates the lane by the section that produced
         // it; every synthetic entry carries that stamp.
         updatedAt: section.generatedAt,
-        links: refs.map((ref) => ({ ref, relation: "tracks" as const })),
+        links: remainingRefs.map((ref) => ({ ref, relation: "tracks" as const })),
       });
     }
   }
@@ -942,6 +942,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       }
       return view;
     },
+    async ingestSnapshots(): Promise<number> {
+      // The server's background writer tick is the landing step for
+      // collector-derived records carried by the feed. Keep this out of
+      // usage(): GETs must remain safe with a read-only snapshot store.
+      const feed = await getFeed();
+      if (!feed?.snapshots?.length) return 0;
+      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
+    },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
       // collector extracts Part (b) on the sandbox, where the sources
@@ -949,13 +957,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // from the quota view + registry files; fixtures only when
       // neither exists. Snapshot history comes from the local store
       // (§4): the feed carries the writers' records (collector-derived
-      // plus the stewardship / check-usage outbox), and ingesting them
-      // here — append with dedupe — is the one write this reader makes.
+      // plus the stewardship / check-usage outbox); a background writer
+      // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
       const store = new SnapshotStore(cfg.snapshotsDir);
-      if (feed?.snapshots?.length) {
-        await store.append(feed.snapshots).catch(() => 0);
-      }
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)

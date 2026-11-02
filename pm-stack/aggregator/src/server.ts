@@ -75,6 +75,9 @@ import {
   renderProgram,
   renderProgramProject,
   renderQuota,
+  renderQueue,
+  renderQueueBody,
+  renderQueueShell,
   buildRoadmapDrill,
   renderRoadmap,
   renderServiceDetail,
@@ -102,6 +105,7 @@ import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
+import { buildQueueView } from "./queue-view.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -512,31 +516,52 @@ async function attentionRender() {
   return { view, coverage, counts, act, briefs };
 }
 
+async function todaySignals() {
+  const [health, quotaResult] = await Promise.all([
+    healthContext(false).catch(() => null),
+    source
+      .quota()
+      .then((quota) => ({ quota, unavailable: false }))
+      .catch(() => ({ quota: emptyQuotaView(), unavailable: true })),
+  ]);
+  return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
+}
+
 async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, quota, summary] = await Promise.all([
+  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
-    source.quota().catch(() => emptyQuotaView()),
+    todaySignals(),
     source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
+  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
+}
+
+async function queueContext() {
+  const [{ board, items }, pool, orchestration] = await Promise.all([
+    boardContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.orchestration().catch(() => null),
+  ]);
+  return buildQueueView({ board, pool, items, orchestration });
 }
 
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
 async function overviewContext() {
-  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
+  const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.quota().catch(() => emptyQuotaView()),
     healthContext(),
     boardContext(),
+    source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, actionsByObject };
+  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
 }
 
 
@@ -964,15 +989,26 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
-      return html(renderTodayShell(prov(), provDetail()));
+      const signals = await todaySignals();
+      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
-    const { today, view, coverage, quota } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
+    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable));
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
+    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
+  }
+
+  if (path === "/queue") {
+    if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
+    return html(renderQueue(await queueContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/queue") {
+    const view = await queueContext();
+    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
   if (path === "/roadmap") {
@@ -1080,7 +1116,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov()));
+    return html(renderAa(await source.aa(), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
     const section = await source.aa();
@@ -1369,6 +1405,9 @@ async function handler(req: Request): Promise<Response> {
     const { today } = await todayContext();
     return json(today);
   }
+  if (path === "/api/queue.json") {
+    return json(await queueContext());
+  }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
     // means "not measured yet" — never an empty queue. #1148: the
@@ -1562,7 +1601,6 @@ async function handler(req: Request): Promise<Response> {
     if (subject) {
       const title = subject.title;
       const links = subject.links;
-      const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
       const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] = await Promise.all([
         source.items(refs).catch(() => new Map()),
@@ -1610,7 +1648,7 @@ async function handler(req: Request): Promise<Response> {
         ...(epicRollup ? { epicRollup } : {}),
         briefs,
       };
-      return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
+      return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
     return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
   }
@@ -1661,6 +1699,27 @@ const servers = cfg.hosts.map((hostname) =>
 
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
+}
+
+// Collector feeds are replaced on a ~5-minute cadence. Land their
+// snapshot records from a server-owned writer tick rather than from
+// usage() so GET /quota and /quota/service/* never require store writes.
+const SNAPSHOT_INGEST_INTERVAL_MS = 5 * 60_000;
+if (source.ingestSnapshots) {
+  let snapshotIngestRunning = false;
+  const ingestSnapshots = async (): Promise<void> => {
+    if (snapshotIngestRunning) return;
+    snapshotIngestRunning = true;
+    try {
+      await source.ingestSnapshots?.();
+    } catch {
+      // Feed and store failures are retried on the next tick; reads stay up.
+    } finally {
+      snapshotIngestRunning = false;
+    }
+  };
+  void ingestSnapshots(); // recover the latest feed immediately on startup
+  setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation

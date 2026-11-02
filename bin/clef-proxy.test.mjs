@@ -106,6 +106,7 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
 
   const { child, base } = await startProxy({
     CLEF_PROXY_GATEWAY_BASE: `http://127.0.0.1:${stubPort}/v1`,
+    CLEF_PROXY_DATA_PATH_TIMEOUT_MS: '300',
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost'
   });
@@ -156,6 +157,25 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
     const data = await res.json();
     assert.deepEqual(data.answers, { q1: 'answer one' });
     assert.match(stubPaths.at(-1), /\/workers-ai\/run\//);
+  });
+
+  await t.test('upstream that never sends headers returns a 504', async () => {
+    stubBehavior = () => {};
+    const res = await ask();
+    assert.equal(res.status, 504);
+    const data = await res.json();
+    assert.match(data.error, /timed out/i);
+  });
+
+  await t.test('response body that never completes returns a 504', async () => {
+    stubBehavior = (_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"success":true,"result":');
+    };
+    const res = await ask();
+    assert.equal(res.status, 504);
+    const data = await res.json();
+    assert.match(data.error, /timed out/i);
   });
 });
 
