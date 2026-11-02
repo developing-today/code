@@ -334,27 +334,40 @@ if 'agent' in doc:
         out = out[:at] + '"agents"' + out[at + len('"agent"'):]
         changed = True
     elif merged != agents:
+        # Splice the merged map into the live `agents` value span via
+        # the string/comment-aware locators (#4612): the old regex
+        # splice demanded a newline + two-space closing brace and took
+        # the first textual match, so inline, single-line, other-indent
+        # and comment-lookalike documents exited 1 or never converged.
+        span = find_value_span(out, 'agents')
+        if span is None:
+            sys.exit(1)  # cannot splice: leave the file untouched
+        vs, ve = span
+        at = find_top_level_key(out, 'agents')
+        line_start = out.rfind('\n', 0, at) + 1
+        indent = out[line_start:at]
+        if indent.strip():
+            indent = '  '
         new_agents = json.dumps(merged, indent=2)
         new_agents = '\n'.join(
-            ('  ' + ln if i else ln) for i, ln in enumerate(new_agents.split('\n'))
+            (indent + ln if i else ln)
+            for i, ln in enumerate(new_agents.split('\n'))
         )
-        out, n = re.subn(
-            r'"agents"(\s*):\s*\{.*?\n  \}',
-            lambda m: '"agents"' + m.group(1) + ': ' + new_agents,
-            out, count=1, flags=re.S,
-        )
-        if not n:
-            sys.exit(1)  # cannot splice: leave the file untouched
+        out = out[:vs] + new_agents + out[ve:]
         changed = True
-        out, n = re.subn(r'\n\s*"agent"\s*:\s*\{.*?\n  \},?', '', out, count=1, flags=re.S)
-        if not n:
-            sys.exit(1)
+        out = delete_top_level_entry(out, 'agent')
+        if out is None:
+            sys.exit(1)  # cannot drop the v1 block: refuse the write
     else:
         # Every `agent` entry is already present in `agents` verbatim,
-        # so dropping the duplicate block cannot lose anything. If the
-        # drop shape misses, verification below refuses the write.
-        out, n = re.subn(r'\n\s*"agent"\s*:\s*\{.*?\n  \},?', '', out, count=1, flags=re.S)
-        changed = changed or bool(n)
+        # so dropping the duplicate block cannot lose anything. Drop it
+        # via the locator, whatever its layout; if it cannot be located
+        # the write is refused (exit 1, file byte-identical) instead of
+        # silently leaving the v1 block in place forever (#4612).
+        out = delete_top_level_entry(out, 'agent')
+        if out is None:
+            sys.exit(1)
+        changed = True
 
 if not changed:
     sys.exit(0)

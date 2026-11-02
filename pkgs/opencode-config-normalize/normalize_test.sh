@@ -198,9 +198,11 @@ cmp -s "$tmp/unparseable.fixture" "$tmp/unparseable.copy" || {
   failures=$((failures + 1))
 }
 
-# Case 6: agents shape the fold splice cannot recognise (4-space
-# indent) with a v1 `agent` block also present — the file must be left
-# byte-identical with exit 1, never stripped.
+# Case 6: agents in a 4-space indent with a v1 `agent` block also
+# present (#4612) — the locator-based fold splices whatever layout the
+# value span has, so this normalises like the 2-space merge (Case 3).
+# (Before #4612 the layout-bound regex splice could not recognise this
+# shape and the case asserted the fail-closed exit 1 instead.)
 cat >"$tmp/unrecognised.fixture" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
@@ -212,7 +214,8 @@ cat >"$tmp/unrecognised.fixture" <<'EOF'
     }
 }
 EOF
-check unrecognised "$tmp/unrecognised.fixture" '' 1
+check unrecognised "$tmp/unrecognised.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-haiku-4-5"}}}' 0
 
 # Case 7: inline // comments (#3179) — the old probe stripper removed
 # only full-line comments, so this file failed to parse and every
@@ -309,6 +312,97 @@ cat >"$tmp/plugins-merge.fixture" <<'EOF'
 EOF
 check plugins-merge "$tmp/plugins-merge.fixture" \
   '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b",["opencode-plugin-c",{"opt":1}]]}' 0
+
+
+# Case 14 (#4612, probe B): `agents` inline empty object with a
+# standard v1 `agent` block — the old regex splice demanded a
+# newline + two-space closing brace, so this exited 1 forever.
+cat >"$tmp/inline-agents.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  "agents": {}
+}
+EOF
+check inline-agents "$tmp/inline-agents.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+
+# Case 15 (#4612, probe C): `agents` on a single line with content,
+# plus a v1 `agent` block adding a key — merges with exit 0.
+cat >"$tmp/singleline-agents.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": { "scout": { "model": "anthropic/claude-haiku-4-5" } },
+  "agents": { "build": { "model": "anthropic/claude-sonnet-4-5" } }
+}
+EOF
+check singleline-agents "$tmp/singleline-agents.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"scout":{"model":"anthropic/claude-haiku-4-5"}}}' 0
+
+# Case 16 (#4612, probe F): an "agents": lookalike inside a // comment
+# above the live keys — the fold must splice the LIVE keys and leave
+# the comment byte-identical (asserted explicitly after the check).
+cat >"$tmp/comment-agents-key.fixture" <<'EOF'
+{
+  // example only: "agents": { "ghost": { "model": "comment/lookalike" } }
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "scout": { "model": "anthropic/claude-haiku-4-5" }
+  },
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check comment-agents-key "$tmp/comment-agents-key.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"scout":{"model":"anthropic/claude-haiku-4-5"}}}' 0
+cp "$tmp/comment-agents-key.fixture" "$tmp/comment-agents-key.copy"
+OPENCODE_CONFIG="$tmp/comment-agents-key.copy" bash "$script" 2>/dev/null
+grep -Fq '// example only: "agents": { "ghost": { "model": "comment/lookalike" } }' "$tmp/comment-agents-key.copy" || {
+  echo "FAIL comment-agents-key-bytes: comment line not byte-identical"
+  failures=$((failures + 1))
+}
+
+# Case 17 (#4612, probe E): fully duplicated entries (merged ==
+# agents) with the v1 `agent` block on ONE line — the old deletion
+# regex missed this layout and silently exited 0 with the v1 block
+# left in place. The block must actually be removed.
+cat >"$tmp/duplicate-singleline.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": { "build": { "model": "anthropic/claude-sonnet-4-5" } },
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check duplicate-singleline "$tmp/duplicate-singleline.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+cp "$tmp/duplicate-singleline.fixture" "$tmp/duplicate-singleline.copy"
+OPENCODE_CONFIG="$tmp/duplicate-singleline.copy" bash "$script" 2>/dev/null
+grep -Fq '"agent":' "$tmp/duplicate-singleline.copy" && {
+  echo "FAIL duplicate-singleline-bytes: v1 agent key still present"
+  failures=$((failures + 1))
+}
+
+# Case 18 (#4612): duplicated entries with the v1 `agent` block as
+# the LAST entry (no trailing comma) — deletion must remove the
+# preceding separator comma and leave a valid single `agents` block.
+cat >"$tmp/duplicate-last.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check duplicate-last "$tmp/duplicate-last.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
 
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
