@@ -32,9 +32,80 @@ import json, re, sys, pathlib
 path = pathlib.Path(sys.argv[1])
 raw = path.read_text()
 
-# Cheap JSONC -> JSON for the membership test only; we never write this back.
-probe = re.sub(r'^\s*//.*$', '', raw, flags=re.M)
-probe = re.sub(r',(\s*[}\]])', r'\1', probe)
+
+def jsonc_to_json(text):
+    # String-aware JSONC -> JSON (#3179): strip // line comments and
+    # /* */ block comments plus trailing commas, but never touch the
+    # contents of string literals — "//", "/*", ",}" and ",]" inside a
+    # string value are data, not comments or trailing commas. Used for
+    # the membership probe and the pre-write verification only; the
+    # repaired output is still spliced from the original text, so
+    # comments in the user's file are preserved.
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '/':
+            while i < n and text[i] != '\n':
+                i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '*':
+            end = text.find('*/', i + 2)
+            i = n if end < 0 else end + 2
+            out.append(' ')
+            continue
+        out.append(c)
+        i += 1
+    s = ''.join(out)
+    out = []
+    i, n = 0, len(s)
+    in_str = False
+    while i < n:
+        c = s[i]
+        if in_str:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                out.append(s[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == ',':
+            j = i + 1
+            while j < n and s[j] in ' \t\r\n':
+                j += 1
+            if j < n and s[j] in '}]':
+                i += 1
+                continue  # trailing comma: drop it
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+# JSONC -> JSON for the membership test only; we never write this back.
+probe = jsonc_to_json(raw)
 try:
     doc = json.loads(probe)
 except Exception:
@@ -105,8 +176,7 @@ if not changed:
 # parsed document differs from the intended one. The intended document is
 # `doc` with the renames/folds above applied; comparing the whole document
 # is what proves no `agents` entry was dropped on the floor (#2364).
-verify = re.sub(r'^\s*//.*$', '', out, flags=re.M)
-verify = re.sub(r',(\s*[}\]])', r'\1', verify)
+verify = jsonc_to_json(out)
 try:
     parsed = json.loads(verify)
 except Exception:
