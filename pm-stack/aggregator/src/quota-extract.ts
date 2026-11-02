@@ -44,9 +44,103 @@ function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string
   return d.toISOString();
 }
 
-/** "2026-10-28" + "14:00" CDT (UTC-5) -> ISO. */
-function dateTimeCDT(date: string, hhmm: string): string {
-  return `${date}T${hhmm}:00-05:00`;
+const CHICAGO_WALL_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+interface WallTimeParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+}
+
+function wallPartsAt(instant: number): WallTimeParts {
+  const parts = Object.fromEntries(
+    CHICAGO_WALL_FORMATTER.formatToParts(new Date(instant)).map(({ type, value }) => [type, value]),
+  );
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+  };
+}
+
+function wallPartsEpoch(parts: WallTimeParts): number {
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day);
+  date.setUTCHours(parts.hour, parts.minute, 0, 0);
+  return date.getTime();
+}
+
+/** Interpret a dated Central wall time using its America/Chicago offset. */
+function dateTimeCentral(date: string, hhmm: string): string {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(hhmm);
+  if (!dateMatch || !timeMatch) throw new RangeError(`Invalid Central wall time: ${date} ${hhmm}`);
+
+  const requested: WallTimeParts = {
+    year: Number(dateMatch[1]),
+    month: Number(dateMatch[2]),
+    day: Number(dateMatch[3]),
+    hour: Number(timeMatch[1]),
+    minute: Number(timeMatch[2]),
+  };
+  const wallEpoch = wallPartsEpoch(requested);
+  const normalizedInput = new Date(wallEpoch);
+  if (
+    requested.month < 1 ||
+    requested.month > 12 ||
+    requested.day < 1 ||
+    requested.hour > 23 ||
+    requested.minute > 59 ||
+    normalizedInput.getUTCFullYear() !== requested.year ||
+    normalizedInput.getUTCMonth() + 1 !== requested.month ||
+    normalizedInput.getUTCDate() !== requested.day ||
+    normalizedInput.getUTCHours() !== requested.hour ||
+    normalizedInput.getUTCMinutes() !== requested.minute
+  ) {
+    throw new RangeError(`Invalid Central wall time: ${date} ${hhmm}`);
+  }
+
+  // Sampling either side of the wall date finds both offsets on transition
+  // days. Round-trip candidates to reject skipped times; for a repeated time,
+  // choose the earlier instant deterministically.
+  const offsets = new Set(
+    [-36, 0, 36].map((hours) => {
+      const instant = wallEpoch + hours * 3_600_000;
+      return wallPartsEpoch(wallPartsAt(instant)) - instant;
+    }),
+  );
+  const candidates = [...offsets]
+    .map((offset) => wallEpoch - offset)
+    .filter((instant) => {
+      const actual = wallPartsAt(instant);
+      return (
+        actual.year === requested.year &&
+        actual.month === requested.month &&
+        actual.day === requested.day &&
+        actual.hour === requested.hour &&
+        actual.minute === requested.minute
+      );
+    })
+    .sort((a, b) => a - b);
+  if (candidates.length === 0) throw new RangeError(`Nonexistent Central wall time: ${date} ${hhmm}`);
+
+  const offsetMinutes = Math.round((wallEpoch - candidates[0]) / 60_000);
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absoluteMinutes = Math.abs(offsetMinutes);
+  const offset = `${sign}${String(Math.floor(absoluteMinutes / 60)).padStart(2, "0")}:${String(absoluteMinutes % 60).padStart(2, "0")}`;
+  return `${date}T${hhmm}:00${offset}`;
 }
 
 function pctWindow(name: string, pct: number, resetsAt: string | null): QuotaWindow {
@@ -102,7 +196,7 @@ const extractClaude: Extractor = (s, now) => {
   if (!pct) return null;
   const reset = first(s, /weekly reset \w+ (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/i);
   return {
-    windows: [pctWindow("weekly", Number(pct[1]), reset ? dateTimeCDT(reset[1], reset[2]) : null)],
+    windows: [pctWindow("weekly", Number(pct[1]), reset ? dateTimeCentral(reset[1], reset[2]) : null)],
     note: "Freshest dated read in the stewardship quota view; Claude exposes no host-side meter.",
   };
 };
@@ -156,7 +250,7 @@ const extractMeta: Extractor = (s, now) => {
     };
   }
   const reset = first(s, /[Ww]eekly reset (?:today )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/);
-  const resetIso = reset ? dateTimeCDT(reset[1], reset[2]) : null;
+  const resetIso = reset ? dateTimeCentral(reset[1], reset[2]) : null;
   const burned = /burned to empty/i.test(s);
   if (resetIso && now.getTime() >= Date.parse(resetIso)) {
     return {
@@ -213,7 +307,7 @@ const extractClinePass: Extractor = (s) => {
     /5-hour \*\*(\d+(?:\.\d+)?)%\*\* used; weekly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\); monthly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\)/i,
   );
   if (!measured || !m) return null;
-  const base = Date.parse(dateTimeCDT(measured[1], measured[2]));
+  const base = Date.parse(dateTimeCentral(measured[1], measured[2]));
   const rel = (d: string, h: string) => new Date(base + (Number(d) * 24 + Number(h)) * 3_600_000).toISOString();
   return {
     windows: [
