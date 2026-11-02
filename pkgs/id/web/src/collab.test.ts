@@ -8,6 +8,7 @@ const unpackr = new Unpackr({ useRecords: false, structuredClone: true });
 
 const MSG_AUTH = 8;
 const MSG_AUTH_OK = 9;
+const MSG_INIT = 0;
 
 /** Minimal WebSocket stand-in: records sent frames, lets the test drive
  * open/message/close by hand. No real network is involved. */
@@ -49,7 +50,7 @@ class FakeWebSocket {
     this.onopen?.();
   }
 
-  deliver(msg: unknown[]): void {
+  deliver(msg: unknown): void {
     const packed = packr.pack(msg);
     const buf = packed.buffer.slice(
       packed.byteOffset,
@@ -82,7 +83,25 @@ function track<T extends { disconnect: () => void }>(conn: T): T {
   return conn;
 }
 
-describe("initCollab token handling (#1463)", () => {
+function openCollab(onEditorReady = vi.fn()) {
+  const conn = track(initCollab(
+    "ws://example.test/collab",
+    makeContainer(),
+    "doc-1",
+    "notes.md",
+    null,
+    undefined,
+    undefined,
+    onEditorReady,
+  ));
+  const socket = FakeWebSocket.instances.at(-1)!;
+  socket.open();
+  return { conn, socket, onEditorReady };
+}
+
+const validInit = () => [MSG_INIT, 0, { type: "doc", content: [{ type: "paragraph" }] }, "raw"];
+
+describe("initCollab protocol handling (#1463, #2824)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     FakeWebSocket.instances = [];
@@ -173,6 +192,44 @@ describe("initCollab token handling (#1463)", () => {
     expect(second.sent.length).toBe(0);
 
     conn.disconnect();
+  });
+
+  it("drops non-array frames and still initializes from a later valid INIT (#2824)", () => {
+    const onEditorReady = vi.fn();
+    const { conn, socket } = openCollab(onEditorReady);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    for (const frame of [null, { type: MSG_INIT }, "not an array"]) {
+      socket.deliver(frame);
+      expect(conn.editor).toBeNull();
+    }
+    expect(onEditorReady).not.toHaveBeenCalled();
+
+    socket.deliver(validInit());
+    expect(conn.editor).not.toBeNull();
+    expect(onEditorReady).toHaveBeenCalledOnce();
+  });
+
+  it("rejects malformed INIT version/document fields before editor initialization (#2824)", () => {
+    const onEditorReady = vi.fn();
+    const { conn, socket } = openCollab(onEditorReady);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    for (const frame of [
+      [MSG_INIT],
+      [MSG_INIT, "0", { type: "doc", content: [] }, "raw"],
+      [MSG_INIT, 0, null, "raw"],
+      [MSG_INIT, 0, [], "raw"],
+      [MSG_INIT, 0, {}, "raw"],
+    ]) {
+      socket.deliver(frame);
+      expect(conn.editor).toBeNull();
+      expect(onEditorReady).not.toHaveBeenCalled();
+    }
+
+    socket.deliver(validInit());
+    expect(conn.editor).not.toBeNull();
+    expect(onEditorReady).toHaveBeenCalledOnce();
   });
 });
 
