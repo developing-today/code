@@ -736,16 +736,22 @@ impl WorldCore {
     /// A malformed id, a duplicate pending id, a full schedule, or a time past
     /// the horizon.
     pub(crate) fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
-        self.check_schedule_replacing(id, at_ms, now_ms, false)
+        self.check_schedule_inner(id, at_ms, now_ms, false)
     }
 
     /// Like [`Self::check_schedule`], but for a set that replaces the pending
-    /// schedule with the same id: the entry being replaced counts as already
-    /// cancelled, so it is neither a duplicate nor a use of the capacity.
+    /// schedule with the same id. Whether this is a replacement is derived
+    /// from this core's schedule map: the entry being replaced counts as
+    /// already cancelled, so it is neither a duplicate nor a use of capacity.
     /// Callers validate with this BEFORE persisting the replacement's
     /// cancellation, so a refused replacement (say, past the horizon) leaves
     /// the existing schedule standing (#807).
-    pub(crate) fn check_schedule_replacing(
+    pub(crate) fn check_schedule_replacing(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
+        let replacing = self.schedules.contains_key(id);
+        self.check_schedule_inner(id, at_ms, now_ms, replacing)
+    }
+
+    fn check_schedule_inner(
         &self,
         id: &str,
         at_ms: u64,

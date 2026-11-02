@@ -1398,12 +1398,8 @@ impl WorldActor {
                     // existing schedule standing, in the journal as in
                     // memory (#807).
                     let replacing = self.core.schedules.contains_key(&id);
-                    self.core.check_schedule_replacing(
-                        &id,
-                        at_ms,
-                        self.core.clock().now_ms(),
-                        replacing,
-                    )?;
+                    self.core
+                        .check_schedule_replacing(&id, at_ms, self.core.clock().now_ms())?;
                     if replacing {
                         // Journal the cancel before the replacement set:
                         // replay refuses two pending sets for one id.
