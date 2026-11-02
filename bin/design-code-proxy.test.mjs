@@ -165,7 +165,7 @@ const startProxy = async ({ backendTimeoutMs } = {}) => {
     env: {
       ...env,
       DESIGN_CODE_PROXY_PORT: String(port),
-      ANTIGRAVITY_LS_PROXY_PORT: String(primary.port),
+      ANTIGRAVITY_DIRECT_PORT: String(primary.port),
       CODEX_PROXY_PORT: String(fallback.port),
       ...(backendTimeoutMs ? { DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS: String(backendTimeoutMs) } : {})
     },
