@@ -187,3 +187,145 @@ test('first-line deadline reaps idle and partial clients while health and forwar
   assert.equal(forwarded.status, 200);
   assert.equal(await forwarded.text(), 'forwarded');
 });
+
+test('bytes sent during the tunnel CONNECT window are forwarded byte-for-byte in order', async (t) => {
+  const sockets = new Set();
+  const track = (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    return socket;
+  };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-relay-test-'));
+
+  // Recording sink: the CONNECT target. Collects raw bytes, replies nothing.
+  let received = Buffer.alloc(0);
+  let sinkSocketResolve;
+  const sinkConnected = new Promise((resolve) => { sinkSocketResolve = resolve; });
+  const sink = net.createServer((socket) => {
+    track(socket);
+    socket.on('data', (chunk) => { received = Buffer.concat([received, chunk]); });
+    sinkSocketResolve(socket);
+  });
+  sink.on('connection', track);
+  const sinkPort = await listen(sink);
+
+  // Tunnel proxy that delays its CONNECT answer by 400ms, opening the
+  // window in which an unpaused relay client used to lose body bytes.
+  const CONNECT_DELAY_MS = 400;
+  const tunnelProxy = net.createServer((client) => {
+    track(client);
+    let request = Buffer.alloc(0);
+    const onData = (chunk) => {
+      request = Buffer.concat([request, chunk]);
+      if (request.indexOf('\r\n\r\n') === -1) return;
+      client.removeListener('data', onData);
+      client.pause();
+      const upstream = track(net.connect(sinkPort, '127.0.0.1'));
+      client.once('close', () => upstream.destroy());
+      client.once('error', () => upstream.destroy());
+      upstream.once('connect', () => {
+        setTimeout(() => {
+          if (client.destroyed) return;
+          client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          client.pipe(upstream);
+          upstream.pipe(client);
+        }, CONNECT_DELAY_MS);
+      });
+      upstream.once('error', () => client.destroy());
+    };
+    client.on('data', onData);
+  });
+  const proxyPort = await listen(tunnelProxy);
+
+  const relayPort = await freePort();
+  const child = spawn(process.execPath, [path.join(binDir, 'proxy-relay.mjs')], {
+    env: {
+      ...process.env,
+      RELAY_LISTEN_HOST: '127.0.0.1',
+      RELAY_LISTEN_PORT: String(relayPort),
+      RELAY_TARGET_HOST: '127.0.0.1',
+      RELAY_TARGET_PORTS: String(sinkPort),
+      RELAY_PROXY_HOST: '127.0.0.1',
+      RELAY_PROXY_PORT: String(proxyPort),
+      RELAY_NAME: 'proxy-relay-test',
+      XDG_STATE_HOME: path.join(tmp, 'state')
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let log = '';
+  child.stdout.on('data', (chunk) => { log += chunk; });
+  child.stderr.on('data', (chunk) => { log += chunk; });
+
+  const closeServer = (server) => new Promise((resolve) => {
+    if (!server.listening) return resolve();
+    server.close(() => resolve());
+  });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    for (const socket of sockets) socket.destroy();
+    await Promise.all([closeServer(tunnelProxy), closeServer(sink)]);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`relay did not start:\n${log}`)), 10_000);
+    child.stdout.on('data', () => {
+      if (!log.includes('[proxy-relay-test] relay http://')) return;
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`relay exited before listening (${code ?? signal}):\n${log}`));
+    });
+  });
+  await ready;
+
+  // /health fast-path control: answered locally, no tunnel, no sink bytes.
+  const health = await within(fetch(`http://127.0.0.1:${relayPort}/health`, {
+    headers: { connection: 'close' }
+  }), 5000, 'local /health');
+  assert.equal(health.status, 200);
+  assert.equal((await health.json()).relay, true);
+  assert.equal(received.length, 0, '/health must not reach the sink');
+
+  const openClient = async () => {
+    const socket = track(net.createConnection({ host: '127.0.0.1', port: relayPort }));
+    await within(new Promise((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    }), 5000, 'relay client connection');
+    return socket;
+  };
+
+  // Multi-segment request: headers first, then body chunks sent while the
+  // tunnel CONNECT is still in flight. Every byte must arrive, in order.
+  const head = 'POST /submit HTTP/1.1\r\nHost: sink\r\nContent-Length: 11\r\nConnection: close\r\n\r\n';
+  const multi = await openClient();
+  multi.write(head);
+  await delay(100);
+  multi.write('hello ');
+  await delay(100);
+  multi.write('world');
+  await within(sinkConnected, 5000, 'sink connection');
+  await delay(1500);
+  assert.equal(
+    received.toString('latin1'),
+    `${head}hello world`,
+    'bytes sent during the CONNECT window must follow the peeked buffer in order'
+  );
+  multi.destroy();
+
+  // Single-segment control: one write is forwarded whole.
+  received = Buffer.alloc(0);
+  const single = 'GET /one-shot HTTP/1.1\r\nHost: sink\r\nConnection: close\r\n\r\n';
+  const oneShot = await openClient();
+  oneShot.write(single);
+  await delay(1500);
+  assert.equal(received.toString('latin1'), single);
+  oneShot.destroy();
+});
