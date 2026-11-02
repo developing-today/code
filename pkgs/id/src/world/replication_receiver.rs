@@ -387,6 +387,14 @@ impl DurableReceiver {
         };
         match staged {
             Staged::Snapshot(bytes) => {
+                // Recover any interrupted tail append before the
+                // replacement snapshot commits: a stale append-pending
+                // record names a length in the OLD journal, and if it
+                // survived to the next open it would truncate the
+                // snapshot that replaces that journal. Recovery rolls
+                // the old journal back (immaterial here, since the
+                // snapshot replaces it wholesale) and clears the record.
+                roll_back_interrupted_append(&self.dir)?;
                 let installing = self.dir.join(INSTALLING_FILE);
                 {
                     let mut file = File::create(&installing)?;
@@ -418,9 +426,18 @@ impl DurableReceiver {
                     Ok(())
                 })();
                 if let Err(error) = append_result {
-                    // Best-effort immediate rollback; the pending
-                    // record makes the next open roll back regardless.
-                    let _ = self.roll_back_to(prior_len);
+                    // Best-effort immediate rollback. When it succeeds
+                    // the transaction is fully recovered, so clear the
+                    // pending record too: a stale record names a length
+                    // in this journal and would roll back a later
+                    // replacement snapshot at the next open. When the
+                    // rollback fails, leave the record — the next open
+                    // (or a snapshot commit's recovery) rolls back
+                    // regardless.
+                    if self.roll_back_to(prior_len).is_ok() {
+                        let _ = fs::remove_file(self.dir.join(APPEND_PENDING_FILE));
+                        let _ = self.sync_dir();
+                    }
                     return Err(error);
                 }
                 fs::remove_file(self.dir.join(APPEND_PENDING_FILE))?;
@@ -634,6 +651,12 @@ mod tests {
 
     fn receiver(dir: &TempDir, key: &SigningKey) -> DurableReceiver {
         DurableReceiver::open(dir.path(), WORLD, source_of(key)).unwrap()
+    }
+
+    /// Reopen a replica directory from a test that already holds a
+    /// binding named `receiver` (which shadows the `receiver` helper).
+    fn reopen(dir: &TempDir, key: &SigningKey) -> DurableReceiver {
+        receiver(dir, key)
     }
 
     /// Drive one full snapshot batch the way the phase-2 feed sends it:
@@ -886,7 +909,7 @@ mod tests {
             world_id: WORLD.to_string(),
             source,
             header_version: 1,
-            kind: ReplicationKind::Tail,
+            kind: ReplicationKind::Snapshot,
             session_nonce: NONCE,
             cursor_before: chain_base_cursor(WORLD, &source, 1),
             cursor_after: chain_base_cursor(WORLD, &source, 1),
@@ -1008,7 +1031,7 @@ mod tests {
         assert_eq!(receiver.committed_cursor(), Some(committed));
         assert_eq!(receiver.read_journal().unwrap(), payload);
         // And the replica still opens cleanly afterwards.
-        let reopened = receiver(&dir, &key);
+        let reopened = reopen(&dir, &key);
         assert_eq!(reopened.committed_cursor(), Some(committed));
     }
 
@@ -1041,11 +1064,48 @@ mod tests {
             file.write_all(debris).unwrap();
             file.sync_all().unwrap();
             drop(file);
-            let reopened = receiver(&dir, &key);
+            let reopened = reopen(&dir, &key);
             assert_eq!(reopened.read_journal().unwrap(), payload);
             assert_eq!(reopened.committed_cursor(), Some(committed));
             assert!(!dir.path().join(APPEND_PENDING_FILE).exists());
         }
+    }
+
+    #[test]
+    fn stale_append_pending_record_cannot_roll_back_a_replacement_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let mut receiver = receiver(&dir, &key);
+        receiver.begin_session(NONCE);
+        let payload = journal_payload(1);
+        feed_snapshot(&mut receiver, &key, NONCE, 1, &payload);
+        // Simulate a failed tail append whose immediate rollback
+        // succeeded but whose append-pending record was left behind:
+        // the record still names the pre-append journal length and the
+        // journal is exactly that long.
+        fs::write(
+            dir.path().join(APPEND_PENDING_TMP_FILE),
+            payload.len().to_string(),
+        )
+        .unwrap();
+        fs::rename(
+            dir.path().join(APPEND_PENDING_TMP_FILE),
+            dir.path().join(APPEND_PENDING_FILE),
+        )
+        .unwrap();
+        // A reconnect snapshot commits on the same receiver. Committing
+        // it must recover and clear the stale record first; otherwise
+        // the next open would truncate the replacement snapshot back
+        // to the old pre-append length.
+        let replacement = journal_payload(2);
+        receiver.begin_session(NONCE2);
+        let progress = feed_snapshot(&mut receiver, &key, NONCE2, 2, &replacement);
+        assert!(matches!(progress, ReceiverProgress::Committed { .. }));
+        assert!(!dir.path().join(APPEND_PENDING_FILE).exists());
+        drop(receiver);
+        let reopened = reopen(&dir, &key);
+        assert_eq!(reopened.read_journal().unwrap(), replacement);
+        assert_eq!(reopened.header_version(), Some(2));
     }
 
     #[test]
