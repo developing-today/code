@@ -71,6 +71,8 @@ use crate::{
     parse_stdin_items, read_input,
 };
 
+const PUT_FINALIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+
 /// Add `data` to `store` as a raw blob; returns its hash and a guard that keeps
 /// the blob protected until dropped (hold it until the blob has been named).
 pub async fn add_raw(store: &Store, data: Vec<u8>) -> Result<(Hash, TempTag)> {
@@ -126,18 +128,23 @@ pub async fn push_and_name(
         filename: name.to_owned(),
         hash,
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_mins(2);
-    let outcome = loop {
-        match request_over(&meta_conn, &req).await {
-            Ok(MetaResponse::Error { message })
-                if crate::fileops::is_blob_missing_message(&message)
-                    && std::time::Instant::now() < deadline =>
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let outcome = crate::connectivity::within(
+        PUT_FINALIZATION_TIMEOUT,
+        "registering the blob name",
+        async {
+            loop {
+                match request_over(&meta_conn, &req).await? {
+                    MetaResponse::Error { message }
+                        if crate::fileops::is_blob_missing_message(&message) =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    response => return Ok(response),
+                }
             }
-            other => break other,
-        }
-    };
+        },
+    )
+    .await;
     meta_conn.close(0u32.into(), b"done");
     blobs_conn.close(0u32.into(), b"done");
     match expect_ok(outcome?)? {

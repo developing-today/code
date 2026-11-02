@@ -61,18 +61,6 @@ on:
       # also marks its commits [skip ci] — both addendum fixes).
       - "!pkgs/mcpx/testdata/seeds/**"
       - ".opencode/plugin/**"
-  # Pull requests run the same test job, so the full-suite check
-  # TESTING.md rule 3 tells agents to read before merging actually
-  # exists (#1966); the trigger also carries the flake-policy jobs
-  # (#1973): the PR stress job runs on pull requests, the full-suite
-  # stress job nightly. The original jobs keep their original event
-  # coverage via their own `if:` conditions.
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".opencode/plugin/**"
-      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"

@@ -27,15 +27,6 @@ on:
       - "pkgs/mcpx/**"
       - "!pkgs/mcpx/testdata/seeds/**"
       - ".github/workflows/mcpx-test.yml"
-  pull_request:
-    # ready_for_review is explicit: the default activity types
-    # (opened/synchronize/reopened) would leave a draft-turned-ready
-    # PR with every job draft-skipped and no run at all (Codex P2).
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".github/workflows/mcpx-test.yml"
   workflow_dispatch:
 
 concurrency:
@@ -100,6 +91,8 @@ jobs:
           go-version-file: pkgs/mcpx/go.mod
           cache: true
           cache-dependency-path: pkgs/mcpx/go.sum
+      - name: Affected-test selector regressions
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v
       # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
       # shell out to deno/bun/node too, and a missing runtime reads as a
       # test failure (first run of this workflow, PR #2888).

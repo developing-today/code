@@ -1725,6 +1725,7 @@ impl Directory {
         ids.extend(self.pending_id(b, a));
         ids.sort();
         ids.dedup();
+        debug_assert!(ids.len() <= artifact::MAX_FRIEND_REMOVE_REQUESTS);
         ids
     }
 
@@ -2056,6 +2057,43 @@ mod tests {
             matches!(stale.downcast_ref::<Refusal>(), Some(Refusal::Conflict(_))),
             "{stale:#}"
         );
+    }
+
+    #[test]
+    fn receive_artifact_refuses_friend_removal_with_too_many_requests_without_storing_it() {
+        let mut directory = Directory::new();
+        let (ann, ann_credential) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        let valid_id = |n: u8| format!("{n:032x}");
+        let cases = [
+            vec![valid_id(1), valid_id(2), valid_id(3), valid_id(4)],
+            vec!["g".repeat(32)],
+            vec!["a".repeat(31)],
+            vec!["a".repeat(33)],
+        ];
+
+        for requests in cases {
+            let removal = SignedArtifact::sign(
+                &key_of(&ann_credential),
+                1,
+                "",
+                artifact::FRIEND_REMOVE,
+                json!({
+                    "a": ann.clone(),
+                    "b": bo.clone(),
+                    "requests": requests
+                }),
+            )
+            .unwrap();
+            let before = directory.clone();
+
+            let error = directory.receive_artifact(&removal).unwrap_err();
+            assert!(
+                matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_))),
+                "{error:#}"
+            );
+            assert_eq!(directory, before);
+        }
     }
 
     #[test]
