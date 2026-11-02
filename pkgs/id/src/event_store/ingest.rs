@@ -1109,6 +1109,7 @@ mod tests {
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1480,6 +1481,62 @@ mod tests {
         store.check_invariants().unwrap();
     }
 
+    /// A `session.checkpoint` event (#3794) is an ordinary verified event to
+    /// the store: it waits for an `after` hash it names like any other kind,
+    /// is released by that event's arrival, and reads back byte for byte.
+    #[test]
+    fn test_a_session_checkpoint_waits_and_round_trips() {
+        use crate::session_checkpoint::{
+            MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
+        };
+
+        let (_dir, mut store) = open();
+        let x = key(21);
+        let y = key(22);
+        let x0 = event(&x, 0, None, Vec::new(), "x");
+        let ext = ChainExt {
+            kind: "session.checkpoint".to_owned(),
+            group: None,
+            after: vec![x0.id],
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: Some(SessionCheckpoint {
+                header: SessionHeader {
+                    session_id: Hash::digest(b"session"),
+                    purpose: "collab editing".to_owned(),
+                    participants: vec![y.verifying_key()],
+                    started_ms: 1_000,
+                    nonce: Hash::digest(b"nonce"),
+                    mac_key_commitment: Hash::digest(b"mac key"),
+                    mac_scope: MacScope::Shared,
+                },
+                segment: SegmentCheckpoint {
+                    segment_seq: 0,
+                    prev_checkpoint: None,
+                    root: Hash::digest(b"root"),
+                    event_count: 3,
+                    start_ms: 1_000,
+                    end_ms: 1_500,
+                    audit_blob: None,
+                },
+            }),
+        };
+        let y0 = sign(&y, 0, None, None, ext).unwrap();
+        assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
+        assert_eq!(
+            ingest(&mut store, &x0),
+            Ingest::Accepted {
+                id: x0.id,
+                released: vec![y0.id],
+            }
+        );
+        assert_eq!(store.event(&author(&y), 0).unwrap(), Some(y0));
+        store.check_invariants().unwrap();
+    }
+
     #[test]
     fn test_an_after_hash_naming_a_voided_event_is_applied() {
         let (_dir, mut store) = open();
@@ -1673,6 +1730,7 @@ mod tests {
                 removes: None,
                 note: None,
                 link: None,
+                checkpoint: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1707,6 +1765,7 @@ mod tests {
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)

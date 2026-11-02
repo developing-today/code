@@ -711,6 +711,7 @@ impl LocalEvents {
             removes,
             note,
             link: None,
+            checkpoint: None,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -968,6 +969,7 @@ mod tests {
                     parents: vec![id(223)],
                 }),
                 link: None,
+                checkpoint: None,
             },
         )
         .unwrap();

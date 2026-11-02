@@ -218,6 +218,7 @@ pub mod sandbox;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
+pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod server_config;
 #[cfg(feature = "world")]
