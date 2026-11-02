@@ -70,6 +70,31 @@ describe("amountFromBody (#3120)", () => {
     expect(amountFromBody("Receipt\nYou were charged $20.00 for OpenAI\nBalance due $0.00")).toBe("20.00");
   });
 
+  test("future and negated verb evidence is not a payment", () => {
+    for (const body of [
+      "You will be charged $20.00",
+      "Amount to be paid $20.00",
+      "You were not charged $20.00",
+      "You were never charged $20.00",
+      "You weren't charged $20.00",
+    ]) {
+      expect(amountFromBody(body)).toBeUndefined();
+    }
+  });
+
+  test("a later valid past-tense charge wins over earlier future wording", () => {
+    expect(amountFromBody("You will be charged $20.00 next month. You were charged $15.00 today")).toBe("15.00");
+  });
+
+  test("an unrelated negation earlier in the sentence does not suppress a charge", () => {
+    expect(amountFromBody("The refund was not processed, but you were charged $20.00")).toBe("20.00");
+  });
+
+  test("standalone total and explicit paid labels retain precedence over invalid verbs", () => {
+    expect(amountFromBody("You will be charged $20.00\nTotal $21.60")).toBe("21.60");
+    expect(amountFromBody("Amount paid $21.60\nYou will be charged $20.00")).toBe("21.60");
+  });
+
   test("a genuine receipt body still yields its amount", () => {
     expect(amountFromBody("Receipt\nYou were charged $20.00 for OpenAI")).toBe("20.00");
   });
