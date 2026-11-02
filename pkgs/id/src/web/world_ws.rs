@@ -17,7 +17,7 @@ use futures::{
     SinkExt, StreamExt,
     stream::{SplitSink, SplitStream},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::directory::Refusal;
 use crate::directory_auth::{Caller, Signed};
@@ -50,12 +50,117 @@ pub fn world_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
         .route("/ws/world", axum::routing::get(handler))
         .route("/api/world/invite", axum::routing::post(invite_handler))
+        .route(
+            "/api/world/host-view",
+            axum::routing::get(host_view_handler),
+        )
         .route("/api/world/metrics", axum::routing::get(metrics_handler))
         .merge(super::explore::explore_routes())
         .route(
             "/api/world/directory",
             axum::routing::get(directory_read_handler).post(directory_write_handler),
         )
+}
+
+#[derive(Debug, Deserialize)]
+struct HostViewQuery {
+    world: Option<String>,
+    after: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct HostViewResponse {
+    snapshot: Option<crate::world::WorldSnapshot>,
+    view: Option<String>,
+    surface: Option<crate::world_presentation::WorldSurface>,
+    records_sequence: u64,
+    records: crate::world::Records,
+    next_after: Option<String>,
+}
+
+/// The host view uses the existing admin secret, not a guest capability. It
+/// is deliberately an HTTP read so the shared shell frame protocol is unchanged.
+async fn host_view_handler(
+    State(state): State<WorldWebState>,
+    headers: HeaderMap,
+    Query(query): Query<HostViewQuery>,
+) -> Response {
+    let Some(hub) = state.hub else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some(token) = headers
+        .get("x-world-admin-token")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if !hub.admin_ok(token) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    // Resolve without the admin creation path: viewing a typo must not create
+    // a new world as a side effect.
+    let lease = match hub.lease(query.world.as_deref(), None).await {
+        Ok(lease) => lease,
+        Err(ResolveError::Busy | ResolveError::TooManyWorlds) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let world = lease.service().world();
+    let (snapshot, view) = if query.after.is_none() {
+        match world.host_view().await {
+            Ok((snapshot, view)) => (Some(snapshot), view),
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    } else {
+        (None, None)
+    };
+    let (records_sequence, current_records) = world.records();
+    let mut records = crate::world::Records::new();
+    let mut used = 0usize;
+    let mut last_included = None;
+    let mut more = false;
+    for (key, value) in current_records.iter() {
+        if query
+            .after
+            .as_deref()
+            .is_some_and(|after| key.as_str() <= after)
+        {
+            continue;
+        }
+        let size = key.len() + serde_json::to_vec(value).map_or(0, |bytes| bytes.len()) + 8;
+        if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+            if records.is_empty() {
+                return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+            }
+            more = true;
+            break;
+        }
+        used += size;
+        last_included = Some(key.clone());
+        records.insert(key.clone(), value.clone());
+    }
+    let next_after = more.then_some(last_included).flatten();
+    let surface = match view
+        .as_deref()
+        .map(crate::world_presentation::parse_surface)
+    {
+        Some(Ok(surface)) => surface,
+        Some(Err(_)) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        None => None,
+    };
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(HostViewResponse {
+            snapshot,
+            view,
+            surface,
+            records_sequence,
+            records,
+            next_after,
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -459,7 +564,9 @@ impl SessionIo for WsIo {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::world::{JoinCapability, WorldCore, WorldHandle, WorldLimits};
+    use crate::world::{
+        JoinCapability, Participant, WorldCore, WorldHandle, WorldLimits, WorldProgram,
+    };
     use crate::world_session::WorldService;
     use axum::http::StatusCode;
     use axum::{body::Body, http::Request};
@@ -530,6 +637,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn host_view_requires_admin_and_does_not_register_a_guest() {
+        struct HostViewerProgram;
+        impl WorldProgram for HostViewerProgram {
+            fn view(&mut self, viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some(viewer.display_name.clone()))
+            }
+        }
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(HostViewerProgram));
+        let router = app(Some(world), Some("s3cret"));
+        for request in [
+            Request::get("/api/world/host-view")
+                .body(Body::empty())
+                .unwrap(),
+            Request::get("/api/world/host-view")
+                .header("x-world-admin-token", "wrong")
+                .body(Body::empty())
+                .unwrap(),
+        ] {
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let response = router
+            .oneshot(
+                Request::get("/api/world/host-view")
+                    .header("x-world-admin-token", "s3cret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["snapshot"]["participants"], serde_json::json!([]));
+        assert!(value["snapshot"]["active_module_hash"].is_null());
+        assert_eq!(value["view"], "Host");
+        assert_eq!(value["records"], serde_json::json!({}));
     }
 
     fn directory_request(
