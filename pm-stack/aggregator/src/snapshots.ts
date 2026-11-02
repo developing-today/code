@@ -94,23 +94,28 @@ export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SnapshotRollup>;
   if (r.kind !== "snapshot-rollup/v1") return false;
-  if (typeof r.month !== "string" || !/^\d{4}-\d{2}$/.test(r.month)) return false;
+  if (typeof r.month !== "string" || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(r.month)) return false;
   if (typeof r.serviceId !== "string" || r.serviceId === "") return false;
   if (typeof r.metricId !== "string" || r.metricId === "") return false;
   if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
   if (typeof r.source !== "string" || !SOURCES.has(r.source)) return false;
-  if (typeof r.count !== "number" || !(r.count >= 1)) return false;
+  if (!isFiniteNumber(r.count) || r.count < 1) return false;
   if (typeof r.observedBy !== "string" || r.observedBy === "") return false;
   for (const f of [r.firstTs, r.lastTs, r.minTs, r.maxTs]) {
-    if (typeof f !== "string" || Number.isNaN(Date.parse(f))) return false;
+    if (!isIsoDate(f)) return false;
   }
+  if (r.resetsAt !== undefined && r.resetsAt !== null && !isIsoDate(r.resetsAt)) return false;
+  if (r.resetsAtTs !== undefined && !isIsoDate(r.resetsAtTs)) return false;
+  if (r.limit !== undefined && r.limit !== null && !isNonNegative(r.limit)) return false;
+  if (r.limitTs !== undefined && !isIsoDate(r.limitTs)) return false;
   if (r.keys !== undefined && (!Array.isArray(r.keys) || r.keys.some((k) => typeof k !== "string"))) return false;
   const val = (x: unknown): boolean =>
-    (typeof x === "number" && Number.isFinite(x)) ||
+    isFiniteNumber(x) ||
     (typeof x === "object" &&
       x !== null &&
-      typeof (x as { low?: unknown }).low === "number" &&
-      typeof (x as { high?: unknown }).high === "number");
+      isFiniteNumber((x as { low?: unknown }).low) &&
+      isFiniteNumber((x as { high?: unknown }).high) &&
+      (x as { low: number }).low <= (x as { high: number }).high);
   return val(r.valueMin) && val(r.valueMax) && val(r.valueLast);
 }
 
