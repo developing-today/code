@@ -373,6 +373,16 @@ pub async fn cmd_put_one_remote(
 /// # Errors
 ///
 /// Collects errors from individual puts and reports them all at the end.
+/// Whether a lone `put` argument targets an existing file — either
+/// directly (`path`) or through a `path:name` spec, whose literal string
+/// never exists as a path. The stdin auto-detection in [`cmd_put_multi`]
+/// relies on this: an existing file means the argument is a file put,
+/// not a name to store stdin content under (#4152).
+fn put_spec_targets_existing_file(spec: &str) -> bool {
+    let (path, _) = parse_put_spec(spec);
+    PathBuf::from(path).exists()
+}
+
 pub async fn cmd_put_multi(
     files: Vec<String>,
     content_mode: bool,
@@ -409,9 +419,10 @@ pub async fn cmd_put_multi(
 
     // Auto-detect stdin content: if exactly one arg (the name) and stdin is piped
     if items.len() == 1 && !std::io::stdin().is_terminal() && !from_stdin {
-        // Check if the item looks like a file path that exists
-        let path = PathBuf::from(&items[0]);
-        if !path.exists() {
+        // Check if the item looks like a file path that exists. A
+        // `path:name` spec never exists as a literal path, so the check
+        // goes through the spec's path part (#4152).
+        if !put_spec_targets_existing_file(&items[0]) {
             // Doesn't exist as a file, treat as name and read content from stdin
             let name = &items[0];
             if hash_only {
@@ -470,6 +481,24 @@ mod tests {
         let (path, name) = parse_put_spec("file.txt:custom");
         assert_eq!(path, "file.txt");
         assert_eq!(name, Some("custom"));
+    }
+
+    #[test]
+    fn test_put_spec_targets_existing_file() {
+        // Missing files are not file targets, with or without a name.
+        assert!(!put_spec_targets_existing_file("no-such-file-4152.txt"));
+        assert!(!put_spec_targets_existing_file(
+            "no-such-file-4152.txt:custom"
+        ));
+        // An existing file is a file target plain and as `path:name` —
+        // the regression in #4152 was the literal spec string being
+        // checked, which a `path:name` spec can never satisfy.
+        let file = std::env::temp_dir().join("id-put-spec-targets-existing-file-test.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let plain = file.to_str().unwrap().to_string();
+        assert!(put_spec_targets_existing_file(&plain));
+        assert!(put_spec_targets_existing_file(&format!("{plain}:custom")));
+        std::fs::remove_file(&file).ok();
     }
 
     #[tokio::test]
