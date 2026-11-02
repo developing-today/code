@@ -100,6 +100,8 @@ jobs:
           go-version-file: pkgs/mcpx/go.mod
           cache: true
           cache-dependency-path: pkgs/mcpx/go.sum
+      - name: Affected-test selector regressions
+        run: python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_affected_untracked.py' -v
       # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
       # shell out to deno/bun/node too, and a missing runtime reads as a
       # test failure (first run of this workflow, PR #2888).
