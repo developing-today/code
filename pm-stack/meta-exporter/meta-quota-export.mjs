@@ -37,6 +37,11 @@
  * "laptop-unreachable" is deliberately NOT produced here: if the
  * laptop is down nothing runs, so consumers derive it from the age of
  * latest.json (> 2 ticks = > 30 min without a fresh document).
+ *
+ * Argv misuse (a value flag followed by another flag or by nothing, an
+ * unknown flag, or a --cdp-port outside 1-65535) is a usage error naming
+ * the flag: stderr + exit 2 before anything runs — no directory is
+ * created and no document is written (#3469).
  */
 import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -510,15 +515,68 @@ export async function run({
   });
 }
 
-async function main() {
-  const args = process.argv.slice(2);
-  const opt = (name, fallback) => {
-    const i = args.indexOf(name);
-    return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+/** Strict single-pass argv parsing (#3469). Every value-taking flag must be
+ * followed by a value token that is not itself a flag: a flag token (or
+ * nothing) where a value belongs is a usage error naming the flag, raised
+ * before any directory is created or any CDP call is made. The parse is
+ * single-pass — each value token is consumed once — so a flag token can
+ * never double as both a value and a flag. Unknown flags and bare
+ * positionals are usage errors too: silently ignoring them is what used
+ * to redirect output into a directory named after a flag. Throws
+ * ExportError("usage", 2); main() turns it into stderr + exit 2. */
+const VALUE_FLAGS = new Set(["--out-dir", "--cdp-port", "--team-id"]);
+
+function usageError(message) {
+  throw new ExportError("usage", 2, message);
+}
+
+function parseCdpPort(raw) {
+  if (!/^\d+$/.test(raw)) {
+    usageError(`--cdp-port must be a decimal integer in 1-65535 (got ${JSON.stringify(raw)})`);
+  }
+  const port = Number(raw);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    usageError(`--cdp-port must be a decimal integer in 1-65535 (got ${JSON.stringify(raw)})`);
+  }
+  return port;
+}
+
+export function parseArgs(argv) {
+  const values = {};
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i];
+    if (!VALUE_FLAGS.has(token)) {
+      if (token.startsWith("--")) usageError(`unknown flag ${JSON.stringify(token)}`);
+      else usageError(`unexpected argument ${JSON.stringify(token)} (this exporter takes only --flag value pairs)`);
+    }
+    const value = argv[i + 1];
+    if (typeof value !== "string" || value === "" || value.startsWith("--")) {
+      usageError(
+        `${token} requires a value that is not another flag (got ${value === undefined ? "nothing" : JSON.stringify(value)})`,
+      );
+    }
+    values[token] = value;
+    i++; // consume the value: no token is read twice
+  }
+  return {
+    outDir: values["--out-dir"] ?? join(homedir(), "atlas", "meta-quota-export"),
+    cdpPort: parseCdpPort(values["--cdp-port"] ?? "19222"),
+    teamId: values["--team-id"] ?? process.env.META_TEAM_ID ?? DEFAULT_TEAM_ID,
   };
-  const outDir = opt("--out-dir", join(homedir(), "atlas", "meta-quota-export"));
-  const cdpPort = Number(opt("--cdp-port", "19222"));
-  const teamId = opt("--team-id", process.env.META_TEAM_ID ?? DEFAULT_TEAM_ID);
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    if (error instanceof ExportError && error.status === "usage") {
+      console.error(`meta-quota-export: ${error.message}; refusing to run, no output written`);
+      process.exit(2);
+    }
+    throw error;
+  }
+  const { outDir, cdpPort, teamId } = options;
   const outcome = await exportAndWrite({ cdpPort, outDir, teamId });
   if (outcome.exitCode === 0) {
     const { doc } = outcome;
