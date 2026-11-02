@@ -182,6 +182,7 @@ pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
 pub use id_core::discovery;
+mod peer_announcement;
 pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
@@ -279,8 +280,8 @@ pub use commands::{
 };
 pub use discovery::{
     ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,
-    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
-    parse_defaults, resolve_config,
+    MAX_PEERS, MAX_PEER_NAME_BYTES, PeerDiscovery, PeerInfo, ResolvedConfig,
+    STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
 pub use helpers::{
     parse_get_spec, parse_put_spec, print_match_cli, print_match_repl, print_matches_cli,

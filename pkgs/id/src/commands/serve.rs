@@ -79,6 +79,7 @@ use crate::discovery::{
 use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
 use crate::groups::warnings::{Evaluator, Observation, Warning};
 use crate::groups::{Key as GroupKey, Projection};
+use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
@@ -1516,6 +1517,8 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+const MAX_STALE_PROBES_PER_PASS: usize = 4;
+
 /// Background loop for gossip-based peer discovery.
 ///
 /// Runs three concurrent tasks:
@@ -1567,14 +1570,22 @@ async fn run_gossip_loop(
                     .map_or(0, |d| d.as_secs()),
             };
 
-            match postcard::to_allocvec(&announcement) {
-                Ok(bytes) => {
-                    if let Err(e) = sender.broadcast(bytes).await {
-                        debug!("gossip broadcast error: {}", e);
+            match SignedPeerAnnouncement::sign(announcement, &signing_key) {
+                Some(signed) => match signed.encode_frame() {
+                    Ok(bytes) => {
+                        if let Err(e) = sender.broadcast(bytes).await {
+                            debug!("gossip broadcast error: {}", e);
+                        }
                     }
-                }
-                Err(e) => {
-                    debug!("gossip announcement serialization error: {}", e);
+                    Err(e) => {
+                        debug!("gossip announcement serialization error: {}", e);
+                    }
+                },
+                None => {
+                    warn!(
+                        "could not sign peer announcement for endpoint {}",
+                        announce_node_id
+                    );
                 }
             }
 
@@ -1622,22 +1633,16 @@ async fn run_gossip_loop(
                             } else {
                                 debug!("presence heartbeat failed signature verification, dropped");
                             }
+                        } else if let Some(announcement) =
+                            SignedPeerAnnouncement::decode_frame(&msg.content)
+                        {
+                            debug!(
+                                "peer announcement from {}: blob_count={}",
+                                announcement.node_id, announcement.blob_count
+                            );
+                            recv_discovery.update(announcement);
                         } else {
-                            match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
-                            Ok(announcement) => {
-                                debug!(
-                                    "peer announcement from {}: blob_count={}",
-                                    announcement.node_id, announcement.blob_count
-                                );
-                                recv_discovery.update(announcement);
-                            }
-                                Err(e) => {
-                                    debug!(
-                                        "failed to deserialize peer announcement: {}",
-                                        e
-                                    );
-                                }
-                            }
+                            debug!("unauthenticated or invalid peer announcement frame dropped");
                         }
                     }
                     iroh_gossip::api::Event::NeighborUp(peer) => {
@@ -1664,6 +1669,7 @@ async fn run_gossip_loop(
 
     let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(STALE_CHECK_INTERVAL);
+        let mut probe_cursor: Option<EndpointId> = None;
 
         loop {
             interval.tick().await;
@@ -1685,9 +1691,13 @@ async fn run_gossip_loop(
                 continue;
             }
 
-            debug!("probing {} stale peer(s)", stale.len());
+            let batch = select_stale_probe_batch(&stale, probe_cursor, MAX_STALE_PROBES_PER_PASS);
+            if let Some(last) = batch.last() {
+                probe_cursor = Some(last.announcement.node_id);
+            }
+            debug!("probing {} of {} stale peer(s)", batch.len(), stale.len());
 
-            for info in &stale {
+            for info in &batch {
                 let peer_id = info.announcement.node_id;
 
                 // Try to connect and send ListPeers RPC
@@ -1711,16 +1721,14 @@ async fn run_gossip_loop(
                     }
                     Ok(Err(e)) => {
                         debug!("stale peer {} probe failed: {}, removing", peer_id, e);
+                        cleanup_discovery.remove_if_stale(&peer_id, STALE_THRESHOLD);
                     }
                     Err(_) => {
                         debug!("stale peer {} probe timed out, removing", peer_id);
+                        cleanup_discovery.remove_if_stale(&peer_id, STALE_THRESHOLD);
                     }
                 }
             }
-
-            // Remove peers that are still stale (probes that failed/timed out
-            // didn't call refresh(), so they remain past STALE_THRESHOLD)
-            cleanup_discovery.remove_stale(STALE_THRESHOLD);
         }
     });
 
@@ -1732,10 +1740,83 @@ async fn run_gossip_loop(
     }
 }
 
+/// Select a deterministic, bounded round-robin batch from stale peers.
+fn select_stale_probe_batch(
+    stale: &[crate::discovery::PeerInfo],
+    after: Option<EndpointId>,
+    limit: usize,
+) -> Vec<crate::discovery::PeerInfo> {
+    if stale.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let mut ordered = stale.to_vec();
+    ordered.sort_by(|left, right| {
+        left.announcement
+            .node_id
+            .as_bytes()
+            .cmp(right.announcement.node_id.as_bytes())
+    });
+    let start = after.map_or(0, |cursor| {
+        let next = ordered
+            .partition_point(|info| info.announcement.node_id.as_bytes() <= cursor.as_bytes());
+        if next == ordered.len() { 0 } else { next }
+    });
+    (0..limit.min(ordered.len()))
+        .map(|offset| ordered[(start + offset) % ordered.len()].clone())
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn stale_test_peer(seed: u8) -> crate::discovery::PeerInfo {
+        let node_id = iroh_base::SecretKey::from_bytes(&[seed; 32]).public();
+        crate::discovery::PeerInfo {
+            announcement: PeerAnnouncement {
+                node_id,
+                name: None,
+                blob_count: 0,
+                timestamp_secs: unix_now(),
+            },
+            last_seen: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn stale_probe_batches_are_bounded_sorted_and_round_robin() {
+        let mut peers: Vec<_> = (1..=5).map(stale_test_peer).collect();
+        peers.reverse();
+        let mut expected: Vec<_> = peers.iter().map(|peer| peer.announcement.node_id).collect();
+        expected.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+
+        assert_eq!(MAX_STALE_PROBES_PER_PASS, 4);
+        let first = select_stale_probe_batch(&peers, None, 2);
+        let first_ids: Vec<_> = first.iter().map(|peer| peer.announcement.node_id).collect();
+        assert_eq!(first_ids, expected[..2]);
+
+        let second = select_stale_probe_batch(
+            &peers,
+            first.last().map(|peer| peer.announcement.node_id),
+            2,
+        );
+        let second_ids: Vec<_> = second
+            .iter()
+            .map(|peer| peer.announcement.node_id)
+            .collect();
+        assert_eq!(second_ids, expected[2..4]);
+
+        let third = select_stale_probe_batch(
+            &peers,
+            second.last().map(|peer| peer.announcement.node_id),
+            2,
+        );
+        let third_ids: Vec<_> = third.iter().map(|peer| peer.announcement.node_id).collect();
+        assert_eq!(third_ids, vec![expected[4], expected[0]]);
+        assert!(select_stale_probe_batch(&peers, None, 0).is_empty());
+    }
 
     /// A scratch directory unique to this test process.
     fn serve_test_dir(name: &str) -> PathBuf {
