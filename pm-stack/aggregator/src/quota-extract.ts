@@ -153,6 +153,24 @@ function dateTimeCentral(date: string, hhmm: string): string {
   return `${date}T${hhmm}:00${offset}`;
 }
 
+/**
+ * Reset captures (#2470): the hand-maintained quota view can carry an
+ * impossible calendar date or clock time (month 13, Feb 30, day 39,
+ * 99:99). The shared dateTimeCentral conversion validates Gregorian
+ * dates and 24-hour times and throws on those; for a reset the right
+ * outcome is resetsAt: null with the usage window preserved — never
+ * the verbatim invalid string, never a discarded read, and never a
+ * wallLiftsAt derived from a reset that does not exist. Valid captures
+ * flow through the shared conversion unchanged.
+ */
+function resetDateTimeCentral(date: string, hhmm: string): string | null {
+  try {
+    return dateTimeCentral(date, hhmm);
+  } catch {
+    return null;
+  }
+}
+
 function pctWindow(name: string, pct: number, resetsAt: string | null): QuotaWindow {
   const rounded = Math.round(pct * 10) / 10;
   return { name, unit: "other", limit: 100, used: rounded, resetsAt, percent: rounded };
@@ -206,7 +224,7 @@ const extractClaude: Extractor = (s, now) => {
   if (!pct) return null;
   const reset = first(s, /weekly reset \w+ (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/i);
   return {
-    windows: [pctWindow("weekly", Number(pct[1]), reset ? dateTimeCentral(reset[1], reset[2]) : null)],
+    windows: [pctWindow("weekly", Number(pct[1]), reset ? resetDateTimeCentral(reset[1], reset[2]) : null)],
     note: "Freshest dated read in the stewardship quota view; Claude exposes no host-side meter.",
   };
 };
@@ -260,7 +278,7 @@ const extractMeta: Extractor = (s, now) => {
     };
   }
   const reset = first(s, /[Ww]eekly reset (?:today )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/);
-  const resetIso = reset ? dateTimeCentral(reset[1], reset[2]) : null;
+  const resetIso = reset ? resetDateTimeCentral(reset[1], reset[2]) : null;
   const burned = /burned to empty/i.test(s);
   if (resetIso && now.getTime() >= Date.parse(resetIso)) {
     return {
