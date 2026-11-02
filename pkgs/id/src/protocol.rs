@@ -1383,8 +1383,6 @@ mod tests {
     // Handler behaviour against real iroh-blobs + iroh-docs (in memory)
     // ========================================================================
 
-    use crate::local::LocalNode;
-
     async fn put(node: &LocalNode, name: &str, data: &[u8]) -> Hash {
         // A temp tag protects the blob without leaving an `auto-*` tag behind.
         let guard = node
