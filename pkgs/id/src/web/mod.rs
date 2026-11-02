@@ -48,6 +48,7 @@ mod assets;
 mod collab;
 mod content_mode;
 mod explore;
+mod groups;
 mod home;
 mod identity;
 mod markdown;
@@ -171,6 +172,10 @@ pub struct AppState {
     pub world: Option<crate::world_hub::WorldHub>,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
+    /// The resolved group-log path for the read-only `/groups` page
+    /// (`id serve` passes its `--groups-log` resolution); `None` reads
+    /// the default `groups.jsonl`, as the group CLI does.
+    pub groups_log: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -187,6 +192,7 @@ impl std::fmt::Debug for AppState {
             .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
             .field("cookie_secure", &self.cookie_secure)
+            .field("groups_log", &self.groups_log)
             .finish()
     }
 }
@@ -247,6 +253,7 @@ impl AppState {
             local_events,
             world: None,
             cookie_secure: false,
+            groups_log: None,
         })
     }
 }
@@ -313,6 +320,7 @@ fn load_asset_urls() -> AssetUrls {
 /// # Returns
 ///
 /// An Axum router ready to be merged with the serve endpoint.
+#[allow(clippy::too_many_arguments)]
 pub async fn web_router(
     store: Store,
     peers: Option<PeerDiscovery>,
@@ -323,6 +331,7 @@ pub async fn web_router(
     security: WebSecurity,
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
+    groups_log: Option<std::path::PathBuf>,
 ) -> anyhow::Result<Router> {
     let state = AppState::new(
         store,
@@ -333,7 +342,7 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure))
+    Ok(finish_router(state, security, world, cookie_secure, groups_log))
 }
 
 /// Like [`web_router`], but over a caller-opened, shared `local_events` store (see
@@ -349,6 +358,7 @@ pub async fn web_router_with_local_events(
     security: WebSecurity,
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
+    groups_log: Option<std::path::PathBuf>,
     local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
 ) -> anyhow::Result<Router> {
     let state = AppState::with_local_events(
@@ -361,7 +371,7 @@ pub async fn web_router_with_local_events(
         local_events,
     )
     .await?;
-    Ok(finish_router(state, security, world, cookie_secure))
+    Ok(finish_router(state, security, world, cookie_secure, groups_log))
 }
 
 /// Applies the world/cookie settings and the security layer to a built state.
@@ -370,8 +380,10 @@ fn finish_router(
     security: WebSecurity,
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
+    groups_log: Option<std::path::PathBuf>,
 ) -> Router {
     state.world = world;
+    state.groups_log = groups_log;
     state.cookie_secure = cookie_secure;
     let security = WebSecurity {
         cookie_secure,
