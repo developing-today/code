@@ -34,8 +34,13 @@ pub struct WorldCore {
     /// Events committed since the journal last started from a checkpoint.
     pub(crate) since_checkpoint: u64,
     pub(crate) capabilities: HashMap<u64, CapabilityRecord>,
-    /// Recent chat timestamps, pruned to the active rolling window on each send.
-    pub(crate) chat_rates: HashMap<u64, VecDeque<std::time::Instant>>,
+    /// Chat rate limiting as a consumer of the shared #2244 P0-A abuse
+    /// evaluator: one frame bucket per participant (keyed by a
+    /// participant-derived endpoint id), with the historical chat caps
+    /// — a burst of `CHAT_RATE_BURST` refilling over `CHAT_RATE_WINDOW`.
+    pub(crate) chat_abuse: crate::abuse::AbuseEvaluator,
+    /// Monotonic origin used for chat bucket refill timestamps.
+    pub(crate) chat_epoch: std::time::Instant,
     pub(crate) events: VecDeque<WorldEvent>,
     pub(crate) directory: crate::directory::Directory,
     pub(crate) petnames: crate::petname::Petnames,
@@ -44,6 +49,32 @@ pub struct WorldCore {
     /// rebuilt by journal replay and preserved across compaction by the
     /// checkpoint's `transfers` field.
     pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+}
+
+/// The abuse-evaluator policy for world chat: the historical caps
+/// (`CHAT_RATE_BURST` lines per `CHAT_RATE_WINDOW`) expressed as a
+/// token bucket — same burst, same sustained rate.
+fn chat_abuse_policy() -> crate::abuse::AbusePolicy {
+    let limits = crate::abuse::BucketLimits {
+        frames_per_sec: u64::from(CHAT_RATE_BURST) / CHAT_RATE_WINDOW.as_secs().max(1),
+        frame_burst: u64::from(CHAT_RATE_BURST),
+        bytes_per_sec: 0,
+        byte_burst: 0,
+    };
+    crate::abuse::AbusePolicy {
+        authorized: limits,
+        pre_authorization: limits,
+        max_connections_per_peer: usize::MAX,
+    }
+}
+
+/// The evaluator endpoint key for one chat participant: the participant
+/// id in the first eight bytes, zeroes elsewhere. World-local — these
+/// keys never leave the world's own evaluator.
+fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
+    let mut endpoint = [0_u8; 32];
+    endpoint[..8].copy_from_slice(&participant_id.to_be_bytes());
+    endpoint
 }
 
 impl WorldCore {
@@ -86,6 +117,7 @@ impl WorldCore {
         crate::world_caps::validate_ceiling_names(&server_caps)
             .context("server capability ceiling")?;
         let grant_on_use = limits.grant_on_use;
+        let chat_epoch = clock.now_instant();
         let mut core = Self {
             world_id,
             limits,
@@ -106,7 +138,8 @@ impl WorldCore {
             file_write_override: false,
             since_checkpoint: 0,
             capabilities: HashMap::new(),
-            chat_rates: HashMap::new(),
+            chat_abuse: crate::abuse::AbuseEvaluator::new(chat_abuse_policy(), [0; 32]),
+            chat_epoch,
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
@@ -1091,26 +1124,22 @@ impl WorldCore {
         );
         let text = sanitize_chat(text);
         ensure!(!text.is_empty(), "chat message must not be empty");
-        let now = self.clock().now_instant();
-        self.chat_rates.retain(|_, sent| {
-            while sent
-                .front()
-                .is_some_and(|at| now.duration_since(*at) >= CHAT_RATE_WINDOW)
-            {
-                sent.pop_front();
-            }
-            !sent.is_empty()
-        });
-        let current = self.chat_rates.get(&participant_id);
-        ensure!(
-            current.is_none_or(|sent| sent.len() < usize::from(CHAT_RATE_BURST)),
-            "chat rate exceeded; try again later"
-        );
+        // Consume one token from the participant's shared-bucket frame
+        // allowance; a refusal is the structured #2244 refusal (reason +
+        // bounded retry value), not prose.
+        let now_ms = u64::try_from(
+            self.clock()
+                .now_instant()
+                .saturating_duration_since(self.chat_epoch)
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
+        self.chat_abuse.prune_idle_endpoints(now_ms);
+        self.chat_abuse.prune_counters(now_ms, 60 * 60 * 1_000);
+        self.chat_abuse
+            .check_frame(chat_endpoint(participant_id), true, now_ms)
+            .map_err(crate::abuse::RefusalError::from)?;
         let event = self.commit(participant_id, WorldEventKind::Chat(text))?;
-        self.chat_rates
-            .entry(participant_id)
-            .or_default()
-            .push_back(now);
         Ok(event)
     }
 

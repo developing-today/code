@@ -57,6 +57,9 @@ pub trait SessionIo: Send {
     fn recv(&mut self) -> impl Future<Output = Inbound> + Send;
     /// Send one frame. Returns `false` when the peer is gone.
     fn send(&mut self, frame: String) -> impl Future<Output = bool> + Send;
+    /// Mark this session authorized after its application-level
+    /// capability or admin credential has been validated.
+    fn mark_authorized(&mut self) {}
 }
 
 /// Tunables for [`run_session_with`].

@@ -819,6 +819,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
+            io.mark_authorized();
             let worlds = hub.list();
             let _ = send_json(
                 &unattributed,
@@ -836,6 +837,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
+            io.mark_authorized();
             let name = world.as_deref().unwrap_or_else(|| hub.default_world());
             match hub.create(name).await {
                 Ok(created) => {
@@ -865,6 +867,9 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
             return;
         }
     };
+    if admin.is_some_and(|token| lease.service().authorize_admin(Some(token)).is_ok()) {
+        io.mark_authorized();
+    }
     if let ClientFrame::SetIsolation {
         isolation,
         admin_token,
@@ -881,6 +886,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         .await
         {
             Ok(isolation) => {
+                io.mark_authorized();
                 let _ = send_json(
                     lease.service().frame_meter(),
                     io,
@@ -900,6 +906,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     if let Some(result) = policy_frame(hub, &lease, &frame).await {
         match result {
             Ok(policy) => {
+                io.mark_authorized();
                 let _ = send_json(
                     lease.service().frame_meter(),
                     io,
@@ -1172,6 +1179,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             if service.world().participant_id(token).await.is_err() {
                 let _ = send_error(service.frame_meter(), io, "join denied").await;
             } else {
+                io.mark_authorized();
                 match service.world().caps_report().await {
                     Ok(report) => {
                         let _ = send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
@@ -1476,6 +1484,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             ClientFrame::Info { capability } => {
                 let token = JoinCapability::from_wire(capability);
                 if let Ok(snapshot) = service.world().snapshot(token).await {
+                    io.mark_authorized();
                     if !send_json(
                         service.frame_meter(),
                         io,
@@ -1500,24 +1509,28 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 // that snapshots the world is enough to read its metrics.
                 let token = JoinCapability::from_wire(capability);
                 match service.world().snapshot(token).await {
-                    Ok(_) => match service.world().metrics().await {
-                        Ok(metrics) => {
-                            if !send_json(
-                                service.frame_meter(),
-                                io,
-                                &ServerFrame::Metrics { metrics },
-                            )
-                            .await
-                            {
+                    Ok(_) => {
+                        io.mark_authorized();
+                        match service.world().metrics().await {
+                            Ok(metrics) => {
+                                if !send_json(
+                                    service.frame_meter(),
+                                    io,
+                                    &ServerFrame::Metrics { metrics },
+                                )
+                                .await
+                                {
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                let _ =
+                                    send_error(service.frame_meter(), io, &format!("{error:#}"))
+                                        .await;
                                 return;
                             }
                         }
-                        Err(error) => {
-                            let _ =
-                                send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-                            return;
-                        }
-                    },
+                    }
                     Err(_) => {
                         let _ = send_error(service.frame_meter(), io, "join denied").await;
                         return;
@@ -1530,6 +1543,9 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 after,
             } => {
                 let token = JoinCapability::from_wire(capability);
+                if service.world().participant_id(token.clone()).await.is_ok() {
+                    io.mark_authorized();
+                }
                 if let Err(message) = records_session(
                     service.frame_meter(),
                     service.world(),
@@ -1550,6 +1566,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                     let _ = send_error(service.frame_meter(), io, "join denied").await;
                     return;
                 }
+                io.mark_authorized();
                 match records_ticket_session(service, io).await {
                     Ok(()) => {}
                     Err(message) => {
@@ -1567,6 +1584,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                     let _ = send_error(service.frame_meter(), io, "join denied").await;
                     return;
                 }
+                io.mark_authorized();
                 if let Err(message) = download_module_session(service, io, &module_hash).await {
                     let _ = send_error(service.frame_meter(), io, message).await;
                     return;
@@ -1888,6 +1906,7 @@ async fn joined<I: SessionIo>(
         let _ = send_error(service.frame_meter(), io, "join denied").await;
         return;
     };
+    io.mark_authorized();
     let mut cursor = snapshot.current_sequence;
     let mut viewport = None;
     let mut view_state = ViewRevisionState::default();
