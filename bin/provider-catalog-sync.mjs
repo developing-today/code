@@ -42,6 +42,13 @@
 // merged effective config (default + overlay; --runtime-config) and skips
 // the sync-owned providers on --apply; sync-models owns their writes.
 //
+// Config resolution (#4588): this tool's target is the tracked configured
+// default — an explicit --config wins, then OPENCODE_CATALOG_SYNC_CONFIG,
+// then <repo>/.opencode/opencode.jsonc. OPENCODE_CONFIG_PATH is never the
+// target: it is sync-models' variable and since #4544 it names the runtime
+// overlay, which this tool only reads (via --runtime-config) to compute the
+// merged effective config.
+//
 // Sources: laptop proxies are enumerated over HTTP on 127.0.0.1 (run this on
 // the laptop, or pass --source-dir with <port>.json snapshots for an offline
 // reproducible run). models.dev is a cross-check for every provider and the
@@ -817,6 +824,18 @@ export function parseArgs(argv) {
   return { options, flags };
 }
 
+// Resolution order for the catalog target (#4588): explicit --config,
+// then the catalog-sync-specific OPENCODE_CATALOG_SYNC_CONFIG, then the
+// tracked configured default. OPENCODE_CONFIG_PATH is deliberately not
+// consulted — since #4544 it names the runtime overlay (sync-models' file).
+export function resolveConfigPath({ options, env, root }) {
+  return (
+    options['--config'] ??
+    env.OPENCODE_CATALOG_SYNC_CONFIG ??
+    path.join(root, '.opencode', 'opencode.jsonc')
+  );
+}
+
 async function main(argv) {
   const { options, flags } = parseArgs(argv);
   if (flags.has('--help')) {
@@ -825,8 +844,7 @@ async function main(argv) {
   }
   const opt = (name, dflt) => options[name] ?? dflt;
   const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
-  const configPath =
-    process.env.OPENCODE_CONFIG_PATH || opt('--config', path.join(root, '.opencode', 'opencode.jsonc'));
+  const configPath = resolveConfigPath({ options, env: process.env, root });
   const runtimeConfigPath = opt(
     '--runtime-config',
     process.env.OPENCODE_RUNTIME_CONFIG ||
