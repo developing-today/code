@@ -55,10 +55,6 @@ export function parseChargeCandidates(raw: unknown): ChargeCandidate[] {
   return out;
 }
 
-function squash(normalized: string): string {
-  return normalized.replace(/\s+/g, "");
-}
-
 function daysBetween(a: string, b: string): number {
   const ms = Math.abs(Date.parse(a) - Date.parse(b));
   return Math.floor(ms / 86_400_000);
@@ -67,41 +63,52 @@ function daysBetween(a: string, b: string): number {
 /**
  * Does a hand-fed row describe the same charge as an auto-matched
  * row? Same amount, dates within the matcher's dedupe window, and
- * merchant/label token strings that contain one another once
- * squashed ("Meta PAYG spill" vs "METAPAY" both squash around
- * METAPAY). Conservative: a hand-fed row is only dropped when an
- * auto row plausibly IS that charge.
+ * merchant/label token sequences that contain one another at whole-
+ * token boundaries ("Meta PAYG spill" still matches the "Meta" alias
+ * of a METAPAY charge). Conservative: a hand-fed row is only dropped
+ * when an auto row plausibly IS that charge.
  */
 /**
- * Every squashed spelling a label answers to: its own, plus the
+ * Every token spelling a label answers to: its own, plus the
  * canonical provider name and merchant aliases of its alias group
  * when the label names one of them. Canonicalizing a matched label
  * (the charge catalog's "Meta Model API" for a METAPAY charge) must
- * not break deduplication against hand-fed rows written under the
- * merchant spelling ("Meta PAYG spill" squashes around METAPAY, an
- * alias of the canonical name) -- without the group expansion the
- * same charge lands in the feed twice (Codex review, PR #3168).
+ * not break deduplication against hand-fed rows written under one of
+ * its merchant aliases ("Meta PAYG spill" contains the whole-token
+ * alias "Meta") -- without group expansion the same charge lands in
+ * the feed twice (Codex review, PR #3168).
  */
-function labelSquashes(label: string): string[] {
-  const base = squash(normalizeMerchantName(label));
-  if (!base) return [];
-  const out = new Set<string>([base]);
+function labelTokenSequences(label: string): string[][] {
+  const normalized = normalizeMerchantName(label);
+  if (!normalized) return [];
+  const base = normalized.split(" ");
+  const out = new Map<string, string[]>([[normalized, base]]);
   for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
-    const group = [canonical, ...aliases].map((n) => squash(normalizeMerchantName(n)));
-    if (group.includes(base)) {
-      for (const g of group) out.add(g);
+    const group = [canonical, ...aliases]
+      .map((name) => normalizeMerchantName(name))
+      .filter(Boolean);
+    if (group.includes(normalized)) {
+      for (const name of group) out.set(name, name.split(" "));
     }
   }
-  return [...out];
+  return [...out.values()];
+}
+
+function containsTokenSequence(tokens: string[], sequence: string[]): boolean {
+  if (!sequence.length || sequence.length > tokens.length) return false;
+  for (let start = 0; start <= tokens.length - sequence.length; start++) {
+    if (sequence.every((token, offset) => tokens[start + offset] === token)) return true;
+  }
+  return false;
 }
 
 function sameCharge(handFed: ChargeRow, auto: ChargeRow): boolean {
   if (handFed.amountUsd !== auto.amountUsd) return false;
   if (daysBetween(handFed.at, auto.at) > DEDUPE_WINDOW_DAYS) return false;
-  const aSet = labelSquashes(handFed.label);
-  const bSet = labelSquashes(auto.label);
+  const aSet = labelTokenSequences(handFed.label);
+  const bSet = labelTokenSequences(auto.label);
   if (!aSet.length || !bSet.length) return false;
-  return aSet.some((a) => bSet.some((b) => a.includes(b) || b.includes(a)));
+  return aSet.some((a) => bSet.some((b) => containsTokenSequence(a, b) || containsTokenSequence(b, a)));
 }
 
 /**
