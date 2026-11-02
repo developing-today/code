@@ -732,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_refuses_issued_scopes_naming_no_scope() {
+    fn test_restore_refuses_issued_scopes_naming_no_scope() {
         // 0x80 names no scope; from_bits rejects the whole byte.
         let error = restore_with_scopes(0x87).unwrap_err();
         assert!(
@@ -746,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_refuses_issued_scopes_without_join() {
+    fn test_restore_refuses_issued_scopes_without_join() {
         for scopes in [0, WorldScopes::CHAT.0, WorldScopes::INPUT.0] {
             let error = restore_with_scopes(scopes).unwrap_err();
             assert!(
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_accepts_guest_and_admin_bit_scopes() {
+    fn test_restore_accepts_guest_and_admin_bit_scopes() {
         for scopes in [
             WorldScopes::GUEST.0,
             WorldScopes::JOIN.0 | WorldScopes::BUILDER.0,
