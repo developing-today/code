@@ -110,6 +110,43 @@ test('rejects empty, misplaced, and stale exception markers', () => {
   assert.ok(issues.some((issue) => issue.includes('metered provider "deepseek"')));
 });
 
+test('rejects metered providers in top-level model_routes when no experimental map exists', () => {
+  const config = `{
+    "model": "opencode-route/workhorse",
+    "model_routes": {
+      "workhorse": { "targets": ["deepseek/deepseek-chat"] },
+    },
+  }`;
+  const issues = checkConfig(config);
+  assert.equal(issues.length, 1);
+  assert.ok(issues[0].includes('$.model_routes.workhorse.targets[0]'));
+  assert.match(issues[0], /deepseek/);
+});
+
+test('rejects a PAYG provider selected through a top-level provider route', () => {
+  const config = `{
+    "provider_routes": { "payg": { "providers": ["deepseek"] } },
+  }`;
+  const issues = checkConfig(config);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0], /provider-route/);
+  assert.ok(issues[0].includes('$.provider_routes.payg.providers[0]'));
+});
+
+test('experimental route maps take precedence over top-level ones, mirroring the runtime fallback', () => {
+  const config = `{
+    "model_routes": {
+      "workhorse": { "targets": ["deepseek/deepseek-chat"] },
+    },
+    "experimental": {
+      "model_routes": {
+        "workhorse": { "targets": ["openai/gpt-6"] },
+      },
+    },
+  }`;
+  assert.deepEqual(checkConfig(config), []);
+});
+
 test('canonical OpenCode config passes the static guard', async () => {
   const { readFile } = await import('node:fs/promises');
   const { resolve } = await import('node:path');

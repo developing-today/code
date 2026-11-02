@@ -242,7 +242,15 @@ export function inspectConfig(source) {
   };
 
   const experimental = property(root, 'experimental');
-  walkModelRoutes(property(experimental, 'model_routes'), '$.experimental.model_routes');
+  // Mirror the route proxy's fallback (bin/opencode-route-proxy.mjs): the
+  // experimental map wins when present, otherwise the top-level map is the
+  // active runtime input and must be guarded too.
+  const modelRoutes = property(experimental, 'model_routes');
+  if (modelRoutes?.type === 'object' || modelRoutes?.type === 'array') {
+    walkModelRoutes(modelRoutes, '$.experimental.model_routes');
+  } else {
+    walkModelRoutes(property(root, 'model_routes'), '$.model_routes');
+  }
 
   const walkProviderRoutes = (node, path) => {
     if (node?.type === 'array') {
@@ -255,7 +263,12 @@ export function inspectConfig(source) {
       });
     }
   };
-  walkProviderRoutes(property(experimental, 'provider_routes'), '$.experimental.provider_routes');
+  const providerRoutes = property(experimental, 'provider_routes');
+  if (providerRoutes?.type === 'object' || providerRoutes?.type === 'array') {
+    walkProviderRoutes(providerRoutes, '$.experimental.provider_routes');
+  } else {
+    walkProviderRoutes(property(root, 'provider_routes'), '$.provider_routes');
+  }
 
   const markerComments = comments.filter((comment) => /payg-exception/i.test(comment.text));
   const markers = markerComments.map((comment) => {
