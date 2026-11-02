@@ -27,6 +27,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function startStubServe(script) {
   const calls = [];
   const sseClients = new Set();
+  let nextSessionNumber = 1;
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
@@ -51,14 +52,17 @@ function startStubServe(script) {
         return;
       }
       if (req.method === 'POST' && url.pathname === '/session') {
+        const sessionId = nextSessionNumber === 1 ? SESSION_ID : `${SESSION_ID}_${nextSessionNumber}`;
+        nextSessionNumber += 1;
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ id: SESSION_ID, directory: url.searchParams.get('directory') }));
+        res.end(JSON.stringify({ id: sessionId, directory: url.searchParams.get('directory') }));
         return;
       }
-      if (req.method === 'POST' && url.pathname === `/session/${SESSION_ID}/prompt_async`) {
+      const promptMatch = url.pathname.match(/^\/session\/([^/]+)\/prompt_async$/);
+      if (req.method === 'POST' && promptMatch) {
         res.writeHead(204);
         res.end();
-        setImmediate(() => script(emit, body));
+        setImmediate(() => script(emit, body, promptMatch[1]));
         return;
       }
       if (req.method === 'POST' && /\/permissions\//.test(url.pathname)) {
@@ -66,10 +70,11 @@ function startStubServe(script) {
         res.end('true');
         return;
       }
-      if (req.method === 'POST' && url.pathname === `/session/${SESSION_ID}/abort`) {
+      const abortMatch = url.pathname.match(/^\/session\/([^/]+)\/abort$/);
+      if (req.method === 'POST' && abortMatch) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('true');
-        emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+        emit({ type: 'session.idle', properties: { sessionID: abortMatch[1] } });
         return;
       }
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -206,6 +211,101 @@ test('session/prompt streams serve SSE parts as session/update and completes on 
     .filter((n) => n.method === 'session/update' && n.params.update.sessionUpdate === 'agent_message_chunk')
     .map((n) => n.params.update.content.text);
   assert.equal(chunks.join(''), 'Hello world');
+});
+
+test('finishing one prompt preserves another session streamed-text offset', async (t) => {
+  let releaseSessionA;
+  let releaseSessionB;
+  let sessionAStarted;
+  let sessionBStarted;
+  const sessionAReady = new Promise((resolve) => {
+    sessionAStarted = resolve;
+  });
+  const sessionBReady = new Promise((resolve) => {
+    sessionBStarted = resolve;
+  });
+  const finishSessionA = new Promise((resolve) => {
+    releaseSessionA = resolve;
+  });
+  const finishSessionB = new Promise((resolve) => {
+    releaseSessionB = resolve;
+  });
+  const script = async (emit, _body, sessionId) => {
+    if (sessionId === SESSION_ID) {
+      emit({
+        type: 'message.part.updated',
+        properties: {
+          part: { id: 'part-a', sessionID: sessionId, type: 'text', text: 'A' },
+          delta: 'A',
+        },
+      });
+      sessionAStarted();
+      await finishSessionA;
+      emit({ type: 'session.idle', properties: { sessionID: sessionId } });
+      return;
+    }
+
+    emit({
+      type: 'message.part.updated',
+      properties: { part: { id: 'part-b', sessionID: sessionId, type: 'text', text: 'Hello' } },
+    });
+    sessionBStarted();
+    await finishSessionB;
+    emit({
+      type: 'message.part.updated',
+      properties: {
+        part: { id: 'part-b', sessionID: sessionId, type: 'text', text: 'Hello world' },
+      },
+    });
+    emit({ type: 'session.idle', properties: { sessionID: sessionId } });
+  };
+  const { acp } = await setup(t, script);
+
+  const sessionA = await acp.request('session/new', { cwd: '/tmp/a', mcpServers: [] });
+  const promptA = acp.request('session/prompt', {
+    sessionId: sessionA.sessionId,
+    prompt: [{ type: 'text', text: 'session A' }],
+  });
+  await sessionAReady;
+  await acp.waitFor(
+    () =>
+      acp.notifications.some(
+        (n) =>
+          n.method === 'session/update' &&
+          n.params.sessionId === sessionA.sessionId &&
+          n.params.update.content.text === 'A',
+      ),
+    'session A text chunk',
+  );
+
+  const sessionB = await acp.request('session/new', { cwd: '/tmp/b', mcpServers: [] });
+  const promptB = acp.request('session/prompt', {
+    sessionId: sessionB.sessionId,
+    prompt: [{ type: 'text', text: 'session B' }],
+  });
+  await sessionBReady;
+  await acp.waitFor(
+    () =>
+      acp.notifications.some(
+        (n) =>
+          n.method === 'session/update' &&
+          n.params.sessionId === sessionB.sessionId &&
+          n.params.update.content.text === 'Hello',
+      ),
+    'session B first text chunk',
+  );
+
+  releaseSessionA();
+  assert.equal((await promptA).stopReason, 'end_turn');
+  releaseSessionB();
+  assert.equal((await promptB).stopReason, 'end_turn');
+
+  const sessionBChunks = acp.notifications
+    .filter(
+      (n) => n.method === 'session/update' && n.params.sessionId === sessionB.sessionId,
+    )
+    .map((n) => n.params.update.content.text);
+  assert.deepEqual(sessionBChunks, ['Hello', ' world']);
 });
 
 test('serve permission events round-trip through session/request_permission', async (t) => {
