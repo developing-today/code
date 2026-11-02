@@ -16,6 +16,7 @@ import {
   caiFamily,
   aaSectionFromSupabase,
   computeAaCoverage,
+  effortRank,
   isAaSection,
   normalizeModelName,
   parseOpencodeCoverageInputs,
@@ -764,5 +765,56 @@ describe("AA_GO_CAPS keys are reachable (#2645)", () => {
     expect(catalog!.find((e) => e.id === "opencode-go/muse-spark-1.3-contributor")!.goCapUsd).toBe(12);
     expect(catalog!.find((e) => e.id === "opencode-go/gemini-4-argon-contributor")!.goCapUsd).toBe(12);
     expect(catalog!.find((e) => e.id === "opencode-go/deepseek-v4.1-flash")!.goCapUsd).toBe(80);
+  });
+});
+
+describe("prototype-key lookups in aa maps (#3056)", () => {
+  test("effortRank: prototype names take the unknown fallback, known ranks unchanged", () => {
+    expect(effortRank("constructor")).toBe(50);
+    expect(effortRank("__proto__")).toBe(50);
+    expect(effortRank("toString")).toBe(50);
+    expect(effortRank("high")).toBe(3);
+    expect(effortRank("max")).toBe(5);
+    expect(effortRank("something-else")).toBe(50);
+    expect(effortRank(null)).toBe(99);
+  });
+
+  test("catalog: prototype-named provider gets no plan facts; prototype-named Go model gets no cap", () => {
+    const cfg = `{ "provider": {
+      "constructor": { "name": "Constructor Provider", "models": { "some-model": { "name": "Some Model" } } },
+      "opencode-go.lab": { "name": "OpenCode Go \u2014 Lab", "models": {
+        "constructor": { "name": "Constructor" },
+        "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
+      } },
+    } }`;
+    const catalog = aaCatalogFromConfig(cfg, { configs: [], rankings: [] });
+    expect(catalog).not.toBeNull();
+    const proto = catalog!.find((e) => e.id === "constructor/some-model")!;
+    expect(proto.plan).toBeNull();
+    expect(proto.multiplier).toBeNull();
+    expect(proto.planNote).toBeNull();
+    const ctor = catalog!.find((e) => e.id === "opencode-go.lab/constructor")!;
+    expect(ctor.goCapUsd).toBeNull();
+    const ds = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
+    expect(ds.goCapUsd).toBe(80); // known Go cap unchanged
+  });
+
+  test("CAI creator: prototype slugs fall back to the slug; known creators still map", () => {
+    const caiRow = (creatorSlug: string) => ({
+      modelName: "Model X",
+      creatorSlug,
+      effort: "max",
+      version: "v1",
+      score: "10",
+      cost: "1",
+      wallSec: "60",
+    });
+    const section = aaSectionFromSupabase(
+      { ...rawPayload(), cai: [caiRow("constructor"), caiRow("__proto__"), caiRow("deepseek"), caiRow("acme")] },
+      null,
+      "2026-10-26T18:05:00Z",
+    );
+    expect(section).not.toBeNull();
+    expect(section!.cai!.map((r) => r.creator)).toEqual(["constructor", "__proto__", "DeepSeek", "acme"]);
   });
 });
