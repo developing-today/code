@@ -85,6 +85,7 @@ fn commonmark_options() -> Options<'static> {
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
     options.extension.table = true;
+    options.extension.autolink = true; // #998: bare URLs/emails become links
     options.extension.footnotes = true;
     options.extension.front_matter_delimiter = Some("---".to_owned());
     options.parse.smart = false; // Don't convert quotes/dashes
@@ -2312,6 +2313,10 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     // long as the opener — a shorter fence line inside a longer
     // fence is literal content, not the end of the block (#1707).
     let mut fence: Option<(u8, usize)> = None;
+    // Whether the current line is a fence line (opens, closes, or is
+    // checked against an open fence): its backticks are fence syntax,
+    // never an inline code span opener.
+    let mut fence_line = false;
     // The open inline code span's backtick run length, when inside
     // one: span content is literal text, so a destination-shaped
     // string inside it must not be protected (#1707).
@@ -2342,11 +2347,13 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             } else {
                 None
             };
+            let was_in_fence = fence.is_some();
             match (fence, fence_run) {
                 (None, Some(open)) => fence = Some(open),
                 (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
                 _ => {}
             }
+            fence_line = fence_run.is_some() && (was_in_fence || fence.is_some());
             // An indented code block starts on a 4+ indented line
             // after a blank line (or at the start, or continuing an
             // indented block); a 4+ indented line inside a paragraph
@@ -2355,7 +2362,7 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
             prev_line_blank = line_blank;
         }
-        let literal_line = fence.is_some() || in_indented;
+        let literal_line = fence.is_some() || in_indented || fence_line;
         if !literal_line && span.is_none() && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
             let lt = if markdown[i..].starts_with("](<") {
                 i + 2
@@ -5234,11 +5241,32 @@ fn build_mark_chain<'a>(
 
 /// Convert plain text to `ProseMirror` JSON document.
 ///
-/// Each line becomes a paragraph.
+/// Each line becomes a paragraph. The split is on the newline
+/// character (not `str::lines`), so a trailing newline yields a final
+/// empty paragraph and the save side (`extract_plain_text`, which joins
+/// paragraphs with a newline) reproduces it exactly: no-edit open/save
+/// is byte-stable for the trailing newline (#1307). A carriage return
+/// left by a CRLF ending is stripped, but only from segments the newline
+/// actually terminated: a lone trailing CR is content and survives. CRLF
+/// files are normalized to LF on save, with their trailing-newline state
+/// preserved (Raw mode stays byte-exact).
 #[must_use]
 pub fn plain_text_to_prosemirror(text: &str) -> Value {
-    let paragraphs: Vec<Value> = text
-        .lines()
+    let segments: Vec<&str> = text.split('\n').collect();
+    let last = segments.len() - 1;
+    let paragraphs: Vec<Value> = segments
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            // Only a segment actually terminated by '\n' can carry the
+            // CR of a CRLF ending; the final segment keeps a lone
+            // trailing CR verbatim (Codex finding on PR #4613).
+            if i < last {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            }
+        })
         .map(|line| {
             if line.is_empty() {
                 json!({"type": "paragraph"})
@@ -5473,6 +5501,73 @@ mod tests {
             assert_eq!(first, original, "first save for {original:?}");
             assert_eq!(first, second, "no fixpoint for {original:?}");
         }
+    }
+
+    #[test]
+    fn test_bare_url_becomes_link_mark() {
+        // #998: with the autolink extension enabled, a bare URL parses
+        // to a text node carrying a link mark, like the angle form.
+        let doc = markdown_to_prosemirror("visit https://example.com/path?a=1 now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare URL has no link mark");
+        let link_mark = link_text.unwrap()["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(
+            link_mark["attrs"]["href"],
+            "https://example.com/path?a=1"
+        );
+    }
+
+    #[test]
+    fn test_bare_email_becomes_link_mark() {
+        // #998: a bare email address autolinks with a mailto: href.
+        let doc = markdown_to_prosemirror("mail me@example.com today");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare email has no link mark");
+        let link = link_text.unwrap();
+        assert_eq!(link["text"], "me@example.com");
+        let link_mark = link["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(link_mark["attrs"]["href"], "mailto:me@example.com");
+    }
+
+    #[test]
+    fn test_bare_url_fixpoint_and_code_span_negative() {
+        // #998: a bare URL round-trips to a stable fixpoint, and a URL
+        // inside a code span stays literal text with no link mark.
+        let (first, second) = two_saves("visit https://example.com/path?a=1 now\n");
+        assert_eq!(first, second, "no fixpoint for bare URL");
+        assert!(
+            first.contains("https://example.com/path?a=1"),
+            "URL lost in save: {first:?}"
+        );
+
+        let doc = markdown_to_prosemirror("run `https://example.com` now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let has_link = para_content.iter().any(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(!has_link, "code-span URL must not carry a link mark");
     }
 
     #[test]

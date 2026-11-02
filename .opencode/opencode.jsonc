@@ -3549,6 +3549,129 @@
       // Per-model pools join every plan provider serving a model; tier pools nest them.
       // Plan routes only. (The DeepSeek PAYG reserve that used to tail the
       // deepseek-flash route was removed 2026-10-27 — see that route.)
+      // Design-code personas (2026-11-02, opencode#1413): the 11 virtual
+      // personas of bin/design-code-proxy.mjs (:18746) carried as routes —
+      // each persona id is the route name, its recipe (primary then
+      // fallback, ordered) is the target list, and the door's injected
+      // design system prompt is the route's `system` (fork support:
+      // opencode#1413 persona-routes PR; the prompt leads any caller
+      // system text, exactly as the door composed it). Antigravity legs
+      // sit on antigravity-direct (:18751) per the #1409 repoint
+      // (code#4626); codex legs on openai-codex (:18744). The door's
+      // keyword fallback for unknown gpt/codex-shaped ids has no route
+      // equivalent and is not carried: unknown ids fail selection
+      // cleanly, as they did at the door (400) via the façade envelope.
+
+      "claude-haiku-5.5": {
+        "name": "Claude Haiku 5.5 (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/claude-sonnet-5-5",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "gpt-6-luna": {
+        "name": "GPT-6 Luna (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6-luna",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "gpt-6.1-sol": {
+        "name": "GPT-6.1 Sol (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6.1-sol",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "deepseek-v4.1-flash": {
+        "name": "DeepSeek V4.1 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "glm-5.3-flash": {
+        "name": "GLM 5.3 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "glm-5.3-flashx": {
+        "name": "GLM 5.3 FlashX (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "mimo-v2.6-flash": {
+        "name": "MIMO v2.6 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "mimo-v2.6-pro": {
+        "name": "MIMO v2.6 Pro (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-6.1-sol"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "design-code-pro": {
+        "name": "Design Code Pro",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-6.1-sol"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "design-code-flash": {
+        "name": "Design Code Flash",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "open-design-pro": {
+        "name": "Open Design Pro",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6.1-sol",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "deepseek-flash-plan": {
         "name": "DeepSeek Flash - plan providers",
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
