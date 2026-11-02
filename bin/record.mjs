@@ -37,7 +37,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_TARGET = path.join(
   os.homedir(),
@@ -203,10 +203,21 @@ const main = async () => {
   process.exit(0);
 };
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
-) {
+// Entry-point check: compare realpaths, not the raw strings (#2235;
+// same pattern as proxy-supervise.mjs / #2083). process.argv[1] keeps the
+// path exactly as invoked (e.g. through a file or directory symlink)
+// while import.meta.url is the resolved module URL, so a string compare
+// silently never matches and main() never runs via a symlink.
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   main();
 }
 
