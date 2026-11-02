@@ -99,6 +99,19 @@ describe("buildItemBrief", () => {
     expect(brief.lastActivity.at).toBe("2026-10-30T10:00:00Z");
     expect(brief.lastActivity.evidence?.url).toBe("https://example.test/c2");
     expect(brief.nextAction.text).toContain("in-flight");
+    expect(brief.state.evidence.url).toBe("/api/orchestration.json");
+  });
+
+  test("invalid orchestration source keeps an open item's derived state unknown", () => {
+    const it = item({ number: 19 });
+    const brief = buildItemBrief(it, {
+      orchestration: orchestrationWith(it.ref),
+      orchestrationStatus: "invalid",
+    });
+    expect(brief.state.value).toBe("Unknown");
+    expect(brief.state.text).toContain("invalid");
+    expect(brief.state.evidence.url).toBe("/api/health");
+    expect(brief.nextAction.text).toContain("Check the orchestration source");
   });
 
   test("idle item with no activity: unknowns render as unknown", () => {

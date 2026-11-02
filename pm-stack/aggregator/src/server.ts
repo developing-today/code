@@ -148,6 +148,11 @@ function pickSource(): Source {
 
 const source = pickSource();
 
+// #1279: prefer the latest-comment-per-ref read so a busy batch cannot
+// truncate an item's most recent activity out of its brief.
+const briefCommentsFor = async (refs: RefKey[]): Promise<Comment[]> =>
+  (source.latestComments ? source.latestComments(refs) : source.comments(refs)).catch(() => []);
+
 /**
  * #1267: the live source populates its provenance strings lazily, one
  * facet per method call — so a consumer that reads provenance()
@@ -381,7 +386,7 @@ async function roadmapContext() {
   // available — an unavailable source must not render as "no epic yet".
   const drill =
     reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
-  return { rows, items, reconciliation, drill };
+  return { rows, items, pool: poolResult.pool, reconciliation, drill };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -424,7 +429,12 @@ async function attentionContext() {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
-  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
+  return {
+    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    coverage,
+    orchestration: summary,
+    diagnosis,
+  };
 }
 
 /**
@@ -449,16 +459,25 @@ function sseResponse(body: string): Response {
 /** The render inputs the board page and its fragment share. */
 async function boardRender() {
   const { board, items } = await boardContext();
-  const [pool, formOpts, actionsByObject, counts] = await Promise.all([
+  const [pool, orchestration, formOpts, actionsByObject, counts] = await Promise.all([
     source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.countsDetailed(),
   ]);
+  const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+  const refs = [
+    ...new Set(board.flatMap((item) => item.links.map((link) => link.ref)).filter((ref) => poolByRef.has(ref))),
+  ];
+  const comments = refs.length ? await briefCommentsFor(refs) : [];
+  const orchestrationStatus = source.diagnostics?.().orchestration.state;
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus });
   const act = {
     actionsByObject,
-    poolByRef: new Map(pool.map((p) => [p.ref, p])),
+    poolByRef,
     identities: formOpts.identities,
+    briefs,
   };
   return { board, items, counts, act };
 }
@@ -467,8 +486,9 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage } = await attentionContext();
-  const [formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
+  const { view, coverage, orchestration, diagnosis } = await attentionContext();
+  const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
+    source.projects().catch(() => []),
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.byObject(),
@@ -476,6 +496,11 @@ async function attentionRender() {
     actionsStore.all(),
   ]);
   const order = effectiveNeedsOrder(allActions);
+  const refs = [
+    ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
+  ];
+  const comments = refs.length ? await briefCommentsFor(refs) : [];
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state });
   const act = {
     actionsByObject,
     identities: formOpts.identities,
@@ -484,7 +509,7 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act };
+  return { view, coverage, counts, act, briefs };
 }
 
 async function todayContext() {
@@ -951,7 +976,18 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/roadmap") {
-    const { rows, items, reconciliation, drill } = await roadmapContext();
+    const { rows, items, pool, reconciliation, drill } = await roadmapContext();
+    const orchestration = await source.orchestration().catch(() => null);
+    const orchestrationStatus = source.diagnostics?.().orchestration.state;
+    const poolRefs = new Set(pool.map((item) => item.ref));
+    const briefRefs = [
+      ...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref)))),
+    ];
+    const briefs = buildBriefs(pool, {
+      comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
+      orchestration,
+      orchestrationStatus,
+    });
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -968,10 +1004,9 @@ async function handler(req: Request): Promise<Response> {
       );
     if (!resolved) {
       return html(
-        renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(rows), viewQuery),
+        renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(rows), viewQuery, briefs),
       );
     }
-    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     const keptRows = rows.filter((r) =>
       linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
@@ -987,7 +1022,7 @@ async function handler(req: Request): Promise<Response> {
       ),
     );
     return html(
-      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(keptRows), viewQuery),
+      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(keptRows), viewQuery, briefs),
     );
   }
 
@@ -1016,14 +1051,14 @@ async function handler(req: Request): Promise<Response> {
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail()));
     }
-    const { view, coverage, counts, act } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act));
+    const { view, coverage, counts, act, briefs } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act);
+    const { view, coverage, counts, act, briefs } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act, briefs);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
   if (path === "/assets/datastar.js") {
@@ -1104,9 +1139,6 @@ async function handler(req: Request): Promise<Response> {
   // #1279: briefs need the latest comment per item, guaranteed per ref —
   // the bulk comments() read can truncate an item's latest comment away
   // in a busy batch, so prefer the source's per-ref latest read.
-  const briefCommentsFor = async (refs: RefKey[]): Promise<Comment[]> =>
-    (source.latestComments ? source.latestComments(refs) : source.comments(refs)).catch(() => []);
-
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
@@ -1120,7 +1152,8 @@ async function handler(req: Request): Promise<Response> {
       pool.length ? briefCommentsFor(pool.map((p) => p.ref)) : Promise.resolve([]),
       source.orchestration().catch(() => null),
     ]);
-    const briefs = buildBriefs(pool, { comments: briefComments, orchestration });
+    const orchestrationStatus = source.diagnostics?.().orchestration.state;
+    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus });
     const resolved = await resolveView(url);
     const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const outRefs = new Set(outPool.map((item) => item.ref));
@@ -1170,6 +1203,7 @@ async function handler(req: Request): Promise<Response> {
     const briefs = buildBriefs(pool, {
       comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
       orchestration,
+      orchestrationStatus: source.diagnostics?.().orchestration.state,
     });
     return html(
       renderProgram(data, items, prov(), provDetail(), {
@@ -1530,15 +1564,23 @@ async function handler(req: Request): Promise<Response> {
       const links = subject.links;
       const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records, pool, allActions, roadmapAnnotations] = await Promise.all([
+      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] = await Promise.all([
         source.items(refs).catch(() => new Map()),
         source.comments(refs).catch(() => []),
         commentsStore.all(),
         source.registry().catch(() => []),
         source.projects().catch(() => []),
+        source.orchestration().catch(() => null),
         actionsStore.all(),
         roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
       ]);
+      const briefRefs = refs.filter((ref) => pool.some((item) => item.ref === ref));
+      const briefComments = briefRefs.length ? await briefCommentsFor(briefRefs) : [];
+      const briefs = buildBriefs(pool, {
+        comments: briefComments,
+        orchestration,
+        orchestrationStatus: source.diagnostics?.().orchestration.state,
+      });
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
       const wanted = new Set([id, ...refs.map((r) => ghObjectRef(r))]);
@@ -1566,6 +1608,7 @@ async function handler(req: Request): Promise<Response> {
             }
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
+        briefs,
       };
       return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }

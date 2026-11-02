@@ -21,7 +21,7 @@ export interface ItemBrief {
   /** The brief is derived, never authored — surfaces label it as such. */
   derived: true;
   label: "Derived brief";
-  state: { value: DerivedProjectState; text: string; evidence: BriefEvidence };
+  state: { value: DerivedProjectState | "Unknown"; text: string; evidence: BriefEvidence };
   blocker: {
     blocked: boolean;
     text: string;
@@ -47,21 +47,42 @@ export interface BriefInputs {
   /** Comment projection; entries for other refs are ignored. */
   comments?: Comment[];
   orchestration?: OrchestrationSection | null;
+  /** A missing/invalid/stale orchestration source cannot support Todo or In Progress claims. */
+  orchestrationStatus?: "live" | "absent" | "invalid" | "stale";
 }
 
-export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}): ItemBrief {
-  const byRef = new Map((inputs.pool ?? []).map((p) => [p.ref, p]));
-  const derived = derivedProjectState(item, inputs.orchestration);
-  const clash = projectDisagreement(item, inputs.orchestration);
+function buildItemBriefWithIndexes(
+  item: ProjectPoolItem,
+  inputs: BriefInputs,
+  byRef: Map<RefKey, ProjectPoolItem>,
+  activity: Comment[],
+): ItemBrief {
+  const sourceUsable = inputs.orchestrationStatus === undefined || inputs.orchestrationStatus === "live";
+  const derived: DerivedProjectState | "Unknown" =
+    item.state === "closed" || item.state === "merged"
+      ? "Done"
+      : sourceUsable
+        ? derivedProjectState(item, inputs.orchestration)
+        : "Unknown";
+  const clash = derived === "Unknown" ? null : projectDisagreement(item, inputs.orchestration);
   const itemEvidence: BriefEvidence = { text: `${item.repo}#${item.number}`, url: item.issueUrl };
 
   // --- State -------------------------------------------------------------
   const stateText =
-    derived === "Done"
-      ? "Done — the linked issue/PR is closed or merged."
-      : derived === "In Progress"
-        ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
-        : "Todo — open, with no orchestration reference placing it in flight.";
+    derived === "Unknown"
+      ? `Unknown — orchestration source is ${inputs.orchestrationStatus}; derived state is not asserted.`
+      : derived === "Done"
+        ? "Done — the linked issue/PR is closed or merged."
+        : derived === "In Progress"
+          ? "In Progress — open, and referenced by the orchestration plan (a tier item, a lined-up goal task, or a dependency)."
+          : "Todo — open, with no orchestration reference placing it in flight.";
+  const stateEvidence: BriefEvidence =
+    derived === "In Progress" || derived === "Unknown"
+      ? {
+          text: derived === "In Progress" ? "orchestration section" : "orchestration source diagnosis",
+          url: derived === "In Progress" ? "/api/orchestration.json" : "/api/health",
+        }
+      : itemEvidence;
 
   // --- Blocker -----------------------------------------------------------
   // blockedBy edges are issue-only (see ProjectPoolItem). A blocker counts
@@ -90,9 +111,6 @@ export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}):
     : itemEvidence;
 
   // --- Last activity -------------------------------------------------------
-  const activity = (inputs.comments ?? [])
-    .filter((c) => c.ref === item.ref && !c.deleted)
-    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
   const last = activity[activity.length - 1];
   const lastActivity: ItemBrief["lastActivity"] = last
     ? {
@@ -116,7 +134,7 @@ export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}):
         };
 
   // --- Disagreement --------------------------------------------------------
-  const disagreement: ItemBrief["disagreement"] = clash
+  const disagreement: ItemBrief["disagreement"] = clash && derived !== "Unknown"
     ? {
         project: clash.project,
         derived: clash.derived,
@@ -146,7 +164,12 @@ export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}):
   } else if (derived === "In Progress") {
     nextAction = {
       text: "Continue the in-flight work — the orchestration plan already references this item.",
-      evidence: itemEvidence,
+      evidence: stateEvidence,
+    };
+  } else if (derived === "Unknown") {
+    nextAction = {
+      text: "Check the orchestration source before treating this item as Todo or In Progress.",
+      evidence: stateEvidence,
     };
   } else if (!activity.length) {
     nextAction = {
@@ -161,7 +184,7 @@ export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}):
     ref: item.ref,
     derived: true,
     label: "Derived brief",
-    state: { value: derived, text: stateText, evidence: itemEvidence },
+    state: { value: derived, text: stateText, evidence: stateEvidence },
     blocker: { blocked, text: blockerText, blockers, evidence: blockerEvidence },
     lastActivity,
     nextAction,
@@ -169,10 +192,31 @@ export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}):
   };
 }
 
+export function buildItemBrief(item: ProjectPoolItem, inputs: BriefInputs = {}): ItemBrief {
+  const byRef = new Map((inputs.pool ?? []).map((p) => [p.ref, p]));
+  const activity = (inputs.comments ?? [])
+    .filter((comment) => comment.ref === item.ref && !comment.deleted)
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+  return buildItemBriefWithIndexes(item, inputs, byRef, activity);
+}
+
 /** Briefs for a whole pool, keyed by ref — the JSON twin's shape. */
 export function buildBriefs(
   pool: ProjectPoolItem[],
   inputs: Omit<BriefInputs, "pool"> = {},
 ): Map<RefKey, ItemBrief> {
-  return new Map(pool.map((p) => [p.ref, buildItemBrief(p, { ...inputs, pool })]));
+  const byRef = new Map(pool.map((item) => [item.ref, item]));
+  const commentsByRef = new Map<RefKey, Comment[]>();
+  for (const comment of inputs.comments ?? []) {
+    if (comment.deleted) continue;
+    const activity = commentsByRef.get(comment.ref) ?? [];
+    activity.push(comment);
+    commentsByRef.set(comment.ref, activity);
+  }
+  for (const activity of commentsByRef.values()) {
+    activity.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+  }
+  return new Map(
+    pool.map((item) => [item.ref, buildItemBriefWithIndexes(item, inputs, byRef, commentsByRef.get(item.ref) ?? [])]),
+  );
 }
