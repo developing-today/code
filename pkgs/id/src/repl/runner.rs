@@ -706,8 +706,14 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--union" {
             args.format = "union";
         } else if arg == "--first" {
-            // --first with optional number argument
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+            // --first with optional number argument; a `>file`
+            // redirection token is not the number (it is handled by
+            // the output branch below), so `--first >out.txt` keeps
+            // the default limit of 1.
+            if i + 1 < rest.len()
+                && !rest[i + 1].starts_with('-')
+                && !rest[i + 1].starts_with('>')
+            {
                 let value = rest[i + 1];
                 args.first =
                     Some(value.parse::<usize>().map_err(|_| {
@@ -718,8 +724,12 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
                 args.first = Some(1); // default to 1
             }
         } else if arg == "--last" {
-            // --last with optional number argument
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+            // --last with optional number argument; same
+            // redirection exclusion as --first.
+            if i + 1 < rest.len()
+                && !rest[i + 1].starts_with('-')
+                && !rest[i + 1].starts_with('>')
+            {
                 let value = rest[i + 1];
                 args.last =
                     Some(value.parse::<usize>().map_err(|_| {
@@ -1750,6 +1760,24 @@ mod tests {
 
         assert!(parse_find_args(&["query", "--first", "2"], "union").is_ok());
         assert!(parse_find_args(&["query", "--last", "3"], "union").is_ok());
+    }
+
+    #[test]
+    fn test_parse_find_args_first_before_redirection_keeps_default() {
+        // `--first >out.txt`: the redirection token is the output
+        // option, not the optional number (Codex P2 on PR #4072).
+        let args = parse_find_args(&["query", "--first", ">out.txt"], "union").unwrap();
+        assert_eq!(args.first, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+        assert!(args.to_file);
+    }
+
+    #[test]
+    fn test_parse_find_args_last_before_redirection_keeps_default() {
+        let args = parse_find_args(&["query", "--last", ">out.txt"], "union").unwrap();
+        assert_eq!(args.last, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+        assert!(args.to_file);
     }
 
     #[test]
