@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   parseJsonc,
   findModelsSpan,
@@ -182,6 +187,41 @@ test('openPrCommands: same-day rerun checks out the existing branch', () => {
     bodyFile: '/tmp/x/pr-body.md',
   });
   assert.deepEqual(cmds[0], ['git', 'checkout', branch]);
+});
+
+test('CLI: entry point runs main via direct path, file symlink, and directory symlink (#2235)', () => {
+  // Regression: the guard compared the raw invoked path with the resolved
+  // module URL, so symlinked invocations silently skipped main (exit 0,
+  // no output). With a nonexistent --config, a main that RAN fails loudly
+  // (exit 2, '[catalog-sync] fatal:'), which is exactly what distinguishes
+  // the two behaviours without any network or repo state.
+  const binDir = path.dirname(fileURLToPath(import.meta.url));
+  const cli = path.join(binDir, 'provider-catalog-sync.mjs');
+  const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-sync-link-'));
+  const fileLink = path.join(linkDir, 'catalog-sync-link.mjs');
+  fs.symlinkSync(cli, fileLink);
+  const dirLink = path.join(linkDir, 'bin-link');
+  fs.symlinkSync(binDir, dirLink, 'dir');
+
+  for (const invoked of [cli, fileLink, path.join(dirLink, 'provider-catalog-sync.mjs')]) {
+    const res = spawnSync(process.execPath, [invoked, '--config', path.join(linkDir, 'missing.jsonc')], {
+      encoding: 'utf8'
+    });
+    assert.equal(res.status, 2, `${invoked}: ${res.stdout} ${res.stderr}`);
+    assert.match(res.stderr, /\[catalog-sync\] fatal:/, invoked);
+  }
+});
+
+test('importing provider-catalog-sync.mjs as a library does not run main (#2235)', () => {
+  const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), 'provider-catalog-sync.mjs');
+  const res = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', `import ${JSON.stringify(pathToFileURL(cli).href)};`],
+    { encoding: 'utf8', env: { ...process.env, OPENCODE_CONFIG_PATH: '/nonexistent.jsonc' } }
+  );
+  assert.equal(res.status, 0, res.stderr);
+  assert.equal(res.stdout, '');
+  assert.equal(res.stderr, '');
 });
 
 test('assertNotDefaultBranch aborts on the default branch, passes elsewhere', () => {

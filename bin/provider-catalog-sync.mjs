@@ -44,6 +44,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Provider source table. `modelsDev` is the provider id in models.dev's
@@ -747,7 +748,19 @@ async function main(argv) {
   return 0;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname;
+// Entry-point check: compare realpaths, not the raw strings (#2235;
+// same pattern as proxy-supervise.mjs / #2083). process.argv[1] keeps the
+// path exactly as invoked (e.g. through a file or directory symlink)
+// while import.meta.url is the resolved module URL, so a string compare
+// silently never matches and main() never runs via a symlink.
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
 if (isMain) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
