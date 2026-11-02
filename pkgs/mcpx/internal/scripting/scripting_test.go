@@ -135,6 +135,8 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after class expression", "const n = class {} / 2;\n"},
 		{"division after named class expression", "const n = class Foo extends Bar {} / 2;\n"},
 		{"regex after function declaration", "function f() {}\n/a+/.test(\"aa\");\n"},
+		{"regex after declaration following async identifier in control header", "const async = true; if (async) function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following async identifier and comment in control header", "const async = true; if (async) /* c */ function f() {} /[}]/.test(\"}\");\n"},
 		{"division after non-breaking space", "const ratio = 4\u00a0/ 2;\n"},
 		{"division after vertical tab and form feed", "const ratio = 4\v\f/ 2;\n"},
 		{"division after BOM whitespace", "const ratio = 4\ufeff/ 2;\n"},

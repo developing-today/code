@@ -180,7 +180,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// (Codex P2 on #1659).
 	identPrev := rune(0)
 	identPrevSig := rune(0)
+	identStart := -1
 	lastIdentPrev := rune(0)
+	lastIdentEnd := -1
 	// prevIdent is the completed identifier before the one now
 	// being accumulated, captured when an identifier starts; it
 	// spots expression keywords in front of function/class
@@ -194,6 +196,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// made isExprPositionStart treat the declaration as an
 	// expression).
 	prevIdentPrev := rune(0)
+	prevIdentEnd := -1
 	// prevPrevIdent is the completed identifier before prevIdent,
 	// with prevPrevIdentPrev the significant character before it:
 	// two levels of history are needed to spot a heritage operand
@@ -402,6 +405,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			if end >= 0 {
 				if len(curIdent) == 0 {
+					identStart = i
 					identPrev = prevChar
 					identPrevSig = prevSig
 					identDotRun = dotRun
@@ -411,6 +415,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
+					prevIdentEnd = lastIdentEnd
 					curIdentBrokeLine = lineBreakPending
 				}
 				curIdent = append(curIdent, 'x')
@@ -436,6 +441,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex {
 			if isIdentChar(ch) {
 				if len(curIdent) == 0 {
+					identStart = i
 					identPrev = prevChar
 					identPrevSig = prevSig
 					identDotRun = dotRun
@@ -445,6 +451,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
+					prevIdentEnd = lastIdentEnd
 					curIdentBrokeLine = lineBreakPending
 				}
 				curIdent = append(curIdent, ch)
@@ -452,6 +459,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				lastIdent = string(curIdent)
 				lastIdentPrev = identPrev
 				lastIdentDotRun = identDotRun
+				lastIdentEnd = i
 				curIdent = nil
 				// The next significant character after the
 				// identifier, skipping whitespace and comments:
@@ -530,7 +538,8 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// not a declaration (Codex P2 on #3354).
 					// class C extends {x:[class extends class {}
 					// {} / 2]}.x {} and the function permutation).
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)) {
+					asyncFunctionModifier := lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && onlyTriviaBetween(chars, prevIdentEnd, identStart)
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || (asyncFunctionModifier && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
@@ -1480,6 +1489,45 @@ func isSimpleTypeName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// onlyTriviaBetween reports whether the source between two identifier
+// boundaries contains only whitespace or comments. The async modifier
+// classification uses it to distinguish `async function` from an unrelated
+// earlier identifier named async, even when comments separate the tokens.
+func onlyTriviaBetween(chars []rune, start, end int) bool {
+	if start < 0 || end < start || end > len(chars) {
+		return false
+	}
+	for i := start; i < end; {
+		ch := chars[i]
+		if isJSWhitespace(ch) || ch == '\n' {
+			i++
+			continue
+		}
+		if ch == '/' && i+1 < end {
+			switch chars[i+1] {
+			case '/':
+				i += 2
+				for i < end && !isLineTerminator(chars[i]) {
+					i++
+				}
+				continue
+			case '*':
+				i += 2
+				for i+1 < end && !(chars[i] == '*' && chars[i+1] == '/') {
+					i++
+				}
+				if i+1 >= end {
+					return false
+				}
+				i += 2
+				continue
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // nextSignificant returns the first significant (non-whitespace,
