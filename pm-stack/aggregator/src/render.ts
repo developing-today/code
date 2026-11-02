@@ -288,6 +288,7 @@ details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
 .xpl-charts .chart.primary { border-color: #1f6feb; }
 .chart-tools { display: inline-flex; gap: 4px; margin-left: 10px; }
 .chart-tools button { border: 1px solid #30363d; background: #161b22; color: #e6edf3; border-radius: 6px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: 11.5px; }
+.chart-mini { display: inline-block; max-width: 100%; }
 .chart-zoomable { cursor: grab; touch-action: none; }
 .chart-zoomable:active { cursor: grabbing; }
 .chart-expanded { position: fixed !important; inset: 12px; z-index: 80; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 14px; overflow: auto; box-shadow: 0 12px 48px rgba(0,0,0,.6); }
@@ -4019,6 +4020,17 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (svg.getAttribute("data-zbound")) return;
     svg.setAttribute("data-zbound", "1");
     svg.classList.add("chart-zoomable");
+    // Band scatters are bare children of the shared #xpl-recs /
+    // #xpl-bandgroups containers (Codex P2, PR #4154): give each a
+    // dedicated wrapper so Expand isolates this chart instead of
+    // overlaying the whole section.
+    var zparent = svg.parentElement;
+    if (zparent && (zparent.id === "xpl-recs" || zparent.id === "xpl-bandgroups")) {
+      var mini = document.createElement("div");
+      mini.className = "chart-mini";
+      zparent.insertBefore(mini, svg);
+      mini.appendChild(svg);
+    }
     var key = chartKeyFor(svg);
     if (!document.querySelector('[data-tools="' + key + '"]')) {
       var host = chartHost(svg);
@@ -4031,14 +4043,20 @@ const AA_EXPLORER_SCRIPT = `<script>
     var drag = null;
     svg.addEventListener("pointerdown", function (e) {
       if (e.button !== 0) return;
-      drag = { lx: e.clientX, ly: e.clientY, sx: e.clientX, sy: e.clientY, moved: false };
-      try { svg.setPointerCapture(e.pointerId); } catch (err) {}
+      // No pointer capture yet (Codex P1, PR #4154): capturing here
+      // would retarget an ordinary click away from the point/bar
+      // selection handlers on the svg's descendants. Capture only
+      // once pointermove detects an actual pan gesture.
+      drag = { lx: e.clientX, ly: e.clientY, sx: e.clientX, sy: e.clientY, moved: false, id: e.pointerId };
     });
     svg.addEventListener("pointermove", function (e) {
       if (!drag) return;
       var dx = e.clientX - drag.lx, dy = e.clientY - drag.ly;
       drag.lx = e.clientX; drag.ly = e.clientY;
-      if (Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 4) drag.moved = true;
+      if (!drag.moved && Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 4) {
+        drag.moved = true;
+        try { svg.setPointerCapture(drag.id); } catch (err) {}
+      }
       if (drag.moved) panChart(svg, dx, dy);
     });
     svg.addEventListener("pointerup", function () {
@@ -4670,6 +4688,10 @@ const AA_EXPLORER_SCRIPT = `<script>
       el.addEventListener("click", function () { selectPoint(el.getAttribute("data-key")); });
     });
     markSelectedRow();
+    // Recommendation inputs redraw #xpl-recs directly, without
+    // going through render() (Codex P2, PR #4154) — re-enhance here
+    // so the band charts keep their expand/zoom/pan controls.
+    enhanceCharts();
   }
   // --- Band comparisons (Site 1's six banded shortlists) -------------------
   // Near-leader windows at 1x: score within 2 points, time within 10%,

@@ -721,6 +721,12 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     expect(html).toContain("function enhanceCharts()");
     expect(html).toContain("#xpl-recs svg, #xpl-bandgroups svg");
     expect(html).toContain("chart-expanded");
+    // Codex fixes on PR #4154: deferred pointer capture (plain point
+    // clicks still select), a dedicated wrapper per band chart, and
+    // re-enhancement after recommendation-only redraws.
+    expect(html).toContain("chart-mini");
+    expect(html).toContain("setPointerCapture(drag.id)");
+    expect(html).toContain("Recommendation inputs redraw #xpl-recs directly");
     expect(html).toContain("data-zbound");
     expect(html).toContain(".chart-expanded { position: fixed");
     // the emitted script still parses (same check as #1215)
