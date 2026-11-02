@@ -5187,9 +5187,9 @@ const AA_EXPLORER_SCRIPT = `<script>
         var py = cy + ((pi % 5) - 2) * 2.5;
         var color = famColor[p.family] || "#8b949e";
         var desc = shortLabel(p) + " — " + axisLabel + " " + valueLabel(v);
-        const cx = x(v).toFixed(1);
-        const cy = py.toFixed(1);
-        svg += '<g class="xpt-control" data-pick="' + esc(p.key) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><circle class="xpt-hit" cx="' + cx + '" cy="' + cy + '" r="40"/><circle class="xpt" cx="' + cx + '" cy="' + cy + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '"/><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></g>";
+        const pointX = x(v).toFixed(1);
+        const pointY = py.toFixed(1);
+        svg += '<g class="xpt-control" data-pick="' + esc(p.key) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><circle class="xpt-hit" cx="' + pointX + '" cy="' + pointY + '" r="40"/><circle class="xpt" cx="' + pointX + '" cy="' + pointY + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '"/><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></g>";
       });
     });
     return '<div class="xpl-band-lane-wrap">' + svg + "</svg></div>";
