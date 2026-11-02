@@ -89,6 +89,21 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
   const validProviders = providers.values.map((provider) => {
     const windows = arrayOf(isQuotaCurrentWindow)(provider.windows)!;
     droppedWindows += windows.dropped;
+    if (provider.state === "ok" && provider.windows.length > 0 && windows.values.length === 0) {
+      // Entirely discarded read (#2416, Codex finding on PR #4182): left
+      // as "ok", the entry would still win fresh-ok precedence in the
+      // overlay, stamp the pool's older windows with fresh provenance,
+      // and block a valid fresh sibling for the same service from
+      // supplying the headline. Downgrade it to the error it is. An
+      // entry that arrived with no windows at all is a legitimate
+      // balance-only read and keeps its state.
+      return {
+        ...provider,
+        state: "error" as const,
+        error: "all quota windows were malformed and dropped at ingest",
+        windows: windows.values,
+      };
+    }
     return { ...provider, windows: windows.values };
   });
   return {

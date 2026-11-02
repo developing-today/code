@@ -323,6 +323,44 @@ describe("quota-current overlay", () => {
       ["7-day", 17],
     ]);
   });
+
+  test("an ok entry whose windows are entirely malformed is downgraded so a valid fresh sibling supplies the headline", () => {
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([
+          entry({ serviceId: "openai:codex", measuredAt: iso(1 * 60_000), windows: [win("7-day", 55, iso(1 * 60_000))] }),
+          entry({ serviceId: "openai:codex", measuredAt: iso(5 * 60_000), windows: [win("7-day", 80, iso(5 * 60_000))] }),
+        ]),
+      ),
+    );
+    doc.providers[0].windows = [null];
+
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.providers[0].state).toBe("error");
+    const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    // The base pool's dated 11% must not be re-stamped as fresh, and the
+    // older valid read (80%) supplies the headline instead.
+    expect(pool.windows.map((w) => [w.name, w.percent])).toEqual([["7-day", 80]]);
+    expect(pool.freshness?.state).toBe("ok");
+    expect(pool.freshness?.measuredAt).toBe(iso(5 * 60_000));
+  });
+
+  test("a sole ok entry whose windows are entirely malformed surfaces as an error, never as fresh provenance", () => {
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([entry({ serviceId: "openai:codex", windows: [win("7-day", 55, iso(5 * 60_000))] })]),
+      ),
+    );
+    doc.providers[0].windows = [null, { bogus: true }];
+
+    const parsed = parseQuotaCurrent(doc);
+    const out = overlayQuotaCurrent(baseView(), parsed!, NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.state).toBe("error");
+    expect(pool.freshness?.state).toBe("error");
+    expect(pool.windows.map((w) => w.percent)).toEqual([11]);
+  });
 });
 
 describe("parseQuotaCurrent", () => {
