@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   feedSectionStatus,
+  isBurnSegment,
   isChargeRow,
   isFleetFeed,
   isProjectPoolSection,
@@ -221,6 +222,34 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     };
     const out = sanitizeQuotaView(quotaWith([POOL], { burn: [seg, null, { provider: "x" }] }) as never);
     expect(out.droppedBurn).toBe(2);
+    expect(out.view.burn).toEqual([seg]);
+  });
+
+  // #3428: value-malformed segments (negative tokens, non-date or
+  // impossible from/to, inverted range) used to pass the type-only
+  // guard and render as measured history. They now drop individually
+  // and count, exactly like shape failures.
+  test("value-malformed burn segments drop individually", () => {
+    const seg = {
+      provider: "opencode",
+      pool: "go",
+      from: "2026-10-01T00:00:00Z",
+      to: "2026-10-01T01:00:00Z",
+      tokens: 42,
+    };
+    const negative = { ...seg, tokens: -12345 };
+    const garbageFrom = { ...seg, from: "banana" };
+    const impossibleTo = { ...seg, to: "2026-02-30T01:00:00Z" };
+    const inverted = { ...seg, from: "2026-10-02T00:00:00Z", to: "2026-10-01T00:00:00Z" };
+    expect(isBurnSegment(seg)).toBe(true);
+    expect(isBurnSegment(negative)).toBe(false);
+    expect(isBurnSegment(garbageFrom)).toBe(false);
+    expect(isBurnSegment(impossibleTo)).toBe(false);
+    expect(isBurnSegment(inverted)).toBe(false);
+    const out = sanitizeQuotaView(
+      quotaWith([POOL], { burn: [seg, negative, garbageFrom, impossibleTo, inverted] }) as never,
+    );
+    expect(out.droppedBurn).toBe(4);
     expect(out.view.burn).toEqual([seg]);
   });
 
