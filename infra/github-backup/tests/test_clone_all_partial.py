@@ -20,6 +20,11 @@ real bare mirror with git init --bare). valid_mirror stays real.
   valid mirror dest   -> already-present, untouched, never re-cloned
   absent dest         -> normal clone, no cleared_partial marker
   empty dir dest      -> normal clone (git accepts), no marker
+  policy-error dest   -> intact mirror git refuses to inspect (dubious
+                         ownership): preserved, loud fail, no clone
+  real-repo dest      -> git opens it as a repository though
+                         valid_mirror said no: preserved, no clone
+  stray file dest     -> cleared as partial, cloned, marker set
 
 Run: python3 infra/github-backup/tests/test_clone_all_partial.py
 """
@@ -48,10 +53,23 @@ class FakeSubprocess:
     TimeoutExpired = subprocess.TimeoutExpired
 
     def __init__(self, mode):
-        self.mode = mode  # "ok" | "fail" | "timeout"
+        self.mode = mode  # "ok" | "fail" | "timeout" | "policy_error"
         self.clone_calls = []
 
     def run(self, cmd, **kw):
+        if cmd[:2] == ["git", "-C"]:
+            # git inspection (rev-parse): real, except in policy_error
+            # mode, which simulates git refusing an intact mirror with
+            # 'detected dubious ownership' (the Codex P1 scenario).
+            if self.mode == "policy_error":
+                return subprocess.CompletedProcess(
+                    cmd,
+                    128,
+                    "",
+                    "fatal: detected dubious ownership in repository at "
+                    f"'{cmd[2]}'",
+                )
+            return REAL_RUN(cmd, capture_output=True, text=True)
         assert cmd[:2] == ["git", "clone"], f"unexpected command: {cmd}"
         self.clone_calls.append(cmd)
         dest = cmd[-1]
@@ -77,7 +95,7 @@ class FakeSubprocess:
 class Harness:
     """One clone_all.main() run over a temp root with one planned repo."""
 
-    def __init__(self, mode="ok"):
+    def __init__(self, mode="ok", valid_mirror_false=False):
         self.root = tempfile.mkdtemp(prefix="ghb-clone-test-")
         with open(os.path.join(self.root, "plan.json"), "w") as f:
             json.dump([{"repo": REPO}], f)
@@ -87,10 +105,15 @@ class Harness:
             clone_all.load_config,
             clone_all.backup_root,
             clone_all.subprocess,
+            clone_all.valid_mirror,
         )
         clone_all.load_config = lambda: {}
         clone_all.backup_root = lambda cfg=None: self.root
         clone_all.subprocess = self.fake
+        if valid_mirror_false:
+            # Simulate valid_mirror failing on an intact mirror (git
+            # policy refusal) — the destination must still survive.
+            clone_all.valid_mirror = lambda p: False
 
     def run_main(self):
         try:
@@ -100,6 +123,7 @@ class Harness:
                 clone_all.load_config,
                 clone_all.backup_root,
                 clone_all.subprocess,
+                clone_all.valid_mirror,
             ) = self._saved
 
     def records(self):
@@ -248,6 +272,65 @@ def test_empty_dir_dest_normal_clone():
     check("empty-dir: dest is a valid mirror", valid_mirror(h.dest))
 
 
+def test_policy_error_dest_preserved():
+    # Codex P1: an intact mirror git refuses to inspect (dubious
+    # ownership) reads as "not a valid mirror" — it must NOT be deleted.
+    h = Harness("policy_error", valid_mirror_false=True)
+    h.seed_valid_mirror()
+    rc = h.run_main()
+    recs = h.records()
+    check("policy: main exits 1", rc == 1, f"rc={rc} recs={recs}")
+    if recs:
+        check("policy: status fail", recs[0].get("status") == "fail")
+        check(
+            "policy: failure names the preservation",
+            "preserving it" in (recs[0].get("error") or ""),
+            f"rec={recs[0]}",
+        )
+        check(
+            "policy: no cleared_partial marker",
+            "cleared_partial" not in recs[0],
+            f"rec={recs[0]}",
+        )
+    check("policy: no clone attempted", len(h.fake.clone_calls) == 0)
+    check(
+        "policy: intact mirror untouched",
+        open(os.path.join(h.dest, "marker.txt")).read() == "do not touch",
+    )
+
+
+def test_real_repo_dest_preserved():
+    # valid_mirror says no, but git opens the destination as a real
+    # repository — not a confirmed partial, so it is preserved.
+    h = Harness("ok", valid_mirror_false=True)
+    h.seed_valid_mirror()
+    rc = h.run_main()
+    recs = h.records()
+    check("real-repo: main exits 1", rc == 1, f"rc={rc} recs={recs}")
+    check("real-repo: no clone attempted", len(h.fake.clone_calls) == 0)
+    check(
+        "real-repo: intact mirror untouched",
+        open(os.path.join(h.dest, "marker.txt")).read() == "do not touch",
+    )
+
+
+def test_stray_file_dest_cleared():
+    h = Harness("ok")
+    os.makedirs(os.path.dirname(h.dest), exist_ok=True)
+    with open(h.dest, "w") as f:
+        f.write("stray file at the mirror path")
+    rc = h.run_main()
+    recs = h.records()
+    check("stray-file: main exits 0", rc == 0, f"rc={rc} recs={recs}")
+    if recs:
+        check(
+            "stray-file: cleared_partial marker set",
+            recs[0].get("cleared_partial") is True,
+            f"rec={recs[0]}",
+        )
+    check("stray-file: dest is now a valid mirror", valid_mirror(h.dest))
+
+
 def main():
     test_partial_dest_cleared_and_cloned()
     test_partial_dest_clone_failure_marked()
@@ -255,6 +338,9 @@ def main():
     test_valid_mirror_untouched()
     test_absent_dest_normal_clone()
     test_empty_dir_dest_normal_clone()
+    test_policy_error_dest_preserved()
+    test_real_repo_dest_preserved()
+    test_stray_file_dest_cleared()
     if FAILURES:
         print(f"\n{len(FAILURES)} FAILURE(S): {FAILURES}")
         return 1

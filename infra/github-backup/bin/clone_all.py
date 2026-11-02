@@ -48,6 +48,35 @@ def clear_partial_dest(root, dest):
     return True
 
 
+def dest_is_confirmed_partial(dest):
+    """True only when dest is positively known not to be a repository.
+
+    valid_mirror() returning False does not by itself prove a partial
+    clone: git also refuses intact mirrors for policy reasons (dubious
+    ownership after a restore, safe.bareRepository=explicit), and
+    deleting an intact backup because inspection failed would be far
+    worse than the wedge this fixes (Codex P1 on the #3233 PR). So:
+
+    - a non-directory at the mirror path is a stray file — partial;
+    - git answering at all (rc 0) means a real repository lives there
+      — never partial, whatever valid_mirror made of it;
+    - git saying 'not a git repository' is the killed-clone / junk
+      shape — partial;
+    - any other git failure is an inspection/policy error — NOT
+      confirmed partial, and the caller preserves the destination.
+    """
+    if not os.path.isdir(dest):
+        return True
+    r = subprocess.run(
+        ["git", "-C", dest, "rev-parse", "--is-bare-repository"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode == 0:
+        return False
+    return "not a git repository" in (r.stderr or "")
+
+
 def main():
     cfg = load_config()
     root = backup_root(cfg)
@@ -79,22 +108,37 @@ def main():
                 "note": "already-present",
                 "disk_kb": disk_kb(dest),
             }
-        # #3233: a destination that exists but is not a valid mirror is
-        # the leftover of a killed clone — clear it and retry, or the
-        # clone below fails on 'already exists' forever. The status
+        # #3233: a destination that exists but is not a valid mirror may
+        # be the leftover of a killed clone — clear it and retry, or the
+        # clone below fails on 'already exists' forever. But only a
+        # CONFIRMED partial is cleared: if git can open the destination
+        # as a repository, or cannot inspect it for policy reasons
+        # (dubious ownership, safe.bareRepository), it may be an intact
+        # backup — preserve it and fail loudly instead. The status
         # record carries cleared_partial so a cleared-partial retry is
         # distinguishable from an ordinary failure in clone-status.jsonl.
-        cleared_partial = clear_partial_dest(root, dest)
+        cleared_partial = False
         if os.path.lexists(dest) and not (
             os.path.isdir(dest) and not os.listdir(dest)
         ):
-            return {
-                "repo": repo,
-                "status": "fail",
-                "error": "destination exists, is not a valid mirror, and "
-                "is outside the driver-managed mirror tree; refusing to "
-                f"remove it: {dest}",
-            }
+            if not dest_is_confirmed_partial(dest):
+                return {
+                    "repo": repo,
+                    "status": "fail",
+                    "error": "destination exists and is not a valid "
+                    "mirror, but is not a confirmed partial clone (git "
+                    "can open it, or inspection failed for policy "
+                    f"reasons); preserving it: {dest}",
+                }
+            cleared_partial = clear_partial_dest(root, dest)
+            if os.path.lexists(dest):
+                return {
+                    "repo": repo,
+                    "status": "fail",
+                    "error": "partial destination is outside the "
+                    "driver-managed mirror tree; refusing to remove "
+                    f"it: {dest}",
+                }
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         cmd = ["git", "clone", "--mirror"]
         ref = item.get("reference")
