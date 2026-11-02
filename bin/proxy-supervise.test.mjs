@@ -7,7 +7,7 @@
 // start -> no-op -> hash change -> A/B roll; swap strategy; a broken
 // new build keeping the old instance; adoption of a foreign instance.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -340,6 +340,71 @@ test('foreign healthy instance is adopted, not duplicated', async (t) => {
 
 test('module under test is the worktree copy', () => {
   assert.ok(fs.existsSync(path.join(here, 'proxy-supervise.mjs')));
+});
+
+test('CLI: rejects unknown arguments before proxy side effects', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-supervise-argv-'));
+  try {
+    const stateDir = path.join(root, 'state');
+    const endpointDir = path.join(root, 'endpoints');
+    const marker = path.join(root, 'spawned');
+    const scriptPath = path.join(root, 'fake-proxy.mjs');
+    const configPath = path.join(root, 'config.json');
+    fs.writeFileSync(scriptPath, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'spawned');`);
+    fs.writeFileSync(configPath, JSON.stringify({
+      stateDir,
+      endpointDir,
+      drainSeconds: 1,
+      healthTimeoutSeconds: 1,
+      proxies: [{
+        name: 'fake-proxy',
+        canonicalPort: 43991,
+        command: [process.execPath, scriptPath],
+        portEnv: 'FAKE_PROXY_PORT',
+        hashFiles: [scriptPath],
+      }],
+    }));
+
+    const script = path.join(here, 'proxy-supervise.mjs');
+    for (const [args, named] of [
+      [['--config', configPath, '--dry-rnu'], '--dry-rnu'],
+      [['--config', configPath, '--bogus-flag'], '--bogus-flag'],
+      [['--config', configPath, '--statuz'], '--statuz'],
+      [['--config', configPath, '--only'], '--only'],
+      [['--config', configPath, '--only', '--status'], '--only'],
+      [['--config'], '--config'],
+      [['--config', '--status'], '--config'],
+    ]) {
+      const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', timeout: 5000 });
+      assert.equal(result.status, 2, `${args}: ${result.stdout}\n${result.stderr}`);
+      assert.ok(result.stderr.includes(named), `${args}: stderr must name ${named}: ${result.stderr}`);
+      assert.equal(fs.existsSync(marker), false, 'invalid argv must not spawn the configured proxy');
+      assert.equal(fs.existsSync(stateDir), false, 'invalid argv must not create state or a lock');
+      assert.equal(fs.existsSync(endpointDir), false, 'invalid argv must not create endpoint state');
+    }
+
+    const unknownBeforeRead = spawnSync(process.execPath, [
+      script, '--config', path.join(root, 'missing.json'), '--statuz',
+    ], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(unknownBeforeRead.status, 2, `${unknownBeforeRead.stdout}\n${unknownBeforeRead.stderr}`);
+    assert.match(unknownBeforeRead.stderr, /--statuz/);
+    assert.doesNotMatch(unknownBeforeRead.stderr, /ENOENT/);
+
+    const dryRun = spawnSync(process.execPath, [
+      script, '--config', configPath, '--only', 'fake-proxy', '--dry-run',
+    ], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(dryRun.status, 0, `${dryRun.stdout}\n${dryRun.stderr}`);
+    assert.match(dryRun.stdout, /"action":"would-start"/);
+    assert.equal(fs.existsSync(marker), false, 'a valid dry run must not spawn the configured proxy');
+    assert.equal(fs.existsSync(stateDir), false, 'a valid dry run must not create state or a lock');
+    assert.equal(fs.existsSync(endpointDir), false, 'a valid dry run must not create endpoint state');
+
+    const bare = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(bare.status, 2, `${bare.stdout}\n${bare.stderr}`);
+    assert.match(bare.stderr, /missing required --config/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('CLI entry point still runs when invoked through a symlinked path (#2083)', async () => {
