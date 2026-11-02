@@ -27,9 +27,18 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function startStubServe(script) {
   const calls = [];
   const sseClients = new Set();
+  let sessionStatus = {};
   const emit = (event) => {
     const payload = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of sseClients) res.write(payload);
+  };
+  const serveControls = {
+    setStatus: (status) => {
+      sessionStatus = status;
+    },
+    dropEventStreams: () => {
+      for (const res of sseClients) res.destroy();
+    },
   };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -50,6 +59,11 @@ function startStubServe(script) {
         res.on('close', () => sseClients.delete(res));
         return;
       }
+      if (req.method === 'GET' && url.pathname === '/session/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(sessionStatus));
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/session') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id: SESSION_ID, directory: url.searchParams.get('directory') }));
@@ -58,7 +72,7 @@ function startStubServe(script) {
       if (req.method === 'POST' && url.pathname === `/session/${SESSION_ID}/prompt_async`) {
         res.writeHead(204);
         res.end();
-        setImmediate(() => script(emit, body));
+        setImmediate(() => script(emit, body, serveControls));
         return;
       }
       if (req.method === 'POST' && /\/permissions\//.test(url.pathname)) {
@@ -259,4 +273,41 @@ test('session/cancel aborts on the serve and the prompt resolves cancelled', asy
     stub.calls.find((c) => c.pathname === `/session/${SESSION_ID}/abort`),
     'stub serve saw POST abort',
   );
+});
+
+test('prompt completed during an event-stream drop is reconciled on reconnect (#4617)', async (t) => {
+  let promptCount = 0;
+  const script = (emit, body, serve) => {
+    promptCount += 1;
+    if (promptCount === 1) {
+      serve.setStatus({ [SESSION_ID]: { type: 'busy' } });
+      // The stream drops mid-prompt and the server finishes the prompt
+      // during the gap: no session.idle ever reaches the adapter, and
+      // the session leaves the status map. Without reconciliation the
+      // ACP request would hang forever.
+      setTimeout(() => {
+        serve.dropEventStreams();
+        serve.setStatus({});
+      }, 50);
+      return;
+    }
+    emit({ type: 'session.idle', properties: { sessionID: SESSION_ID } });
+  };
+  const { stub, acp } = await setup(t, script);
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const result = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'long task' }],
+  });
+  assert.equal(result.stopReason, 'end_turn');
+  assert.ok(
+    stub.calls.find((c) => c.method === 'GET' && c.pathname === '/session/status'),
+    'adapter queried /session/status after reconnecting',
+  );
+  // The session is not wedged: a later prompt is accepted and completes.
+  const second = await acp.request('session/prompt', {
+    sessionId: SESSION_ID,
+    prompt: [{ type: 'text', text: 'again' }],
+  });
+  assert.equal(second.stopReason, 'end_turn');
 });

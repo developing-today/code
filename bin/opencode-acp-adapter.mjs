@@ -155,10 +155,46 @@ async function ensureEventStream(timeoutMs = 5000) {
   ]);
 }
 
+// After a reconnect, prompts whose session finished while the stream
+// was down never get their session.idle / session.error event, so
+// without reconciliation they would stay in pendingPrompts forever
+// (and every later prompt would be rejected as already in flight,
+// #4617). Ask the serve for the current session status instead:
+// busy/retry sessions are still running and their completion event
+// will arrive on the new stream; idle or absent sessions finished
+// during the gap and are completed here exactly as session.idle
+// would have; if the status cannot be read at all, fail the pending
+// prompts explicitly rather than leaving them hanging.
+async function reconcilePendingPrompts() {
+  if (pendingPrompts.size === 0) return;
+  let status = null;
+  try {
+    status = await serveJson('/session/status');
+  } catch (err) {
+    debug(`reconcile after reconnect: GET /session/status failed: ${err.message}`);
+  }
+  for (const sessionId of [...pendingPrompts.keys()]) {
+    if (!status) {
+      finishPrompt(
+        sessionId,
+        null,
+        'event stream reconnected and the session state could not be verified; prompt aborted',
+      );
+      continue;
+    }
+    const type = status[sessionId]?.type;
+    if (type === 'busy' || type === 'retry') continue;
+    const wasCancelled = cancelledSessions.has(sessionId);
+    cancelledSessions.delete(sessionId);
+    finishPrompt(sessionId, { stopReason: wasCancelled ? 'cancelled' : 'end_turn' });
+  }
+}
+
 async function runEventStream() {
   eventStreamReady = new Promise((resolve) => {
     eventStreamReadyResolve = resolve;
   });
+  let connectedOnce = false;
   while (!shuttingDown) {
     try {
       const res = await fetch(`${serverBase}/event`, {
@@ -167,6 +203,8 @@ async function runEventStream() {
       if (!res.ok || !res.body) throw new Error(`GET /event -> ${res.status}`);
       markEventStreamReady();
       debug('event stream connected');
+      if (connectedOnce) void reconcilePendingPrompts();
+      connectedOnce = true;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
