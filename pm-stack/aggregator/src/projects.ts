@@ -243,6 +243,24 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     typeof p.number === "number" &&
     typeof p.issueUrl === "string" &&
     typeof p.title === "string" &&
+    // url/projectUrl/contentKind and the Project single-select fields are
+    // required by the model and dereferenced by board/item renders; the
+    // gate must own their shapes (#2418).
+    typeof p.url === "string" &&
+    typeof p.projectUrl === "string" &&
+    (p.contentKind === "issue" || p.contentKind === "pr") &&
+    (p.status === null || typeof p.status === "string") &&
+    (p.area === null || typeof p.area === "string") &&
+    (p.horizon === null || typeof p.horizon === "string") &&
+    (p.kind === null || typeof p.kind === "string") &&
+    // Optional fields stay absence-friendly, but a present value must
+    // match its declared type: labels feeds .map/.includes in renders,
+    // so a string or non-string array crashes instead of dropping (#2418).
+    (p.databaseId === undefined || typeof p.databaseId === "number") &&
+    (p.draft === undefined || typeof p.draft === "boolean") &&
+    (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
+    (p.author === undefined || typeof p.author === "string") &&
+    (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || typeof p.parentRef === "string") &&
     (p.epicRef === undefined || typeof p.epicRef === "string") &&
