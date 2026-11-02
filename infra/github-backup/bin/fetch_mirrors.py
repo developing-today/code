@@ -52,13 +52,21 @@ def fetch_repo(root, repo, state):
     if not valid_mirror(path):
         return "missing"
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    r = subprocess.run(
-        ["git", "-C", path, "fetch", "--all", "--prune"],
-        capture_output=True,
-        text=True,
-        timeout=3600,
-        env=env,
-    )
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "fetch", "--all", "--prune"],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as e:
+        st = state.setdefault(repo, {})
+        today = time.strftime("%Y-%m-%d")
+        days = st.setdefault("fail_days", [])
+        record_failure_day(days, today)
+        st["last_error"] = f"fetch timed out after {e.timeout} seconds"
+        return "fail"
     now = time.time()
     st = state.setdefault(repo, {})
     if r.returncode == 0:
