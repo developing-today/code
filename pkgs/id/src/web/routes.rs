@@ -3345,6 +3345,20 @@ mod tests {
     }
 
     #[test]
+    fn test_plain_mode_roundtrip_preserves_lone_terminal_cr() {
+        // Codex finding on PR #4613: a carriage return that is NOT part
+        // of a CRLF ending is content. Only segments terminated by '\n'
+        // may have their CR stripped; the final segment keeps it.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\r");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\r");
+        // A CR-only line ending mid-file is likewise preserved.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\rbeta\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\rbeta\n");
+    }
+
+    #[test]
     fn test_extract_plain_text_paragraph_heading_byte_identical() {
         // Pre-#1306 behaviour for paragraph/heading-only docs is unchanged.
         let doc = plain_doc(vec![

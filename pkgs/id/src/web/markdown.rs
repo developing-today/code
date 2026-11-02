@@ -5239,14 +5239,27 @@ fn build_mark_chain<'a>(
 /// empty paragraph and the save side (`extract_plain_text`, which joins
 /// paragraphs with a newline) reproduces it exactly: no-edit open/save
 /// is byte-stable for the trailing newline (#1307). A carriage return
-/// left by a CRLF ending is stripped per line: CRLF files are normalized
-/// to LF on save, with their trailing-newline state preserved (Raw mode
-/// stays byte-exact).
+/// left by a CRLF ending is stripped, but only from segments the newline
+/// actually terminated: a lone trailing CR is content and survives. CRLF
+/// files are normalized to LF on save, with their trailing-newline state
+/// preserved (Raw mode stays byte-exact).
 #[must_use]
 pub fn plain_text_to_prosemirror(text: &str) -> Value {
-    let paragraphs: Vec<Value> = text
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+    let segments: Vec<&str> = text.split('\n').collect();
+    let last = segments.len() - 1;
+    let paragraphs: Vec<Value> = segments
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            // Only a segment actually terminated by '\n' can carry the
+            // CR of a CRLF ending; the final segment keeps a lone
+            // trailing CR verbatim (Codex finding on PR #4613).
+            if i < last {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            }
+        })
         .map(|line| {
             if line.is_empty() {
                 json!({"type": "paragraph"})
