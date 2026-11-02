@@ -1040,9 +1040,15 @@ impl std::str::FromStr for SshTarget {
     fn from_str(text: &str) -> anyhow::Result<Self> {
         let (user, rest) = text.rsplit_once('@').unwrap_or(("id", text));
         let port = |digits: &str| {
-            digits
+            anyhow::ensure!(
+                digits.bytes().all(|byte| byte.is_ascii_digit()),
+                "`{digits}` is not a port"
+            );
+            let port = digits
                 .parse::<u16>()
-                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))
+                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))?;
+            anyhow::ensure!(port != 0, "`{digits}` is not a port");
+            Ok(port)
         };
         let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
             let Some((host, tail)) = inner.split_once(']') else {
@@ -2462,7 +2468,20 @@ mod tests {
             parse("me@[2001:db8::1]:2222").unwrap(),
             target("me", "2001:db8::1", 2222)
         );
-        for bad in ["", "host:", "host:99999", "::1", "[::1", "@host", "[::1]x"] {
+        for bad in [
+            "",
+            "host:",
+            "host:0",
+            "[::1]:0",
+            "host:+22",
+            "host:-22",
+            "host:٢٢",
+            "host:99999",
+            "::1",
+            "[::1",
+            "@host",
+            "[::1]x",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
         // #3267: whitespace, control characters, and `/` in the user or
