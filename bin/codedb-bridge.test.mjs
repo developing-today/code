@@ -1,8 +1,14 @@
 // Tests for the codedb MCP bridge (#4120).
 // Run: node --test bin/codedb-bridge.test.mjs
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import http from 'node:http';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { CODEDB_TOOLS, createHandler, parseDaemonUrl, routeForTool } from './codedb-bridge.mjs';
+
+const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 test('daemon URL defaults to the codedb serve origin and rejects non-origins', () => {
   assert.equal(parseDaemonUrl(undefined), 'http://127.0.0.1:7719');
@@ -86,6 +92,47 @@ test('tools/call forwards to the daemon and returns its payload', async () => {
   assert.deepEqual(JSON.parse(search.result.content[0].text).results.map((r) => r.path), ['x.rs', 'y.rs']);
   const hot = await call(handle, 'codedb_hot', { limit: 1 });
   assert.deepEqual(JSON.parse(hot.result.content[0].text).files, ['a']);
+});
+
+test('a slow daemon call does not head-of-line block a later ping (PR #4171 Codex P2)', async () => {
+  const daemon = http.createServer((req, res) => {
+    const respond = () => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ query: 'x', results: [] }));
+    };
+    if (req.url.startsWith('/explore/search')) setTimeout(respond, 1200);
+    else respond();
+  });
+  await new Promise((resolve) => daemon.listen(0, '127.0.0.1', resolve));
+  const child = spawn(process.execPath, [path.join(binDir, 'codedb-bridge.mjs')], {
+    env: { ...process.env, CODEDB_DAEMON_URL: `http://127.0.0.1:${daemon.address().port}` },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  try {
+    const order = [];
+    const done = new Promise((resolve) => {
+      let buf = '';
+      child.stdout.on('data', (chunk) => {
+        buf += chunk;
+        for (const line of buf.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            order.push(JSON.parse(line).id);
+          } catch {}
+        }
+        buf = buf.slice(buf.lastIndexOf('\n') + 1);
+        if (order.length >= 2) resolve();
+      });
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codedb_search', arguments: { query: 'x' } } })}\n`);
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' })}\n`);
+    await done;
+    assert.deepEqual(order, [2, 1], 'ping (id 2) must be answered before the slow search (id 1) completes');
+  } finally {
+    child.stdin.end();
+    child.kill();
+    daemon.close();
+  }
 });
 
 test('daemon errors and an unreachable daemon surface as MCP errors naming the cause', async () => {

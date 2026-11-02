@@ -251,18 +251,40 @@ const main = async () => {
   const handle = createHandler({ fetchFn: (url) => fetch(url), daemonUrl });
   const readline = await import('node:readline');
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
-  for await (const line of rl) {
+  // Requests are dispatched independently, never awaited inside the read
+  // loop: mcpx can share one bridge process across sessions, so a slow
+  // daemon call must not head-of-line block unrelated calls or pings.
+  // Responses are correlated by their JSON-RPC id and may complete out
+  // of order (Codex finding on PR #4171).
+  let pending = 0;
+  let closed = false;
+  const maybeExit = () => {
+    if (closed && pending === 0) process.exit(0);
+  };
+  rl.on('line', (line) => {
     const trimmed = line.trim();
-    if (trimmed === '') continue;
+    if (trimmed === '') return;
     let msg;
     try {
       msg = JSON.parse(trimmed);
     } catch {
-      continue; // not JSON-RPC; codedb's own stdio server ignores malformed lines the same way
+      return; // not JSON-RPC; codedb's own stdio server ignores malformed lines the same way
     }
-    const response = await handle(msg);
-    if (response !== null) process.stdout.write(`${JSON.stringify(response)}\n`);
-  }
+    pending += 1;
+    handle(msg)
+      .then((response) => {
+        if (response !== null) process.stdout.write(`${JSON.stringify(response)}\n`);
+      })
+      .catch(() => {}) // a handler failure must not kill the shared bridge; the caller times out on that one id
+      .finally(() => {
+        pending -= 1;
+        maybeExit();
+      });
+  });
+  rl.on('close', () => {
+    closed = true;
+    maybeExit();
+  });
 };
 
 import { pathToFileURL } from 'node:url';
