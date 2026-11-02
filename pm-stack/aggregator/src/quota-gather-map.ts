@@ -175,10 +175,11 @@ export function entryFromFileExport(
 
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
-  const measuredAt =
-    typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt)
-      ? new Date(result.fetchedAt).toISOString()
-      : tickIso;
+  let measuredAt = tickIso;
+  if (typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt) && result.fetchedAt > 0) {
+    const fetchedDate = new Date(result.fetchedAt);
+    if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
+  }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
   const entry: QuotaCurrentEntry = {
     providerId: result.providerId,
