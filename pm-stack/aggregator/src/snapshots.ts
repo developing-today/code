@@ -99,7 +99,9 @@ export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
   if (typeof r.metricId !== "string" || r.metricId === "") return false;
   if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
   if (typeof r.source !== "string" || !SOURCES.has(r.source)) return false;
-  if (typeof r.count !== "number" || !(r.count >= 1)) return false;
+  // count is a record tally: fractional or infinite counts are malformed
+  // and must not seed readAll/rollupKeys/compaction with corrupt totals.
+  if (typeof r.count !== "number" || !Number.isInteger(r.count) || r.count < 1) return false;
   if (typeof r.observedBy !== "string" || r.observedBy === "") return false;
   for (const f of [r.firstTs, r.lastTs, r.minTs, r.maxTs]) {
     if (typeof f !== "string" || Number.isNaN(Date.parse(f))) return false;
