@@ -169,8 +169,13 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
     // suffix: the archive claim path always formats a u64.
     if let Some(pos) = name.rfind(".archive.") {
         let ts_str = &name[pos + ".archive.".len()..];
-        if let Ok(ts) = ts_str.parse::<u64>() {
-            return (FileKind::Archive, Some(ts));
+        // The producer's Display form is unsigned decimal digits only:
+        // parse::<u64>() would also accept a leading '+', a spelling no
+        // producer mints (#4329).
+        if !ts_str.is_empty() && ts_str.bytes().all(|b| b.is_ascii_digit()) {
+            if let Ok(ts) = ts_str.parse::<u64>() {
+                return (FileKind::Archive, Some(ts));
+            }
         }
     }
 
@@ -206,18 +211,36 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
     // timestamp malformed (#1879). Dropping failed segments let junk like
     // "2026-03-12-draft" collapse onto the valid "2026-03-12" and parse
     // as the same instant.
-    let date_parts: Vec<u64> = parts[0]
-        .split('-')
-        .map(|p| p.parse().ok())
-        .collect::<Option<Vec<u64>>>()?;
-    let time_parts: Vec<u64> = parts[1]
-        .split(':')
-        .map(|p| p.parse().ok())
-        .collect::<Option<Vec<u64>>>()?;
+    let date_strs: Vec<&str> = parts[0].split('-').collect();
+    let time_strs: Vec<&str> = parts[1].split(':').collect();
 
-    if date_parts.len() != 3 || time_parts.len() != 3 {
+    if date_strs.len() != 3 || time_strs.len() != 3 {
         return None;
     }
+
+    // Components must carry the canonical spellings of the documented
+    // format: a 4-digit year and 2-digit everything else, digits
+    // only (#4329). parse::<u64>() alone accepts any width and a leading
+    // '+', so non-canonical spellings like "2026-3-2T6:4:2Z" or a
+    // "+2026" year used to map onto the canonical instant.
+    let canonical = |s: &str, width: usize| {
+        s.len() == width && s.bytes().all(|b| b.is_ascii_digit())
+    };
+    if !canonical(date_strs[0], 4)
+        || !date_strs[1..].iter().all(|p| canonical(p, 2))
+        || !time_strs.iter().all(|p| canonical(p, 2))
+    {
+        return None;
+    }
+
+    let date_parts: Vec<u64> = date_strs
+        .iter()
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    let time_parts: Vec<u64> = time_strs
+        .iter()
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
 
     let (year, month, day) = (date_parts[0], date_parts[1], date_parts[2]);
     let (hour, min, sec) = (time_parts[0], time_parts[1], time_parts[2]);
@@ -3405,6 +3428,42 @@ mod tests {
         assert!(parse_iso_timestamp("2026-03-12T06:42").is_none());
         // Junk fractional seconds.
         assert!(parse_iso_timestamp("2026-03-12T06:42:30.abcZ").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_rejects_noncanonical_spellings() {
+        // Regression (#4329): only the canonical fixed-width spellings
+        // classify; non-padded, over-wide, and '+'-signed components
+        // used to parse onto the canonical instant (control:
+        // 2026-03-12T06:42:30Z is Some(1_773_297_750)).
+        for s in [
+            "2026-3-12T6:42:30Z",
+            "2026-03-12T06:4:2Z",
+            "2026-3-2T6:4:2Z",
+            "+2026-03-12T06:42:30Z",
+            "02026-03-12T06:42:30Z",
+            "2026-003-12T06:42:30Z",
+            "2026-03-12T+06:42:30Z",
+            "2026-03-12T06:42:3Z",
+        ] {
+            assert!(parse_iso_timestamp(s).is_none(), "{s}");
+        }
+    }
+
+    #[test]
+    fn test_classify_tag_noncanonical_spellings_are_primary() {
+        // Regression (#4329): near-miss spellings of the producer-shaped
+        // names are ordinary files, not auto-backups or archives.
+        for name in [
+            "auto-2026-3-12T6:42:30Z",
+            "auto-+2026-03-12T06:42:30Z",
+            "auto-02026-03-12T06:42:30Z",
+            "notes.archive.+123",
+        ] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
     }
 
     #[test]
