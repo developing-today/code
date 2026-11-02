@@ -457,13 +457,22 @@ the load-bearing claims against the code and configuration (see
 | DNS (#906) | Fleet feed `dns` section, parsed collector-side from the #902 register | fixtures when no section exists | collector (sandbox) |
 | Registry (#906) | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file | fixtures when the feed is absent | aggregator unit + collector |
 | **Projector** (service) | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it |
-| **Pad** (service) | — (the aggregator reads no Pad data; Pad is not a facet source) | — | **Deployed as the planning layer only**: Pad container (compose, `pm-stack/pad/`); named here so its absence from the facet rows is a stated fact, not an omission |
+| **Pad** (service) | — (the aggregator reads no Pad data; Pad is not a facet source) | — | **Deployed as the planning layer only**: NixOS OCI container `pm-pad`, declared by `services.pm-apps` (`nixos/services/pm-apps/default.nix`); named here so its absence from the facet rows is a stated fact, not an omission |
 
-Observed runtime (checked 2026-11-02 by the task 4902 worker):
-`systemctl --user is-active pm-projector pm-aggregator` → both
-`active`; the projector's `/health` answered `ok` with 8,134 items
-and 41,169 comments projected. That is a dated observation, not a
-standing claim — re-run the commands before citing it as current.
+Observed runtime (checked 2026-11-02 by task 6104 via the stack's status
+surfaces): at `06:04:56.726Z`, the aggregator briefly reported the
+projector `down` (1.5s probe timeout) and Comments `fixtures`, while Pad
+was `up` (HTTP 200). At `06:07:46.665Z`, its `/api/health` recheck showed
+Pad and projector `up` (HTTP 200), Comments `live (projector)`, and
+`degraded=false`. Direct checks during the same pass found `pm-pad`
+running/healthy with `/api/v1/health` version `0.18.1`; projector `/health`
+returned 8,189 items and 41,961 comments, and a direct `/comments` read
+returned a projected issue comment. This later read supersedes the brief
+timeout and the earlier task 4902 successful read (8,134 items, 41,169
+comments). These are point-in-time observations, not standing health
+claims. The deployment cells above describe declared configuration; they
+do not imply that a service is currently healthy or that its live data is
+reaching the aggregator.
 
 ### Keeping the matrix honest
 
