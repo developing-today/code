@@ -61,22 +61,21 @@ impl GroupLog {
         let mut events = Vec::new();
         let mut kept = 0;
         for (number, line) in text.split_inclusive('\n').enumerate() {
+            if !line.ends_with('\n') {
+                tracing::warn!(
+                    "group log {}: dropping torn final entry at byte {kept}",
+                    path.display()
+                );
+                break;
+            }
             if line.trim().is_empty() {
                 kept += line.len();
                 continue;
             }
-            let complete = line.ends_with('\n');
             match serde_json::from_str::<Event>(line.trim_end()) {
                 Ok(event) => {
                     events.push(event);
                     kept += line.len();
-                }
-                Err(_) if !complete => {
-                    tracing::warn!(
-                        "group log {}: dropping torn final entry at byte {kept}",
-                        path.display()
-                    );
-                    break;
                 }
                 Err(error) => {
                     return Err(error).with_context(|| {
@@ -453,5 +452,31 @@ mod tests {
         // The torn bytes are truncated, so the next append is not glued
         // onto them and replays cleanly on the next open.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+    }
+
+    #[test]
+    fn test_a_parseable_torn_final_line_is_dropped_before_append() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        let first = log.record(OWNER, None, create_body()).unwrap().event;
+        log.record(OWNER, None, create_body()).unwrap();
+        drop(log);
+
+        let complete = std::fs::read_to_string(&path).unwrap();
+        let last_complete_line_end = complete[..complete.len() - 1].rfind('\n').unwrap() + 1;
+        let kept = &complete[..last_complete_line_end];
+        std::fs::write(&path, &complete[..complete.len() - 1]).unwrap();
+
+        let mut reopened = GroupLog::open(&path).unwrap();
+        assert_eq!(reopened.events().len(), 1);
+        assert!(reopened.projection().unwrap().group(&first).is_some());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), kept);
+
+        reopened.record(OWNER, None, create_body()).unwrap();
+        drop(reopened);
+        let roundtrip = GroupLog::open(&path).unwrap();
+        assert_eq!(roundtrip.events().len(), 2);
+        assert!(roundtrip.projection().unwrap().group(&first).is_some());
     }
 }

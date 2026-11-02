@@ -297,7 +297,12 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
   const windowMetric = (w: unknown): void => {
     if (typeof w !== "object" || w === null) return;
     const win = w as { used_percent?: unknown; limit_window_seconds?: unknown };
-    if (typeof win.used_percent !== "number") return;
+    if (
+      typeof win.used_percent !== "number" ||
+      !Number.isFinite(win.used_percent) ||
+      win.used_percent < 0 ||
+      win.used_percent > 100
+    ) return;
     const metricId =
       win.limit_window_seconds === 604_800 ? "7-day" : win.limit_window_seconds === 18_000 ? "5-hour" : null;
     if (!metricId) return;

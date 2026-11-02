@@ -23,7 +23,7 @@
 use id::sandbox::{Sandbox, SandboxLimits};
 
 const COUNTER_WASM: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
-const TIC_TAC_TOE_WASM: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+const TIC_TAC_TOE_WASM: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 
 /// The #2271 scripted sequences, shared verbatim with the isolate runner.
 /// Tic-tac-toe: X plays 0, O plays 4, X plays 1, O retries the occupied 4

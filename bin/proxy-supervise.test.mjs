@@ -200,6 +200,29 @@ test('loadConfig rejects bad ports and altPortOffset values', () => {
   assert.match(loadBad({ proxies: [{ ...validProxy, canonicalPort: 65000, altPortOffset: 1000 }] }), /field 'altPortOffset' makes canonicalPort \+ altPortOffset exceed 65535/);
 });
 
+test('loadConfig rejects port collisions between proxies on the same host (#4094)', () => {
+  const other = { name: 'p2', command: ['/bin/true'], canonicalPort: 19742, portEnv: 'P2_PORT' };
+  const loadOk = (config) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-supervise-okcfg-'));
+    const configPath = path.join(root, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify(config));
+    return loadConfig(configPath);
+  };
+  // canonical vs canonical (validProxy claims 18742 and, by the default
+  // offset, 19742 — so `other` at 19742 is also canonical vs alternate).
+  assert.match(loadBad({ proxies: [validProxy, { ...other, canonicalPort: 18742 }] }), /field 'canonicalPort' port 18742 on host '127\.0\.0\.1' is already claimed by proxy 'p1' as its canonicalPort/);
+  assert.match(loadBad({ proxies: [validProxy, other] }), /port 19742 .* already claimed by proxy 'p1' as its altPort/);
+  // alternate vs alternate: 18742+500 and 19000+242 are both 19242.
+  assert.match(
+    loadBad({ proxies: [{ ...validProxy, altPortOffset: 500 }, { ...other, canonicalPort: 19000, altPortOffset: 242 }] }),
+    /field 'altPort' port 19242 .* already claimed by proxy 'p1' as its altPort/,
+  );
+  // The same ports on a different host are different claims and stay valid,
+  // as does a fully distinct port set on the same host.
+  assert.equal(loadOk({ proxies: [validProxy, { ...other, canonicalPort: 18742, host: '127.0.0.2' }] }).proxies.length, 2);
+  assert.equal(loadOk({ proxies: [validProxy, { ...other, canonicalPort: 20742 }] }).proxies.length, 2);
+});
+
 test('loadConfig rejects out-of-range or non-integer timeouts', () => {
   assert.match(loadBad({ drainSeconds: 'soon', proxies: [] }), /field 'drainSeconds' must be an integer in 0\.\.=3600/);
   assert.match(loadBad({ drainSeconds: -1, proxies: [] }), /field 'drainSeconds'/);

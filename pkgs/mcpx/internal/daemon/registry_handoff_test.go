@@ -125,7 +125,7 @@ func detachRemote(t *testing.T, url string) (*Registry, *RegistryHandoff) {
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestSuccessorShutdownWaitsForABlockedOrphanTermination(t *testing.T) {
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestDaemonRestartWaitsForABlockedOrphanTermination(t *testing.T) {
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestAbortedTakeoverLeavesARemovedServersSessionAlone(t *testing.T) {
 		t.Fatalf("an aborted handoff ended the upstream session with %d DELETE(s)", deletes)
 	}
 	p, _ := old.Pool("remote")
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestSuccessorServeWaitsForABlockedOrphanTerminationOnHandoff(t *testing.T) 
 	if !ok {
 		t.Fatal("no pool for remote")
 	}
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatal(err)
 	}

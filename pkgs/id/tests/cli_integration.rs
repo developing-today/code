@@ -675,6 +675,43 @@ mod find_search_tests {
         );
         assert!(combined.contains("no matches") || output.status.success());
     }
+
+    #[test]
+    fn test_bulk_download_collision_fails_before_writing_for_find_and_search() {
+        let tmp = TempDir::new().unwrap();
+        let first_file = tmp.path().join("first-source.txt");
+        let second_file = tmp.path().join("second-source.txt");
+        fs::write(&first_file, b"first report").unwrap();
+        fs::write(&second_file, b"second report").unwrap();
+
+        let first_spec = format!("{}:one/report.txt", first_file.display());
+        let second_spec = format!("{}:two/report.txt", second_file.display());
+        run_cmd_success(&["put", &first_spec, &second_spec], tmp.path());
+
+        for (command, output_dir) in [("find", "find-output"), ("search", "search-output")] {
+            let output = run_cmd(
+                &[command, "--all", "--dir", output_dir, "report.txt"],
+                tmp.path(),
+            );
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !output.status.success(),
+                "{command} should reject colliding destinations: {combined}"
+            );
+            assert!(
+                combined.contains("collision"),
+                "{command} should explain the collision: {combined}"
+            );
+            assert!(
+                !tmp.path().join(output_dir).exists(),
+                "{command} must reject the batch before creating or writing its destination"
+            );
+        }
+    }
 }
 
 mod id_tests {
@@ -3804,6 +3841,72 @@ mod serve_tests {
         assert!(
             instance_dir.exists(),
             ".iroh/test-instance/ should be created"
+        );
+        assert!(
+            instance_dir.join(".iroh-key").exists(),
+            "Key file should be in named instance directory"
+        );
+    }
+
+    /// Test that space-form `--new <subcommand>` does not swallow the
+    /// subcommand as the instance name (#3144): `id --new id` must run the
+    /// `id` subcommand under a randomly-named instance, like `--new= id`.
+    #[test]
+    fn test_new_flag_space_form_subcommand_not_swallowed() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let iroh_dir = tmp.path().join(".iroh");
+        assert!(iroh_dir.exists(), ".iroh/ directory should be created");
+        assert!(
+            !iroh_dir.join("id").exists(),
+            "the subcommand token must not become the instance directory"
+        );
+
+        let entries: Vec<_> = fs::read_dir(&iroh_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Should have exactly one auto-generated subdirectory"
+        );
+        let name = entries[0].file_name().to_string_lossy().to_string();
+        assert_eq!(name.len(), 8, "Auto-generated name should be 8 chars");
+        assert!(
+            name.chars().all(|c| c.is_ascii_hexdigit()),
+            "Auto-generated name should be hex: {name}"
+        );
+        assert!(
+            iroh_dir.join(&name).join(".iroh-key").exists(),
+            "Key file should be created in instance directory"
+        );
+    }
+
+    /// Test that space-form `--new <name> <subcommand>` still creates the
+    /// named instance and runs the subcommand (#3144 preserved form).
+    #[test]
+    fn test_new_flag_space_form_named() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new", "space-dev", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new space-dev id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let instance_dir = tmp.path().join(".iroh").join("space-dev");
+        assert!(
+            instance_dir.exists(),
+            ".iroh/space-dev/ should be created"
         );
         assert!(
             instance_dir.join(".iroh-key").exists(),

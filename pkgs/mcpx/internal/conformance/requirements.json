@@ -8227,7 +8227,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "partial — no rate limiting"
+      "server": "yes — suggestions ranked by relevance (exact \u003e prefix \u003e substring tiers, `rankCompletions` in `internal/daemon/ops.go`, #2388) and completion requests rate limited per caller (`completion.perMinute`) and per server (`completion.serverPerMinute`) at the /v1 choke point (#2387); inputs validated (see completion-errors)"
     }
   },
   {
@@ -8273,7 +8273,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "**no** for rate limiting (none found); access control inherits mcpx's lack of auth"
+      "server": "partial — inputs validated and rate limiting implemented per caller (`completion.perMinute`) and per server (`completion.serverPerMinute`) (#2387); control of access to sensitive suggestions and prevention of completion-based information disclosure still pending principals (#1968) / permissive-auth (#1972)"
     }
   },
   {
