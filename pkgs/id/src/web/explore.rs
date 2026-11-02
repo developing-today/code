@@ -354,8 +354,8 @@ fn label_html(label: &Label) -> String {
 }
 
 async fn invite_handler(uri: axum::http::Uri) -> Response {
-    let page = Invite::from_query(uri.query().unwrap_or(""))
-        .and_then(|invite| invite_page(&invite));
+    let page =
+        Invite::from_query(uri.query().unwrap_or("")).and_then(|invite| invite_page(&invite));
     match page {
         Ok(body) => respond(StatusCode::OK, &body, None),
         Err(error) => respond(
@@ -1037,10 +1037,16 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         // Verify that web path refuses non-canonical hex encodings (percent-encoded key).
-        let bad_percent = format!("/invite?key=%61a11{}&node={node}&name=Ann", "a11".repeat(20));
+        let bad_percent = format!(
+            "/invite?key=%61a11{}&node={node}&name=Ann",
+            "a11".repeat(20)
+        );
         let (status, _, _) = send(
             &app,
-            Request::builder().uri(&bad_percent).body(Body::empty()).unwrap(),
+            Request::builder()
+                .uri(&bad_percent)
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1049,7 +1055,10 @@ mod tests {
         let bad_plus = format!("/invite?key=+{key}&node={node}&name=Ann");
         let (status, _, _) = send(
             &app,
-            Request::builder().uri(&bad_plus).body(Body::empty()).unwrap(),
+            Request::builder()
+                .uri(&bad_plus)
+                .body(Body::empty())
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);

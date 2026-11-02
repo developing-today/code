@@ -1437,7 +1437,6 @@ mod tests {
         assert!(result.contains("lines:")); // Header should show line count
     }
 
-
     // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
     // printers' doubling — saturating arithmetic prints short content once,
     // with no omitted-count line and no panic.
