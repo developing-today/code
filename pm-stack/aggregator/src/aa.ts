@@ -26,10 +26,26 @@ import type {
 // The Supabase Management API serializes numeric columns as JSON
 // strings, so every number crosses a coercion gate here; anything
 // unparseable becomes null ("not measured"), never 0.
+//
+// Strict decimal contract (#2985; pins from triage task 4291, design
+// #3005 Phase 1 "a measurement is a plain decimal"): a string counts
+// as a measurement ONLY if it is a plain decimal spelling — optional
+// sign, digits with optional fraction, or `.digits` — with no trim,
+// no `0x`/`0b`/`0o` prefix (any case), and no exponent. Radix,
+// scientific, and whitespace-padded spellings all return null.
+// PIN 1 (scientific REJECTED): no AA source serializes a measurement
+// in e-notation — Postgres `numeric` → jsonb spelling is always plain
+// decimal, and Test_Runs cells are human-entered decimals where
+// e-notation is formatting drift, not a serialization.
+// PIN 2 (padded REJECTED): the legitimate string producers (Postgres
+// jsonb numerics, JSON config limits) never emit padding; padding is
+// import drift, covered by the same no-trim rule.
+
+const PLAIN_DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 export function num(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string" && v.trim() !== "") {
+  if (typeof v === "string" && PLAIN_DECIMAL.test(v)) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }
