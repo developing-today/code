@@ -1083,6 +1083,7 @@ let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       suites = [
         "laptop-backups-watchdog"
+        "laptop-state-backup"
         "pm-dashboard-backup"
         "pm-dashboard-backup-copy"
         "pm-dashboard-backup-date"
