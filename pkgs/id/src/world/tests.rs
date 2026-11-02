@@ -127,6 +127,71 @@ mod tests {
     }
 
     #[test]
+    fn restore_checkpoint_sequence_does_not_wrap_at_u64_max() {
+        fn system_event(sequence: u64) -> WorldEvent {
+            WorldEvent {
+                sequence,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: "checkpoint boundary test".to_owned(),
+                },
+            }
+        }
+
+        fn checkpoint(sequence: u64, events: Vec<WorldEvent>) -> JournalEntry {
+            JournalEntry::Checkpoint {
+                sequence,
+                module_hash: "h".to_owned(),
+                seed: 1,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: None,
+                snapshot: "s".to_owned(),
+                events,
+            }
+        }
+
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                checkpoint(0, vec![system_event(u64::MAX), system_event(0)]),
+            ],
+        )
+        .err()
+        .expect("wrapped checkpoint sequence must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("journal checkpoint events are out of order"),
+            "{error:#}"
+        );
+
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                checkpoint(
+                    u64::MAX,
+                    vec![system_event(u64::MAX - 1), system_event(u64::MAX)],
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.sequence, u64::MAX);
+    }
+
+    #[test]
     fn restore_accepts_v1_and_v2_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
