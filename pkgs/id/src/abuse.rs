@@ -962,6 +962,13 @@ impl AbuseEvaluator {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_connection_count(&self, endpoint: &EndpointId) -> usize {
+        self.endpoints
+            .get(endpoint)
+            .map_or(0, |state| state.connections.len())
+    }
+
     /// Admits one frame from `endpoint`, drawing on the endpoint's
     /// shared frame bucket (the authorized or pre-authorization
     /// bucket per `authorized`). Admitted frames are counted in the
