@@ -8,6 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AA_GO_CAPS,
   aaAbsent,
   aaCaiPoints,
   aaCatalogFromConfig,
@@ -144,6 +145,12 @@ describe("Test_Runs mapping", () => {
 });
 
 describe("coverage name matching", () => {
+  test("OpenCode Go cap keys are normalized fixed points", () => {
+    for (const key of Object.keys(AA_GO_CAPS)) {
+      expect(normalizeModelName(key)).toBe(key);
+    }
+  });
+
   test("normalization keeps point versions distinct (GPT-6 vs GPT-6.1)", () => {
     expect(normalizeModelName("GPT-6 Sol")).toBe("gpt 6 sol");
     expect(normalizeModelName("gpt-6.1-sol")).toBe("gpt 6 1 sol");
@@ -416,6 +423,8 @@ describe("fleet catalog (Model Explorer)", () => {
       "opencode-go.personal": { "instanceOf": "opencode-go" },
       "opencode-go.lab": { "name": "OpenCode Go — Lab", "models": {
         "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
+        "muse-spark-1.3-contributor": { "name": "Muse Spark 1.3 Contributor" },
+        "gemini-4-argon-contributor": { "name": "Gemini 4 Argon Contributor" },
       } },
     },
     "experimental": { "model_routes": {
@@ -439,7 +448,7 @@ describe("fleet catalog (Model Explorer)", () => {
       rankings: [],
     });
     expect(catalog).not.toBeNull();
-    expect(catalog!.length).toBe(3); // the instanceOf alias contributes none
+    expect(catalog!.length).toBe(5); // the instanceOf alias contributes none
     const luna = catalog!.find((e) => e.id === "openai/gpt-6-luna")!;
     expect(luna.routes).toEqual(["inner", "outer"]);
     expect(luna.contextLimit).toBe(1050000);
@@ -456,6 +465,10 @@ describe("fleet catalog (Model Explorer)", () => {
     const dsFlash = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
     expect(dsFlash.goCapUsd).toBe(80); // published Go cap (docs reading)
     expect(dsFlash.plan).toBe("OpenCode Go — Lab");
+    const muse = catalog!.find((e) => e.id === "opencode-go.lab/muse-spark-1.3-contributor")!;
+    expect(muse.goCapUsd).toBe(12);
+    const gemini = catalog!.find((e) => e.id === "opencode-go.lab/gemini-4-argon-contributor")!;
+    expect(gemini.goCapUsd).toBe(12);
   });
 
   test("null on unparseable config", () => {
