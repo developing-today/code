@@ -408,29 +408,44 @@ fn causal_order(nodes: &[Node], position: &HashMap<Hash, usize>) -> Result<Vec<u
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
 
-    let mut placed = vec![false; nodes.len()];
-    let mut queued = vec![false; nodes.len()];
-    let mut order = Vec::with_capacity(nodes.len());
+    // Dependency counts and child adjacency lists (as in the groups fold) enqueue each node
+    // exactly when its last dependency is placed, so ordering a history is linear in its
+    // size instead of rescanning every node after each placement.
+    let mut waiting = vec![0usize; nodes.len()];
+    let mut blocked = vec![false; nodes.len()];
+    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
     let mut ready: BinaryHeap<Reverse<(Hash, usize)>> = BinaryHeap::new();
-    loop {
-        for (index, node) in nodes.iter().enumerate() {
-            if placed[index] || queued[index] {
-                continue;
-            }
-            let is_ready = node.after.iter().all(|dep| match position.get(dep) {
-                Some(&other) => placed[other],
-                None => node.excluded,
-            });
-            if is_ready {
-                queued[index] = true;
-                ready.push(Reverse((node.id, index)));
+    for (index, node) in nodes.iter().enumerate() {
+        let after: HashSet<&Hash> = node.after.iter().collect();
+        let mut dependencies: HashSet<usize> = HashSet::new();
+        for dep in &after {
+            match position.get(dep) {
+                Some(&other) => {
+                    dependencies.insert(other);
+                }
+                // An absent dependency is dropped only for an excluded node; any other
+                // node naming one can never be placed, as before.
+                None if !node.excluded => blocked[index] = true,
+                None => {}
             }
         }
-        let Some(Reverse((_, index))) = ready.pop() else {
-            break;
-        };
-        placed[index] = true;
+        waiting[index] = dependencies.len();
+        for other in dependencies {
+            children.entry(other).or_default().push(index);
+        }
+        if waiting[index] == 0 && !blocked[index] {
+            ready.push(Reverse((node.id, index)));
+        }
+    }
+    let mut order = Vec::with_capacity(nodes.len());
+    while let Some(Reverse((_, index))) = ready.pop() {
         order.push(index);
+        for child in children.remove(&index).unwrap_or_default() {
+            waiting[child] -= 1;
+            if waiting[child] == 0 && !blocked[child] {
+                ready.push(Reverse((nodes[child].id, child)));
+            }
+        }
     }
     if order.len() != nodes.len() {
         return Err(corrupt(
@@ -582,6 +597,25 @@ mod tests {
         let smaller_first = (Hash::digest([11]) < Hash::digest([12]))
             == (ids[0] == Hash::digest([11]));
         assert!(smaller_first);
+    }
+
+    /// A long chain stored newest-first comes out oldest-first: each node is enqueued by
+    /// its parent's placement through the adjacency lists, with no rescan.
+    #[test]
+    fn test_causal_order_places_a_long_chain_in_order() {
+        let nodes: Vec<Node> = (0..64u8)
+            .rev()
+            .map(|n| node(n, if n == 0 { &[][..] } else { &[n - 1][..] }))
+            .collect();
+        let position: HashMap<Hash, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id, index))
+            .collect();
+        let order = causal_order(&nodes, &position).unwrap();
+        let ids: Vec<Hash> = order.iter().map(|&index| nodes[index].id).collect();
+        let expected: Vec<Hash> = (0..64u8).map(|n| Hash::digest([n])).collect();
+        assert_eq!(ids, expected);
     }
 }
 

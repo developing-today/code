@@ -12,9 +12,10 @@
 //!
 //! The final state depends only on the set of events, not on the order they arrive in. That is
 //! the property the tests in `tests/membership_properties.rs` check. Concurrent creates of
-//! one group are part of that promise: the gate crowns the canonical winner (causal order,
-//! ties to the smaller event ID, as in the groups fold), and when the winner arrives second
-//! the layer re-decides the events it holds in canonical order, so the loser ends refused
+//! one group are part of that promise: the layer crowns the canonical winner (causal order,
+//! ties to the smaller event ID, as in the groups fold) by re-deciding the events it holds
+//! in canonical order whenever a create meets a standing concurrent create, so the loser
+//! ends refused
 //! and the refreshed outcomes returned by that [`Membership::receive`] call supersede the
 //! ones returned earlier for the same events.
 
@@ -1024,6 +1025,57 @@ mod tests {
             layer.members(id(200)),
             vec![(AuthId::Key(key(8)), Access::manage())]
         );
+    }
+
+    #[test]
+    fn test_concurrent_creates_with_interleaved_ancestors_converge() {
+        // Regression (Codex finding on PR #4099): canonical precedence is not raw event-ID
+        // order. Create A has the smaller ID but causally follows a non-auth event X whose
+        // ID is larger than create B's, so the canonical feed places B first (the ready set
+        // is {B, X} and B is smaller). B is the winner in every arrival order even though
+        // A < B; comparing the two create IDs alone crowned A when A arrived before B and
+        // B when B arrived first, so replicas diverged on the same event set.
+        let mut bytes: Vec<u8> = (0..=250u8).filter(|n| *n != 200).collect();
+        bytes.sort_by_key(|n| id(*n));
+        let (a, b, x) = (bytes[0], bytes[1], bytes[2]);
+        assert!(id(a) < id(b) && id(b) < id(x));
+        let mut create_a = create_named(a, 7, 200, &[7]);
+        create_a.after = vec![id(x)];
+        let events: HashMap<u8, CausalEvent> = [
+            (a, create_a),
+            (b, create_named(b, 8, 200, &[8])),
+            (x, other(x, &[])),
+        ]
+        .into_iter()
+        .collect();
+        for arrival in [[x, a, b], [b, x, a], [b, a, x], [x, b, a]] {
+            let mut layer = Membership::new();
+            let mut last = Vec::new();
+            for n in arrival {
+                last = layer.receive(events[&n].clone()).unwrap();
+            }
+            assert_eq!(
+                layer.members(id(200)),
+                vec![(AuthId::Key(key(8)), Access::manage())],
+                "arrival {arrival:?}",
+            );
+            assert!(layer.is_effective(&id(b)), "arrival {arrival:?}");
+            assert!(!layer.is_effective(&id(a)), "arrival {arrival:?}");
+            // The final receive's refreshed outcomes refuse A with GroupExists.
+            assert!(
+                last.iter().any(|(hash, outcome)| {
+                    *hash == id(a)
+                        && matches!(
+                            outcome,
+                            Outcome::Refused {
+                                reason: Refusal::Gate(Rejection::GroupExists),
+                                ..
+                            }
+                        )
+                }),
+                "arrival {arrival:?}: {last:?}",
+            );
+        }
     }
 }
 

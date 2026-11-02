@@ -38,9 +38,11 @@ pub enum Admission {
     Wait(Vec<Hash>),
     /// Refuse the operation. The reason is for the void record.
     Reject(Rejection),
-    /// A concurrent create with the smaller event ID: it displaces the standing create named
-    /// here, which loses as if it had been refused with [`Rejection::GroupExists`]. Only the
-    /// layer can displace, by re-deciding the events it holds in canonical order.
+    /// A concurrent create for a group the standing create named here already made. Which of
+    /// the two stands is decided by the layer, by re-deciding the events it holds in
+    /// canonical order; the loser ends as if it had been refused with
+    /// [`Rejection::GroupExists`]. The gate never names the winner itself: canonical
+    /// precedence depends on the creates' causal ancestors, not only on their event IDs.
     Displace(Hash),
 }
 
@@ -77,13 +79,14 @@ pub fn admit(state: &GroupState, op: &AuthOperation) -> Admission {
         }
         // Concurrent creates of one group: the canonical rule decides, as in the groups fold
         // (causal order, ties to the smaller event ID), so every replica crowns the same
-        // create whatever order the two arrived in. The smaller ID stands; the larger is
-        // refused, or displaces the standing create when it arrives second.
-        return if op.id < standing.id {
-            Admission::Displace(standing.id)
-        } else {
-            Admission::Reject(Rejection::GroupExists)
-        };
+        // create whatever order the two arrived in. The gate cannot name the winner here:
+        // canonical precedence is not raw event-ID order -- a create whose causal ancestors
+        // carry larger IDs is placed after a concurrent create with a larger ID whose past
+        // is already placed, so comparing the two create IDs alone crowns different winners
+        // depending on arrival order. Every concurrent create therefore displaces, and the
+        // layer re-decides the events it holds in canonical order, where the first create
+        // decided stands and the other is refused.
+        return Admission::Displace(standing.id);
     }
     if op.dependencies.is_empty() {
         return Admission::Reject(Rejection::NoDependencies);
@@ -246,12 +249,15 @@ mod tests {
     }
 
     #[test]
-    fn test_a_concurrent_create_with_the_larger_id_is_rejected() {
+    fn test_a_concurrent_create_with_the_larger_id_also_displaces() {
+        // The gate does not crown the smaller ID on the spot: a larger-ID create can still
+        // be the canonical winner when the smaller one's causal ancestors place it later,
+        // so both ID orders displace and the layer's canonical re-decision decides.
         let (small, large) = ordered_pair();
         let state = Graph::process(Graph::init(), &create_named(small, 30, &[1])).unwrap();
         assert_eq!(
             admit(&state, &create_named(large, 30, &[2])),
-            Admission::Reject(Rejection::GroupExists)
+            Admission::Displace(Hash::digest([small]))
         );
     }
 
