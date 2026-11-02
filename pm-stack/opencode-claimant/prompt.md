@@ -70,8 +70,11 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 4. For each candidate, highest queue priority first, while cap room
    remains:
    a. Re-verify the task is still claimed, still lane `opencode`,
-   still unbound (re-run poll.py for that task id). If it changed,
-   skip it -- someone else owns the launch now.
+   still unbound, and still at stage `handed_off` (re-run poll.py
+   for that task id -- its candidate filter encodes all four). If
+   it changed, skip it -- someone else owns the launch now. A task
+   that is assigned `opencode` but NOT handed off belongs to its
+   claiming lane, which is working it: never launch into it.
    b. Create the worker session on the standing OpenCode server
    (`POST /api/session`, directory = the repo's laptop primary,
    title naming the queue task and issue, model = the route above).
@@ -87,9 +90,12 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    a different existing binding -- a bind error means someone else
    owns the launch; do not prompt your session, note it in the fire
    log, and move on. Then run the helper
-   `checkpoint <id> --worker opencode-claimant --stage launched`
-   with the session id in the progress JSON. A launch without this
-   binding is the Oct 28 duplicate-PR defect -- never leave one.
+   `checkpoint <id> --worker <worker_id> --stage launched`
+   with the session id in the progress JSON -- the checkpoint verb
+   enforces claim ownership, so it runs as the candidate's
+   `worker_id` (the claiming repo worker), not as yourself. A
+   launch without this binding is the Oct 28 duplicate-PR defect
+   -- never leave one.
    d. Send the worker prompt to the bound session: the queue runbook
    for its queue with the task id, issue, and packet inlined,
    instructing it to work THAT task (it is already claimed and
