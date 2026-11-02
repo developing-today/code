@@ -47,7 +47,8 @@ pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, sanitize_chat, sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
+    sanitize_display_name, token_digest,
 };
 
 /// A chat participant may send at most this many lines during the rolling window.

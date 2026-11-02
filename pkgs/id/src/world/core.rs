@@ -232,13 +232,22 @@ impl WorldCore {
                     // could have produced. Mint sanitizes every name
                     // (control and format characters stripped, capped at
                     // 48 chars, trimmed) and refuses an empty result, so a
-                    // name that differs from its own sanitization — or is
-                    // empty — comes from a journal no live path can write;
-                    // refuse the whole restore.
+                    // name that is a fixed point of neither sanitization
+                    // — or is empty — comes from a journal no live path
+                    // can write; refuse the whole restore. The pre-#2112
+                    // sanitizer (control characters only) is also accepted:
+                    // journals minted before format stripping landed can
+                    // legitimately carry ZWJ/ZWNJ names such as family
+                    // emoji, and those worlds restored fine before this
+                    // check existed.
                     ensure!(
                         !participant.display_name.is_empty()
-                            && participant.display_name
-                                == sanitize_display_name(&participant.display_name),
+                            && (participant.display_name
+                                == sanitize_display_name(&participant.display_name)
+                                || participant.display_name
+                                    == legacy_sanitize_display_name(
+                                        &participant.display_name
+                                    )),
                         "participant {} has a display name mint could not have produced",
                         participant.id
                     );

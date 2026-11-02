@@ -75,6 +75,22 @@ pub(crate) fn sanitize_display_name(name: &str) -> String {
         .to_owned()
 }
 
+/// The display-name sanitizer as it existed before #2112 (commit
+/// 872aa09f) added format-character stripping: control characters
+/// stripped, 48-char cap, trimmed. Journals written by that earlier
+/// mint can legitimately carry names that are fixed points of this
+/// version but not of the current one — ZWJ/ZWNJ sequences such as
+/// family emoji are the common case — and restore accepts those for
+/// journal compatibility (see the #2960 check in `WorldCore::restore`).
+pub(crate) fn legacy_sanitize_display_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| !ch.is_control())
+        .take(48)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
 pub(crate) fn sanitize_chat(text: &str) -> String {
     text.chars()
         .filter(|ch| {
@@ -88,7 +104,7 @@ pub(crate) fn sanitize_chat(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{sanitize_chat, sanitize_display_name};
+    use super::{legacy_sanitize_display_name, sanitize_chat, sanitize_display_name};
 
     #[test]
     fn display_name_strips_bidi_override() {
@@ -104,6 +120,14 @@ mod tests {
     fn display_name_strips_joiners() {
         assert_eq!(sanitize_display_name("a\u{200d}b"), "ab");
         assert_eq!(sanitize_display_name("a\u{200c}b"), "ab");
+    }
+
+    #[test]
+    fn legacy_display_name_keeps_joiners_but_strips_controls() {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        assert_eq!(legacy_sanitize_display_name(family), family);
+        assert_eq!(legacy_sanitize_display_name("a\u{7}b"), "ab");
+        assert_eq!(legacy_sanitize_display_name("  Ada  "), "Ada");
     }
 
     #[test]

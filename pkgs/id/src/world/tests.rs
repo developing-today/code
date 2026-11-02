@@ -1817,6 +1817,29 @@ mod tests {
             [header.clone(), legitimate],
         )
         .unwrap();
+        // A name minted before #2112's format stripping — a fixed point
+        // of the legacy sanitizer only, here a ZWJ family emoji — also
+        // restores fine: those journals predate the current sanitizer
+        // and restored successfully before this check existed.
+        let legacy = JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".to_owned(),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legacy],
+        )
+        .unwrap();
         for bad_name in [
             String::new(),
             "a\u{7}\n".to_owned() + &"x".repeat(98),
