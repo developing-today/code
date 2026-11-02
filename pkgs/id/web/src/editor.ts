@@ -150,6 +150,10 @@ export const richSchema = new Schema({
       attrs: {
         order: { default: 1, validate: "number" },
         tight: { default: true },
+        // #1380: mirror the codec's delimiter attr ("period"/"paren",
+        // default period) so paren-style lists are not rewritten on
+        // save; undeclared, it was dropped on editor load.
+        delimiter: { default: "period" },
       },
     })
     .update("image", {
@@ -211,7 +215,13 @@ export const richSchema = new Schema({
         // depends on it so multi-block task items do not fuse on save.
         // #997: ordered task lists carry their start in `order` (null for
         // bullet task lists), mirroring the markdown codec's attrs.order.
-        attrs: { tight: { default: true }, order: { default: null } },
+        // #1380: ordered task lists also carry `delimiter`, mirroring
+        // the codec (default period, as in ordered_list above).
+        attrs: {
+          tight: { default: true },
+          order: { default: null },
+          delimiter: { default: "period" },
+        },
         parseDOM: [
           {
             tag: "ul",

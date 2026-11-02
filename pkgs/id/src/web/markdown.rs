@@ -31,7 +31,7 @@
 //! - `link`: Hyperlink with `href` and `title` attributes
 //! - `strikethrough`: Strikethrough text (GFM `~~text~~`)
 
-use comrak::nodes::{AstNode, ListType, NodeValue};
+use comrak::nodes::{AstNode, ListDelimType, ListType, NodeValue};
 use comrak::{Arena, Options, format_commonmark, parse_document};
 use serde_json::{Value, json};
 
@@ -3190,9 +3190,29 @@ fn is_end_list_separator<'a>(node: &'a AstNode<'a>) -> bool {
 /// so numbering renders unchanged; `tight` is carried from the source
 /// list to every run. Placement validation and the editor schema are
 /// untouched: every emitted list is pure.
+/// #1380: the PM `delimiter` attr spelling for a comrak ordered-list
+/// delimiter (`.` vs `)`). The editor schema mirrors these spellings.
+fn delimiter_attr(delimiter: ListDelimType) -> &'static str {
+    match delimiter {
+        ListDelimType::Period => "period",
+        ListDelimType::Paren => "paren",
+    }
+}
+
+/// #1380: read the PM `delimiter` attr back to a comrak delimiter.
+/// Absent or unknown (legacy PM docs stored by the old codec, which
+/// dropped the delimiter) defaults to Period - exactly how the old
+/// codec saved every ordered list.
+fn delimiter_from_attrs(json: &Value) -> ListDelimType {
+    match json["attrs"]["delimiter"].as_str() {
+        Some("paren") => ListDelimType::Paren,
+        _ => ListDelimType::Period,
+    }
+}
+
 fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    let (list_type, start, tight) = match &node.data.borrow().value {
-        NodeValue::List(list) => (list.list_type, list.start, list.tight),
+    let (list_type, start, tight, delimiter) = match &node.data.borrow().value {
+        NodeValue::List(list) => (list.list_type, list.start, list.tight, list.delimiter),
         _ => return Vec::new(),
     };
     // (is_task, items before this run, converted items)
@@ -3214,7 +3234,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
         .map(|(is_task, offset, content)| match (is_task, list_type) {
             (true, ListType::Ordered) => json!({
                 "type": "task_list",
-                "attrs": {"order": start + offset, "tight": tight},
+                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
                 "content": content
             }),
             (true, ListType::Bullet) => json!({
@@ -3224,7 +3244,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
             }),
             (false, ListType::Ordered) => json!({
                 "type": "ordered_list",
-                "attrs": {"order": start + offset, "tight": tight},
+                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
                 "content": content
             }),
             (false, ListType::Bullet) => json!({
@@ -4481,10 +4501,13 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             #[allow(clippy::cast_possible_truncation)] // order is typically small
             let order = json["attrs"]["order"].as_u64().unwrap_or(1) as usize;
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
+            // #1380: carry the delimiter style; absent (legacy docs)
+            // defaults to Period in delimiter_from_attrs.
             NodeValue::List(comrak::nodes::NodeList {
                 list_type: ListType::Ordered,
                 start: order,
                 tight,
+                delimiter: delimiter_from_attrs(json),
                 ..Default::default()
             })
         }
@@ -4516,6 +4539,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     list_type: ListType::Ordered,
                     start,
                     tight,
+                    // #1380: same delimiter carry as ordered_list.
+                    delimiter: delimiter_from_attrs(json),
                     ..Default::default()
                 }),
                 None => NodeValue::List(comrak::nodes::NodeList {
@@ -8700,6 +8725,65 @@ Some text
         assert_eq!(bullet["content"][0]["type"], "task_list");
         assert!(bullet["content"][0]["attrs"]["order"].is_null());
         assert_eq!(bullet["content"][0]["attrs"]["tight"], true);
+    }
+
+    #[test]
+    fn test_ordered_list_paren_delimiter_roundtrips() {
+        // #1380: the ordered-list delimiter style (`1)` vs `1.`) must
+        // survive the codec in both directions instead of every list
+        // being rewritten with periods.
+        let doc = markdown_to_prosemirror("1) one\n2) two\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "ordered_list");
+        assert_eq!(content[0]["attrs"]["delimiter"], "paren");
+
+        let (first, second) = two_saves("1) one\n2) two\n");
+        assert_eq!(first, "1) one\n2) two\n", "paren round-trip changed bytes");
+        assert_eq!(first, second, "no fixpoint for paren list");
+
+        // Period lists are unchanged and now carry the attr explicitly.
+        let doc = markdown_to_prosemirror("1. one\n2. two\n");
+        assert_eq!(doc["content"][0]["attrs"]["delimiter"], "period");
+        let (first, second) = two_saves("1. one\n2. two\n");
+        assert_eq!(first, "1. one\n2. two\n");
+        assert_eq!(first, second, "no fixpoint for period list");
+    }
+
+    #[test]
+    fn test_ordered_task_list_paren_delimiter_roundtrips() {
+        // #1380: ordered task lists keep their delimiter too.
+        let doc = markdown_to_prosemirror("1) [ ] todo\n2) [x] done\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "task_list");
+        assert_eq!(content[0]["attrs"]["order"], 1);
+        assert_eq!(content[0]["attrs"]["delimiter"], "paren");
+
+        let (first, second) = two_saves("1) [ ] todo\n2) [x] done\n");
+        assert_eq!(first, "1) [ ] todo\n2) [x] done\n");
+        assert_eq!(first, second, "no fixpoint for paren task list");
+    }
+
+    #[test]
+    fn test_legacy_ordered_list_without_delimiter_attr_saves_period() {
+        // #1380: legacy PM docs stored by the old codec carry no
+        // delimiter attr; they must save exactly as today (period).
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "ordered_list",
+                "attrs": {"order": 1, "tight": true},
+                "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "one"}]}
+                    ]},
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "two"}]}
+                    ]}
+                ]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(md, "1. one\n2. two\n", "legacy doc changed: {md:?}");
     }
 
     #[test]
