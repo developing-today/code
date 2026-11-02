@@ -662,6 +662,20 @@ fn required_value<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
     Ok(value)
 }
 
+/// Like `required_value`, but for `--exclude`: exclusion patterns are
+/// data, and a pattern may legitimately start with a hyphen (e.g.
+/// `--exclude -draft`), so any non-empty next token is accepted.
+fn required_pattern<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
+    let flag = rest[*i];
+    let value = rest
+        .get(*i + 1)
+        .copied()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+    *i += 1;
+    Ok(value)
+}
+
 fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<FindArgs<'a>> {
     let mut args = FindArgs {
         queries: Vec::new(),
@@ -754,7 +768,7 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--count" {
             args.count = true;
         } else if arg == "--exclude" {
-            args.exclude.push(required_value(rest, &mut i)?);
+            args.exclude.push(required_pattern(rest, &mut i)?);
         } else if arg.starts_with('-') {
             anyhow::bail!("unknown flag: {arg}");
         } else {
@@ -1336,7 +1350,7 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
                 find_args.last = Some(1);
             }
         } else if arg == "--exclude" {
-            find_args.exclude.push(required_value(rest, &mut i)?);
+            find_args.exclude.push(required_pattern(rest, &mut i)?);
         } else if arg == "--lines" || arg == "-n" {
             // Same redirection exclusion: `--lines >out.txt` keeps
             // the default line count and lets the `>` branch run.
@@ -1810,6 +1824,12 @@ mod tests {
                 .output_file,
             Some("out")
         );
+        assert_eq!(
+            parse_find_args(&["report", "--exclude", "-draft"], "union")
+                .unwrap()
+                .exclude,
+            vec!["-draft"]
+        );
     }
 
     #[test]
@@ -1828,6 +1848,13 @@ mod tests {
         }
         // A bare --lines/-n keeps the default line count, matching the
         // merged-first set's bare --first/--last default design (#4072).
+        assert_eq!(
+            parse_peek_args(&["report", "--exclude", "-draft"])
+                .unwrap()
+                .0
+                .exclude,
+            vec!["-draft"]
+        );
         assert_eq!(parse_peek_args(&["report", "--lines"]).unwrap().1.lines, 5);
         assert_eq!(
             parse_peek_args(&["report", "-n", "--quiet"])
