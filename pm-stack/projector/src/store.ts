@@ -221,7 +221,8 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
             deleted = excluded.deleted,
             source_updated_at = excluded.source_updated_at,
             fetched_at = excluded.fetched_at
-          WHERE excluded.source_updated_at >= pmp_comments.source_updated_at`,
+          WHERE pmp_comments.deleted = 0
+            AND excluded.source_updated_at >= pmp_comments.source_updated_at`,
     args: [
       c.id,
       c.ref,
@@ -244,10 +245,36 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
   });
 }
 
-export async function markCommentDeleted(db: Client, id: string): Promise<void> {
+/** Persist a delete tombstone, even when the delete arrives before the first upsert. */
+export async function markCommentDeleted(db: Client, c: Omit<CommentRow, "fetched_at">): Promise<void> {
   await db.execute({
-    sql: `UPDATE pmp_comments SET deleted = 1, fetched_at = ? WHERE id = ?`,
-    args: [now(), id],
+    sql: `INSERT INTO pmp_comments (
+            id, ref, kind, author, body, created_at, updated_at, url, path,
+            line, diff_hunk, review_state, submitted_at, commit_id, deleted,
+            source_updated_at, fetched_at
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET
+            deleted = 1,
+            fetched_at = excluded.fetched_at`,
+    args: [
+      c.id,
+      c.ref,
+      c.kind,
+      c.author,
+      c.body,
+      c.created_at,
+      c.updated_at,
+      c.url,
+      c.path,
+      c.line,
+      c.diff_hunk,
+      c.review_state,
+      c.submitted_at,
+      c.commit_id,
+      1,
+      c.source_updated_at,
+      now(),
+    ],
   });
 }
 
