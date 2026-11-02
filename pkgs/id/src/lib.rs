@@ -286,7 +286,8 @@ pub use discovery::{
     STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
 pub use helpers::{
-    parse_get_spec, parse_put_spec, print_match_cli, print_match_repl, print_matches_cli,
+    download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
+    print_matches_cli,
 };
 pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
 pub use repl::run_repl;
