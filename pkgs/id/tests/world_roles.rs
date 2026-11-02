@@ -27,6 +27,11 @@ impl WorldJournal for Capturing {
         self.0.lock().unwrap().push(entry.clone());
         Ok(())
     }
+
+    fn append_transaction(&mut self, entries: &[JournalEntry]) -> anyhow::Result<()> {
+        self.0.lock().unwrap().extend_from_slice(entries);
+        Ok(())
+    }
 }
 
 /// A program with no capabilities, so installs exercise only the audit path.

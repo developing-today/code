@@ -913,9 +913,10 @@ pub enum JournalEntry {
 ///
 /// Journal upgrade/rollback contract (issue #227): a journal is created at
 /// version 1 and stays at version 1 until it contains an entry kind a
-/// version-1 binary cannot read. The first such entry — today only
-/// [`JournalEntry::ExecutionProfile`] — bumps the header to
-/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] *before* the entry is appended, by
+/// version-1 binary cannot read. The first such entries —
+/// [`JournalEntry::ExecutionProfile`] and [`JournalEntry::BuilderInstalled`] —
+/// bump the header to [`JOURNAL_VERSION_EXECUTION_PROFILE`] *before* they are
+/// written, by
 /// atomically rewriting the journal (sibling temp file, fsync, rename), so
 /// a failed bump leaves the old journal untouched. A binary refuses any
 /// journal newer than [`MAX_JOURNAL_VERSION`] at the header check in
@@ -928,8 +929,9 @@ pub enum JournalEntry {
 pub const JOURNAL_VERSION: u32 = 1;
 
 /// Header version of a journal that contains a
-/// [`JournalEntry::ExecutionProfile`]: the first entry kind a version-1
-/// binary cannot read. See the contract on [`JOURNAL_VERSION`].
+/// [`JournalEntry::ExecutionProfile`] or [`JournalEntry::BuilderInstalled`]:
+/// entry kinds a version-1 binary cannot read. See the contract on
+/// [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 
 /// Header version of a journal that contains a region-seam handoff entry
@@ -976,7 +978,9 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
                 JOURNAL_VERSION
             }
         }
-        JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        JournalEntry::ExecutionProfile { .. } | JournalEntry::BuilderInstalled { .. } => {
+            JOURNAL_VERSION_EXECUTION_PROFILE
+        }
         _ => JOURNAL_VERSION,
     }
 }
@@ -993,6 +997,18 @@ pub trait WorldJournal: Send + 'static {
     ///
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
+
+    /// Durably append a group of entries as one all-or-nothing transaction.
+    /// Journals that cannot guarantee atomicity must leave the default in
+    /// place; an install requiring paired event and audit records will then
+    /// fail closed instead of falling back to separate appends.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure, or if this journal does not support atomic groups.
+    fn append_transaction(&mut self, _entries: &[JournalEntry]) -> Result<()> {
+        bail!("this journal does not support atomic entry transactions")
+    }
 
     /// Atomically replace the whole journal with `entries` (a header, the
     /// participants and a [`JournalEntry::Checkpoint`]). Either the old or
