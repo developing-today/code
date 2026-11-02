@@ -114,13 +114,25 @@ interface KaneoColumn {
   tasks: KaneoTask[];
 }
 
-/** Kaneo project slug -> GitHub repo (pm-stack/kaneo-projects.json, Session H). */
-const KANEO_PROJECT_REPOS: Record<string, string> = {
-  code: "developing-today/code",
-  opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
-  nix: "dezren39/nix",
-};
+/** Kaneo project slug -> GitHub repo, read authoritatively from
+ * pm-stack/kaneo-projects.json (#1201). Unknown slugs stay unmapped
+ * (repo "") — never guessed — so no invented repo-based refs appear.
+ * An unreadable registry degrades to the same empty map. */
+async function kaneoProjectRepos(cfg: Config): Promise<Record<string, string>> {
+  try {
+    const raw = await readFile(cfg.kaneo.projectsFile, "utf8");
+    const doc = JSON.parse(raw) as { projects?: { slug?: unknown; repository?: unknown }[] };
+    const map: Record<string, string> = {};
+    for (const p of doc.projects ?? []) {
+      if (typeof p?.slug === "string" && typeof p?.repository === "string" && p.repository.includes("/")) {
+        map[p.slug] = p.repository;
+      }
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
 
 async function kaneoProjects(
   cfg: Config,
@@ -133,11 +145,14 @@ async function kaneoProjects(
   if (!workspaceId) throw new Error("kaneo workspace empty");
   const proj = await getJson(`${cfg.kaneo.baseUrl}/api/project?workspaceId=${workspaceId}`, { Cookie: cookie });
   if (!proj.ok) throw new Error("kaneo project read failed");
+  // #1201: the registry is the only source of slug -> repo. Unknown
+  // slugs stay unmapped (repo "") instead of guessing a repo name.
+  const repos = await kaneoProjectRepos(cfg);
   return (proj.json as { id: string; slug: string; name: string }[]).map((p) => ({
     id: p.id,
     slug: p.slug,
     name: p.name,
-    repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
+    repo: repos[p.slug] ?? "",
     workspaceId,
   }));
 }
@@ -176,10 +191,13 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
         if (isRetiredDoneTableTitle(t.title)) continue;
         const links: Link[] = (t.externalLinks ?? [])
           .filter((l) => l.resourceType === "issue" || l.resourceType === "pull_request")
-          .map((l) => {
+          .flatMap((l) => {
+            // #1201: only a GitHub URL names a repo. A non-GitHub URL —
+            // or an unmapped project — yields no repo-based ref at all;
+            // refs are never invented from a guessed repo.
             const m = /github\.com\/([\w.-]+\/[\w.-]+)\//.exec(l.url);
-            const repo = m ? m[1] : p.repo;
-            return { ref: `${repo}#${l.externalId}`, relation: "tracks" as const };
+            if (!m) return [];
+            return [{ ref: `${m[1]}#${l.externalId}`, relation: "tracks" as const }];
           });
         out.push({
           // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
