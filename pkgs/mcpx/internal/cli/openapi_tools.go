@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -84,6 +85,15 @@ func (a *App) CmdAPI(ctx context.Context, args []string) error {
 	sub := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub, args = args[0], args[1:]
+	}
+	// add and remove go through the daemon, like adapter add/remove: the
+	// write has to land where the running daemon reads, and the local
+	// declaration files are not the authority for a live change.
+	if sub == "add" {
+		return a.apiAdd(ctx, args)
+	}
+	if sub == "remove" {
+		return a.apiRemove(ctx, args)
 	}
 	args = hoistFlags(args, map[string]bool{
 		"spec": true, "base-url": true, "name": true,
@@ -234,7 +244,7 @@ func (a *App) CmdAPI(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("no api named %q", fs.Arg(0))
 	}
-	return fmt.Errorf("no api subcommand %q; list, tools, call or serve", sub)
+	return fmt.Errorf("no api subcommand %q; list, tools, call, serve, add or remove", sub)
 }
 
 // apiTools exposes declared APIs through the MCP server.
@@ -292,4 +302,128 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+// apiAddValuedFlags are api add's flags that take a value, for
+// hoistFlags: the name comes first on the command line, so flags and
+// their values move ahead of it as pairs.
+var apiAddValuedFlags = map[string]bool{
+	"spec": true, "base-url": true, "include": true, "exclude": true,
+	"methods": true, "description": true, "header": true,
+}
+
+// parseAPIHeader splits one --header KEY=VALUE flag.
+func parseAPIHeader(h string) (string, string, error) {
+	k, v, ok := strings.Cut(h, "=")
+	if !ok || strings.TrimSpace(k) == "" {
+		return "", "", fmt.Errorf("a header needs KEY=VALUE, got %q", h)
+	}
+	return k, v, nil
+}
+
+// apiAdd declares a new API through the daemon, the way adapter add
+// does: the write lands in the declaration file the running daemon
+// reads and the reload makes it callable at once.
+func (a *App) apiAdd(ctx context.Context, args []string) error {
+	args = hoistFlags(args, apiAddValuedFlags)
+	fs := newFlagSet("api")
+	spec := fs.String("spec", "", "the OpenAPI document: a path or a URL")
+	baseURL := fs.String("base-url", "", "override the server URL the document declares")
+	include := fs.String("include", "", "only operations matching these words, comma separated")
+	exclude := fs.String("exclude", "", "drop operations matching these words")
+	methods := fs.String("methods", "", "HTTP methods to expose; 'all' for every one (default: read-only)")
+	deprecated := fs.Bool("deprecated", false, "include operations the document marks deprecated")
+	desc := fs.String("description", "", "one line shown beside the namespace")
+	header := newRepeated()
+	fs.Var(header, "header", "a header sent with every operation call, as KEY=VALUE (repeatable)")
+	replace := fs.Bool("replace", false, "overwrite a declaration of the same name")
+	if err := parseFlags(a, fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: mcpx api add <name> --spec <path-or-url> [--base-url <url>] [--include a,b] [--exclude c] [--methods all] [--deprecated] [--header K=V]... [--description ...] [--replace]")
+	}
+	if strings.TrimSpace(*spec) == "" {
+		return fmt.Errorf("an API needs --spec <path-or-url>")
+	}
+	name := fs.Arg(0)
+	body := map[string]any{
+		"name": name, "spec": *spec, "replace": *replace,
+	}
+	if *baseURL != "" {
+		body["baseUrl"] = *baseURL
+	}
+	if v := splitCSV(*include); len(v) > 0 {
+		body["include"] = v
+	}
+	if v := splitCSV(*exclude); len(v) > 0 {
+		body["exclude"] = v
+	}
+	if v := splitCSV(*methods); len(v) > 0 {
+		body["methods"] = v
+	}
+	if *deprecated {
+		body["includeDeprecated"] = true
+	}
+	if *desc != "" {
+		body["description"] = *desc
+	}
+	if len(header.values) > 0 {
+		headers := map[string]string{}
+		for _, h := range header.values {
+			k, v, err := parseAPIHeader(h)
+			if err != nil {
+				return err
+			}
+			headers[k] = v
+		}
+		body["headers"] = headers
+	}
+	c, err := a.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := c.Do(ctx, http.MethodPost, "/v1/apis", mustMarshal(body))
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.out(out)
+	}
+	fmt.Printf("added api %s to %v; it is live now\n", name, out["written"])
+	return nil
+}
+
+// apiRemove removes a declaration through the daemon, mirroring adapter
+// remove: the file that defines it is the one edited.
+func (a *App) apiRemove(ctx context.Context, args []string) error {
+	fs := newFlagSet("api")
+	if err := parseFlags(a, fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: mcpx api remove <name>")
+	}
+	name := fs.Arg(0)
+	c, err := a.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := c.Do(ctx, http.MethodDelete, "/v1/apis/"+urlEscape(name), nil)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.out(out)
+	}
+	fmt.Printf("removed api %s from %v; it is gone from the running daemon\n", name, out["written"])
+	return nil
 }
