@@ -203,6 +203,24 @@ impl WorldJournal for FileJournal {
         Ok(())
     }
 
+    fn replication_snapshot(&mut self) -> Result<crate::world::JournalSnapshot> {
+        let bytes = std::fs::read(&self.path)
+            .with_context(|| format!("read world journal snapshot {}", self.path.display()))?;
+        ensure!(
+            bytes.is_empty() || bytes.ends_with(b"\n"),
+            "world journal {} has an unterminated final entry",
+            self.path.display()
+        );
+        Ok(crate::world::JournalSnapshot {
+            header_version: self.version,
+            bytes,
+        })
+    }
+
+    fn replication_header_version(&self) -> Option<u32> {
+        Some(self.version)
+    }
+
     fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
         ensure!(
             !self.broken,
@@ -656,6 +674,78 @@ mod tests {
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
         let admin = admin.map(str::to_owned);
         move |handle| WorldService::new(handle, admin)
+    }
+
+    #[tokio::test]
+    async fn replication_feed_snapshots_exact_bytes_and_follows_durable_appends() {
+        let dir = TempDir::new().unwrap();
+        let (service, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
+        let world = service.world();
+        let (world_id, first, mut first_updates) = world.replication_feed().await.unwrap();
+        let (second_world_id, second, mut second_updates) = world.replication_feed().await.unwrap();
+        let durable_bytes = std::fs::read(dir.path().join("journal.jsonl")).unwrap();
+        assert_eq!(world_id, "lobby");
+        assert_eq!(second_world_id, world_id);
+        assert_eq!(first, second);
+        assert_eq!(first.bytes, durable_bytes);
+        assert!(first.bytes.ends_with(b"\n"));
+
+        world
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        for update in [
+            first_updates.recv().await.unwrap(),
+            second_updates.recv().await.unwrap(),
+        ] {
+            match update {
+                crate::world::ReplicationUpdate::Append {
+                    header_version,
+                    entry,
+                } => {
+                    assert_eq!(header_version, first.header_version);
+                    assert!(entry.ends_with(b"\n"));
+                    assert!(matches!(
+                        serde_json::from_slice::<JournalEntry>(&entry).unwrap(),
+                        JournalEntry::Isolation {
+                            isolation: Isolation::Unisolated
+                        }
+                    ));
+                }
+                other => panic!("expected durable append, got {other:?}"),
+            }
+        }
+        world.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn replication_snapshot_repairs_an_unterminated_torn_tail() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (journal, _) = FileJournal::open(&path, "lobby").unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        drop(journal);
+
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(br#"{"torn":"entry""#)
+            .unwrap();
+        assert_ne!(std::fs::read(&path).unwrap(), expected);
+
+        let (mut journal, _) = FileJournal::open(&path, "lobby").unwrap();
+        let snapshot = journal.replication_snapshot().unwrap();
+        assert_eq!(snapshot.bytes, expected);
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
     }
 
     #[tokio::test]
