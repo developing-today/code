@@ -79,6 +79,7 @@ async function reconcileStream(
       const ref = commentRef(repo, c);
       const createdAt = c.created_at ?? c.updated_at ?? null;
       if (!ref || !createdAt) continue;
+      const updatedAt = c.updated_at ?? null;
       await store.upsertComment(db, {
         id: String(c.id),
         ref,
@@ -86,7 +87,7 @@ async function reconcileStream(
         author: c.user?.login ?? null,
         body: typeof c.body === "string" ? c.body : null,
         created_at: createdAt,
-        updated_at: c.updated_at ?? null,
+        updated_at: updatedAt,
         url: c.html_url ?? null,
         path: c.path ?? null,
         line: typeof c.line === "number" ? c.line : null,
@@ -95,7 +96,7 @@ async function reconcileStream(
         submitted_at: null,
         commit_id: c.commit_id ?? null,
         deleted: 0,
-        source_updated_at: createdAt,
+        source_updated_at: updatedAt ?? createdAt,
       });
       await mark(1);
       const u = c.updated_at ?? c.created_at;
