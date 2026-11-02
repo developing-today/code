@@ -6740,23 +6740,21 @@
         // main the reserve) at the pair's previous combined weight
         // (1.5 + 1 = 2.5). The Go burn-by-expiry weights (3/2) above
         // are untouched.
+        // 2026-11-02 (Drew): Luna seats ONLY through openai-plan (the
+        // ChatGPT pair) - the OpenAI plans are the doors with no
+        // DeepSeek, so Luna there is unique coverage. The Go workspace
+        // and OpenDesign leaves came out: those doors carry DeepSeek
+        // Flash already (deepseek-flash-plan keeps its Go leaves), so
+        // Luna on them was duplicate coverage of the same meters. The
+        // burn-by-expiry Go weights (3/2) go with them - both Go Luna
+        // leaves were at their monthly walls anyway, Personal ends
+        // tonight 2026-11-02 21:02 CT, Lab 2026-11-06. To restore a
+        // leaf, re-add its target line from git history.
         "targets": [
-          "openai-plan/gpt-6-luna",
-          {
-            "model": "opendesign/gpt-6-luna",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          "opencode-go.lab/gpt-6-luna",
-          "opencode-go.personal/gpt-6-luna",
-          "opencode-go/gpt-6-luna"
+          "openai-plan/gpt-6-luna"
         ],
         "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-go.personal/gpt-6-luna": 3,
-          "opencode-go.lab/gpt-6-luna": 2,
-          "openai-plan/gpt-6-luna": 2.5
-        }
+        "autonomy": "rules"
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
       // is seated nowhere. Decline-with-reason: it is dominated on its own
