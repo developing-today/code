@@ -3745,3 +3745,72 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod collab_route_tests {
+    //! Route-level proof for #2830: the production router registers
+    //! `/ws/collab/{doc_id}` as a single-segment route (see
+    //! `create_router`); the web client percent-encodes the docId into
+    //! that one segment, and axum matches the raw path, so `%2F` stays
+    //! inside the segment and Path extraction percent-decodes it back
+    //! to the exact filename — while a real second segment still
+    //! fails to match. This mini-router uses the identical route
+    //! pattern on the same axum stack; the handler is an echo so the
+    //! decoded value itself is asserted. (Behavior verified against
+    //! the locked axum 0.8.9 with a standalone probe on 2026-11-02;
+    //! in-crate execution currently waits on #4340.)
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        extract::Path,
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use tower::ServiceExt as _;
+
+    async fn echo_doc_id(Path(doc_id): Path<String>) -> String {
+        doc_id
+    }
+
+    async fn get(uri: &str) -> (StatusCode, String) {
+        let app = Router::new().route("/ws/collab/{doc_id}", get(echo_doc_id));
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn encoded_slash_round_trips_to_the_exact_filename() {
+        assert_eq!(
+            get("/ws/collab/a%2Fb.md").await,
+            (StatusCode::OK, "a/b.md".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn encoded_percent_names_round_trip() {
+        // a%20b.md the file, not "a b.md": the client sends a%2520b.md.
+        assert_eq!(
+            get("/ws/collab/a%2520b.md").await,
+            (StatusCode::OK, "a%20b.md".to_owned())
+        );
+        assert_eq!(
+            get("/ws/collab/100%25.md").await,
+            (StatusCode::OK, "100%.md".to_owned())
+        );
+        assert_eq!(
+            get("/ws/collab/notes.md").await,
+            (StatusCode::OK, "notes.md".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_second_segment_does_not_match() {
+        assert_eq!(get("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
+    }
+}

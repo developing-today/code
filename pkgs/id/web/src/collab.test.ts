@@ -1,6 +1,6 @@
 import { Packr, Unpackr } from "msgpackr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, initCollab, stepBatch } from "./collab";
+import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, buildCollabWsUrl, initCollab, stepBatch } from "./collab";
 
 // Same MessagePack configuration as collab.ts
 const packr = new Packr({ useRecords: false, structuredClone: true });
@@ -284,5 +284,48 @@ describe("stepBatch (client side of the server step cap, #1965)", () => {
     const steps = ["exact", "later"];
     const batch = stepBatch(steps, (s) => (s === "exact" ? MAX_STEPS_MESSAGE_BYTES : 1));
     expect(batch).toEqual(["exact"]);
+  });
+});
+
+describe("buildCollabWsUrl (#2830)", () => {
+  // [docId, expected single path segment] — the segment must decode
+  // back to the exact docId, and plain names must be untouched.
+  const cases: Array<[string, string]> = [
+    ["notes.md", "notes.md"],
+    ["a/b.md", "a%2Fb.md"],
+    ["a#b.md", "a%23b.md"],
+    ["a?b.md", "a%3Fb.md"],
+    ["a%20b.md", "a%2520b.md"],
+    ["100%.md", "100%25.md"],
+    ["my notes.md", "my%20notes.md"],
+    ["caf\u00e9.md", "caf%C3%A9.md"],
+  ];
+  it.each(cases)("docId %s -> one segment %s that decodes back exactly", (docId, segment) => {
+    const url = new URL(buildCollabWsUrl("ws:", "example.test", docId));
+    expect(url.pathname).toBe(`/ws/collab/${segment}`);
+    const parts = url.pathname.split("/");
+    expect(parts).toHaveLength(4); // "", "ws", "collab", segment
+    expect(decodeURIComponent(parts[3])).toBe(docId);
+  });
+
+  it("keeps the filename query parameter intact for a # name", () => {
+    vi.useFakeTimers();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const conn = track(
+      initCollab(
+        buildCollabWsUrl("ws:", "example.test", "a#b.md"),
+        makeContainer(),
+        "a#b.md",
+        "a#b.md",
+        null,
+      ),
+    );
+    const socket = FakeWebSocket.instances.at(-1)!;
+    const url = new URL(socket.url);
+    expect(decodeURIComponent(url.pathname.split("/")[3])).toBe("a#b.md");
+    expect(url.searchParams.get("filename")).toBe("a#b.md");
+    conn.disconnect();
+    vi.useRealTimers();
   });
 });

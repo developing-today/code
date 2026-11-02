@@ -132,6 +132,18 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
  */
+/**
+ * Build the collab WebSocket URL for a document (#2830). The docId goes
+ * into a single path segment, so it must be percent-encoded: a raw `/`
+ * breaks the single-segment route, a raw `#`/`?` truncates the URL
+ * (losing the query string), and a raw `%20` in a name is decoded by
+ * the server into a *different* file. The axum route percent-decodes
+ * the segment, so encoding here round-trips to the exact filename.
+ */
+export function buildCollabWsUrl(wsProtocol: string, host: string, docId: string): string {
+  return `${wsProtocol}//${host}/ws/collab/${encodeURIComponent(docId)}`;
+}
+
 export function initCollab(
   wsUrl: string,
   container: HTMLElement,
