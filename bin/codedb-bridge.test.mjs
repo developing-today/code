@@ -1,0 +1,108 @@
+// Tests for the codedb MCP bridge (#4120).
+// Run: node --test bin/codedb-bridge.test.mjs
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { CODEDB_TOOLS, createHandler, parseDaemonUrl, routeForTool } from './codedb-bridge.mjs';
+
+test('daemon URL defaults to the codedb serve origin and rejects non-origins', () => {
+  assert.equal(parseDaemonUrl(undefined), 'http://127.0.0.1:7719');
+  assert.equal(parseDaemonUrl(''), 'http://127.0.0.1:7719');
+  assert.equal(parseDaemonUrl('http://127.0.0.1:7719/'), 'http://127.0.0.1:7719');
+  assert.throws(() => parseDaemonUrl('not a url'), /CODEDB_DAEMON_URL/);
+  assert.throws(() => parseDaemonUrl('https://127.0.0.1:7719'), /CODEDB_DAEMON_URL/);
+  assert.throws(() => parseDaemonUrl('http://127.0.0.1:7719/explore'), /CODEDB_DAEMON_URL/);
+});
+
+test('every advertised tool maps to a verified daemon route', () => {
+  const args = {
+    codedb_tree: {},
+    codedb_outline: { path: 'a/b.rs' },
+    codedb_symbol: { name: 'IdentityStore' },
+    codedb_search: { query: 'IdentityStore' },
+    codedb_word: { word: 'IdentityStore' },
+    codedb_hot: {},
+    codedb_deps: { path: 'a/b.rs' },
+  };
+  for (const t of CODEDB_TOOLS) {
+    const { route } = routeForTool(t.name, args[t.name]);
+    assert.ok(route.startsWith('/explore/'), `${t.name} -> ${route}`);
+  }
+  assert.equal(routeForTool('codedb_search', { query: 'a b' }).route, '/explore/search?q=a%20b');
+  assert.equal(routeForTool('codedb_word', { word: 'x' }).route, '/explore/word?q=x');
+  assert.equal(routeForTool('codedb_symbol', { name: 'x' }).route, '/explore/symbol?name=x');
+});
+
+test('unhonourable arguments are rejected by name, never silently ignored (#3352)', () => {
+  assert.throws(() => routeForTool('codedb_search', { query: 'x', regex: true }), /"regex"/);
+  assert.throws(() => routeForTool('codedb_search', { query: 'x', scope: true }), /"scope"/);
+  assert.throws(() => routeForTool('codedb_outline', { path: 'x', compact: true }), /"compact"/);
+  assert.throws(() => routeForTool('codedb_tree', { project: '/elsewhere' }), /"project"/);
+  assert.throws(() => routeForTool('codedb_search', {}), /"query" is required/);
+  assert.throws(() => routeForTool('codedb_read', { path: 'x' }), /unknown tool "codedb_read"/);
+});
+
+const stubFetch = (routes) => async (url) => {
+  const path = url.replace('http://127.0.0.1:7719', '');
+  if (!(path in routes)) return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
+  return { ok: true, status: 200, json: async () => routes[path] };
+};
+
+const call = async (handle, name, args) =>
+  handle({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name, arguments: args } });
+
+test('handler answers initialize, tools/list and ping; notifications get no reply', async () => {
+  const handle = createHandler({ fetchFn: stubFetch({}), daemonUrl: 'http://127.0.0.1:7719' });
+  const init = await handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
+  assert.equal(init.result.serverInfo.name, 'codedb-bridge');
+  assert.equal(init.result.protocolVersion, '2024-11-05');
+  const list = await handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  assert.deepEqual(list.result.tools.map((t) => t.name), CODEDB_TOOLS.map((t) => t.name));
+  assert.deepEqual((await handle({ jsonrpc: '2.0', id: 3, method: 'ping' })).result, {});
+  assert.equal(await handle({ jsonrpc: '2.0', method: 'notifications/initialized' }), null);
+  const bad = await handle({ jsonrpc: '2.0', id: 4, method: 'resources/list' });
+  assert.equal(bad.error.code, -32601);
+});
+
+test('tools/call forwards to the daemon and returns its payload', async () => {
+  const handle = createHandler({
+    fetchFn: stubFetch({
+      '/explore/tree': { tree: 'a/\n  b.rs  rust  3L  1 sym\n' },
+      '/explore/search?q=IdentityStore': {
+        query: 'IdentityStore',
+        results: [
+          { path: 'x.rs', line: 1, text: 'a' },
+          { path: 'y.rs', line: 2, text: 'b' },
+          { path: 'z.rs', line: 3, text: 'c' },
+        ],
+      },
+      '/explore/hot': { files: ['a', 'b', 'c'] },
+    }),
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const tree = await call(handle, 'codedb_tree', {});
+  assert.equal(tree.result.content[0].text, 'a/\n  b.rs  rust  3L  1 sym\n');
+  assert.equal(tree.result.isError, undefined);
+  const search = await call(handle, 'codedb_search', { query: 'IdentityStore', max_results: 2 });
+  assert.deepEqual(JSON.parse(search.result.content[0].text).results.map((r) => r.path), ['x.rs', 'y.rs']);
+  const hot = await call(handle, 'codedb_hot', { limit: 1 });
+  assert.deepEqual(JSON.parse(hot.result.content[0].text).files, ['a']);
+});
+
+test('daemon errors and an unreachable daemon surface as MCP errors naming the cause', async () => {
+  const handle404 = createHandler({ fetchFn: stubFetch({}), daemonUrl: 'http://127.0.0.1:7719' });
+  const missing = await call(handle404, 'codedb_outline', { path: 'nope.rs' });
+  assert.equal(missing.result.isError, true);
+  assert.match(missing.result.content[0].text, /not found/);
+  const down = createHandler({
+    fetchFn: async () => {
+      throw new Error('connect ECONNREFUSED');
+    },
+    daemonUrl: 'http://127.0.0.1:7719',
+  });
+  const unreachable = await call(down, 'codedb_tree', {});
+  assert.equal(unreachable.result.isError, true);
+  assert.match(unreachable.result.content[0].text, /unreachable.*systemctl --user start codedb-/);
+  const badArg = await call(down, 'codedb_search', { query: 'x', regex: true });
+  assert.equal(badArg.result.isError, true);
+  assert.match(badArg.result.content[0].text, /"regex"/);
+});
