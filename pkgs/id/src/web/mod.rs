@@ -65,7 +65,7 @@ pub use markdown::{
 
 use axum::Router;
 use iroh_blobs::api::Store;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -95,6 +95,14 @@ pub const DEFAULT_SAVE_COOLDOWN: Duration = Duration::from_secs(5);
 pub struct SaveRateLimiter {
     /// Map of filename → last save time.
     last_save: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Filenames with a save currently in flight (#2466). `check` alone
+    /// cannot stop overlapping saves — it only sees *completed* saves —
+    /// so `acquire` reserves the name here for the whole handler run and
+    /// a second same-file save is refused instead of racing the first.
+    /// A std mutex: the set is only touched for O(1) insert/remove, never
+    /// held across an await, and `SavePermit::drop` must release the
+    /// reservation synchronously on every handler exit path.
+    in_flight: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Minimum time between saves for the same file.
     pub cooldown: Duration,
 }
@@ -104,6 +112,7 @@ impl SaveRateLimiter {
     pub fn new(cooldown: Duration) -> Self {
         Self {
             last_save: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(std::sync::Mutex::new(HashSet::new())),
             cooldown,
         }
     }
@@ -128,6 +137,30 @@ impl SaveRateLimiter {
         Ok(())
     }
 
+    /// Reserve a filename for a save that is about to run (#2466).
+    ///
+    /// Combines the cooldown `check` with an in-flight reservation taken
+    /// atomically under the in-flight lock: if a save for the same name
+    /// is already running, returns `Err(self.cooldown)` so the caller can
+    /// refuse with the usual "Try again in Ns" contract instead of
+    /// racing the in-flight save to the filename tag. On success the
+    /// returned `SavePermit` holds the reservation until it is dropped —
+    /// on completion (after `complete` records the save) or on any early
+    /// error return, which releases the name without recording a save,
+    /// so a failed save never strands the filename.
+    pub async fn acquire(&self, name: &str) -> Result<SavePermit, Duration> {
+        self.check(name).await?;
+        let mut flight =
+            self.in_flight.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !flight.insert(name.to_owned()) {
+            return Err(self.cooldown);
+        }
+        Ok(SavePermit {
+            limiter: self.clone(),
+            name: name.to_owned(),
+        })
+    }
+
     /// Record a successful save for the given filename.
     pub async fn record(&self, name: &str) {
         let mut map = self.last_save.lock().await;
@@ -136,6 +169,37 @@ impl SaveRateLimiter {
         // for every filename ever saved (#1713).
         map.retain(|_, last| last.elapsed() < self.cooldown);
         map.insert(name.to_owned(), Instant::now());
+    }
+}
+
+/// An in-flight save reservation handed out by `SaveRateLimiter::acquire`.
+///
+/// Dropping the permit releases the filename reservation. Call
+/// `complete` once the save has succeeded so the cooldown is recorded;
+/// dropping without completing (any early error path in the handler)
+/// records nothing.
+#[derive(Debug)]
+pub struct SavePermit {
+    /// The limiter that issued the reservation (cloned handle).
+    limiter: SaveRateLimiter,
+    /// The reserved filename.
+    name: String,
+}
+
+impl SavePermit {
+    /// Record the save as successful and release the reservation.
+    pub async fn complete(self) {
+        self.limiter.record(&self.name).await;
+        // The reservation itself is released by Drop as `self` goes out
+        // of scope at the end of this call.
+    }
+}
+
+impl Drop for SavePermit {
+    fn drop(&mut self) {
+        if let Ok(mut flight) = self.limiter.in_flight.lock() {
+            flight.remove(&self.name);
+        }
     }
 }
 
@@ -398,6 +462,57 @@ mod tests {
             limiter.check("b.txt").await.is_ok(),
             "other files are not limited"
         );
+    }
+
+    #[tokio::test]
+    async fn test_save_limiter_acquire_refuses_a_second_in_flight_save() {
+        let limiter = SaveRateLimiter::new(Duration::from_secs(5));
+        let _permit = limiter.acquire("a.txt").await.expect("first save proceeds");
+        let remaining = limiter.acquire("a.txt").await.unwrap_err();
+        assert_eq!(remaining, Duration::from_secs(5), "in-flight refusal quotes the cooldown");
+        assert!(
+            limiter.acquire("b.txt").await.is_ok(),
+            "a different file is not refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_limiter_concurrent_acquires_admit_exactly_one() {
+        let limiter = SaveRateLimiter::new(Duration::from_secs(5));
+        let (first, second) = tokio::join!(
+            limiter.acquire("a.txt"),
+            limiter.acquire("a.txt")
+        );
+        let admitted = [first.is_ok(), second.is_ok()]
+            .into_iter()
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(admitted, 1, "exactly one overlapping save proceeds");
+    }
+
+    #[tokio::test]
+    async fn test_save_limiter_dropped_permit_releases_without_recording() {
+        let limiter = SaveRateLimiter::new(Duration::from_secs(5));
+        {
+            let _permit = limiter.acquire("a.txt").await.expect("first save proceeds");
+        } // dropped without complete(): the save failed / the handler bailed
+        assert!(
+            limiter.acquire("a.txt").await.is_ok(),
+            "a failed save strands neither the reservation nor a cooldown"
+        );
+        assert!(limiter.check("a.txt").await.is_ok(), "nothing was recorded");
+    }
+
+    #[tokio::test]
+    async fn test_save_limiter_completed_permit_records_the_cooldown() {
+        let limiter = SaveRateLimiter::new(Duration::from_secs(5));
+        let permit = limiter.acquire("a.txt").await.expect("first save proceeds");
+        permit.complete().await;
+        assert!(
+            limiter.acquire("a.txt").await.is_err(),
+            "the completed save's cooldown refuses the next save"
+        );
+        assert!(limiter.check("a.txt").await.is_err());
     }
 
     #[tokio::test]
