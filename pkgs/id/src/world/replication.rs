@@ -933,9 +933,8 @@ mod tests {
     fn signed_tails_with_supported_header_versions_are_accepted() {
         let key = signing_key(1);
         let source = source_of(&key);
-        let payload = entry_payload();
-
         for version in JOURNAL_VERSION..=MAX_JOURNAL_VERSION {
+            let payload = entry_payload_with_version(version);
             let mut receiver = ReplicationTracker::new(WORLD, source, version, NONCE).unwrap();
             let tail = ReplicationEnvelope::tail(
                 WORLD,
