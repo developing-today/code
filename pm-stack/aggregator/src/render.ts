@@ -2054,9 +2054,16 @@ export function sessionRecordLine(
   const parent = r.parentId
     ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
-  const refs = r.taskRefs.length
-    ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
-    : "";
+  const renderedRefs = r.taskRefs.flatMap((ref) => {
+    try {
+      return [`<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`];
+    } catch {
+      // A malformed ref may still exist in an older or ungated in-memory
+      // record. Keep the session visible and omit only the invalid link.
+      return [];
+    }
+  });
+  const refs = renderedRefs.length ? ` · ${renderedRefs.join(" ")}` : "";
   // #1156: live records carry the session action set on the merged
   // registry identity; historical records render no controls.
   const badges = actionBadgesHtml(act?.actions);
