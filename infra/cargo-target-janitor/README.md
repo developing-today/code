@@ -21,8 +21,15 @@ ad-hoc targets are considered.
   Open PRs are read with `gh`. If either source is unavailable, cleanup stops.
 - Default mode is **dry-run**. It prints each proposed path, size and reason,
   plus every protected target. `--apply` is required to remove anything.
+- Ad-hoc targets are exactly `target-<task-id>`; a registered worktree
+  whose directory merely starts with `target-` is a checkout and is never
+  classified as a disposable target. Sizes count each inode once (Cargo
+  hard-links artifacts) at allocated blocks, so the cap tracks real disk
+  usage. (#4175 Codex P1/P2 dispositions.)
 - Apply re-reads queue claims, open PRs and process cwd state before each
-  removal, checks path containment and age again, then writes/fsyncs a JSONL
+  removal — including any build process whose cwd is anywhere inside the
+  owning worktree, not only inside the target directory — checks path
+  containment and age again, then writes/fsyncs a JSONL
   write-ahead record before removing the exact enumerated directory. No
   wildcard or force-delete command is used. At most 20 targets are planned
   per invocation; the hourly timer continues later if still over cap.

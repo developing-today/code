@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -19,6 +20,10 @@ GIB = 1024**3
 QUEUE = "repo-health-code-pilot"
 REPO = "developing-today/code"
 TASK_ID_RE = re.compile(r"(?:queue/|task-|target-)(\d+)(?:-|$)")
+# Ad-hoc targets are exactly "target-<task-id>" (README). Anything else
+# starting with "target-" (e.g. a registered worktree named
+# "target-42-worktree") is a checkout, never a disposable target.
+ADHOC_TARGET_RE = re.compile(r"target-\d+")
 
 
 class SafetyError(RuntimeError):
@@ -42,10 +47,28 @@ def task_id_from(value: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def is_adhoc_target(entry: Path, registered: set[Path]) -> bool:
+    return (ADHOC_TARGET_RE.fullmatch(entry.name) is not None
+            and entry.resolve() not in registered)
+
+
+def worktree_root_for_target(path: Path) -> Path | None:
+    """The checkout owning a <worktree>/pkgs/id/target path, else None."""
+    if (path.name == "target" and path.parent.name == "id"
+            and path.parent.parent.name == "pkgs"):
+        return path.parent.parent.parent
+    return None
+
+
+def cwd_inside(cwds: list[Path], base: Path) -> bool:
+    return any(cwd == base or cwd.is_relative_to(base) for cwd in cwds)
+
+
 def target_stats(path: Path) -> tuple[int, float]:
     """Count regular files without following symlinks; fail closed on I/O errors."""
     total = 0
     newest = path.lstat().st_mtime
+    seen_inodes: set[tuple[int, int]] = set()
     for root, dirs, files in os.walk(path, followlinks=False):
         dirs[:] = [name for name in dirs
                    if not (Path(root) / name).is_symlink()]
@@ -55,8 +78,20 @@ def target_stats(path: Path) -> tuple[int, float]:
                 st = entry.lstat()
             except FileNotFoundError:
                 continue  # Cargo may be creating/removing files during the scan.
-            total += st.st_size
             newest = max(newest, st.st_mtime)
+            if stat.S_ISREG(st.st_mode):
+                # Cargo hard-links artifacts (target/debug/<bin> and
+                # target/debug/deps/<bin>-<hash> share an inode): count
+                # each inode once, at allocated size, so the cap and the
+                # reclaimed reporting track real disk usage.
+                key = (st.st_dev, st.st_ino)
+                if key in seen_inodes:
+                    continue
+                seen_inodes.add(key)
+                blocks = getattr(st, "st_blocks", 0)
+                total += blocks * 512 if blocks else st.st_size
+            else:
+                total += st.st_size
     return total, newest
 
 
@@ -168,13 +203,14 @@ def discover_targets(fleet_root: Path, branches: dict[Path, str | None],
                      claimed: set[int], statuses: dict[int, str], prs: set[str],
                      process_cwds: list[Path], stale_before: float) -> list[Target]:
     root = fleet_root.resolve(strict=True)
+    registered = {path.resolve() for path in branches}
     worktree_task_ids = {task_id for branch in branches.values()
                          if (task_id := task_id_from(branch or "")) is not None}
     candidates: list[tuple[Path, Path | None, str | None, int | None]] = []
     for entry in sorted(root.iterdir()):
         if entry.is_symlink() or not entry.is_dir():
             continue
-        if entry.name.startswith("target-"):
+        if is_adhoc_target(entry, registered):
             candidates.append((entry, None, None, task_id_from(entry.name)))
             continue
         target = entry / "pkgs" / "id" / "target"
@@ -232,14 +268,16 @@ def discover_targets(fleet_root: Path, branches: dict[Path, str | None],
     return result
 
 
-def measure_total(fleet_root: Path) -> int:
+def measure_total(fleet_root: Path,
+                  branches: dict[Path, str | None] | None = None) -> int:
     """Re-measure every in-scope target once, including ones created mid-run."""
     root = fleet_root.resolve(strict=True)
+    registered = {path.resolve() for path in (branches or {})}
     total = 0
     for entry in root.iterdir():
         if entry.is_symlink() or not entry.is_dir():
             continue
-        paths = [entry] if entry.name.startswith("target-") else [
+        paths = [entry] if is_adhoc_target(entry, registered) else [
             entry / "pkgs" / "id" / "target"
         ]
         for path in paths:
@@ -297,8 +335,9 @@ def main() -> int:
         prs = open_pr_branches()
         cwds = active_process_cwds()
         task_ids = set()
+        registered = {path.resolve() for path in branches}
         for entry in args.fleet_root.iterdir():
-            if entry.name.startswith("target-"):
+            if is_adhoc_target(entry, registered):
                 task_id = task_id_from(entry.name)
                 if task_id is not None:
                     task_ids.add(task_id)
@@ -372,6 +411,10 @@ def main() -> int:
             if target.task_id is not None and any(
                     task_id_from(pr) == target.task_id for pr in fresh_prs):
                 raise SafetyError(f"task {target.task_id} gained an open PR; stopping")
+            worktree_root = worktree_root_for_target(resolved)
+            if worktree_root is not None and cwd_inside(fresh_cwds, worktree_root):
+                raise SafetyError(
+                    f"build process active in worktree; stopping before {path}")
             if any(cwd == resolved or cwd.is_relative_to(resolved)
                    for cwd in fresh_cwds):
                 raise SafetyError(f"process entered target; stopping before {path}")
@@ -394,7 +437,7 @@ def main() -> int:
             remaining_estimate -= size
             append_log(log, {"event": "deleted", "at": datetime.now(timezone.utc).isoformat(),
                              "path": str(resolved), "bytes": size})
-        remaining = measure_total(args.fleet_root)
+        remaining = measure_total(args.fleet_root, branches)
         append_log(log, {"event": "summary", "at": datetime.now(timezone.utc).isoformat(),
                          "reclaimed_bytes": reclaimed, "remaining_bytes": remaining,
                          "over_cap": remaining > args.cap_gib * GIB})

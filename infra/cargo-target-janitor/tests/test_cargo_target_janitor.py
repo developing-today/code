@@ -59,8 +59,12 @@ class JanitorTests(unittest.TestCase):
             self.root, {recent.parents[2].resolve(): "queue/44-fix"}, set(), {},
             set(), [], time.time() - 48 * 3600,
         )
-        self.assertEqual({t.protected for t in found},
-                         {"younger-than-48h", "unmapped-ad-hoc-target"})
+        # "target-not-a-task" is not the documented target-<task-id> shape
+        # and holds no pkgs/id/target, so it is not a target at all
+        # (PR #4175 Codex P1: non-numeric target-* names are checkouts or
+        # stray directories, never disposable targets).
+        self.assertEqual({t.protected for t in found}, {"younger-than-48h"})
+        self.assertNotIn(unknown, {t.path for t in found})
 
     def test_terminal_task_is_eligible_before_age_threshold(self):
         target = self.make_target("task-45/pkgs/id/target", age=1)
@@ -101,6 +105,44 @@ class JanitorTests(unittest.TestCase):
         selected, projected = janitor.build_plan(targets, 8)
         self.assertEqual([t.path for t in selected], [old])
         self.assertEqual(projected, 5)
+
+    def test_registered_worktree_named_like_target_is_not_adhoc(self):
+        # Codex P1 on PR #4175: a registered worktree called
+        # "target-42-worktree" was classified as a disposable ad-hoc
+        # target and its whole checkout became removable.
+        target = self.make_target("target-42-worktree/pkgs/id/target")
+        worktree = target.parents[2]
+        found = janitor.discover_targets(
+            self.root, {worktree.resolve(): "feature/my-current-work"},
+            set(), {}, {"feature/my-current-work"}, [],
+            time.time() - 48 * 3600,
+        )
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].path, target.resolve())
+        self.assertEqual(found[0].protected, "open-pr-worktree")
+
+    def test_hardlinked_artifacts_counted_once(self):
+        # Codex P2 on PR #4175: Cargo hard-links artifacts; summing
+        # st_size per path double-charges the same inode.
+        import os
+        single = self.root / "single"
+        single.mkdir()
+        (single / "bin").write_bytes(b"x" * 100_000)
+        doubled = self.root / "doubled"
+        doubled.mkdir()
+        (doubled / "bin").write_bytes(b"x" * 100_000)
+        os.link(doubled / "bin", doubled / "bin-hash")
+        self.assertEqual(janitor.target_stats(doubled)[0],
+                         janitor.target_stats(single)[0])
+
+    def test_worktree_process_guard_helpers(self):
+        target = self.root / "task-9" / "pkgs" / "id" / "target"
+        worktree = janitor.worktree_root_for_target(target)
+        self.assertEqual(worktree, self.root / "task-9")
+        self.assertTrue(janitor.cwd_inside([worktree / "pkgs"], worktree))
+        self.assertFalse(janitor.cwd_inside([self.root / "other"], worktree))
+        self.assertIsNone(
+            janitor.worktree_root_for_target(self.root / "target-9"))
 
     def test_default_logs_plan_without_deleting(self):
         path = self.make_target("target-7")
