@@ -28,6 +28,15 @@
 //!   (the phase-2 feed contract), which rebases the tracker; staged bytes
 //!   from a dead session are discarded, never committed.
 //!
+//! Tail appends are transactional: before appending, the receiver
+//! durably records the journal's pre-append length in an append-pending
+//! record (itself installed by rename, so it is never torn); the record
+//! is removed only after the appended bytes are fsynced. At open, a
+//! leftover record rolls the journal back to the recorded length, so a
+//! crash or a partial write mid-append can neither wedge the replica
+//! (an unterminated final line) nor silently promote an uncommitted
+//! batch (a partial append that happens to end at an entry boundary).
+//!
 //! The replica journal is the exact `JournalEntry` JSONL the writer
 //! stores, at `<dir>/journal.jsonl`. Serving spectators from it is phase
 //! 4; this module only receives, verifies, and persists.
@@ -44,7 +53,7 @@ use std::path::{Path, PathBuf};
 
 use super::replication::{
     ReplicationCursor, ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
-    advance_cursor, chain_base_cursor,
+    SignedReplicationEnvelope, advance_cursor, chain_base_cursor,
 };
 use super::{JournalEntry, MAX_JOURNAL_VERSION};
 
@@ -56,6 +65,16 @@ pub const REPLICA_JOURNAL_FILE: &str = "journal.jsonl";
 /// installed; renamed over [`REPLICA_JOURNAL_FILE`] once fully written
 /// and fsynced. A leftover at open time is crash debris and is removed.
 const INSTALLING_FILE: &str = "journal.jsonl.installing";
+
+/// Transaction record for an in-flight tail append: the journal's byte
+/// length before the append began. Installed by rename from
+/// [`APPEND_PENDING_TMP_FILE`] so its contents are never torn; removed
+/// once the append is fsynced. A leftover at open rolls the journal
+/// back to the recorded length.
+const APPEND_PENDING_FILE: &str = "journal.jsonl.append-pending";
+
+/// Scratch file the append-pending record is written through.
+const APPEND_PENDING_TMP_FILE: &str = "journal.jsonl.append-pending.tmp";
 
 /// Upper bound on one uncommitted transfer's staged bytes. Per-frame
 /// payloads are already bounded by
@@ -92,6 +111,13 @@ pub enum ReceiverError {
     /// [`MAX_STAGED_TRANSFER_BYTES`]; the session is poisoned.
     #[error("staged transfer exceeds the {MAX_STAGED_TRANSFER_BYTES}-byte bound")]
     StagedTransferTooLarge,
+    /// A session's first frame was not a snapshot. The phase-2 feed
+    /// opens every session with a snapshot, which is what rebases the
+    /// verification tracker to the chain base; a tail or terminal first
+    /// would be verified against the base but applied to the existing
+    /// journal, so the receiver refuses it before the tracker sees it.
+    #[error("replication session does not start with a snapshot frame")]
+    SessionMustStartWithSnapshot,
 }
 
 /// What one accepted frame did to the receiver.
@@ -151,6 +177,7 @@ pub struct DurableReceiver {
     committed_cursor: Option<ReplicationCursor>,
     header_version: Option<u32>,
     session: Option<ReplicationTracker>,
+    session_started: bool,
     staged: Option<Staged>,
 }
 
@@ -171,6 +198,7 @@ impl DurableReceiver {
         pinned_source: [u8; 32],
     ) -> Result<Self, ReceiverError> {
         fs::create_dir_all(dir)?;
+        roll_back_interrupted_append(dir)?;
         // A leftover installing file is the debris of a crash mid-commit:
         // the rename never happened, so the committed journal (if any) is
         // the intact pre-commit state and the scratch is safe to drop.
@@ -193,6 +221,7 @@ impl DurableReceiver {
             committed_cursor,
             header_version,
             session: None,
+            session_started: false,
             staged: None,
         })
     }
@@ -252,6 +281,7 @@ impl DurableReceiver {
             self.header_version.unwrap_or(1),
             session_nonce,
         ));
+        self.session_started = false;
         self.staged = None;
     }
 
@@ -259,6 +289,7 @@ impl DurableReceiver {
     /// and the committed replica is left exactly as it was.
     pub fn abort_session(&mut self) {
         self.session = None;
+        self.session_started = false;
         self.staged = None;
     }
 
@@ -275,11 +306,28 @@ impl DurableReceiver {
     /// poison the session, because the staging area may no longer match
     /// the verification state.
     pub fn accept_frame(&mut self, frame_bytes: &[u8]) -> Result<ReceiverProgress, ReceiverError> {
+        if self.session.is_none() {
+            return Err(ReceiverError::NoSession);
+        }
+        // Snapshot-first ordering, checked before the tracker sees the
+        // frame so a refusal leaves the session state untouched: a new
+        // session's tracker sits at the chain base, so a base-chained
+        // tail would verify there but must never be appended to an
+        // existing journal, and a first terminal must never move the
+        // committed cursor without moving the journal.
+        if !self.session_started {
+            if let Some(signed) = SignedReplicationEnvelope::decode_frame(frame_bytes) {
+                if signed.envelope.kind != ReplicationKind::Snapshot {
+                    return Err(ReceiverError::SessionMustStartWithSnapshot);
+                }
+            }
+        }
         let (accepted, session_cursor, session_version) = {
             let tracker = self.session.as_mut().ok_or(ReceiverError::NoSession)?;
             let accepted = tracker.accept(frame_bytes)?;
             (accepted, tracker.cursor(), tracker.header_version())
         };
+        self.session_started = true;
         match accepted.kind {
             ReplicationKind::Snapshot => {
                 self.staged = Some(Staged::Snapshot(accepted.payload));
@@ -303,6 +351,7 @@ impl DurableReceiver {
             ReplicationKind::Terminal => {
                 if let Err(error) = self.commit_staged() {
                     self.session = None;
+                    self.session_started = false;
                     self.staged = None;
                     return Err(error);
                 }
@@ -322,6 +371,7 @@ impl DurableReceiver {
             .map_or(0, |staged| staged.bytes().len());
         if len > MAX_STAGED_TRANSFER_BYTES {
             self.session = None;
+            self.session_started = false;
             self.staged = None;
             return Err(ReceiverError::StagedTransferTooLarge);
         }
@@ -347,12 +397,34 @@ impl DurableReceiver {
                 self.sync_dir()?;
             }
             Staged::Tails(bytes) => {
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(self.journal_path())?;
-                file.write_all(&bytes)?;
-                file.sync_all()?;
+                // Transactional append: record the pre-append length
+                // durably first, so an interrupted or partial append
+                // is rolled back at the next open instead of wedging
+                // or silently promoting the batch.
+                let journal = self.journal_path();
+                let prior_len = if journal.exists() {
+                    fs::metadata(&journal)?.len()
+                } else {
+                    0
+                };
+                self.write_append_pending(prior_len)?;
+                let append_result = (|| -> Result<(), ReceiverError> {
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&journal)?;
+                    file.write_all(&bytes)?;
+                    file.sync_all()?;
+                    Ok(())
+                })();
+                if let Err(error) = append_result {
+                    // Best-effort immediate rollback; the pending
+                    // record makes the next open roll back regardless.
+                    let _ = self.roll_back_to(prior_len);
+                    return Err(error);
+                }
+                fs::remove_file(self.dir.join(APPEND_PENDING_FILE))?;
+                self.sync_dir()?;
             }
         }
         Ok(())
@@ -362,6 +434,62 @@ impl DurableReceiver {
         File::open(&self.dir)?.sync_all()?;
         Ok(())
     }
+
+    /// Durably record the journal's pre-append length: written through
+    /// a scratch file and renamed into place, so the record itself is
+    /// never torn.
+    fn write_append_pending(&self, prior_len: u64) -> Result<(), ReceiverError> {
+        let tmp = self.dir.join(APPEND_PENDING_TMP_FILE);
+        {
+            let mut file = File::create(&tmp)?;
+            file.write_all(prior_len.to_string().as_bytes())?;
+            file.sync_all()?;
+        }
+        fs::rename(&tmp, self.dir.join(APPEND_PENDING_FILE))?;
+        self.sync_dir()?;
+        Ok(())
+    }
+
+    /// Truncate the journal back to `len` bytes and fsync it.
+    fn roll_back_to(&self, len: u64) -> Result<(), ReceiverError> {
+        let journal = self.journal_path();
+        if journal.exists() {
+            let file = OpenOptions::new().write(true).open(&journal)?;
+            file.set_len(len)?;
+            file.sync_all()?;
+        }
+        Ok(())
+    }
+}
+
+/// If a previous tail append was interrupted (its append-pending record
+/// is still present), roll the journal back to the recorded pre-append
+/// length and clear the record. Runs at open, before the journal is
+/// validated: the rollback restores exactly the last committed batch
+/// boundary, whether the partial append stopped mid-line or at an
+/// entry boundary.
+fn roll_back_interrupted_append(dir: &Path) -> Result<(), ReceiverError> {
+    let pending = dir.join(APPEND_PENDING_FILE);
+    let tmp = dir.join(APPEND_PENDING_TMP_FILE);
+    if tmp.exists() {
+        fs::remove_file(&tmp)?;
+    }
+    if !pending.exists() {
+        return Ok(());
+    }
+    let text = fs::read_to_string(&pending)?;
+    let prior_len: u64 = text.trim().parse().map_err(|_| {
+        ReceiverError::CorruptReplica("append-pending record is not a byte length".to_string())
+    })?;
+    let journal = dir.join(REPLICA_JOURNAL_FILE);
+    if journal.exists() {
+        let file = OpenOptions::new().write(true).open(&journal)?;
+        file.set_len(prior_len)?;
+        file.sync_all()?;
+    }
+    fs::remove_file(&pending)?;
+    File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// Recompute the verified cursor of a committed journal from its exact
@@ -428,7 +556,7 @@ mod tests {
         ReplicationEnvelope, SignedReplicationEnvelope, chain_payload, frame_digest,
         journal_entry_line, split_entry_payload,
     };
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
     use tempfile::TempDir;
 
     const WORLD: &str = "world-receiver-test";
@@ -471,6 +599,37 @@ mod tests {
             .unwrap()
             .encode_frame()
             .unwrap()
+    }
+
+    /// Sign an envelope the production signer refuses to sign (an
+    /// over-bound payload), replicating the signing-bytes contract so
+    /// the frame still passes signature verification and reaches the
+    /// check under test. If the contract changes, this helper's frames
+    /// fail verification and the tests say so loudly.
+    fn sign_unbounded(envelope: ReplicationEnvelope, key: &SigningKey) -> Vec<u8> {
+        use crate::world::replication::REPLICATION_DOMAIN;
+        let signing_bytes = postcard::to_allocvec(&(
+            REPLICATION_DOMAIN,
+            envelope.version,
+            &envelope.world_id,
+            &envelope.source,
+            envelope.header_version,
+            envelope.kind,
+            &envelope.session_nonce,
+            envelope.cursor_before,
+            envelope.cursor_after,
+            &envelope.prev_frame_digest,
+            &envelope.payload_digest,
+            &envelope.payload,
+        ))
+        .unwrap();
+        let signature = key.sign(&signing_bytes).to_bytes().to_vec();
+        SignedReplicationEnvelope {
+            envelope,
+            signature,
+        }
+        .encode_frame()
+        .unwrap()
     }
 
     fn receiver(dir: &TempDir, key: &SigningKey) -> DurableReceiver {
@@ -735,7 +894,9 @@ mod tests {
             payload_digest: crate::world::replication::payload_digest(&oversized),
             payload: oversized,
         };
-        let error = receiver.accept_frame(&sign(envelope, &key)).unwrap_err();
+        let error = receiver
+            .accept_frame(&sign_unbounded(envelope, &key))
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             ReplicationError::PayloadTooLarge.to_string()
@@ -800,6 +961,91 @@ mod tests {
         fs::write(dir.path().join(REPLICA_JOURNAL_FILE), b"not a journal\n").unwrap();
         let error = DurableReceiver::open(dir.path(), WORLD, source_of(&key)).unwrap_err();
         assert!(matches!(error, ReceiverError::CorruptReplica(_)));
+    }
+
+    #[test]
+    fn tail_or_terminal_first_in_a_session_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let source = source_of(&key);
+        let mut receiver = receiver(&dir, &key);
+        receiver.begin_session(NONCE);
+        let payload = journal_payload(1);
+        feed_snapshot(&mut receiver, &key, NONCE, 1, &payload);
+        let committed = receiver.committed_cursor().unwrap();
+        // A new session whose first frame is a base-chained tail
+        // carrying the Created header: the tracker would accept it
+        // against the chain base, but appending it would duplicate the
+        // header in the stored journal. The receiver refuses it before
+        // the tracker sees it.
+        receiver.begin_session(NONCE2);
+        let tail = ReplicationEnvelope::tail(
+            WORLD,
+            source,
+            1,
+            NONCE2,
+            chain_base_cursor(WORLD, &source, 1),
+            [0; 32],
+            payload.clone(),
+        )
+        .unwrap();
+        let error = receiver.accept_frame(&sign(tail, &key)).unwrap_err();
+        assert!(matches!(error, ReceiverError::SessionMustStartWithSnapshot));
+        // A terminal as a session's first frame is likewise refused:
+        // it must never move the committed cursor without the journal.
+        receiver.begin_session(NONCE2);
+        let terminal = ReplicationEnvelope::terminal(
+            WORLD,
+            source,
+            1,
+            NONCE2,
+            chain_base_cursor(WORLD, &source, 1),
+            [0; 32],
+        );
+        let error = receiver.accept_frame(&sign(terminal, &key)).unwrap_err();
+        assert!(matches!(error, ReceiverError::SessionMustStartWithSnapshot));
+        receiver.abort_session();
+        assert_eq!(receiver.committed_cursor(), Some(committed));
+        assert_eq!(receiver.read_journal().unwrap(), payload);
+        // And the replica still opens cleanly afterwards.
+        let reopened = receiver(&dir, &key);
+        assert_eq!(reopened.committed_cursor(), Some(committed));
+    }
+
+    #[test]
+    fn interrupted_tail_append_is_rolled_back_on_open() {
+        let dir = TempDir::new().unwrap();
+        let key = signing_key(1);
+        let mut receiver = receiver(&dir, &key);
+        receiver.begin_session(NONCE);
+        let payload = journal_payload(1);
+        feed_snapshot(&mut receiver, &key, NONCE, 1, &payload);
+        let committed = receiver.committed_cursor().unwrap();
+        drop(receiver);
+        let journal = dir.path().join(REPLICA_JOURNAL_FILE);
+        // Simulate a crash mid-append in two shapes: a torn final line
+        // and a complete extra entry — both under a durable
+        // append-pending record naming the pre-append length.
+        for debris in [b"{\"created\":partial".as_slice(), extra_entry().as_slice()] {
+            fs::write(
+                dir.path().join(APPEND_PENDING_TMP_FILE),
+                payload.len().to_string(),
+            )
+            .unwrap();
+            fs::rename(
+                dir.path().join(APPEND_PENDING_TMP_FILE),
+                dir.path().join(APPEND_PENDING_FILE),
+            )
+            .unwrap();
+            let mut file = OpenOptions::new().append(true).open(&journal).unwrap();
+            file.write_all(debris).unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            let reopened = receiver(&dir, &key);
+            assert_eq!(reopened.read_journal().unwrap(), payload);
+            assert_eq!(reopened.committed_cursor(), Some(committed));
+            assert!(!dir.path().join(APPEND_PENDING_FILE).exists());
+        }
     }
 
     #[test]
