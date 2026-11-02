@@ -110,6 +110,39 @@ func TestADirectoryIsConcatenatedInNaturalOrder(t *testing.T) {
 	}
 }
 
+func TestADirectoryIsConcatenatedInNaturalOrderWithLongNumbers(t *testing.T) {
+	dir := t.TempDir()
+	smaller := "fragment-99999999999999999999999z.ts"
+	larger := "fragment-100000000000000000000000a.ts"
+	for name, contents := range map[string]string{
+		larger:  "large-numbered fragment",
+		smaller: "small-numbered fragment",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := source.Resolve(dir, opts(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 2 {
+		t.Fatalf("got %d files, want 2", len(got.Files))
+	}
+	want := []string{smaller, larger}
+	for i, name := range want {
+		if gotName := filepath.Base(got.Files[i]); gotName != name {
+			t.Errorf("file order[%d] = %q, want %q", i, gotName, name)
+		}
+	}
+	smallAt := strings.Index(got.Text, "small-numbered fragment")
+	largeAt := strings.Index(got.Text, "large-numbered fragment")
+	if smallAt < 0 || largeAt < 0 || smallAt >= largeAt {
+		t.Errorf("directory contents are not concatenated in numeric order:\n%s", got.Text)
+	}
+}
+
 func TestEachConcatenatedFileIsNamedInTheOutput(t *testing.T) {
 	// A stack trace into a concatenation is otherwise unattributable.
 	dir := t.TempDir()

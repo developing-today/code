@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 )
@@ -263,9 +262,12 @@ func naturalLess(a, b string) bool {
 			for bi < len(b) && isDigit(b[bi]) {
 				bi++
 			}
-			an, aerr := strconv.ParseInt(a[as:ai], 10, 64)
-			bn, berr := strconv.ParseInt(b[bs:bi], 10, 64)
-			if aerr == nil && berr == nil && an != bn {
+			an := strings.TrimLeft(a[as:ai], "0")
+			bn := strings.TrimLeft(b[bs:bi], "0")
+			if len(an) != len(bn) {
+				return len(an) < len(bn)
+			}
+			if an != bn {
 				return an < bn
 			}
 			continue
