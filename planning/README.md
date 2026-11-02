@@ -53,6 +53,12 @@ A roadmap row records intent. It is not a go-ahead to build the thing, and it do
 4. When a row ships or is dropped, move it to the "Done" table. Do not delete rows, since the history is useful.
 5. Open an issue for every item in Now, so the work can be picked up and tracked there. The roadmap links to issues and does not copy their content.
 
+## Epics
+
+New program-level work uses the [epic issue template](../.github/ISSUE_TEMPLATE/epic.md) and its [intake checklist](templates/epic-intake.md). The template carries the epic and component labels and prompts for Project #4 fields, a measurable definition of done, and a named owner. File children as native sub-issues during intake; the `Part of epic: #…` line in each child is only the readable mirror.
+
+Run `bun run scripts/check-epic-conformance.ts` from `pm-stack/aggregator/` to audit open epics. It reports missing labels, Project #4 membership, a definition of done, or a named owner. Project membership is checked only when `gh` has `read:project`; otherwise the audit says it was skipped. Verify the actual Area, Horizon, and Kind values in the Project UI.
+
 ## Templates
 
 - [Roadmap item](templates/roadmap-item.md)
