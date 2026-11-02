@@ -102,6 +102,35 @@ function isSavedView(value: unknown): value is SavedView {
   );
 }
 
+function crossRowInvariantError(views: readonly SavedView[]): string | null {
+  const ids = new Set<string>();
+  const namesByOwner = new Map<string, Set<string>>();
+  const ownersWithDefault = new Set<string>();
+
+  for (const [index, view] of views.entries()) {
+    if (ids.has(view.id)) return `view row ${index} duplicates id "${view.id}"`;
+    ids.add(view.id);
+
+    let names = namesByOwner.get(view.owner);
+    if (!names) {
+      names = new Set<string>();
+      namesByOwner.set(view.owner, names);
+    }
+    const normalizedName = view.name.toLowerCase();
+    if (names.has(normalizedName)) {
+      return `view row ${index} duplicates name "${view.name}" for owner "${view.owner}"`;
+    }
+    names.add(normalizedName);
+
+    if (view.isDefault) {
+      if (ownersWithDefault.has(view.owner)) return `view row ${index} adds a second default for owner "${view.owner}"`;
+      ownersWithDefault.add(view.owner);
+    }
+  }
+
+  return null;
+}
+
 let counter = 0;
 export function newViewId(now = new Date()): string {
   counter = (counter + 1) % 46656;
@@ -217,7 +246,10 @@ export class ViewsStore {
       if (malformedIndex !== -1) {
         throw new Error(`view row ${malformedIndex} does not have the expected SavedView shape`);
       }
-      this.views = rows.filter(isSavedView);
+      const views = rows.filter(isSavedView);
+      const invariantError = crossRowInvariantError(views);
+      if (invariantError) throw new Error(invariantError);
+      this.views = views;
     } catch (err) {
       this.views = [];
       await this.quarantine(`is unparseable (${err instanceof Error ? err.message : String(err)})`);

@@ -16,6 +16,7 @@ import {
   ownerKey,
   validateViewFilters,
   viewUrl,
+  type SavedView,
   type ViewItemLike,
 } from "../src/views.ts";
 
@@ -27,6 +28,20 @@ function tmpStore(): { dir: string; file: string; store: ViewsStore } {
   const dir = mkdtempSync(join(tmpdir(), "agg-views-"));
   const file = join(dir, "views.json");
   return { dir, file, store: new ViewsStore(file) };
+}
+
+function persistedView(overrides: Partial<SavedView> = {}): SavedView {
+  const now = new Date().toISOString();
+  return {
+    id: "vw-1",
+    name: "Alpha",
+    owner: drewKey,
+    filters: { repo: "a/b" },
+    isDefault: false,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
 }
 
 describe("views store (#1276)", () => {
@@ -137,6 +152,41 @@ describe("views store (#1276)", () => {
     await expect(store.save({ owner: drewKey, name: "Fresh", filters: { state: "open" } })).resolves.toMatchObject({
       name: "Fresh",
     });
+  });
+
+  test("cross-row invariant violations are quarantined before ambiguous views can be removed", async () => {
+    const cases: Array<{ name: string; views: SavedView[] }> = [
+      {
+        name: "duplicate ids",
+        views: [persistedView({ id: "vw-dup", name: "Gamma" }), persistedView({ id: "vw-dup", name: "Delta" })],
+      },
+      {
+        name: "case-insensitive duplicate names per owner",
+        views: [persistedView({ id: "vw-a", name: "Alpha" }), persistedView({ id: "vw-b", name: "alpha" })],
+      },
+      {
+        name: "multiple defaults per owner",
+        views: [
+          persistedView({ id: "vw-a", isDefault: true }),
+          persistedView({ id: "vw-b", name: "Beta", isDefault: true }),
+        ],
+      },
+    ];
+
+    for (const { name, views } of cases) {
+      const { dir, file, store } = tmpStore();
+      const raw = JSON.stringify({ version: 1, views });
+      writeFileSync(file, raw);
+
+      expect(await store.all(), name).toEqual([]);
+      const quarantined = readdirSync(dir).filter((entry) => entry.startsWith("views.json.corrupt-"));
+      expect(quarantined, name).toHaveLength(1);
+      expect(readFileSync(join(dir, quarantined[0]), "utf8"), name).toBe(raw);
+      if (name === "duplicate ids") {
+        expect(await store.remove("vw-dup", drewKey)).toBe(false);
+        expect(await store.all()).toEqual([]);
+      }
+    }
   });
 
   test("malformed default filters are quarantined instead of becoming a match-all view", async () => {
