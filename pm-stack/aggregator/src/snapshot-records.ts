@@ -180,7 +180,9 @@ export function recordsFromDeepseekBalance(quotaViewText: string, observedBy: st
   if (!amount) return [];
   const value = Number(amount[1].replace(/,/g, ""));
   if (!Number.isFinite(value)) return [];
-  const date = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? lastCheckedDate(section) ?? freshestDate(section);
+  const raw = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? null;
+  const onLine = raw !== null && parseIsoDate(raw) !== null ? raw : null;
+  const date = onLine ?? lastCheckedDate(section) ?? freshestDate(section);
   if (!date) return [];
   return [
     {
