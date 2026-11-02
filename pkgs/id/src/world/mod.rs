@@ -365,6 +365,14 @@ pub enum WorldEventKind {
         /// Server-observed origin metadata. Absent on older journal entries.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provenance: Option<ModuleProvenance>,
+        /// The trust decision that admitted this module (#1069), carried
+        /// by the install event itself so the decision and the install
+        /// are one durable record: a separate audit append after the
+        /// install event could fail and leave a durable install with no
+        /// decision (or a split live/restored state). Absent on older
+        /// journal entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trust: Option<TrustDecision>,
     },
 }
 
@@ -638,9 +646,10 @@ pub enum TrustBasis {
     ServerCompiled,
 }
 
-/// A trust gate decision to record in the journal alongside an install
-/// (#1069): the basis, and the publisher key when one verified.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A trust gate decision recorded in the journal as part of the
+/// install event it admitted (#1069): the basis, and the publisher key
+/// when one verified.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustDecision {
     /// The basis on which the module was admitted.
     pub basis: TrustBasis,
@@ -698,22 +707,6 @@ pub enum JournalEntry {
         /// from a moderator scope rather than the admin. `None` means admin.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<u64>,
-    },
-    /// A module trust decision admitted an installed module (#1069).
-    /// Journal-only: the audit record for the publisher-signature gate,
-    /// written alongside the `ProgramInstalled` event that carries the
-    /// install itself. It records the basis on which the module was
-    /// admitted; a module the gate rejected is never installed and
-    /// leaves no entry.
-    ModuleTrustDecision {
-        /// The hash of the admitted module.
-        module_hash: String,
-        /// The basis on which the module was admitted.
-        basis: TrustBasis,
-        /// Hex public key of the publisher whose signature verified,
-        /// when the basis is `signature_verified`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        publisher: Option<String>,
     },
     /// A builder-scoped participant installed a program. Journal-only: it is
     /// the audit record for the builder authority, written alongside the

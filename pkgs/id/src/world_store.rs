@@ -1466,6 +1466,7 @@ mod tests {
                     module_hash: "h".to_owned(),
                     seed: 1,
                     provenance: None,
+                    trust: None,
                 },
             },
         });

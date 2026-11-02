@@ -78,6 +78,7 @@ mod tests {
                 module_hash: "h".to_owned(),
                 seed: 3,
                 provenance: Some(sample_source_provenance()),
+                trust: None,
             },
         };
         let encoded = serde_json::to_value(&event).unwrap();
@@ -2163,6 +2164,7 @@ mod tests {
                         module_hash: "ab".repeat(32),
                         seed: 424_242,
                         provenance: None,
+                        trust: None,
                     },
                 },
             },
@@ -2367,6 +2369,7 @@ mod tests {
                 module_hash: "ab".repeat(32),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         for scopes in [WorldScopes::JOIN, WorldScopes::GUEST, WorldScopes::ALL] {
@@ -2377,6 +2380,7 @@ mod tests {
                     module_hash: "ab".repeat(32),
                     seed: 0,
                     provenance: None,
+                    trust: None,
                 }
             );
         }
@@ -4349,6 +4353,7 @@ mod projection_guard_tests {
                 module_hash: "hash".to_owned(),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         let shown = project_event_for(WorldScopes::GUEST, &installed)

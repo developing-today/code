@@ -1305,6 +1305,7 @@ impl WorldActor {
                         module_hash: module_hash.clone(),
                         seed,
                         provenance: provenance.clone(),
+                        trust: trust.clone(),
                     },
                 };
                 let result = self
@@ -1319,19 +1320,6 @@ impl WorldActor {
                                 by,
                                 module_hash: module_hash.clone(),
                                 seed,
-                            });
-                        }
-                        Ok(())
-                    })
-                    .and_then(|()| {
-                        // The trust gate likewise leaves a journal-only
-                        // audit record of the decision that admitted the
-                        // module (#1069), alongside the install event.
-                        if let Some(decision) = trust {
-                            return self.persist(JournalEntry::ModuleTrustDecision {
-                                module_hash: module_hash.clone(),
-                                basis: decision.basis,
-                                publisher: decision.publisher,
                             });
                         }
                         Ok(())
