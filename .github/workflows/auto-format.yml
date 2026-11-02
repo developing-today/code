@@ -17,8 +17,6 @@ name: auto-format
 #      format commit.
 
 on:
-  push:
-    branches: [main]
   schedule:
     # Nightly sweep over the last day's changed files.
     - cron: "47 6 * * *"
