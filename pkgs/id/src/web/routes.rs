@@ -1205,28 +1205,34 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         req.name
     );
 
-    // Check save rate limit
-    if let Err(remaining) = state.save_limiter.check(&req.name).await {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let secs = remaining.as_secs_f64().ceil() as u64;
-        tracing::info!(
-            "[routes] Save rate limited for '{}': {}s remaining",
-            req.name,
-            secs
-        );
-        // Structured refusal (#2244 P0-A): machine-readable reason and
-        // retry value in the body, `Retry-After` header alongside.
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(header::RETRY_AFTER, secs.to_string())],
-            Json(serde_json::json!({
-                "error": format!("Save rate limited. Try again in {secs}s."),
-                "reason": "rate_limited",
-                "retry_after_ms": secs.saturating_mul(1_000),
-            })),
-        )
-            .into_response();
-    }
+    // Check save rate limit and reserve the filename for this save
+    // (#2466): a second save of the same file arriving while this one is
+    // in flight is refused here instead of racing to the filename tag.
+    // The permit releases the reservation on every exit path below.
+    let permit = match state.save_limiter.acquire(&req.name).await {
+        Ok(permit) => permit,
+        Err(remaining) => {
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let secs = remaining.as_secs_f64().ceil() as u64;
+            tracing::info!(
+                "[routes] Save rate limited for '{}': {}s remaining",
+                req.name,
+                secs
+            );
+            // Structured refusal (#2244 P0-A): machine-readable reason and
+            // retry value in the body, `Retry-After` header alongside.
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, secs.to_string())],
+                Json(serde_json::json!({
+                    "error": format!("Save rate limited. Try again in {secs}s."),
+                    "reason": "rate_limited",
+                    "retry_after_ms": secs.saturating_mul(1_000),
+                })),
+            )
+                .into_response();
+        }
+    };
 
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
@@ -1336,8 +1342,9 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         .notify_new_version(&req.name, &new_hash_str)
         .await;
 
-    // Record successful save for rate limiting
-    state.save_limiter.record(&req.name).await;
+    // Record successful save for rate limiting (also releases the
+    // in-flight reservation as the permit drops)
+    permit.complete().await;
 
     Json(SaveResponse {
         hash: new_hash_str,
