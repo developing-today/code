@@ -69,6 +69,14 @@ impl StoreId {
     }
 }
 
+impl Default for StoreId {
+    /// The PoC has exactly one local store, so the default store is the
+    /// local one (this is what lets `LocalIndex` derive `Default`).
+    fn default() -> Self {
+        Self::local()
+    }
+}
+
 /// A stored reference: the meaning is the target ID, the surface is only a label.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reference {
@@ -121,7 +129,9 @@ impl Reference {
                 }
                 ']' if chars.next() == Some('(') => {
                     let rest: String = chars.collect();
-                    break rest.strip_prefix("id://")?.strip_suffix(')')?;
+                    // Own the hex slice: `rest` is dropped at the end of
+                    // this match arm, so the loop value cannot borrow it.
+                    break rest.strip_prefix("id://")?.strip_suffix(')')?.to_owned();
                 }
                 chr => surface.push(chr),
             }
