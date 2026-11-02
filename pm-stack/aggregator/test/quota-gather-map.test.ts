@@ -92,6 +92,40 @@ describe("entryFromResult", () => {
     expect(entry.windows[0].pctOfLimit).toBe(2);
     expect(entry.windows[0].resetsAt).toBe("2026-10-31T13:11:00.000Z");
   });
+  test("out-of-range percentages are omitted while null and valid sibling windows survive", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "claude",
+        ok: true,
+        configured: true,
+        usage: {
+          windows: {
+            below: { usedPercent: -20 },
+            above: { usedPercent: 150 },
+            huge: { usedPercent: 1e9 },
+            zero: { usedPercent: 0 },
+            full: { usedPercent: 100 },
+            valid: { usedPercent: 42 },
+            balance: { usedPercent: null, valueLabel: "$12.50" },
+          },
+        },
+      },
+      "2026-10-27T05:00:00.000Z",
+    );
+
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["zero", 0],
+      ["full", 100],
+      ["valid", 42],
+      ["balance", null],
+    ]);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => [r.metricId, r.value])).toEqual([
+      ["full", 100],
+      ["valid", 42],
+      ["zero", 0],
+    ]);
+  });
   test("error and unconfigured states stay distinct", () => {
     const err = entryFromResult(
       { providerId: "claude", ok: false, configured: true, error: "session expired", usage: null },
@@ -384,6 +418,45 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
     const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
     expect(records.map((r) => r.metricId).sort()).toEqual(["5h", "weekly"]);
     expect(records.every((r) => r.source === "console")).toBe(true);
+  });
+  test("out-of-range percentages and negative dollar labels are omitted", () => {
+    const doc = {
+      source: "file-export/test",
+      status: "ok",
+      measuredAt: "2026-10-27T05:30:00.000Z",
+      windows: [
+        { name: "below", usedPct: -20 },
+        { name: "above", usedPct: 150 },
+        { name: "huge", usedPct: 1e9 },
+        { name: "null", usedPct: null },
+        { name: "zero", usedPct: 0 },
+        { name: "full", usedPct: 100 },
+        { name: "valid", usedPct: 42 },
+      ],
+      freeCreditsUsd: -42.5,
+      paygBalanceUsd: -1,
+    };
+    const entry = entryFromFileExport(doc, { fileMtimeIso: doc.measuredAt, stale: false });
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit, w.valueLabel])).toEqual([
+      ["zero", 0, null],
+      ["full", 100, null],
+      ["valid", 42, null],
+    ]);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => [r.metricId, r.value])).toEqual([
+      ["full", 100],
+      ["valid", 42],
+      ["zero", 0],
+    ]);
+
+    const nonnegativeLabels = entryFromFileExport(
+      { ...doc, windows: [], freeCreditsUsd: 0, paygBalanceUsd: 12.5 },
+      { fileMtimeIso: doc.measuredAt, stale: false },
+    );
+    expect(nonnegativeLabels.windows.map((w) => [w.name, w.valueLabel])).toEqual([
+      ["free_credits", "$0.00"],
+      ["payg_balance", "$12.50"],
+    ]);
   });
   test("failure status documents are error entries, never zeros", () => {
     const entry = entryFromFileExport(
