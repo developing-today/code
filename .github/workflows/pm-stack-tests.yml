@@ -1,0 +1,47 @@
+name: pm-stack tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pm-stack/**"
+      - ".github/workflows/pm-stack-tests.yml"
+  pull_request:
+    paths:
+      - "pm-stack/**"
+      - ".github/workflows/pm-stack-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: aggregator + projector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install aggregator dependencies
+        working-directory: pm-stack/aggregator
+        run: bun install --frozen-lockfile
+
+      - name: Test aggregator
+        working-directory: pm-stack/aggregator
+        run: bun test
+
+      - name: Install projector dependencies
+        working-directory: pm-stack/projector
+        run: bun install --frozen-lockfile
+
+      - name: Test projector
+        working-directory: pm-stack/projector
+        run: bun test
+
+      - name: Test seed and deploy/install scripts
+        run: |
+          bash pm-stack/scripts/seed-smoke.test.sh
+          bash pm-stack/scripts/deploy-install-smoke.test.sh

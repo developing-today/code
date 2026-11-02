@@ -501,7 +501,8 @@ describe("slice-3 routes", () => {
     expect(dnsJson.totalAnnualListUsd).toBe(595.62);
     const sessions = await (await fetch(`http://127.0.0.1:${port}/sessions`)).text();
     expect(sessions).toContain("identity registry");
-    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json`)).json()) as {
+    // window=all: fixture last-activity is a fixed date; the default 7-day window ages it out and fails this test on later run dates.
+    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json?window=all`)).json()) as {
       records: { source: string }[];
       identities: { kind: string }[];
     };
