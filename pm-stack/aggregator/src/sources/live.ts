@@ -754,9 +754,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     },
     async items(refs) {
       // #910 stage 5: the fleet feed's GitHub Project pool is the
-      // resolution source FIRST — the projector is dead by config and
-      // the Projects-scope token cannot read arbitrary issues, only
-      // the Project (whose items carry their linked issue's state).
+      // resolution source FIRST — the projector (deployed; the NixOS
+      // module pins PM_PROJECTOR_URL to it) serves refs outside the
+      // pool below, and the Projects-scope token cannot read arbitrary
+      // issues, only the Project (whose items carry their linked
+      // issue's state).
       const out = new Map<RefKey, GhItem>();
       const feed = await getFeed();
       // #2399: the pool enters through the single feed gate (fail-soft,

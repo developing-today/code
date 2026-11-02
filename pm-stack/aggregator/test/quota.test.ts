@@ -50,6 +50,72 @@ describe("quota extractors", () => {
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
 
+  test("month-based resets normalize month case and preserve reads for invalid dates across extractors", () => {
+    const consumers = [
+      {
+        id: "openai:codex",
+        view: (reset: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, 18:01 UTC.\n`,
+        window: { name: "7-day", percent: 42 },
+        extraWindows: 0,
+      },
+      {
+        id: "opencode-go:personal",
+        view: (reset: string) =>
+          `\n### OpenCode Go ×2 workspaces\n- **Personal — monthly 60% used**; monthly reset ${reset}, 18:01 UTC.\n`,
+        window: { name: "monthly", unit: "usd", limit: 60, used: 36, percent: 60 },
+        extraWindows: 0,
+      },
+      {
+        id: "commandcode:go",
+        view: (reset: string) =>
+          `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${reset}, 18:01 UTC.\n`,
+        window: { name: "monthly credits", unit: "usd", limit: 10, used: 6.57, percent: 65.7 },
+        extraWindows: 2,
+      },
+    ];
+    const resets = [
+      { input: "Oct 30", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "oct 30", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "OCT 30", expected: "2026-10-30T18:01:00.000Z" },
+      { input: "Foo 30", expected: null },
+      { input: "Oct 39", expected: null },
+    ];
+
+    for (const consumer of consumers) {
+      for (const reset of resets) {
+        const pool = extractQuotaPools(consumer.view(reset.input), NOW).find((p) => p.id === consumer.id)!;
+        expect(pool.windows).toHaveLength(1 + consumer.extraWindows);
+        expect(pool.windows[0]).toMatchObject(consumer.window);
+        expect(pool.windows[0].resetsAt).toBe(reset.expected);
+        if (consumer.id === "commandcode:go") {
+          expect(pool.windows.slice(1).map((window) => window.percent)).toEqual([1.2, 8.8]);
+        }
+      }
+    }
+  });
+
+  test("valid month-based resets still roll forward when more than 30 days past", () => {
+    const pastDate = "Sep 24";
+    const cases = [
+      {
+        id: "openai:codex",
+        view: `\n### ChatGPT — main account plans\n7-day 42% used; resets ${pastDate}, 18:01 UTC.\n`,
+      },
+      {
+        id: "opencode-go:personal",
+        view: `\n### OpenCode Go ×2 workspaces\n- **Personal — monthly 60% used**; monthly reset ${pastDate}, 18:01 UTC.\n`,
+      },
+      {
+        id: "commandcode:go",
+        view: `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${pastDate}, 18:01 UTC.\n`,
+      },
+    ];
+    for (const { id, view } of cases) {
+      const pool = extractQuotaPools(view, NOW).find((p) => p.id === id)!;
+      expect(pool.windows[0].resetsAt).toBe("2027-09-24T18:01:00.000Z");
+    }
+  });
+
   test("alternate ChatGPT account is its own pool — never merged into the main pool", () => {
     const p = byId.get("openai.alternate")!;
     expect(p).toBeDefined();

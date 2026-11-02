@@ -28,6 +28,16 @@ pub enum ConfigError {
     /// A key names two users, two groups, or a user and a group.
     #[error("key `{0}` is declared more than once; keys are unique within the config")]
     DuplicateKey(String),
+    /// A user or group declaration key is blank or carries surrounding whitespace.
+    #[error(
+        "{kind} key `{key}` is not a usable declaration key; keys are non-blank and carry no surrounding whitespace"
+    )]
+    InvalidKey {
+        /// The kind of declaration the key belongs to.
+        kind: &'static str,
+        /// The key exactly as declared.
+        key: String,
+    },
     /// Two user keys name the same public key, so the two declared users are one account.
     #[error(
         "users `{first}` and `{second}` name the same id; each user key must name a different id"
@@ -181,6 +191,7 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
     let mut users = Vec::with_capacity(raw.users.len());
     let mut user_ids: BTreeMap<Key, String> = BTreeMap::new();
     for user in &raw.users {
+        check_declaration_key("user", &user.key)?;
         let id = parse_id(&user.key, &user.id)?;
         claim(&mut names, &user.key, Object::User(id))?;
         if let Some(first) = user_ids.get(&id) {
@@ -204,6 +215,7 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
 
     let mut pending = Vec::with_capacity(raw.groups.len());
     for group in &raw.groups {
+        check_declaration_key("group", &group.key)?;
         let creator = user_of(&names, &group.creator, &format!("group `{}`", group.key))?;
         let id = group_id(&creator, &group.key);
         claim(&mut names, &group.key, Object::Group(id))?;
@@ -324,6 +336,19 @@ fn create_rule(
         groups,
         floor,
     })
+}
+
+/// A declaration key must be non-blank and exactly as referenced: surrounding whitespace is
+/// refused, never trimmed, so a key cannot diverge from the trimmed account name that
+/// provisioning derives from it, and references keep exact-key semantics.
+fn check_declaration_key(kind: &'static str, key: &str) -> Result<(), ConfigError> {
+    if key.trim().is_empty() || key.trim() != key {
+        return Err(ConfigError::InvalidKey {
+            kind,
+            key: key.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Records that `key` names `object`. Keys are unique across users and groups.
@@ -540,6 +565,74 @@ mod tests {
             config(&again),
             Err(ConfigError::DuplicateKey("ann".to_owned()))
         );
+    }
+
+    #[test]
+    fn test_a_blank_user_key_is_refused_naming_it() {
+        let text = format!("\n[[users]]\nkey = \"\"\nid = \"{}\"\n", hex(9));
+        assert_eq!(
+            config(&text),
+            Err(ConfigError::InvalidKey {
+                kind: "user",
+                key: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_whitespace_only_user_key_is_refused() {
+        let text = format!("\n[[users]]\nkey = \"  \"\nid = \"{}\"\n", hex(9));
+        assert_eq!(
+            config(&text),
+            Err(ConfigError::InvalidKey {
+                kind: "user",
+                key: "  ".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_padded_user_key_is_refused_not_trimmed() {
+        let text = format!("\n[[users]]\nkey = \" eve\"\nid = \"{}\"\n", hex(9));
+        assert_eq!(
+            config(&text),
+            Err(ConfigError::InvalidKey {
+                kind: "user",
+                key: " eve".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_blank_group_key_is_refused_naming_it() {
+        let text = "\n[[groups]]\nkey = \"\"\nname = \"Team\"\ncreator = \"ann\"\n";
+        assert_eq!(
+            config(text),
+            Err(ConfigError::InvalidKey {
+                kind: "group",
+                key: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_padded_group_key_is_refused_not_trimmed() {
+        let text = "\n[[groups]]\nkey = \"team \"\nname = \"Team\"\ncreator = \"ann\"\n";
+        assert_eq!(
+            config(text),
+            Err(ConfigError::InvalidKey {
+                kind: "group",
+                key: "team ".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_a_padded_reference_does_not_resolve_to_a_declared_key() {
+        let text = "\n[[groups]]\nkey = \"team\"\nname = \"Team\"\ncreator = \"ann\"\n\n\
+                    [[groups.members]]\nuser = \" bo\"\nrole = \"write\"\n";
+        let refused = config(text).unwrap_err();
+        assert!(matches!(refused, ConfigError::UnknownKey { .. }));
     }
 
     #[test]

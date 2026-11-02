@@ -35,6 +35,9 @@ pub enum FileOpError {
     /// The new name was empty or whitespace.
     #[error("name cannot be empty")]
     EmptyName,
+    /// The name is rooted or contains a traversal component.
+    #[error("name must be a safe relative path: {0}")]
+    InvalidName(String),
     /// Source and destination are the same name.
     #[error("new name must differ from the current name")]
     SameName,
@@ -194,11 +197,28 @@ impl<'a> FileOps<'a> {
         }
     }
 
-    fn validate_target(from: &str, to: &str) -> Result<String, FileOpError> {
-        let to = to.trim();
-        if to.is_empty() {
+    fn validate_name(name: &str) -> Result<(), FileOpError> {
+        if name.trim().is_empty() {
             return Err(FileOpError::EmptyName);
         }
+        let bytes = name.as_bytes();
+        let has_windows_drive_prefix =
+            bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+        if name.starts_with('/')
+            || name.starts_with('\\')
+            || has_windows_drive_prefix
+            || name
+                .split(['/', '\\'])
+                .any(|component| matches!(component, "." | ".."))
+        {
+            return Err(FileOpError::InvalidName(name.to_owned()));
+        }
+        Ok(())
+    }
+
+    fn validate_target(from: &str, to: &str) -> Result<String, FileOpError> {
+        let to = to.trim();
+        Self::validate_name(to)?;
         if from == to {
             return Err(FileOpError::SameName);
         }
@@ -221,9 +241,7 @@ impl<'a> FileOps<'a> {
     /// Sets the `created` tag only if absent and always refreshes `modified`,
     /// then auto-tags `name`/`file`.
     pub async fn put(&self, name: &str, hash: Hash) -> Result<(), FileOpError> {
-        if name.trim().is_empty() {
-            return Err(FileOpError::EmptyName);
-        }
+        Self::validate_name(name)?;
         if !self.blob_present(hash).await? {
             return Err(FileOpError::BlobMissing(hash));
         }

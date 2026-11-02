@@ -43,6 +43,12 @@ fn examples_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
 }
 
+fn apps_dir() -> PathBuf {
+    std::env::var_os("ID_TEST_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps"))
+}
+
 /// How long one CLI invocation may run before its test fails. A client stuck
 /// on a silent server must not block the suite.
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
@@ -668,6 +674,43 @@ mod find_search_tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(combined.contains("no matches") || output.status.success());
+    }
+
+    #[test]
+    fn test_bulk_download_collision_fails_before_writing_for_find_and_search() {
+        let tmp = TempDir::new().unwrap();
+        let first_file = tmp.path().join("first-source.txt");
+        let second_file = tmp.path().join("second-source.txt");
+        fs::write(&first_file, b"first report").unwrap();
+        fs::write(&second_file, b"second report").unwrap();
+
+        let first_spec = format!("{}:one/report.txt", first_file.display());
+        let second_spec = format!("{}:two/report.txt", second_file.display());
+        run_cmd_success(&["put", &first_spec, &second_spec], tmp.path());
+
+        for (command, output_dir) in [("find", "find-output"), ("search", "search-output")] {
+            let output = run_cmd(
+                &[command, "--all", "--dir", output_dir, "report.txt"],
+                tmp.path(),
+            );
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !output.status.success(),
+                "{command} should reject colliding destinations: {combined}"
+            );
+            assert!(
+                combined.contains("collision"),
+                "{command} should explain the collision: {combined}"
+            );
+            assert!(
+                !tmp.path().join(output_dir).exists(),
+                "{command} must reject the batch before creating or writing its destination"
+            );
+        }
     }
 }
 
@@ -2114,7 +2157,7 @@ mod serve_tests {
     fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let mut server = ServerHandle::spawn_with_args(
             server_dir.path(),
             &["--world", "--world-admin-token", "adm"],
@@ -2212,7 +2255,7 @@ mod serve_tests {
     fn test_journal_is_trimmed_behind_a_checkpoint_and_a_game_resumes() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();
-        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let module = module.to_str().unwrap();
         let serve_args = [
             "--world",
@@ -2319,7 +2362,7 @@ mod serve_tests {
         let examples = examples_dir();
         let counter = examples.join("roc-counter/counter.wasm");
         let counter = counter.to_str().unwrap();
-        let tictactoe = examples.join("tic-tac-toe/tic-tac-toe.wasm");
+        let tictactoe = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let tictactoe = tictactoe.to_str().unwrap();
         let serve_args = [
             "--world",

@@ -39,6 +39,10 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // ack surface from his phone) promotes it to primary — a curation
   // decision, recorded here like the others.
   alerts: "primary",
+  // Post-#1497 addition (#1210, 2026-11-01): the comments queue
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  "comments-queue": "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

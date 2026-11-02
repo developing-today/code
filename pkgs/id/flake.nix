@@ -135,6 +135,7 @@
             fi
             cp "$TEST_BIN" $out/bin/cli_integration_test
             cp -r examples $out/share/id-test/examples
+            cp -r apps $out/share/id-test/apps
           '';
         };
 

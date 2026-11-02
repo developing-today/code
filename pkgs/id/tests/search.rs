@@ -88,6 +88,7 @@ impl Writer {
             tag: None,
             document: Some(document),
             removes: None,
+            note: None,
         })
     }
 }
@@ -100,6 +101,7 @@ fn tag_ext(kind: &str, op: TagOp, after: Vec<Hash>) -> ChainExt {
         tag: Some(op),
         document: None,
         removes: None,
+        note: None,
     }
 }
 

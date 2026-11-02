@@ -681,7 +681,9 @@ const warmChains = new Map();
 const enqueueWarm = (key, job) => {
   const prev = warmChains.get(key) || Promise.resolve();
   const run = prev.then(job, job);
-  warmChains.set(key, run.catch(() => {}));
+  const stored = run.catch(() => {});
+  warmChains.set(key, stored);
+  stored.then(() => { if (warmChains.get(key) === stored) warmChains.delete(key); });
   return run;
 };
 
@@ -1428,7 +1430,8 @@ const server = http.createServer((req, res) => {
         enabled: WARM_ENABLED,
         hostGen: warmHost.gen,
         hostUp: Boolean(warmHost.child),
-        sessions: warmStore.map.size
+        sessions: warmStore.map.size,
+        chains: warmChains.size
       },
       direct: {
         enabled: DIRECT_ENABLED,
