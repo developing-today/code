@@ -19,6 +19,7 @@ impl WorldCommand {
             Self::ApplyDirectory { .. } => "ApplyDirectory",
             Self::Revoke { .. } => "Revoke",
             Self::ParticipantId { .. } => "ParticipantId",
+            Self::BindAuthorKey { .. } => "BindAuthorKey",
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
             Self::Snapshot { .. } => "Snapshot",
@@ -100,7 +101,17 @@ pub(crate) enum WorldCommand {
     Input {
         token: JoinCapability,
         input: Vec<u8>,
+        /// The player-signed move event bytes for this input (#2814), when
+        /// the participant plays signed. `None` is the unsigned path,
+        /// which refuses participants with a bound author key.
+        signed_move: Option<Vec<u8>>,
         reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    /// Bind the calling participant's author key for signed play (#2814).
+    BindAuthorKey {
+        token: JoinCapability,
+        author_key: [u8; 32],
+        reply: oneshot::Sender<Result<u64>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -1108,6 +1119,13 @@ impl WorldActor {
             WorldCommand::ParticipantId { token, reply } => {
                 let _ = reply.send(self.core.authorize(&token, WorldScopes::JOIN));
             }
+            WorldCommand::BindAuthorKey {
+                token,
+                author_key,
+                reply,
+            } => {
+                let _ = reply.send(self.core.bind_author_key(&token, author_key));
+            }
             WorldCommand::Presence {
                 participant,
                 joined,
@@ -1135,13 +1153,24 @@ impl WorldActor {
             WorldCommand::Input {
                 token,
                 input,
+                signed_move,
                 reply,
             } => {
-                let result = match self.core.prepare_input(&token, &input) {
+                let prepared = match &signed_move {
+                    Some(bytes) => self
+                        .core
+                        .prepare_input_signed(&token, &input, bytes)
+                        .map(|(event, signed)| (event, Some(signed))),
+                    None => self
+                        .core
+                        .prepare_input(&token, &input)
+                        .map(|event| (event, None)),
+                };
+                let result = match prepared {
                     Ok(_) if self.storage_failed => Err(anyhow::anyhow!(
                         "world storage failed; the world is read-only"
                     )),
-                    Ok(candidate) if self.program_healthy => {
+                    Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
                         match self
                             .program
@@ -1153,6 +1182,12 @@ impl WorldActor {
                                     event: candidate.clone(),
                                 })
                                 .and_then(|()| self.core.commit_prepared(candidate))
+                                .and_then(|event| {
+                                    if let Some(signed) = &signed {
+                                        self.core.record_signed_move(&event, signed)?;
+                                    }
+                                    Ok(event)
+                                })
                                 .inspect(|event| {
                                     let records = records.unwrap_or_default();
                                     self.republished(records, event.sequence);

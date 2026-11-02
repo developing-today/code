@@ -3080,6 +3080,122 @@ mod tests {
             "the fallback triggers a view failure count"
         );
     }
+
+    #[test]
+    fn signed_moves_chain_verify_and_replay_the_journal_order() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let mut core = WorldCore::new("ttt", WorldLimits::default()).unwrap();
+        let (_, token_x) = core
+            .issue_capability("x", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (_, token_o) = core
+            .issue_capability("o", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let key_x = SigningKey::from_bytes(Hash::digest(b"x key").as_bytes());
+        let key_o = SigningKey::from_bytes(Hash::digest(b"o key").as_bytes());
+        let author_x = *key_x.verifying_key().as_bytes();
+        let author_o = *key_o.verifying_key().as_bytes();
+        core.bind_author_key(&token_x, author_x).unwrap();
+        core.bind_author_key(&token_o, author_o).unwrap();
+
+        // Once a key is bound, the unsigned path refuses the participant.
+        assert!(core.input(&token_x, b"cell-0").is_err());
+
+        // A tic-tac-toe game through the world path: alternating signed
+        // moves, each chained to the player's previous move.
+        let script: [(&JoinCapability, &SigningKey, &[u8]); 5] = [
+            (&token_x, &key_x, b"cell-0"),
+            (&token_o, &key_o, b"cell-4"),
+            (&token_x, &key_x, b"cell-1"),
+            (&token_o, &key_o, b"cell-3"),
+            (&token_x, &key_x, b"cell-2"),
+        ];
+        let mut seq: std::collections::HashMap<u64, u32> = Default::default();
+        let mut frontier: std::collections::HashMap<u64, Hash> = Default::default();
+        for (token, key, input) in script {
+            let author = *key.verifying_key().as_bytes();
+            let participant = if author == author_x { 1 } else { 2 };
+            let n = seq.entry(participant).or_default();
+            let signed = signed::sign_move(
+                key,
+                "ttt",
+                *n,
+                frontier.get(&participant).copied(),
+                input,
+            )
+            .unwrap();
+            let event = core.input_signed(token, input, &signed.bytes).unwrap();
+            assert_eq!(event.kind, WorldEventKind::Input(input.to_vec()));
+            frontier.insert(participant, signed.id);
+            *n += 1;
+        }
+
+        // The accepted records cross-reference world sequence and chain
+        // position, and replaying each author's chain against the
+        // journal's input bytes reproduces the journal order.
+        let records = core.signed_moves().to_vec();
+        assert_eq!(records.len(), 5);
+        let mut chains: std::collections::HashMap<u64, signed::MoveChain> = Default::default();
+        for record in &records {
+            let journal_event = core
+                .events
+                .iter()
+                .find(|event| event.sequence == record.world_sequence)
+                .unwrap();
+            let WorldEventKind::Input(input) = &journal_event.kind else {
+                panic!("signed move record does not name an input event");
+            };
+            assert_eq!(journal_event.participant_id, record.participant_id);
+            chains
+                .entry(record.participant_id)
+                .or_default()
+                .verify_and_accept(&record.bytes, "ttt", input, &record.author)
+                .unwrap();
+        }
+
+        // Tampering: a move signed over one input does not verify for
+        // another, and a mutated signed byte string does not verify at
+        // all. Neither advances the author's chain.
+        let next = signed::sign_move(&key_x, "ttt", 3, frontier.get(&1).copied(), b"cell-8")
+            .unwrap();
+        assert!(core.input_signed(&token_x, b"cell-7", &next.bytes).is_err());
+        let mut mutated = next.bytes.clone();
+        mutated[12] ^= 0xff;
+        assert!(core.input_signed(&token_x, b"cell-8", &mutated).is_err());
+        core.input_signed(&token_x, b"cell-8", &next.bytes).unwrap();
+
+        // Equivocation: a rival move signed at the same author sequence
+        // is a valid chain event on its own (the fork-proof material the
+        // event store's ingest rules consume), but the world refuses it
+        // once the first move at that sequence has been accepted.
+        let rival = signed::sign_move(&key_x, "ttt", 3, frontier.get(&1).copied(), b"cell-6")
+            .unwrap();
+        assert!(crate::chain::decode(&rival.bytes).is_ok());
+        assert!(core.input_signed(&token_x, b"cell-6", &rival.bytes).is_err());
+    }
+
+    #[tokio::test]
+    async fn signed_input_flows_through_the_actor() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let core = WorldCore::new("ttt-actor", WorldLimits::default()).unwrap();
+        let handle = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let (_, token) = handle.issue("x", WorldScopes::GUEST).await.unwrap();
+        let key = SigningKey::from_bytes(Hash::digest(b"actor x").as_bytes());
+        handle
+            .bind_author_key(token.clone(), *key.verifying_key().as_bytes())
+            .await
+            .unwrap();
+        assert!(handle.input(token.clone(), b"cell-0".to_vec()).await.is_err());
+        let signed = signed::sign_move(&key, "ttt-actor", 0, None, b"cell-0").unwrap();
+        let event = handle
+            .input_signed(token, b"cell-0".to_vec(), signed.bytes)
+            .await
+            .unwrap();
+        assert_eq!(event.kind, WorldEventKind::Input(b"cell-0".to_vec()));
+    }
+
 }
 
 #[cfg(test)]
@@ -3867,6 +3983,7 @@ mod schedule_tests {
             .handle(WorldCommand::Input {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
+                signed_move: None,
                 reply,
             })
             .await;
@@ -4448,6 +4565,7 @@ mod schedule_tests {
             "unexpected reason: {reason}"
         );
     }
+
 }
 
 /// Structural guard for the one client projection (F11.11, #543).
