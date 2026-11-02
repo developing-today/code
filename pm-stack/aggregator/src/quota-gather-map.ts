@@ -426,6 +426,15 @@ export const TURSO_SOURCE = "turso-api";
 const gb = (bytes: number): number => Math.round((bytes / 1e9) * 1e6) / 1e6;
 const pct3 = (used: number, limit: number): number => Math.round((used / limit) * 100 * 1000) / 1000;
 
+/** Turso usage counts are counts: a negative value is impossible, so it is
+ * treated exactly like a metric the response does not carry (#2553) — the
+ * window is omitted, never published negative. Local to entryFromTurso:
+ * the shared num() keeps its semantics for the other mappers. */
+const numNonNegative = (v: unknown): number | null => {
+  const n = num(v);
+  return n !== null && n < 0 ? null : n;
+};
+
 /**
  * Map one Turso usage + subscription read onto a quota-current
  * entry (serviceId "turso", the SaaS card's snapshot id, so the
@@ -486,9 +495,9 @@ export function entryFromTurso(
       state: "ok",
     });
   };
-  const databases = num(usage.databases);
+  const databases = numNonNegative(usage.databases);
   push("databases", databases, TURSO_LIMITS.databases, databases ?? 0, `${databases} / ${TURSO_LIMITS.databases}`);
-  const storageBytes = num(usage.storage_bytes);
+  const storageBytes = numNonNegative(usage.storage_bytes);
   push(
     "storage",
     storageBytes,
@@ -496,7 +505,7 @@ export function entryFromTurso(
     storageBytes == null ? 0 : gb(storageBytes),
     `${storageBytes == null ? "?" : gb(storageBytes)} GB / 5 GB`,
   );
-  const rowsRead = num(usage.rows_read);
+  const rowsRead = numNonNegative(usage.rows_read);
   push(
     "rows-read",
     rowsRead,
@@ -504,7 +513,7 @@ export function entryFromTurso(
     rowsRead ?? 0,
     `${rowsRead?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsRead.toLocaleString("en-US")}`,
   );
-  const rowsWritten = num(usage.rows_written);
+  const rowsWritten = numNonNegative(usage.rows_written);
   push(
     "rows-written",
     rowsWritten,
@@ -512,7 +521,7 @@ export function entryFromTurso(
     rowsWritten ?? 0,
     `${rowsWritten?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsWritten.toLocaleString("en-US")}`,
   );
-  const bytesSynced = num(usage.bytes_synced);
+  const bytesSynced = numNonNegative(usage.bytes_synced);
   push(
     "sync",
     bytesSynced,

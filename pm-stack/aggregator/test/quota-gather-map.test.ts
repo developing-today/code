@@ -485,6 +485,42 @@ describe("entryFromTurso (#1049)", () => {
   });
 });
 
+describe("entryFromTurso negative usage (#2553)", () => {
+  const subDoc = {
+    subscription: { plan: "starter", name: "starter", current_billing_period_start: "2026-10-01T04:00:00+00:00", current_billing_period_end: "2026-11-01T04:00:00+00:00" },
+  };
+  const at = "2026-10-29T02:30:00.000Z";
+  test("all-negative usage read is an error entry with no windows and no records", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { databases: -3, storage_bytes: -2, rows_read: -5, rows_written: -1, bytes_synced: -1 } } },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("error");
+    expect(entry.error).toContain("no known metrics");
+    expect(entry.windows).toEqual([]);
+    expect(recordsFromEntries([entry], new Map(), "quota-gatherer").records).toEqual([]);
+  });
+  test("one negative metric is omitted; the valid metrics publish unchanged and no record is negative", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { databases: -3, storage_bytes: 1_053_323_264, rows_read: 1_905_385, rows_written: 30_026, bytes_synced: -1 } } },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.map((w) => w.name).sort()).toEqual(["rows-read", "rows-written", "storage"]);
+    for (const w of entry.windows) {
+      expect(w.value).toBeGreaterThanOrEqual(0);
+      expect(w.pctOfLimit).toBeGreaterThanOrEqual(0);
+    }
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => r.metricId).sort()).toEqual(["rows-read", "rows-written", "storage"]);
+    for (const r of records) {
+      expect(r.value).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
 describe("own-key guards on quota-gather-map lookups (#2781)", () => {
   const at = "2026-10-27T05:30:00.000Z";
   test("entryFromFileExport: prototype spellings get windowSeconds null; known names unchanged", () => {
