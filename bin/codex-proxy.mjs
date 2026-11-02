@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
 
 const PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const HOST = process.env.CODEX_PROXY_HOST || '127.0.0.1';
@@ -1070,10 +1071,10 @@ const server = http.createServer(async (req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -1081,6 +1082,8 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);

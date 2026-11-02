@@ -11,6 +11,7 @@ import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
+import { isSessionRecord } from "./registry.ts";
 import {
   arrayOf,
   isFiniteNumber,
@@ -60,6 +61,9 @@ export interface FleetFeed {
    * only when at least one row (or a non-array section) was dropped;
    * absent on raw parsed feeds and on clean loads. */
   subscriptionsDropped?: number;
+  /** Registry rows loadFeed's sanitization dropped (#2539), set only
+   * when at least one row (or a non-array section) was dropped. */
+  registryDropped?: number;
   /** Rows loadFeed's charges sanitization dropped (#2445), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   chargesDropped?: number;
@@ -637,6 +641,24 @@ export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
   return { rows, dropped: v.length - rows.length };
 }
 
+export interface RegistrySanitization {
+  /** Safe registry rows, or undefined when the optional section is absent. */
+  rows?: SessionRecord[];
+  dropped: number;
+}
+
+/** Drop malformed optional registry rows at the shared loadFeed boundary
+ * (#2539), so registry() and coverage() consume the same safe records.
+ * An absent section stays absent; a non-array section becomes an empty
+ * registry and counts as one dropped section; malformed array entries are
+ * dropped individually. */
+export function sanitizeRegistry(v: unknown): RegistrySanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { rows: [], dropped: 1 };
+  const rows = v.filter(isSessionRecord);
+  return { rows, dropped: v.length - rows.length };
+}
+
 /** A PAYG line safe for both the attention derivation and the quota renderer. */
 export function isPaygLine(v: unknown): v is PaygLine {
   if (!isRecord(v)) return false;
@@ -699,6 +721,9 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const charges =
       parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    // Registry rows feed both the session registry and coverage, so sanitize
+    // once here rather than letting the two consumers see different inputs.
+    const registry = sanitizeRegistry(parsed.registry);
     const payg = sanitizePayg(parsed.payg);
     // Charges rows get the same drop-and-count treatment at this same
     // shared gate (#2445): the section is optional, so absence stays
@@ -730,6 +755,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(registry.rows !== undefined ? { registry: registry.rows } : {}),
+      ...(registry.dropped > 0 ? { registryDropped: registry.dropped } : {}),
       ...(payg.rows !== undefined ? { payg: payg.rows } : {}),
       ...(payg.dropped > 0 ? { paygDropped: payg.dropped } : {}),
       ...chargesPart,

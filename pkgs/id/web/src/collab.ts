@@ -271,21 +271,46 @@ export function initCollab(
   };
 
   const handleMessage = (data: ArrayBuffer): void => {
-    let msg: unknown[];
+    let frame: unknown;
     try {
-      msg = unpackr.unpack(new Uint8Array(data)) as unknown[];
+      frame = unpackr.unpack(new Uint8Array(data));
     } catch (err) {
       console.error("[collab] Failed to decode MessagePack message:", err);
       return;
     }
-    const msgType = msg[0] as number;
+    if (!Array.isArray(frame)) {
+      console.error("[collab] Dropping malformed MessagePack frame: expected an array");
+      return;
+    }
+    const msg = frame as unknown[];
+    const msgType = msg[0];
+    if (typeof msgType !== "number" || !Number.isInteger(msgType)) {
+      console.error("[collab] Dropping malformed MessagePack frame: invalid message type");
+      return;
+    }
     console.log("[collab] handleMessage msgType:", msgType);
 
     switch (msgType) {
       case MSG.INIT: {
         // [0, version, doc, mode]
-        const version = msg[1] as number;
-        const doc = msg[2] as { type: string; content?: unknown[] };
+        const version = msg[1];
+        const doc = msg[2];
+        const docRecord =
+          doc !== null && typeof doc === "object" && !Array.isArray(doc)
+            ? (doc as Record<string, unknown>)
+            : null;
+        if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
+          console.error("[collab] Dropping malformed Init message: invalid version");
+          return;
+        }
+        if (
+          !docRecord ||
+          docRecord.type !== "doc" ||
+          (docRecord.content !== undefined && !Array.isArray(docRecord.content))
+        ) {
+          console.error("[collab] Dropping malformed Init message: invalid document");
+          return;
+        }
         const mode = ((msg[3] as string) || "raw") as ContentMode;
         documentMode = mode;
         console.log("[collab] Received Init, version:", version, "mode:", mode);
@@ -293,7 +318,7 @@ export function initCollab(
         if (!editorInstance) {
           // First connection — initialize the editor from scratch
           console.log("[collab] Initializing editor with server version:", version, "mode:", mode);
-          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
+          editorInstance = initEditor(container, docRecord, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Our clientID:", myClientID);
 
@@ -316,7 +341,7 @@ export function initCollab(
           closeImageBrowser();
           editorInstance.view.destroy();
 
-          editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);
+          editorInstance = initEditor(container, docRecord, version, mode, sendCursor, filename);
           myClientID = editorInstance.clientID;
           console.log("[collab] Reconnect: new clientID:", myClientID);
 
