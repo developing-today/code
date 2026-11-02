@@ -759,6 +759,90 @@
       "role": "not-compendium",
       "lines": 5,
       "note": "a five-line scratch list, not a chapter"
+    },
+    {
+      "path": "docs/binary.md",
+      "chapter": "build-and-packaging",
+      "role": "chapter-source",
+      "lines": 114,
+      "note": "the binary: what it is, how it is built and shipped"
+    },
+    {
+      "path": "docs/cli.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 191,
+      "note": "the command-line surface: commands, flags, and output shapes"
+    },
+    {
+      "path": "docs/compare/chapter.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 147,
+      "note": "the comparison chapter's own framing: what is compared and why"
+    },
+    {
+      "path": "docs/compare/history.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 215,
+      "note": "how the comparison repo reached its current state"
+    },
+    {
+      "path": "docs/examples.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 148,
+      "note": "worked examples of recipes and calls, companion to the design pages"
+    },
+    {
+      "path": "docs/faq.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 85,
+      "note": "questions users actually ask; the book links to it rather than excerpting it"
+    },
+    {
+      "path": "docs/interfaces.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 187,
+      "note": "the interfaces a program or client codes against"
+    },
+    {
+      "path": "docs/level-2-page-map.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 152,
+      "note": "the map of level-2 guide pages (#146-#148): which page covers what"
+    },
+    {
+      "path": "docs/opencode-plugin-v2.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 161,
+      "note": "the opencode v2 plugin: verified API facts and implementation map"
+    },
+    {
+      "path": "docs/plugins.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 335,
+      "note": "plugins: what they are, how they are written and loaded"
+    },
+    {
+      "path": "docs/remote.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 132,
+      "note": "reaching a daemon on another machine: transports, addressing, trust"
+    },
+    {
+      "path": "docs/scripts.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 155,
+      "note": "scripts: the unit of work mcpx runs, their shape and lifecycle"
     }
   ]
 }

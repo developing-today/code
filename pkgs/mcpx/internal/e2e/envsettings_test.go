@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"os/exec"
 	"io"
 	"net/http"
 	"os"
@@ -69,6 +70,9 @@ func TestLoggingTraceIsReachableFromEverySurface(t *testing.T) {
 // script.permissions key were parsed, reported by `mcpx settings`, and
 // ignored.
 func TestScriptPermissionsIsReachableFromEverySurface(t *testing.T) {
+	if _, err := exec.LookPath("deno"); err != nil {
+		t.Skipf("type checking is only available under Deno")
+	}
 	const probe = `try { await Deno.readTextFile("/etc/hosts"); console.log("ALLOWED"); }
 		catch (err) { console.log("denied:", (err as Error).name); }`
 	base := newEnv(t, oneServer)
