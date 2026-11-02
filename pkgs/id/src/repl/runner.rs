@@ -1270,8 +1270,19 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
                 find_args.output_file = Some(rest[i + 1]);
                 i += 1;
             }
+        } else if let Some(path) = arg.strip_prefix('>') {
+            // Mirror parse_find_args: `>file` redirects the preview to
+            // a file (the peek handler already honors output_file).
+            find_args.output_file = Some(path);
+            find_args.to_file = true;
         } else if arg == "--first" {
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+            // A `>file` redirection token is not the number (handled
+            // by the output branch above), so `--first >out.txt`
+            // keeps the default limit of 1.
+            if i + 1 < rest.len()
+                && !rest[i + 1].starts_with('-')
+                && !rest[i + 1].starts_with('>')
+            {
                 let value = rest[i + 1];
                 find_args.first =
                     Some(value.parse::<usize>().map_err(|_| {
@@ -1282,7 +1293,11 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
                 find_args.first = Some(1);
             }
         } else if arg == "--last" {
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+            // Same redirection exclusion as --first.
+            if i + 1 < rest.len()
+                && !rest[i + 1].starts_with('-')
+                && !rest[i + 1].starts_with('>')
+            {
                 let value = rest[i + 1];
                 find_args.last =
                     Some(value.parse::<usize>().map_err(|_| {
@@ -1298,7 +1313,12 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
                 i += 1;
             }
         } else if arg == "--lines" || arg == "-n" {
-            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+            // Same redirection exclusion: `--lines >out.txt` keeps
+            // the default line count and lets the `>` branch run.
+            if i + 1 < rest.len()
+                && !rest[i + 1].starts_with('-')
+                && !rest[i + 1].starts_with('>')
+            {
                 let value = rest[i + 1];
                 let n = value
                     .parse::<usize>()
@@ -1650,6 +1670,35 @@ mod tests {
                 .expect("peek parser should reject a nonnumeric line count");
             assert!(error.to_string().contains("abc"));
         }
+    }
+
+    #[test]
+    fn test_parse_peek_args_with_output_file_redirect() {
+        // #4161: peek learns the `>file` redirect find already has.
+        let (args, _) = parse_peek_args(&["q", ">out.txt"]).unwrap();
+        assert_eq!(args.queries, vec!["q"]);
+        assert!(args.to_file);
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        // A redirect after an optional numeric flag is not its value:
+        // the flag keeps its default and the redirect still applies.
+        let (args, _) = parse_peek_args(&["q", "--first", ">out.txt"]).unwrap();
+        assert_eq!(args.first, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        let (args, _) = parse_peek_args(&["q", "--last", ">out.txt"]).unwrap();
+        assert_eq!(args.last, Some(1));
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        let (args, opts) = parse_peek_args(&["q", "--lines", ">out.txt"]).unwrap();
+        assert_eq!(opts.lines, 5);
+        assert_eq!(args.output_file, Some("out.txt"));
+
+        // A real numeric value still parses before the redirect.
+        let (args, opts) = parse_peek_args(&["q", "--lines", "3", ">out.txt"]).unwrap();
+        assert_eq!(opts.lines, 3);
+        assert_eq!(args.queries, vec!["q"]);
+        assert_eq!(args.output_file, Some("out.txt"));
     }
 
     fn test_parse_find_args_basic() {
