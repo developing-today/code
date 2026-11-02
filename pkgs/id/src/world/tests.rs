@@ -46,6 +46,7 @@ mod tests {
         ModuleProvenance::SourceBuild(SourceBuildProvenance {
             schema_version: 1,
             compiler_blake3: "compiler".to_owned(),
+            compiler_version: "roc-test 0.0.0".to_owned(),
             platform_blake3: "platform".to_owned(),
             source_blake3: "source".to_owned(),
             target: "wasm32".to_owned(),
@@ -77,6 +78,7 @@ mod tests {
                 module_hash: "h".to_owned(),
                 seed: 3,
                 provenance: Some(sample_source_provenance()),
+                trust: None,
             },
         };
         let encoded = serde_json::to_value(&event).unwrap();
@@ -2162,6 +2164,7 @@ mod tests {
                         module_hash: "ab".repeat(32),
                         seed: 424_242,
                         provenance: None,
+                        trust: None,
                     },
                 },
             },
@@ -2366,6 +2369,7 @@ mod tests {
                 module_hash: "ab".repeat(32),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         for scopes in [WorldScopes::JOIN, WorldScopes::GUEST, WorldScopes::ALL] {
@@ -2376,6 +2380,7 @@ mod tests {
                     module_hash: "ab".repeat(32),
                     seed: 0,
                     provenance: None,
+                    trust: None,
                 }
             );
         }
@@ -4348,6 +4353,7 @@ mod projection_guard_tests {
                 module_hash: "hash".to_owned(),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         let shown = project_event_for(WorldScopes::GUEST, &installed)

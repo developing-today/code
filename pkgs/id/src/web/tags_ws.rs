@@ -37,6 +37,7 @@
 //! - otherwise — delete the exact `(subject, key, value)` tag (a request with
 //!   no value deletes the value-less key-only tag)
 
+use crate::frames::MAX_FRAME_BYTES;
 use axum::{
     Json,
     extract::{Query, State, WebSocketUpgrade, ws::Message},
@@ -205,7 +206,8 @@ pub async fn ws_tags_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_tags_socket(socket, state))
+    ws.max_message_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| handle_tags_socket(socket, state))
 }
 
 /// Handle a tag WebSocket connection.

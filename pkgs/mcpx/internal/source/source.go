@@ -117,7 +117,7 @@ func abs(path, dir string) string {
 	if filepath.IsAbs(path) {
 		return path
 	}
-	if strings.HasPrefix(path, "~") {
+	if path == "~" || strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, strings.TrimPrefix(path, "~"))
 		}

@@ -22,6 +22,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { parseRef } from "../src/model.ts";
 
 function usageError(message: string): never {
   console.error(`record-claude-launch: ${message}`);
@@ -58,6 +59,17 @@ if (!label) {
 const now = new Date();
 const id = arg("id") ?? `claude-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 const taskRefs = process.argv.flatMap((a, i) => (a === "--task" ? [valueAfter(i, "task")] : []));
+
+for (const ref of taskRefs) {
+  try {
+    parseRef(ref);
+  } catch {
+    console.error(
+      `record-claude-launch: invalid --task ${JSON.stringify(ref)} (expected owner/repo#123 with a safe integer number)`,
+    );
+    process.exit(2);
+  }
+}
 
 const record = {
   id,

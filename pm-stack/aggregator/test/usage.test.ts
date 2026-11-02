@@ -90,6 +90,51 @@ describe("saas extraction (Part b)", () => {
     expect(t.nextDate).toBe("2026-10-31 cycle end");
   });
 
+  test("cloudflare: grouped counts preserve every count", () => {
+    const view = VIEW.replace(
+      "- **Usage / pace:** Tracker: small, 3 Workers, 2 R2 buckets ~2 GB, 2 D1, 2 KV, 2 Queues; far behind, mostly unused.",
+      "- **Usage / pace:** Tracker: small, 1,234 Workers, 56 R2 buckets ~2 GB; 7 D1, 8 KV, 9 Queues; far behind, mostly unused.",
+    );
+    const cloudflare = extractSaasServices(view).find((service) => service.id === "cloudflare")!;
+    const metrics = new Map(cloudflare.metrics.map((metric) => [metric.id, metric]));
+    expect(metrics.get("workers-count")?.used).toBe(1234);
+    expect(metrics.get("r2-buckets")?.used).toBe(56);
+    expect(metrics.get("d1-count")?.used).toBe(7);
+    expect(metrics.get("kv-count")?.used).toBe(8);
+    expect(metrics.get("queues-count")?.used).toBe(9);
+  });
+
+  test("cloudflare: grouped KV count keeps the whole count line", () => {
+    const view = VIEW.replace(
+      "- **Usage / pace:** Tracker: small, 3 Workers, 2 R2 buckets ~2 GB, 2 D1, 2 KV, 2 Queues; far behind, mostly unused.",
+      "- **Usage / pace:** Tracker: small, 3 Workers, 2 R2 buckets ~2 GB; 2 D1, 1,234 KV, 2 Queues; far behind, mostly unused.",
+    );
+    const cloudflare = extractSaasServices(view).find((service) => service.id === "cloudflare")!;
+    const metrics = new Map(cloudflare.metrics.map((metric) => [metric.id, metric]));
+    expect(metrics.get("workers-count")?.used).toBe(3);
+    expect(metrics.get("r2-buckets")?.used).toBe(2);
+    expect(metrics.get("d1-count")?.used).toBe(2);
+    expect(metrics.get("kv-count")?.used).toBe(1234);
+    expect(metrics.get("queues-count")?.used).toBe(2);
+  });
+
+  test("turso: grouped database count is parsed whole", () => {
+    const view = VIEW.replace("1 DB `great-star-lord`", "1,234 DB `great-star-lord`");
+    const turso = extractSaasServices(view).find((service) => service.id === "turso")!;
+    expect(turso.metrics.find((metric) => metric.id === "databases")?.used).toBe(1234);
+  });
+
+  test("github: grouped comped minute counts are both parsed whole", () => {
+    const view = `${VIEW}
+### GitHub
+- **Plan / price / allowance:** Pro $4/mo.
+- **Usage / dates:** 5,000 Linux + 1,234 macOS minutes.
+- **Last checked:** 2026-10-25.
+`;
+    const github = extractSaasServices(view).find((service) => service.id === "github")!;
+    expect(github.metrics.find((metric) => metric.id === "actions-comped-minutes")?.used).toBe(6234);
+  });
+
   test("modal: not-estimable stays a note, never a number", () => {
     const modal = byId.get("modal")!;
     expect(modal.paygEstimate).toBeNull();
