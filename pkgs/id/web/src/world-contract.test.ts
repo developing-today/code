@@ -43,6 +43,36 @@ function worldPageMarkup(): string {
 describe("shell contract validator", () => {
   const cap = "cap";
 
+  it("validates top-level fields when loading a contract", () => {
+    const missingMaxBytes = structuredClone(contract);
+    delete (missingMaxBytes as any).max_frame_bytes;
+    expect(() => parseShellContract(missingMaxBytes)).toThrow("max_frame_bytes must be a non-negative finite number");
+
+    const negativeMaxBytes = structuredClone(contract);
+    (negativeMaxBytes as any).max_frame_bytes = -1;
+    expect(() => parseShellContract(negativeMaxBytes)).toThrow("max_frame_bytes must be a non-negative finite number");
+
+    const missingRoutingFields = structuredClone(contract);
+    delete (missingRoutingFields as any).routing_fields;
+    expect(() => parseShellContract(missingRoutingFields)).toThrow("routing_fields must be an array of strings");
+
+    const stringRoutingFields = structuredClone(contract);
+    (stringRoutingFields as any).routing_fields = "world";
+    expect(() => parseShellContract(stringRoutingFields)).toThrow("routing_fields must be an array of strings");
+
+    const missingProjection = structuredClone(contract);
+    delete (missingProjection as any).projection;
+    expect(() => parseShellContract(missingProjection)).toThrow("projection must be an object");
+
+    const missingRedactedKeys = structuredClone(contract);
+    delete (missingRedactedKeys as any).projection.redacted_keys;
+    expect(() => parseShellContract(missingRedactedKeys)).toThrow("projection.redacted_keys must be an array of strings");
+
+    const stringRedactedKeys = structuredClone(contract);
+    (stringRedactedKeys as any).projection.redacted_keys = "seed";
+    expect(() => parseShellContract(stringRedactedKeys)).toThrow("projection.redacted_keys must be an array of strings");
+  });
+
   it("validates every client and server field spec when loading a contract", () => {
     expect(parseShellContract(contractDocument)).toEqual(contract);
 
