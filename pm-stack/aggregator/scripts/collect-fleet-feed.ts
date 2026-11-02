@@ -72,7 +72,7 @@ import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promi
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dnsSectionFromRegister } from "../src/dns.ts";
+import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
 import {
   disabledProvidersFromConfig,
   aaAbsent,
@@ -114,7 +114,7 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
+import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -134,6 +134,9 @@ const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orches
 const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
   join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
+// Slice 2 of #902: register.json sits beside the register Markdown and
+// is the authoritative source for the fields it carries.
+const dnsRegisterJsonPath = process.env.DNS_REGISTER_JSON_PATH ?? join(dirname(dnsRegisterPath), "register.json");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
@@ -620,16 +623,28 @@ async function main(): Promise<void> {
 
   // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
   let jules: JulesSummary | undefined;
+  let julesState: unknown;
+  let julesReadable = false;
   try {
-    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as JulesReviewState;
+    julesState = JSON.parse(await readFile(julesStatePath, "utf8")) as unknown;
+    julesReadable = true;
+  } catch (err) {
+    console.error("collector: jules-review state unreadable; no Jules sessions this run");
+    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
+  }
+  if (julesReadable) {
+    const state = julesState as JulesReviewState;
     const entries = mapJulesItems(state);
     if (entries.length) attention = [...attention, ...entries];
     for (const e of entries) registry.push(recordFromSessionEntry(e));
     jules = julesSummary(state);
+    const dropped = droppedJulesItemCount(state);
+    if (dropped > 0) {
+      console.error(
+        `collector: jules-review state malformed; skipped ${dropped} item(s), kept ${entries.length} session(s)`,
+      );
+    }
     markSection("julesSummary", "ok");
-  } catch (err) {
-    console.error("collector: jules-review state unreadable; no Jules sessions this run");
-    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- Muse launch records (#906 §3) --------------------------------
@@ -645,22 +660,56 @@ async function main(): Promise<void> {
   }
   markSection("registry", registry.length ? "ok" : "skipped");
 
-  // --- DNS register (#902's file, parsed; #906 §1 owns the view) ---------
+  // --- DNS register (#902's files; #906 §1 owns the view) ----------------
+  // Slice 2: register.json is authoritative for the fields it carries;
+  // the Markdown parse supplies the editorial columns and is the
+  // FALLBACK when register.json is missing or malformed — the fallback
+  // is logged, never silent (see dnsSectionFromRegisterJson in dns.ts).
   let dns: DnsSection | undefined;
+  let dnsSourcePath = dnsRegisterPath;
+  let mdText: string | null = null;
+  let mdErr: unknown = null;
   try {
-    const md = await readFile(dnsRegisterPath, "utf8");
-    dns =
-      dnsSectionFromRegister(md, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
-      undefined;
-    if (!dns) {
-      console.error("collector: DNS register parsed to zero entries; section omitted");
-      markSection("dns", "error", "register did not produce a valid DNS section");
-    } else {
-      markSection("dns", "ok");
-    }
+    mdText = await readFile(dnsRegisterPath, "utf8");
   } catch (err) {
-    console.error("collector: DNS register unreadable; section omitted");
-    markSection("dns", isMissingInput(err) ? "skipped" : "error", err);
+    mdErr = err;
+  }
+  const mdEntries = mdText ? parseDnsRegister(mdText) : [];
+  let jsonProblem: string | null = null;
+  try {
+    const jsonText = await readFile(dnsRegisterJsonPath, "utf8");
+    dns =
+      dnsSectionFromRegisterJson(
+        jsonText,
+        now.toISOString(),
+        "register.json (#902 pipeline) via fleet feed collector",
+        mdEntries,
+      ) ?? undefined;
+    if (!dns) jsonProblem = "register.json did not produce a valid DNS section";
+  } catch (err) {
+    jsonProblem = err instanceof Error ? err.message : String(err);
+  }
+  if (dns) {
+    dnsSourcePath = dnsRegisterJsonPath;
+    markSection("dns", "ok");
+  } else {
+    console.error(
+      `collector: DNS register.json unusable (${jsonProblem ?? "unknown reason"}); FALLING BACK to the register Markdown parse`,
+    );
+    if (mdText) {
+      dns =
+        dnsSectionFromRegister(mdText, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
+        undefined;
+      if (!dns) {
+        console.error("collector: DNS register parsed to zero entries; section omitted");
+        markSection("dns", "error", "register did not produce a valid DNS section");
+      } else {
+        markSection("dns", "ok");
+      }
+    } else {
+      console.error("collector: DNS register unreadable; section omitted");
+      markSection("dns", isMissingInput(mdErr) ? "skipped" : "error", mdErr);
+    }
   }
 
   // --- orchestration section (#899) --------------------------------------
@@ -678,7 +727,11 @@ async function main(): Promise<void> {
       console.error(
         `collector: orchestration.json failed its structural check (${orchestrationSectionProblem(parsed)}); section omitted`,
       );
-      markSection("orchestration", "error", `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`);
+      markSection(
+        "orchestration",
+        "error",
+        `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`,
+      );
     }
   } catch (err) {
     // No orchestration file yet (the job has not run) is the normal
@@ -705,9 +758,7 @@ async function main(): Promise<void> {
       markSection("projects", "ok");
     }
   } catch (err) {
-    console.error(
-      `collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`,
-    );
+    console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
     projects = undefined;
     markSection("projects", "error", err);
   }
@@ -765,9 +816,7 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error(
-      `collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`,
-    );
+    console.error(`collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`);
     coverage = undefined;
     markSection("coverage", "error", err);
   }
@@ -798,7 +847,7 @@ async function main(): Promise<void> {
   if (payg) snapshotRecords.push(...recordsFromPaygLines(payg, "fleet-feed-collector"));
   if (dns) {
     try {
-      const registerStat = await stat(dnsRegisterPath);
+      const registerStat = await stat(dnsSourcePath);
       snapshotRecords.push(...recordsFromDns(dns, registerStat.mtime.toISOString(), "fleet-feed-collector"));
     } catch {
       console.error("collector: DNS register stat failed; dns snapshot records omitted this run");

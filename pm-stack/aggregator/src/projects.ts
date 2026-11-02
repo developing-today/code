@@ -78,7 +78,9 @@ interface GqlContent {
 }
 interface GqlItem {
   id?: string;
-  databaseId?: number;
+  // ProjectV2Item.databaseId is a nullable Int in the GraphQL schema:
+  // null is a valid upstream shape, normalized away in parseProjectItems.
+  databaseId?: number | null;
   type?: string;
   content?: GqlContent | null;
   fieldValues?: { nodes?: (GqlFieldValue | null)[] } | null;
@@ -141,7 +143,10 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
     const blocks = !isPr ? (c.blocking?.nodes ?? []).map(edgeRef).filter((x): x is RefKey => x !== null) : [];
     out.push({
       id: item.id,
-      databaseId: item.databaseId,
+      // Normalize the nullable GraphQL databaseId to the model's optional
+      // number: null becomes absent, so a valid item is never dropped by
+      // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
+      databaseId: item.databaseId ?? undefined,
       url: projectItemUrl(item.databaseId, projectUrl),
       projectUrl,
       ref: refKey({ repo, number: c.number }),
@@ -198,12 +203,10 @@ export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCurso
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
  * the collector can fail-soft and omit the section. Never logs the token. */
-export async function fetchProjectPool(
-  token: string,
-  fetchFn: typeof fetch = fetch,
-): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
+  let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
   for (let page = 0; page < 10; page++) {
     const res = await fetchFn("https://api.github.com/graphql", {
       method: "POST",
@@ -219,9 +222,12 @@ export async function fetchProjectPool(
     const json: unknown = await res.json();
     if ((json as GqlProjectPage).errors) throw new Error("github GraphQL returned errors");
     out.push(...parseProjectItems(json));
-    const info = projectPageInfo(json);
-    if (!info.hasNextPage || !info.endCursor) break;
-    cursor = info.endCursor;
+    lastPageInfo = projectPageInfo(json);
+    if (!lastPageInfo.hasNextPage || !lastPageInfo.endCursor) break;
+    cursor = lastPageInfo.endCursor;
+  }
+  if (lastPageInfo?.hasNextPage && lastPageInfo.endCursor) {
+    throw new Error(`github project pool truncated at 10-page cap (totalCount: ${lastPageInfo.totalCount})`);
   }
   // Epic membership needs the whole pool (parents may sit on other
   // pages), so it resolves once over the aggregate, not per page.
@@ -243,6 +249,24 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     typeof p.number === "number" &&
     typeof p.issueUrl === "string" &&
     typeof p.title === "string" &&
+    // url/projectUrl/contentKind and the Project single-select fields are
+    // required by the model and dereferenced by board/item renders; the
+    // gate must own their shapes (#2418).
+    typeof p.url === "string" &&
+    typeof p.projectUrl === "string" &&
+    (p.contentKind === "issue" || p.contentKind === "pr") &&
+    (p.status === null || typeof p.status === "string") &&
+    (p.area === null || typeof p.area === "string") &&
+    (p.horizon === null || typeof p.horizon === "string") &&
+    (p.kind === null || typeof p.kind === "string") &&
+    // Optional fields stay absence-friendly, but a present value must
+    // match its declared type: labels feeds .map/.includes in renders,
+    // so a string or non-string array crashes instead of dropping (#2418).
+    (p.databaseId === undefined || typeof p.databaseId === "number") &&
+    (p.draft === undefined || typeof p.draft === "boolean") &&
+    (p.labels === undefined || (Array.isArray(p.labels) && p.labels.every((x) => typeof x === "string"))) &&
+    (p.author === undefined || typeof p.author === "string") &&
+    (p.updatedAt === undefined || typeof p.updatedAt === "string") &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || typeof p.parentRef === "string") &&
     (p.epicRef === undefined || typeof p.epicRef === "string") &&
@@ -284,9 +308,13 @@ export type DerivedProjectState = "Todo" | "In Progress" | "Done";
  * therefore disagrees with an "In Progress" derivation, and the
  * /projects page shows that disagreement rather than hiding it.
  */
-export function derivedProjectState(p: ProjectPoolItem, section?: OrchestrationSection | null): DerivedProjectState {
+export function derivedProjectState(
+  p: ProjectPoolItem,
+  section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
+): DerivedProjectState {
   if (p.state === "closed" || p.state === "merged") return "Done";
-  if (section && refInOrchestration(p.ref, section)) return "In Progress";
+  if ((section && refInOrchestration(p.ref, section)) || additionalInProgressRefs?.has(p.ref)) return "In Progress";
   return "Todo";
 }
 
@@ -308,8 +336,9 @@ function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean
 export function projectDisagreement(
   p: ProjectPoolItem,
   section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
 ): { project: string; derived: DerivedProjectState } | null {
   if (!p.status) return null;
-  const derived = derivedProjectState(p, section);
+  const derived = derivedProjectState(p, section, additionalInProgressRefs);
   return p.status === derived ? null : { project: p.status, derived };
 }

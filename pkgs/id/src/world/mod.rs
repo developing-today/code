@@ -35,6 +35,7 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+pub mod signed;
 mod util;
 
 #[cfg(test)]
@@ -47,7 +48,8 @@ pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, sanitize_chat, sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
+    sanitize_display_name, token_digest,
 };
 
 /// A chat participant may send at most this many lines during the rolling window.
@@ -365,6 +367,14 @@ pub enum WorldEventKind {
         /// Server-observed origin metadata. Absent on older journal entries.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provenance: Option<ModuleProvenance>,
+        /// The trust decision that admitted this module (#1069), carried
+        /// by the install event itself so the decision and the install
+        /// are one durable record: a separate audit append after the
+        /// install event could fail and leave a durable install with no
+        /// decision (or a split live/restored state). Absent on older
+        /// journal entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trust: Option<TrustDecision>,
     },
 }
 
@@ -404,6 +414,14 @@ pub struct SourceBuildProvenance {
     pub schema_version: u8,
     /// Domain-separated BLAKE3 digest of the compiler executable bytes.
     pub compiler_blake3: String,
+    /// Version string the compiler binary reports for itself (`roc
+    /// version`), recorded alongside its digest (#1069): the digest
+    /// identifies the exact bytes, the version is the human-legible
+    /// name for them. Empty when the version probe failed. Defaulted
+    /// so provenance records written before this field existed still
+    /// deserialize.
+    #[serde(default)]
+    pub compiler_version: String,
     /// BLAKE3 digest of the platform tree, including relative paths.
     pub platform_blake3: String,
     /// BLAKE3 digest of the submitted source filenames and contents.
@@ -615,6 +633,30 @@ pub enum CoordinatorJournalEntry {
         /// Why the handoff was cancelled.
         reason: String,
     },
+}
+
+/// The basis on which the module trust gate admitted a module (#1069).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustBasis {
+    /// A publisher signature verified against the configured trust list.
+    SignatureVerified,
+    /// No trust list is configured, so the gate admits any module.
+    NoTrustList,
+    /// The server compiled the module from source itself, so the upload
+    /// trust gate does not apply.
+    ServerCompiled,
+}
+
+/// A trust gate decision recorded in the journal as part of the
+/// install event it admitted (#1069): the basis, and the publisher key
+/// when one verified.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustDecision {
+    /// The basis on which the module was admitted.
+    pub basis: TrustBasis,
+    /// Hex public key of the verifying publisher, if any.
+    pub publisher: Option<String>,
 }
 
 /// One durable fact about a world, in commit order.

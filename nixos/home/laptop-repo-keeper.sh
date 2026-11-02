@@ -9,9 +9,10 @@
 #     (a dirty primary on the wrong branch is reported, never forced)
 #   - commits tracked-file changes on the default branch —
 #     all-or-nothing: a tree containing a secret-shaped tracked
-#     path is reported, never committed. Untracked files are only
-#     counted here; the daily laptop-untracked-review classifies
-#     them (oversized ones belong to the backup scripts)
+#     path or tracked backup/residue path is reported, never committed.
+#     Untracked files are only counted here; the daily
+#     laptop-untracked-review classifies them (oversized ones belong
+#     to the backup scripts)
 #   - pulls fast-forward when behind, pushes when ahead; never
 #     force-pushes, never merges, never rebases
 # Worktrees are counted for the report but never touched: they are
@@ -25,6 +26,7 @@ REPORT_DIR="$HOME/backups/repo-keeper"
 mkdir -p "$REPORT_DIR"
 TS="$(date '+%Y-%m-%d %H:%M %Z')"
 SECRET_RE='\.env|secret|credential|\.pem$|\.key$|id_rsa|id_ed25519'
+RESIDUE_RE='(^|/)([^/]*\.bak(-[^/]*)?|[^/]*\.backup|\.pre-warm[^/]*|resume-build|[^/]*\.mjs\.new)$'
 BIG_TRACKED=26214400 # 25 MiB
 LINES=()
 say() {
@@ -108,7 +110,11 @@ for d in "${REPOS[@]}"; do
     fi
   fi
   if [ "$dirty" -gt 0 ]; then
-    if g status --porcelain | grep -v '^??' | grep -Eiq "$SECRET_RE"; then
+    residue="$(g ls-files | grep -Ei "$RESIDUE_RE" || true)"
+    if [ -n "$residue" ]; then
+      residue_list="$(printf '%s' "$residue" | tr '\n' ' ')"
+      say "- $name: TRACKED RESIDUE NOT committed — move these paths to a dated residue directory first: $residue_list"
+    elif g status --porcelain | grep -v '^??' | grep -Eiq "$SECRET_RE"; then
       say "- $name: DIRTY ($dirty tracked entries) NOT committed — secret-shaped path present"
     elif g add -u && g commit -q -m "repo-keeper: snapshot $name $TS"; then
       say "- $name: committed $dirty tracked entries on $db"

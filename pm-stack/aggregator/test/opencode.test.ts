@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mapServerSessions } from "../src/sources/opencode.ts";
 
 // A stub OpenCode v2 server with canned wire shapes (probed live
@@ -110,23 +110,37 @@ const messages: Record<string, unknown[]> = {
 
 let server: ReturnType<typeof Bun.serve>;
 let baseUrl = "";
+let overrides: Record<string, unknown> = {};
 
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
     fetch(req) {
       const url = new URL(req.url);
-      if (url.pathname === "/api/session") return Response.json({ data: sessions });
-      if (url.pathname === "/api/session/active") return Response.json({ data: { ses_active: {} } });
+      if (url.pathname === "/api/session") {
+        return Response.json(Object.hasOwn(overrides, "sessions") ? overrides.sessions : { data: sessions });
+      }
+      if (url.pathname === "/api/session/active") {
+        return Response.json(Object.hasOwn(overrides, "active") ? overrides.active : { data: { ses_active: {} } });
+      }
       if (url.pathname === "/api/permission/request") {
-        return Response.json({
-          data: [{ sessionID: "ses_question", title: "bash: rm -rf build" }],
-        });
+        return Response.json(
+          Object.hasOwn(overrides, "permissions")
+            ? overrides.permissions
+            : { data: [{ sessionID: "ses_question", title: "bash: rm -rf build" }] },
+        );
       }
       const m = /^\/api\/session\/([^/]+)\/message$/.exec(url.pathname);
-      if (m) return Response.json({ data: messages[m[1]] ?? [] });
+      if (m) {
+        const bySession = overrides.messages as Record<string, unknown> | undefined;
+        const response = bySession && Object.hasOwn(bySession, m[1]) ? bySession[m[1]] : { data: messages[m[1]] ?? [] };
+        return Response.json(response);
+      }
       const f = /^\/api\/session\/([^/]+)\/form$/.exec(url.pathname);
-      if (f) return Response.json({ data: [] });
+      if (f) {
+        const bySession = overrides.forms as Record<string, unknown> | undefined;
+        return Response.json(bySession && Object.hasOwn(bySession, f[1]) ? bySession[f[1]] : { data: [] });
+      }
       return new Response("not found", { status: 404 });
     },
   });
@@ -134,6 +148,9 @@ beforeAll(() => {
 });
 
 afterAll(() => server.stop(true));
+afterEach(() => {
+  overrides = {};
+});
 
 describe("opencode v2 mapper", () => {
   test("maps signals and applies the inclusion window", async () => {
@@ -189,5 +206,41 @@ describe("opencode v2 mapper", () => {
   test("unreachable server fails soft (null)", async () => {
     const mapped = await mapServerSessions({ baseUrl: "http://127.0.0.1:1", password: "x" }, NOW);
     expect(mapped).toBeNull();
+  });
+
+  test("malformed required session list container fails soft", async () => {
+    overrides.sessions = { data: {} };
+
+    const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW);
+
+    expect(mapped).toBeNull();
+  });
+
+  test("malformed endpoint contributions and rows do not drop valid sibling sessions", async () => {
+    const brokenSession = { id: "ses_broken", title: "bad optional data", time: { created: recent, updated: recent } };
+    const validSibling = { ...sessions[0], id: "ses_valid_sibling", title: "valid sibling" };
+    overrides = {
+      sessions: { data: [brokenSession, null, { title: "missing id", time: { updated: recent } }, validSibling] },
+      active: { data: { ses_broken: {}, ses_valid_sibling: {} } },
+      permissions: { data: {} },
+      forms: {
+        ses_broken: { data: {} },
+      },
+      messages: {
+        ses_broken: { data: {} },
+        ses_valid_sibling: { data: messages.ses_active },
+      },
+    };
+
+    const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW);
+
+    expect(mapped).not.toBeNull();
+    expect(mapped!.entries.map((entry) => entry.sessionId).sort()).toEqual(["ses_broken", "ses_valid_sibling"]);
+    expect(mapped!.entries.every((entry) => typeof entry.sessionId === "string" && entry.sessionId.length > 0)).toBe(
+      true,
+    );
+    expect(mapped!.tokensBySession.has("undefined")).toBe(false);
+    expect(mapped!.entries.find((entry) => entry.sessionId === "ses_broken")?.messageCount).toBe(0);
+    expect(mapped!.entries.find((entry) => entry.sessionId === "ses_valid_sibling")?.messageCount).toBe(2);
   });
 });

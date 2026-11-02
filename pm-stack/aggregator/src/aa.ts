@@ -21,15 +21,32 @@ import type {
   AaTestRun,
   AaThreshold,
 } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 // --- scalar coercion ---------------------------------------------------------
 // The Supabase Management API serializes numeric columns as JSON
 // strings, so every number crosses a coercion gate here; anything
 // unparseable becomes null ("not measured"), never 0.
+//
+// Strict decimal contract (#2985; pins from triage task 4291, design
+// #3005 Phase 1 "a measurement is a plain decimal"): a string counts
+// as a measurement ONLY if it is a plain decimal spelling — optional
+// sign, digits with optional fraction, or `.digits` — with no trim,
+// no `0x`/`0b`/`0o` prefix (any case), and no exponent. Radix,
+// scientific, and whitespace-padded spellings all return null.
+// PIN 1 (scientific REJECTED): no AA source serializes a measurement
+// in e-notation — Postgres `numeric` → jsonb spelling is always plain
+// decimal, and Test_Runs cells are human-entered decimals where
+// e-notation is formatting drift, not a serialization.
+// PIN 2 (padded REJECTED): the legitimate string producers (Postgres
+// jsonb numerics, JSON config limits) never emit padding; padding is
+// import drift, covered by the same no-trim rule.
+
+const PLAIN_DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 export function num(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
-  if (typeof v === "string" && v.trim() !== "") {
+  if (typeof v === "string" && PLAIN_DECIMAL.test(v)) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   }
@@ -347,7 +364,11 @@ export const AA_EFFORT_ORDER: Record<string, number> = {
 /** Sort effort labels along the ladder (unknown labels last, alpha). */
 export function effortRank(effort: string | null): number {
   if (effort == null) return 99;
-  return AA_EFFORT_ORDER[effort.toLowerCase()] ?? 50;
+  // #3056 (rule in #2792): the key is data-controlled — own-key guard so
+  // prototype names ("constructor", "__proto__") take the unknown
+  // fallback instead of resolving inherited Object members.
+  const key = effort.toLowerCase();
+  return Object.hasOwn(AA_EFFORT_ORDER, key) ? AA_EFFORT_ORDER[key] : 50;
 }
 
 interface MetricRow {
@@ -675,8 +696,8 @@ export const AA_GO_CAPS: Record<string, number> = {
   "kimi k3": 15,
   "grok 4 7": 15,
   "claude haiku 5 5": 15,
-  "muse spark 1 3 contributor": 12,
-  "gemini 4 argon contributor": 12,
+  "muse spark 1 3": 12,
+  "gemini 4 argon": 12,
 };
 
 interface RawModelEntry {
@@ -856,7 +877,7 @@ export function aaCatalogFromConfig(
       typeof (providerCfg as { name?: unknown }).name === "string"
         ? ((providerCfg as { name: string }).name as string)
         : providerId;
-    const fact = AA_PLAN_FACTS[providerId];
+    const fact = Object.hasOwn(AA_PLAN_FACTS, providerId) ? AA_PLAN_FACTS[providerId] : undefined; // #3056 own-key guard
     for (const [modelId, rawEntry] of Object.entries(models as Record<string, unknown>)) {
       const entry = (typeof rawEntry === "object" && rawEntry !== null ? rawEntry : {}) as RawModelEntry;
       const id = `${providerId}/${modelId}`;
@@ -883,7 +904,11 @@ export function aaCatalogFromConfig(
         plan: fact?.plan ?? null,
         multiplier: fact?.multiplier ?? null,
         planNote: fact?.note ?? null,
-        goCapUsd: providerId.startsWith("opencode-go") ? (AA_GO_CAPS[norm] ?? null) : null,
+        goCapUsd: providerId.startsWith("opencode-go")
+          ? Object.hasOwn(AA_GO_CAPS, norm)
+            ? AA_GO_CAPS[norm]
+            : null
+          : null, // #3056 own-key guard
         aaScore: conf?.intelligence ?? rank?.adjustedScore ?? rank?.rawScore ?? null,
         aaCostPerTask: conf?.costPerTaskUsd ?? rank?.costTask ?? null,
         aaTimePerTask: fastestRanking.get(norm)?.timeTaskSec ?? null,
@@ -995,7 +1020,7 @@ function caiFromRaw(v: unknown): AaCaiRow | null {
   return {
     modelName: r.modelName,
     family: caiFamily(r.modelName, effort),
-    creator: slug ? (CAI_CREATORS[slug.toLowerCase()] ?? slug) : "",
+    creator: slug ? (Object.hasOwn(CAI_CREATORS, slug.toLowerCase()) ? CAI_CREATORS[slug.toLowerCase()] : slug) : "", // #3056 own-key guard
     effort,
     version: str(r.version),
     score: num(r.score),
@@ -1092,14 +1117,10 @@ export function aaSectionFromSupabase(
 export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<AaSection> & Partial<AaAbsentSection>;
-  if (s.status === "absent")
-    return (
-      typeof s.reason === "string" && typeof s.generatedAt === "string" && Number.isFinite(Date.parse(s.generatedAt))
-    );
+  if (s.status === "absent") return typeof s.reason === "string" && isIsoDate(s.generatedAt);
   if (s.status !== "ok") return false;
   return (
-    typeof s.generatedAt === "string" &&
-    Number.isFinite(Date.parse(s.generatedAt)) &&
+    isIsoDate(s.generatedAt) &&
     typeof s.batch === "string" &&
     Array.isArray(s.rankings) &&
     s.rankings.length > 0 &&

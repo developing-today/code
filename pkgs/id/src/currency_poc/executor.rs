@@ -14,6 +14,8 @@
 //! rate and its authorisation are control-plane data (#2063), carried
 //! here as a [`RateQuote`] and recorded on the intent record.
 
+use std::collections::HashSet;
+
 use anyhow::{Context, Result, bail};
 
 use super::intent::{IntentRecord, IntentState, IntentStore};
@@ -136,6 +138,13 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     /// enough destination inventory. Failing here means no intent is
     /// written and nothing is submitted.
     pub fn preflight(&self, request: &ConversionRequest) -> Result<()> {
+        let mut transfer_ids = HashSet::with_capacity(request.transfer_ids.len());
+        for id in &request.transfer_ids {
+            if !transfer_ids.insert(*id) {
+                bail!("preflight: duplicate transfer ID {id}");
+            }
+        }
+
         if request.quote.denominator == 0 {
             bail!("preflight: rate quote has a zero denominator");
         }

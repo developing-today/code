@@ -82,7 +82,7 @@ describe("reconcileRepos against a fake GitHub", () => {
             body: "an issue comment",
             user: { login: "drew" },
             created_at: "2026-10-03T00:00:00Z",
-            updated_at: "2026-10-03T00:00:00Z",
+            updated_at: "2026-10-05T00:00:00Z",
           },
         ]);
       }
@@ -94,7 +94,7 @@ describe("reconcileRepos against a fake GitHub", () => {
             body: "a review comment",
             user: { login: "drew" },
             created_at: "2026-10-04T00:00:00Z",
-            updated_at: "2026-10-04T00:00:00Z",
+            updated_at: "2026-10-06T00:00:00Z",
             path: "src/x.ts",
             line: 3,
           },
@@ -117,7 +117,15 @@ describe("reconcileRepos against a fake GitHub", () => {
     const items = await getItems(db, ["developing-today/code#1", "developing-today/code#2"]);
     expect(items.map((i) => i.number).sort()).toEqual([1, 2]);
     // Both comment collections landed.
-    expect((await getComments(db, ["developing-today/code#1"])).map((c) => c.id)).toEqual(["9001"]);
+    const issueComments = await getComments(db, ["developing-today/code#1"]);
+    expect(issueComments.map((c) => c.id)).toEqual(["9001"]);
+    expect(issueComments[0].source_updated_at).toBe("2026-10-05T00:00:00Z");
+    const reviewComments = await getComments(db, ["developing-today/code#7"]);
+    expect(reviewComments.map((c) => c.id)).toEqual(["9002"]);
+    expect(reviewComments[0].source_updated_at).toBe("2026-10-06T00:00:00Z");
+    const commentStreams = result.streams as { stream: string; cursor: string | null }[];
+    expect(commentStreams.find((s) => s.stream === "issue_comments")?.cursor).toBe("2026-10-05T00:00:00Z");
+    expect(commentStreams.find((s) => s.stream === "review_comments")?.cursor).toBe("2026-10-06T00:00:00Z");
     // The requests used the real collection paths, never the 404 shapes.
     expect(seen.some((u) => u.includes("/issues/comments"))).toBe(true);
     expect(seen.some((u) => u.includes("/pulls/comments"))).toBe(true);

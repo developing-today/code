@@ -44,6 +44,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Provider source table. `modelsDev` is the provider id in models.dev's
@@ -119,7 +120,45 @@ export function stripJsonc(text) {
     out.push(c);
     i += 1;
   }
-  return out.join('').replace(/,(\s*[}\]])/g, '$1');
+  const stripped = out.join('');
+  // String-aware trailing-comma removal: a ',' followed by only whitespace
+  // then '}' or ']' is structural, but the same sequence inside a string
+  // literal is content and must survive verbatim (#3430).
+  const res = [];
+  let j = 0;
+  let inStr = false;
+  let e = false;
+  while (j < stripped.length) {
+    const ch = stripped[j];
+    if (inStr) {
+      res.push(ch);
+      if (e) e = false;
+      else if (ch === '\\') e = true;
+      else if (ch === '"') inStr = false;
+      j += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      res.push(ch);
+      j += 1;
+      continue;
+    }
+    if (ch === ',') {
+      let k = j + 1;
+      while (k < stripped.length && /\s/.test(stripped[k])) k += 1;
+      if (stripped[k] === '}' || stripped[k] === ']') {
+        j += 1;
+        continue;
+      }
+      res.push(ch);
+      j += 1;
+      continue;
+    }
+    res.push(ch);
+    j += 1;
+  }
+  return res.join('');
 }
 
 export function parseJsonc(text) {
@@ -684,24 +723,75 @@ export function openPrCommands({ branch, branchExists, date, bodyFile }) {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Strict argv parsing (issue #3449). Before this, opt() returned argv[idx+1]
+// unchecked and unknown arguments were never rejected: flag tokens were
+// consumed as values ('--config --apply' opened a file named '--apply'), a
+// token could be consumed twice ('--models-dev --apply' both set the
+// models.dev spec AND enabled apply), a trailing value flag crashed with a
+// raw TypeError that never named the flag, and a typo'd '--aply' silently
+// degraded an apply run into a dry run. Validation runs before any file
+// read, fetch, or write; a failure is a usage error (exit 2, this script's
+// hard-error code, matching the sibling usage-error pattern from
+// #3419/#3295) that names the offending flag.
+// ---------------------------------------------------------------------------
+export const VALUE_OPTIONS = ['--config', '--models-dev', '--source-dir', '--repo'];
+export const FLAG_OPTIONS = ['--apply', '--open-pr', '--json', '--help'];
+export const USAGE =
+  'usage: provider-catalog-sync [--config <path>] [--models-dev <url|path>] ' +
+  '[--source-dir <dir>] [--repo <dir>] [--apply] [--open-pr] [--json]';
+
+export class UsageError extends Error {}
+
+export function parseArgs(argv) {
+  const options = {};
+  const flags = new Set();
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (FLAG_OPTIONS.includes(token)) {
+      flags.add(token);
+      continue;
+    }
+    if (VALUE_OPTIONS.includes(token)) {
+      if (Object.hasOwn(options, token)) {
+        throw new UsageError(`${token} was given more than once\n${USAGE}`);
+      }
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) {
+        throw new UsageError(
+          `${token} requires a value, but ${
+            value === undefined ? 'no value followed it' : `the next token is the flag ${value}`
+          }\n${USAGE}`,
+        );
+      }
+      options[token] = value;
+      i += 1;
+      continue;
+    }
+    throw new UsageError(`unrecognised argument: ${token}\n${USAGE}`);
+  }
+  return { options, flags };
+}
+
 async function main(argv) {
-  const args = new Set(argv);
-  const opt = (name, dflt) => {
-    const idx = argv.indexOf(name);
-    return idx >= 0 ? argv[idx + 1] : dflt;
-  };
+  const { options, flags } = parseArgs(argv);
+  if (flags.has('--help')) {
+    console.log(USAGE);
+    return 0;
+  }
+  const opt = (name, dflt) => options[name] ?? dflt;
   const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
   const configPath =
     process.env.OPENCODE_CONFIG_PATH || opt('--config', path.join(root, '.opencode', 'opencode.jsonc'));
   const modelsDevSpec = opt('--models-dev', 'https://models.dev/api.json');
   const sourceDir = opt('--source-dir', null);
-  const apply = args.has('--apply');
-  const openPr = args.has('--open-pr');
+  const apply = flags.has('--apply');
+  const openPr = flags.has('--open-pr');
 
   const { report, configText, config } = await runSync({ configPath, modelsDevSpec, sourceDir });
 
   if (!apply) {
-    if (args.has('--json')) console.log(JSON.stringify(report, null, 2));
+    if (flags.has('--json')) console.log(JSON.stringify(report, null, 2));
     else console.log(renderHuman(report));
     return report.totals.additions_validated > 0 ? 3 : 0;
   }
@@ -747,12 +837,28 @@ async function main(argv) {
   return 0;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname;
+// Entry-point check: compare realpaths, not the raw strings (#2235;
+// same pattern as proxy-supervise.mjs / #2083). process.argv[1] keeps the
+// path exactly as invoked (e.g. through a file or directory symlink)
+// while import.meta.url is the resolved module URL, so a string compare
+// silently never matches and main() never runs via a symlink.
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
 if (isMain) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err) => {
-      console.error(`[catalog-sync] fatal: ${err?.stack ?? err}`);
+      if (err instanceof UsageError) {
+        console.error(`[catalog-sync] ${err.message}`);
+      } else {
+        console.error(`[catalog-sync] fatal: ${err?.stack ?? err}`);
+      }
       process.exit(2);
     },
   );

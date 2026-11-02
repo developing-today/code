@@ -72,6 +72,15 @@ describe("class + quiet merges (design §1/§2)", () => {
       enabled: true,
     });
   });
+  test("invalid quiet timezone falls back to the default", () => {
+    expect(mergeQuiet({ tz: "Not/AZone" }).tz).toBe("America/Chicago");
+  });
+  test("valid non-default timezone is preserved and used", () => {
+    const quiet = mergeQuiet({ tz: "UTC" });
+    expect(quiet.tz).toBe("UTC");
+    // 2026-01-15T04:00Z is 04:00 UTC (inside), but 22:00 CST (outside).
+    expect(inQuietHours(quiet, new Date("2026-01-15T04:00:00Z"))).toBe(true);
+  });
   test("inQuietHours wraps midnight and honors the window edges", () => {
     const q = { start: "23:00", end: "07:00", tz: "America/Chicago" };
     // 2026-01-15T05:30Z = Jan 14 23:30 CST — inside.

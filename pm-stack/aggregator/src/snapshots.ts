@@ -99,7 +99,9 @@ export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
   if (typeof r.metricId !== "string" || r.metricId === "") return false;
   if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
   if (typeof r.source !== "string" || !SOURCES.has(r.source)) return false;
-  if (typeof r.count !== "number" || !(r.count >= 1)) return false;
+  // count is a record tally: fractional or infinite counts are malformed
+  // and must not seed readAll/rollupKeys/compaction with corrupt totals.
+  if (typeof r.count !== "number" || !Number.isInteger(r.count) || r.count < 1) return false;
   if (typeof r.observedBy !== "string" || r.observedBy === "") return false;
   for (const f of [r.firstTs, r.lastTs, r.minTs, r.maxTs]) {
     if (typeof f !== "string" || Number.isNaN(Date.parse(f))) return false;
@@ -579,11 +581,13 @@ export class SnapshotStore {
 
   /** History grouped by service id, oldest first per service. */
   async byService(): Promise<Record<string, SnapshotRecord[]>> {
-    const grouped: Record<string, SnapshotRecord[]> = {};
+    const grouped = new Map<string, SnapshotRecord[]>();
     for (const r of await this.readAll()) {
-      (grouped[r.serviceId] ??= []).push(r);
+      const records = grouped.get(r.serviceId) ?? [];
+      records.push(r);
+      grouped.set(r.serviceId, records);
     }
-    return grouped;
+    return Object.fromEntries(grouped);
   }
 
   /** Dedupe keys of every observation already compacted into rollups. */
@@ -676,6 +680,14 @@ export class SnapshotStore {
   }): Promise<CompactionReport> {
     const now = opts.now ?? new Date();
     const retentionMonths = opts.retentionMonths ?? 13;
+    if (!Number.isInteger(retentionMonths) || retentionMonths < 1) {
+      // Zero (or negative/fractional) retention would make the in-progress
+      // month eligible for compaction (#3285): its raw file would be
+      // replaced by a lossy rollup while writers are still appending.
+      throw new RangeError(
+        `SnapshotStore.compact: retentionMonths must be a positive integer, got ${opts.retentionMonths}`,
+      );
+    }
     const dryRun = opts.dryRun ?? false;
     const currentMonth = now.toISOString().slice(0, 7);
     const cutoffMonth = shiftMonth(currentMonth, -retentionMonths);
@@ -729,16 +741,25 @@ export class SnapshotStore {
         }
       }
       const rollups = compactRecordsToRollups(month, records, existing);
-      const perService: Record<string, CompactionServiceCounts> = {};
+      const perServiceCounts = new Map<string, CompactionServiceCounts>();
+      const countsFor = (serviceId: string): CompactionServiceCounts => {
+        let counts = perServiceCounts.get(serviceId);
+        if (!counts) {
+          counts = { before: 0, after: 0 };
+          perServiceCounts.set(serviceId, counts);
+        }
+        return counts;
+      };
       for (const r of records) {
-        (perService[r.serviceId] ??= { before: 0, after: 0 }).before += 1;
+        countsFor(r.serviceId).before += 1;
       }
       for (const r of existing) {
-        (perService[r.serviceId] ??= { before: 0, after: 0 }).before += r.count;
+        countsFor(r.serviceId).before += r.count;
       }
       for (const r of rollups) {
-        (perService[r.serviceId] ??= { before: 0, after: 0 }).after += 1;
+        countsFor(r.serviceId).after += 1;
       }
+      const perService = Object.fromEntries(perServiceCounts);
       const monthReport: CompactionMonthReport = {
         month,
         recordsBefore: records.length + existing.reduce((n, r) => n + r.count, 0),

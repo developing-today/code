@@ -489,6 +489,17 @@ func ParseBytes(v string) (int64, error) {
 	return n, nil
 }
 
+// tickerIntervalSettings are the KindDuration settings whose values are
+// passed directly to time.NewTicker (daemon/server.go: the reap and save
+// tickers and the SSE ping ticker). time.NewTicker panics on a
+// non-positive period, so Validate refuses zero and negative values for
+// exactly these paths (#3467).
+var tickerIntervalSettings = map[string]bool{
+	"daemon.reapInterval": true,
+	"daemon.saveInterval": true,
+	"http.ssePing":        true,
+}
+
 // Validate checks one raw value against its declaration.
 func Validate(set Setting, raw string) error {
 	raw = strings.TrimSpace(raw)
@@ -508,10 +519,30 @@ func Validate(set Setting, raw string) error {
 		if set.Floor > 0 && n < set.Floor {
 			return fmt.Errorf("want a whole number of at least %d, got %q", set.Floor, raw)
 		}
+		if set.Ceiling > 0 && (n < set.Floor || n > set.Ceiling) {
+			// A declared ceiling is a range whose lower bound is the
+			// setting's Floor (0 when unset): daemon.port accepts
+			// 0-65535 and refuses -1 as firmly as 65536, here at the
+			// shared choke point, instead of dying later at net.Listen
+			// with an error naming neither the setting nor its
+			// source (#3648). The error names the setting and the
+			// refused value.
+			return fmt.Errorf("%s must be a whole number between %d and %d, got %q", set.Path, set.Floor, set.Ceiling, raw)
+		}
 	case KindDuration:
 		d, err := time.ParseDuration(raw)
 		if err != nil {
 			return fmt.Errorf("want a duration like 30s or 5m, got %q", raw)
+		}
+		if d <= 0 && tickerIntervalSettings[set.Path] {
+			// These three settings are passed directly to time.NewTicker,
+			// which panics on a non-positive period, so a zero or negative
+			// value must be refused here rather than crash the daemon at
+			// startup or an SSE handler later (#3467). Positivity is
+			// per-setting, not blanket: daemon.idleExit=0s means "never",
+			// and artifacts.gcInterval / transport.sseKeepAlive fall back
+			// to a default when non-positive, so they keep accepting it.
+			return fmt.Errorf("%s must be a positive duration, got %q", set.Path, raw)
 		}
 		if set.Path == "protoTasks.maxTTL" && d > 0 && d < time.Millisecond {
 			// Store.Start clamps in whole milliseconds; a positive

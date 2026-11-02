@@ -163,8 +163,6 @@ export interface BoardItem {
   kaneoUrl?: string;
   /** Every linked issue/PR, from any of the four repos. */
   links: Link[];
-  /** Pad notes linked to the item (planning layer), by title + URL. */
-  notes?: { title: string; url: string }[];
 }
 
 /** One row of the Grist "Roadmap" table (doc "Program roadmap"). */
@@ -452,7 +450,9 @@ export function refKey(ref: GhRef): RefKey {
 export function parseRef(key: RefKey): GhRef {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(key);
   if (!m) throw new Error(`not a repo-qualified ref: ${key}`);
-  return { repo: m[1], number: Number(m[2]) };
+  const number = Number(m[2]);
+  if (!Number.isSafeInteger(number)) throw new Error(`ref number is not a safe integer: ${key}`);
+  return { repo: m[1], number };
 }
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
@@ -1338,6 +1338,8 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Parser diagnostics for malformed entries removed at the ingest boundary. */
+  sanitized?: { droppedProviders: number; droppedWindows: number };
 }
 
 /**

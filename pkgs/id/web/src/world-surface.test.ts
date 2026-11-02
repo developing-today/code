@@ -358,4 +358,76 @@ describe("world screen presenter", () => {
       expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
     }
   });
+
+  it("measures U+FE0F clusters by the base's emoji-presentability, like Rust unicode-width 0.2.2 (#3265)", () => {
+    const root = document.createElement("div");
+    const screenWith = (symbol: string, columns: 1 | 2): ScreenSurface =>
+      columns === 1
+        ? makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }])
+        : {
+            kind: "screen",
+            version: 1,
+            width: 2,
+            height: 1,
+            cells: [
+              { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+              { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+            ],
+          };
+    // Bases unicode-width 0.2.2 does NOT widen with U+FE0F — letters,
+    // punctuation, U+2192 and space measure 1, so the Rust-valid
+    // columns:1 cell renders and a columns:2 claim is refused. A
+    // combining mark between the base and U+FE0F also breaks the
+    // widening (© + U+0301 + U+FE0F measures 1).
+    const narrowGlyphs = [
+      "\u0061\uFE0F",
+      "\u0078\uFE0F",
+      "\u005A\uFE0F",
+      "\u00E9\uFE0F",
+      "\u03A9\uFE0F",
+      "\u2192\uFE0F",
+      "\u0021\uFE0F",
+      "\u003F\uFE0F",
+      "\u0025\uFE0F",
+      "\u0020\uFE0F",
+      "\u00A9\u0301\uFE0F",
+    ];
+    for (const symbol of narrowGlyphs) {
+      expect(renderWorldSurface(root, screenWith(symbol, 1))).toBe(true);
+      expect(renderWorldSurface(root, screenWith(symbol, 2))).toBe(false);
+    }
+    // A lone U+FE0F measures 0 in Rust: no columns value can carry it.
+    expect(renderWorldSurface(root, screenWith("\uFE0F", 1))).toBe(false);
+    expect(renderWorldSurface(root, screenWith("\uFE0F", 2))).toBe(false);
+    // Emoji-presentable bases still widen to 2: ⚠ ☝ ❤ © ® ™ ♠ ♥ ♦ ▶ ◀
+    // ↔ ↩ ⤴ 〰 〽 ㊗ ㊙, digits / # / * with U+FE0F, and keycap sequences.
+    const wideGlyphs = [
+      "\u26A0\uFE0F",
+      "\u261D\uFE0F",
+      "\u2764\uFE0F",
+      "\u00A9\uFE0F",
+      "\u00AE\uFE0F",
+      "\u2122\uFE0F",
+      "\u2660\uFE0F",
+      "\u2665\uFE0F",
+      "\u2666\uFE0F",
+      "\u25B6\uFE0F",
+      "\u25C0\uFE0F",
+      "\u2194\uFE0F",
+      "\u21A9\uFE0F",
+      "\u2934\uFE0F",
+      "\u3030\uFE0F",
+      "\u303D\uFE0F",
+      "\u3297\uFE0F",
+      "\u3299\uFE0F",
+      "\u0031\uFE0F",
+      "\u0023\uFE0F",
+      "\u002A\uFE0F",
+      "\u0039\uFE0F\u20E3",
+    ];
+    for (const symbol of wideGlyphs) {
+      expect(renderWorldSurface(root, screenWith(symbol, 2))).toBe(true);
+      expect(renderWorldSurface(root, screenWith(symbol, 1))).toBe(false);
+    }
+  });
 });

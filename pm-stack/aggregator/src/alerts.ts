@@ -91,7 +91,15 @@ export function mergeQuiet(input: unknown): QuietPrefs {
     const q = input as Record<string, unknown>;
     if (typeof q.start === "string" && /^\d{2}:\d{2}$/.test(q.start)) out.start = q.start;
     if (typeof q.end === "string" && /^\d{2}:\d{2}$/.test(q.end)) out.end = q.end;
-    if (typeof q.tz === "string" && q.tz.trim()) out.tz = q.tz.trim();
+    if (typeof q.tz === "string" && q.tz.trim()) {
+      const tz = q.tz.trim();
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: tz });
+        out.tz = tz;
+      } catch {
+        // Keep the default timezone for an invalid stored preference.
+      }
+    }
     if (typeof q.enabled === "boolean") out.enabled = q.enabled;
   }
   return out;

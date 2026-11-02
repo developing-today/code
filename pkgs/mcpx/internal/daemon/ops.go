@@ -397,7 +397,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		fwd["context"] = map[string]any{"arguments": req.Arguments}
 	}
 	params, _ := json.Marshal(fwd)
-	raw, upstream, err := p.Complete(r.Context(), s.reg.keyFor(p, cc), params)
+	raw, upstream, err := p.Complete(r.Context(), s.reg.resolvedFor(p, cc), params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -586,6 +586,8 @@ func (s *Server) taskStore() *tasks.Store {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
 			if store, err := tasks.Open(dbPath); err == nil {
 				s.tasks = store
+			} else if s.logger != nil {
+				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)
 			}
 		}
 		if s.tasks == nil {

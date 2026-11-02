@@ -8,7 +8,7 @@ import type { upsertItem, upsertComment, markCommentDeleted, recordPush, ItemRow
 export interface ProjectorStore {
   upsertItem(i: Omit<ItemRow, "fetched_at">): Promise<void>;
   upsertComment(c: Omit<CommentRow, "fetched_at">): Promise<void>;
-  markCommentDeleted(id: string): Promise<void>;
+  markCommentDeleted(c: Omit<CommentRow, "fetched_at">): Promise<void>;
   recordPush(p: {
     deliveryId: string;
     repo: string;
@@ -76,6 +76,7 @@ function commentCommon(
   kind: CommentRow["kind"],
 ): Omit<CommentRow, "fetched_at"> {
   const createdAt = iso(c.created_at) ?? iso(c.updated_at) ?? new Date().toISOString();
+  const updatedAt = iso(c.updated_at);
   return {
     id: String(c.id),
     ref,
@@ -83,7 +84,7 @@ function commentCommon(
     author: iso(c.user?.login),
     body: typeof c.body === "string" ? c.body : null,
     created_at: createdAt,
-    updated_at: iso(c.updated_at),
+    updated_at: updatedAt,
     url: iso(c.html_url),
     path: null,
     line: null,
@@ -92,7 +93,7 @@ function commentCommon(
     submitted_at: null,
     commit_id: null,
     deleted: 0,
-    source_updated_at: createdAt,
+    source_updated_at: kind === "review" ? createdAt : (updatedAt ?? createdAt),
   };
 }
 
@@ -155,10 +156,11 @@ export async function applyEvent(
     if (!issue) return;
     await store.upsertItem(fromIssueOrPr(repo, issue, issueIsPr(issue) ? "pr" : "issue"));
     addRef(itemRef(repo, issue.number));
+    const row = commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment");
     if (event === "issue_comment" && payload.action === "deleted") {
-      await store.markCommentDeleted(String(comment.id));
+      await store.markCommentDeleted(row);
     } else {
-      await store.upsertComment(commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"));
+      await store.upsertComment(row);
     }
     wrote = true;
   };
@@ -210,7 +212,7 @@ export async function applyEvent(
         base.line = typeof comment.line === "number" ? comment.line : null;
         base.diff_hunk = iso(comment.diff_hunk);
         if (payload.action === "deleted") {
-          await store.markCommentDeleted(String(comment.id));
+          await store.markCommentDeleted(base);
         } else {
           await store.upsertComment(base);
         }

@@ -9,7 +9,9 @@ import pathlib
 import unittest
 
 _spec = importlib.util.spec_from_file_location(
-    "update_choice_options", pathlib.Path(__file__).with_name("update-choice-options.py"))
+    "update_choice_options",
+    pathlib.Path(__file__).with_name("update-choice-options.py"),
+)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 merge_choices = _mod.merge_choices
@@ -17,8 +19,10 @@ merge_choices = _mod.merge_choices
 
 class MergeChoices(unittest.TestCase):
     def test_appends_new_preserving_order_and_other_keys(self):
-        wo = {"choices": ["code", "infra"],
-              "choiceOptions": {"code": {"fillColor": "#1d76db"}}}
+        wo = {
+            "choices": ["code", "infra"],
+            "choiceOptions": {"code": {"fillColor": "#1d76db"}},
+        }
         merged, added = merge_choices(wo, ["id"])
         self.assertEqual(merged["choices"], ["code", "infra", "id"])
         self.assertEqual(added, ["id"])

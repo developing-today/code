@@ -18,7 +18,7 @@ import {
   FIXTURE_ROADMAP,
   fixtureSource,
 } from "../src/sources/fixtures.ts";
-import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
+import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 
 const NOW = Date.parse("2026-10-25T15:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -225,6 +225,56 @@ describe("jules mapping (#898 §5)", () => {
     const failed = entries.find((e) => e.sessionId === "999")!;
     expect(failed.outcome).toBe("failed");
     expect(failed.lastTurnError).toContain("failed");
+  });
+
+  test("skips malformed elements while preserving valid siblings", () => {
+    const malformed = {
+      items: {
+        good: { state: "IN_PROGRESS" },
+        bad: null,
+      },
+    } as unknown as JulesReviewState;
+    expect(mapJulesItems(malformed).map((entry) => entry.sessionId)).toEqual(["good"]);
+    expect(julesSummary(malformed).tracked).toBe(1);
+    expect(droppedJulesItemCount(malformed)).toBe(1);
+  });
+
+  test("degrades non-string state, title, and source fields", () => {
+    const malformed = {
+      items: {
+        numericState: { state: 42 },
+        numericFields: { title: 42, source: 42 },
+      },
+    } as unknown as JulesReviewState;
+    const [numericState, numericFields] = mapJulesItems(malformed);
+    expect(numericState.supervisionNote).toBe("Jules UNKNOWN");
+    expect(numericState.activeToolCalls).toBe(0);
+    expect(numericState.outcome).toBeUndefined();
+    expect(numericFields.title).toBeUndefined();
+    expect(numericFields.directory).toBeUndefined();
+  });
+
+  test("treats string or array items as an empty state", () => {
+    for (const items of ["nope", ["session"]]) {
+      const malformed = { items } as unknown as JulesReviewState;
+      expect(mapJulesItems(malformed)).toEqual([]);
+      expect(julesSummary(malformed).tracked).toBe(0);
+      expect(droppedJulesItemCount(malformed)).toBe(0);
+    }
+  });
+
+  test("skips array elements and counts them as dropped", () => {
+    const malformed = { items: { bad: ["session"] } } as unknown as JulesReviewState;
+    expect(mapJulesItems(malformed)).toEqual([]);
+    expect(julesSummary(malformed).tracked).toBe(0);
+    expect(droppedJulesItemCount(malformed)).toBe(1);
+  });
+
+  test("treats a non-object top-level state as empty", () => {
+    const malformed = null as unknown as JulesReviewState;
+    expect(mapJulesItems(malformed)).toEqual([]);
+    expect(julesSummary(malformed)).toEqual({ at: null, tracked: 0 });
+    expect(droppedJulesItemCount(malformed)).toBe(0);
   });
 
   test("parses keeper totals", () => {

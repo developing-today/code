@@ -20,9 +20,54 @@ parsed_doc() {
   python3 - "$1" <<'PY'
 import json, re, sys, pathlib
 raw = pathlib.Path(sys.argv[1]).read_text()
-probe = re.sub(r'^\s*//.*$', '', raw, flags=re.M)
-probe = re.sub(r',(\s*[}\]])', r'\1', probe)
-print(json.dumps(json.loads(probe), sort_keys=True))
+# String-aware JSONC strip (mirrors normalize.sh jsonc_to_json, #3179):
+# comments and trailing commas are removed only outside string literals.
+out = []
+i, n = 0, len(raw)
+in_str = False
+while i < n:
+    c = raw[i]
+    if in_str:
+        out.append(c)
+        if c == '\\' and i + 1 < n:
+            out.append(raw[i + 1]); i += 2; continue
+        if c == '"':
+            in_str = False
+        i += 1; continue
+    if c == '"':
+        in_str = True; out.append(c); i += 1; continue
+    if c == '/' and raw[i + 1:i + 2] == '/':
+        while i < n and raw[i] != '\n':
+            i += 1
+        continue
+    if c == '/' and raw[i + 1:i + 2] == '*':
+        end = raw.find('*/', i + 2)
+        i = n if end < 0 else end + 2
+        out.append(' '); continue
+    out.append(c); i += 1
+s = ''.join(out)
+out = []
+i, n = 0, len(s)
+in_str = False
+while i < n:
+    c = s[i]
+    if in_str:
+        out.append(c)
+        if c == '\\' and i + 1 < n:
+            out.append(s[i + 1]); i += 2; continue
+        if c == '"':
+            in_str = False
+        i += 1; continue
+    if c == '"':
+        in_str = True; out.append(c); i += 1; continue
+    if c == ',':
+        j = i + 1
+        while j < n and s[j] in ' \t\r\n':
+            j += 1
+        if j < n and s[j] in '}]':
+            i += 1; continue
+    out.append(c); i += 1
+print(json.dumps(json.loads(''.join(out)), sort_keys=True))
 PY
 }
 
@@ -38,21 +83,29 @@ check() {
   OPENCODE_CONFIG="$cfg" bash "$script" 2>/dev/null
   local got_exit=$?
   if [ "$got_exit" -ne "$want_exit" ]; then
-    echo "FAIL $name: exit $got_exit, want $want_exit"; failures=$((failures+1)); return
+    echo "FAIL $name: exit $got_exit, want $want_exit"
+    failures=$((failures + 1))
+    return
   fi
   if [ "$want_exit" -ne 0 ]; then
     # Failure contract: the file is left byte-identical.
     after_first="$(sha256sum "$cfg" | cut -d' ' -f1)"
     if [ "$before" != "$after_first" ]; then
-      echo "FAIL $name: file modified despite exit $want_exit"; failures=$((failures+1)); return
+      echo "FAIL $name: file modified despite exit $want_exit"
+      failures=$((failures + 1))
+      return
     fi
-    echo "PASS $name"; return
+    echo "PASS $name"
+    return
   fi
   if [ "$expected" = "__UNPARSEABLE__" ]; then
     if [ "$(sha256sum "$cfg" | cut -d' ' -f1)" != "$before" ]; then
-      echo "FAIL $name: unparseable file was modified"; failures=$((failures+1)); return
+      echo "FAIL $name: unparseable file was modified"
+      failures=$((failures + 1))
+      return
     fi
-    echo "PASS $name"; return
+    echo "PASS $name"
+    return
   fi
   local got want
   got="$(parsed_doc "$cfg")"
@@ -61,19 +114,22 @@ check() {
     echo "FAIL $name: parsed document mismatch"
     echo "  got:  $got"
     echo "  want: $want"
-    failures=$((failures+1)); return
+    failures=$((failures + 1))
+    return
   fi
   # Idempotence: second run is a byte-identical no-op with exit 0.
   after_first="$(sha256sum "$cfg" | cut -d' ' -f1)"
   OPENCODE_CONFIG="$cfg" bash "$script" 2>/dev/null
   if [ $? -ne 0 ] || [ "$(sha256sum "$cfg" | cut -d' ' -f1)" != "$after_first" ]; then
-    echo "FAIL $name: second run was not a byte-identical no-op"; failures=$((failures+1)); return
+    echo "FAIL $name: second run was not a byte-identical no-op"
+    failures=$((failures + 1))
+    return
   fi
   echo "PASS $name"
 }
 
 # Case 1: agents-only (2-space pretty) — the #2364 data-loss shape.
-cat > "$tmp/agents-only.fixture" <<'EOF'
+cat >"$tmp/agents-only.fixture" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
   "agents": {
@@ -87,7 +143,7 @@ check agents-only "$tmp/agents-only.fixture" \
   '{"$schema":"https://opencode.ai/config.json","agent":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-haiku-4-5"}},"plugin":["opencode-plugin-x"]}' 0
 
 # Case 2: agents-only as the last key (no trailing comma after the block).
-cat > "$tmp/agents-last.fixture" <<'EOF'
+cat >"$tmp/agents-last.fixture" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
   "agents": {
@@ -99,7 +155,7 @@ check agents-last "$tmp/agents-last.fixture" \
   '{"$schema":"https://opencode.ai/config.json","agent":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
 
 # Case 3: agent + agents merge — existing agent wins per key.
-cat > "$tmp/merge.fixture" <<'EOF'
+cat >"$tmp/merge.fixture" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
   "agent": {
@@ -116,7 +172,7 @@ check merge "$tmp/merge.fixture" \
   '{"$schema":"https://opencode.ai/config.json","agent":{"build":{"model":"existing/wins"},"scout":{"model":"anthropic/claude-haiku-4-5"},"plan":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
 
 # Case 4: plugins-only rename, nothing else touched.
-cat > "$tmp/plugins-only.fixture" <<'EOF'
+cat >"$tmp/plugins-only.fixture" <<'EOF'
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": ["opencode-plugin-x", "opencode-plugin-y"]
@@ -126,7 +182,7 @@ check plugins-only "$tmp/plugins-only.fixture" \
   '{"$schema":"https://opencode.ai/config.json","plugin":["opencode-plugin-x","opencode-plugin-y"]}' 0
 
 # Case 5: unparseable file is left untouched, exit 0.
-cat > "$tmp/unparseable.fixture" <<'EOF'
+cat >"$tmp/unparseable.fixture" <<'EOF'
 { this is not json at all
 EOF
 check unparseable "$tmp/unparseable.fixture" '__UNPARSEABLE__' 0
@@ -134,11 +190,14 @@ check unparseable "$tmp/unparseable.fixture" '__UNPARSEABLE__' 0
 # only for non-zero exits; verify the bytes explicitly here too)
 cp "$tmp/unparseable.fixture" "$tmp/unparseable.copy"
 OPENCODE_CONFIG="$tmp/unparseable.copy" bash "$script" 2>/dev/null
-cmp -s "$tmp/unparseable.fixture" "$tmp/unparseable.copy" || { echo "FAIL unparseable-bytes"; failures=$((failures+1)); }
+cmp -s "$tmp/unparseable.fixture" "$tmp/unparseable.copy" || {
+  echo "FAIL unparseable-bytes"
+  failures=$((failures + 1))
+}
 
 # Case 6: agents shape the splice cannot recognise (4-space indent) —
 # the file must be left byte-identical with exit 1, never stripped.
-cat > "$tmp/unrecognised.fixture" <<'EOF'
+cat >"$tmp/unrecognised.fixture" <<'EOF'
 {
     "$schema": "https://opencode.ai/config.json",
     "agents": {
@@ -147,6 +206,70 @@ cat > "$tmp/unrecognised.fixture" <<'EOF'
 }
 EOF
 check unrecognised "$tmp/unrecognised.fixture" '' 1
+
+# Case 7: inline // comments (#3179) — the old probe stripper removed
+# only full-line comments, so this file failed to parse and every
+# repair was silently skipped. Must repair exactly like its
+# comment-free twin.
+cat >"$tmp/inline-comments.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json", // schema URL
+  "plugins": ["opencode-plugin-x"], // v2 spelling, must rename
+  "model": "anthropic/claude-sonnet-4-5" // trailing note
+}
+EOF
+check inline-comments "$tmp/inline-comments.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","model":"anthropic/claude-sonnet-4-5","plugin":["opencode-plugin-x"]}' 0
+
+# Case 8: /* */ block comments (#3179), standalone and inline.
+cat >"$tmp/block-comments.fixture" <<'EOF'
+{
+  /* written by OpenChamber 2.x */
+  "plugins": ["opencode-plugin-x", /* inline block */ "opencode-plugin-y"]
+}
+EOF
+check block-comments "$tmp/block-comments.fixture" \
+  '{"plugin":["opencode-plugin-x","opencode-plugin-y"]}' 0
+
+# Case 9: string lookalikes (#3179) — comment markers and ,} / ,]
+# sequences inside string values are data and must survive verbatim,
+# while a real trailing comma is still tolerated.
+cat >"$tmp/string-lookalikes.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-plugin-x"],
+  "note": "docs at https://example.com/a//b, markers /* not a comment */ and ,} ,] stay",
+  "list": [1, 2,]
+}
+EOF
+check string-lookalikes "$tmp/string-lookalikes.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","list":[1,2],"note":"docs at https://example.com/a//b, markers /* not a comment */ and ,} ,] stay","plugin":["opencode-plugin-x"]}' 0
+
+# Case 10: unterminated block comment (PR #4312 review) — the stripper
+# used to drop everything after the open /* and then repair and write
+# the file anyway, leaving a still-invalid config behind. An
+# unterminated comment is unparseable: leave the file byte-identical.
+cat >"$tmp/unterminated-comment.fixture" <<'EOF'
+{
+  "plugins": ["opencode-plugin-x"]
+}
+/* trailing note that never closes
+EOF
+check unterminated-comment "$tmp/unterminated-comment.fixture" '__UNPARSEABLE__' 0
+
+# Case 11: "plugins": inside comments before the live key (PR #4312
+# review) — the raw-text rename used to select the comment text first,
+# leaving the live key unrepaired and the run failed. The live key is
+# the one renamed; comments are preserved.
+cat >"$tmp/comment-plugins-key.fixture" <<'EOF'
+{
+  /* v2 spelling was "plugins": ["old"] — comment, do not touch */
+  // likewise "plugins": in a line comment is not a key
+  "plugins": ["opencode-plugin-x"]
+}
+EOF
+check comment-plugins-key "$tmp/comment-plugins-key.fixture" \
+  '{"plugin":["opencode-plugin-x"]}' 0
 
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"

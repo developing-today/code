@@ -39,7 +39,7 @@ import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { ChargeCandidate } from "../src/charges-match.ts";
+import { isRealCalendarDate, type ChargeCandidate } from "../src/charges-match.ts";
 
 const run = promisify(execFile);
 const PLAID_CLI = process.env.PLAID_CLI ?? "/opt/hatch/bin/plaid";
@@ -100,7 +100,7 @@ async function plaidCandidates(start: string, end: string): Promise<ChargeCandid
     if (t.pending || !(t.amount > 0)) continue;
     if (EXCLUDED_CATEGORIES.has(t.category?.[0] ?? "")) continue;
     const merchant = (t.merchant_name ?? t.name ?? "").trim();
-    if (!merchant || !/^\d{4}-\d{2}-\d{2}$/.test(t.date)) continue;
+    if (!merchant || !isRealCalendarDate(t.date)) continue;
     const method = methodLabel(accounts.get(t.account_id));
     out.push({ source: "plaid", at: t.date, merchant, amountUsd: t.amount, ...(method ? { method } : {}) });
   }
@@ -182,19 +182,54 @@ export function isNotChargeSubject(subject: string): boolean {
  * and the wrong amount then defeated cross-source dedupe); any $
  * amount in the body is the last resort. */
 export function amountFromBody(text: string): string | undefined {
-  const paid =
-    /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
-    // Verb evidence ("You were charged $20.00", "Paid $20.00") is explicit
-    // payment confirmation too — it must win over a trailing due line
-    // (#3120, Codex P2 on PR #3193).
-    /\b(?:charged|paid)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
-    /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1];
+  const explicitPaid = /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(
+    text,
+  )?.[1];
+  if (explicitPaid !== undefined) return explicitPaid;
+
+  // Verb evidence ("You were charged $20.00", "Paid $20.00") is explicit
+  // payment confirmation too — it must win over a trailing due line
+  // (#3120, Codex P2 on PR #3193). Ignore future/negated evidence, but keep
+  // looking: a later, valid charge in the same body still counts.
+  let verbPaid: string | undefined;
+  let rejectedVerbEvidence = false;
+  for (const match of text.matchAll(/\b(?:charged|paid)[:\s]*\$([\d,]+\.\d{2})/gi)) {
+    const verbStart = match.index ?? 0;
+    let clauseStart = -1;
+    for (const boundary of [".", "!", "?", ";", "\n"]) {
+      clauseStart = Math.max(clauseStart, text.lastIndexOf(boundary, verbStart - 1));
+    }
+    const beforeVerb = text.slice(clauseStart + 1, verbStart);
+    const futureOrNegated =
+      /\b(?:will|shall|must|should|would|could|might|may|can)\b(?:[\s,]+(?:not|never|be|been|being|have|has|had|do|does|did|ever|still|also|certainly|probably|possibly|eventually|to)){0,5}\s*$/i.test(
+        beforeVerb,
+      ) ||
+      /\bgoing\s+to(?:\s+be)?\s*$/i.test(beforeVerb) ||
+      /\bto\s+be\s*$/i.test(beforeVerb) ||
+      /\b(?:not|never)\b(?:[\s,]+(?:be|been|being|was|were|is|are|am|has|have|had|do|does|did|get|got|ever|yet|still|actually|really|necessarily|previously|fully|in\s+fact)){0,4}\s*$/i.test(
+        beforeVerb,
+      ) ||
+      /\b[a-z]+n['’]t\b(?:[\s,]+(?:be|been|being|get|got|ever|yet|still|actually|really|possibly|necessarily)){0,3}\s*$/i.test(
+        beforeVerb,
+      );
+    if (futureOrNegated) {
+      rejectedVerbEvidence = true;
+      continue;
+    }
+    verbPaid = match[1];
+    break;
+  }
+
+  const paid = verbPaid ?? /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1];
   if (paid !== undefined) return paid;
   // #3120: due language is not payment evidence. An invoice body whose
   // only amount is an amount/balance DUE (no paid/charged/total label
   // above) must not fall through to the bare-amount fallback and become
   // a charge candidate.
   if (/amount due|balance due|total due|payment due/i.test(text)) return undefined;
+  // Do not let the bare-amount fallback rediscover an amount from a
+  // future/negated verb match that was rejected above.
+  if (rejectedVerbEvidence) return undefined;
   return AMOUNT_RE.exec(text)?.[1];
 }
 
@@ -234,7 +269,7 @@ async function gmailCandidates(
       continue;
     }
     const at = gmailMessageDay(m);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) {
+    if (!isRealCalendarDate(at)) {
       skipped++;
       continue;
     }

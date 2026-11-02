@@ -82,14 +82,13 @@
     "fff-worktree": {
       "command": "/home/user/.local/bin/fff-mcp",
       "args": ["/home/user/.local/share/opencode/worktree"]
-    }
-  },
-  "disabledMcpServers": {
+    },
     "codedb": {
-      "command": "/home/user/bin/codedb",
-      "args": ["mcp"],
+      "command": "node",
+      "args": ["/home/user/git/code/bin/codedb-bridge.mjs"],
       "env": {
-        "CODEDB_NO_TELEMETRY": "1"
+        "CODEDB_NO_TELEMETRY": "1",
+        "CODEDB_DAEMON_URL": "http://127.0.0.1:7719"
       }
     }
   },

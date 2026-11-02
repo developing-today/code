@@ -22,7 +22,7 @@ export function openDb(env: DbEnv): Client {
   return createClient({ url, authToken: env.TURSO_AUTH_TOKEN });
 }
 
-/** Run schema.sql. Idempotent — every statement is CREATE ... IF NOT EXISTS. */
+/** Run schema.sql. DDL is idempotent and data migrations use INSERT OR IGNORE. */
 export async function migrate(db: Client, schemaPath?: string): Promise<void> {
   const path = schemaPath ?? new URL("../schema.sql", import.meta.url).pathname;
   const sql = await Bun.file(path).text();
@@ -221,7 +221,8 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
             deleted = excluded.deleted,
             source_updated_at = excluded.source_updated_at,
             fetched_at = excluded.fetched_at
-          WHERE excluded.source_updated_at >= pmp_comments.source_updated_at`,
+          WHERE pmp_comments.deleted = 0
+            AND excluded.source_updated_at >= pmp_comments.source_updated_at`,
     args: [
       c.id,
       c.ref,
@@ -244,10 +245,36 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
   });
 }
 
-export async function markCommentDeleted(db: Client, id: string): Promise<void> {
+/** Persist a delete tombstone, even when the delete arrives before the first upsert. */
+export async function markCommentDeleted(db: Client, c: Omit<CommentRow, "fetched_at">): Promise<void> {
   await db.execute({
-    sql: `UPDATE pmp_comments SET deleted = 1, fetched_at = ? WHERE id = ?`,
-    args: [now(), id],
+    sql: `INSERT INTO pmp_comments (
+            id, ref, kind, author, body, created_at, updated_at, url, path,
+            line, diff_hunk, review_state, submitted_at, commit_id, deleted,
+            source_updated_at, fetched_at
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET
+            deleted = 1,
+            fetched_at = excluded.fetched_at`,
+    args: [
+      c.id,
+      c.ref,
+      c.kind,
+      c.author,
+      c.body,
+      c.created_at,
+      c.updated_at,
+      c.url,
+      c.path,
+      c.line,
+      c.diff_hunk,
+      c.review_state,
+      c.submitted_at,
+      c.commit_id,
+      1,
+      c.source_updated_at,
+      now(),
+    ],
   });
 }
 
@@ -336,7 +363,8 @@ export async function getLinks(db: Client, opts: { subject?: string; ref?: strin
 
 export async function deliveryApplied(db: Client, deliveryId: string): Promise<boolean> {
   const r = await db.execute({
-    sql: `SELECT 1 AS x FROM pmp_deliveries WHERE delivery_id = ?`,
+    sql: `SELECT 1 AS x FROM pmp_deliveries
+          WHERE delivery_id = ? AND outcome IN ('applied', 'ignored')`,
     args: [deliveryId],
   });
   return r.rows.length > 0;
@@ -353,9 +381,24 @@ export async function recordDelivery(
     detail?: string | null;
   },
 ): Promise<void> {
+  if (d.outcome === "error") {
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO pmp_delivery_errors (delivery_id, event, received_at, outcome, detail)
+            VALUES (?,?,?,'error',?)`,
+      args: [d.deliveryId, d.event, now(), d.detail ?? null],
+    });
+  }
   await db.execute({
     sql: `INSERT INTO pmp_deliveries (delivery_id, event, action, ref, received_at, outcome, detail)
-          VALUES (?,?,?,?,?,?,?)`,
+          VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(delivery_id) DO UPDATE SET
+            event = excluded.event,
+            action = excluded.action,
+            ref = excluded.ref,
+            received_at = excluded.received_at,
+            outcome = excluded.outcome,
+            detail = excluded.detail
+          WHERE pmp_deliveries.outcome NOT IN ('applied', 'ignored')`,
     args: [d.deliveryId, d.event, d.action ?? null, d.ref ?? null, now(), d.outcome, d.detail ?? null],
   });
 }

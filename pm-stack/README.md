@@ -30,6 +30,17 @@ because upstream ships only an npm package; Pad and Grist run as
 containers per the standing container rule. Grist was chosen over
 Baserow — the evaluation is in the design record.
 
+**Capability provenance:** the tables in this README are deployment
+definitions (what the stack configures), not observed runtime. The
+single per-facet matrix — live source, fallback, and deployment
+status for every aggregator facet, naming the comment projector and
+Pad honestly — is the "Capability provenance matrix" in
+[`aggregator/README.md`](aggregator/README.md), kept in step with the
+code and the NixOS module by
+`aggregator/scripts/check-provenance-matrix.ts`. One consequence
+worth stating here: the aggregator reads no Pad data — Pad is the
+planning layer only.
+
 Public address: **https://kaneo.security.cab** — a Cloudflare Tunnel
 (tunnel name `amd-6-pm-stack`, remotely managed) whose ingress maps
 that hostname to `http://localhost:5173`. The tunnel connector runs as
@@ -49,6 +60,32 @@ isolated in `deploy.sh` (two env vars) and the systemd unit paths;
 everything else is host-independent so the stack can move to the
 Kubernetes cluster later (the same values map onto a Secret + the
 upstream Helm chart's env).
+
+## GitHub Project #4 conventions
+
+The org Project **Developing Today** (#4) is the portfolio map; issues and
+their native GitHub relations remain the work record. For items in its pool:
+
+- **Project `Kind=Epic` is canonical.** The aggregator reads this field and
+  resolves `epicRef` through native sub-issue parents; it does not infer epic
+  membership from labels. The GitHub `epic` label is the maintained gate and
+  mirror: every pool item with `Kind=Epic` carries `epic`, and no other pool
+  item does. When adding a new epic, set both consistently.
+- **`meta/epic` is retired.** It has no consumer and must not be used as an
+  epic marker. Remove it rather than treating it as an alias. Keep the
+  separate `epic` label where the Project auto-add gate needs it.
+- **Hierarchy and dependencies are different edges.** Native sub-issue
+  parents establish epic membership; native `blockedBy`/`blocking` relations
+  express dependencies. Prose descriptions are not a substitute for either.
+- **The orchestrator is the Project's single writer.** Agents and the
+  dashboard do not edit Project fields directly; the aggregator reads the
+  pool through the fleet feed.
+
+This repository copy records the reconciled convention from #1265 because
+the private Project README is not readable with the fleet's current GitHub
+scope. Source/design records: [#910](https://github.com/developing-today/code/issues/910),
+[#1122](https://github.com/developing-today/code/issues/1122), and
+[#1265](https://github.com/developing-today/code/issues/1265).
 
 ## Secrets
 
@@ -269,6 +306,41 @@ cd grist
   `/apply` `UpdateColumn` (blocked by access rules) and never the
   document SQLite. Runbook: `grist/CHOICE-OPTIONS.md` (#1287).
 
+#### Reload a document after an external change
+
+Grist OSS **v1.7.21** provides the authenticated
+`POST /api/docs/{docId}/force-reload` endpoint. It closes and reopens
+the document inside the running Grist service; it does not restart the
+container. After an approved external document edit, verify the exact
+cell through the API while forcing the reload:
+
+```bash
+cd grist  # from pm-stack/
+./reload-doc.sh DOC_ID TABLE_ID ROW_ID COLUMN_ID EXPECTED_VALUE
+```
+
+The script reads `grist_api_key` from the same SOPS file and age key as
+`seed.sh`, sends the reload request, and exits non-zero if the selected
+cell does not read back with the expected text. It does not print the
+API key. For a simple API-supported text update that should be applied
+as part of the operation, append `--apply`; the script uses one
+`UpdateRecord` action, skips the write when the value is already equal,
+then force-reloads and verifies. Do not use `--apply` for schema
+changes or arbitrary actions.
+
+Before a live edit, choose a reversible, low-impact cell change and
+record its original value and restoration step. Check that no one is
+actively editing the document; Grist may reject the reload while a
+write is in progress. Inspect the aggregator's roadmap source chip or
+`/api/health` (`source.roadmap`) before, during, and after the operation:
+`live (Grist...)` means it is reading from Grist, while a
+`fixtures (...)` value explicitly signals fallback. If the roadmap
+source changes unexpectedly, stop and investigate rather than treating
+the fallback as live data. Confirm the container's `StartedAt` is
+unchanged to distinguish a document reload from a service restart.
+Direct SQLite editing is not the routine workflow; this wrapper only
+uses the Grist API.
+
 ## Day-2 operations
 
 - **Status:** `docker compose ps`, `docker compose logs -f kaneo`,
@@ -331,6 +403,7 @@ pm-stack/
 │   ├── deploy.sh
 │   ├── .env.example
 │   ├── seed.sh                # idempotent seed via the REST API
+│   ├── reload-doc.sh          # force-reload + API read-back verification
 │   └── seed/roadmap.json      # Roadmap rows
 └── ready-for-agent/           # Phase 2 dispatch layer (ready-for-agent 1.1.0)
     ├── install.sh             # pinned npm install + unit + clone helper

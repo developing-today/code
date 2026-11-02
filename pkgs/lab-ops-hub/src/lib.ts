@@ -469,6 +469,38 @@ export function uploadKey(name: string, now: number, rand: string = crypto.rando
   return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
 }
 
+// Decode the path suffix before looking up an uploaded file. Keep this
+// route-specific response logic pure so malformed keys and the 404 control
+// can be covered without constructing a Worker environment.
+export async function fileResponseForKey(
+  encodedKey: string,
+  getFile: (key: string) => Promise<{
+    body: ReadableStream<Uint8Array> | null;
+    httpMetadata?: { contentType?: string };
+  } | null>,
+): Promise<Response> {
+  let key: string;
+  try {
+    key = decodeURIComponent(encodedKey);
+  } catch {
+    return new Response(JSON.stringify({ error: "bad file key encoding" }, null, 2), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const obj = await getFile(key);
+  if (!obj) {
+    return new Response(JSON.stringify({ error: "not found in R2" }, null, 2), {
+      status: 404,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  return new Response(obj.body, {
+    headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
+  });
+}
+
 // --- HTML extraction (#569) -------------------------------------------------
 // extractHtml mirrors the container crawler's Extractor (container/app.py,
 // an html.parser.HTMLParser) so the Worker fallback in index.ts and the
@@ -484,22 +516,91 @@ export function uploadKey(name: string, now: number, rand: string = crypto.rando
 //   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
 //   both test/extractor.test.ts and test/test_extractor_parity.py.
 const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
-  copy: "©", reg: "®", trade: "™", hellip: "…", mdash: "—", ndash: "–",
-  lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", laquo: "«", raquo: "»",
-  times: "×", divide: "÷", plusmn: "±", deg: "°", middot: "·",
-  bull: "•", dagger: "†", permil: "‰", euro: "€", pound: "£", yen: "¥",
-  cent: "¢", curren: "¤", sect: "§", para: "¶", micro: "µ", sup1: "¹",
-  sup2: "²", sup3: "³", frac12: "½", frac14: "¼", frac34: "¾",
-  iexcl: "¡", iquest: "¿", szlig: "ß", agrave: "à", aacute: "á",
-  acirc: "â", atilde: "ã", auml: "ä", aring: "å", aelig: "æ",
-  ccedil: "ç", egrave: "è", eacute: "é", ecirc: "ê", euml: "ë",
-  igrave: "ì", iacute: "í", icirc: "î", iuml: "ï", ntilde: "ñ",
-  ograve: "ò", oacute: "ó", ocirc: "ô", otilde: "õ", ouml: "ö",
-  ugrave: "ù", uacute: "ú", ucirc: "û", uuml: "ü", yacute: "ý",
-  yuml: "ÿ", Agrave: "À", Aacute: "Á", Auml: "Ä", Ccedil: "Ç",
-  Egrave: "È", Eacute: "É", Euml: "Ë", Ntilde: "Ñ", Ograve: "Ò",
-  Oacute: "Ó", Ouml: "Ö", Ugrave: "Ù", Uacute: "Ú", Uuml: "Ü",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  copy: "©",
+  reg: "®",
+  trade: "™",
+  hellip: "…",
+  mdash: "—",
+  ndash: "–",
+  lsquo: "‘",
+  rsquo: "’",
+  ldquo: "“",
+  rdquo: "”",
+  laquo: "«",
+  raquo: "»",
+  times: "×",
+  divide: "÷",
+  plusmn: "±",
+  deg: "°",
+  middot: "·",
+  bull: "•",
+  dagger: "†",
+  permil: "‰",
+  euro: "€",
+  pound: "£",
+  yen: "¥",
+  cent: "¢",
+  curren: "¤",
+  sect: "§",
+  para: "¶",
+  micro: "µ",
+  sup1: "¹",
+  sup2: "²",
+  sup3: "³",
+  frac12: "½",
+  frac14: "¼",
+  frac34: "¾",
+  iexcl: "¡",
+  iquest: "¿",
+  szlig: "ß",
+  agrave: "à",
+  aacute: "á",
+  acirc: "â",
+  atilde: "ã",
+  auml: "ä",
+  aring: "å",
+  aelig: "æ",
+  ccedil: "ç",
+  egrave: "è",
+  eacute: "é",
+  ecirc: "ê",
+  euml: "ë",
+  igrave: "ì",
+  iacute: "í",
+  icirc: "î",
+  iuml: "ï",
+  ntilde: "ñ",
+  ograve: "ò",
+  oacute: "ó",
+  ocirc: "ô",
+  otilde: "õ",
+  ouml: "ö",
+  ugrave: "ù",
+  uacute: "ú",
+  ucirc: "û",
+  uuml: "ü",
+  yacute: "ý",
+  yuml: "ÿ",
+  Agrave: "À",
+  Aacute: "Á",
+  Auml: "Ä",
+  Ccedil: "Ç",
+  Egrave: "È",
+  Eacute: "É",
+  Euml: "Ë",
+  Ntilde: "Ñ",
+  Ograve: "Ò",
+  Oacute: "Ó",
+  Ouml: "Ö",
+  Ugrave: "Ù",
+  Uacute: "Ú",
+  Uuml: "Ü",
 };
 
 // HTML numeric character-reference normalization: the same remapping
@@ -507,13 +608,38 @@ const NAMED_ENTITIES: Record<string, string> = {
 // 0x80-0x9F map to their Windows-1252 characters; NUL, surrogates, and
 // out-of-range values become U+FFFD.
 const NUMERIC_REF_REMAP: Record<number, number> = {
-  0x80: 0x20ac, 0x81: 0x0081, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e,
-  0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6, 0x89: 0x2030,
-  0x8a: 0x0160, 0x8b: 0x2039, 0x8c: 0x0152, 0x8d: 0x008d, 0x8e: 0x017d,
-  0x8f: 0x008f, 0x90: 0x0090, 0x91: 0x2018, 0x92: 0x2019, 0x93: 0x201c,
-  0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014, 0x98: 0x02dc,
-  0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153, 0x9d: 0x009d,
-  0x9e: 0x017e, 0x9f: 0x0178,
+  0x80: 0x20ac,
+  0x81: 0x0081,
+  0x82: 0x201a,
+  0x83: 0x0192,
+  0x84: 0x201e,
+  0x85: 0x2026,
+  0x86: 0x2020,
+  0x87: 0x2021,
+  0x88: 0x02c6,
+  0x89: 0x2030,
+  0x8a: 0x0160,
+  0x8b: 0x2039,
+  0x8c: 0x0152,
+  0x8d: 0x008d,
+  0x8e: 0x017d,
+  0x8f: 0x008f,
+  0x90: 0x0090,
+  0x91: 0x2018,
+  0x92: 0x2019,
+  0x93: 0x201c,
+  0x94: 0x201d,
+  0x95: 0x2022,
+  0x96: 0x2013,
+  0x97: 0x2014,
+  0x98: 0x02dc,
+  0x99: 0x2122,
+  0x9a: 0x0161,
+  0x9b: 0x203a,
+  0x9c: 0x0153,
+  0x9d: 0x009d,
+  0x9e: 0x017e,
+  0x9f: 0x0178,
 };
 
 function normalizeNumericRef(code: number): number {
@@ -531,9 +657,7 @@ export function decodeHtmlEntities(data: string): string {
     // Own-property lookup only: a plain index would resolve inherited
     // Object properties (&constructor;, &toString;) to JavaScript
     // functions, where HTMLParser leaves unknown names literal.
-    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body)
-      ? NAMED_ENTITIES[body]
-      : whole;
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : whole;
   });
 }
 
@@ -664,8 +788,7 @@ export function extractHtml(html: string): { title: string; links: number; text:
       // backtracks quadratically on an incomplete end tag at EOF
       // (</p followed by a long letter run and no '>').
       const gt = html.indexOf(">", i);
-      const m =
-        gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
+      const m = gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
       if (m === null) {
         if (gt === -1 && /^<\/[a-zA-Z]/.test(html.slice(i))) {
           // Incomplete end tag at EOF: HTMLParser drops it.

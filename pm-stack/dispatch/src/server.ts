@@ -31,7 +31,8 @@ import {
   validatePayload,
 } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
-import { handleLaunchFailure } from "./launch_failure.ts";
+import { handleLaunchFailure, withCreatedSession, type LaunchFailureContext } from "./launch_failure.ts";
+import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient } from "./opencode.ts";
 
@@ -111,6 +112,8 @@ async function launchSession(
   task: TaskRow,
   issue: IssueRef | null,
   directory: string,
+  warnings: string[],
+  failureContext: LaunchFailureContext,
 ): Promise<string> {
   const session = await opencode.createSession({
     directory,
@@ -118,25 +121,27 @@ async function launchSession(
     model: req.model,
   });
   const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
-  await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
+  await withCreatedSession(session.id, failureContext, async () => {
+    await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
-  // Assign immediately: PATCH the exact row the enqueue created (the
-  // claim RPC claims the next task in a queue, not a specific one). The
-  // worker identity must exist in agent.workers first (worker_id is an
-  // FK), so register it idempotently.
-  await requireQueue().ensureWorker();
-  const now = new Date();
-  await requireQueue().patchTask(task.id, {
-    status: "claimed",
-    worker_id: "dispatch-opencode",
-    claimed_at: now.toISOString(),
-    lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
-    progress: {
-      lane: "opencode",
-      session_id: session.id,
-      issue_number: issue?.number ?? null,
-      launched_by: caller,
-    },
+    // Assign immediately: PATCH the exact row the enqueue created (the
+    // claim RPC claims the next task in a queue, not a specific one). The
+    // worker identity must exist in agent.workers first (worker_id is an
+    // FK), so register it idempotently.
+    await requireQueue().ensureWorker();
+    const now = new Date();
+    await requireQueue().patchTask(task.id, {
+      status: "claimed",
+      worker_id: "dispatch-opencode",
+      claimed_at: now.toISOString(),
+      lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
+      progress: {
+        lane: "opencode",
+        session_id: session.id,
+        issue_number: issue?.number ?? null,
+        launched_by: caller,
+      },
+    });
   });
 
   // Lane ledger: the same assignment the queue workers record after a
@@ -156,27 +161,24 @@ async function launchSession(
   }
 
   if (issue) {
-    // Post-launch annotations are best-effort: the session is already
-    // running and the task already claimed, so a GitHub failure here
-    // must not reject the launch — callers cancel the task on a
-    // rejected launch (#2901), which would orphan a live session.
-    // Noted on the task instead, like the lane-ledger failure above.
-    try {
-      await github.comment(
+    // Post-claim annotations are best-effort and individually guarded
+    // (#2660, design #2668 phase 2): the claim PATCH above is the
+    // commit point, so a GitHub failure here must not reject the
+    // launch — callers cancel the task on a rejected launch (#2901),
+    // which would orphan a live session. annotateLaunch records each
+    // failure on the task, still runs the remaining steps, and
+    // returns warnings the wait:true response surfaces.
+    warnings.push(
+      ...(await annotateLaunch(
+        github,
+        requireQueue(),
         req.repo,
         issue.number,
+        task.id,
         `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
-      );
-      await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
-    } catch (e) {
-      try {
-        await requireQueue().patchTask(task.id, {
-          last_error: `launch annotation failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
-        });
-      } catch {
-        /* nothing more to do — the claim stands */
-      }
-    }
+        ["queue/claimed", "work/assigned"],
+      )),
+    );
   }
   return session.id;
 }
@@ -233,14 +235,24 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   // 3-5. Launch + assign. wait=false: answer after the enqueue and finish
   // the launch asynchronously, recording the outcome on the task row.
   if (!body.wait) {
+    const failureContext: LaunchFailureContext = { sessionId: null };
     void (async () => {
       try {
-        await launchSession(caller, body, task, issue, directory);
+        await launchSession(caller, body, task, issue, directory, warnings, failureContext);
       } catch (e) {
         // Mirror the wait:true failure path exactly (#2901): cancel the
         // task and note the failure on the issue — never leave a queued
         // task behind for a session that did not launch.
-        await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
+        await handleLaunchFailure(
+          requireQueue(),
+          github,
+          body.repo,
+          task.id,
+          issue?.number ?? null,
+          e,
+          failureContext.sessionId,
+          (sessionId) => opencode.deleteSession(sessionId),
+        );
       }
     })();
     return json(202, {
@@ -253,13 +265,23 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   }
 
   let sessionId: string;
+  const failureContext: LaunchFailureContext = { sessionId: null };
   try {
-    sessionId = await launchSession(caller, body, task, issue, directory);
+    sessionId = await launchSession(caller, body, task, issue, directory, warnings, failureContext);
   } catch (e) {
     // Never leave a queued/claimed task behind for a session that did
     // not launch: cancel it and note the failure on the issue (the
     // shared handler the wait:false path also uses, #2901).
-    const msg = await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
+    const msg = await handleLaunchFailure(
+      requireQueue(),
+      github,
+      body.repo,
+      task.id,
+      issue?.number ?? null,
+      e,
+      failureContext.sessionId,
+      (sessionId) => opencode.deleteSession(sessionId),
+    );
     return json(502, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
   }
 

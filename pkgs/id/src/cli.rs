@@ -25,6 +25,13 @@
 //!   id         Print node ID
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
+//!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   group        Groups: create, policy, add, remove, set roles, list, join
+//!   delegate     Grant a delegate a scope in a group
+//!   revoke       Revoke a delegation by its grant's event ID
+//!   doc          Documents: publish a file; list events, frontier, history
+//!   claim        Tag claims on any subject (set, clear, list, search)
+//!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
 //!
 //! # Search Filtering Flags
@@ -82,10 +89,11 @@
 //! - **Stdout output**: `-` as output path, `--stdout` flag, or `cat` command
 //! - **Renaming**: Use `source:dest` syntax for any path argument
 
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::groups::Role;
 use crate::groups::policy::Delegation;
@@ -196,6 +204,93 @@ pub struct Cli {
 /// Each variant represents a distinct operation mode for the `id` tool.
 /// Commands are organized by their primary function: storage, retrieval,
 /// search, or system operations.
+/// Names and aliases of the top-level subcommands, taken from the clap
+/// definition itself so the list can never drift from the real parser.
+fn top_level_subcommand_names() -> std::collections::HashSet<String> {
+    let command = Cli::command();
+    let mut names = std::collections::HashSet::new();
+    for sub in command.get_subcommands() {
+        names.insert(sub.get_name().to_owned());
+        names.extend(sub.get_aliases().map(str::to_owned));
+        names.extend(sub.get_visible_aliases().map(str::to_owned));
+    }
+    names
+}
+
+/// Rewrite raw argv so the space form of `--new` never swallows a
+/// subcommand as the instance name (#3144).
+///
+/// `--new` takes an optional value (`num_args = 0..=1`), so clap greedily
+/// consumes the next token: the documented `id --new serve` parsed as
+/// instance name `serve` with no subcommand, created `.iroh/serve/`, and
+/// started the REPL. When the token after a bare `--new` is a top-level
+/// subcommand name (and no subcommand has been seen yet), rewrite that
+/// `--new` to `--new=` — the empty value still means "random name", and
+/// the token is then parsed as the subcommand. Every other form is
+/// passed through untouched: bare `--new`, `--new=<name>`, `--new <name>
+/// <command>`, and a trailing `--new` after the subcommand.
+pub fn normalize_args<I, T>(args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    // Global options that take a separate value token: the token after
+    // one of these is a value even when it spells a subcommand name.
+    const VALUE_FLAGS: [&str; 5] = [
+        "--log-level",
+        "--data-dir",
+        "-d",
+        "--groups-log",
+        "--event-store",
+    ];
+    let subcommands = top_level_subcommand_names();
+    let raw: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let mut out: Vec<OsString> = Vec::with_capacity(raw.len());
+    let mut seen_subcommand = false;
+    let mut expect_value = false;
+    let mut iter = raw.into_iter().peekable();
+    // The first token is the program name; copy it verbatim.
+    if let Some(prog) = iter.next() {
+        out.push(prog);
+    }
+    while let Some(arg) = iter.next() {
+        if expect_value {
+            out.push(arg);
+            expect_value = false;
+            continue;
+        }
+        let text = arg.to_str().map(str::to_owned);
+        if !seen_subcommand && text.as_deref() == Some("--new") {
+            match iter.peek().and_then(|next| next.to_str()) {
+                Some(next) if subcommands.contains(next) => {
+                    out.push(OsString::from("--new="));
+                }
+                _ => {
+                    // The next token (if any) is the instance name; do
+                    // not mistake it for a subcommand on the next pass.
+                    out.push(arg);
+                    expect_value = true;
+                }
+            }
+            continue;
+        }
+        out.push(arg);
+        if seen_subcommand {
+            continue;
+        }
+        match text.as_deref() {
+            // After `--`, every token is a positional value.
+            Some("--") => seen_subcommand = true,
+            Some(name) if VALUE_FLAGS.contains(&name) => expect_value = true,
+            Some(name) if !name.starts_with('-') && subcommands.contains(name) => {
+                seen_subcommand = true;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Parses a result limit (`--first` / `--last` / peek `--lines`): zero is
 /// rejected with a clear error instead of silently producing an empty result
 /// or a header-only preview (#3059). Clap names the flag in its error prefix,
@@ -356,6 +451,15 @@ pub enum Command {
         /// `--web-token` when you do.
         #[arg(long, default_value = "127.0.0.1")]
         bind: std::net::IpAddr,
+        /// Web listener to bind, as `IP:PORT` (repeatable; #2145).
+        ///
+        /// Each occurrence adds one listener; the set replaces any
+        /// `[web_bindings]` entries from `defaults.conf` entirely.
+        /// Combining `--web-listen` with an explicitly-set `--bind` or
+        /// `--port` is a startup error naming the conflict. IPv6
+        /// addresses use the bracket form, e.g. `[::1]:3001`.
+        #[arg(long = "web-listen", value_name = "IP:PORT")]
+        web_listen: Vec<SocketAddr>,
         /// Require this token to use the web interface.
         ///
         /// Open `http://host:port/?token=<TOKEN>` once; the browser keeps a
@@ -449,6 +553,13 @@ pub enum Command {
             conflicts_with = "world_module"
         )]
         world_source_only: bool,
+        /// Ed25519 module-signing public key trusted by this server (hex; repeatable).
+        #[arg(
+            long = "world-module-trust-key",
+            value_name = "HEX",
+            requires = "world"
+        )]
+        world_module_trust_keys: Vec<String>,
         /// Execution bounds for world programs.
         #[command(flatten)]
         world_runtime: WorldRuntimeArgs,
@@ -1270,7 +1381,7 @@ pub enum Command {
         ///
         /// 0 = no crawl, 1 = query direct peers (default),
         /// N = recursively query up to N levels deep.
-        #[arg(long, default_value = "1")]
+        #[arg(long, default_value = "1", allow_negative_numbers = true, value_parser = clap::value_parser!(i32).range(0..))]
         depth: i32,
         /// Maximum total peers to discover.
         ///
@@ -1440,7 +1551,7 @@ pub enum GroupCommand {
     },
     /// List the groups in the log, one line each.
     List,
-    /// Join a group with an invitation: a pasted ticket, or an `id:join?` link. Not wired yet.
+    /// Unavailable: group admission and network joining are not implemented yet.
     Join {
         /// The pasted ticket or link.
         invite: String,
@@ -1592,8 +1703,12 @@ pub enum WorldCommand {
         /// Store the replica on disk so it survives between runs.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
-        /// Give up after this many seconds without a completed sync.
-        #[arg(long, default_value_t = 30)]
+        /// Give up after this many seconds without a completed sync (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         timeout_secs: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -1641,6 +1756,9 @@ pub enum WorldCommand {
         /// `/quit`, ...) instead of sending every line as chat.
         #[arg(long)]
         command_mode: bool,
+        /// Emit local command responses as JSONL records on stdout.
+        #[arg(long, requires = "command_mode")]
+        json: bool,
         /// How to reach the host: `iroh` (NODE is a node ID) or `ssh` (NODE
         /// is `[user@]host[:port]` of the host's world SSH server, and the
         /// frames travel over an SSH exec channel, for networks and jump
@@ -1928,8 +2046,12 @@ pub enum WorldCommand {
         /// Guest capability from `id world invite`.
         #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
         capability: String,
-        /// Stop after this many seconds.
-        #[arg(long, default_value_t = 5)]
+        /// Stop after this many seconds (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 5,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         seconds: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -2373,11 +2495,149 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
+    fn test_command_lists_cover_all_clap_subcommands() {
+        let cmd = Cli::command();
+        let names: Vec<&str> = cmd
+            .get_subcommands()
+            .map(|s| s.get_name())
+            .filter(|n| *n != "help")
+            .collect();
+        assert!(names.len() >= 20, "expected the full command set, got {names:?}");
+
+        // The module-doc command list at the top of this file.
+        let source = include_str!("cli.rs");
+        let doc_list = source
+            .split("Commands:")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("module-doc command list present");
+        for name in &names {
+            assert!(
+                doc_list.lines().any(|line| line
+                    .trim_start_matches('/')
+                    .trim_start_matches('!')
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    == Some(name)),
+                "module-doc command list in cli.rs omits `{name}`"
+            );
+        }
+
+        // The user-facing CLI Commands table in the README.
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+        let table = readme
+            .split("## CLI Commands")
+            .nth(1)
+            .and_then(|rest| rest.split("### ").next())
+            .expect("README CLI Commands table present");
+        for name in &names {
+            let cell = format!("| `{name}`");
+            assert!(
+                table.lines().any(|line| line.starts_with(&cell)),
+                "README CLI Commands table omits `{name}`"
+            );
+        }
+    }
+
+    #[test]
     fn test_cli_parse_no_args() {
         let cli = Cli::parse_from(["id"]);
         assert!(cli.command.is_none());
         assert!(!cli.debug);
         assert!(cli.log_level.is_none());
+    }
+
+    /// Parse via `normalize_args` on a big-stack thread: building this
+    /// CLI's clap tree is deep enough to overflow the default test
+    /// thread stack (the #3059 parse tests below spawn a thread for the
+    /// same reason).
+    fn parse_normalized(args: &[&str]) -> Cli {
+        let owned: Vec<OsString> = args.iter().map(OsString::from).collect();
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || Cli::parse_from(normalize_args(owned)))
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_cli_parse_new_space_form_subcommand_not_swallowed() {
+        // #3144: `id --new serve` must run serve under a random instance
+        // name, not create an instance literally named "serve".
+        let cli = parse_normalized(&["id", "--new", "serve"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+
+        let cli = parse_normalized(&["id", "--new", "id"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::Id { .. })));
+
+        let cli = parse_normalized(&["id", "--new", "list"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_new_forms_preserved() {
+        // Named space form: the name is kept and the subcommand still runs.
+        let cli = parse_normalized(&["id", "--new", "my-dev", "list"]);
+        assert_eq!(cli.new.as_deref(), Some("my-dev"));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+
+        // Bare --new: random name, no subcommand.
+        let cli = parse_normalized(&["id", "--new"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(cli.command.is_none());
+
+        // Equals form is passed through untouched, even when the name
+        // spells a subcommand.
+        let cli = parse_normalized(&["id", "--new=serve", "list"]);
+        assert_eq!(cli.new.as_deref(), Some("serve"));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+
+        // Trailing --new after the subcommand keeps working.
+        let cli = parse_normalized(&["id", "list", "--new"]);
+        assert_eq!(cli.new.as_deref(), Some(""));
+        assert!(matches!(cli.command, Some(Command::List { .. })));
+    }
+
+    #[test]
+    fn test_normalize_args_rewrites_only_the_ambiguous_form() {
+        // Same big-stack thread as parse_normalized: collecting the
+        // subcommand names builds the clap tree.
+        let (rewritten, flag_value) = std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .spawn(|| {
+                (
+                    normalize_args(["id", "--new", "serve"]),
+                    normalize_args(["id", "--log-level", "list", "--new", "id"]),
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            rewritten,
+            vec![
+                OsString::from("id"),
+                OsString::from("--new="),
+                OsString::from("serve")
+            ]
+        );
+        // A global flag value that spells a subcommand is not a subcommand.
+        assert_eq!(
+            flag_value,
+            vec![
+                OsString::from("id"),
+                OsString::from("--log-level"),
+                OsString::from("list"),
+                OsString::from("--new="),
+                OsString::from("id")
+            ]
+        );
     }
 
     #[test]
@@ -2933,6 +3193,30 @@ mod tests {
                 assert_eq!(max_peers, 50);
             }
             _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_peers_depth_rejects_negative_and_preserves_non_negative_values() {
+        for argv in [
+            vec!["id", "peers", "--depth=-1"],
+            vec!["id", "peers", "--depth", "-1"],
+        ] {
+            let err = Cli::try_parse_from(argv).unwrap_err();
+            assert!(
+                err.to_string().contains("depth"),
+                "error should name depth: {err}"
+            );
+        }
+
+        for depth in ["0", "1", "2"] {
+            let cli = Cli::try_parse_from(["id", "peers", "--depth", depth]).unwrap();
+            match cli.command {
+                Some(Command::Peers { depth: parsed, .. }) => {
+                    assert_eq!(parsed, depth.parse::<i32>().unwrap());
+                }
+                _ => panic!("Expected Peers command"),
+            }
         }
     }
 
@@ -3895,6 +4179,34 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_serve_web_listen_repeatable() {
+        // #2145: --web-listen is repeatable and parses each IP:PORT.
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--web",
+            "--web-listen",
+            "127.0.0.1:4001",
+            "--web-listen",
+            "[::1]:4002",
+        ]);
+        match cli.command {
+            Some(Command::Serve { web_listen, .. }) => {
+                assert_eq!(
+                    web_listen,
+                    vec![
+                        "127.0.0.1:4001".parse::<SocketAddr>().unwrap(),
+                        "[::1]:4002".parse::<SocketAddr>().unwrap(),
+                    ]
+                );
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        // A malformed listener is a parse error, not a silent skip.
+        assert!(Cli::try_parse_from(["id", "serve", "--web-listen", "nope"]).is_err());
+    }
+
+    #[test]
     fn test_cli_parse_serve_security_flags() {
         let cli = Cli::parse_from([
             "id",
@@ -3977,6 +4289,34 @@ mod tests {
                 "trusted.wasm",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn module_trust_keys_are_repeatable_and_require_world_mode() {
+        let first = "11".repeat(32);
+        let second = "22".repeat(32);
+        let parsed = Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "admin",
+            "--world-module-trust-key",
+            &first,
+            "--world-module-trust-key",
+            &second,
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Serve {
+                world_module_trust_keys,
+                ..
+            }) => assert_eq!(world_module_trust_keys, vec![first.clone(), second]),
+            _ => panic!("Expected Serve command"),
+        }
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world-module-trust-key", &first]).is_err()
         );
     }
 
@@ -4245,6 +4585,24 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
         ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "join",
+            &node,
+            "--capability",
+            "c",
+            "--command-mode",
+            "--json",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { json: true, .. })
+        ));
+        assert!(
+            Cli::try_parse_from(["id", "world", "join", &node, "--capability", "c", "--json",])
+                .is_err()
+        );
     }
 
     #[test]
@@ -4394,6 +4752,67 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 9, .. })
         ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_timeout_ranges() {
+        let node = "a".repeat(64);
+        let logs_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "logs".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--seconds".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+        let mirror_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "mirror".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--timeout-secs".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+
+        let logs = Cli::parse_from(["id", "world", "logs", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            logs.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 5, .. })
+        ));
+        let mirror = Cli::parse_from(["id", "world", "mirror", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            mirror.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs: 30, .. })
+        ));
+
+        for seconds in ["0", "86400"] {
+            let logs = Cli::try_parse_from(logs_args(seconds)).unwrap();
+            let mirror = Cli::try_parse_from(mirror_args(seconds)).unwrap();
+            let expected = seconds.parse::<u64>().unwrap();
+            assert!(matches!(
+                logs.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds, .. } if seconds == expected)
+            ));
+            assert!(matches!(
+                mirror.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs, .. } if timeout_secs == expected)
+            ));
+        }
+
+        for seconds in ["86401", "18446744073709551615"] {
+            let logs_error = Cli::try_parse_from(logs_args(seconds)).unwrap_err();
+            assert!(logs_error.to_string().contains("--seconds"));
+            let mirror_error = Cli::try_parse_from(mirror_args(seconds)).unwrap_err();
+            assert!(mirror_error.to_string().contains("--timeout-secs"));
+        }
     }
 
     #[test]

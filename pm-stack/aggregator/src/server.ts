@@ -42,7 +42,7 @@ import {
   unavailableRoadmapReconciliation,
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
-import type { DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -75,6 +75,9 @@ import {
   renderProgram,
   renderProgramProject,
   renderQuota,
+  renderQueue,
+  renderQueueBody,
+  renderQueueShell,
   buildRoadmapDrill,
   renderRoadmap,
   renderServiceDetail,
@@ -84,6 +87,7 @@ import {
   renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
+import { buildBriefs } from "./brief.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
@@ -96,10 +100,12 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts } from "./render.ts";
+import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
+import { buildQueueView } from "./queue-view.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -145,6 +151,11 @@ function pickSource(): Source {
 }
 
 const source = pickSource();
+
+// #1279: prefer the latest-comment-per-ref read so a busy batch cannot
+// truncate an item's most recent activity out of its brief.
+const briefCommentsFor = async (refs: RefKey[]): Promise<Comment[]> =>
+  (source.latestComments ? source.latestComments(refs) : source.comments(refs)).catch(() => []);
 
 /**
  * #1267: the live source populates its provenance strings lazily, one
@@ -265,12 +276,6 @@ async function discussTitle(objectRef: string): Promise<{ title: string; githubR
   return { title: `Comments — ${objectRef}`, githubRefs: [] };
 }
 
-async function readJsonBody(req: Request): Promise<unknown> {
-  const text = await req.text();
-  if (text.length > 100_000) throw new Error("body too large");
-  return JSON.parse(text);
-}
-
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
@@ -385,7 +390,7 @@ async function roadmapContext() {
   // available — an unavailable source must not render as "no epic yet".
   const drill =
     reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
-  return { rows, items, reconciliation, drill };
+  return { rows, items, pool: poolResult.pool, reconciliation, drill };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -428,7 +433,12 @@ async function attentionContext() {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
-  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
+  return {
+    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
+    coverage,
+    orchestration: summary,
+    diagnosis,
+  };
 }
 
 /**
@@ -453,16 +463,25 @@ function sseResponse(body: string): Response {
 /** The render inputs the board page and its fragment share. */
 async function boardRender() {
   const { board, items } = await boardContext();
-  const [pool, formOpts, actionsByObject, counts] = await Promise.all([
+  const [pool, orchestration, formOpts, actionsByObject, counts] = await Promise.all([
     source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.countsDetailed(),
   ]);
+  const poolByRef = new Map(pool.map((p) => [p.ref, p]));
+  const refs = [
+    ...new Set(board.flatMap((item) => item.links.map((link) => link.ref)).filter((ref) => poolByRef.has(ref))),
+  ];
+  const comments = refs.length ? await briefCommentsFor(refs) : [];
+  const orchestrationStatus = source.diagnostics?.().orchestration.state;
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus });
   const act = {
     actionsByObject,
-    poolByRef: new Map(pool.map((p) => [p.ref, p])),
+    poolByRef,
     identities: formOpts.identities,
+    briefs,
   };
   return { board, items, counts, act };
 }
@@ -471,8 +490,9 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage } = await attentionContext();
-  const [formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
+  const { view, coverage, orchestration, diagnosis } = await attentionContext();
+  const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
+    source.projects().catch(() => []),
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.byObject(),
@@ -480,6 +500,11 @@ async function attentionRender() {
     actionsStore.all(),
   ]);
   const order = effectiveNeedsOrder(allActions);
+  const refs = [
+    ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
+  ];
+  const comments = refs.length ? await briefCommentsFor(refs) : [];
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state });
   const act = {
     actionsByObject,
     identities: formOpts.identities,
@@ -488,36 +513,56 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act };
+  return { view, coverage, counts, act, briefs };
+}
+
+async function todaySignals() {
+  const [health, quotaResult] = await Promise.all([
+    healthContext(false).catch(() => null),
+    source
+      .quota()
+      .then((quota) => ({ quota, unavailable: false }))
+      .catch(() => ({ quota: emptyQuotaView(), unavailable: true })),
+  ]);
+  return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
 }
 
 async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, quota, summary] = await Promise.all([
+  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
-    source.quota().catch(() => emptyQuotaView()),
+    todaySignals(),
     source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
+  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
+}
+
+async function queueContext() {
+  const [{ board, items }, pool, orchestration] = await Promise.all([
+    boardContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.orchestration().catch(() => null),
+  ]);
+  return buildQueueView({ board, pool, items, orchestration });
 }
 
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
 async function overviewContext() {
-  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
+  const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.quota().catch(() => emptyQuotaView()),
     healthContext(),
     boardContext(),
+    source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, actionsByObject };
+  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
 }
-
 
 // -- Saved views (#1276) -------------------------------------------------
 // A request names a view three ways, in precedence order: explicit
@@ -829,7 +874,11 @@ async function handler(req: Request): Promise<Response> {
           continue;
         }
         if (parsed.value.kind === "triage" && section) {
-          const problem = checkActionAgainstItem(parsed.value, findTierItem(section, parsed.value.objectRef), Date.now());
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
           if (problem) {
             results.push({ index, objectRef, ok: false, error: problem });
             continue;
@@ -924,7 +973,11 @@ async function handler(req: Request): Promise<Response> {
     const { board, items, counts, act } = await boardRender();
     const resolved = await resolveView(url);
     if (!resolved) {
-      return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
+      return html(
+        renderBoard(board, items, prov(), counts, provDetail(), act, {
+          showAllDone: url.searchParams.get("done") === "all",
+        }),
+      );
     }
     const poolByRef = act.poolByRef;
     const keptBoard = board.filter((b) =>
@@ -932,8 +985,16 @@ async function handler(req: Request): Promise<Response> {
     );
     const keptRefs = new Set<string>();
     for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map([...items].filter(([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters)));
-    return html(renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
+    const keptItems = new Map(
+      [...items].filter(
+        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
+      ),
+    );
+    return html(
+      renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
+        showAllDone: url.searchParams.get("done") === "all",
+      }),
+    );
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
@@ -943,19 +1004,39 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
-      return html(renderTodayShell(prov(), provDetail()));
+      const signals = await todaySignals();
+      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
-    const { today, view, coverage, quota } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
+    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable));
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
+    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
+  if (path === "/queue") {
+    if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
+    return html(renderQueue(await queueContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/queue") {
+    const view = await queueContext();
+    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    return sseResponse(ssePatch("#queue-main", wrapped));
+  }
+
   if (path === "/roadmap") {
-    const { rows, items, reconciliation, drill } = await roadmapContext();
+    const { rows, items, pool, reconciliation, drill } = await roadmapContext();
+    const orchestration = await source.orchestration().catch(() => null);
+    const orchestrationStatus = source.diagnostics?.().orchestration.state;
+    const poolRefs = new Set(pool.map((item) => item.ref));
+    const briefRefs = [...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref))))];
+    const briefs = buildBriefs(pool, {
+      comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
+      orchestration,
+      orchestrationStatus,
+    });
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -968,17 +1049,36 @@ async function handler(req: Request): Promise<Response> {
     const viewQuery = viewParams.toString();
     const annotationsFor = async (rs: typeof rows) =>
       new Map(
-        await Promise.all(rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
+        await Promise.all(
+          rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const),
+        ),
       );
     if (!resolved) {
       return html(
-        renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(rows), viewQuery),
+        renderRoadmap(
+          rows,
+          items,
+          prov(),
+          grain,
+          await commentsStore.countsDetailed(),
+          provDetail(),
+          reconciliation,
+          drill,
+          await annotationsFor(rows),
+          viewQuery,
+          briefs,
+        ),
       );
     }
-    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     const keptRows = rows.filter((r) =>
-      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
+      linkedLike(
+        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
+        r.links,
+        items,
+        poolByRef,
+        resolved.filters,
+      ),
     );
     // Codex P2, PR #4013: items linked from a KEPT row keep their
     // metadata (links/badges in roadmapCard) even when they fail the
@@ -991,7 +1091,19 @@ async function handler(req: Request): Promise<Response> {
       ),
     );
     return html(
-      renderRoadmap(keptRows, keptItems, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, await annotationsFor(keptRows), viewQuery),
+      renderRoadmap(
+        keptRows,
+        keptItems,
+        prov(),
+        grain,
+        await commentsStore.countsDetailed(),
+        provDetail(),
+        reconciliation,
+        drill,
+        await annotationsFor(keptRows),
+        viewQuery,
+        briefs,
+      ),
     );
   }
 
@@ -1020,14 +1132,14 @@ async function handler(req: Request): Promise<Response> {
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail()));
     }
-    const { view, coverage, counts, act } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act));
+    const { view, coverage, counts, act, briefs } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act);
+    const { view, coverage, counts, act, briefs } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act, briefs);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
   if (path === "/assets/datastar.js") {
@@ -1049,7 +1161,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov()));
+    return html(renderAa(await source.aa(), prov(), provDetail()));
   }
   if (path === "/api/aa.json") {
     const section = await source.aa();
@@ -1105,6 +1217,9 @@ async function handler(req: Request): Promise<Response> {
     const target = qs ? `/program?${qs}#projects-pool` : "/program#projects-pool";
     return new Response(null, { status: 302, headers: { Location: target } });
   }
+  // #1279: briefs need the latest comment per item, guaranteed per ref —
+  // the bulk comments() read can truncate an item's latest comment away
+  // in a busy batch, so prefer the source's per-ref latest read.
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
@@ -1112,11 +1227,23 @@ async function handler(req: Request): Promise<Response> {
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    // #1279: the JSON twin of the brief panels on the pool cards — the
+    // identical brief objects, built with comment activity folded in.
+    const [briefComments, orchestration] = await Promise.all([
+      pool.length ? briefCommentsFor(pool.map((p) => p.ref)) : Promise.resolve([]),
+      source.orchestration().catch(() => null),
+    ]);
+    const orchestrationStatus = source.diagnostics?.().orchestration.state;
+    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus });
     const resolved = await resolveView(url);
     const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
+    const outRefs = new Set(outPool.map((item) => item.ref));
     return json({
       project: "developing-today#4",
       items: outPool,
+      // Build with the full pool so a filtered-out blocker can still have
+      // its state resolved, but only expose briefs for the visible items.
+      briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -1151,6 +1278,14 @@ async function handler(req: Request): Promise<Response> {
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    // #1279: the pool cards on /program carry the same comment-backed
+    // briefs as the JSON twin — building them here, not the comment-less
+    // fallback projectsBodyHtml would derive on its own.
+    const briefs = buildBriefs(pool, {
+      comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
+      orchestration,
+      orchestrationStatus: source.diagnostics?.().orchestration.state,
+    });
     return html(
       renderProgram(data, items, prov(), provDetail(), {
         pool: viewPool,
@@ -1159,6 +1294,7 @@ async function handler(req: Request): Promise<Response> {
         coverage,
         actionsByObject,
         identities: formOpts.identities,
+        briefs,
       }),
     );
   }
@@ -1234,7 +1370,9 @@ async function handler(req: Request): Promise<Response> {
     const keptBoard = board.filter((b) =>
       linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
     );
-    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
+    const keptItems = [...items.values()].filter((it) =>
+      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
+    );
     return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
   }
   if (path === "/api/roadmap.json") {
@@ -1254,9 +1392,17 @@ async function handler(req: Request): Promise<Response> {
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     const keptRows = rows.filter((r) =>
-      linkedLike({ ref: r.subject, area: r.area, horizon: r.horizon, state: r.status }, r.links, items, poolByRef, resolved.filters),
+      linkedLike(
+        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
+        r.links,
+        items,
+        poolByRef,
+        resolved.filters,
+      ),
     );
-    const keptItems = [...items.values()].filter((it) => itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters));
+    const keptItems = [...items.values()].filter((it) =>
+      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
+    );
     const annotatedKeptRows = await Promise.all(
       keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
@@ -1313,6 +1459,9 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/today.json") {
     const { today } = await todayContext();
     return json(today);
+  }
+  if (path === "/api/queue.json") {
+    return json(await queueContext());
   }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
@@ -1507,17 +1656,25 @@ async function handler(req: Request): Promise<Response> {
     if (subject) {
       const title = subject.title;
       const links = subject.links;
-      const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records, pool, allActions, roadmapAnnotations] = await Promise.all([
-        source.items(refs).catch(() => new Map()),
-        source.comments(refs).catch(() => []),
-        commentsStore.all(),
-        source.registry().catch(() => []),
-        source.projects().catch(() => []),
-        actionsStore.all(),
-        roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
-      ]);
+      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] =
+        await Promise.all([
+          source.items(refs).catch(() => new Map()),
+          source.comments(refs).catch(() => []),
+          commentsStore.all(),
+          source.registry().catch(() => []),
+          source.projects().catch(() => []),
+          source.orchestration().catch(() => null),
+          actionsStore.all(),
+          roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
+        ]);
+      const briefRefs = refs.filter((ref) => pool.some((item) => item.ref === ref));
+      const briefComments = briefRefs.length ? await briefCommentsFor(briefRefs) : [];
+      const briefs = buildBriefs(pool, {
+        comments: briefComments,
+        orchestration,
+        orchestrationStatus: source.diagnostics?.().orchestration.state,
+      });
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
       const wanted = new Set([id, ...refs.map((r) => ghObjectRef(r))]);
@@ -1545,10 +1702,14 @@ async function handler(req: Request): Promise<Response> {
             }
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
+        briefs,
       };
-      return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
+      return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
-    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
+    return html(
+      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`,
+      404,
+    );
   }
 
   return notFoundResponse(path);
@@ -1597,6 +1758,27 @@ const servers = cfg.hosts.map((hostname) =>
 
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
+}
+
+// Collector feeds are replaced on a ~5-minute cadence. Land their
+// snapshot records from a server-owned writer tick rather than from
+// usage() so GET /quota and /quota/service/* never require store writes.
+const SNAPSHOT_INGEST_INTERVAL_MS = 5 * 60_000;
+if (source.ingestSnapshots) {
+  let snapshotIngestRunning = false;
+  const ingestSnapshots = async (): Promise<void> => {
+    if (snapshotIngestRunning) return;
+    snapshotIngestRunning = true;
+    try {
+      await source.ingestSnapshots?.();
+    } catch {
+      // Feed and store failures are retried on the next tick; reads stay up.
+    } finally {
+      snapshotIngestRunning = false;
+    }
+  };
+  void ingestSnapshots(); // recover the latest feed immediately on startup
+  setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation

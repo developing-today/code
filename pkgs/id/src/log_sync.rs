@@ -701,6 +701,7 @@ mod tests {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -1205,6 +1206,7 @@ mod tests {
             document: None,
             removes: None,
             note: None,
+            link: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
