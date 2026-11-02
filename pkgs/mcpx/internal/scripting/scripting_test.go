@@ -135,10 +135,21 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after class expression", "const n = class {} / 2;\n"},
 		{"division after named class expression", "const n = class Foo extends Bar {} / 2;\n"},
 		{"regex after function declaration", "function f() {}\n/a+/.test(\"aa\");\n"},
+		{"regex after declaration following async identifier in control header", "const async = true; if (async) function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following async identifier and comment in control header", "const async = true; if (async) /* c */ function f() {} /[}]/.test(\"}\");\n"},
 		{"division after non-breaking space", "const ratio = 4\u00a0/ 2;\n"},
 		{"division after vertical tab and form feed", "const ratio = 4\v\f/ 2;\n"},
 		{"division after BOM whitespace", "const ratio = 4\ufeff/ 2;\n"},
 		{"division after line separator", "const ratio = 4\u2028/ 2;\n"},
+		{"line separator inside double quoted string", "const s = \"a\u2028b\";\n"},
+		{"paragraph separator inside single quoted string", "const s = 'a\u2029b';\n"},
+		{"string line continuation backslash CR", "const s = \"a\\\rb\";\n"},
+		{"string line continuation backslash CRLF", "const s = \"a\\\r\nb\";\n"},
+		{"string line continuation backslash line separator", "const s = \"a\\\u2028b\";\n"},
+		{"division after async function assignment in heritage callback", "class C extends {C:()=>{const x=async function(){} /2;},Base:Object}.Base {}\n"},
+		{"division after named async function assignment in heritage callback", "class C extends {C:()=>{const x=async function named(){} /2;},Base:Object}.Base {}\n"},
+		{"division after async generator assignment in heritage callback", "class C extends {C:()=>{const x=async function*(){} /2;},Base:Object}.Base {}\n"},
+		{"division after async function assignment", "const x = async function(){} / 2;\n"},
 		{"regex after for-of keyword", "for (const match of /a+/.exec(\"aa\")) {}\n"},
 		{"regex after in keyword operator", "const ok = \"source\" in /a+/;\n"},
 		{"division after void object literal", "const q = void {} / 2;\n"},
@@ -189,6 +200,9 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"regex as class heritage expression", "class C extends /a+/.constructor {}\n"},
 		{"regex as class expression heritage", "const C = class extends /a+/.constructor {};\n"},
 		{"division after spread object operand", "const obj = {...{} / 2};\n"},
+		{"division after spread string operand member new", "const a = {...\"x\".new / 2};\n"},
+		{"division after spread template operand member new", "const a = {...`x`.new / 2};\n"},
+		{"division after spread regex operand member new", "const a = {.../x/.new / 2};\n"},
 		{"regex after side-effect import newline", "import \"node:fs\"\n/a+/.test(\"aa\");\n"},
 		{"regex after named import newline", "import { readFile } from \"node:fs\"\n/a+/.test(\"aa\");\n"},
 		{"regex after re-export newline", "export { readFile } from \"node:fs\"\n/a+/.test(\"aa\");\n"},
@@ -202,10 +216,110 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after braced unicode escape identifier", "const \\u{61} = 4; const q = \\u{61} / 2;\n"},
 		{"division after hex unicode escape identifier", "const \\u0061 = 4; const q = \\u0061 / 2;\n"},
 		{"division after TypeScript instantiation expression", "function f<T>() { return 4; } const q = f<number> / 2;\n"},
+		{"division after TypeScript instantiation on tagged template", "const q = tag`x`<number> / 2;\n"},
+		{"division after TypeScript instantiation on tagged template with comment", "const q = tag`x` /* c */ <number> / 2;\n"},
 		{"division after TypeScript instantiation call", "function f<T>() { return 4; } const q = f<number>() / 2;\n"},
+		{"division after TypeScript instantiation on digit-ending identifier", "const q = f1<number> / 2;\n"},
+		{"division after TypeScript instantiation on digit-ending member", "const q = obj.f1<number> / 2;\n"},
+		{"division after TypeScript instantiation on escaped digit-ending identifier", "const q = f\\u{61}1<number> / 2;\n"},
+		{"division after TypeScript instantiation on escaped digit-ending member", "const q = obj.f\\u{61}1<number> / 2;\n"},
+		{"relational comparison after numeric literal stays relational", "const ok = 1 < 2; const q = 4 / 2;\n"},
 		{"division after private keyword-named member", "class C { #return=4; f(){ return this.#return / 2; } }\n"},
 		{"division after object with import-named property", "const obj = { import: \"foo\"\n / 2 };\n"},
 		{"comparison chain with capitalised operand stays relational", "const ok = a < Foo > b;\nconst q = 4 / 2;\n"},
+		{"regex after relational chain with capitalised middle operand", "const yes = 1 < Number > /[)]/.source.length;\n"},
+		{"regex after relational chain with trailing-dot numeric operand", "const yes = 1. < Number > /[)]/.source.length;\n"},
+		{"regex after relational chain with newline before comparison", "const yes = 1\n< Number > /[)]/.source.length;\n"},
+		{"statement block inside function in heritage object", "class C extends {C: function(){ {} /[}]/.test('}'); }}.C {}\n"},
+		{"division after class expression with nested object heritage", "const C = class extends {x:{C:Object}}.x.C {} / 2;\n"},
+		{"division after class expression with arrow body in heritage object", "const C = class extends {C:()=>{}, Base:Object}.Base {} / 2;\n"},
+		{"division after class expression with object inside arrow body in heritage object", "const C = class extends {C:()=>{const a={};}, Base:Object}.Base {} / 2;\n"},
+		{"regex after class declaration with nested object heritage", "class C extends {x:{C:Object}}.x.C {} /a+/.test(\"aa\");\n"},
+		{"postfix increment after escaped identifier at line start", "let a=1;\n\\u0061++ / 2;\n"},
+		{"postfix decrement after escaped identifier at line start", "let a=1;\n\\u0061-- / 2;\n"},
+		{"regex after class declaration following property named new", "const obj={new:1}; obj.new\nclass C {} /[)]/.test(')');\n"},
+		{"regex after function declaration following property named new", "const obj={new:1}; obj.new\nfunction f() {} /[)]/.test(')');\n"},
+		{"division after nested class expression in heritage array", "class C extends {x:[class extends {C:Object}.C {} / 2],Base:Object}.Base {}\n"},
+		{"division after nested class with new-operand heritage in heritage array", "class C extends {x:[class extends new {C:Object}.C {} / 2]}.x {}\n"},
+		{"division after nested class with comment-separated new-operand heritage", "class C extends {x:[class extends new /*c*/ {C:Object}.C {} / 2]}.x {}\n"},
+		{"division after nested class with async function heritage operand", "class C extends {x:[class extends async function(){} {} / 2]}.x {}\n"},
+		{"division after nested class with named async function heritage operand", "class C extends {x:[class extends async function foo(){} {} / 2]}.x {}\n"},
+		{"division after nested class with async generator heritage operand", "class C extends {x:[class extends async function*(){} {} / 2]}.x {}\n"},
+		{"division after class expression with direct async function heritage", "const q = class extends async function(){} {} / 2;\n"},
+		{"division after nested class with new async function heritage operand", "class C extends {x:[class extends new async function(){} {} / 2]}.x {}\n"},
+		{"division after nested class with named new async function heritage operand", "class C extends {x:[class extends new async function foo(){} {} / 2]}.x {}\n"},
+		{"division after nested class with new async generator heritage operand", "class C extends {x:[class extends new async function*(){} {} / 2]}.x {}\n"},
+		{"division after class expression with direct new async function heritage", "const q = class extends new async function(){} {} / 2;\n"},
+		{"regex after declaration following new async split by line break", "new async\nfunction f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by CRLF", "new async\r\nfunction f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by lone carriage return", "new async\rfunction f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by line separator", "new async\u2028function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by paragraph separator", "new async\u2029function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by block comment with lone carriage return", "new async /*\r*/ function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by block comment with line separator", "new async /*\u2028*/ function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by line comment ended by carriage return", "new async // c\rfunction f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by line comment ended by paragraph separator", "new async // c\u2029function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by block comment with line break", "new async /*\n*/ function f() {} /[}]/.test(\"}\");\n"},
+		{"regex after declaration following new async split by line comment", "new async // c\nfunction f() {} /[}]/.test(\"}\");\n"},
+		{"regex after named declaration following new async split by line break", "new async\nfunction foo() {} /[}]/.test(\"}\");\n"},
+		{"regex after generator declaration following new async split by line break", "new async\nfunction* f() {} /[}]/.test(\"}\");\n"},
+		{"division after nested class with nested object in new-operand heritage", "class C extends {x:[class extends new {C:{D:Object}}.C {} / 2]}.x {}\n"},
+		{"division after class expression with new-operand heritage", "const q = class extends new {C:Object}.C {} / 2;\n"},
+		{"division after nested class body after member-named new heritage", "class C extends {x:[class extends obj.new {} / 2]}.x {}\n"},
+		{"division after roman-numeral identifier", "const \u21601 = 4;\nconst q = \u21601 / 2;\n"},
+		{"division after roman-numeral member identifier", "const q = obj.\u21601 / 2;\n"},
+		{"division after roman-numeral generic instantiation", "const q = \u21601<number> / 2;\n"},
+		{"division after roman-numeral member generic instantiation", "const q = obj.\u21601<number> / 2;\n"},
+		{"division after nested class expression as heritage property", "const C = class extends {x: class extends {C:Object}.C {} / 2, Base:Object}.Base {} / 2;\n"},
+		{"division after instantiation following block comment with inner opener text", "const q = f /* 1 /* text */<number> / 2;\n"},
+		{"division after instantiation with earlier string containing comment opener", "const s = \"1/*\"; const q = f /* comment */<number> / 2;\n"},
+		{"division after instantiation following two separate block comments", "const q = f /* a */ /* b */<number> / 2;\n"},
+		{"division after instantiation following line comment ending in digit", "const q = f // 1\n<number> / 2;\n"},
+		{"division after instantiation on member following line comment ending in digit", "const q = obj.f // 1\n<number> / 2;\n"},
+		{"division after instantiation following line comment ending in digit with trailing spaces", "const q = f // 1   \n<number> / 2;\n"},
+		{"division after instantiation following line comment ending in digit with trailing tab", "const q = f // 1\t\n<number> / 2;\n"},
+		{"division after instantiation on member following line comment ending in digit with trailing spaces and tab", "const q = obj.f // 1 \t \n<number> / 2;\n"},
+		{"division after instantiation on digit-ending identifier following line comment with trailing spaces", "const q = f1 // 1  \n<number> / 2;\n"},
+		{"division after instantiation on digit-ending identifier following line comment", "const q = f1 // 1\n<number> / 2;\n"},
+		{"division inside nested class heritage with nested object operand", "class C extends {x:[class extends {x:{}}.x {} / 2]}.x {}\n"},
+		{"division after nested class heritage expression with nested object operand", "const q = class extends {x:[class extends {x:{y:{}}}.x {} / 2]}.x {} / 2;\n"},
+		{"division inside nested class heritage with arrow body in nested object", "class C extends {x:[class extends {x:{f:()=>{}}}.x {} / 2]}.x {}\n"},
+		{"division after nested class heritage array operand with object second", "class C extends {x:[class extends [0,{C:Object}][1].C {} / 2]}.x {}\n"},
+		{"division after nested class heritage array operand with object first", "class C extends {x:[class extends [{C:Object},0][0].C {} / 2]}.x {}\n"},
+		{"division after nested class with class-expression heritage in heritage array", "class C extends {x:[class extends class {} {} / 2]}.x {}\n"},
+		{"division after nested class with function-expression heritage in heritage array", "class C extends {x:[class extends function(){} {} / 2]}.x {}\n"},
+		{"division after nested class with named class-expression heritage in heritage array", "class C extends {x:[class extends class D {} {} / 2]}.x {}\n"},
+		{"division after nested class with nonempty function heritage body in heritage array", "class C extends {x:[class extends function(){ {} } {} / 2]}.x {}\n"},
+		{"division after nested class with class-method heritage in heritage array", "class C extends {x:[class extends class {m(){}} {} / 2]}.x {}\n"},
+		{"division after class expression with class-expression heritage", "const C = class extends class {} {} / 2;\n"},
+		{"division after class expression with function-expression heritage", "const C = class extends function() {} {} / 2;\n"},
+		{"division after instantiation with block comment before angle bracket", "const q = f1/*c*/<number> / 2;\n"},
+		{"division after instantiation with two block comments before angle bracket", "const q = f1/*a*//*b*/<number> / 2;\n"},
+		{"division after TypeScript instantiation on middle-dot digit-ending identifier", "const q = f\u00b71<number> / 2;\n"},
+		{"division after TypeScript instantiation on middle-dot digit-ending member", "const q = obj.f\u00b71<number> / 2;\n"},
+		{"division after TypeScript instantiation on ano-teleia digit-ending identifier", "const q = f\u03871<number> / 2;\n"},
+		{"division after TypeScript instantiation on script-p digit-ending identifier", "const q = \u21181<number> / 2;\n"},
+		{"division after spread new class expression", "const a={...new class {} / 2};\n"},
+		{"division after spread new function expression", "const a={...new function() {} / 2};\n"},
+		{"regex after async declaration following return and line feed", "function outer() { return\nasync function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return and carriage return", "function outer() { return\rasync function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return and CRLF", "function outer() { return\r\nasync function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return and line separator", "function outer() { return\u2028async function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return and paragraph separator", "function outer() { return\u2029async function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return with line feed in block comment", "function outer() { return /*\n*/ async function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return with carriage return in block comment", "function outer() { return /*\r*/ async function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return with CRLF in block comment", "function outer() { return /*\r\n*/ async function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return with line separator in block comment", "function outer() { return /*\u2028*/ async function f() {} /[}]/.test(\"}\"); }\n"},
+		{"regex after async declaration following return with paragraph separator in block comment", "function outer() { return /*\u2029*/ async function f() {} /[}]/.test(\"}\"); }\n"},
+		{"division after async function expression following operator line break", "const q =\nasync function f() {} / 2;\n"},
+		{"division after tagged template escaped carriage return continuation", "const q = tag`a\\\r`<number> / 2;\n"},
+		{"division after tagged template escaped CRLF continuation", "const q = tag`a\\\r\n`<number> / 2;\n"},
+		{"division after tagged template escaped line separator continuation", "const q = tag`a\\\u2028`<number> / 2;\n"},
+		{"division after tagged template escaped paragraph separator continuation", "const q = tag`a\\\u2029`<number> / 2;\n"},
+		{"division after tagged template with nested interpolation", "const q = tag`outer ${`inner ${value}`}`<number> / 2;\n"},
+		{"division after tagged template with deeper nested interpolation and comment", "const q = tag`outer ${`middle ${`inner ${value}`}`}` /*c*/ <number> / 2;\n"},
+		{"division after tagged template with nested tagged interpolation", "const q = tag`outer ${inner`middle ${`inner ${value}`}`}`<number> / 2;\n"},
+		{"regex after untagged template with nested tagged interpolation", "const q = `outer ${inner`middle ${value}`}`<number>/[}]/;\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
@@ -222,9 +336,11 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		err  string
 	}{
 		{"unclosed regex before newline", "const re = /abc\nconst x = 1;\n", "unclosed regex literal"},
+		{"unclosed regex before carriage return", "const re = /abc\rconst x = 1;\n", "unclosed regex literal"},
 		{"unclosed regex at EOF", "const re = /abc", "unclosed regex literal"},
 		{"unclosed paren after division", "const q = a / b;\nconst x = (1;\n", "unclosed delimiter '('"},
 		{"unclosed string after division", "const q = a / b;\nconst s = \"oops\n", "unclosed string literal"},
+		{"unclosed class body after nested heritage object", "const C = class extends {x:{C:Object}}.x.C {\n", "unclosed delimiter '{'"},
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
@@ -372,5 +488,23 @@ func TestResolveProviderNamedDrivers(t *testing.T) {
 	}
 	if pAuto.Name() != "opencode" && pAuto.Name() != "claude" {
 		t.Fatalf("expected auto provider to be opencode or claude, got %s", pAuto.Name())
+	}
+}
+
+// The numeric-token guard consults the recorded block-comment
+// ranges for every '<': with a long comment history it must stay
+// correct (and, since the ranges are binary-searched, fast) --
+// Codex P2 on #3354 measured the old linear scan at ~25x slower
+// on 60k comments.
+func TestValidationNumericGuardWithLongCommentHistory(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("let a = 1, b = 2;\n")
+	for i := 0; i < 20000; i++ {
+		b.WriteString("/*c*/ a < b;\n")
+	}
+	b.WriteString("const q = f1<number> / 2;\n")
+	res := scripting.Validate(b.String(), nil)
+	if !res.Valid {
+		t.Fatalf("expected valid script, got: %s", res.Summary())
 	}
 }

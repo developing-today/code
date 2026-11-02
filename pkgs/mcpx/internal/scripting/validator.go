@@ -101,9 +101,20 @@ func Validate(src string, cat *diagnose.Catalog) ValidationResult {
 }
 
 type delimToken struct {
-	char      rune
-	line      int
-	exprAfter bool
+	char         rune
+	line         int
+	exprAfter    bool
+	heritage     bool
+	templateExpr bool
+	// heritageOwnsFloor marks a heritage brace that pushed a
+	// pending-body snapshot (heritageFloorStack): its closing '}'
+	// restores the snapshot it displaced.
+	heritageOwnsFloor bool
+}
+
+type blockCommentRange struct {
+	start int
+	end   int
 }
 
 // pendingBodyFrame tracks one not-yet-seen function/class
@@ -112,6 +123,7 @@ type delimToken struct {
 type pendingBodyFrame struct {
 	parenDepth int
 	stackDepth int
+	arrayDepth int
 }
 
 func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
@@ -122,8 +134,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	closedExprAfter := false
 	inSingleLineComment := false
 	inMultiLineComment := false
+	blockCommentStart := -1
+	lineCommentStart := -1
+	var blockComments []blockCommentRange
 	inString := rune(0)
 	isEscaped := false
+	var templateTaggedStack []bool
 	inRegex := false
 	inCharClass := false
 	regexEscaped := false
@@ -143,7 +159,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// regex).
 	signAfterOperand := false
 	var curIdent []rune
+	// curIdentBrokeLine records whether a line terminator appeared
+	// in the trivia before the identifier now being accumulated
+	// started (lineBreakPending at its first character; comment
+	// characters never consume that flag, so a break inside an
+	// intervening comment counts). The async branches below
+	// consult it: async is a modifier of function only with NO
+	// line terminator between the two words (Codex P2 on #3354:
+	// new async<newline>function f() {} is a constructor call on
+	// the identifier async plus a function declaration, by ASI).
+	curIdentBrokeLine := false
 	lastIdent := ""
+	lastIdentBrokeLine := false
 	prevChar := rune(0)
 	// identPrev is the last significant character before the
 	// identifier currently being accumulated started, and
@@ -155,12 +182,47 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// (Codex P2 on #1659).
 	identPrev := rune(0)
 	identPrevSig := rune(0)
+	identStart := -1
 	lastIdentPrev := rune(0)
+	lastIdentEnd := -1
 	// prevIdent is the completed identifier before the one now
 	// being accumulated, captured when an identifier starts; it
 	// spots expression keywords in front of function/class
 	// (return function() {} / 2 divides after the body closure).
 	prevIdent := ""
+	prevIdentBrokeLine := false
+	// prevIdentPrev is the significant character before prevIdent
+	// started (mirroring lastIdentPrev for lastIdent): it tells
+	// whether prevIdent was reached through member access, in
+	// which case it is a property name, not a keyword (Codex P2
+	// on #3346: obj.new\nclass C {} — the property named 'new'
+	// made isExprPositionStart treat the declaration as an
+	// expression).
+	prevIdentPrev := rune(0)
+	prevIdentEnd := -1
+	// prevPrevIdent is the completed identifier before prevIdent,
+	// with prevPrevIdentPrev the significant character before it:
+	// two levels of history are needed to spot a heritage operand
+	// behind a modifier — in 'extends async function(){}' the
+	// 'function' keyword's prevIdent is 'async', and only
+	// prevPrevIdent still names the 'extends' that puts the async
+	// function in heritage-expression position (Codex P2 on
+	// #3354).
+	prevPrevIdent := ""
+	prevPrevIdentPrev := rune(0)
+	// identDotRun / lastIdentDotRun / prevIdentDotRun mirror
+	// identPrev / lastIdentPrev / prevIdentPrev for dotRun: how
+	// many consecutive '.' characters immediately preceded the
+	// identifier. A '.' before an identifier is member access
+	// only as a single dot — after a spread '...' the identifier
+	// is a keyword in its own right (Codex P2 on #3354:
+	// {...new class {} / 2} — the spread's final dot made 'new'
+	// read as a property name, so the class after it was taken
+	// for a declaration and its body closure misread).
+	identDotRun := 0
+	lastIdentDotRun := 0
+	prevIdentDotRun := 0
+	prevPrevIdentDotRun := 0
 	// funcClassFrames holds one frame per function or class
 	// EXPRESSION whose body '{' has not been seen yet: that
 	// brace closes an operand, not a statement block, so a '/'
@@ -182,6 +244,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// — and records len(stack) when it was pushed: a ';' only
 	// clears a frame from its own scope.
 	var funcClassFrames []pendingBodyFrame
+	// arrayDepth records the open square-bracket nesting at the current
+	// token. A pending class/function body can only be consumed at the
+	// bracket depth where its keyword appeared: object literals inside a
+	// nested array heritage operand must not consume the class body's frame.
+	arrayDepth := 0
 	// inClassHeritage is set while scanning a class head before
 	// its body '{': the expression after 'extends' is a heritage
 	// expression in expression position (Codex P2 on #1659:
@@ -194,6 +261,28 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// neither consume the pending body frame nor end the heritage
 	// state (Codex P2 on #3334).
 	heritageBraceDepth := 0
+	// heritageFrameFloor / heritageDeclPending snapshot the pending
+	// body state when the OUTERMOST heritage brace opens: a '{'
+	// inside the heritage may consume only body state created after
+	// that point (a function/class expression nested in the heritage
+	// object), never the outer class's own pending body (Codex P2
+	// on #3354: class extends {x:{C:Object}}.x.C {} / 2 — the inner
+	// object ate the outer frame and the real body's '}' read as a
+	// statement boundary).
+	heritageFrameFloor := 0
+	heritageDeclPending := false
+	// heritageFloorStack / heritageDeclStack hold the snapshots
+	// displaced by NESTED heritage operands: a class nested inside a
+	// heritage expression has its own heritage operand, and that
+	// operand's braces must protect the nested class's pending body,
+	// not the outer class's (Codex P2 on #3354: class C extends
+	// {x:[class extends {x:{}}.x {} / 2]}.x {} — the single outer
+	// floor let the inner heritage object consume the inner class's
+	// frame, so its real body's '}' read as a block closure and the
+	// slash opened a phantom regex). Each floor-owning heritage
+	// brace pushes the previous snapshot; its '}' restores it.
+	var heritageFloorStack []int
+	var heritageDeclStack []bool
 	// dotRun counts consecutive '.' significant characters: a '{'
 	// after a spread token '...' is the spread object operand
 	// even when trivia (whitespace or a comment) intervenes
@@ -284,7 +373,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	if n >= 2 && chars[0] == '#' && chars[1] == '!' {
 		scanStart = n
 		for j := 0; j < n; j++ {
-			if chars[j] == '\n' {
+			if isLineTerminator(chars[j]) {
 				scanStart = j
 				break
 			}
@@ -319,9 +408,19 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			if end >= 0 {
 				if len(curIdent) == 0 {
+					identStart = i
 					identPrev = prevChar
 					identPrevSig = prevSig
+					identDotRun = dotRun
+					prevPrevIdent = prevIdent
+					prevPrevIdentPrev = prevIdentPrev
+					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
+					prevIdentBrokeLine = lastIdentBrokeLine
+					prevIdentPrev = lastIdentPrev
+					prevIdentDotRun = lastIdentDotRun
+					prevIdentEnd = lastIdentEnd
+					curIdentBrokeLine = lineBreakPending
 				}
 				curIdent = append(curIdent, 'x')
 				// The escape is an identifier character: it
@@ -330,6 +429,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				prevSig = 'x'
 				prevChar = 'x'
 				dotRun = 0
+				// The escape is a significant character: it
+				// consumes a pending line break like an
+				// ordinary identifier character. Leaving the
+				// break pending made a following ++/-- read
+				// as a prefix instead of a postfix on this
+				// identifier (Codex P2 on #3346:
+				// \u0061++ / 2 at a line start).
+				lineBreakPending = false
 				i = end
 				continue
 			}
@@ -338,14 +445,27 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex {
 			if isIdentChar(ch) {
 				if len(curIdent) == 0 {
+					identStart = i
 					identPrev = prevChar
 					identPrevSig = prevSig
+					identDotRun = dotRun
+					prevPrevIdent = prevIdent
+					prevPrevIdentPrev = prevIdentPrev
+					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
+					prevIdentBrokeLine = lastIdentBrokeLine
+					prevIdentPrev = lastIdentPrev
+					prevIdentDotRun = lastIdentDotRun
+					prevIdentEnd = lastIdentEnd
+					curIdentBrokeLine = lineBreakPending
 				}
 				curIdent = append(curIdent, ch)
 			} else if len(curIdent) > 0 {
 				lastIdent = string(curIdent)
+				lastIdentBrokeLine = curIdentBrokeLine
 				lastIdentPrev = identPrev
+				lastIdentDotRun = identDotRun
+				lastIdentEnd = i
 				curIdent = nil
 				// The next significant character after the
 				// identifier, skipping whitespace and comments:
@@ -353,7 +473,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// defeat the property-name guards below (Codex
 				// P2 on #1659: {class : 1}).
 				nextSig := nextSignificant(chars, i)
-				if isExprKeyword(lastIdent) && lastIdentPrev != '.' && lastIdentPrev != '#' {
+				if isExprKeyword(lastIdent) && !(lastIdentPrev == '.' && lastIdentDotRun < 3) && lastIdentPrev != '#' {
 					prevSig = 'o'
 				}
 				if (lastIdent == "in" || lastIdent == "of" || lastIdent == "instanceof") && lastIdentPrev != '.' && lastIdentPrev != '#' && identPrevSig == 'x' {
@@ -396,8 +516,47 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					if lastIdent == "class" {
 						inClassHeritage = true
 					}
-					if isExprPositionStart(lastIdentPrev, prevIdent) {
-						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack)})
+					// A class/function keyword right after 'extends'
+					// — or a 'function' keyword right after the
+					// 'async' modifier that itself follows 'extends'
+					// (class extends async function(){} {}: the
+					// intervening 'async' must not hide the heritage
+					// position, Codex P2 on #3354) — or behind the
+					// 'new' of a constructor call (class extends
+					// {x:[class extends new async function(){} {} / 2]}.x:
+					// a 'new' callee is an expression in any context,
+					// so no heritage requirement there, Codex P2 on
+					// #3354) —
+					// heads a heritage operand: always an expression,
+					// never a declaration, so it takes a pending
+					// frame even though 'extends' is not an
+					// expression keyword -- otherwise its body
+					// brace consumes the containing class
+					// expression's frame (Codex P2 on #3354:
+					// The expression position also carries across an
+					// 'async' modifier in any context: for a 'function'
+					// whose previous identifier is 'async' (no line
+					// break between them), the position is whatever
+					// precedes 'async' — so an async function in
+					// assignment position inside a heritage callback
+					// body (class C extends {C:()=>{const x=async
+					// function(){} /2;},..}.Base {}) is an expression,
+					// not a declaration (Codex P2 on #3354).
+					// class C extends {x:[class extends class {}
+					// {} / 2]}.x {} and the function permutation).
+					asyncFunctionModifier := lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && onlyTriviaBetween(chars, prevIdentEnd, identStart)
+					asyncFunctionExprPosition := asyncFunctionModifier && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)
+					if asyncFunctionExprPosition && prevIdentBrokeLine && prevPrevIdent == "return" && prevPrevIdentPrev != '.' && prevPrevIdentPrev != '#' {
+						// A line break before `async` ends a preceding
+						// return statement by ASI. The function is then
+						// a declaration in the new statement, not an
+						// expression inherited from `return` (Codex P2
+						// on #3354). Expression position from an operator
+						// still applies across the line break.
+						asyncFunctionExprPosition = false
+					}
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || asyncFunctionExprPosition {
+						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
 						expectDeclParenDepth = 0
@@ -431,9 +590,71 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 		}
 
-		if ch == '\n' {
-			line++
+		if isLineTerminator(ch) {
+			if inString == '`' && isEscaped {
+				// A backslash escapes a template line terminator as a
+				// continuation. Consume CRLF as one line and clear the
+				// escape so the closing backtick remains structural
+				// (Codex P2 on #3354).
+				isEscaped = false
+				line++
+				if ch == '\r' && i+1 < n && chars[i+1] == '\n' {
+					i++
+				}
+				continue
+			}
+			if inString == '\'' || inString == '"' {
+				if isEscaped {
+					// A backslash before a line terminator inside
+					// a quoted string is a line continuation: the
+					// pair is string content, not the end of the
+					// literal (Codex P2 on #3354: backslash + lone
+					// CR regressed when CR became a terminator).
+					// CRLF is one continuation: consume its LF
+					// too, and count the pair as one line.
+					isEscaped = false
+					line++
+					if ch == '\r' && i+1 < n && chars[i+1] == '\n' {
+						i++
+					}
+					continue
+				}
+				if ch == '\u2028' || ch == '\u2029' {
+					// Since ES2019 a line/paragraph separator is
+					// ordinary content inside a quoted string,
+					// not the end of the literal (Codex P2 on
+					// #3354: "a<LS>b" is a valid string).
+					line++
+					continue
+				}
+			}
+			// Every JavaScript line terminator (LF, CR, CRLF, LS,
+			// PS) is a line break for ASI and comment termination,
+			// not just LF: a lone CR between 'async' and 'function'
+			// separates them the same way (Codex P2 on #3354).
+			// CRLF counts once: the CR defers the increment to
+			// its LF.
+			if ch != '\r' || i+1 >= n || chars[i+1] != '\n' {
+				line++
+			}
 			lineBreakPending = true
+			if inSingleLineComment && lineCommentStart >= 0 {
+				// Record the line comment's range alongside the
+				// block comments: the numeric-token guard must
+				// skip it the same way, or a digit at the end
+				// of a line comment (f // 1\n<number>) is
+				// mistaken for the preceding token (Codex P2
+				// on #3354). The range ends at the terminator
+				// that closed the comment; for an LF-closed
+				// comment a trailing '\r' is the CRLF
+				// terminator, not comment text.
+				end := i
+				if end > lineCommentStart && chars[end-1] == '\r' {
+					end--
+				}
+				blockComments = append(blockComments, blockCommentRange{start: lineCommentStart, end: end})
+				lineCommentStart = -1
+			}
 			inSingleLineComment = false
 			if moduleSpecClosed {
 				// A static import/export declaration ended at
@@ -526,6 +747,8 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if inMultiLineComment {
 			if ch == '*' && i+1 < n && chars[i+1] == '/' {
 				inMultiLineComment = false
+				blockComments = append(blockComments, blockCommentRange{start: blockCommentStart, end: i + 2})
+				blockCommentStart = -1
 				i++
 			}
 			continue
@@ -540,7 +763,43 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				isEscaped = true
 				continue
 			}
+			if inString == '`' && ch == '$' && i+1 < n && chars[i+1] == '{' {
+				// A template interpolation is JavaScript expression
+				// context until its matching brace. Mark that brace so
+				// nested templates can return to this template's text
+				// without losing the outer tag classification.
+				inString = 0
+				stack = append(stack, delimToken{char: '{', line: line, templateExpr: true})
+				prevSig = 'o'
+				prevChar = '{'
+				dotRun = 0
+				prevTokenArrow = false
+				closedExprAfter = false
+				curIdent = nil
+				curIdentBrokeLine = false
+				lastIdent = ""
+				lastIdentPrev = 0
+				lastIdentDotRun = 0
+				lastIdentEnd = -1
+				lastIdentBrokeLine = false
+				prevIdent = ""
+				prevIdentPrev = 0
+				prevIdentDotRun = 0
+				prevIdentEnd = -1
+				prevIdentBrokeLine = false
+				prevPrevIdent = ""
+				prevPrevIdentPrev = 0
+				prevPrevIdentDotRun = 0
+				i++
+				continue
+			}
 			if ch == inString {
+				wasTaggedTemplate := false
+				if inString == '`' && len(templateTaggedStack) > 0 {
+					top := len(templateTaggedStack) - 1
+					wasTaggedTemplate = templateTaggedStack[top]
+					templateTaggedStack = templateTaggedStack[:top]
+				}
 				inString = rune(0)
 				prevSig = 'x'
 				// The closing quote is the previous significant
@@ -550,6 +809,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// object literal instead of a statement block
 				// (Codex P2 on #1659: const x = "x"\n{} /a+/).
 				prevChar = ch
+				if wasTaggedTemplate {
+					// A tagged template is an expression operand just like
+					// a call result, so a following TypeScript
+					// instantiation can bind to it (`tag`x`<T>`).
+					prevChar = 'x'
+				}
 				if stringIsModuleSpec {
 					moduleSpecClosed = true
 					stringIsModuleSpec = false
@@ -622,6 +887,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if ch == '/' && i+1 < n {
 			if chars[i+1] == '/' {
 				inSingleLineComment = true
+				lineCommentStart = i
 				if brokeLine {
 					lineBreakPending = true
 				}
@@ -630,6 +896,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			if chars[i+1] == '*' {
 				inMultiLineComment = true
+				blockCommentStart = i
 				if brokeLine {
 					lineBreakPending = true
 				}
@@ -661,6 +928,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// pinned blind spot, since it is indistinguishable from
 		// a relational chain by local inspection.
 		if ch == '/' {
+			// Slash is a significant token (division or a regex
+			// literal), so an earlier spread's dot run cannot leak
+			// through it into a later `.new` property.
+			dotRun = 0
 			if inTypeAssert && typeAngleDepth == 0 {
 				// The assertion carried no generic list
 				// (x as number / 2): it is already complete, and
@@ -688,7 +959,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 
 		// String starts
 		if ch == '\'' || ch == '"' || ch == '`' {
+			if ch == '`' {
+				templateTaggedStack = append(templateTaggedStack, prevSig == 'x')
+			}
 			inString = ch
+			// Literal tokens interrupt a preceding spread token.
+			dotRun = 0
 			// A string directly after 'import' (a side-effect
 			// import) or after a module declaration's 'from' is
 			// the module specifier: the declaration ends with
@@ -777,29 +1053,102 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// a '{' cannot start another heritage operand —
 			// class C<T> {} and class C extends mixin() {} are
 			// bodies, not heritage objects.
-			heritageExprBrace := inClassHeritage && (heritageBraceDepth > 0 ||
-				(prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']'))
+			// A pending function/class expression body (or a
+			// declaration body) that opens INSIDE an already
+			// open heritage brace is a body, not another
+			// heritage operand, and braces nested inside it
+			// classify by the ordinary rules (Codex P2 on
+			// #3346: class C extends {C: function(){ {}
+			// /[}]/.test('}'); }}.C {} — the heritage depth
+			// forced the function's inner statement block to
+			// read as an object literal, so the following
+			// regex read as division). An arrow body is a
+			// body too, never a heritage operand.
+			// Both frame-consumption checks below also require
+			// the brace to sit at the pending frame's own
+			// delimiter depth (len(stack) <= frame.stackDepth,
+			// the same scoping the ';' expiry uses): a '{' nested
+			// inside a body opened after the frame was pushed --
+			// a statement block inside a heritage operand's
+			// function body, a method body inside a heritage
+			// operand's class body -- belongs to that inner body,
+			// never to the pending outer frame (Codex P2 on
+			// #3354: class C extends {x:[class extends
+			// function(){ {} } {} /2]}.x {} and the class-method
+			// permutation {x:[class extends class {m(){}} {} /2]}
+			// -- the inner block/method brace consumed the
+			// containing class's pending frame, its real body
+			// then closed as a statement boundary and the slash
+			// opened a phantom regex).
+			topHeritageBrace := len(stack) > 0 && stack[len(stack)-1].char == '{' && stack[len(stack)-1].heritage
+			insideHeritageBrace := topHeritageBrace || heritageBraceDepth > 0
+			// A '{' immediately after 'extends' opens that class's
+			// heritage operand, not its body — even when the class
+			// is itself nested inside an outer heritage brace
+			// (Codex P2 on #3354: {x:[class extends {C:Object}.C
+			// {} / 2]} — frameBodyBrace consumed the inner class's
+			// frame at its heritage brace, so its real body's '}'
+			// read as a block closure and the slash opened a
+			// phantom regex).
+			// A heritage operand can also open with the 'new'
+			// keyword: in class C extends new {C:Object}.C {}
+			// the brace after 'new' is the constructor operand,
+			// not the class body (Codex P2 on #3354: nested as
+			// {x:[class extends new {C:Object}.C {} / 2]} the
+			// brace ate the inner class's frame and the real
+			// body's '}' opened a phantom regex at the slash).
+			// 'new' reached through member access (obj.new) is a
+			// property name, not the keyword.
+			heritageKeyword := lastIdent == "extends" || (lastIdent == "new" && lastIdentPrev != '.' && lastIdentPrev != '#')
+			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && len(stack) <= funcClassFrames[len(funcClassFrames)-1].stackDepth && !heritageKeyword
+			declBodyBrace := insideHeritageBrace && expectDeclBody && !heritageDeclPending && expectDeclParenDepth == 0
+			heritageExprBrace := inClassHeritage && !frameBodyBrace && !declBodyBrace && !prevTokenArrow &&
+				(topHeritageBrace ||
+					(heritageBraceDepth == 0 && prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']') ||
+					(heritageBraceDepth > 0 && prevSig == 'o' && heritageKeyword))
+			heritageOwnsFloor := false
 			if heritageExprBrace {
+				// A heritage brace owns a floor snapshot when it
+				// starts a heritage operand: the outermost one
+				// (depth 0), or a nested class's operand opened
+				// right after 'extends' inside an outer heritage
+				// expression. Plain braces nested inside an
+				// operand (object values) share its floor.
+				if heritageBraceDepth == 0 || (prevSig == 'o' && heritageKeyword) {
+					heritageFloorStack = append(heritageFloorStack, heritageFrameFloor)
+					heritageDeclStack = append(heritageDeclStack, heritageDeclPending)
+					heritageFrameFloor = len(funcClassFrames)
+					heritageDeclPending = expectDeclBody
+					heritageOwnsFloor = true
+				}
 				heritageBraceDepth++
 				exprAfter = false
 			}
-			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 {
+			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && len(stack) <= funcClassFrames[len(funcClassFrames)-1].stackDepth && (!insideHeritageBrace || len(funcClassFrames) > heritageFrameFloor) {
 				exprAfter = false
 				funcClassFrames = funcClassFrames[:len(funcClassFrames)-1]
 			}
-			if !heritageExprBrace {
+			if !heritageExprBrace && !insideHeritageBrace {
+				// A body brace ends the heritage only when it is
+				// not itself nested inside a heritage brace: an
+				// arrow/function body inside the heritage object
+				// leaves the heritage state for the tokens after
+				// it (Codex P2 on #3354: {C:()=>{const a={};}
+				// — resetting here let the inner {} consume the
+				// outer class frame).
 				inClassHeritage = false
 				heritageBraceDepth = 0
 			}
-			if !heritageExprBrace && expectDeclBody && expectDeclParenDepth == 0 {
+			if !heritageExprBrace && expectDeclBody && expectDeclParenDepth == 0 && (!insideHeritageBrace || !heritageDeclPending) {
 				exprAfter = true
 				expectDeclBody = false
 			}
-			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter})
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter, heritage: heritageExprBrace, heritageOwnsFloor: heritageOwnsFloor})
 			lastIdent = ""
 			lastIdentPrev = 0
 		case '[':
 			stack = append(stack, delimToken{char: ch, line: line})
+			arrayDepth++
 		case ')', '}', ']':
 			if len(stack) == 0 {
 				diags = append(diags, diagnose.Diagnostic{
@@ -812,8 +1161,17 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			if ch == '}' && heritageBraceDepth > 0 {
+			if top.char == '[' && arrayDepth > 0 {
+				arrayDepth--
+			}
+			if ch == '}' && top.heritage && heritageBraceDepth > 0 {
 				heritageBraceDepth--
+				if top.heritageOwnsFloor && len(heritageFloorStack) > 0 {
+					heritageFrameFloor = heritageFloorStack[len(heritageFloorStack)-1]
+					heritageFloorStack = heritageFloorStack[:len(heritageFloorStack)-1]
+					heritageDeclPending = heritageDeclStack[len(heritageDeclStack)-1]
+					heritageDeclStack = heritageDeclStack[:len(heritageDeclStack)-1]
+				}
 			}
 			if top.char == '(' {
 				for fi := range funcClassFrames {
@@ -826,6 +1184,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				expectDeclParenDepth--
 			}
 			closedExprAfter = top.exprAfter
+			if ch == '}' && top.templateExpr {
+				// The interpolation is complete; resume the surrounding
+				// template as opaque text. Nested literals have popped
+				// their own tag frames, leaving this one intact.
+				inString = '`'
+			}
 			if !matchesDelim(top.char, ch) {
 				diags = append(diags, diagnose.Diagnostic{
 					Kind:    diagnose.Kind("syntax-error"),
@@ -890,7 +1254,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				instActive = false
 			}
 			prevSig = 'x'
-		case ch == '<' && !inTypeAssert && prevSig == 'x' && looksLikeInstantiation(chars, i):
+		case ch == '<' && !inTypeAssert && prevSig == 'x' && !prevTokenIsNumeric(chars, i, blockComments) && prevChar != '\'' && prevChar != '"' && prevChar != '`' && looksLikeInstantiation(chars, i):
 			// A TypeScript instantiation expression
 			// (f<number> / 2): the generic list's closing '>'
 			// completes the operand, so the slash divides
@@ -1076,13 +1440,16 @@ func isControlKeyword(kw string) bool {
 
 // isExprPositionStart reports whether a function/class keyword that
 // started right after the significant character prev (with prevIdent
-// the identifier completed before it) sits in expression position:
+// the identifier completed before it, and prevIdentPrev the
+// significant character before prevIdent — a '.' or '#' there makes
+// prevIdent a property name, not an expression keyword) sits in
+// expression position:
 // after an operator or opening delimiter, or after an expression
 // keyword (return function() {}). Statement position — start of
 // input, or after ';', '{' or '}' — makes the keyword a declaration
 // instead, whose closing brace returns to expression position.
-func isExprPositionStart(prev rune, prevIdent string) bool {
-	if isExprKeyword(prevIdent) {
+func isExprPositionStart(prev rune, prevIdent string, prevIdentPrev rune, prevIdentDotRun int) bool {
+	if !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevIdentPrev != '#' && isExprKeyword(prevIdent) {
 		return true
 	}
 	switch prev {
@@ -1095,15 +1462,29 @@ func isExprPositionStart(prev rune, prevIdent string) bool {
 // isIdentChar reports whether ch can appear in a JavaScript identifier
 // as this scanner tracks it: letters, digits, '_' and '$', plus the
 // remaining IdentifierPart characters — combining marks (Mn, Mc),
-// connector punctuation (Pc), and the zero-width (non-)joiners U+200C and
+// connector punctuation (Pc), letter numbers (Nl, e.g. U+2160 —
+// ECMAScript ID_Start/ID_Continue include them, but Go's IsLetter and
+// IsDigit do not; leaving them out split the identifier Ⅰ1 into the
+// number 1 in the numeric-token scan, Codex P2 on #3354), and the
+// zero-width (non-)joiners U+200C and
 // U+200D. An identifier ending in one of those is still an operand, so a
 // '/' after it divides (Codex P2 on #1659: an identifier ending in
 // U+0301 fell out of the accumulation and the classification alike).
 func isIdentChar(ch rune) bool {
 	return unicode.IsLetter(ch) || unicode.IsDigit(ch) ||
 		ch == '_' || ch == '$' ||
-		unicode.In(ch, unicode.Mn, unicode.Mc, unicode.Pc) ||
+		unicode.In(ch, unicode.Mn, unicode.Mc, unicode.Pc, unicode.Nl) ||
 		ch == '\u200c' || ch == '\u200d'
+}
+
+// isLineTerminator reports whether ch is a JavaScript line
+// terminator: LF, CR, U+2028 (line separator), or U+2029
+// (paragraph separator). CRLF is a single terminator made of the
+// first two. The scan loop's terminator branch handles all four;
+// treating only LF as a break left CR/LS/PS invisible to ASI
+// classification (Codex P2 on #3354).
+func isLineTerminator(ch rune) bool {
+	return ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029'
 }
 
 // isJSWhitespace reports whether ch is in the ECMAScript WhiteSpace
@@ -1180,6 +1561,45 @@ func isSimpleTypeName(name string) bool {
 	return false
 }
 
+// onlyTriviaBetween reports whether the source between two identifier
+// boundaries contains only whitespace or comments. The async modifier
+// classification uses it to distinguish `async function` from an unrelated
+// earlier identifier named async, even when comments separate the tokens.
+func onlyTriviaBetween(chars []rune, start, end int) bool {
+	if start < 0 || end < start || end > len(chars) {
+		return false
+	}
+	for i := start; i < end; {
+		ch := chars[i]
+		if isJSWhitespace(ch) || ch == '\n' {
+			i++
+			continue
+		}
+		if ch == '/' && i+1 < end {
+			switch chars[i+1] {
+			case '/':
+				i += 2
+				for i < end && !isLineTerminator(chars[i]) {
+					i++
+				}
+				continue
+			case '*':
+				i += 2
+				for i+1 < end && !(chars[i] == '*' && chars[i+1] == '/') {
+					i++
+				}
+				if i+1 >= end {
+					return false
+				}
+				i += 2
+				continue
+			}
+		}
+		return false
+	}
+	return true
+}
+
 // nextSignificant returns the first significant (non-whitespace,
 // non-comment) character at or after index from, or 0 if there is
 // none. It lets keyword classification look past trivia — spaces
@@ -1193,7 +1613,7 @@ func nextSignificant(chars []rune, from int) rune {
 			continue
 		}
 		if c == '/' && j+1 < n && chars[j+1] == '/' {
-			for j < n && chars[j] != '\n' {
+			for j < n && !isLineTerminator(chars[j]) {
 				j++
 			}
 			continue
@@ -1215,6 +1635,108 @@ func nextSignificant(chars []rune, from int) rune {
 // \uXXXX and \u{...} identifier escapes).
 func isHexDigit(ch rune) bool {
 	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+}
+
+// prevTokenIsNumeric reports whether the token immediately before
+// offset lt is a numeric literal: it walks back over identifier
+// characters and checks the token's FIRST character, so an
+// identifier that merely ends in a digit (f1) is not mistaken for
+// a number (Codex P2 on #3354: f1<number> / 2 lost instantiation
+// recognition to a guard that looked only at the final character,
+// and the relational '>' left the slash to open a phantom regex).
+// isIdentExceptionRune reports whether ch is one of the ECMAScript
+// Unicode identifier exceptions: a rune outside the general
+// ID_Start/ID_Continue categories that the spec still allows inside
+// an identifier — the ID_Continue exceptions U+00B7, U+0387,
+// U+1369–U+1371 and U+19DA (plus U+30FB/U+FF65, letter-adjacent in
+// Unicode but listed for completeness) and the Other_ID_Start
+// exceptions U+2118, U+212E, U+309B and U+309C. isIdentChar does not
+// cover these, so a scan that stops at one splits the identifier
+// (Codex P2 on #3354: f\u00b71 and \u21181 read as the number 1).
+func isIdentExceptionRune(ch rune) bool {
+	switch ch {
+	case '\u00b7', '\u0387', '\u19da', '\u2118', '\u212e', '\u309b', '\u309c', '\u30fb', '\uff65':
+		return true
+	}
+	return ch >= '\u1369' && ch <= '\u1371'
+}
+
+func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool {
+	end := lt
+	// Skip trailing trivia — whitespace, line terminators and
+	// comments (block and line ranges are both recorded) — the way the scanner's prevChar already
+	// does: in "1 < x" the character before '<' is a space, but
+	// the token is "1", and a newline before '<' does not change
+	// the token either ("1\n< x").
+	for end > 0 {
+		for end > 0 && (isJSWhitespace(chars[end-1]) || chars[end-1] == '\n') {
+			end--
+		}
+		skippedComment := false
+		// Comment ranges are recorded in scan order, so their
+		// ends are sorted: binary-search for the range ending
+		// exactly at end instead of scanning the whole history
+		// for every '<' -- the linear scan made validation
+		// quadratic in the number of block comments (Codex P2
+		// on #3354: 60k comments + comparisons, ~25x slower).
+		lo, hi := 0, len(comments)
+		for lo < hi {
+			mid := int(uint(lo+hi) >> 1)
+			if comments[mid].end < end {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		// The match is containment, not just an exact end: the
+		// whitespace strip above can move end INSIDE a comment
+		// whose text ends in spaces or tabs (f // 1   \n<number>),
+		// and an exact-end lookup then misses the range and reads
+		// the comment's trailing digit as the previous token
+		// (Codex P2 on #3354). Ranges are disjoint and sorted, so
+		// the first range ending at or after end is the only one
+		// that can contain it.
+		if lo < len(comments) && comments[lo].start < end && end <= comments[lo].end {
+			end = comments[lo].start
+			skippedComment = true
+		}
+		if skippedComment {
+			continue
+		}
+		break
+	}
+	start := end
+	// A numeric literal may end in a decimal point (1. < x): the
+	// trailing '.' belongs to the number token when a digit
+	// precedes it, so step over it before walking the token —
+	// otherwise the walk stops at the '.' and the number is
+	// missed (CodeRabbit finding on #3354).
+	if start > 1 && chars[start-1] == '.' && unicode.IsDigit(chars[start-2]) {
+		start--
+	}
+	for start > 0 {
+		if isIdentChar(chars[start-1]) || isIdentExceptionRune(chars[start-1]) {
+			start--
+			continue
+		}
+		// A braced Unicode escape (\u{61}) belongs to the token
+		// even though its '}' is not an identifier character:
+		// jump over the whole escape and keep walking, so
+		// f\u{61}1 reads as one identifier, not as the number 1
+		// (Codex P2 on #3354).
+		if chars[start-1] == '}' {
+			open := start - 1
+			for open > 0 && chars[open] != '{' {
+				open--
+			}
+			if open >= 2 && chars[open] == '{' && chars[open-1] == 'u' && chars[open-2] == '\\' {
+				start = open - 2
+				continue
+			}
+		}
+		break
+	}
+	return start < end && unicode.IsDigit(chars[start])
 }
 
 // looksLikeInstantiation reports whether the '<' at index lt opens
