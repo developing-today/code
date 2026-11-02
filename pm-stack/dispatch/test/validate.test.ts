@@ -174,6 +174,13 @@ describe("request validation", () => {
   test("titleFromPrompt takes the first non-empty line, capped", () => {
     expect(titleFromPrompt("\n\n  fix the thing  \nmore")).toBe("fix the thing");
     expect(titleFromPrompt("x".repeat(200)).length).toBe(120);
+    expect(titleFromPrompt("x".repeat(200))).toBe("x".repeat(119) + "…");
+  });
+
+  test("titleFromPrompt does not split astral code points when truncating", () => {
+    expect(titleFromPrompt("x".repeat(118) + "😀" + "y".repeat(10))).toBe("x".repeat(118) + "…");
+    expect(titleFromPrompt("ab😀cde", 4)).toBe("ab…");
+    expect(titleFromPrompt("a😀bcde", 4)).toBe("a😀…");
   });
 });
 

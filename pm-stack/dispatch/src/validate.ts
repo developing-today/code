@@ -311,5 +311,16 @@ export function titleFromPrompt(prompt: string, max = 120): string {
       .split("\n")
       .map((l) => l.trim())
       .find((l) => l.length > 0) ?? "dispatch request";
-  return first.length > max ? first.slice(0, max - 1) + "…" : first;
+  if (first.length <= max) return first;
+
+  // Keep the UTF-16 cap and suffix, but don't leave half of a surrogate pair.
+  let end = max - 1;
+  if (end > 0 && end < first.length) {
+    const before = first.charCodeAt(end - 1);
+    const after = first.charCodeAt(end);
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) {
+      end--;
+    }
+  }
+  return first.slice(0, end) + "…";
 }
