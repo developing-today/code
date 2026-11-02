@@ -3752,11 +3752,14 @@ mod collab_route_tests {
     //! Route-level proof for #2830: the production router registers
     //! `/ws/collab/{doc_id}` as a single-segment route (see
     //! `create_router`); the web client percent-encodes the docId into
-    //! that one segment, so axum's Path extraction must percent-decode
-    //! it back to the exact filename — `%2F` included — while a real
-    //! second segment still fails to match. This mini-router uses the
-    //! identical route pattern on the same axum stack; the handler is
-    //! an echo so the decoded value itself is asserted.
+    //! that one segment, and axum matches the raw path, so `%2F` stays
+    //! inside the segment and Path extraction percent-decodes it back
+    //! to the exact filename — while a real second segment still
+    //! fails to match. This mini-router uses the identical route
+    //! pattern on the same axum stack; the handler is an echo so the
+    //! decoded value itself is asserted. (Behavior verified against
+    //! the locked axum 0.8.9 with a standalone probe on 2026-11-02;
+    //! in-crate execution currently waits on #4340.)
     use axum::{
         Router,
         body::{Body, to_bytes},
@@ -3781,16 +3784,12 @@ mod collab_route_tests {
         (status, String::from_utf8(bytes.to_vec()).unwrap())
     }
 
-    // KNOWN GAP (#2830, found by this test): the router percent-decodes
-    // %2F to a real `/` before segment matching, so a slash name's
-    // encoded segment still does not match the single-segment route
-    // and 404s - the client encoding is necessary but not sufficient
-    // for slash names. Fixing that needs a route-shape decision
-    // (wildcard capture or a query-param docId), which #2830's packet
-    // reserves for re-triage; this assertion flips when that lands.
     #[tokio::test]
-    async fn encoded_slash_currently_misses_the_single_segment_route() {
-        assert_eq!(get("/ws/collab/a%2Fb.md").await.0, StatusCode::NOT_FOUND);
+    async fn encoded_slash_round_trips_to_the_exact_filename() {
+        assert_eq!(
+            get("/ws/collab/a%2Fb.md").await,
+            (StatusCode::OK, "a/b.md".to_owned())
+        );
     }
 
     #[tokio::test]
