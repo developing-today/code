@@ -358,7 +358,14 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
       const qs = item.questions ?? [];
       if (!qs.length) return "this item has no survey questions to answer";
       const byId = new Map(qs.map((q) => [q.id, q]));
+      const seenAnswers = new Set<string>();
       for (const a of p.answers) {
+        // #4291: a duplicate questionId in one submit is rejected
+        // even when validateNewAction was bypassed — the item-side
+        // boundary does not merge or guess between the two values.
+        if (seenAnswers.has(a.questionId))
+          return `question "${a.questionId}" is answered more than once in this submit`;
+        seenAnswers.add(a.questionId);
         const q = byId.get(a.questionId);
         if (!q) return `unknown question id "${a.questionId}" for this item`;
         switch (q.type) {

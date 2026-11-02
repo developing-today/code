@@ -320,6 +320,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       return { ok: false, error: "payload.answers must be an array of at most 50 {questionId, value}" };
     }
     const answers: { questionId: string; value: string | string[] }[] = [];
+    const seenQuestionIds = new Set<string>();
     for (const entry of rawPayload.answers) {
       if (typeof entry !== "object" || entry === null) {
         return { ok: false, error: "payload.answers entries must be {questionId, value}" };
@@ -342,6 +343,14 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       if (q === undefined || v === undefined) {
         return { ok: false, error: "payload.answers entries need non-empty questionId and value" };
       }
+      // #4291: one action answers each question at most once — a
+      // repeated questionId (same or contradictory value) resolves
+      // differently per reader (cardState merges latest-wins, a raw
+      // payload consumer sees both), so reject it here.
+      if (seenQuestionIds.has(q)) {
+        return { ok: false, error: `payload.answers answers question "${q}" more than once` };
+      }
+      seenQuestionIds.add(q);
       answers.push({ questionId: q, value: v });
     }
     if (answers.length) payload.answers = answers;

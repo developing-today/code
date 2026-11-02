@@ -348,6 +348,30 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
     ).toBeNull();
   });
 
+  test("duplicate questionId in one submit is rejected, same-value or contradictory (#4291)", () => {
+    const dup = (answers: { questionId: string; value: string }[]) =>
+      checkActionAgainstItem(actionInput({ payload: { answers } }), item, NOW);
+    expect(
+      dup([
+        { questionId: "audience", value: "internal" },
+        { questionId: "audience", value: "internal" },
+      ]),
+    ).toContain('question "audience" is answered more than once');
+    expect(
+      dup([
+        { questionId: "audience", value: "internal" },
+        { questionId: "audience", value: "public" },
+      ]),
+    ).toContain('question "audience" is answered more than once');
+    // Distinct questions in one submit are still accepted.
+    expect(
+      dup([
+        { questionId: "audience", value: "internal" },
+        { questionId: "notes", value: "hi" },
+      ]),
+    ).toBeNull();
+  });
+
   test("yes/no answers are limited to yes or no; text answers must be strings", () => {
     const raw = extendedRaw();
     raw.questions = [
@@ -528,6 +552,38 @@ describe("actions boundary additions (#1290)", () => {
       author,
     });
     expect(badStamp.ok).toBe(false);
+  });
+
+  test("an answers array naming one question twice is rejected at validation (#4291)", () => {
+    const dup = validateNewAction({
+      clientToken: "ct-ans-00002",
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:x",
+      payload: {
+        answers: [
+          { questionId: "audience", value: "internal" },
+          { questionId: "audience", value: "public" },
+        ],
+      },
+      author,
+    });
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.error).toContain('answers question "audience" more than once');
+    const distinct = validateNewAction({
+      clientToken: "ct-ans-00003",
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:x",
+      payload: {
+        answers: [
+          { questionId: "audience", value: "internal" },
+          { questionId: "notes", value: "hi" },
+        ],
+      },
+      author,
+    });
+    expect(distinct.ok).toBe(true);
   });
 
   test("multi-choice answers carry an array value; dismiss/reject still require reasons", () => {
