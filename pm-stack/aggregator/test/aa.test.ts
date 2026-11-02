@@ -14,6 +14,7 @@ import {
   aaCatalogFromConfig,
   aaPoints,
   caiFamily,
+  num,
   aaSectionFromSupabase,
   computeAaCoverage,
   effortRank,
@@ -882,5 +883,51 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
     );
     expect(section).not.toBeNull();
     expect(section!.cai!.map((r) => r.creator)).toEqual(["constructor", "__proto__", "DeepSeek", "acme"]);
+  });
+});
+
+describe("num() strict decimal contract (#2985)", () => {
+  test("plain decimal spellings parse", () => {
+    expect(num("12")).toBe(12);
+    expect(num("12.5")).toBe(12.5);
+    expect(num("-3")).toBe(-3);
+    expect(num("+3")).toBe(3);
+    expect(num(".5")).toBe(0.5);
+    expect(num("5.")).toBe(5);
+    expect(num("0")).toBe(0);
+  });
+
+  test("radix-prefixed spellings return null (any case)", () => {
+    for (const s of ["0x10", "0X10", "0b101", "0B101", "0o17", "0O17"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("scientific spellings return null (PIN 1: no AA source emits e-notation)", () => {
+    for (const s of ["1e2", "1E2", "1e-3", "1E+2"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("whitespace-padded spellings return null (PIN 2: padding is drift, no trim)", () => {
+    for (const s of ["  12  ", " 12", "12 ", "\t12\n"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("other unparseable strings return null", () => {
+    for (const s of ["", "abc", "12abc", "Infinity", "1,200", "1_000", "-", ".", "+"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("finite numbers pass through; non-finite and non-numeric inputs return null", () => {
+    expect(num(42)).toBe(42);
+    expect(num(12.5)).toBe(12.5);
+    expect(num(NaN)).toBeNull();
+    expect(num(Infinity)).toBeNull();
+    expect(num(null)).toBeNull();
+    expect(num(undefined)).toBeNull();
+    expect(num(true)).toBeNull();
   });
 });
