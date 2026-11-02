@@ -24,6 +24,7 @@ Run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_input
 
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+BASH = shutil.which("bash") or "bash"
 COPIES = {
     "root": ROOT / "scripts",
     "pkgs/id": ROOT / "pkgs" / "id" / "scripts",
@@ -82,6 +84,77 @@ class TestCopiesCannotDrift(unittest.TestCase):
         )
 
 
+class TestDiscoverInputs(unittest.TestCase):
+    def _discover(self, script_dir: Path, lock_data, ref=None):
+        script = script_dir / "update-nixpkgs-inputs.py"
+        return runpy.run_path(str(script))["discover_inputs"](lock_data, ref)
+
+    def _lock_for_original(self, original):
+        return {
+            "nodes": {
+                "root": {"inputs": {"candidate": "candidate"}},
+                "candidate": {"original": original},
+            }
+        }
+
+    def test_owner_matches_exactly_ignoring_case_in_both_copies(self):
+        accepted = ("NixOS", "nixos", "Nixos", "NIXOS", "NiXoS", "nIxOs")
+        rejected = ("NixOS2", "nixos-fork", "NixOSx", "nixoss", "evilNixOS")
+        non_strings = (None, 7, {}, [])
+
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                for owner in accepted:
+                    with self.subTest(owner=owner):
+                        original = {"type": "github", "owner": owner, "repo": "nixpkgs"}
+                        self.assertEqual(
+                            self._discover(script_dir, self._lock_for_original(original)),
+                            ["candidate"],
+                        )
+                for owner in (*rejected, *non_strings):
+                    with self.subTest(owner=owner):
+                        original = {"type": "github", "owner": owner, "repo": "nixpkgs"}
+                        self.assertEqual(self._discover(script_dir, self._lock_for_original(original)), [])
+
+    def test_repository_type_follows_and_ref_filters_are_preserved(self):
+        inputs = {
+            "default": "default",
+            "master": "master",
+            "unstable": "unstable",
+            "stable": "stable",
+            "wrong-repo": "wrong-repo",
+            "wrong-type": "wrong-type",
+            "follows": ["master"],
+        }
+        nodes = {
+            "root": {"inputs": inputs},
+            "default": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs"}},
+            "master": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "master"}},
+            "unstable": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixos-unstable"}},
+            "stable": {"original": {"type": "github", "owner": "NixOS", "repo": "nixpkgs", "ref": "nixos-24.11"}},
+            "wrong-repo": {"original": {"type": "github", "owner": "NixOS", "repo": "other"}},
+            "wrong-type": {"original": {"type": "git", "owner": "NixOS", "repo": "nixpkgs"}},
+        }
+        lock_data = {"nodes": nodes}
+        expected = ["default", "master", "stable", "unstable"]
+
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                discover = runpy.run_path(str(script_dir / "update-nixpkgs-inputs.py"))["discover_inputs"]
+                self.assertEqual(discover(lock_data, None), expected)
+                self.assertEqual(discover(lock_data, "master"), ["default", "master"])
+                self.assertEqual(discover(lock_data, "nixos-unstable"), ["unstable"])
+                self.assertEqual(discover(lock_data, "nixos-24.11"), ["stable"])
+
+    def test_current_flake_lock_keeps_the_four_intended_inputs(self):
+        lock_data = json.loads((ROOT / "flake.lock").read_text())
+        expected = ["nixpkgs-25", "nixpkgs-master", "nixpkgs-stable", "nixpkgs-unstable"]
+
+        for label, script_dir in COPIES.items():
+            with self.subTest(copy=label):
+                self.assertEqual(self._discover(script_dir, lock_data), expected)
+
+
 class ScriptTree:
     """One copy of the tool staged as <tmp>/scripts/ + <tmp>/flake.lock,
 
@@ -118,6 +191,11 @@ class ScriptTree:
             # python3 shim keeps the wrapper's fallback interpreter
             # hermetic — a host python3 may live outside /usr/bin:/bin
             # (e.g. on NixOS) and must not leak into the 127 setup.
+            # The shell wrapper also needs dirname, absent from /bin and
+            # /usr/bin on NixOS; expose only that executable in the test PATH.
+            dirname = shutil.which("dirname")
+            if dirname:
+                (self.bin / "dirname").symlink_to(dirname)
             _write_executable(
                 self.bin / "python3",
                 f'#!/bin/sh\nexec {sys.executable} "$@"\n',
@@ -155,7 +233,7 @@ class ScriptTree:
 
     def run_sh(self) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["bash", str(self.repo_dir / "scripts" / "update-nixpkgs-inputs.sh")],
+            [BASH, str(self.repo_dir / "scripts" / "update-nixpkgs-inputs.sh")],
             env=self.env,
             capture_output=True,
             text=True,

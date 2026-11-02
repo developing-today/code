@@ -7,7 +7,17 @@
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
-import { type SessionFeedEntry, type SessionRecord, refsInText } from "./model.ts";
+import { parseRef, type SessionFeedEntry, type SessionRecord, refsInText } from "./model.ts";
+
+function isValidTaskRef(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Agent identity for an OpenCode session entry. */
 export function agentIdentityOf(e: SessionFeedEntry): { agentId: string; agentLabel: string } {
@@ -166,12 +176,12 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
     typeof r.label === "string" &&
     (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
     (r.startedAt === undefined || typeof r.startedAt === "string") &&
-    // #2408: mergeRecords spreads taskRefs as an array, so a present-but-
-    // non-array taskRefs throws TypeError on the duplicate-key merge (and
-    // a string silently spreads into single-character refs). The validator
-    // owns the rule, per the #2347/#2376 precedent above: taskRefs must be
-    // absent or an array of strings; anything else rejects the record.
-    (r.taskRefs === undefined || (Array.isArray(r.taskRefs) && r.taskRefs.every((t) => typeof t === "string")))
+    // #2408/#2485: mergeRecords spreads taskRefs as an array, and rendering
+    // parses each ref as owner/repo#number. The validator owns the rule, per
+    // the #2347/#2376 precedent above: taskRefs must be absent or an array
+    // of parseable refs with safe-integer issue numbers; malformed records
+    // are rejected, not coerced.
+    (r.taskRefs === undefined || (Array.isArray(r.taskRefs) && r.taskRefs.every(isValidTaskRef)))
   );
 }
 

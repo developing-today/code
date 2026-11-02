@@ -82,6 +82,12 @@ impl FileJournal {
                     break;
                 }
                 let complete = line.last() == Some(&b'\n');
+                if line == b"\n" {
+                    // Empty lines carry no entry. Preserve their bytes so a
+                    // later torn-tail repair cannot truncate past them.
+                    good_len += read as u64;
+                    continue;
+                }
                 match serde_json::from_slice::<JournalEntry>(&line) {
                     Ok(entry) if complete => {
                         entries.push(entry);
@@ -1081,6 +1087,30 @@ mod tests {
         std::fs::write(&path, &corrupt).unwrap();
         let err = FileJournal::open(&path, "w").unwrap_err();
         assert!(err.to_string().contains("corrupt"), "{err:#}");
+    }
+
+    #[test]
+    fn blank_lines_before_between_and_after_entries_are_skipped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open(&path, "w").unwrap());
+        let created = std::fs::read(&path).unwrap();
+        let revoked = serde_json::to_vec(&JournalEntry::Revoked {
+            participant_id: 1,
+            by: None,
+        })
+        .unwrap();
+
+        let mut with_blanks = b"\n".to_vec();
+        with_blanks.extend_from_slice(&created);
+        with_blanks.extend_from_slice(b"\n");
+        with_blanks.extend_from_slice(&revoked);
+        with_blanks.extend_from_slice(b"\n\n");
+        std::fs::write(&path, &with_blanks).unwrap();
+
+        let (_, entries) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(std::fs::read(&path).unwrap(), with_blanks);
     }
 
     #[test]

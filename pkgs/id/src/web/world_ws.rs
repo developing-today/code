@@ -353,6 +353,24 @@ pub(super) fn refusal_status(error: &anyhow::Error) -> StatusCode {
 }
 
 fn refusal_response(error: &anyhow::Error) -> Response {
+    // Structured refusal (#2244 P0-A): a rate-limit refusal carries the
+    // machine-readable reason and a bounded retry value, in the body
+    // and as a `Retry-After` header. The directory limiters behind
+    // this surface compute no bucket value of their own, so the abuse
+    // contract's floor (`RETRY_FLOOR_MS`) is what is emitted.
+    if matches!(error.downcast_ref::<Refusal>(), Some(Refusal::RateLimited(_))) {
+        let retry_ms = crate::abuse::RETRY_FLOOR_MS;
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, (retry_ms / 1_000).to_string())],
+            Json(serde_json::json!({
+                "error": format!("{error:#}"),
+                "reason": "rate_limited",
+                "retry_after_ms": retry_ms,
+            })),
+        )
+            .into_response();
+    }
     (
         refusal_status(error),
         Json(serde_json::json!({ "error": format!("{error:#}") })),

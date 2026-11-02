@@ -759,6 +759,7 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
             },
         )
         .unwrap();

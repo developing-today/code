@@ -8,6 +8,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AA_GO_CAPS,
   aaAbsent,
   aaCaiPoints,
   aaCatalogFromConfig,
@@ -15,6 +16,7 @@ import {
   caiFamily,
   aaSectionFromSupabase,
   computeAaCoverage,
+  effortRank,
   isAaSection,
   normalizeModelName,
   parseOpencodeCoverageInputs,
@@ -700,5 +702,119 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(section.coverage?.catalogNotPooledUnmeasured).toContain("commandcode/reflection/beam:free");
     expect(section.catalog?.some((e) => e.id === "commandcode/reflection/beam:free")).toBe(true);
     expect(section.catalog?.find((e) => e.id === "claude-code/claude-haiku-5-5")?.disabled).toBe(true);
+  });
+});
+
+describe("aa chart expand + zoom/pan (#3298)", () => {
+  test("every server-rendered explorer chart carries the full tool set", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    for (const id of ["xpl-c1", "xpl-c2", "xpl-c3", "xpl-c4", "xpl-c5", "xpl-c6"]) {
+      expect(html).toContain(`data-tools="${id}"`);
+      for (const act of ["expand", "in", "out", "reset"]) {
+        expect(html).toContain(`data-zact="${act}" data-zfor="${id}"`);
+      }
+    }
+  });
+
+  test("the explorer script ships the uniform enhancer for dynamic charts too", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    // band scatters are built client-side; the enhancer must target
+    // their containers and re-run after renders.
+    expect(html).toContain("function enhanceCharts()");
+    expect(html).toContain("#xpl-recs svg, #xpl-bandgroups svg");
+    expect(html).toContain("chart-expanded");
+    // Codex fixes on PR #4154: deferred pointer capture (plain point
+    // clicks still select), a dedicated wrapper per band chart, and
+    // re-enhancement after recommendation-only redraws.
+    expect(html).toContain("chart-mini");
+    expect(html).toContain("setPointerCapture(drag.id)");
+    expect(html).toContain("Recommendation inputs redraw #xpl-recs directly");
+    expect(html).toContain("data-zbound");
+    expect(html).toContain(".chart-expanded { position: fixed");
+    // the emitted script still parses (same check as #1215)
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+  });
+});
+
+describe("AA_GO_CAPS keys are reachable (#2645)", () => {
+  test("every key is a fixed point of normalizeModelName", () => {
+    // The lookup is AA_GO_CAPS[normalizeModelName(id)] and the table's
+    // keys are documented as normalizeModelName output. A key that is
+    // not a fixed point can never be hit — the two contributor keys
+    // were dead because normalizeModelName strips the "contributor"
+    // noise token.
+    for (const key of Object.keys(AA_GO_CAPS)) {
+      expect(normalizeModelName(key)).toBe(key);
+    }
+  });
+
+  test("catalog publishes goCapUsd 12 for both contributor ids", () => {
+    const snippet = `{
+      "provider": {
+        "opencode-go": { "name": "OpenCode Go", "models": {
+          "muse-spark-1.3-contributor": { "name": "Muse Spark 1.3" },
+          "gemini-4-argon-contributor": { "name": "Gemini 4 Argon" },
+          "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" }
+        } }
+      }
+    }`;
+    const catalog = aaCatalogFromConfig(snippet, { configs: [], rankings: [] });
+    expect(catalog).not.toBeNull();
+    expect(catalog!.find((e) => e.id === "opencode-go/muse-spark-1.3-contributor")!.goCapUsd).toBe(12);
+    expect(catalog!.find((e) => e.id === "opencode-go/gemini-4-argon-contributor")!.goCapUsd).toBe(12);
+    expect(catalog!.find((e) => e.id === "opencode-go/deepseek-v4.1-flash")!.goCapUsd).toBe(80);
+  });
+});
+
+describe("prototype-key lookups in aa maps (#3056)", () => {
+  test("effortRank: prototype names take the unknown fallback, known ranks unchanged", () => {
+    expect(effortRank("constructor")).toBe(50);
+    expect(effortRank("__proto__")).toBe(50);
+    expect(effortRank("toString")).toBe(50);
+    expect(effortRank("high")).toBe(3);
+    expect(effortRank("max")).toBe(5);
+    expect(effortRank("something-else")).toBe(50);
+    expect(effortRank(null)).toBe(99);
+  });
+
+  test("catalog: prototype-named provider gets no plan facts; prototype-named Go model gets no cap", () => {
+    const cfg = `{ "provider": {
+      "constructor": { "name": "Constructor Provider", "models": { "some-model": { "name": "Some Model" } } },
+      "opencode-go.lab": { "name": "OpenCode Go \u2014 Lab", "models": {
+        "constructor": { "name": "Constructor" },
+        "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
+      } },
+    } }`;
+    const catalog = aaCatalogFromConfig(cfg, { configs: [], rankings: [] });
+    expect(catalog).not.toBeNull();
+    const proto = catalog!.find((e) => e.id === "constructor/some-model")!;
+    expect(proto.plan).toBeNull();
+    expect(proto.multiplier).toBeNull();
+    expect(proto.planNote).toBeNull();
+    const ctor = catalog!.find((e) => e.id === "opencode-go.lab/constructor")!;
+    expect(ctor.goCapUsd).toBeNull();
+    const ds = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
+    expect(ds.goCapUsd).toBe(80); // known Go cap unchanged
+  });
+
+  test("CAI creator: prototype slugs fall back to the slug; known creators still map", () => {
+    const caiRow = (creatorSlug: string) => ({
+      modelName: "Model X",
+      creatorSlug,
+      effort: "max",
+      version: "v1",
+      score: "10",
+      cost: "1",
+      wallSec: "60",
+    });
+    const section = aaSectionFromSupabase(
+      { ...rawPayload(), cai: [caiRow("constructor"), caiRow("__proto__"), caiRow("deepseek"), caiRow("acme")] },
+      null,
+      "2026-10-26T18:05:00Z",
+    );
+    expect(section).not.toBeNull();
+    expect(section!.cai!.map((r) => r.creator)).toEqual(["constructor", "__proto__", "DeepSeek", "acme"]);
   });
 });
