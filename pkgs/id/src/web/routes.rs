@@ -2221,6 +2221,13 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// dropping it. The pre-#1306 version handled only top-level
 /// paragraphs/headings and silently deleted everything else on save.
 ///
+/// Line endings: plain-mode load (`plain_text_to_prosemirror`) strips
+/// the CR of CRLF endings and this join emits LF only, so a CRLF file
+/// is normalized to LF on save - a deliberate, documented choice
+/// (#1307), pinned by the round-trip tests below; the file's
+/// trailing-newline state is preserved through the load/save pair.
+/// Byte-exact CRLF round-trips remain available in Raw mode.
+///
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
 /// text verbatim when non-empty, otherwise its `src` verbatim when
@@ -3330,6 +3337,40 @@ mod tests {
 
     fn para(text: &str) -> serde_json::Value {
         serde_json::json!({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_preserves_trailing_newline() {
+        // #1307 pinned policy: the real load/save pair is byte-stable
+        // for the common shapes, including the trailing newline.
+        for text in ["a\nb\n", "a\nb", "a\n", "\n", ""] {
+            let doc = super::super::markdown::plain_text_to_prosemirror(text);
+            assert_eq!(extract_plain_text(&doc), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_normalizes_crlf_to_lf() {
+        // #1307 pinned policy: CRLF normalizes to LF on save, and the
+        // trailing-newline state survives the normalization.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\n");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta");
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_preserves_lone_terminal_cr() {
+        // Codex finding on PR #4613: a carriage return that is NOT part
+        // of a CRLF ending is content. Only segments terminated by '\n'
+        // may have their CR stripped; the final segment keeps it.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\r");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\r");
+        // A CR-only line ending mid-file is likewise preserved.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\rbeta\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\rbeta\n");
     }
 
     #[test]
