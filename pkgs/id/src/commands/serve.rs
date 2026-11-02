@@ -1387,8 +1387,17 @@ const GROUP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_se
 struct GroupWarningWatcher {
     evaluator: Evaluator,
     /// The devices authorized per group at the last event the watcher has
-    /// folded, tracked through the event stream, not just at evaluations.
-    authorized: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
+    /// folded, tracked through the event stream, not just at evaluations,
+    /// with the accounts whose grants authorize each device: a revocation
+    /// is account-scoped in the fold (it ends only the revoking account's
+    /// grant), so a device stays authorized while any account's grant for
+    /// it remains. An empty account set means the fold shows the device
+    /// authorized but the watcher has not observed a grant for it (the
+    /// device was adopted in the fold sync in `evaluate`).
+    authorized: std::collections::BTreeMap<
+        Hash,
+        std::collections::BTreeMap<GroupKey, std::collections::BTreeSet<GroupKey>>,
+    >,
     /// Every device ever seen authorized per group.
     seen_devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
     /// The re-add times per group, as observed by this watcher.
@@ -1433,11 +1442,11 @@ impl GroupWarningWatcher {
             let current = projection.group_active_devices(group);
             {
                 let authorized = self.authorized.entry(*group).or_default();
-                authorized.retain(|device| current.contains(device));
+                authorized.retain(|device, _accounts| current.contains(device));
                 let seen = self.seen_devices.entry(*group).or_default();
                 for device in &current {
-                    if !authorized.contains(device) {
-                        authorized.insert(*device);
+                    if !authorized.contains_key(device) {
+                        authorized.insert(*device, std::collections::BTreeSet::new());
                         seen.insert(*device);
                     }
                 }
@@ -1510,16 +1519,26 @@ impl GroupWarningWatcher {
                     let was_seen = seen.contains(device);
                     seen.insert(*device);
                     let authorized = self.authorized.entry(group).or_default();
-                    if !authorized.contains(device) {
-                        authorized.insert(*device);
-                        if was_seen {
-                            *counts.entry(group).or_default() += 1;
-                        }
+                    if !authorized.contains_key(device) && was_seen {
+                        *counts.entry(group).or_default() += 1;
                     }
+                    authorized.entry(*device).or_default().insert(event.author);
                 }
                 crate::groups::DeviceOp::Revoke { device } => {
+                    // A revocation is account-scoped in the fold: it ends
+                    // only the revoking account's grant, so the device
+                    // stays authorized while another account's grant for
+                    // it remains (Codex review on PR #4035). Removing the
+                    // device outright would count the other account's
+                    // later re-add as churn that never happened.
                     if let Some(authorized) = self.authorized.get_mut(&group) {
-                        authorized.remove(device);
+                        let mut ended = false;
+                        if let Some(accounts) = authorized.get_mut(device) {
+                            ended = accounts.remove(&event.author) && accounts.is_empty();
+                        }
+                        if ended {
+                            authorized.remove(device);
+                        }
                     }
                 }
             }
@@ -1534,10 +1553,25 @@ impl GroupWarningWatcher {
     fn baseline(&mut self, projection: &Projection) {
         self.authorized.clear();
         self.seen_devices.clear();
-        for (group, _view) in projection.groups() {
+        for (group, view) in projection.groups() {
             let current = projection.group_active_devices(group);
             self.seen_devices.insert(*group, current.clone());
-            self.authorized.insert(*group, current);
+            // Record which accounts' grants authorize each device, so a
+            // later account-scoped revocation replays correctly against
+            // the baseline too.
+            let mut devices: std::collections::BTreeMap<
+                GroupKey,
+                std::collections::BTreeSet<GroupKey>,
+            > = current
+                .iter()
+                .map(|device| (*device, std::collections::BTreeSet::new()))
+                .collect();
+            for account in view.members.keys() {
+                for device in projection.active_devices(group, account) {
+                    devices.entry(device).or_default().insert(*account);
+                }
+            }
+            self.authorized.insert(*group, devices);
         }
     }
 }
@@ -1987,6 +2021,39 @@ mod tests {
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].0, group);
         assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_group_warnings_ignore_other_accounts_revoke_readd_cycles() {
+        use crate::groups::Role;
+
+        // Codex review on PR #4035: a revocation is account-scoped in the
+        // fold - it ends only the revoking account's grant. When account A
+        // has authorized a device, revoke + re-add cycles by account B
+        // never leave the device unauthorized (A's grant stands
+        // throughout), so they are not re-adds and must not fire the churn
+        // warning.
+        let dir = serve_test_dir("churn-other-account");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let other: GroupKey = [2; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // Account A authorizes the device; the first evaluation adopts it.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Four revoke + re-add cycles by account B inside one interval:
+        // B's revokes do not touch A's grant, so nothing here is a re-add.
+        for _ in 0..4 {
+            log.device_revoke(other, group, device).unwrap();
+            log.device_add(other, group, device, Role::Read).unwrap();
+        }
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
