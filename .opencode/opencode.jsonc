@@ -6740,21 +6740,31 @@
         // main the reserve) at the pair's previous combined weight
         // (1.5 + 1 = 2.5). The Go burn-by-expiry weights (3/2) above
         // are untouched.
-        // 2026-11-02 (Drew): Luna seats ONLY through openai-plan (the
-        // ChatGPT pair) - the OpenAI plans are the doors with no
-        // DeepSeek, so Luna there is unique coverage. The Go workspace
-        // and OpenDesign leaves came out: those doors carry DeepSeek
-        // Flash already (deepseek-flash-plan keeps its Go leaves), so
-        // Luna on them was duplicate coverage of the same meters. The
-        // burn-by-expiry Go weights (3/2) go with them - both Go Luna
-        // leaves were at their monthly walls anyway, Personal ends
-        // tonight 2026-11-02 21:02 CT, Lab 2026-11-06. To restore a
-        // leaf, re-add its target line from git history.
+        // 2026-11-02 (Drew, refinement): the full plan pool is
+        // restored. The workhorse rule (Luna only from the OpenAI
+        // plans, the doors with no DeepSeek) is applied at the
+        // workhorse-primary seat, which now addresses
+        // openai-plan/gpt-6-luna#xhigh directly; this route keeps
+        // every Luna plan door for its other callers (small-100k)
+        // and for deliberate use. The same-day trim of this route
+        // is reverted - it had blast radius beyond workhorse.
         "targets": [
-          "openai-plan/gpt-6-luna"
+          "openai-plan/gpt-6-luna",
+          {
+            "model": "opendesign/gpt-6-luna",
+            "variants": { "xhigh": "high", "max": "high" }
+          },
+          "opencode-go.lab/gpt-6-luna",
+          "opencode-go.personal/gpt-6-luna",
+          "opencode-go/gpt-6-luna"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go.personal/gpt-6-luna": 3,
+          "opencode-go.lab/gpt-6-luna": 2,
+          "openai-plan/gpt-6-luna": 2.5
+        }
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
       // is seated nowhere. Decline-with-reason: it is dominated on its own
@@ -7217,14 +7227,20 @@
         // score pts (AA v5) is the Luna elbow - max jumps to $0.184
         // for its 38-pt ceiling. The bare Spark seat was the only
         // unpinned effort in the tier (ledger: variant NULL).
+        // 2026-11-02 (Drew, refinement): the Luna leg seats the
+        // openai-plan leaf directly (openai-plan/gpt-6-luna#xhigh)
+        // instead of routing through luna-plan: the workhorse-only
+        // rule - Luna only from the OpenAI plans, the doors with no
+        // DeepSeek - belongs to this seat, not to the shared plan
+        // route. luna-plan keeps its full pool (see its own note).
         "targets": [
-          "opencode-route/luna-plan#xhigh",
+          "openai-plan/gpt-6-luna#xhigh",
           "muse-direct/muse-spark-1.3-contributor#xhigh"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/luna-plan": 2,
+          "openai-plan/gpt-6-luna": 2,
           "muse-direct/muse-spark-1.3-contributor": 2
         }
       },
