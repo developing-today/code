@@ -305,13 +305,17 @@ pub fn fold(name: &str) -> String {
     strip_format_chars(name).to_lowercase()
 }
 
-/// The name with look-alike characters mapped to one form, so `PayPa1` and
-/// `PayPal` compare equal. The fold lowercases first, so capital `I` lands
-/// in the `i` class and maps to `l` with `1` and `|` (#2069); `8` maps to
-/// `b`, symmetric with the other mapped digits.
+/// The name's UTS #39 confusable skeleton, plus the petname-specific ASCII
+/// look-alike rules, so cross-script look-alikes and `PayPa1`/`PayPal` compare
+/// equal. The fold lowercases first, so capital `I` lands in the `i` class and
+/// maps to `l` with `1` and `|` (#2069); `8` maps to `b`, symmetric with the
+/// other mapped digits.
 #[must_use]
 pub fn skeleton(name: &str) -> String {
-    let mapped: String = fold(name)
+    let folded = fold(name);
+    let unicode_skeleton: String = unicode_security::skeleton(&folded).collect();
+    let folded_skeleton = fold(&unicode_skeleton);
+    let mapped: String = folded_skeleton
         .chars()
         .map(|c| match c {
             '0' => 'o',
@@ -447,6 +451,86 @@ mod tests {
         let error = store.set(OWNER, CAROL, "PayPa1", alleged).unwrap_err();
         assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
         assert!(store.get(OWNER, CAROL).is_none());
+    }
+
+    #[test]
+    fn test_cross_script_confusables_are_refused_for_petnames_and_alleged_names() {
+        for (latin, confusable) in [
+            ("Alice", "Аlice"),
+            ("PayPal", "Pаypal"),
+            ("Bob", "Bоb"),
+            ("Peter", "Pеter"),
+            ("Carol", "Сarol"),
+            ("bob", "bοb"),
+        ] {
+            let mut store = Petnames::new();
+            store.set(OWNER, ALICE, latin, []).unwrap();
+            let error = store.set(OWNER, BOB, confusable, []).unwrap_err();
+            assert!(
+                matches!(refusal(&error), Some(Refusal::Conflict(_))),
+                "{confusable:?} should not mimic the existing petname {latin:?}"
+            );
+
+            let mut store = Petnames::new();
+            let error = store
+                .set(OWNER, BOB, confusable, [(ALICE, latin)])
+                .unwrap_err();
+            assert!(
+                matches!(refusal(&error), Some(Refusal::Conflict(_))),
+                "{confusable:?} should not mimic the alleged name {latin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ascii_confusable_controls_remain_refused() {
+        for (latin, confusable) in [("PayPal", "PayPa1"), ("mum", "rnurn"), ("Mom", "M0m")] {
+            let mut store = Petnames::new();
+            store.set(OWNER, ALICE, latin, []).unwrap();
+            let error = store.set(OWNER, BOB, confusable, []).unwrap_err();
+            assert!(
+                matches!(refusal(&error), Some(Refusal::Conflict(_))),
+                "{confusable:?} should remain confusable with {latin:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unrelated_and_single_script_cyrillic_petnames_are_accepted() {
+        let mut store = Petnames::new();
+        store.set(OWNER, ALICE, "Иван", []).unwrap();
+        store.set(OWNER, BOB, "Dana", []).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("Иван"));
+        assert_eq!(store.get(OWNER, BOB), Some("Dana"));
+    }
+
+    #[test]
+    fn test_legacy_cross_script_petname_collisions_get_fingerprints() {
+        let contacts = [
+            Contact {
+                id: ALICE,
+                alleged: "Alice",
+                petname: Some("PayPal"),
+            },
+            Contact {
+                id: BOB,
+                alleged: "Bob",
+                petname: Some("Pаypal"),
+            },
+        ];
+        assert_eq!(
+            labels(&contacts),
+            vec![
+                Label::SharedPetname {
+                    name: "PayPal".to_owned(),
+                    fingerprint: "aa11aa".to_owned(),
+                },
+                Label::SharedPetname {
+                    name: "Pаypal".to_owned(),
+                    fingerprint: "bb22bb".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]
