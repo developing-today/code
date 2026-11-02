@@ -153,3 +153,28 @@ test('canonical OpenCode config passes the static guard', async () => {
   const config = await readFile(resolve('.opencode/opencode.jsonc'), 'utf8');
   assert.deepEqual(checkConfig(config), []);
 });
+
+test('rejects a metered target in a model route named like a selection field', () => {
+  const config = `{
+    "model": "opencode-route/model",
+    "experimental": {
+      "model_routes": { "model": { "targets": ["deepseek/deepseek-chat"] } },
+    },
+  }`;
+  const issues = checkConfig(config);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0], /deepseek/);
+  assert.ok(issues[0].includes('$.experimental.model_routes.model.targets[0]'));
+});
+
+test('rejects a PAYG provider in a provider group named providers', () => {
+  const config = `{
+    "experimental": {
+      "provider_routes": { "providers": { "providers": ["deepseek"] } },
+    },
+  }`;
+  const issues = checkConfig(config);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0], /provider-route/);
+  assert.ok(issues[0].includes('$.experimental.provider_routes.providers.providers[0]'));
+});

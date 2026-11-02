@@ -224,9 +224,12 @@ export function inspectConfig(source) {
   };
   walkAgents(property(root, 'agent'), '$.agent');
 
-  const walkModelRoutes = (node, path) => {
+  // The route map's keys are route NAMES, not definition fields: a route
+  // named "model" (or "targets") is still a route. Iterate map entries as
+  // names first, then walk each value as a route definition.
+  const walkRouteDefinition = (node, path) => {
     if (node?.type === 'array') {
-      node.items.forEach((item, index) => walkModelRoutes(item, `${path}[${index}]`));
+      node.items.forEach((item, index) => walkRouteDefinition(item, `${path}[${index}]`));
     } else if (node?.type === 'object') {
       effectiveProperties(node).forEach(({ key, value }) => {
         const childPath = `${path}.${key}`;
@@ -235,8 +238,18 @@ export function inspectConfig(source) {
         } else if (key === 'model') {
           addReference(value, childPath);
         } else {
-          walkModelRoutes(value, childPath);
+          walkRouteDefinition(value, childPath);
         }
+      });
+    }
+  };
+
+  const walkModelRoutes = (node, path) => {
+    if (node?.type === 'array') {
+      node.items.forEach((item, index) => walkModelRoutes(item, `${path}[${index}]`));
+    } else if (node?.type === 'object') {
+      effectiveProperties(node).forEach(({ key, value }) => {
+        walkRouteDefinition(value, `${path}.${key}`);
       });
     }
   };
@@ -252,14 +265,27 @@ export function inspectConfig(source) {
     walkModelRoutes(property(root, 'model_routes'), '$.model_routes');
   }
 
+  // Provider-route group names are not definition fields either: a group
+  // named "providers" is still a group. Iterate map entries as names
+  // first, then walk each value as a group definition.
+  const walkProviderGroup = (node, path) => {
+    if (node?.type === 'array') {
+      node.items.forEach((item, index) => walkProviderGroup(item, `${path}[${index}]`));
+    } else if (node?.type === 'object') {
+      effectiveProperties(node).forEach(({ key, value }) => {
+        const childPath = `${path}.${key}`;
+        if (key === 'providers') collectSelections(value, childPath, 'provider-route');
+        else walkProviderGroup(value, childPath);
+      });
+    }
+  };
+
   const walkProviderRoutes = (node, path) => {
     if (node?.type === 'array') {
       node.items.forEach((item, index) => walkProviderRoutes(item, `${path}[${index}]`));
     } else if (node?.type === 'object') {
       effectiveProperties(node).forEach(({ key, value }) => {
-        const childPath = `${path}.${key}`;
-        if (key === 'providers') collectSelections(value, childPath, 'provider-route');
-        else walkProviderRoutes(value, childPath);
+        walkProviderGroup(value, `${path}.${key}`);
       });
     }
   };
