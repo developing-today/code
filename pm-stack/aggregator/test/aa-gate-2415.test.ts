@@ -17,7 +17,7 @@ function completeSection(): Record<string, unknown> {
     rankings: [{ testRunKey: "run-1", family: "GPT" }],
     thresholds: [{ testRunKey: "run-1", target: 42, usable: true }],
     configs: [],
-    testRuns: [{ testRunKey: "run-1", snapshotDate: "2026-10-01" }],
+    testRuns: [{ testRunKey: "run-1", modelVariantKey: "openai|gpt-6-luna|max", snapshotDate: "2026-10-01" }],
   };
 }
 
@@ -35,7 +35,7 @@ describe("isAaSection gate depth (#2415)", () => {
 
   test("accepts a testRuns entry with a null snapshotDate", () => {
     const s = completeSection();
-    s.testRuns = [{ testRunKey: "run-1", snapshotDate: null }];
+    s.testRuns = [{ testRunKey: "run-1", modelVariantKey: "openai|gpt-6-luna|max", snapshotDate: null }];
     expect(isAaSection(s)).toBe(true);
   });
 
@@ -83,7 +83,7 @@ describe("isAaSection gate depth (#2415)", () => {
     nullEntry.testRuns = [null];
     expect(isAaSection(nullEntry)).toBe(false);
     const undefDate = completeSection();
-    undefDate.testRuns = [{ testRunKey: "run-1" }];
+    undefDate.testRuns = [{ testRunKey: "run-1", modelVariantKey: "openai|gpt-6-luna|max" }];
     expect(isAaSection(undefDate)).toBe(false);
   });
 
