@@ -1592,8 +1592,12 @@ pub enum WorldCommand {
         /// Store the replica on disk so it survives between runs.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
-        /// Give up after this many seconds without a completed sync.
-        #[arg(long, default_value_t = 30)]
+        /// Give up after this many seconds without a completed sync (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         timeout_secs: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -1928,8 +1932,12 @@ pub enum WorldCommand {
         /// Guest capability from `id world invite`.
         #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
         capability: String,
-        /// Stop after this many seconds.
-        #[arg(long, default_value_t = 5)]
+        /// Stop after this many seconds (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 5,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         seconds: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -4394,6 +4402,67 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 9, .. })
         ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_timeout_ranges() {
+        let node = "a".repeat(64);
+        let logs_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "logs".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--seconds".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+        let mirror_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "mirror".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--timeout-secs".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+
+        let logs = Cli::parse_from(["id", "world", "logs", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            logs.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 5, .. })
+        ));
+        let mirror = Cli::parse_from(["id", "world", "mirror", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            mirror.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs: 30, .. })
+        ));
+
+        for seconds in ["0", "86400"] {
+            let logs = Cli::try_parse_from(logs_args(seconds)).unwrap();
+            let mirror = Cli::try_parse_from(mirror_args(seconds)).unwrap();
+            let expected = seconds.parse::<u64>().unwrap();
+            assert!(matches!(
+                logs.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds, .. } if seconds == expected)
+            ));
+            assert!(matches!(
+                mirror.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs, .. } if timeout_secs == expected)
+            ));
+        }
+
+        for seconds in ["86401", "18446744073709551615"] {
+            let logs_error = Cli::try_parse_from(logs_args(seconds)).unwrap_err();
+            assert!(logs_error.to_string().contains("--seconds"));
+            let mirror_error = Cli::try_parse_from(mirror_args(seconds)).unwrap_err();
+            assert!(mirror_error.to_string().contains("--timeout-secs"));
+        }
     }
 
     #[test]
