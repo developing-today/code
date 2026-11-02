@@ -368,17 +368,30 @@ pub struct ServeOptions {
 /// One web listener in the bindings model (#2145).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WebBinding {
-    /// Address the listener binds to.
-    pub bind: std::net::IpAddr,
-    /// Port the listener binds to (0 = OS-assigned).
-    pub port: u16,
+    /// Full socket address, including any IPv6 scope ID (port 0 = OS-assigned).
+    pub addr: SocketAddr,
 }
 
 impl WebBinding {
     /// The socket address this binding listens on.
     #[must_use]
     pub fn socket_addr(&self) -> SocketAddr {
-        SocketAddr::new(self.bind, self.port)
+        self.addr
+    }
+
+    /// The same socket address with the port selected by the OS.
+    #[must_use]
+    pub fn with_port(&self, port: u16) -> SocketAddr {
+        match self.addr {
+            SocketAddr::V4(mut addr) => {
+                addr.set_port(port);
+                SocketAddr::V4(addr)
+            }
+            SocketAddr::V6(mut addr) => {
+                addr.set_port(port);
+                SocketAddr::V6(addr)
+            }
+        }
     }
 }
 
@@ -415,10 +428,7 @@ pub fn resolve_web_bindings(
         );
         return Ok(web_listen
             .iter()
-            .map(|addr| WebBinding {
-                bind: addr.ip(),
-                port: addr.port(),
-            })
+            .map(|addr| WebBinding { addr: *addr })
             .collect());
     }
     if !config_bindings.is_empty() {
@@ -426,10 +436,7 @@ pub fn resolve_web_bindings(
             .iter()
             .map(|line| {
                 line.parse::<SocketAddr>()
-                    .map(|addr| WebBinding {
-                        bind: addr.ip(),
-                        port: addr.port(),
-                    })
+                    .map(|addr| WebBinding { addr })
                     .map_err(|e| {
                         anyhow::anyhow!(
                             "invalid [web_bindings] entry {line:?} in defaults.conf: {e}                              (expected IP:PORT, e.g. 127.0.0.1:3000)"
@@ -439,8 +446,7 @@ pub fn resolve_web_bindings(
             .collect();
     }
     Ok(vec![WebBinding {
-        bind: legacy_bind,
-        port: legacy_port,
+        addr: SocketAddr::new(legacy_bind, legacy_port),
     }])
 }
 
@@ -1259,7 +1265,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[allow(unused_mut)] // web_binding_addrs is only mutated with the `web` feature
     let mut web_binding_addrs: Vec<String> = Vec::new();
     #[cfg(feature = "web")]
-    let web_listeners: Vec<(std::net::IpAddr, u16, tokio::net::TcpListener)> = if web {
+    let web_listeners: Vec<(SocketAddr, tokio::net::TcpListener)> = if web {
         info!("serve startup: binding web listener(s) (#190 breadcrumb)");
         let mut listeners = Vec::new();
         for binding in &web_bindings {
@@ -1268,15 +1274,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 .await
                 .map_err(|e| anyhow::anyhow!("web: failed to bind listener {addr}: {e}"))?;
             let actual_port = listener.local_addr()?.port();
+            let actual_addr = binding.with_port(actual_port);
             info!(
-                addr = %SocketAddr::new(binding.bind, actual_port),
+                addr = %actual_addr,
                 "serve startup: web listener bound (#190 breadcrumb)"
             );
             if web_port.is_none() {
                 web_port = Some(actual_port);
             }
-            web_binding_addrs.push(SocketAddr::new(binding.bind, actual_port).to_string());
-            listeners.push((binding.bind, actual_port, listener));
+            web_binding_addrs.push(actual_addr.to_string());
+            listeners.push((actual_addr, listener));
         }
         listeners
     } else {
@@ -1360,64 +1367,86 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let mut handles = Vec::new();
         if !web_listeners.is_empty() {
             status!("web: {} listener(s)", web_listeners.len());
-        }
-        // One shared AppState for all listeners (the identity store
-        // opens exclusively); each listener's router is finished with
-        // its own per-bind security.
-        let securities: Vec<crate::web::WebSecurity> = web_listeners
-            .iter()
-            .map(|(listener_bind, _, _)| {
-                crate::web::WebSecurity::for_bind(*listener_bind, web_token.clone(), &[])
-            })
-            .collect();
-        let web_routers = crate::web::web_routers(
-            store_handle.clone(),
-            Some(peer_discovery.clone()),
-            node_id.to_string(),
-            Arc::clone(&tag_store),
-            key.to_bytes(),
-            std::path::Path::new(KEY_FILE).with_file_name(".identity.redb"),
-            securities,
-            world_hub.clone(),
-            web_cookie_secure,
-            event_events.as_ref().map(Arc::clone),
-        )
-        .await?;
-        for ((listener_bind, actual_port, listener), web_router) in
-            web_listeners.into_iter().zip(web_routers)
-        {
-            let shown_host = if listener_bind.is_unspecified() || listener_bind.is_loopback() {
-                "localhost".to_owned()
-            } else {
-                listener_bind.to_string()
-            };
-            if web_token.is_some() {
-                status!("web: http://{shown_host}:{actual_port}/?token=<redacted>");
-            } else {
-                status!("web: http://{shown_host}:{actual_port}");
-            }
-            #[cfg(feature = "world")]
-            if world {
-                status!("world: browser http://{shown_host}:{actual_port}/world");
-            }
-            if !listener_bind.is_loopback() && web_token.is_none() {
-                status_err!(
-                    "warning: the web UI is bound to {listener_bind} without --web-token; \
-                     anyone who can reach port {actual_port} can read and modify files"
-                );
-            }
-            if world_hub.is_some() && !listener_bind.is_loopback() && !web_cookie_secure {
-                status_err!(
-                    "warning: the admin sign-in form is served over plain HTTP on {listener_bind}; \
-                     its token and session cookie travel in clear unless HTTPS is terminated \
-                     in front (then pass --web-cookie-secure) or the UI is bound to loopback"
-                );
-            }
-            handles.push(tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, web_router).await {
-                    tracing::error!("web server error: {}", e);
+            // One shared AppState for all listeners (the identity store
+            // opens exclusively); each listener's router is finished with
+            // its own per-bind security. Do not initialize web persistence
+            // when serving without the web interface.
+            let securities: Vec<crate::web::WebSecurity> = web_listeners
+                .iter()
+                .map(|(listener_addr, _)| {
+                    crate::web::WebSecurity::for_bind(listener_addr.ip(), web_token.clone(), &[])
+                })
+                .collect();
+            let web_routers = crate::web::web_routers(
+                store_handle.clone(),
+                Some(peer_discovery.clone()),
+                node_id.to_string(),
+                Arc::clone(&tag_store),
+                key.to_bytes(),
+                std::path::Path::new(KEY_FILE).with_file_name(".identity.redb"),
+                securities,
+                world_hub.clone(),
+                web_cookie_secure,
+                event_events.as_ref().map(Arc::clone),
+            )
+            .await?;
+            for ((listener_addr, listener), web_router) in
+                web_listeners.into_iter().zip(web_routers)
+            {
+                let listener_ip = listener_addr.ip();
+                let shown_host = match listener_addr {
+                    SocketAddr::V4(addr)
+                        if addr.ip().is_unspecified() || addr.ip().is_loopback() =>
+                    {
+                        "localhost".to_owned()
+                    }
+                    SocketAddr::V4(addr) => addr.ip().to_string(),
+                    SocketAddr::V6(addr)
+                        if addr.ip().is_unspecified() || addr.ip().is_loopback() =>
+                    {
+                        "localhost".to_owned()
+                    }
+                    SocketAddr::V6(addr) if addr.scope_id() == 0 => {
+                        format!("[{}]", addr.ip())
+                    }
+                    SocketAddr::V6(addr) => {
+                        format!("[{}%25{}]", addr.ip(), addr.scope_id())
+                    }
+                };
+                if web_token.is_some() {
+                    status!(
+                        "web: http://{shown_host}:{}/?token=<redacted>",
+                        listener_addr.port()
+                    );
+                } else {
+                    status!("web: http://{shown_host}:{}", listener_addr.port());
                 }
-            }));
+                #[cfg(feature = "world")]
+                if world {
+                    status!(
+                        "world: browser http://{shown_host}:{}/world",
+                        listener_addr.port()
+                    );
+                }
+                if !listener_ip.is_loopback() && web_token.is_none() {
+                    status_err!(
+                        "warning: the web UI is bound to {listener_addr} without --web-token; \
+                         anyone who can reach this listener can read and modify files"
+                    );
+                }
+                if world_hub.is_some() && !listener_ip.is_loopback() && !web_cookie_secure {
+                    status_err!(
+                        "warning: the admin sign-in form is served over plain HTTP on {listener_addr}; \
+                         its token and session cookie travel in clear unless HTTPS is terminated \
+                         in front (then pass --web-cookie-secure) or the UI is bound to loopback"
+                    );
+                }
+                handles.push(tokio::spawn(async move {
+                    if let Err(e) = axum::serve(listener, web_router).await {
+                        tracing::error!("web server error: {}", e);
+                    }
+                }));
+            }
         }
         handles
     };
@@ -2222,8 +2251,70 @@ mod tests {
 
     #[test]
     fn test_resolve_web_bindings_legacy_fallback() {
+        let bindings =
+            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap();
+        assert_eq!(
+            bindings,
+            vec![WebBinding {
+                addr: "127.0.0.1:3000".parse().unwrap()
+            }]
+        );
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_flags_win_over_config() {
+        let flags: Vec<SocketAddr> = vec![
+            "127.0.0.1:4001".parse().unwrap(),
+            "[::1]:4002".parse().unwrap(),
+        ];
+        let config = vec!["127.0.0.1:3000".to_owned()];
+        let bindings = resolve_web_bindings(
+            &flags,
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(
+            bindings[0].socket_addr(),
+            "127.0.0.1:4001".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            bindings[1].socket_addr(),
+            "[::1]:4002".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_config_only() {
+        let config = vec!["127.0.0.1:3000".to_owned(), "192.0.2.10:3001".to_owned()];
         let bindings = resolve_web_bindings(
             &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            9999,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[1].socket_addr().port(), 3001);
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_preserves_ipv6_scope_id() {
+        let scoped_addr = SocketAddr::V6(std::net::SocketAddrV6::new(
+            "fe80::1".parse().unwrap(),
+            4001,
+            0,
+            3,
+        ));
+        let from_flags = resolve_web_bindings(
+            &[scoped_addr],
             false,
             false,
             "127.0.0.1".parse().unwrap(),
@@ -2231,35 +2322,22 @@ mod tests {
             &[],
         )
         .unwrap();
+        assert_eq!(from_flags[0].socket_addr(), scoped_addr);
         assert_eq!(
-            bindings,
-            vec![WebBinding {
-                bind: "127.0.0.1".parse().unwrap(),
-                port: 3000
-            }]
+            from_flags[0].with_port(4100).to_string(),
+            "[fe80::1%3]:4100"
         );
-    }
 
-    #[test]
-    fn test_resolve_web_bindings_flags_win_over_config() {
-        let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap(), "[::1]:4002".parse().unwrap()];
-        let config = vec!["127.0.0.1:3000".to_owned()];
-        let bindings =
-            resolve_web_bindings(&flags, false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
-                .unwrap();
-        assert_eq!(bindings.len(), 2);
-        assert_eq!(bindings[0].socket_addr(), "127.0.0.1:4001".parse::<SocketAddr>().unwrap());
-        assert_eq!(bindings[1].socket_addr(), "[::1]:4002".parse::<SocketAddr>().unwrap());
-    }
-
-    #[test]
-    fn test_resolve_web_bindings_config_only() {
-        let config = vec!["127.0.0.1:3000".to_owned(), "192.0.2.10:3001".to_owned()];
-        let bindings =
-            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 9999, &config)
-                .unwrap();
-        assert_eq!(bindings.len(), 2);
-        assert_eq!(bindings[1].port, 3001);
+        let from_config = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[scoped_addr.to_string()],
+        )
+        .unwrap();
+        assert_eq!(from_config[0].socket_addr(), scoped_addr);
     }
 
     #[test]
