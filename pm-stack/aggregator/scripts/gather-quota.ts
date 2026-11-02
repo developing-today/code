@@ -28,6 +28,13 @@
 //      the gatherer ingests them in the same tick. A document older
 //      than 30 minutes means the producer is unreachable — an error
 //      entry, never zeros.
+//   4. The native ClinePass token adapter (#1159, src/clinepass-
+//      adapter.ts on the #1153 framework): fills the ClinePass row
+//      when the OpenChamber module did not already produce a fresh
+//      one this tick, and only when CLINEPASS_CREDENTIAL_REF names
+//      a credential reference on this host. An expired token is
+//      session-expired / re-login with the last-known row retained
+//      (#1268) — never a 0% row.
 //
 // Outputs:
 //   - quota-current.json — the latest-state contract (model.ts
@@ -65,7 +72,11 @@
 //      by name via ~/tools/bws-env conventions — BWS_BIN and
 //      BWS_ACCESS_TOKEN_FILE override its plumbing),
 //      TURSO_ORG_SLUG (dezren39), TURSO_API_BASE
-//      (https://api.turso.tech).
+//      (https://api.turso.tech),
+//      CLINEPASS_CREDENTIAL_REF (bitwarden:<name> or file:<path> —
+//      a CredentialRef for the native ClinePass adapter (#1159),
+//      never a credential value; unset = not configured on this
+//      host, live verification gated on #1155).
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -88,6 +99,13 @@ import {
   type TursoUsageDoc,
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
+import {
+  CLINEPASS_PROVIDER_ID,
+  clinePassErrorEntry,
+  credentialRefFromConfig,
+  gatherClinePass,
+} from "../src/clinepass-adapter.ts";
+import type { CredentialRef } from "../src/token-adapter.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -308,6 +326,64 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
   }
 }
 
+/**
+ * Resolve a ClinePass CredentialRef to its value at tick time
+ * (#1159): Bitwarden by name (the resolveBwsSecret plumbing), or a
+ * file whose owner-only mode is enforced, not assumed. The value is
+ * handed to the adapter's fetch and never logged or stored.
+ */
+async function resolveClinePassCredentialValue(ref: CredentialRef): Promise<string | null> {
+  if (ref.kind === "bitwarden") return resolveBwsSecret(ref.name);
+  try {
+    const st = await stat(ref.path);
+    if ((st.mode & 0o077) !== 0) return null;
+    const v = (await readFile(ref.path, "utf8")).trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The native ClinePass adapter run (#1159). Null when no credential
+ * reference is configured on this host — the adapter is registered
+ * but dormant until #1155 names the provenance. A misconfigured
+ * reference is an error row naming the defect, never a value.
+ * Previous-value retention is the tick's #1268 pass below, so the
+ * adapter is collected with no previous here.
+ */
+async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
+  const t0 = Date.now();
+  let ref: CredentialRef | null;
+  try {
+    ref = credentialRefFromConfig(process.env.CLINEPASS_CREDENTIAL_REF);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      id: CLINEPASS_PROVIDER_ID,
+      state: "error",
+      ms: Date.now() - t0,
+      entries: [clinePassErrorEntry(detail, tickIso)],
+      error: detail,
+    };
+  }
+  if (!ref) return null;
+  const outcome = await gatherClinePass({
+    now: new Date(tickIso),
+    previous: null,
+    credentialRef: ref,
+    resolveCredentialValue: resolveClinePassCredentialValue,
+  });
+  const entry = outcome.value ?? clinePassErrorEntry(outcome.detail ?? `cline-pass adapter: ${outcome.status}`, tickIso);
+  return {
+    id: CLINEPASS_PROVIDER_ID,
+    state: outcome.status === "ok" ? "ok" : "error",
+    ms: Date.now() - t0,
+    entries: [entry],
+    ...(outcome.status !== "ok" ? { error: outcome.detail ?? outcome.status } : {}),
+  };
+}
+
 interface ProviderRun {
   id: string;
   state: "ok" | "error";
@@ -429,6 +505,22 @@ async function main(): Promise<number> {
   const runs = await mapWithConcurrency(providerIds, gatherConcurrency, (id) => runProvider(quota, id, tickAt));
   for (const fx of FILE_EXPORTS) runs.push(await runFileExport(fx));
   runs.push(await runTurso(tickAt));
+
+  // #1159: register the native ClinePass adapter. Exactly one
+  // cline-pass run survives: a fresh module row wins (the native run
+  // is skipped), otherwise the native run replaces the module's
+  // errored run so #1268 retention below applies to one run only.
+  const clineRun = await runClinePass(tickAt);
+  if (clineRun) {
+    const idx = runs.findIndex((r) => r.id === CLINEPASS_PROVIDER_ID);
+    if (idx === -1) {
+      runs.push(clineRun);
+    } else if (runs[idx].entries.some((e) => e.state === "ok")) {
+      console.log("quota-gatherer: cline-pass ok via openchamber module - native adapter run skipped");
+    } else {
+      runs[idx] = clineRun;
+    }
+  }
 
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
