@@ -215,10 +215,25 @@ func warnSink(opts Options) io.Writer {
 func installEnvIdentity(env map[string]string, npmrc []byte) string {
 	var keys []string
 	seen := map[string]bool{}
-	for k := range env {
-		if k == "NODE_ENV" || strings.HasPrefix(k, "NPM_CONFIG_") {
+	add := func(k string) {
+		if !seen[k] {
 			keys = append(keys, k)
 			seen[k] = true
+		}
+	}
+	for k := range env {
+		if k == "NODE_ENV" || strings.HasPrefix(k, "NPM_CONFIG_") {
+			add(k)
+		}
+	}
+	// The installer inherits the process environment too (installEnv
+	// hands it os.Environ overlaid with the run env), so an inherited
+	// NODE_ENV or NPM_CONFIG_* value changes the installed tree even
+	// when the caller supplied no override for it.
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "NODE_ENV" || strings.HasPrefix(k, "NPM_CONFIG_") {
+			add(k)
 		}
 	}
 	// A transported .npmrc may interpolate arbitrary environment

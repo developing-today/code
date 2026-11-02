@@ -1427,6 +1427,34 @@ func TestWorkDirKeySeparatesInstallEnvironments(t *testing.T) {
 	if other != none {
 		t.Fatal("workdir key separates on an environment variable no installer reads")
 	}
+
+	// The installer inherits the daemon/CLI process environment too; a
+	// caller-supplied environment map is only an override, not the whole
+	// installation environment.
+	t.Setenv("NODE_ENV", "production")
+	inheritedProd := workDirKeyMaterial(KindNode, mk(nil))
+	t.Setenv("NODE_ENV", "development")
+	inheritedDev := workDirKeyMaterial(KindNode, mk(nil))
+	if inheritedProd == inheritedDev {
+		t.Fatal("workdir key ignores inherited NODE_ENV")
+	}
+	t.Setenv("NPM_CONFIG_OMIT", "dev")
+	inheritedOmitDev := workDirKeyMaterial(KindNode, mk(nil))
+	t.Setenv("NPM_CONFIG_OMIT", "optional")
+	inheritedOmitOptional := workDirKeyMaterial(KindNode, mk(nil))
+	if inheritedOmitDev == inheritedOmitOptional {
+		t.Fatal("workdir key ignores inherited NPM_CONFIG_* settings")
+	}
+
+	// Explicit run values win over inherited values and use the same
+	// identity as the equivalent inherited effective environment.
+	t.Setenv("NODE_ENV", "production")
+	overridden := workDirKeyMaterial(KindNode, mk(map[string]string{"NODE_ENV": "development"}))
+	t.Setenv("NODE_ENV", "development")
+	inherited := workDirKeyMaterial(KindNode, mk(nil))
+	if overridden != inherited {
+		t.Fatal("workdir key does not use the effective NODE_ENV override")
+	}
 }
 
 // TestMaterialiseDepsSameSpellingDifferentOrigins is the Codex
