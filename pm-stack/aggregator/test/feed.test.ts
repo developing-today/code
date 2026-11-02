@@ -3,6 +3,7 @@ import {
   feedSectionStatus,
   isChargeRow,
   isFleetFeed,
+  isPaygLine,
   isProjectPoolSection,
   isUnmatchedCharge,
   loadFeed,
@@ -13,13 +14,14 @@ import {
   sanitizeFeedMetadata,
   sanitizeSubscriptions,
 } from "../src/feed.ts";
+import { buildAttentionFlags } from "../src/derive.ts";
 import { renderQuota } from "../src/render.ts";
-import { renderQuota } from "../src/render.ts";
+import { extractPaygLines } from "../src/saas-extract.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
-import type { QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
+import type { PaygLine, QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -334,6 +336,140 @@ describe("feed subscriptions sanitization (#2446)", () => {
     expect(clean?.subscriptionsDropped).toBeUndefined();
   });
 });
+
+describe("feed PAYG sanitization (#2450)", () => {
+  const PAYG: PaygLine = {
+    id: "meta-payg",
+    label: "Meta Model API PAYG",
+    accruedUsd: 23.92,
+    collectedUsd: 23.91,
+    estimate: { low: 20, high: 25, period: "Oct 19–25", note: "console estimate" },
+    unbilledUsd: 6.01,
+    note: "Oct 19–25 console read",
+    measuredAt: "2026-10-25",
+    sourceClass: "console",
+  };
+  const feedWithPayg = (payg: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    ...(payg === undefined ? {} : { payg }),
+  });
+  const loadWithPayg = async (payg: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-payg-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithPayg(payg)));
+    return loadFeed(file);
+  };
+
+  test("PaygLine validates the fields its consumers dereference", () => {
+    expect(isPaygLine(PAYG)).toBe(true);
+    expect(
+      isPaygLine({
+        ...PAYG,
+        accruedUsd: null,
+        collectedUsd: null,
+        estimate: null,
+        unbilledUsd: null,
+        measuredAt: null,
+        sourceClass: "invoice",
+      }),
+    ).toBe(true);
+    for (const bad of [
+      { ...PAYG, id: 42 },
+      { ...PAYG, label: null },
+      { ...PAYG, accruedUsd: "23.92" },
+      { ...PAYG, accruedUsd: Number.POSITIVE_INFINITY },
+      { ...PAYG, collectedUsd: "23.91" },
+      { ...PAYG, unbilledUsd: "6.01" },
+      { ...PAYG, note: 42 },
+      { ...PAYG, measuredAt: 42 },
+      { ...PAYG, sourceClass: "unknown" },
+    ]) {
+      expect(isPaygLine(bad)).toBe(false);
+    }
+  });
+
+  test("[null] drops the row, keeps the feed, and surfaces the count", async () => {
+    const loaded = await loadWithPayg([null]);
+    expect(loaded).not.toBeNull();
+    expect(loaded?.payg).toEqual([]);
+    expect(loaded?.paygDropped).toBe(1);
+  });
+
+  test("a non-array section is dropped whole and counted without rejecting the feed", async () => {
+    for (const bad of ["nope", { id: "not-an-array" }]) {
+      const feed = feedWithPayg(bad);
+      expect(isFleetFeed(feed)).toBe(true);
+      const loaded = await loadWithPayg(bad);
+      expect(loaded).not.toBeNull();
+      expect(loaded?.payg).toBeUndefined();
+      expect(loaded?.paygDropped).toBe(1);
+    }
+  });
+
+  test("malformed money rows drop individually while valid siblings survive", async () => {
+    const loaded = await loadWithPayg([{ ...PAYG, accruedUsd: "23.92" }, PAYG, null]);
+    expect(loaded?.payg).toEqual([PAYG]);
+    expect(loaded?.paygDropped).toBe(2);
+  });
+
+  test("estimate variants are checked structurally", async () => {
+    const noEstimate = { ...PAYG };
+    delete noEstimate.estimate;
+    const nullEstimate = { ...PAYG, estimate: null };
+    const estimateWithoutNote = { ...PAYG, estimate: { low: 20, high: 25, period: "month" } };
+    const malformed = [
+      { ...PAYG, estimate: "25" },
+      { ...PAYG, estimate: { high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: "20", high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: Number.POSITIVE_INFINITY, high: 25, period: "month" } },
+      { ...PAYG, estimate: { low: 20, high: 25, period: 3 } },
+      { ...PAYG, estimate: { low: 20, high: 25, period: "month", note: 3 } },
+    ];
+    const loaded = await loadWithPayg([noEstimate, nullEstimate, PAYG, estimateWithoutNote, ...malformed]);
+    expect(loaded?.payg).toEqual([noEstimate, nullEstimate, PAYG, estimateWithoutNote]);
+    expect(loaded?.paygDropped).toBe(malformed.length);
+  });
+
+  test("absent and clean PAYG stay unchanged; collector-produced lines are accepted", async () => {
+    const absent = await loadWithPayg(undefined);
+    expect(absent?.payg).toBeUndefined();
+    expect(absent?.paygDropped).toBeUndefined();
+    const clean = await loadWithPayg([PAYG]);
+    expect(clean?.payg).toEqual([PAYG]);
+    expect(clean?.paygDropped).toBeUndefined();
+
+    const produced = extractPaygLines(
+      "### Meta Model API\nPAYG Oct 19–25: $23.92 accrued / $23.91 collected",
+      "$29.60 per budget alert vs $45.10 per gateway cost attribution",
+    );
+    expect(produced).toHaveLength(2);
+    const loaded = await loadWithPayg(produced);
+    expect(loaded?.payg).toEqual(produced);
+    expect(loaded?.paygDropped).toBeUndefined();
+  });
+
+  test("sanitized survivors still render and contribute attention flags", async () => {
+    const loaded = await loadWithPayg([PAYG, null]);
+    const usage = {
+      services: [],
+      payg: loaded?.payg ?? [],
+      charges: [],
+      attention: [],
+      domains: null,
+      subscriptions: [],
+      history: {},
+    } as never;
+    expect(() => renderQuota(loaded!.quota, {} as never, usage)).not.toThrow();
+    expect(buildAttentionFlags(loaded!.quota, { services: [], payg: loaded!.payg ?? [] })).toContainEqual(
+      expect.objectContaining({ kind: "payg-unbilled", label: PAYG.label }),
+    );
+    expect(loaded?.paygDropped).toBe(1);
+  });
+});
+
 describe("isChargeRow + loadFeed charges sanitization (#2445)", () => {
   const CHOICES = { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] };
   const ROW = {
