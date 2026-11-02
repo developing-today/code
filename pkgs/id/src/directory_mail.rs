@@ -339,13 +339,15 @@ fn expect(reader: &mut BufReader<TcpStream>, code: u16, deadline: Instant) -> Re
         let Some(line) = read_reply_line(reader, deadline)? else {
             bail!("the mail relay closed the connection");
         };
-        let line = line.trim_end();
+        let line = line.trim_end_matches(['\r', '\n']);
         ensure!(
             line.get(..3).and_then(|c| c.parse::<u16>().ok()) == Some(code),
             "the mail relay replied: {line}"
         );
-        if line.as_bytes().get(3) != Some(&b'-') {
-            return Ok(());
+        match line.as_bytes().get(3) {
+            Some(b'-') => {}
+            Some(b' ') | None => return Ok(()),
+            _ => bail!("the mail relay replied: {line}"),
         }
         continuations += 1;
         ensure!(
@@ -574,6 +576,14 @@ mod tests {
 
     /// A relay that records every line it is sent, refusing the recipient if asked.
     fn fake_relay(refuse_recipient: bool) -> (SocketAddr, JoinHandle<Vec<String>>) {
+        fake_relay_with_ehlo_reply(b"250-fake\r\n250 OK\r\n", refuse_recipient)
+    }
+
+    /// A relay whose EHLO response can be varied to exercise reply parsing.
+    fn fake_relay_with_ehlo_reply(
+        ehlo_reply: &'static [u8],
+        refuse_recipient: bool,
+    ) -> (SocketAddr, JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -607,7 +617,7 @@ mod tests {
                     continue;
                 }
                 let reply: &[u8] = match command.split(' ').next().unwrap_or_default() {
-                    "EHLO" => b"250-fake\r\n250 OK\r\n",
+                    "EHLO" => ehlo_reply,
                     "RCPT" if refuse_recipient => b"550 no such user\r\n",
                     "QUIT" => {
                         writer.write_all(b"221 bye\r\n").unwrap();
@@ -620,6 +630,56 @@ mod tests {
             seen
         });
         (addr, handle)
+    }
+
+    #[test]
+    fn malformed_reply_terminators_are_refused() {
+        for (reply, reply_line) in [
+            (&b"2500 bogus code\r\n"[..], "2500 bogus code"),
+            (&b"250OK no separator\r\n"[..], "250OK no separator"),
+            (&b"250\tbad separator\r\n"[..], "250\tbad separator"),
+            (
+                &b"250-first line\r\n2500 final line\r\n"[..],
+                "2500 final line",
+            ),
+        ] {
+            let (relay, server) = fake_relay_with_ehlo_reply(reply, false);
+            let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+            let error = sink.send(&sample()).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("the mail relay replied: {reply_line}"),
+                "unexpected error for {reply:?}"
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn valid_single_line_bare_and_multiline_replies_are_accepted() {
+        for reply in [
+            &b"250 ok\r\n"[..],
+            &b"250\r\n"[..],
+            &b"250-first line\r\n250 final line\r\n"[..],
+        ] {
+            let (relay, server) = fake_relay_with_ehlo_reply(reply, false);
+            let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+            sink.send(&sample()).unwrap();
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_wrong_reply_code_is_still_refused() {
+        let (relay, server) = fake_relay_with_ehlo_reply(b"251 not 250\r\n", false);
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        let error = sink.send(&sample()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the mail relay replied: 251 not 250",
+            "unexpected error: {error:#}"
+        );
+        server.join().unwrap();
     }
 
     #[test]

@@ -1,9 +1,19 @@
 //! App-folder manifests and host-side discovery.
+//!
+//! Symlink rule for app folders (resolve and contain): discovery
+//! canonicalizes each candidate app folder and the apps root. A
+//! candidate whose resolved path lies outside the canonicalized apps
+//! root is reported as a named per-app error and is never registered,
+//! so a symlinked folder cannot smuggle an external folder in as a
+//! local app. A symlink whose resolved target stays inside the apps
+//! root registers normally, under the symlink's own folder name.
+//! Symlinks *inside* a real app folder are explicitly out of scope
+//! here; they are owned by the Phase 4 audit (issue #4203).
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// The strict, version-one description of one unpacked app folder.
@@ -195,6 +205,19 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
 pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     let root = root.as_ref();
     let mut discovery = AppDiscovery::default();
+    // The canonicalized root is the containment boundary for the
+    // resolve-and-contain symlink rule documented at the top of this
+    // module. A root that cannot be canonicalized is reported exactly
+    // like a root that cannot be read.
+    let canonical_root = match fs::canonicalize(root) {
+        Ok(path) => path,
+        Err(error) => {
+            discovery
+                .errors
+                .push(format!("{}: {error}", root.display()));
+            return discovery;
+        }
+    };
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(error) => {
@@ -222,6 +245,30 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     for folder in folders {
         let manifest_path = folder.join("app.toml");
         if !manifest_path.is_file() {
+            continue;
+        }
+        // Resolve and contain: the candidate folder itself must resolve
+        // to a path inside the canonicalized apps root. A resolution
+        // failure or an outside resolution is a named per-app error and
+        // the folder is not registered.
+        let resolved = match fs::canonicalize(&folder) {
+            Ok(path) => path,
+            Err(error) => {
+                discovery.errors.push(format!(
+                    "{}: cannot resolve app folder {}: {error}",
+                    folder.display(),
+                    folder.display()
+                ));
+                continue;
+            }
+        };
+        if !resolved.starts_with(&canonical_root) {
+            discovery.errors.push(format!(
+                "{}: app folder resolves to {} outside the apps root {} - symlinked app folders must resolve inside the apps root",
+                folder.display(),
+                resolved.display(),
+                canonical_root.display()
+            ));
             continue;
         }
         let folder_name = folder
@@ -428,5 +475,59 @@ commands = ["play"]
         assert!(discovery.errors[0].contains("program.source"));
         assert!(discovery.errors[0].contains("program/"));
         assert!(discovery.errors[0].contains("does not exist"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn discovery_rejects_symlinked_app_folder_pointing_outside_root() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let external_app = outside.path().join("tic-tac-toe");
+        fs::create_dir_all(external_app.join("program")).unwrap();
+        fs::write(external_app.join("app.toml"), MANIFEST).unwrap();
+        symlink(&external_app, root.path().join("tic-tac-toe")).unwrap();
+
+        let discovery = discover_apps(root.path());
+
+        assert!(
+            discovery.apps.is_empty(),
+            "outside symlink must not register: {:?}",
+            discovery.apps
+        );
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(
+            discovery.errors[0].contains("tic-tac-toe"),
+            "error names the app folder: {}",
+            discovery.errors[0]
+        );
+        assert!(
+            discovery.errors[0].contains("outside the apps root"),
+            "error names the containment rule: {}",
+            discovery.errors[0]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_registers_symlinked_app_folder_resolving_inside_root() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        // The real app is nested under the root but is not an immediate
+        // child, so the only discovery path to it is through the symlink.
+        let stored = root.path().join("stored").join("tic-tac-toe");
+        fs::create_dir_all(stored.join("program")).unwrap();
+        fs::write(stored.join("app.toml"), MANIFEST).unwrap();
+        symlink(&stored, root.path().join("tic-tac-toe")).unwrap();
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(
+            discovery.errors.len(),
+            0,
+            "in-root symlink errors: {:?}",
+            discovery.errors
+        );
+        assert_eq!(discovery.apps.len(), 1);
+        assert_eq!(discovery.apps[0].manifest.app.id, "tic-tac-toe");
     }
 }

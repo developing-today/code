@@ -636,7 +636,17 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let output = shell_capture(&left)?;
 
         // Replace - in right side with stdin content marker
-        let mut new_result = right.replace(" - ", &format!(" __STDIN_CONTENT__:{output} "));
+        // The newline form comes first: a mid-line placeholder followed
+        // by a newline (the shape a command substitution expanding to
+        // "put -" + newline + " name" produces) is not matched by
+        // " - ", and without this replace the fallback below appends
+        // the marker at the end, where handle_stdin_content rejects
+        // the line (#4428; regression from PR #3096, which removed this
+        // replace along with the bogus trailing ones). The marker keeps
+        // its trailing newline, preserving the pre-#3096 shape.
+        let mut new_result = right
+            .replace(" -\n", &format!(" __STDIN_CONTENT__:{output}\n"))
+            .replace(" - ", &format!(" __STDIN_CONTENT__:{output} "));
 
         // If no - found, might be at end
         if !new_result.contains("__STDIN_CONTENT__") {
@@ -938,6 +948,27 @@ mod tests {
     fn test_preprocess_pipe_midline_placeholder_substitutes() {
         match preprocess_repl_line("echo hi |> put - name").unwrap() {
             ReplInput::Ready(s) => assert_eq!(s, "put __STDIN_CONTENT__:hi name"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_pipe_newline_midline_placeholder_substitutes() {
+        // Regression #4428: PR #3096 removed the pipe stage's newline
+        // replace, so a mid-line placeholder followed by a newline
+        // produced no marker; the fallback appended the marker at the
+        // end and handle_stdin_content rejected the line, storing
+        // nothing. The placeholder must substitute in place, preserving
+        // the marker-plus-newline shape, yielding the same Ready line
+        // the space-separated form produces apart from the newline.
+        // End-to-end form: the substitution expands to "put -\n name".
+        match preprocess_repl_line("echo hi |> $(printf 'put -\\n name')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "put __STDIN_CONTENT__:hi\n name"),
+            _ => panic!("expected Ready"),
+        }
+        // Direct form, without the command-substitution stage.
+        match preprocess_repl_line("echo hi |> put -\n name").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "put __STDIN_CONTENT__:hi\n name"),
             _ => panic!("expected Ready"),
         }
     }
