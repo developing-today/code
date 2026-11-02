@@ -294,6 +294,13 @@ describe("payload assembly + section shape", () => {
     expect(isAaSection({ generatedAt: "x", batch: "y", rankings: [] })).toBe(false);
   });
 
+  test("isAaSection rejects the absent form with impossible generatedAt dates (#3441)", () => {
+    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
+      expect(isAaSection(aaAbsent("Supabase unreachable", generatedAt))).toBe(false);
+    }
+  });
+
   test("summarizeAa: usable-up-to + snapshot vintage", () => {
     const summary = summarizeAa(FIXTURE_AA);
     const lunaKey = FIXTURE_AA.testRuns[0].testRunKey;

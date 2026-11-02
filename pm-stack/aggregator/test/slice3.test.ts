@@ -162,6 +162,15 @@ describe("dns register parser", () => {
     expect(isDnsSection(withStatus("unused"))).toBe(true);
   });
 
+  test("isDnsSection rejects impossible generatedAt dates Date.parse rolls over (#3441)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
+      expect(isDnsSection({ ...good, generatedAt })).toBe(false);
+    }
+  });
+
 });
 
 // --- Identity registry (#906 §3) ---------------------------------------------

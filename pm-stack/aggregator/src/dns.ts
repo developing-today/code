@@ -8,6 +8,7 @@
 // not the competitor.
 import { addDaysYmd, chicagoYmd } from "./derive.ts";
 import type { DnsEntry, DnsSection } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 /** Classification from the register's "Plan / status" cell. */
 export function classifyDnsStatus(plan: string): DnsEntry["status"] {
@@ -75,8 +76,7 @@ export function isDnsSection(v: unknown): v is DnsSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<DnsSection>;
   return (
-    typeof s.generatedAt === "string" &&
-    Number.isFinite(Date.parse(s.generatedAt)) &&
+    isIsoDate(s.generatedAt) &&
     // totalAnnualListUsd is dereferenced with .toFixed on the /dns and
     // usage render paths, so the gate must guarantee a finite number
     // (#2412) — a missing/string/null/NaN total certifies a section the
