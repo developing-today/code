@@ -253,6 +253,21 @@ impl WorldCore {
                             participant.id
                         );
                     }
+                    // #2890: mint refuses scope bits from_bits rejects
+                    // and scopes without JOIN; a journaled Issued entry
+                    // must meet the same bar, or restore would resurrect
+                    // a capability mint could never have issued.
+                    let Some(validated_scopes) = WorldScopes::from_bits(scopes) else {
+                        anyhow::bail!(
+                            "participant {} journaled scopes {scopes:#04x} name no scope",
+                            participant.id
+                        );
+                    };
+                    ensure!(
+                        validated_scopes.contains(WorldScopes::JOIN),
+                        "participant {} journaled scopes must include join scope",
+                        participant.id
+                    );
                     core.next_participant_id = core.next_participant_id.max(
                         participant
                             .id
@@ -264,7 +279,7 @@ impl WorldCore {
                         CapabilityRecord {
                             digest,
                             participant,
-                            scopes: WorldScopes(scopes),
+                            scopes: validated_scopes,
                             parent,
                             revoked: false,
                             bounds: CapabilityBounds { expires_at, uses },
