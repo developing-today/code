@@ -508,4 +508,28 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
     expect(facet?.countLabel).toBe("session records");
     expect(facet?.state).toBe("live");
   });
+
+  test("registry and coverage share sanitized optional feed rows (#2539)", async () => {
+    for (const registry of ["bad", { registry: "bad" }, 42, [null]]) {
+      const src = await sourceWithFeed({ registry });
+      const records = await src.registry();
+      expect(Array.isArray(records)).toBe(true);
+
+      const coverage = await src.coverage();
+      const muse = coverage.find((row) => row.source === "claude-code");
+      expect(muse?.wired).toBe(false);
+      expect(muse?.detail).toContain("no launch records");
+    }
+
+    const clean = await sourceWithFeed({
+      registry: [
+        { id: "ses-muse-1", source: "claude-code", label: "Muse launch" },
+        { id: "ses-opencode-1", source: "opencode-sandbox", label: "OpenCode session" },
+      ],
+    });
+    expect(await clean.registry()).toHaveLength(2);
+    const muse = (await clean.coverage()).find((row) => row.source === "claude-code");
+    expect(muse?.wired).toBe(true);
+    expect(muse?.detail).toContain("1 recorded");
+  });
 });
