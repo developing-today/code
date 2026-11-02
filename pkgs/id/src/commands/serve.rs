@@ -1931,7 +1931,11 @@ async fn run_gossip_loop(
                             if heartbeat.verify() {
                                 debug!(
                                     "presence heartbeat from {}: {} channel(s)",
-                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                    heartbeat
+                                        .node
+                                        .iter()
+                                        .map(|b| format!("{b:02x}"))
+                                        .collect::<String>(),
                                     heartbeat.channels.len()
                                 );
                                 recv_presence.update(heartbeat);
@@ -2169,10 +2173,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -2374,7 +2375,8 @@ mod tests {
         // Removing the other account leaves the device authorized
         // through the author alone; the evaluation reconciles the
         // tracked grant owners with the fold. Not itself a re-add.
-        log.remove(author, group, other, None).unwrap();
+        log.remove(author, group, other, crate::groups::RemoveMode::Revoke)
+            .unwrap();
         assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
 
         // Four genuine revoke + re-add cycles by the remaining account,
@@ -2547,7 +2549,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
@@ -2733,20 +2738,28 @@ mod tests {
     #[test]
     fn test_resolve_web_bindings_conflict_names_the_flag() {
         let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap()];
-        let err = resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--bind"), "{err}");
-        let err = resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--port"), "{err}");
     }
 
     #[test]
     fn test_resolve_web_bindings_malformed_config_line_is_named() {
         let config = vec!["127.0.0.1:3000".to_owned(), "not-an-addr".to_owned()];
-        let err =
-            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
-                .unwrap_err();
+        let err = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
         assert!(err.to_string().contains("[web_bindings]"), "{err}");
     }

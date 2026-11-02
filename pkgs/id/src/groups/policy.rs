@@ -209,16 +209,17 @@ pub enum Removal {
     Weak,
 }
 
-/// What happens to a removed member's grants (design §7.3).
+/// Legacy group-wide delegation preference. New removals carry their own [`RemoveMode`], which is
+/// validated by `remove_policy` and is not overridden by this setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Delegation {
-    /// Grants made before the removal stand. Grants made concurrently with it are void.
+    /// Legacy preference to keep grants made before a removal.
     #[value(name = "keep_prior")]
     KeepPrior,
-    /// A grant stands only while its grantor still holds the scope. The default.
+    /// Legacy preference to cascade a grant when its grantor loses the scope. The default.
     Cascade,
-    /// The removal names a successor, who takes over the removed member's grants from the removal
-    /// on. Without a successor the grants end.
+    /// Legacy preference for transfer removals. New events record a concrete successor in
+    /// `RemoveMode::Transfer`.
     Transfer,
 }
 
@@ -265,8 +266,7 @@ pub struct Policy {
     pub on_member_removed: OnMemberRemoved,
     /// How removals take effect.
     pub removal: Removal,
-    /// The fate of a removed member's grants. `None` means cascade (design §7.3). Read it through
-    /// [`Policy::delegation_mode`].
+    /// Legacy group-wide delegation preference. A removal's concrete [`RemoveMode`] takes precedence.
     pub delegation: Option<Delegation>,
     /// Allowed explicit removal modes and the mode used for `ServerDefault`.
     #[serde(default)]
@@ -318,7 +318,7 @@ impl Policy {
         }
     }
 
-    /// The delegation mode in effect: the record's, or cascade when it names none.
+    /// The legacy delegation preference: the record's, or cascade when it names none.
     pub fn delegation_mode(&self) -> Delegation {
         self.delegation.unwrap_or(Delegation::Cascade)
     }
