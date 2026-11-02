@@ -57,8 +57,16 @@ pub fn world_routes() -> axum::Router<WorldWebState> {
 /// server (or served side by side) without either seeing the
 /// other's channel.
 pub fn world_routes_at(socket: &str) -> axum::Router<WorldWebState> {
+    world_http_routes().route(socket, axum::routing::get(handler))
+}
+
+/// The shared world HTTP surface - invite, metrics, directory and
+/// the script-free explore/invite pages - with no live channel.
+/// An app whose `[interfaces.web]` section declares no socket still
+/// serves these routes; only the websocket bridge is socket-bound
+/// (Codex P2 on #3894).
+pub fn world_http_routes() -> axum::Router<WorldWebState> {
     axum::Router::new()
-        .route(socket, axum::routing::get(handler))
         .route("/api/world/invite", axum::routing::post(invite_handler))
         .route("/api/world/metrics", axum::routing::get(metrics_handler))
         .merge(super::explore::explore_routes())
@@ -1487,5 +1495,38 @@ mod tests {
         );
         let _ = client_a.close(None).await;
         let _ = client_b.close(None).await;
+    }
+
+    #[tokio::test]
+    async fn http_routes_serve_without_a_socket() {
+        // The shared HTTP surface is served even when an app binds
+        // no live channel (Codex P2 on #3894): metrics answers 401
+        // (route present, no token) rather than 404 (route absent),
+        // and the script-free explore page renders.
+        let router = world_http_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
+            cookie_secure: false,
+        });
+        let metrics = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/world/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metrics.status(), StatusCode::UNAUTHORIZED);
+        let explore = router
+            .oneshot(
+                Request::builder()
+                    .uri("/explore")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(explore.status(), StatusCode::OK);
     }
 }

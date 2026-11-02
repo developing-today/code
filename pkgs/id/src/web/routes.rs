@@ -265,18 +265,22 @@ pub fn create_router(state: AppState) -> Router {
 /// interface the result is byte-identical to create_router: same
 /// routes, same handlers, same state.
 pub fn create_router_for_app(
-    state: AppState,
+    mut state: AppState,
     interface: &super::app_interface::WebInterface,
 ) -> Router {
-    create_router_inner(state, &interface.route, interface.socket.as_deref())
+    state.web_route = interface.route.clone();
+    state.web_socket = interface.socket.clone();
+    create_router_inner(state)
 }
 
-fn create_router_inner(state: AppState, world_route: &str, world_socket: Option<&str>) -> Router {
+fn create_router_inner(state: AppState) -> Router {
+    let world_route = state.web_route.clone();
+    let world_socket = state.web_socket.clone();
     let router = Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
         .route("/files", get(files_page_handler))
-        .route(world_route, get(world_page_handler))
+        .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
@@ -324,18 +328,21 @@ fn create_router_inner(state: AppState, world_route: &str, world_socket: Option<
         // WebSocket for live tag updates
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
         // Static assets
-        .route("/assets/{*path}", get(assets_handler))
-        ;
+        .route("/assets/{*path}", get(assets_handler));
     // Optional authoritative in-memory world session bridge, bound
-    // at the app's socket when it declares one (#2325).
-    let router = match world_socket {
-        Some(socket) => router.merge(
-            super::world_ws::world_routes_at(socket).with_state(super::world_ws::WorldWebState {
-                hub: state.world.clone(),
-                cookie_secure: state.cookie_secure,
-            }),
-        ),
-        None => router,
+    // at the app's socket when it declares one (#2325). The shared
+    // world HTTP surface (invite, metrics, directory, explore) is
+    // merged either way: an app that declares no live channel still
+    // serves those routes (Codex P2 on #3894).
+    let world_state = super::world_ws::WorldWebState {
+        hub: state.world.clone(),
+        cookie_secure: state.cookie_secure,
+    };
+    let router = match &world_socket {
+        Some(socket) => {
+            router.merge(super::world_ws::world_routes_at(socket).with_state(world_state))
+        }
+        None => router.merge(super::world_ws::world_http_routes().with_state(world_state)),
     };
     router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
@@ -346,7 +353,11 @@ async fn world_page_handler(State(state): State<AppState>) -> Response {
     if state.world.is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    Html(super::templates::render_world_page(&state.assets)).into_response()
+    Html(super::templates::render_world_page(
+        &state.assets,
+        state.web_socket.as_deref(),
+    ))
+    .into_response()
 }
 
 /// Check if this is a partial request (SPA navigation, returns fragment not full page).
@@ -363,7 +374,12 @@ async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> imp
         .world
         .as_ref()
         .map_or("lobby", |hub| hub.default_world());
-    let content = super::home::render_home(&worlds, default_world, state.world.is_some());
+    let content = super::home::render_home(
+        &worlds,
+        default_world,
+        state.world.is_some(),
+        &state.web_route,
+    );
     if is_partial_request(&headers) {
         Html(render_main_page_wrapper(&content))
     } else {
@@ -2638,23 +2654,51 @@ mod upload_router_tests {
         assert_ne!(images[0]["name"], images[1]["name"]);
         assert_ne!(images[0]["hash"], images[1]["hash"]);
         let listed = list_images(router.clone()).await;
-        for (image, bytes) in images.iter().zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()]) {
+        for (image, bytes) in images
+            .iter()
+            .zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()])
+        {
             let name = image["name"].as_str().unwrap();
             let hash = image["hash"].as_str().unwrap();
-            assert_eq!(upload_name_owner(&state.store, name).await.unwrap().unwrap().to_string(), hash);
-            assert!(listed.iter().any(|entry| entry["name"] == name && entry["hash"] == hash));
+            assert_eq!(
+                upload_name_owner(&state.store, name)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .to_string(),
+                hash
+            );
+            assert!(
+                listed
+                    .iter()
+                    .any(|entry| entry["name"] == name && entry["hash"] == hash)
+            );
             let url = image["url"].as_str().unwrap();
             assert!(url.contains(&format!("filename={name}")));
             let (status, _, actual) = get_blob(router.clone(), url).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(actual, bytes);
-            for (key, expected) in [(b"content-type".as_slice(), Some("image/png")), (b"created".as_slice(), None)] {
-                let tags = state.tag_store.get_by_key(&state.tag_store.global, name.as_bytes(), key).await.unwrap();
-                let value = tags.first().and_then(|tag| tag.value.as_ref()).and_then(|value| value.as_str()).unwrap();
+            for (key, expected) in [
+                (b"content-type".as_slice(), Some("image/png")),
+                (b"created".as_slice(), None),
+            ] {
+                let tags = state
+                    .tag_store
+                    .get_by_key(&state.tag_store.global, name.as_bytes(), key)
+                    .await
+                    .unwrap();
+                let value = tags
+                    .first()
+                    .and_then(|tag| tag.value.as_ref())
+                    .and_then(|value| value.as_str())
+                    .unwrap();
                 if let Some(expected) = expected {
                     assert_eq!(value, expected);
                 } else {
-                    assert!(value.parse::<u64>().is_ok(), "invalid creation timestamp: {value}");
+                    assert!(
+                        value.parse::<u64>().is_ok(),
+                        "invalid creation timestamp: {value}"
+                    );
                 }
             }
         }

@@ -767,7 +767,7 @@ pub fn render_settings(node_id: &str) -> String {
 }
 
 /// Render a browser presentation for the optional multiplayer world.
-pub fn render_world_page(assets: &AssetUrls) -> String {
+pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> String {
     let content = r#"
 <section data-world-app class="space-y-5" aria-labelledby="world-title">
   <nav aria-label="World documents" class="text-sm">
@@ -853,7 +853,23 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
   </section>
 </section>
 "#;
-    render_page("World", content, "", assets)
+    // The frontend connects to the app's configured live channel:
+    // the socket travels on the root element as a data attribute
+    // (data-world-socket), which world.ts reads instead of a
+    // hardcoded path (Codex P1 on #3894). No socket declared: no
+    // attribute, and the frontend keeps its historical default.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content.to_owned(),
+    };
+    render_page("World", &content, "", assets)
 }
 
 /// Render the peers page showing discovered peers.
@@ -1072,7 +1088,8 @@ mod tests {
 
     #[test]
     fn test_render_world_page_exposes_presentation_controls() {
-        let html = render_world_page(&AssetUrls::default());
+        let html = render_world_page(&AssetUrls::default(), Some("/ws/arena"));
+        assert!(html.contains("data-world-socket=\"/ws/arena\""));
         assert!(html.contains("data-world-app"));
         assert!(html.contains("data-world-invite"));
         assert!(html.contains("data-world-join"));
