@@ -778,10 +778,16 @@ async function main(): Promise<void> {
     } else {
       projects = await fetchProjectPool(token);
       if (!projects.length) {
+        // #3979: Project #4 is never legitimately empty, so a zero-item
+        // read is a broken read (lost scope, renamed project, shape
+        // drift) — mark it error like the DNS zero-entries case instead
+        // of reporting ok for a section that was omitted.
         console.error("collector: GitHub Project read returned zero items; projects section omitted");
         projects = undefined;
+        markSection("projects", "error", "GitHub Project read returned zero items");
+      } else {
+        markSection("projects", "ok");
       }
-      markSection("projects", "ok");
     }
   } catch (err) {
     console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
