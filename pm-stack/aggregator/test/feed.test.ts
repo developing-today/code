@@ -430,6 +430,21 @@ describe("feed subscriptions sanitization (#2446)", () => {
     expect(out.dropped).toBe(1);
   });
 
+  test("invalid renewsAt strings drop; ISO dates and null survive (#3513)", async () => {
+    const bad = (renewsAt: string) => ({ name: "Bad", plan: "p", renewsAt });
+    const out = sanitizeSubscriptions([
+      SUB,
+      SUB_NULL_RENEW,
+      bad("banana"),
+      bad("2026-02-30"),
+      bad("2026-13-01"),
+      bad("12/01/2026"),
+      bad("2026-12-01banana"),
+    ]);
+    expect(out.rows).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(out.dropped).toBe(5);
+  });
+
   test("a mixed valid/invalid array through loadFeed keeps only renderer-safe rows", async () => {
     const loaded = await loadWithSubs([SUB, null, "junk", { name: "Ok", plan: 7, renewsAt: null }, SUB_NULL_RENEW]);
     expect(loaded?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
