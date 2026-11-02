@@ -11,6 +11,7 @@ import type { HealthView } from "../src/health.ts";
 const health: HealthView = {
   status: "ok",
   mode: "fixtures",
+  version: "test",
   generatedAt: "2026-10-29T00:00:00Z",
   bootAt: "2026-10-29T00:00:00Z",
   degraded: false,
@@ -22,6 +23,7 @@ const health: HealthView = {
   },
   pages: [],
   facets: null,
+  itemsCoverage: null,
   comments: { pendingMessages: 0, pendingGithub: 0, total: 0 },
 };
 
@@ -49,6 +51,7 @@ const data: OverviewData = {
         lastSeenAt: "2026-10-29T00:00:00Z",
       },
     ],
+    watchdog: [],
     orchestratorExtra: [],
     all: [],
     expiredCount: 0,

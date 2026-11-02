@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
 
 // readCtx is the portable top of a hook script in these tests: the hook

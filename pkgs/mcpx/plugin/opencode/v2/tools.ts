@@ -21,11 +21,12 @@
  *
  * What differs from v1, honestly:
  *
- *  - No ctx.ask. v1's daemon_select confirmed through the tool context's
- *    permission prompt; the v2 ToolContext has no ask, and the permission
- *    domain (permission.hook("evaluate")) is SET-REMAINDER work on #1858,
- *    not this core. So v2 daemon_select applies the choice it was told to
- *    apply. Its description no longer claims a confirmation happens.
+ *  - daemon_select confirms through the v2 permission domain
+ *    (permission.ts, #1858 SET-REMAINDER item (2)): the tool asserts
+ *    `mcpx_daemon_select` before applying, the evaluate hook keeps that
+ *    action at "ask", and a rejection applies nothing. With no
+ *    permission domain wired there is no channel to confirm through,
+ *    and the tool says so instead of applying silently.
  *  - No toasts. The v2 server context slice this tree uses has no TUI
  *    channel; ambiguity is surfaced the other v1 way — the annotation line
  *    on tool results — which needs no interface at all.
@@ -51,6 +52,10 @@ import {
   type Target,
 } from "../mcpx/daemon.ts";
 import type { Options } from "./options.ts";
+import {
+  DAEMON_SELECT_ACTION,
+  type PermissionAssertInput,
+} from "./permission.ts";
 import {
   forgetDaemon,
   readRememberedDaemon,
@@ -119,6 +124,13 @@ export type ToolRuntimeDeps = {
    * hook for exactly this reason.
    */
   onTarget?: (target: Target) => void;
+  /**
+   * The permission gate daemon_select asserts through before applying
+   * a choice (permission.ts). Wired from ctx.permission.assert in
+   * index.ts; absent means this host offers no permission domain, and
+   * daemon_select refuses rather than applying a choice unconfirmed.
+   */
+  assertPermission?: (input: PermissionAssertInput) => Promise<void>;
 };
 
 export type ToolRuntime = {
@@ -367,7 +379,8 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
       name: "daemon_select",
       description:
         "Point this session at one of the daemons mcpx_daemon_status listed, by its " +
-        "index. The tool sets the socket itself — pass the index, never a path.",
+        "index. The user is asked to confirm, and the tool sets the socket itself — " +
+        "pass the index, never a path.",
       input: {
         type: "object",
         properties: {
@@ -392,7 +405,10 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
         additionalProperties: false,
       },
       options: { namespace: NAMESPACE },
-      execute: async (input: { candidate: number; remember?: string; stopOthers?: boolean }) => {
+      execute: async (
+        input: { candidate: number; remember?: string; stopOthers?: boolean },
+        context: { sessionID: string },
+      ) => {
         const record = await readRememberedDaemon(deps.storage, deps.directory).catch(
           () => undefined,
         );
@@ -411,6 +427,37 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
         const scope = (input.remember ??
           options.remember ??
           "session") as "session" | "until-gone" | "indefinite" | "permanent";
+        // The user confirms, and sees what they are confirming — v1's
+        // ctx.ask, carried to the v2 permission domain (permission.ts).
+        // A rejection (or a deny rule) throws out of assert, so nothing
+        // is applied and the tool call fails with the reason.
+        if (!deps.assertPermission) {
+          return result(
+            "This host offers no permission prompt, so the choice was not applied. " +
+              "Start the session where mcpx_daemon_select can ask, or set the daemon " +
+              "endpoint in the mcpx config directly.",
+          );
+        }
+        await deps.assertPermission({
+          sessionID: context.sessionID,
+          action: DAEMON_SELECT_ACTION,
+          resources: [targetKey(pick.target)],
+          save: [targetKey(pick.target)],
+          metadata: {
+            daemon: label(pick),
+            socket: targetKey(pick.target),
+            config: pick.configPath,
+            started: pick.startedAt,
+            version: pick.version,
+            servers: pick.servers,
+            sessions: pick.sessions,
+            remember: scope,
+            stopOthers: input.stopOthers === true,
+            others: list
+              .filter((c) => c !== pick)
+              .map((c) => targetKey(c.target)),
+          },
+        });
         const note = await applyChoice(pick.target, scope);
         let stopped = "";
         if (input.stopOthers) {

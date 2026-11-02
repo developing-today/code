@@ -2,6 +2,7 @@
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
 import type { SectionDiagnosis } from "./feed.ts";
+import type { RepoCensus } from "./coverage.ts";
 import type {
   AaFeedSection,
   BoardItem,
@@ -30,6 +31,12 @@ export interface Source {
   items(refs: RefKey[]): Promise<Map<RefKey, GhItem>>;
   /** The comment projection for the refs, PR-interior comments included. */
   comments(refs: RefKey[]): Promise<Comment[]>;
+  /** The latest comment per ref, guaranteed per ref (#1279): the bulk
+   * comments() read applies one row limit across all requested refs, so
+   * a busy batch can omit an item's latest comment entirely. Briefs only
+   * need the latest, and need it for every item. Optional — callers fall
+   * back to comments() when a source does not provide it. */
+  latestComments?(refs: RefKey[]): Promise<Comment[]>;
   /** Quota + throughput view (#851). */
   quota(): Promise<QuotaView>;
   /** Usage & billing hub view: family-2 SaaS services, PAYG lines,
@@ -41,7 +48,7 @@ export interface Source {
   orchestration(): Promise<OrchestrationSection | null>;
   /** The DNS/domain register (#902) for the register page; null = not collected yet. */
   dns(): Promise<DnsSection | null>;
-  /** The AA cost explorer section (ainventory workbook data via the
+  /** The AA cost explorer section (ainventory import data via the
    * fleet feed); null = not collected yet. The absent form
    * ({status:"absent"}) is a real section: it renders its reason. */
   aa(): Promise<AaFeedSection | null>;
@@ -49,6 +56,14 @@ export interface Source {
   registry(): Promise<SessionRecord[]>;
   /** The GitHub Project pool (#910 stage 5) from the fleet feed; empty when not collected. */
   projects(): Promise<ProjectPoolItem[]>;
+  /** The collector's per-repo backlog census (#1220), when the source
+   * carries one; null = not collected. Optional so fixtures and test
+   * doubles keep working — the coverage panel degrades honestly. */
+  coverageCensus?(): Promise<RepoCensus[] | null>;
+  /** Whether the Project pool was actually read (#1220): false when the
+   * feed carried no projects section, so coverage renders the pool as
+   * unavailable instead of zero. Optional, like coverageCensus. */
+  projectsAvailable?(): Promise<boolean>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

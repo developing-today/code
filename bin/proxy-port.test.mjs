@@ -7,9 +7,20 @@ import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parseProxyPortValue, parseAddressPortValue } from './proxy-port.mjs';
+import { parseProxyPortValue, parseAddressPortValue, parseProxyMillisValue } from './proxy-port.mjs';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
+
+test('millisecond timeouts accept only decimal integers in the Node timer range', () => {
+  for (const raw of [undefined, '']) assert.equal(parseProxyMillisValue('TIMEOUT', raw, 1200000), 1200000);
+  for (const [raw, value] of [['1', 1], ['00100', 100], ['2147483647', 2147483647]]) {
+    assert.equal(parseProxyMillisValue('TIMEOUT', raw, 1200000), value);
+  }
+  for (const raw of ['0', '-1', '+1', '1.5', '1e3', '0x10', ' 1', '1 ', 'abc', '2147483648', '999999999999999999999']) {
+    assert.throws(() => parseProxyMillisValue('TIMEOUT', raw, 1200000), (err) =>
+      err.message.includes('TIMEOUT') && err.message.includes(`"${raw}"`));
+  }
+});
 
 test('unset and empty values fall back to the default', () => {
   assert.equal(parseProxyPortValue('X_PROXY_PORT', undefined, 18744), 18744);

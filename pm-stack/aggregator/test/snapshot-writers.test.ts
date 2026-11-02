@@ -14,6 +14,7 @@ import {
   recordsFromPools,
   recordsFromProviderUsage,
   recordsFromSaasServices,
+  freshestDate,
 } from "../src/snapshot-records.ts";
 import { SnapshotStore, isSnapshotRecord } from "../src/snapshots.ts";
 
@@ -197,6 +198,64 @@ describe("recordsFromProviderUsage", () => {
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
   });
+
+  test("skips an invalid window without suppressing sessions or a valid companion", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      sessions: [1],
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: -1, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
+      "opencode-server/sessions-listed=1",
+      "openai:codex/5-hour=100",
+    ]);
+  });
+
+  test("skips percentages above 100 and non-finite values", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      sessions: [],
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: 100.01, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: Number.POSITIVE_INFINITY, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
+      "opencode-server/sessions-listed=0",
+    ]);
+  });
+
+  test("accepts the inclusive percentage boundaries", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: 0, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
+      "openai:codex/7-day=0",
+      "openai:codex/5-hour=100",
+    ]);
+  });
 });
 
 describe("DeepSeek CNY balance (#1052)", () => {
@@ -330,5 +389,43 @@ describe("writer dedupe invariant", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("snapshot boundary on validate.ts primitives (#2578 Phase 2)", () => {
+  const base = {
+    serviceId: "cloudflare",
+    metricId: "gateway-accrual-est",
+    unit: "usd-est",
+    source: "estimate",
+    observedBy: "stewardship-cycle",
+    ts: "2026-10-26T12:00:00Z",
+    value: 5,
+  } as const;
+
+  test("limit/resetsAt are validated when present (#2483)", () => {
+    expect(isSnapshotRecord({ ...base, limit: 100 })).toBe(true);
+    expect(isSnapshotRecord({ ...base, limit: 0 })).toBe(true);
+    expect(isSnapshotRecord({ ...base, limit: null })).toBe(true);
+    expect(isSnapshotRecord({ ...base, limit: Number.NaN })).toBe(false);
+    expect(isSnapshotRecord({ ...base, limit: Number.POSITIVE_INFINITY })).toBe(false);
+    expect(isSnapshotRecord({ ...base, limit: -1 })).toBe(false);
+    expect(isSnapshotRecord({ ...base, resetsAt: "2026-11-01T00:00:00Z" })).toBe(true);
+    expect(isSnapshotRecord({ ...base, resetsAt: null })).toBe(true);
+    expect(isSnapshotRecord({ ...base, resetsAt: "2026-02-30" })).toBe(false);
+    expect(isSnapshotRecord({ ...base, resetsAt: "2026-13-01T00:00:00Z" })).toBe(false);
+    expect(isSnapshotRecord({ ...base, resetsAt: "soon" })).toBe(false);
+  });
+
+  test("impossible ts dates never validate (#2264)", () => {
+    expect(isSnapshotRecord({ ...base, ts: "2026-02-30T12:00:00Z" })).toBe(false);
+    expect(isSnapshotRecord({ ...base, ts: "2026-13-01T12:00:00Z" })).toBe(false);
+  });
+
+  test("freshestDate ignores impossible dates (#2264)", () => {
+    expect(freshestDate("checked 2026-10-01; renews 2026-02-30")).toBe("2026-10-01");
+    expect(freshestDate("only 2026-13-01 here")).toBe(null);
+    expect(freshestDate("2026-10-01 and 2026-10-03")).toBe("2026-10-03");
+    expect(freshestDate("no dates")).toBe(null);
   });
 });

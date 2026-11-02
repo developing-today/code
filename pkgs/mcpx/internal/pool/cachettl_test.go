@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // #1602: the pool catalogue cache honours a modern upstream's ttlMs.

@@ -80,6 +80,7 @@ var handFlagIndex = map[string][]HandFlag{
 	"elicit": {
 		{Name: "session", Usage: "restrict to one session"},
 		{Name: "audience", Usage: "agent or human"},
+		{Name: "yes", Usage: "answer without the interactive review prompt"},
 	},
 	"embeddings export": {
 		{Name: "output", Usage: "output file path (default stdout)"},

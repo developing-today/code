@@ -37,6 +37,7 @@
 //! - otherwise — delete the exact `(subject, key, value)` tag (a request with
 //!   no value deletes the value-less key-only tag)
 
+use crate::frames::MAX_FRAME_BYTES;
 use axum::{
     Json,
     extract::{Query, State, WebSocketUpgrade, ws::Message},
@@ -205,7 +206,8 @@ pub async fn ws_tags_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_tags_socket(socket, state))
+    ws.max_message_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| handle_tags_socket(socket, state))
 }
 
 /// Handle a tag WebSocket connection.
@@ -452,6 +454,10 @@ pub async fn search_tags_handler(
         Ok(ns) => ns,
         Err(message) => return bad_ns(message).into_response(),
     };
+
+    if let Err(e) = crate::tags::parse_search_query(&query.q) {
+        return bad_ns(format!("invalid search query: {e}")).into_response();
+    }
 
     match tag_store.search_by_query(ns, &query.q).await {
         Ok(tags) => {

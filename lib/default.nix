@@ -600,15 +600,49 @@ let
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
+      mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
+      pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
+        cf = pkgs.callPackage ../pkgs/cf { };
+      };
+      developingTodayBackupDeploy = pkgs.callPackage ../infra/github-backup/deploy.nix { };
     in
     {
       packages = {
-        inherit mcpx idMailDeploy;
+        inherit
+          mcpx
+          idMailDeploy
+          pkarrDeploy
+          developingTodayBackupDeploy
+          ;
         mcpx-docs = mcpxDocs;
+        mcpx-real-servers = mcpxRealServers;
+      };
+      checks = {
+        # The packaging test (#1981): run the built mcpx artifact --
+        # never the source tree -- with an empty HOME: --version,
+        # the wrapper PATH (via `mcpx doctor` in a scrubbed
+        # environment), the man page and completions, and a stdio
+        # serve handshake. The script is the single source, shared
+        # with the hand-run command in pkgs/mcpx/AGENTS.md.
+        mcpx-packaging =
+          pkgs.runCommand "mcpx-packaging-test"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.gzip
+                pkgs.jq
+              ];
+            }
+            ''
+              bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
+              touch $out
+            '';
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
+        pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
+        developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -1000,6 +1034,63 @@ let
       ))
     ];
 
+  # Flake checks for the laptop-backups shell suites (#1841): the seven
+  # suites in nixos/home drive the real backup and watchdog scripts with
+  # stubbed systemctl/bws/journalctl/rclone, so each is a runCommandLocal
+  # that copies nixos/home somewhere writable and runs one suite. Until
+  # this wiring they ran only by hand on the laptop, so a regression in
+  # the backup scripts reached CI only when somebody remembered to run
+  # them. inputs.self is copied, not run in place: the store path is
+  # read-only and the suites write beside themselves.
+  make-laptop-backups-checks = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      suites = [
+        "laptop-backups-watchdog"
+        "pm-dashboard-backup"
+        "pm-dashboard-backup-copy"
+        "pm-dashboard-backup-date"
+        "pm-dashboard-backup-manifest"
+        "pm-dashboard-backup-prune"
+        "pm-dashboard-backup-record"
+      ];
+    in
+    {
+      checks = builtins.listToAttrs (
+        map (suite: {
+          name = "laptop-backups-${suite}";
+          value =
+            pkgs.runCommandLocal "check-laptop-backups-${suite}"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.diffutils
+                  pkgs.findutils
+                  pkgs.gnugrep
+                  pkgs.gnused
+                  pkgs.gnutar
+                  pkgs.gzip
+                  pkgs.jq
+                  pkgs.python3
+                  pkgs.util-linux
+                  pkgs.zstd
+                ];
+              }
+              ''
+                cp -r ${inputs.self}/nixos/home home
+                chmod -R u+w home
+                cd home
+                bash ${suite}.test.sh
+                mkdir -p $out
+                echo "${suite} suite passed" > $out/result.txt
+              '';
+        }) suites
+      );
+    }
+  );
+
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
@@ -1055,6 +1146,7 @@ let
         make-root-apps
         make-id
         make-mcpx-overlay
+        make-laptop-backups-checks
         ;
     }
   ];

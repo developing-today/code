@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 // A child is handed the runtime values of the secrets its own configuration

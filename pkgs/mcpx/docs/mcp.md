@@ -56,6 +56,19 @@ upstream tools, adapting as calls name new ones, and a
 on `mcpx serve` or `mcpx daemon`) is offered as itself — its tools,
 prompts and resources under their own names, its results verbatim.
 
+A client can also ask for the raw surface per connection: a request
+to `/mcp?codemode=false` gets every upstream tool, flat, under a
+namespaced name (`<namespace>_<tool>`), and the gateway's own tools
+are not on that list — the raw surface replaces the code-mode
+surface, it does not add to it. Calls to a raw name go to its
+upstream under the upstream's own name. This is the switch opencode
+v2 appends to a remote server's URL when the server is not
+configured `codemode: false`, so a v2 host's own code mode can
+orchestrate mcpx's pooled servers directly. Any other value, and
+the parameter's absence, change nothing; the switch is read from
+each request's URL, so one connection can be answered raw and the
+next through the gateway.
+
 Questions flow backwards over the same connection. When an upstream
 tool asks something mid-call — an elicitation, a sampling request —
 mcpx puts the question to the client that made the call when that

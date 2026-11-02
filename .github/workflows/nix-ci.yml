@@ -49,6 +49,44 @@ jobs:
       - name: Check proxy port fallbacks match their definitions
         run: .github/scripts/check-proxy-port-fallbacks.sh
 
+  # PR tier (#705): evaluate both real NixOS hosts (drvPath only, no
+  # build), so a host-breaking change fails on the PR instead of at
+  # switch time (#699, fixed by #701's quoting, is the failure this
+  # catches). Host evaluation imports from the patched nixpkgs source
+  # (lib/default.nix make-nixos-from-config), i.e. it is
+  # import-from-derivation: both evals share one job so the
+  # patched-source realisation is paid once per runner.
+  host-eval:
+    name: "basic: NixOS host evaluation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # lazy-trees off for this job only (#705): Determinate Nix ships
+      # lazy trees on, which virtualises the flake source tree; the
+      # in-module builtins.fetchTree { type = "path"; } on
+      # home/openclaw/plugins/summarize then opens a directory that is
+      # not materialised and fails with ENOENT (run 41209590370),
+      # while the same head evaluates cleanly against a materialised
+      # source. Materialise the source for host evaluation instead.
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            lazy-trees = false
+      - name: Evaluate NixOS host configurations (drvPath only)
+        # The hosts legitimately include unfree packages (Affinity
+        # Photo 2 via scripts.nix); the laptop allows them, CI does
+        # not by default, and drvPath evaluation refuses them
+        # (run 41223153158). This check guards evaluation health
+        # (#699-style breakage), not license policy, so allow unfree
+        # for the eval exactly as the laptop does. NIXPKGS_ALLOW_UNFREE
+        # is only honoured with --impure.
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
+        run: |
+          nix eval --impure .#nixosConfigurations.amd.config.system.build.toplevel.drvPath
+          nix eval --impure .#nixosConfigurations.nixos.config.system.build.toplevel.drvPath
+
   flake-check:
     name: "full (main tier): Nix flake evaluation"
     # Main tier only (Phase 2, #1781): PRs keep the basic proxy-port
@@ -72,7 +110,7 @@ jobs:
   # continue-on-error: a dispatch failure must never change this
   # workflow's own result.
   ci-fix:
-    needs: [proxy-port-fallbacks, flake-check]
+    needs: [proxy-port-fallbacks, host-eval, flake-check]
     if: failure()
     permissions:
       id-token: write

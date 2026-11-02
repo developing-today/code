@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // InstallHooks connects every pool to the event bus and the question broker.
@@ -50,6 +50,16 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 			}[kind]
 			if k != "" {
 				r.publish(events.Event{Kind: k, Server: server})
+			}
+			// A changed catalog can orphan an argument rule (#1986):
+			// note that this server's rules need a re-check. The
+			// check itself is deferred to the next genuine catalog
+			// observation -- refreshing here would acquire a pool
+			// instance solely for a diagnostic and can evict a
+			// session-scoped caller's live process. See
+			// noteDeadRuleRecheck.
+			if kind == "tools" {
+				r.noteDeadRuleRecheck(server)
 			}
 		},
 		OnResourceUpdated: func(server, uri string) {

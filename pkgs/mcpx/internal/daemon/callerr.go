@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 type callSetKey struct{}
@@ -19,6 +20,61 @@ type callSetKey struct{}
 // sees only the daemon's.
 func withCallSettings(ctx context.Context, cs *settings.Set) context.Context {
 	return context.WithValue(ctx, callSetKey{}, cs)
+}
+
+// callSettingsFrom returns the call settings carried on ctx, or nil.
+func callSettingsFrom(ctx context.Context) *settings.Set {
+	cs, _ := ctx.Value(callSetKey{}).(*settings.Set)
+	return cs
+}
+
+// callSettingsHeaderValue renders the overrides in cs that arrived via
+// the call-settings header back into that header's JSON shape, so a
+// value a caller sent for one request can ride along to the calls a
+// script makes on that request's behalf (via MCPX_SETTINGS and the
+// generated client's x-mcpx-settings header). Only header-origin
+// values are the caller's; the daemon's own layers stay home.
+func callSettingsHeaderValue(cs *settings.Set) string {
+	if cs == nil {
+		return ""
+	}
+	ov := map[string]string{}
+	for _, decl := range cs.Schema().All() {
+		v, ok := cs.Value(decl.Path)
+		if !ok || v.Origin.Layer != settings.LayerRuntime || v.Origin.Detail != CallSettingsHeader {
+			continue
+		}
+		ov[decl.Path] = v.Raw
+	}
+	if len(ov) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(ov)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// withRequestedCallTimeout threads a caller's requested pool.callTimeout
+// (#1864 item 4) from the request's call settings onto ctx, where the pool
+// reads it. Only a value that arrived in the call-settings header counts:
+// the merged set's other layers are the daemon's own configuration, which
+// the pool has already resolved into the ceiling this request is clamped
+// to. Threading it can only ever lower one call's budget, never raise it.
+func withRequestedCallTimeout(ctx context.Context) context.Context {
+	cs, ok := ctx.Value(callSetKey{}).(*settings.Set)
+	if !ok || cs == nil {
+		return ctx
+	}
+	v, ok := cs.Value("pool.callTimeout")
+	if !ok || v.Origin.Layer != settings.LayerRuntime || v.Origin.Detail != CallSettingsHeader {
+		return ctx
+	}
+	if d := cs.Duration("pool.callTimeout"); d > 0 {
+		return pool.WithCallTimeout(ctx, d)
+	}
+	return ctx
 }
 
 // repairAutonomy is the request's repair.autonomy, already lowered to

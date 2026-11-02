@@ -22,7 +22,6 @@ Examples:
 """
 
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -97,7 +96,8 @@ def discover_inputs(lock_data, ref):
         # Match by URL: github:NixOS/nixpkgs
         if original.get("type", "").lower() != "github":
             continue
-        if not re.match(r"[Nn]ix[Oo][Ss]", original.get("owner", "")):
+        owner = original.get("owner")
+        if not isinstance(owner, str) or owner.lower() != "nixos":
             continue
         if original.get("repo", "") != "nixpkgs":
             continue
@@ -312,6 +312,15 @@ def main():
     # Print combined overall summary if multiple refs were requested
     if len(refs) > 1:
         print_combined_summary(all_ref_data)
+
+    # A run that failed to update any input is a failure, even though the
+    # summaries above printed normally: callers (&& chains, CI, cron) must
+    # not proceed as if the inputs were updated.
+    failed_total = sum(
+        1 for rd in all_ref_data for r in rd["results"] if r["status"] == "failed"
+    )
+    if failed_total:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

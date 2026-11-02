@@ -42,7 +42,8 @@ no entry-point convention.
 ## ~~Modes and scopes~~ — shipped
 
 ```
-status:  shipped
+id:           modes-and-scopes-shipped
+status:       shipped
 ```
 
 Built. See [Sharing and scope](./story.md) in the feature list. The retired
@@ -127,7 +128,8 @@ browser belongs to that process" without any protocol.
 ## Session introspection
 
 ```
-status:  proposed
+id:           session-introspection
+status:       proposed
 depends: modes and scopes
 ```
 
@@ -156,7 +158,8 @@ script can look at its own lease and adjust its own timeout.
 ## Logging
 
 ```
-status:  proposed
+id:           logging
+status:       proposed
 ```
 
 Two stores, because they answer different questions.
@@ -197,7 +200,8 @@ command is worth having for CI, where a lingering daemon is a nuisance.
 ## ~~Configuration~~ — merge shipped
 
 ```
-status:  shipped
+id:           configuration-merge-shipped
+status:       shipped
 ```
 
 The chain now merges, nearest first, per server name. A project adds servers
@@ -251,7 +255,8 @@ pathological config degrades into slower leasing rather than fork-bombing.
 ## The script contract
 
 ```
-status:  proposed
+id:           the-script-contract
+status:       proposed
 ```
 
 Underspecified today and worth pinning down.
@@ -297,7 +302,8 @@ duration, tool calls made — in one envelope for programmatic callers.
 ## Modules and libraries
 
 ```
-status:  proposed
+id:           modules-and-libraries
+status:       proposed
 ```
 
 Scripts run on a real runtime, so imports already work: `npm:`, `jsr:`,
@@ -323,7 +329,8 @@ wants and the user-level pin is irrelevant to it.
 ## Types
 
 ```
-status:  proposed
+id:           types
+status:       proposed
 ```
 
 **`mcpx types <ns>.<tool>`** — emit one function with its argument and return
@@ -379,7 +386,8 @@ of code.
 ## Round-robin catalogue budgeting
 
 ```
-status:  proposed
+id:           round-robin-catalogue-budgeting
+status:       proposed
 effort:  small; the ranking already exists in a different form
 ```
 
@@ -422,7 +430,8 @@ ranking systems and may be better than either.
 ## Protocol adapters, including OpenAPI
 
 ```
-status:  proposed
+id:           protocol-adapters-including-openapi
+status:       proposed
 effort:  medium for the interface, small per adapter
 ```
 
@@ -460,7 +469,8 @@ as a headline. **Reordered to the bottom of the shipped-work queue.**
 ## Per-instance argument templating
 
 ```
-status:  proposed
+id:           per-instance-argument-templating
+status:       proposed
 effort:  small
 ```
 
@@ -497,7 +507,8 @@ bind the port, hold the listener, pass it down, release on start.
 ## Scope policy
 
 ```
-status:  proposed
+id:           scope-policy
+status:       proposed
 effort:  small
 ```
 
@@ -527,7 +538,8 @@ another.
 ## Named sessions and keepalive control
 
 ```
-status:  proposed
+id:           named-sessions-and-keepalive-control
+status:       proposed
 effort:  medium
 ```
 
@@ -565,7 +577,8 @@ Overridable in config per server, and at runtime per session.
 ## Health-based and webhook reaping
 
 ```
-status:  proposed
+id:           health-based-and-webhook-reaping
+status:       proposed
 effort:  small for health, medium for webhooks
 ```
 
@@ -591,7 +604,8 @@ webhooks only if a concrete need appears.
 ## Structured logging
 
 ```
-status:  proposed
+id:           structured-logging
+status:       proposed
 effort:  medium
 supersedes: the earlier "Logging" entry
 ```
@@ -668,7 +682,8 @@ more to stderr is not, because an agent reads stderr.
 ## Harness integration and installation
 
 ```
-status:  proposed
+id:           harness-integration-and-installation
+status:       proposed
 effort:  large; several independent pieces
 ```
 
@@ -724,7 +739,8 @@ tool's configuration is surprising in a way that is hard to debug.
 ## Packaging and service management
 
 ```
-status:  proposed
+id:           packaging-and-service-management
+status:       proposed
 effort:  medium
 ```
 
@@ -751,7 +767,8 @@ _requires_ installation.
 ## Transport, addressing and scale
 
 ```
-status:  proposed
+id:           transport-addressing-and-scale
+status:       proposed
 effort:  small for addressing, unknown for the rest
 ```
 
@@ -794,7 +811,8 @@ handling. Revisit only if profiling finds something the GC is responsible for.
 ## Name
 
 ```
-status:  proposed
+id:           name
+status:       proposed
 effort:  none, but it gets more expensive every week
 ```
 
@@ -815,7 +833,8 @@ decided before anything publishes.
 ## Parity tracking
 
 ```
-status:  proposed
+id:           parity-tracking
+status:       proposed
 effort:  small, ongoing
 ```
 
@@ -835,7 +854,8 @@ this tool exists to solve.
 ## Extra discovery paths
 
 ```
-status:  proposed
+id:           extra-discovery-paths
+status:       proposed
 effort:  small
 ```
 
@@ -870,10 +890,12 @@ differently, which the author controls.
 ## Better tool search
 
 ```
-status:  slice 1 shipped 2026-10-30 (#1923) — tags, word-splitting/stemming
+id:           better-tool-search
+status:       partial
          and --explain are in; typo tolerance (on #1904's shared near-miss
          matcher) and concept similarity remain proposed
 effort:  small to large depending on how far it goes
+note:         slice 1 shipped 2026-10-30 (#1923) — tags, word-splitting/stemming
 ```
 
 Search scoring today: exact 100, prefix 60, tag 50, contains 40, a
@@ -908,7 +930,8 @@ tool" cases are probably vocabulary, and tags fix vocabulary directly.
 ## Types improvements
 
 ```
-status:  proposed
+id:           types-improvements
+status:       proposed
 effort:  small each
 ```
 
@@ -930,7 +953,8 @@ Beyond `mcpx types <ns>.<tool>`:
 ## mcpx as a server
 
 ```
-status:  proposed
+id:           mcpx-as-a-server
+status:       proposed
 effort:  medium
 ```
 
@@ -978,7 +1002,8 @@ threat model.
 ## MCP protocol coverage
 
 ```
-status:  proposed
+id:           mcp-protocol-coverage
+status:       proposed
 effort:  medium, several independent pieces
 ```
 
@@ -1009,7 +1034,8 @@ implements most of it. Meeting parity means, roughly in order of value:
 ## Chrome and stateful-server ergonomics
 
 ```
-status:  proposed
+id:           chrome-and-stateful-server-ergonomics
+status:       proposed
 effort:  small each
 ```
 
@@ -1047,7 +1073,8 @@ server-agnostic.
 ## Log context and enrichment layering
 
 ```
-status:  proposed
+id:           log-context-and-enrichment-layering
+status:       proposed
 effort:  small
 ```
 
@@ -1093,7 +1120,9 @@ the most specific statement about this one record.
 ## Reserved attribute names
 
 ```
-status:  shipped (collision handling), proposed (the rest)
+id:           reserved-attribute-names
+status:       partial
+note:         shipped (collision handling), proposed (the rest)
 ```
 
 A rendered record flattens attributes next to `ts`, `level`, `msg` and
@@ -1115,7 +1144,8 @@ because at that point the collisions stop being hypothetical.
 ## ~~Level filtering in the script~~ — shipped
 
 ```
-status:  shipped
+id:           level-filtering-in-the-script-shipped
+status:       shipped
 ```
 
 The script now knows the threshold and returns before encoding. Measured at
@@ -1146,7 +1176,9 @@ rather than a stack trace.
 ## Layered script prefixes
 
 ```
-status:  shipped (list + null splice), rejected (ancestor indexing)
+id:           layered-script-prefixes
+status:       partial
+note:         shipped (list + null splice), rejected (ancestor indexing)
 ```
 
 `mcpx exec` generates a whole file, so it can wrap a snippet in lines from
@@ -1220,7 +1252,8 @@ shares scope and _can_ declare bindings the snippet uses.
 ## Launcher as a template with placeholders
 
 ```
-status:  proposed
+id:           launcher-as-a-template-with-placeholders
+status:       proposed
 effort:  medium
 ```
 
@@ -1261,7 +1294,8 @@ shown insufficient.
 ## Structured stack traces
 
 ```
-status:  shipped
+id:           structured-stack-traces
+status:       shipped
 ```
 
 `Error.prepareStackTrace` is V8-specific and not in any standard, and was
@@ -1290,7 +1324,8 @@ test now asserts both survive.
 ## Defaults as an embedded layer
 
 ```
-status:  shipped
+id:           defaults-as-an-embedded-layer
+status:       shipped
 ```
 
 Every default now lives in `internal/defaults/defaults.json`, embedded with
@@ -1315,7 +1350,8 @@ startup panic instead of a zero value discovered three layers down.
 ## Console fidelity
 
 ```
-status:  shipped
+id:           console-fidelity
+status:       shipped
 ```
 
 All 25 of Deno's console members are handled. The ones with a level become
@@ -1341,7 +1377,9 @@ because matching the original includes matching its failures.
 ## Protocol methods still missing
 
 ```
-status:  audited 2026-09-29, method by method against all three schemas
+id:           protocol-methods-still-missing
+status:       implemented
+note:         audited 2026-09-29, method by method against all three schemas
 ```
 
 An earlier audit assembled a feature list from the specification's index page

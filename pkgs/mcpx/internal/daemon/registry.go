@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,18 +17,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/catalog"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/secrets"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Registry holds one pool per configured server plus the schema cache.
@@ -57,6 +58,18 @@ type Registry struct {
 	vectorIdx     *catalog.VectorIndex
 	embedder      catalog.Embedder
 	feedbackStore *logstore.FeedbackStore
+
+	// deadRuleWarned records argument rules (#1986) already warned
+	// about as matching no known tool, keyed server + rule key, so a
+	// dead rule warns once per registry lifetime instead of on every
+	// catalog observation.
+	deadRuleWarned sync.Map
+	// deadRulePending records servers whose catalog changed
+	// (list_changed) since the last dead-rule check. The check itself
+	// is deferred to the next genuine catalog observation, so the
+	// notification handler never acquires a pool instance just for
+	// this diagnostic (see noteDeadRuleRecheck).
+	deadRulePending sync.Map
 
 	sessMu sync.Mutex
 	leases map[string]*leaseState
@@ -235,7 +248,106 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 	}
 	sort.Strings(r.order)
 	r.loadCache()
+	r.warnDeadArgumentRules()
 	return r, nil
+}
+
+// warnDeadArgumentRules logs each argument rule (#1986) that matches
+// no tool in its server's cached catalog: a dead rule constrains
+// nothing and is usually a tool name that moved. Called at load (from
+// NewRegistry, over the disk-seeded cache), after Warm, and on catalog
+// changes; a server whose catalog is not loaded yet warns nothing, and
+// each rule warns once per registry lifetime unless it comes back to
+// life in between.
+func (r *Registry) warnDeadArgumentRules() {
+	names := r.Names()
+	for _, name := range names {
+		// This runs at load and after Warm -- both genuine catalog
+		// observations -- so any pending post-list_changed re-check
+		// for the server is discharged here.
+		r.deadRulePending.Delete(name)
+		r.warnDeadArgumentRulesFor(name)
+	}
+}
+
+func (r *Registry) warnDeadArgumentRulesFor(name string) {
+	view, ok := r.View(name)
+	if !ok || view.ArgumentRules.Empty() {
+		return
+	}
+	p, ok := r.Pool(name)
+	if !ok {
+		return
+	}
+	tools, _, at := p.CachedSchemas()
+	if at.IsZero() || len(tools) == 0 {
+		// A zero timestamp means the cache was invalidated by a
+		// list_changed and not yet re-read: the tool list still
+		// served here is the PREVIOUS catalog, and warning against
+		// it could condemn a rule the changed catalog keeps alive
+		// (or clear one it orphaned). Wait for a real observation.
+		return
+	}
+	known := make([]string, 0, len(tools))
+	for _, t := range tools {
+		known = append(known, t.Name)
+	}
+	dead := map[string]bool{}
+	for _, rule := range view.ArgumentRules.DeadRules(known) {
+		dead[rule.Key] = true
+		k := name + "\x00" + rule.Key
+		if _, loaded := r.deadRuleWarned.LoadOrStore(k, true); !loaded {
+			r.logf("argument rule %q for server %q (%s) matches no known tool; it constrains nothing -- check the tool name",
+				rule.Key, name, rule.Origin)
+		}
+	}
+	for _, rule := range view.ArgumentRules.Rules() {
+		if !dead[rule.Key] {
+			r.deadRuleWarned.Delete(name + "\x00" + rule.Key)
+		}
+	}
+}
+
+// noteDeadRuleRecheck records that a server's catalog changed
+// (tools/list_changed, #1986), so its argument rules need a fresh
+// dead-rule check -- later, at the next genuine catalog observation.
+//
+// The check must NOT run here. Reading the changed catalog means
+// RefreshSchemas, which borrows the pool's separate schema key: for
+// a session-scoped server at max 1, acquiring that throwaway
+// instance evicts and closes the caller's live session process,
+// destroying its state between consecutive calls -- all for a
+// diagnostic, and even for servers with no argument rules at all.
+// The notification handler therefore only takes a note. The check
+// runs in recheckDeadArgumentRules once real work (a guarded call,
+// Warm) has refreshed the catalog for its own reasons, and
+// warnDeadArgumentRulesFor refuses to judge from the stale
+// pre-change list in the meantime.
+func (r *Registry) noteDeadRuleRecheck(name string) {
+	view, ok := r.View(name)
+	if !ok || view.ArgumentRules.Empty() {
+		return
+	}
+	r.deadRulePending.Store(name, true)
+}
+
+// recheckDeadArgumentRules discharges a pending post-list_changed
+// dead-rule check for one server, if a fresh catalog has actually
+// been observed since the change. Call it after a RefreshSchemas
+// that other work already paid for; it acquires nothing itself.
+func (r *Registry) recheckDeadArgumentRules(name string) {
+	if _, pending := r.deadRulePending.Load(name); !pending {
+		return
+	}
+	p, ok := r.Pool(name)
+	if !ok {
+		return
+	}
+	if _, _, at := p.CachedSchemas(); at.IsZero() {
+		return // still no fresh catalog; keep the note for the next one
+	}
+	r.deadRulePending.Delete(name)
+	r.warnDeadArgumentRulesFor(name)
 }
 
 // ConfigHash fingerprints the server definitions.
@@ -293,6 +405,26 @@ func (r *Registry) Pool(nameOrNS string) (*pool.Pool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// CanonicalName resolves a name-or-namespace the way Pool does and
+// returns the configured server name, or the input unchanged when it
+// names nothing. It is a map read only -- no lease, no upstream -- so
+// callers that must key by server identity before touching the pool
+// (the completion rate limiter, #2387) can share one spelling per
+// server instead of one budget per spelling.
+func (r *Registry) CanonicalName(nameOrNS string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.pools[nameOrNS]; ok {
+		return nameOrNS
+	}
+	for _, name := range r.order {
+		if r.views[name].Namespace == nameOrNS {
+			return name
+		}
+	}
+	return nameOrNS
 }
 
 func (r *Registry) loadCache() {
@@ -403,6 +535,7 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 	// that one of them changed. Recording it here is what lets a diagnostic
 	// say when.
 	r.ObserveCatalog()
+	r.warnDeadArgumentRules()
 	return errs
 }
 
@@ -549,7 +682,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 				Call:         "tools." + view.Namespace + "." + fn + "(args)",
 				Native:       view.Namespace + "_" + fn,
 				Description:  t.Description,
-				InputSchema:  t.InputSchema,
+				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
 				Execution:    t.Execution,
 				Title:        t.Title,
 				OutputSchema: t.OutputSchema,
@@ -632,6 +765,13 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 	if err != nil || len(queryVec) == 0 {
 		queryVec = catalog.Embed(query)
 	}
+	if len(queryVec) != catalog.VectorDim {
+		// The configured embedder's dimension does not match the index
+		// dimension: CosineSimilarity would silently score every stored
+		// vector 0. Log the mismatch and fall back to the local embedder.
+		log.Printf("mcpx: semantic search: embedder returned a %d-dimensional query vector, index dimension is %d; falling back to local embedder", len(queryVec), catalog.VectorDim)
+		queryVec = catalog.Embed(query)
+	}
 
 	keywordScores := make(map[string]int)
 	for _, t := range rank(all, terms, false) {
@@ -651,8 +791,16 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 			if err != nil || len(tVec) == 0 {
 				tVec = catalog.Embed(t.Namespace + " " + t.Tool + " " + t.Description)
 			}
+			if len(tVec) != 0 && len(tVec) != catalog.VectorDim {
+				// Dimension mismatch: do not cache or score this vector
+				// silently; fall back to the local embedder.
+				log.Printf("mcpx: semantic search: embedder returned a %d-dimensional vector for %s, index dimension is %d; falling back to local embedder", len(tVec), t.Function, catalog.VectorDim)
+				tVec = catalog.Embed(t.Namespace + " " + t.Tool + " " + t.Description)
+			}
 			if vIdx != nil && len(tVec) > 0 {
-				_ = vIdx.Put(t.Function, tVec)
+				if err := vIdx.Put(t.Function, tVec); err != nil {
+					log.Printf("mcpx: semantic search: cache vector for %s: %v", t.Function, err)
+				}
 			}
 		}
 		sim := queryVec.CosineSimilarity(tVec)
@@ -962,7 +1110,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 				Name:         t.Name,
 				Description:  t.Description,
 				Tags:         toolTags(view, t.Name),
-				InputSchema:  t.InputSchema,
+				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
 				OutputSchema: t.OutputSchema,
 			})
 		}
@@ -1010,6 +1158,7 @@ func failureStatus(err error) int {
 	var hidden HiddenTool
 	var secret SecretRequired
 	var denied ErrWriteDenied
+	var argDenied ErrArgumentRuleDenied
 	switch {
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
@@ -1019,7 +1168,9 @@ func failureStatus(err error) int {
 		// A conflict with the state of the daemon, not a fault in the request
 		// and not a failure of the server: it can succeed once a value exists.
 		return http.StatusConflict
-	case errors.As(err, &unknown), errors.As(err, &hidden):
+	case errors.As(err, &unknown), errors.As(err, &hidden), errors.As(err, &argDenied):
+		// An argument-rule refusal is 400 like a hidden tool (#1986):
+		// the caller's arguments broke a configured constraint.
 		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
@@ -1071,12 +1222,12 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
-	defer r.joinAsk(ctx, server, key)()
-	res, err := p.Call(ctx, key, tool, args)
+	defer r.joinAsk(ctx, server, rs.Key)()
+	res, err := p.Call(withRequestedCallTimeout(ctx), rs, tool, args)
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
@@ -1087,38 +1238,38 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 // consumer policies. Every path that calls a tool goes through it: the ask
 // path once skipped both, so a destructive-tool guard was off for exactly the
 // clients that declared they could answer it.
-func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (string, error) {
+func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (config.ResolvedScope, error) {
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
 		// Before the child is touched: a server waiting for a secret is not
 		// started just to fail.
 		if err := r.refuseBlocked(server); err != nil {
-			return "", err
+			return config.ResolvedScope{}, err
 		}
 		if !view.VisibleTool(tool) {
 			if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
-				return "", fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+				return config.ResolvedScope{}, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
 			}
-			return "", HiddenTool{Server: server, Tool: tool}
+			return config.ResolvedScope{}, HiddenTool{Server: server, Tool: tool}
 		}
 	}
-	key := r.keyFor(p, cc)
+	rs := r.resolvedFor(p, cc)
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
-	key = r.disambiguate(ctx, p, cc, key)
+	rs = r.disambiguate(ctx, p, cc, rs)
 	asked, err := r.applyWritePolicy(ctx, p, server, tool, cc, args)
 	if err != nil {
-		return "", err
+		return config.ResolvedScope{}, err
 	}
 	if !asked {
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
 		if err := r.confirmDestructive(ctx, p, tool, cc); err != nil {
-			return "", err
+			return config.ResolvedScope{}, err
 		}
 	}
-	return key, nil
+	return rs, nil
 }
 
 // ReadResource dispatches a resource read.
@@ -1130,10 +1281,10 @@ func (r *Registry) ReadResource(ctx context.Context, server, uri string, cc conf
 	if err := r.refuseBlocked(server); err != nil {
 		return nil, err
 	}
-	key := r.keyFor(p, cc)
+	rs := r.resolvedFor(p, cc)
 	// The listing drops a leading '/', so mcpx://ns/abs/doc names /abs/doc;
 	// the server only knows its own spelling.
-	return p.ReadResource(ctx, key, upstreamResourceURI(ctx, p, uri))
+	return p.ReadResource(ctx, rs, upstreamResourceURI(ctx, p, uri))
 }
 
 // PromptInfo is one prompt, with the namespace it came from.
@@ -1273,14 +1424,21 @@ func (r *Registry) GetPrompt(ctx context.Context, server, name string, args map[
 	if err := r.refuseBlocked(server); err != nil {
 		return nil, err
 	}
-	return p.GetPrompt(ctx, r.keyFor(p, cc), name, args)
+	return p.GetPrompt(ctx, r.resolvedFor(p, cc), name, args)
 }
 
-// keyFor resolves a server's scope and records the association so the caller
-// can later release exactly what it created.
+// keyFor resolves a server's scope key; resolvedFor is the full
+// resolution, for callers that also pass the root to the pool.
 func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
+	return r.resolvedFor(p, cc).Key
+}
+
+// resolvedFor resolves a server's scope and records the association so
+// the caller can later release exactly what it created.
+func (r *Registry) resolvedFor(p *pool.Pool, cc config.CallContext) config.ResolvedScope {
 	scope := p.Config().Scope
-	key, degraded := scope.Key(cc)
+	rs := scope.Resolve(cc)
+	key, degraded := rs.Key, rs.Degraded
 	if degraded != "" {
 		r.warnDegraded(p.Name(), scope, key, degraded)
 	}
@@ -1297,7 +1455,7 @@ func (r *Registry) keyFor(p *pool.Pool, cc config.CallContext) string {
 		}
 		r.sessMu.Unlock()
 	}
-	return key
+	return rs
 }
 
 // warnDegraded reports a scope that could not be resolved as configured, once

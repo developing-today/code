@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Conn is one client's connection.
@@ -235,14 +235,24 @@ func (p Peer) DeclaredExtension(name string) bool {
 	if json.Unmarshal(p.Caps["extensions"], &ext) != nil {
 		return false
 	}
-	_, ok := ext[name]
-	return ok
+	raw, ok := ext[name]
+	return ok && declaredValue(raw)
 }
 
 // Declared reports whether the client declared a capability.
 func (p Peer) Declared(name string) bool {
 	_, ok := p.Caps[name]
 	return ok
+}
+
+// declaredValue reports whether a raw capability value is a usable
+// declaration: present and not JSON null. A client that serializes an
+// unset capability as null has declared nothing, but Go reads the
+// literal null into a struct as a no-op and stores it in a
+// json.RawMessage as four non-empty bytes, so a bare presence or
+// length check counts it as declared (#2474).
+func declaredValue(raw json.RawMessage) bool {
+	return len(raw) > 0 && strings.TrimSpace(string(raw)) != "null"
 }
 
 // CanElicit reports whether mcpx may send this client an elicitation in the
@@ -260,18 +270,22 @@ func (p Peer) CanElicit(mode string) bool {
 	if !AtLeast(p.Version, "2025-06-18") || !p.Declared("elicitation") {
 		return false
 	}
+	if !declaredValue(p.Caps["elicitation"]) {
+		return false
+	}
 	if mode != "url" {
 		if !AtLeast(p.Version, "2025-11-25") {
 			return true
 		}
-		var e struct {
-			Form json.RawMessage `json:"form"`
-			URL  json.RawMessage `json:"url"`
-		}
+		var e map[string]json.RawMessage
 		if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
 			return false
 		}
-		return len(e.Form) > 0 || len(e.URL) == 0
+		if raw, ok := e["form"]; ok {
+			return declaredValue(raw)
+		}
+		_, hasURL := e["url"]
+		return !hasURL
 	}
 	if !AtLeast(p.Version, "2025-11-25") {
 		return false
@@ -282,7 +296,7 @@ func (p Peer) CanElicit(mode string) bool {
 	if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
 		return false
 	}
-	return len(e.URL) > 0
+	return declaredValue(e.URL)
 }
 
 // CanSample reports whether mcpx may ask this client for a model completion.
@@ -303,9 +317,9 @@ func (p Peer) samplingSub(name string) bool {
 	}
 	switch name {
 	case "tools":
-		return len(s.Tools) > 0
+		return declaredValue(s.Tools)
 	case "context":
-		return len(s.Context) > 0
+		return declaredValue(s.Context)
 	}
 	return false
 }

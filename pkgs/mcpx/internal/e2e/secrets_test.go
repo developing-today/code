@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 )
 
 // secretServer is the fake server, requiring one secret. Its echo tool answers

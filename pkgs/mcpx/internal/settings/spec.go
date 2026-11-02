@@ -3,7 +3,7 @@ package settings
 import (
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // specSettings choose between MCP revisions where they genuinely conflict and

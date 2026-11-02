@@ -3,6 +3,9 @@ import {
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
+  lastKnownEntries,
+  mapWithConcurrency,
+  markRetained,
   normalizeResetAt,
   recordsFromEntries,
   serviceIdFor,
@@ -89,6 +92,40 @@ describe("entryFromResult", () => {
     expect(entry.windows[0].pctOfLimit).toBe(2);
     expect(entry.windows[0].resetsAt).toBe("2026-10-31T13:11:00.000Z");
   });
+  test("out-of-range percentages are omitted while null and valid sibling windows survive", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "claude",
+        ok: true,
+        configured: true,
+        usage: {
+          windows: {
+            below: { usedPercent: -20 },
+            above: { usedPercent: 150 },
+            huge: { usedPercent: 1e9 },
+            zero: { usedPercent: 0 },
+            full: { usedPercent: 100 },
+            valid: { usedPercent: 42 },
+            balance: { usedPercent: null, valueLabel: "$12.50" },
+          },
+        },
+      },
+      "2026-10-27T05:00:00.000Z",
+    );
+
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["zero", 0],
+      ["full", 100],
+      ["valid", 42],
+      ["balance", null],
+    ]);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => [r.metricId, r.value])).toEqual([
+      ["full", 100],
+      ["valid", 42],
+      ["zero", 0],
+    ]);
+  });
   test("error and unconfigured states stay distinct", () => {
     const err = entryFromResult(
       { providerId: "claude", ok: false, configured: true, error: "session expired", usage: null },
@@ -102,6 +139,75 @@ describe("entryFromResult", () => {
       "2026-10-27T05:00:00.000Z",
     );
     expect(un.state).toBe("unconfigured");
+  });
+});
+
+describe("mapWithConcurrency (#1268)", () => {
+  test("preserves order and never exceeds the in-flight bound", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const out = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(n % 3);
+      inFlight--;
+      return n * 10;
+    });
+    expect(out).toEqual([10, 20, 30, 40, 50, 60, 70]);
+    expect(maxInFlight).toBe(3);
+  });
+  test("a limit above the item count still completes; empty input maps to empty", async () => {
+    expect(await mapWithConcurrency([1, 2], 6, async (n) => n + 1)).toEqual([2, 3]);
+    expect(await mapWithConcurrency([], 6, async (n: number) => n)).toEqual([]);
+  });
+  test("a non-positive limit degrades to sequential, never unbounded", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const out = await mapWithConcurrency([1, 2, 3], 0, async (n) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(1);
+      inFlight--;
+      return n;
+    });
+    expect(out).toEqual([1, 2, 3]);
+    expect(maxInFlight).toBe(1);
+  });
+  test("a worker rejection rejects the map", async () => {
+    await expect(
+      mapWithConcurrency([1, 2], 2, async (n) => {
+        if (n === 2) throw new Error("boom");
+        return n;
+      }),
+    ).rejects.toThrow("boom");
+  });
+});
+
+describe("lastKnownEntries (#1268)", () => {
+  const tick = "2026-10-27T05:00:00.000Z";
+  const okEntry = entryFromResult(OK_RESULT, tick);
+  const errEntry = entryFromResult(
+    { providerId: "cline-pass", ok: false, configured: true, error: "timed out", usage: null },
+    tick,
+  );
+  const otherOk = entryFromResult({ ...OK_RESULT, providerId: "claude" }, tick);
+  test("returns the provider's ok entries verbatim, original measuredAt kept", () => {
+    const kept = lastKnownEntries([okEntry, errEntry, otherOk], "cline-pass");
+    expect(kept).toEqual([okEntry]);
+    expect(kept[0].measuredAt).toBe(okEntry.measuredAt);
+  });
+  test("error-only history retains nothing; unknown providers retain nothing", () => {
+    expect(lastKnownEntries([errEntry], "cline-pass")).toEqual([]);
+    expect(lastKnownEntries([okEntry], "nope")).toEqual([]);
+    expect(lastKnownEntries([], "cline-pass")).toEqual([]);
+  });
+  test("markRetained stamps copies with the failed tick; originals and measuredAt untouched", () => {
+    const stamped = markRetained([okEntry], "2026-10-27T05:15:00.000Z");
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0].retainedFromFailedTick).toBe("2026-10-27T05:15:00.000Z");
+    expect(stamped[0].measuredAt).toBe(okEntry.measuredAt);
+    expect(stamped[0]).not.toBe(okEntry);
+    expect(okEntry.retainedFromFailedTick).toBeUndefined();
   });
 });
 
@@ -313,6 +419,45 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
     expect(records.map((r) => r.metricId).sort()).toEqual(["5h", "weekly"]);
     expect(records.every((r) => r.source === "console")).toBe(true);
   });
+  test("out-of-range percentages and negative dollar labels are omitted", () => {
+    const doc = {
+      source: "file-export/test",
+      status: "ok",
+      measuredAt: "2026-10-27T05:30:00.000Z",
+      windows: [
+        { name: "below", usedPct: -20 },
+        { name: "above", usedPct: 150 },
+        { name: "huge", usedPct: 1e9 },
+        { name: "null", usedPct: null },
+        { name: "zero", usedPct: 0 },
+        { name: "full", usedPct: 100 },
+        { name: "valid", usedPct: 42 },
+      ],
+      freeCreditsUsd: -42.5,
+      paygBalanceUsd: -1,
+    };
+    const entry = entryFromFileExport(doc, { fileMtimeIso: doc.measuredAt, stale: false });
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit, w.valueLabel])).toEqual([
+      ["zero", 0, null],
+      ["full", 100, null],
+      ["valid", 42, null],
+    ]);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => [r.metricId, r.value])).toEqual([
+      ["full", 100],
+      ["valid", 42],
+      ["zero", 0],
+    ]);
+
+    const nonnegativeLabels = entryFromFileExport(
+      { ...doc, windows: [], freeCreditsUsd: 0, paygBalanceUsd: 12.5 },
+      { fileMtimeIso: doc.measuredAt, stale: false },
+    );
+    expect(nonnegativeLabels.windows.map((w) => [w.name, w.valueLabel])).toEqual([
+      ["free_credits", "$0.00"],
+      ["payg_balance", "$12.50"],
+    ]);
+  });
   test("failure status documents are error entries, never zeros", () => {
     const entry = entryFromFileExport(
       { service: "meta", source: "file-export/meta-laptop", status: "session-expired", measuredAt: null },
@@ -410,5 +555,109 @@ describe("entryFromTurso (#1049)", () => {
     const empty = entryFromTurso({ organization: { usage: {} } }, subDoc, { measuredAt: at });
     expect(empty.state).toBe("error");
     expect(empty.windows).toEqual([]);
+  });
+});
+
+describe("entryFromTurso negative usage (#2553)", () => {
+  const subDoc = {
+    subscription: { plan: "starter", name: "starter", current_billing_period_start: "2026-10-01T04:00:00+00:00", current_billing_period_end: "2026-11-01T04:00:00+00:00" },
+  };
+  const at = "2026-10-29T02:30:00.000Z";
+  test("all-negative usage read is an error entry with no windows and no records", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { databases: -3, storage_bytes: -2, rows_read: -5, rows_written: -1, bytes_synced: -1 } } },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("error");
+    expect(entry.error).toContain("no known metrics");
+    expect(entry.windows).toEqual([]);
+    expect(recordsFromEntries([entry], new Map(), "quota-gatherer").records).toEqual([]);
+  });
+  test("one negative metric is omitted; the valid metrics publish unchanged and no record is negative", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { databases: -3, storage_bytes: 1_053_323_264, rows_read: 1_905_385, rows_written: 30_026, bytes_synced: -1 } } },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.map((w) => w.name).sort()).toEqual(["rows-read", "rows-written", "storage"]);
+    for (const w of entry.windows) {
+      expect(w.value).toBeGreaterThanOrEqual(0);
+      expect(w.pctOfLimit).toBeGreaterThanOrEqual(0);
+    }
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => r.metricId).sort()).toEqual(["rows-read", "rows-written", "storage"]);
+    for (const r of records) {
+      expect(r.value).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
+describe("own-key guards on quota-gather-map lookups (#2781)", () => {
+  const at = "2026-10-27T05:30:00.000Z";
+  test("entryFromFileExport: prototype spellings get windowSeconds null; known names unchanged", () => {
+    const doc = {
+      service: "meta",
+      source: "file-export/meta-laptop",
+      status: "ok",
+      measuredAt: at,
+      windows: [
+        { name: "5h", usedPct: 12 },
+        { name: "weekly", usedPct: 46 },
+        { name: "storage", usedPct: 3 },
+        { name: "constructor", usedPct: 10 },
+        { name: "__proto__", usedPct: 20 },
+        { name: "toString", usedPct: 30 },
+        { name: "hasOwnProperty", usedPct: 40 },
+      ],
+    };
+    const entry = entryFromFileExport(doc, { fileMtimeIso: at, stale: false });
+    const byName = new Map(entry.windows.map((w) => [w.name, w.windowSeconds]));
+    expect(byName.get("5h")).toBe(18000);
+    expect(byName.get("weekly")).toBe(604800);
+    // "storage" is a genuinely unknown file-export window: null, like the
+    // prototype spellings must be after the guard.
+    expect(byName.get("storage")).toBeNull();
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect(byName.get(name)).toBeNull();
+    }
+    // The published shape: every windowSeconds is a number or null — no
+    // function/object prototype member survives serialization.
+    const published = JSON.parse(JSON.stringify(entry)) as typeof entry;
+    for (const w of published.windows) {
+      expect(w.windowSeconds === null || typeof w.windowSeconds === "number").toBe(true);
+    }
+  });
+
+  test("recordsFromEntries: prototype-spelled Turso windows take the pct path; storage control stays native", () => {
+    // Windows arrive via JSON.parse in production, which is what makes
+    // "__proto__" an own key of the windows record — build the fixture
+    // the same way so the probe is truthful.
+    const usage = JSON.parse(
+      '{"windows":{"storage":{"usedPercent":40},"constructor":{"usedPercent":42},"__proto__":{"usedPercent":7},"toString":{"usedPercent":9}}}',
+    ) as QuotaProviderResult["usage"];
+    const entry = entryFromResult(
+      { providerId: "turso", providerName: "Turso", ok: true, configured: true, fetchedAt: 1793076600000, usage },
+      at,
+    );
+    expect(entry.serviceId).toBe("turso");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    // Control: storage keeps its native-unit record.
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 5, value: 40 });
+    // Prototype spellings: ordinary pct records, never fabricated
+    // native records with undefined unit/limit.
+    for (const [name, value] of [
+      ["constructor", 42],
+      ["__proto__", 7],
+      ["toString", 9],
+    ] as const) {
+      expect(byMetric.get(name)).toMatchObject({ unit: "pct", limit: 100, value });
+    }
+    for (const r of records) {
+      expect(typeof r.unit).toBe("string");
+      expect(Number.isFinite(r.limit)).toBe(true);
+    }
   });
 });

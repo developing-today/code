@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // The ClampedBy capability of docs/decisions/0002-autonomy-dial.md: a

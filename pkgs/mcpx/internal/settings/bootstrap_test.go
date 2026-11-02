@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // A bootstrap setting is one no configuration can set, because it decides

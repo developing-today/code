@@ -536,6 +536,9 @@ type ToolCorrelation struct {
 }
 
 // Correlations finds tools that are commonly used together in sessions.
+// Count is the number of distinct sessions in which both tools were
+// called -- not the number of record pairs -- because the dashboard
+// renders it as a session count (#1695).
 func (s *Store) Correlations(q Query, maxRows int) ([]ToolCorrelation, error) {
 	n := maxRows
 	if n <= 0 {
@@ -545,16 +548,25 @@ func (s *Store) Correlations(q Query, maxRows int) ([]ToolCorrelation, error) {
 	if err != nil {
 		return nil, err
 	}
-	whereClause := " WHERE a.event = 'mcp.call' AND b.event = 'mcp.call' AND ifnull(a.session,'') != '' AND ifnull(a.tool,'') != '' AND ifnull(b.tool,'') != '' AND a.tool < b.tool "
+	// The where conditions name unqualified columns, which are ambiguous
+	// between the two sides of a self-join (#1695). Apply them inside a
+	// filtered subquery per side instead: each subquery is single-table,
+	// so the conditions stay valid verbatim, and the bound args repeat in
+	// step (side a first, then side b).
+	side := "SELECT * FROM records WHERE event = 'mcp.call'"
 	if where != "" {
-		whereClause += " AND " + strings.TrimPrefix(where, " WHERE ")
+		side += " AND " + strings.TrimPrefix(where, " WHERE ")
 	}
-	rows, err := s.db.Query(`SELECT a.tool, b.tool, count(*) AS cnt
-		FROM records a
-		JOIN records b ON a.session = b.session
-		`+whereClause+`
+	allArgs := make([]any, 0, 2*len(args)+1)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, args...)
+	allArgs = append(allArgs, n)
+	rows, err := s.db.Query(`SELECT a.tool, b.tool, count(DISTINCT a.session) AS cnt
+		FROM (`+side+`) a
+		JOIN (`+side+`) b ON a.session = b.session
+		WHERE ifnull(a.session,'') != '' AND ifnull(a.tool,'') != '' AND ifnull(b.tool,'') != '' AND a.tool < b.tool
 		GROUP BY a.tool, b.tool
-		ORDER BY cnt DESC LIMIT ?`, append(args, n)...)
+		ORDER BY cnt DESC LIMIT ?`, allArgs...)
 	if err != nil {
 		return nil, err
 	}

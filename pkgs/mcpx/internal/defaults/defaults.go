@@ -189,6 +189,7 @@ type Defaults struct {
 		Programs     int    `json:"programs"`
 		Entries      int    `json:"entries"`
 		StderrLimit  int    `json:"stderrLimit"`
+		StdoutLimit  int    `json:"stdoutLimit"`
 		Output       string `json:"output"`
 		RemoteOutput string `json:"remoteOutput"`
 		Delivery     string `json:"delivery"`
@@ -205,6 +206,8 @@ type Defaults struct {
 	// caller to fetch rather than printed into its context.
 	Artifacts struct {
 		TTL                string `json:"ttl"`
+		IdleTTL            string `json:"idleTtl"`
+		MaxAge             string `json:"maxAge"`
 		MaxBytes           string `json:"maxBytes"`
 		Quota              string `json:"quota"`
 		InlineMaxBytes     string `json:"inlineMaxBytes"`
@@ -679,6 +682,11 @@ var (
 	// explain the failure. Unbounded, a script looping on stderr would be
 	// held in memory in full, by the daemon, on someone else's behalf.
 	ExecStderrLimit = builtin.Exec.StderrLimit
+	// ExecStdoutLimit bounds how much of a run's stdout the returned
+	// Result carries (CODE-16, #1937). The full output still exists in
+	// the run record/artifacts where one is kept; this bounds only what
+	// is handed back into a caller's context.
+	ExecStdoutLimit = builtin.Exec.StdoutLimit
 	// ExecWorkDirs bounds how many content-addressed client directories are
 	// kept. One per distinct catalogue; without a bound it grows forever.
 	ExecWorkDirs = builtin.Exec.WorkDirs
@@ -703,6 +711,12 @@ var (
 	ExecDelivery       = builtin.Exec.Delivery
 
 	ArtifactTTL = mustDur(builtin.Artifacts.TTL, "artifacts.ttl")
+	// ArtifactIdleTTL is the opt-in touch-on-read window for artifacts
+	// (decision 0006): zero, the builtin, keeps absolute expiry.
+	ArtifactIdleTTL = mustDur(builtin.Artifacts.IdleTTL, "artifacts.idleTtl")
+	// ArtifactMaxAge is the ceiling touch-on-read renewal can never
+	// push an artifact's deadline past, from its creation.
+	ArtifactMaxAge = mustDur(builtin.Artifacts.MaxAge, "artifacts.maxAge")
 	// ArtifactMaxBytes is the ceiling for one artifact. A screenshot is
 	// under a megabyte; the headroom is for the video and the core dump
 	// somebody will eventually want to hand back.

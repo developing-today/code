@@ -19,7 +19,7 @@
 //! Artifacts travel over iroh only: pushed to a home server on
 //! [`PUSH_ALPN`], and pulled by account from the same endpoint on [`PULL_ALPN`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
@@ -34,6 +34,7 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use unicode_normalization::is_nfc;
 
 use crate::connectivity::{DIAL_TIMEOUT, connect, within};
 use crate::directory::{Directory, Refusal, hex_to_array, normalize_key};
@@ -41,6 +42,7 @@ use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
 use crate::envelope_net::{Reply, answer_frames, send};
 use crate::envelope_outbox::{Outcome, check_target};
+use crate::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
 use crate::frames::{read_frame, write_frame};
 use crate::world::hex_encode;
 use crate::world_hub::WorldHub;
@@ -284,6 +286,10 @@ impl SignedArtifact {
             self.after.iter().all(|hash| is_hash(hash)),
             "an artifact names a malformed hash in after"
         );
+        let mut seen = HashSet::with_capacity(self.after.len());
+        for hash in &self.after {
+            ensure!(seen.insert(hash), "an artifact names {hash} twice in after");
+        }
         let bytes = signed_bytes(
             &self.author,
             self.seq,
@@ -357,6 +363,9 @@ impl SignedArtifact {
                 if body.media_type.is_empty() || body.media_type.len() > 128 {
                     return Err(forbidden("a document names its media type"));
                 }
+                if !is_nfc(&body.media_type) {
+                    return Err(forbidden("a document's media type is not NFC"));
+                }
                 let size = serde_json::to_vec(&body.content)
                     .map_err(|error| forbidden(format!("{error}")))?
                     .len();
@@ -375,8 +384,14 @@ impl SignedArtifact {
                 if body.name.is_empty() || body.name.len() > 64 {
                     return Err(forbidden("a tag's name is 1 to 64 bytes"));
                 }
+                if !is_nfc(&body.name) {
+                    return Err(forbidden("a tag's name is not NFC"));
+                }
                 if body.value.as_ref().is_some_and(|value| value.len() > 256) {
                     return Err(forbidden("a tag's value is at most 256 bytes"));
+                }
+                if body.value.as_ref().is_some_and(|value| !is_nfc(value)) {
+                    return Err(forbidden("a tag's value is not NFC"));
                 }
                 Ok(Some(Kind::Tag(body)))
             }
@@ -564,7 +579,8 @@ impl ArtifactLog {
 
     /// Load the log at `path`, which is empty if the file does not exist. A
     /// final line cut short by a crash was never synced, so it is dropped and
-    /// the file is truncated to the last complete line.
+    /// the file is truncated to the last complete line, with a warning. Blank
+    /// lines are skipped, as `Directory::replay` skips them (#2128).
     ///
     /// # Errors
     ///
@@ -577,6 +593,12 @@ impl ArtifactLog {
         };
         let kept = text.rfind('\n').map_or(0, |index| index + 1);
         if kept < text.len() {
+            // #2128: mirror Directory::replay / FileJournal::open - a torn
+            // final entry is dropped loudly, not silently.
+            tracing::warn!(
+                "artifact journal {}: dropping torn final entry at byte {kept}",
+                path.display()
+            );
             OpenOptions::new()
                 .write(true)
                 .open(path)?
@@ -584,6 +606,13 @@ impl ArtifactLog {
         }
         let mut log = Self::default();
         for (number, line) in text[..kept].lines().enumerate() {
+            // #2128: blank lines are cosmetic (Directory::replay skips them
+            // in its own journal); enumerate() keeps the physical line
+            // number, so a corrupt non-blank line still reports its true
+            // position below.
+            if line.trim().is_empty() {
+                continue;
+            }
             let artifact: SignedArtifact = serde_json::from_str(line)
                 .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
             log.store(artifact, false)
@@ -713,13 +742,21 @@ pub struct PullRequest {
 #[derive(Clone, Debug)]
 pub struct ArtifactPullProtocol {
     hub: WorldHub,
+    /// Deadline for the request frame to arrive (see `accept`).
+    frame_deadline: Duration,
+    /// Bound on the post-answer wait for the dialer to close.
+    close_wait: Duration,
 }
 
 impl ArtifactPullProtocol {
     /// Serve the artifacts of the worlds in `hub` to Iroh peers.
     #[must_use]
     pub const fn new(hub: WorldHub) -> Self {
-        Self { hub }
+        Self {
+            hub,
+            frame_deadline: SESSION_DEADLINE,
+            close_wait: CLOSE_WAIT,
+        }
     }
 
     async fn page(&self, request: &PullRequest) -> Result<Page> {
@@ -745,7 +782,16 @@ fn refused(error: anyhow::Error) -> AcceptError {
 impl ProtocolHandler for ArtifactPullProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let (mut send, mut recv) = conn.accept_bi().await?;
-        let Some(frame) = read_frame(&mut recv).await.map_err(refused)? else {
+        // A peer that connects and never sends its request frame
+        // must not hold this handler forever (#2087): bound the
+        // read by the same session deadline event sync uses for a
+        // silent peer.
+        let frame = tokio::time::timeout(self.frame_deadline, read_frame(&mut recv)).await;
+        let frame = match frame {
+            Ok(frame) => frame.map_err(refused)?,
+            Err(_elapsed) => return Ok(()),
+        };
+        let Some(frame) = frame else {
             return Ok(());
         };
         let request: PullRequest =
@@ -754,7 +800,10 @@ impl ProtocolHandler for ArtifactPullProtocol {
         let bytes = serde_json::to_vec(&page).map_err(|error| refused(error.into()))?;
         write_frame(&mut send, &bytes).await.map_err(refused)?;
         send.finish()?;
-        conn.closed().await;
+        // Bound the wait for the dialer to close, as event sync
+        // does (#2087): a peer that never closes must not pin the
+        // handler after its answer is sent.
+        let _ = tokio::time::timeout(self.close_wait, conn.closed()).await;
         Ok(())
     }
 }
@@ -1190,6 +1239,58 @@ mod tests {
         assert_eq!(reopened.head_seq(&public(1)), 2);
     }
 
+    #[test]
+    fn blank_lines_in_the_journal_are_skipped() {
+        // #2128: a blank line must not brick the open - Directory::replay
+        // skips them in its own journal. Middle (incl. whitespace-only),
+        // trailing, and blank-only states all open with artifacts intact.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(first.clone()).unwrap();
+        append(&path, &first).unwrap();
+        let second = log.sign(&key(1), &declared(1, 7)).unwrap();
+        log.insert(second.clone()).unwrap();
+        append(&path, &second).unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        let first_nl = text.find('\n').unwrap();
+        let mut mangled = text.clone();
+        mangled.insert_str(first_nl + 1, "\n  \n");
+        mangled.push('\n');
+        fs::write(&path, mangled).unwrap();
+        assert_eq!(ArtifactLog::open(&path).unwrap(), log);
+
+        let blank_only = dir.path().join("blank.artifacts");
+        fs::write(&blank_only, "\n\n").unwrap();
+        assert_eq!(
+            ArtifactLog::open(&blank_only).unwrap(),
+            ArtifactLog::default()
+        );
+    }
+
+    #[test]
+    fn a_corrupt_line_after_a_blank_line_reports_its_physical_line() {
+        // #2128: skipping blanks must not renumber - the corrupt line is
+        // physically line 3 and the refusal must say so.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(first.clone()).unwrap();
+        append(&path, &first).unwrap();
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("\nnot json\n");
+        fs::write(&path, text).unwrap();
+
+        let refused = ArtifactLog::open(&path).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("artifact line 3 is corrupt"),
+            "{refused:#}"
+        );
+    }
+
     /// The bytes a page takes on the wire, as the server sends it.
     fn wire_len(page: &[SignedArtifact]) -> usize {
         serde_json::to_vec(&Page {
@@ -1485,6 +1586,94 @@ mod tests {
         assert_eq!(away.artifacts().head_seq(&ann), 1);
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_silent_or_never_closing_pull_peer_does_not_pin_the_handler() {
+        // #2087 regression: accept waited forever for the request
+        // frame and for the dialer to close after answering. Both
+        // waits are now bounded (short bounds injected here), and
+        // the handler future completing is the observable release.
+        // No Router here: accept() is driven directly, so the
+        // endpoint must advertise the pull ALPN itself.
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![PULL_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let client = endpoint().await;
+
+        // Silent peer: connects, opens a stream, sends nothing.
+        let world = WorldHandle::spawn(WorldCore::new("home", WorldLimits::default()).unwrap());
+        let protocol = ArtifactPullProtocol {
+            hub: WorldHub::single(WorldService::new(world, None)),
+            frame_deadline: Duration::from_millis(200),
+            close_wait: Duration::from_millis(200),
+        };
+        let accept_task = tokio::spawn({
+            let server = server.clone();
+            async move {
+                let incoming = server.accept().await.expect("incoming");
+                let conn = incoming.await.expect("connecting");
+                protocol.accept(conn).await
+            }
+        });
+        let silent = client.connect(loopback(&server), PULL_ALPN).await.unwrap();
+        let (mut send, _recv) = silent.open_bi().await.unwrap();
+        // Announce the stream with a partial frame-length prefix
+        // (an idle stream is not visible to accept_bi), then stall:
+        // no request frame ever arrives.
+        send.write_all(&[0, 0]).await.unwrap();
+        let _send = send;
+        let released = tokio::time::timeout(Duration::from_secs(15), accept_task)
+            .await
+            .expect("a silent peer's handler is released at the frame deadline")
+            .expect("the accept task did not panic");
+        assert!(
+            released.is_ok(),
+            "the silent accept ends cleanly: {released:?}"
+        );
+
+        // Never-closing peer: reads its answer, then holds the
+        // connection open instead of closing it.
+        let world = WorldHandle::spawn(WorldCore::new("home", WorldLimits::default()).unwrap());
+        let protocol = ArtifactPullProtocol {
+            hub: WorldHub::single(WorldService::new(world, None)),
+            frame_deadline: Duration::from_secs(30),
+            close_wait: Duration::from_millis(200),
+        };
+        let accept_task = tokio::spawn({
+            let server = server.clone();
+            async move {
+                let incoming = server.accept().await.expect("incoming");
+                let conn = incoming.await.expect("connecting");
+                protocol.accept(conn).await
+            }
+        });
+        let peer = client.connect(loopback(&server), PULL_ALPN).await.unwrap();
+        let (mut send, mut recv) = peer.open_bi().await.unwrap();
+        let request = PullRequest {
+            account: public(1),
+            after: 0,
+        };
+        write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
+            .await
+            .unwrap();
+        send.finish().unwrap();
+        let answer = read_frame(&mut recv).await.unwrap();
+        assert!(
+            answer.is_some(),
+            "the pull is answered before the close wait"
+        );
+        let released = tokio::time::timeout(Duration::from_secs(15), accept_task)
+            .await
+            .expect("a never-closing peer's handler is released at the close wait")
+            .expect("the accept task did not panic");
+        assert!(
+            released.is_ok(),
+            "the answered accept ends cleanly: {released:?}"
+        );
+    }
+
     #[test]
     fn a_pulled_artifact_from_another_account_is_refused() {
         let mut directory = Directory::new();
@@ -1539,6 +1728,41 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_after_hashes_are_refused() {
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &document("first")).unwrap();
+        log.insert(first.clone()).unwrap();
+
+        let doubled = log
+            .sign_after(
+                &key(1),
+                &document("second"),
+                vec![first.hash.clone(), first.hash.clone()],
+            )
+            .unwrap();
+        assert!(doubled.verify().is_err());
+        assert!(log.insert(doubled).is_err());
+
+        let repeated = log
+            .sign_after(
+                &key(1),
+                &document("third"),
+                vec![first.hash.clone(); MAX_AFTER],
+            )
+            .unwrap();
+        assert!(repeated.verify().is_err());
+        assert!(log.insert(repeated).is_err());
+        assert_eq!(log.head_seq(&public(1)), 1);
+
+        let distinct: Vec<String> = (0..MAX_AFTER).map(|i| format!("{i:064x}")).collect();
+        let frontier = log
+            .sign_after(&key(1), &document("fourth"), distinct)
+            .unwrap();
+        assert!(frontier.verify().is_ok());
+        assert_eq!(log.insert(frontier).unwrap(), Stored::New);
+    }
+
+    #[test]
     fn documents_and_tags_are_checked_and_never_applied_as_directory_changes() {
         let huge = Kind::Document(Document {
             media_type: "application/json".to_owned(),
@@ -1584,6 +1808,71 @@ mod tests {
             .unwrap();
         assert_eq!(stored, Stored::New);
         assert_eq!(directory.artifacts().head_seq(&public(1)), 1);
+    }
+
+    #[test]
+    fn parsed_document_media_type_must_be_nfc() {
+        let nfc = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Document(Document {
+                    media_type: "application/json".to_owned(),
+                    content: json!({ "text": "ok" }),
+                }),
+            )
+            .unwrap();
+        assert!(matches!(nfc.parsed(), Ok(Some(Kind::Document(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Document(Document {
+                    media_type: "application/jso\u{301}n".to_owned(),
+                    content: json!({ "text": "ok" }),
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
+    }
+
+    #[test]
+    fn parsed_tag_name_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Tag(Tag {
+                    subject: public(2),
+                    name: "e\u{301}".to_owned(),
+                    value: None,
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
+    }
+
+    #[test]
+    fn parsed_tag_value_must_be_nfc() {
+        let control = ArtifactLog::default()
+            .sign(&key(1), &author_tag(&public(2), 1))
+            .unwrap();
+        assert!(matches!(control.parsed(), Ok(Some(Kind::Tag(_)))));
+
+        let decomposed = ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::Tag(Tag {
+                    subject: public(2),
+                    name: "author".to_owned(),
+                    value: Some("e\u{301}".to_owned()),
+                }),
+            )
+            .unwrap();
+        assert!(decomposed.parsed().is_err());
     }
 
     #[tokio::test]

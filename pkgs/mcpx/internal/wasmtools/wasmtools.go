@@ -10,6 +10,13 @@
 // anything ungranted fails to instantiate — deny-by-default is a
 // property of the loader, not a check inside the guest.
 //
+// Log retention is bounded to 1 MiB of payload bytes, 1,024 lines (empty
+// lines count), and 64 KiB per line. Oversized lines are dropped. When a
+// valid line would exceed an aggregate bound, oldest lines are evicted
+// until it fits. Each dropped or evicted line increments
+// Source.DroppedLogLines; Logs returns an ordered, defensive, non-draining
+// snapshot of the retained lines.
+//
 // Guest ABI (core WASM, shaped so a component-model ABI can replace it
 // underneath later, per #1970 Approach C):
 //
@@ -37,11 +44,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // GrantLog is the host capability that lets a guest write one log line
@@ -49,18 +57,24 @@ import (
 const GrantLog = "log"
 
 const (
-	inputPtrFn  = "mcpx_input_ptr"
-	outputPtrFn = "mcpx_output_ptr"
-	listFn      = "mcpx_list_tools"
-	callFn      = "mcpx_call_tool"
-	maxMsg      = 1 << 20
+	inputPtrFn     = "mcpx_input_ptr"
+	outputPtrFn    = "mcpx_output_ptr"
+	listFn         = "mcpx_list_tools"
+	callFn         = "mcpx_call_tool"
+	maxMsg         = 1 << 20
+	maxLogBytes    = 1 << 20
+	maxLogLines    = 1024
+	maxLogLineSize = 64 << 10
 )
 
 // Source is one instantiated WASM tool source.
 type Source struct {
-	rt   wazero.Runtime
-	mod  api.Module
-	logs []string
+	rt              wazero.Runtime
+	mod             api.Module
+	logMu           sync.RWMutex
+	logs            []string
+	logBytes        int
+	droppedLogLines uint64
 }
 
 // Load instantiates src (a core-WASM binary) granting exactly the
@@ -78,9 +92,13 @@ func Load(ctx context.Context, src []byte, grants ...string) (*Source, error) {
 	host := rt.NewHostModuleBuilder("mcpx")
 	if granted[GrantLog] {
 		host.NewFunctionBuilder().WithFunc(func(_ context.Context, m api.Module, ptr, length uint32) {
+			if length > maxLogLineSize {
+				s.dropLogLine()
+				return
+			}
 			b, ok := m.Memory().Read(ptr, length)
 			if ok {
-				s.logs = append(s.logs, string(b))
+				s.appendLog(b)
 			}
 		}).Export("log")
 	}
@@ -107,9 +125,55 @@ func Load(ctx context.Context, src []byte, grants ...string) (*Source, error) {
 // Close releases the runtime and every module in it.
 func (s *Source) Close(ctx context.Context) error { return s.rt.Close(ctx) }
 
-// Logs returns the lines the guest wrote through the granted "log"
-// capability, in order.
-func (s *Source) Logs() []string { return append([]string(nil), s.logs...) }
+// Logs returns a defensive, ordered, non-draining snapshot of the retained
+// lines the guest wrote through the granted "log" capability.
+func (s *Source) Logs() []string {
+	s.logMu.RLock()
+	defer s.logMu.RUnlock()
+	return append([]string(nil), s.logs...)
+}
+
+// DroppedLogLines returns the cumulative number of log lines that were
+// dropped because they exceeded the per-line limit or evicted to keep the
+// retained logs within an aggregate limit.
+func (s *Source) DroppedLogLines() uint64 {
+	s.logMu.RLock()
+	defer s.logMu.RUnlock()
+	return s.droppedLogLines
+}
+
+// appendLog retains one guest log line while enforcing the byte and line
+// bounds. It checks the byte slice length before converting it to a string,
+// and is separate from the WASM callback so retention can be tested without
+// repeatedly invoking a guest.
+func (s *Source) appendLog(line []byte) {
+	if len(line) > maxLogLineSize {
+		s.dropLogLine()
+		return
+	}
+	s.retainLog(string(line))
+}
+
+func (s *Source) dropLogLine() {
+	s.logMu.Lock()
+	s.droppedLogLines++
+	s.logMu.Unlock()
+}
+
+func (s *Source) retainLog(line string) {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+
+	for len(s.logs) >= maxLogLines || s.logBytes+len(line) > maxLogBytes {
+		s.logBytes -= len(s.logs[0])
+		copy(s.logs, s.logs[1:])
+		s.logs[len(s.logs)-1] = ""
+		s.logs = s.logs[:len(s.logs)-1]
+		s.droppedLogLines++
+	}
+	s.logs = append(s.logs, line)
+	s.logBytes += len(line)
+}
 
 func (s *Source) readOutput(ctx context.Context, length uint64) ([]byte, error) {
 	if length > maxMsg {

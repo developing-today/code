@@ -15,14 +15,26 @@ import {
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
+  coverageFromFeed,
+  poolAvailableFromFeed,
   poolFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
+import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { applyCloudflareExport, applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import {
+  applyCloudflareExport,
+  applySupabaseExport,
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+} from "../saas-extract.ts";
+import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
@@ -35,6 +47,7 @@ import {
   type AaFeedSection,
   type AttentionFlag,
   type BoardItem,
+  type ChargeRow,
   type Comment,
   type DnsSection,
   type GhItem,
@@ -176,7 +189,12 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           source: "kaneo",
           status: col.id,
           priority: t.priority,
-          updatedAt: t.updatedAt ?? t.createdAt,
+          // #1197: never present creation time as update time. When
+          // Kaneo omits updatedAt the item stays undated: downstream
+          // sorts treat missing as oldest and the done policy keeps
+          // undated cards (age unproven), instead of freshness being
+          // fabricated from createdAt.
+          updatedAt: t.updatedAt,
           kaneoUrl: kaneoTaskUrl(p.workspaceId, p.id, t.id),
           links,
         });
@@ -379,6 +397,49 @@ export async function projectorComments(baseUrl: string, refs: RefKey[]): Promis
   return out;
 }
 
+/** The latest non-deleted comment per ref, from a list in any order. */
+export function latestPerRef(comments: Comment[]): Comment[] {
+  const byRef = new Map<RefKey, Comment>();
+  for (const c of comments) {
+    if (c.deleted) continue;
+    const cur = byRef.get(c.ref);
+    if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+  }
+  return [...byRef.values()];
+}
+
+/**
+ * The latest comment for each ref, one projector read per ref (#1279).
+ * The bulk /comments read applies its row limit across every requested
+ * ref (projector default 500), so in a busy batch an item's latest
+ * comment can be truncated away entirely; a per-ref limit=1 read cannot
+ * be crowded out by other items' comments. Reads run with bounded
+ * concurrency against the local projector; any failed read fails the
+ * whole call (null), matching projectorComments' fail-soft contract.
+ */
+export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
+  if (refs.length === 0) return [];
+  const out: Comment[] = [];
+  const CONCURRENCY = 16;
+  for (let i = 0; i < refs.length; i += CONCURRENCY) {
+    const batch = refs.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (ref): Promise<Comment[] | null> => {
+        const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(ref)}&limit=1`);
+        if (!r.ok) return null;
+        return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+          .map(mapProjectorComment)
+          .filter((c) => !c.deleted);
+      }),
+    );
+    for (const rows of results) {
+      if (rows === null) return null;
+      if (rows.length) out.push(latestPerRef(rows)[0]);
+    }
+  }
+  return out;
+}
+
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
 export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
@@ -440,7 +501,12 @@ export function titleRefs(title: string): RefKey[] {
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
-  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) add(`${m[1]}#${m[2]}`);
+  const explicitRefSpans: { start: number; end: number }[] = [];
+  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
+    const start = m.index ?? 0;
+    explicitRefSpans.push({ start, end: start + m[0].length });
+    add(`${m[1]}#${m[2]}`);
+  }
   const aliases: { at: number; repo: string }[] = [];
   for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
     aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
@@ -448,6 +514,7 @@ export function titleRefs(title: string): RefKey[] {
   if (aliases.length) {
     for (const m of title.matchAll(/#(\d+)/g)) {
       const at = m.index ?? 0;
+      if (explicitRefSpans.some((span) => span.start <= at && at < span.end)) continue;
       const before = aliases.filter((a) => a.at < at).pop();
       const repo = (before ?? aliases.find((a) => a.at > at))?.repo;
       if (repo) add(`${repo}#${m[1]}`);
@@ -545,6 +612,20 @@ async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasS
     /* no gatherer file (or unreadable): base services stand */
   }
   return services;
+}
+
+/**
+ * One feed attention row safe to key by sessionId (#2427): isFleetFeed
+ * only checks that `attention` is an array, never its entries, so a
+ * null row throws on `.sessionId` here and rows without a string
+ * sessionId all collapse onto the same map key. Malformed rows are
+ * dropped at this consumer, before the dedupe insert — the gate stays
+ * structural (triage task 3640) and the collector's emitted shape is
+ * unchanged. Sibling sections are element-filtered the same way
+ * (registry via isSessionRecord, subscriptions via isSubscriptionRow).
+ */
+export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
+  return isRecord(v) && typeof v.sessionId === "string" && v.sessionId.length > 0;
 }
 
 export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
@@ -691,7 +772,8 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         let merged = board;
         if (cfg.projector.baseUrl) {
           merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-          provenance.board = "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+          provenance.board =
+            "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
         // In-flight lane (see inFlightBoardItems above): synthetic
         // entries from the fleet feed's orchestration section — the
@@ -736,9 +818,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     },
     async items(refs) {
       // #910 stage 5: the fleet feed's GitHub Project pool is the
-      // resolution source FIRST — the projector is dead by config and
-      // the Projects-scope token cannot read arbitrary issues, only
-      // the Project (whose items carry their linked issue's state).
+      // resolution source FIRST — the projector (deployed; the NixOS
+      // module pins PM_PROJECTOR_URL to it) serves refs outside the
+      // pool below, and the Projects-scope token cannot read arbitrary
+      // issues, only the Project (whose items carry their linked
+      // issue's state).
       const out = new Map<RefKey, GhItem>();
       const feed = await getFeed();
       // #2399: the pool enters through the single feed gate (fail-soft,
@@ -791,6 +875,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const feed = await getFeed();
       return poolFromFeed(feed);
     },
+    async projectsAvailable(): Promise<boolean> {
+      const feed = await getFeed();
+      return poolAvailableFromFeed(feed);
+    },
+    async coverageCensus(): Promise<RepoCensus[] | null> {
+      const feed = await getFeed();
+      return coverageFromFeed(feed);
+    },
     async comments(refs) {
       if (cfg.projector.baseUrl) {
         const live = await projectorComments(cfg.projector.baseUrl, refs);
@@ -800,6 +892,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         }
       }
       return fix.comments(refs);
+    },
+    async latestComments(refs) {
+      if (cfg.projector.baseUrl) {
+        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
+        if (live) {
+          provenance.comments = "live (projector)";
+          return live;
+        }
+      }
+      return latestPerRef(await fix.comments(refs));
     },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced
@@ -816,6 +918,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       if (feed) {
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         view = feed.quota;
+        const dropped = feed.quotaDropped;
+        if (dropped && dropped.pools + dropped.windows + dropped.burn > 0) {
+          provenance.quota += ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.windows} window(s), ${dropped.burn} burn segment(s) (#2429)`;
+        }
       } else {
         provenance.quota = "fixtures (no fleet feed file yet)";
         view = await fix.quota();
@@ -825,6 +931,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const file = parseQuotaCurrent(JSON.parse(raw));
         if (file) {
           provenance.quota += ` · gatherer ${file.generatedAt}`;
+          const sanitized = file.sanitized;
+          if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
+            provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
+          }
           return overlayQuotaCurrent(view, file);
         }
       } catch {
@@ -862,8 +972,33 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
         .then((text) => JSON.parse(text) as SupabaseExportDoc)
         .catch(() => null);
+      // Charges evidence + unmatched-charge flags (#3124): computed
+      // once, before the branch. The feed's charge data is not a
+      // byproduct of the saas section, so every return path below
+      // consumes it — previously both lived only inside the saas
+      // gate, and a feed with charges but no saas (or a quota-view
+      // fallback) silently dropped every auto-matched charge.
+      const feedCharges: ChargeRow[] = feed?.charges ?? [];
+      // Charges auto-matching (#1057): the feed carries only
+      // first-time unmatched SaaS/AI charges (the collector's
+      // surfaced-state guarantees exactly-once), so each becomes
+      // an attention flag here and never repeats on later feeds.
+      // Charges sanitization loss (#2445): rows loadFeed dropped are
+      // counted on the feed; surface that count in the usage
+      // provenance on every return path below, never swallow it.
+      const chargesDroppedNote = feed?.chargesDropped
+        ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
+        : "";
+      const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
+        kind: "unmatched-charge",
+        label: `${u.merchant} — unrecognized SaaS/AI charge`,
+        detail: `$${u.amountUsd.toFixed(2)} on ${u.at} via ${u.source === "plaid" ? "Plaid" : "Gmail alert"} — no hub service matched; classify it or add the service`,
+        href: "/quota",
+        severity: u.amountUsd,
+      }));
       if (feed?.saas && feed.saas.length) {
-        provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        provenance.usage =
+          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + chargesDroppedNote;
         // The Cloudflare live export overlays tracker prose on BOTH
         // service sources — a healthy fleet feed must not keep stale
         // prose values when a fresh export exists (Codex, PR #2228).
@@ -873,27 +1008,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
           payg: feed.payg ?? [],
-          charges: feed.charges ?? [],
+          charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
         };
-        // Charges auto-matching (#1057): the feed carries only
-        // first-time unmatched SaaS/AI charges (the collector's
-        // surfaced-state guarantees exactly-once), so each becomes
-        // an attention flag here and never repeats on later feeds.
         partial.services = await tursoOverlay(cfg, partial.services);
-        const chargeFlags: AttentionFlag[] = (feed.chargesAttention ?? []).map((u) => ({
-          kind: "unmatched-charge",
-          label: `${u.merchant} — unrecognized SaaS/AI charge`,
-          detail: `$${u.amountUsd.toFixed(2)} on ${u.at} via ${u.source === "plaid" ? "Plaid" : "Gmail alert"} — no hub service matched; classify it or add the service`,
-          href: "/quota",
-          severity: u.amountUsd,
-        }));
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed.quota, partial), ...chargeFlags],
+          attention: [...buildAttentionFlags(feed.quota, partial), ...feedChargeFlags],
           domains,
           history,
         };
@@ -906,27 +1030,45 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const cfExport = await readFile(cfg.cloudflareExportFile, "utf8")
           .then((text) => JSON.parse(text) as CloudflareExportDoc)
           .catch(() => null);
+        // #3124: the feed's charges win/merge here too — prose
+        // extraction is the fallback for when the feed carries none,
+        // never a reason to drop the ones it does carry. The merge is
+        // charge-level (mergeChargeRows): the same charge recorded in
+        // both places differs in label/date/source strings, so
+        // full-row equality would display it twice; automatic
+        // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           payg: extractPaygLines(doc, registryText),
-          charges: extractCharges(doc, registryText),
+          charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
         };
         partial.services = await tursoOverlay(cfg, partial.services);
-        provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
+        provenance.usage =
+          "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
+          chargesDroppedNote;
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial),
+          attention: [...buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial), ...feedChargeFlags],
           domains,
           history,
         };
       } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)";
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + chargesDroppedNote;
         const fallback = await fix.usage();
-        return { ...fallback, history: Object.keys(history).length ? history : fallback.history };
+        // #3124: even the fixtures fallback keeps the feed's charge
+        // evidence when a feed exists — fixtures stand in for the
+        // sections that are missing, not for the ones that arrived.
+        return {
+          ...fallback,
+          charges: feedCharges.length ? feedCharges : fallback.charges,
+          chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
+          attention: [...fallback.attention, ...feedChargeFlags],
+          history: Object.keys(history).length ? history : fallback.history,
+        };
       }
     },
     async attention() {
@@ -938,7 +1080,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
 
       const feed = await getFeed();
       if (feed) {
-        for (const e of feed.attention) byId.set(e.sessionId, e);
+        for (const e of feed.attention) if (isFeedAttentionEntry(e)) byId.set(e.sessionId, e);
         parts.push(`sandbox via fleet feed (${feedAgeText(feed.generatedAt)})`);
       }
 
@@ -974,11 +1116,15 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // #1139 adds the fourth — stale — tracked as a diagnosis on the
       // source so the attention/today surfaces can banner it.
       const feed = await getFeed();
+      const collection = feed?.meta?.sections.orchestration;
       lastOrchestrationDiagnosis = diagnoseOrchestrationSection(feed?.orchestration ?? null);
       if (feed?.orchestration) {
         const section = normalizeOrchestrationSection(feed.orchestration);
         if (section) {
-          provenance.orchestration = `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          provenance.orchestration =
+            collection?.status === "error"
+              ? `error — collector error: ${collection.error ?? "collection failed"}; serving embedded section ${section.runId}`
+              : `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
           // #1290: the per-item extension seam. The section gate above
           // never learns the extension fields; each tier item's
           // extensions are validated here, fail-soft (a malformed
@@ -1001,9 +1147,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         provenance.orchestration = `invalid — orchestration section present but failed validation (${problem}); the today view derives`;
         return null;
       }
-      provenance.orchestration = feed
-        ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
-        : "fixtures (no fleet feed file yet)";
+      provenance.orchestration =
+        collection?.status === "error"
+          ? `error — collector error: ${collection.error ?? "collection failed"}; no orchestration section was embedded`
+          : collection?.status === "skipped"
+            ? "skipped — collector intentionally skipped orchestration collection"
+            : feed
+              ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async dns(): Promise<DnsSection | null> {
@@ -1011,13 +1162,22 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // from #902's register file by the collector. The page renders
       // the register; it never edits it.
       const feed = await getFeed();
+      const collection = feed?.meta?.sections.dns;
       if (feed?.dns && isDnsSection(feed.dns)) {
-        provenance.dns = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · register parsed ${feed.dns.generatedAt})`;
+        provenance.dns =
+          collection?.status === "error"
+            ? `error — collector error: ${collection.error ?? "collection failed"}; serving embedded DNS section`
+            : `live (fleet feed · ${feedAgeText(feed.generatedAt)} · register parsed ${feed.dns.generatedAt})`;
         return feed.dns;
       }
-      provenance.dns = feed
-        ? "not collected yet — the collector has not embedded a register section"
-        : "fixtures (no fleet feed file yet)";
+      provenance.dns =
+        collection?.status === "error"
+          ? `error — collector error: ${collection.error ?? "collection failed"}; no DNS section was embedded`
+          : collection?.status === "skipped"
+            ? "skipped — collector intentionally skipped DNS collection"
+            : feed
+              ? "not collected yet — the collector has not embedded a register section"
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async aa(): Promise<AaFeedSection | null> {
@@ -1026,16 +1186,26 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // section (the page renders the reason); a missing section means
       // the collector has not embedded one yet.
       const feed = await getFeed();
+      const collection = feed?.meta?.sections.aa;
       if (feed?.aa && isAaSection(feed.aa)) {
-        provenance.aa =
+        const detail =
           feed.aa.status === "ok"
             ? `live (fleet feed · ${feedAgeText(feed.generatedAt)} · ainventory batch ${feed.aa.batch.slice(0, 8)} · collected ${feed.aa.generatedAt})`
             : `live (fleet feed · ${feedAgeText(feed.generatedAt)} · AA section absent: ${feed.aa.reason})`;
+        provenance.aa =
+          collection?.status === "error"
+            ? `error — collector error: ${collection.error ?? "collection failed"}; ${detail}`
+            : detail;
         return feed.aa;
       }
-      provenance.aa = feed
-        ? "not collected yet — the collector has not embedded an AA section"
-        : "fixtures (no fleet feed file yet)";
+      provenance.aa =
+        collection?.status === "error"
+          ? `error — collector error: ${collection.error ?? "collection failed"}; no AA section was embedded`
+          : collection?.status === "skipped"
+            ? "skipped — collector intentionally skipped AA collection"
+            : feed
+              ? "not collected yet — the collector has not embedded an AA section"
+              : "fixtures (no fleet feed file yet)";
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
@@ -1132,9 +1302,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const facet = (key: keyof Provenance): ProvenanceFacet => {
         const text = provenance[key];
         let state: ProvenanceFacet["state"];
-        if (text.startsWith("live")) state = "live";
+        if (text.startsWith("error")) state = "error";
+        else if (text.startsWith("live")) state = "live";
         else if (text.startsWith("invalid")) state = "invalid";
-        else if (text.startsWith("none yet") || text.startsWith("not collected yet")) state = "absent";
+        else if (text.startsWith("none yet") || text.startsWith("not collected yet") || text.startsWith("skipped"))
+          state = "absent";
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
         const feedBacked = text.includes("fleet feed");

@@ -7,7 +7,17 @@
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
-import { type SessionFeedEntry, type SessionRecord, refsInText } from "./model.ts";
+import { parseRef, type SessionFeedEntry, type SessionRecord, refsInText } from "./model.ts";
+
+function isValidTaskRef(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Agent identity for an OpenCode session entry. */
 export function agentIdentityOf(e: SessionFeedEntry): { agentId: string; agentLabel: string } {
@@ -98,7 +108,11 @@ export function parseLaunchRecords(jsonl: string): SessionRecord[] {
     try {
       const parsed: unknown = JSON.parse(t);
       if (typeof parsed === "object" && parsed !== null && typeof (parsed as ClaudeLaunchRecord).id === "string") {
-        out.push(recordFromLaunch(parsed as ClaudeLaunchRecord));
+        // #2376: route through the same hygiene filter as the store/feed
+        // paths — a launch record carrying a non-string lastSeenAt or
+        // startedAt must not reach mergeRecords' string-only sort.
+        const rec = recordFromLaunch(parsed as ClaudeLaunchRecord);
+        if (isSessionRecord(rec)) out.push(rec);
       }
     } catch {
       /* a torn final line must not lose the registry */
@@ -151,7 +165,24 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
 export function isSessionRecord(v: unknown): v is SessionRecord {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SessionRecord>;
-  return typeof r.id === "string" && typeof r.source === "string" && typeof r.label === "string";
+  // #2376: mergeRecords compares lastSeenAt with string-only methods
+  // (localeCompare / >=), so a present-but-non-string timestamp passes
+  // this filter today and throws TypeError once the sort reaches it.
+  // Timestamps must be string-or-absent; a poisoned record is rejected,
+  // not coerced (the #2347 load-filter precedent).
+  return (
+    typeof r.id === "string" &&
+    typeof r.source === "string" &&
+    typeof r.label === "string" &&
+    (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
+    (r.startedAt === undefined || typeof r.startedAt === "string") &&
+    // #2408/#2485: mergeRecords spreads taskRefs as an array, and rendering
+    // parses each ref as owner/repo#number. The validator owns the rule, per
+    // the #2347/#2376 precedent above: taskRefs must be absent or an array
+    // of parseable refs with safe-integer issue numbers; malformed records
+    // are rejected, not coerced.
+    (r.taskRefs === undefined || (Array.isArray(r.taskRefs) && r.taskRefs.every(isValidTaskRef)))
+  );
 }
 
 /** Standing fleet identities + one per registry session, for comment authorship. */

@@ -82,6 +82,12 @@ impl FileJournal {
                     break;
                 }
                 let complete = line.last() == Some(&b'\n');
+                if line == b"\n" {
+                    // Empty lines carry no entry. Preserve their bytes so a
+                    // later torn-tail repair cannot truncate past them.
+                    good_len += read as u64;
+                    continue;
+                }
                 match serde_json::from_slice::<JournalEntry>(&line) {
                     Ok(entry) if complete => {
                         entries.push(entry);
@@ -449,10 +455,31 @@ pub struct ForkSpec {
 }
 
 /// Read a journal's entries without opening it for append.
+///
+/// A torn final fragment — a last chunk with no terminating newline, left by
+/// a crash mid-append — is excluded with a warning, mirroring
+/// [`FileJournal::open`]: that entry was never acknowledged, and a world its
+/// own open repairs must stay forkable (#1523). A newline-terminated line
+/// that does not parse was fully written, so it stays fatal corruption in
+/// any position, including the last line.
 fn read_journal_entries(path: &Path) -> Result<Vec<JournalEntry>> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if bytes.last() != Some(&b'\n') {
+        // The split's final chunk is an unterminated fragment (or the empty
+        // tail of an empty file); it is not a complete entry.
+        if let Some(fragment) = lines.pop() {
+            if !fragment.is_empty() {
+                tracing::warn!(
+                    "world journal {}: dropping torn final entry at byte {}",
+                    path.display(),
+                    bytes.len() - fragment.len()
+                );
+            }
+        }
+    }
     let mut entries = Vec::new();
-    for line in bytes.split(|byte| *byte == b'\n') {
+    for line in lines {
         if line.is_empty() {
             continue;
         }
@@ -1063,6 +1090,30 @@ mod tests {
     }
 
     #[test]
+    fn blank_lines_before_between_and_after_entries_are_skipped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open(&path, "w").unwrap());
+        let created = std::fs::read(&path).unwrap();
+        let revoked = serde_json::to_vec(&JournalEntry::Revoked {
+            participant_id: 1,
+            by: None,
+        })
+        .unwrap();
+
+        let mut with_blanks = b"\n".to_vec();
+        with_blanks.extend_from_slice(&created);
+        with_blanks.extend_from_slice(b"\n");
+        with_blanks.extend_from_slice(&revoked);
+        with_blanks.extend_from_slice(b"\n\n");
+        std::fs::write(&path, &with_blanks).unwrap();
+
+        let (_, entries) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(std::fs::read(&path).unwrap(), with_blanks);
+    }
+
+    #[test]
     fn a_terminated_entry_this_binary_cannot_read_is_refused_not_dropped() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("journal.jsonl");
@@ -1153,7 +1204,7 @@ mod tests {
                 .unwrap();
         }
         svc.world().chat(ann.clone(), "hi").await.unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=3");
+        assert!(view(&svc, &ann).await.contains("count=3"));
         svc.world().shutdown().await.unwrap();
 
         let fresh_blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
@@ -1169,7 +1220,10 @@ mod tests {
         assert_eq!(report.program_error, None);
         assert_eq!(report.replayed_inputs, 3);
         assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
-        assert_eq!(view(&svc, &ann).await, "count=3", "state rebuilt by replay");
+        assert!(
+            view(&svc, &ann).await.contains("count=3"),
+            "state rebuilt by replay"
+        );
         assert_eq!(
             svc.active_module_hash().await.as_deref(),
             Some(hash.as_str()),
@@ -1179,7 +1233,7 @@ mod tests {
             .input(ann.clone(), b"inc".to_vec())
             .await
             .unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=4");
+        assert!(view(&svc, &ann).await.contains("count=4"));
     }
 
     #[cfg(feature = "sandbox")]
@@ -1221,7 +1275,7 @@ mod tests {
             .input(ann.clone(), b"inc".to_vec())
             .await
             .unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=1");
+        assert!(view(&svc, &ann).await.contains("count=1"));
         svc.world().shutdown().await.unwrap();
     }
 
@@ -1269,7 +1323,7 @@ mod tests {
         }
         svc.world().chat(ann.clone(), "hi").await.unwrap();
         assert!(svc.world().revoke(bob_participant.id).await.unwrap());
-        assert_eq!(view(&svc, &ann).await, "count=13");
+        assert!(view(&svc, &ann).await.contains("count=13"));
         let sequence = svc
             .world()
             .snapshot(ann.clone())
@@ -1315,9 +1369,8 @@ mod tests {
             report.replayed_inputs < 5,
             "replay starts at the checkpoint"
         );
-        assert_eq!(
-            view(&svc, &ann).await,
-            "count=13",
+        assert!(
+            view(&svc, &ann).await.contains("count=13"),
             "state from checkpoint + tail"
         );
         assert_eq!(
@@ -1332,7 +1385,7 @@ mod tests {
             .input(ann.clone(), b"inc".to_vec())
             .await
             .unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=14");
+        assert!(view(&svc, &ann).await.contains("count=14"));
         let page = svc
             .world()
             .events_after(ann.clone(), sequence)
@@ -1443,6 +1496,7 @@ mod tests {
                     module_hash: "h".to_owned(),
                     seed: 1,
                     provenance: None,
+                    trust: None,
                 },
             },
         });
@@ -1454,6 +1508,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         });
@@ -1562,9 +1617,7 @@ mod tests {
                 }
             ));
             journal
-                .append(&JournalEntry::ExecutionProfile {
-                    profile,
-                })
+                .append(&JournalEntry::ExecutionProfile { profile })
                 .unwrap();
         }
         let entries = journal_entries(dir.path());

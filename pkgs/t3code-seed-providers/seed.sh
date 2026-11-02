@@ -44,8 +44,16 @@ import json, os, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 try:
     doc = json.loads(path.read_text() or "{}")
-except Exception:
+except (OSError, ValueError) as exc:
+    print(f"t3code-seed-providers: cannot read settings: {exc}", file=sys.stderr)
     sys.exit(0)  # don't clobber something we can't parse
+
+if not isinstance(doc, dict):
+    print("t3code-seed-providers: settings must be an object; leaving unchanged", file=sys.stderr)
+    sys.exit(0)
+if "providerInstances" in doc and not isinstance(doc["providerInstances"], dict):
+    print("t3code-seed-providers: providerInstances must be an object; leaving unchanged", file=sys.stderr)
+    sys.exit(0)
 
 def env(name):
     v = os.environ.get(name, "").strip()
@@ -151,9 +159,17 @@ for k in added:
 # displayName, enabled and everything else the UI may have set. Without this,
 # every store-path bump strands the old binary in settings.json forever.
 FLEET_OWNED = ("opencode-v2", "antigravity-acp", "muse", "pi")
+malformed = set()
+for k in FLEET_OWNED:
+    if k not in instances:
+        continue
+    inst = instances[k]
+    if not isinstance(inst, dict) or ("config" in inst and not isinstance(inst["config"], dict)):
+        print(f"t3code-seed-providers: skipping malformed fleet-owned instance {k}", file=sys.stderr)
+        malformed.add(k)
 refreshed = []
 for k in FLEET_OWNED:
-    if k in added or k not in instances or k not in desired:
+    if k in added or k not in instances or k not in desired or k in malformed:
         continue
     binary = (desired[k].get("config") or {}).get("binaryPath")
     if not binary:
@@ -170,9 +186,14 @@ for k in FLEET_OWNED:
 # that is reversible in the UI, but it should not be re-enabled.
 disabled = []
 for k, inst in instances.items():
-    if not isinstance(inst, dict) or inst.get("driver") != "opencode":
+    if k in malformed or not isinstance(inst, dict) or inst.get("driver") != "opencode":
         continue
-    binary = (inst.get("config") or {}).get("binaryPath") or ""
+    config = inst.get("config", {})
+    if not isinstance(config, dict):
+        continue
+    binary = config.get("binaryPath") or ""
+    if not isinstance(binary, str):
+        continue
     # Matches both an opencode-1.x directory ("/opencode-1.") and a Nix store
     # path segment ("<hash>-opencode-1.").
     if ("/opencode-1." in binary or "-opencode-1." in binary) and inst.get("enabled") is not False:

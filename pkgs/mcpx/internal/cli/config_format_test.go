@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // `mcpx config --schema --format` (#1846 step 2): markdown emits

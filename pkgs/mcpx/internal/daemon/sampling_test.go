@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // sampleRig is a registry with a broker and no upstream connections: the

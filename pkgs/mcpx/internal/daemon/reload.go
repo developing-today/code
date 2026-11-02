@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // Reload swaps in a new configuration without restarting anything that did

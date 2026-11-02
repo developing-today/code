@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/model"
-	"github.com/dezren39/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/model"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
 )
 
 // Codex P2 (PR #2592): a model layer that was configured but cannot

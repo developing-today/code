@@ -1,13 +1,29 @@
-// The fleet feed: a JSON file produced on the sandbox host by
-// scripts/collect-fleet-feed.ts and pushed to the laptop (the sandbox
-// OpenCode server binds its own loopback, and the quota sources of
-// record live on the sandbox). The aggregator renders the feed as-is;
-// a stale feed keeps rendering with its age stated in provenance.
+// The fleet feed: a JSON file produced on the laptop by
+// scripts/collect-fleet-feed.ts, run by the laptop's fleet-feed-collector
+// user timer (declared in the pm-stack NixOS module, #3363/#3368) and
+// written straight to the aggregator's state dir. (The collector
+// originally ran on the sandbox and pushed the feed here; that sandbox
+// timer is retired — a stale sandbox copy overwriting this file was
+// code#3362.) The aggregator renders the feed as-is; a stale feed keeps
+// rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
+import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
+import { isRepoCensus, type RepoCensus } from "./coverage.ts";
+import { isSessionRecord } from "./registry.ts";
+import {
+  arrayOf,
+  isFiniteNumber,
+  isIsoDate,
+  isNonNegative,
+  isRecord,
+  isStringArray,
+  isTimestampNotFuture,
+} from "./validate.ts";
 import type {
   AaFeedSection,
+  BurnSegment,
   ChargeRow,
   DnsSection,
   GoalMeasurement,
@@ -16,7 +32,9 @@ import type {
   OrchestrationSection,
   PaygLine,
   ProjectPoolItem,
+  QuotaPool,
   QuotaView,
+  QuotaWindow,
   SaasService,
   SessionFeedEntry,
   SessionRecord,
@@ -27,7 +45,31 @@ export interface FleetFeed {
   version: 1;
   /** ISO timestamp of collection on the sandbox. */
   generatedAt: string;
+  /** Collector checkout drift vs origin/main (#1116 item 3), measured
+   *  by the collector in its own checkout at collection time. Absent
+   *  in feeds written before the drift check existed. */
+  checkout?: CheckoutDrift;
   quota: QuotaView;
+  /** Element drops loadFeed's quota sanitization made (#2429), set
+   * only on feeds returned by loadFeed; absent on raw parsed feeds. */
+  quotaDropped?: { pools: number; windows: number; burn: number };
+  /** Element drops loadFeed's chargesAttention sanitization made
+   * (#2439), set only when at least one entry dropped; absent on raw
+   * parsed feeds and on feeds whose entries all survived. */
+  chargesAttentionDropped?: number;
+  /** Subscription rows loadFeed's sanitization dropped (#2446), set
+   * only when at least one row (or a non-array section) was dropped;
+   * absent on raw parsed feeds and on clean loads. */
+  subscriptionsDropped?: number;
+  /** Registry rows loadFeed's sanitization dropped (#2539), set only
+   * when at least one row (or a non-array section) was dropped. */
+  registryDropped?: number;
+  /** Rows loadFeed's charges sanitization dropped (#2445), set only
+   * when drops occurred; absent on raw parsed feeds and clean loads. */
+  chargesDropped?: number;
+  /** PAYG lines loadFeed's sanitization dropped (#2450), set only
+   * when drops occurred; absent on raw parsed feeds and clean loads. */
+  paygDropped?: number;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -64,12 +106,82 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
-  /** AA cost explorer section: the ainventory (AA workbook) data read
+  /** Project #4 coverage census (#1220): per-repo open-issue and
+   * gate-label counts from the collector's Search API reads, embedded
+   * beside the projects section. Absent when the collector had no
+   * GitHub token or the census failed. */
+  coverage?: RepoCensus[];
+  /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
    * ({status:"absent", reason}) when Supabase was unreachable — the
    * section degrades, the feed never fails over it. */
   aa?: AaFeedSection;
+  /** Optional collector outcomes. Older feeds have no metadata and keep
+   *  their historical presence-only health/provenance behavior. */
+  meta?: FeedMetadata;
+}
+
+export type FeedSectionStatus = "ok" | "error" | "skipped";
+
+export interface FeedSectionCollectionStatus {
+  status: FeedSectionStatus;
+  /** When this collection attempt finished (ISO timestamp). */
+  at: string;
+  /** Sanitized diagnostic for an error outcome only. */
+  error?: string;
+}
+
+export interface FeedMetadata {
+  sections: Record<string, FeedSectionCollectionStatus>;
+}
+
+/** Keep collector diagnostics useful without allowing credentials or
+ *  response payloads to leak into the shared feed. */
+export function sanitizeCollectionError(value: unknown): string {
+  let message = value instanceof Error ? value.message : typeof value === "string" ? value : "collection failed";
+  message = message
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/\bBasic\s+[A-Za-z0-9+/=]+/gi, "Basic [redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
+    .replace(/\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "$1[redacted]")
+    .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 240);
+  return message || "collection failed";
+}
+
+export function feedSectionStatus(
+  status: FeedSectionStatus,
+  at: string,
+  error?: unknown,
+): FeedSectionCollectionStatus {
+  return status === "error"
+    ? { status, at, error: sanitizeCollectionError(error) }
+    : { status, at };
+}
+
+/** Tolerate malformed optional metadata without rejecting an otherwise
+ *  usable feed. The same boundary also sanitizes error text from older
+ *  or externally-written collectors. */
+export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
+  if (!isRecord(value) || !isRecord(value.sections)) return undefined;
+  const sections: FeedMetadata["sections"] = {};
+  for (const [key, raw] of Object.entries(value.sections)) {
+    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(key) || !isRecord(raw)) continue;
+    const at = raw.at;
+    if (
+      (raw.status !== "ok" && raw.status !== "error" && raw.status !== "skipped") ||
+      typeof at !== "string" ||
+      !isTimestampNotFuture(at)
+    ) {
+      continue;
+    }
+    sections[key] = feedSectionStatus(raw.status, at, raw.error);
+  }
+  return Object.keys(sections).length ? { sections } : undefined;
 }
 
 /**
@@ -94,7 +206,60 @@ function isGoalMeasurement(v: unknown): boolean {
     Array.isArray(g.linedUp) &&
     Array.isArray(g.stalled) &&
     Array.isArray(g.gaps) &&
+    // #2417: todayFromSection dereferences every lined-up / stalled
+    // element, so a non-record element must fail here, at the gate —
+    // presence of the arrays alone let [null] through to a TypeError.
+    g.linedUp.every(isRecord) &&
+    g.stalled.every(isRecord) &&
     (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
+  );
+}
+
+/**
+ * Element gates for the section's remaining arrays (#2417). The
+ * section gate used to check only that these arrays exist; poisoned
+ * elements (null, primitives, shapeless objects) then reached
+ * consumers that dereference them — buildAttention on tier items,
+ * the projects view on dependencies, the today view on actions —
+ * and threw TypeErrors instead of taking the designed invalid-section
+ * fallback. The rules stay at the depth consumers need:
+ *
+ * - Tier items: a plain record with a string `id`. Deeper fields are
+ *   the per-item sanitizer's job (src/tier-items.ts, #1290) — a
+ *   malformed extension drops there, never the item, so the gate
+ *   must not reject on them.
+ * - Dependencies: the declared consumed shape — required string
+ *   `task`, `status` in the DependencyRef union, and the optional
+ *   ref/worker fields string-typed when present.
+ * - Actions: the four rendered string fields (at, kind, target,
+ *   summary).
+ */
+function isTierElement(v: unknown): boolean {
+  return isRecord(v) && typeof v.id === "string";
+}
+
+const DEPENDENCY_STATUSES: readonly string[] = ["in-progress", "queued", "stalled", "done", "unknown"];
+
+function isDependencyElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.task === "string" &&
+    typeof v.status === "string" &&
+    DEPENDENCY_STATUSES.includes(v.status) &&
+    (v.ref === undefined || typeof v.ref === "string") &&
+    (v.taskRef === undefined || typeof v.taskRef === "string") &&
+    (v.workerSessionId === undefined || typeof v.workerSessionId === "string") &&
+    (v.workerLabel === undefined || typeof v.workerLabel === "string")
+  );
+}
+
+function isActionElement(v: unknown): boolean {
+  return (
+    isRecord(v) &&
+    typeof v.at === "string" &&
+    typeof v.kind === "string" &&
+    typeof v.target === "string" &&
+    typeof v.summary === "string"
   );
 }
 
@@ -129,16 +294,20 @@ export function orchestrationSectionProblem(v: unknown): string | null {
   if (typeof v !== "object" || v === null) return "not an object";
   const s = v as Partial<OrchestrationSection>;
   if (s.version !== 1) return "version";
-  if (typeof s.generatedAt !== "string" || !Number.isFinite(Date.parse(s.generatedAt))) return "generatedAt";
+  if (!isIsoDate(s.generatedAt)) return "generatedAt";
   if (typeof s.runId !== "string") return "runId";
   if (!isProvenance(s.provenance)) return "provenance";
   if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
   if (!Array.isArray(s.tiers.needsDrew)) return "tiers.needsDrew";
+  if (!s.tiers.needsDrew.every(isTierElement)) return "tiers.needsDrew (per-item shape)";
   if (!Array.isArray(s.tiers.needsOrchestrator)) return "tiers.needsOrchestrator";
+  if (!s.tiers.needsOrchestrator.every(isTierElement)) return "tiers.needsOrchestrator (per-item shape)";
   if (!Array.isArray(s.dependencies)) return "dependencies";
+  if (!s.dependencies.every(isDependencyElement)) return "dependencies (per-dependency shape)";
   if (!Array.isArray(s.goals)) return "goals";
   if (!s.goals.every(isGoalMeasurement)) return "goals (per-goal shape)";
   if (!Array.isArray(s.actions)) return "actions";
+  if (!s.actions.every(isActionElement)) return "actions (per-action shape)";
   return null;
 }
 
@@ -241,24 +410,357 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
   return raw.filter(isProjectPoolItem);
 }
 
+/** Whether the feed actually carries a projects section. The collector
+ * omits the section entirely when its Project read fails, so presence
+ * is the availability signal: an absent (or malformed) section means
+ * the pool is unavailable, which coverage must not render as zero
+ * items (#1220, PR #3309). A present array is available even when
+ * individual malformed items drop in poolFromFeed. */
+export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefined): boolean {
+  return Array.isArray(feed?.projects);
+}
+
+/** Fail-soft read of the coverage census from a parsed feed: absent
+ * or malformed sections yield null (the panel then renders backlog
+ * counts as unavailable), malformed rows drop individually. A duplicate
+ * repo makes the census ambiguous, so refuse that optional section
+ * rather than letting array order choose the persisted count. */
+export function coverageFromFeed(feed: Partial<FleetFeed> | null | undefined): RepoCensus[] | null {
+  const raw = feed?.coverage;
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) return null;
+  const rows = raw.filter(isRepoCensus);
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.repo)) return null;
+    seen.add(row.repo);
+  }
+  return rows.length ? rows : null;
+}
+
+/** One quota window as the renderers dereference it (#2429): `limit`
+ * is read arithmetically by windowPercent, `used` is rendered, and a
+ * non-object element crashes both renderQuota and buildAttentionFlags. */
+export function isQuotaWindow(v: unknown): v is QuotaWindow {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    (v.unit === "requests" || v.unit === "tokens" || v.unit === "usd" || v.unit === "messages" || v.unit === "other") &&
+    (v.limit === null || isFiniteNumber(v.limit)) &&
+    isFiniteNumber(v.used) &&
+    (v.resetsAt === null || typeof v.resetsAt === "string") &&
+    (v.percent === undefined || isFiniteNumber(v.percent))
+  );
+}
+
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+
+/** One quota pool whose own shape is safe to hand to the renderers
+ * (#2429): an object with a `windows` ARRAY — a non-array windows value
+ * must never be iterated as a collection of windows (it fabricated
+ * attention flags). Window ELEMENTS are filtered by sanitizeQuotaView,
+ * so a pool survives one bad window. Credential rows, when present,
+ * must at least be records holding a windows array; their elements are
+ * filtered the same way. */
+export function isQuotaPool(v: unknown): v is QuotaPool {
+  if (!isRecord(v)) return false;
+  if (typeof v.id !== "string" || typeof v.provider !== "string" || typeof v.plan !== "string") return false;
+  if (typeof v.state !== "string" || !QUOTA_STATES.includes(v.state)) return false;
+  if (!Array.isArray(v.windows)) return false;
+  if (v.credentials !== undefined) {
+    if (!Array.isArray(v.credentials)) return false;
+    for (const row of v.credentials) {
+      if (!isRecord(row) || !Array.isArray(row.windows)) return false;
+    }
+  }
+  return true;
+}
+
+/** One historical burn segment as renderQuota maps it (#2429).
+ *  Values, not just types (#3428): from/to must be real ISO calendar
+ *  dates, tokens may not be negative, and the range may not be
+ *  inverted — a segment failing any of these is not measured history
+ *  and drops individually in sanitizeQuotaView (#2429 counting). */
+export function isBurnSegment(v: unknown): v is BurnSegment {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.provider === "string" &&
+    typeof v.pool === "string" &&
+    isIsoDate(v.from) &&
+    isIsoDate(v.to) &&
+    isNonNegative(v.tokens) &&
+    Date.parse(v.from) <= Date.parse(v.to)
+  );
+}
+
+/** One unmatched-charge entry as the live source dereferences it
+ * (#2439): merchant and at are interpolated, amountUsd is formatted
+ * with toFixed and used as a severity, so those three must be a
+ * string, a finite number, and a string. normalized/source are not
+ * gate-required: the consumer tolerates any source value and never
+ * dereferences normalized. */
+export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
+  if (!isRecord(v)) return false;
+  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+}
+
+/** One charges-evidence row as the /quota charges strip renders it
+ * (#2445): a record with string at/label/method/source and a
+ * finite-number amountUsd (ChargeRow, model.ts). Built on the shared
+ * validate.ts primitives, like the quota element validators above. */
+export function isChargeRow(v: unknown): v is ChargeRow {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.at === "string" &&
+    typeof v.label === "string" &&
+    isFiniteNumber(v.amountUsd) &&
+    typeof v.method === "string" &&
+    typeof v.source === "string"
+  );
+}
+
+/** The choices block renderQuota dereferences (hasHeadroom et al.). */
+function isQuotaChoices(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return isStringArray(v.hasHeadroom) && isStringArray(v.burnBeforeReset) && isStringArray(v.doNotStart);
+}
+
+export interface QuotaSanitization {
+  view: QuotaView;
+  droppedPools: number;
+  droppedWindows: number;
+  droppedBurn: number;
+}
+
+/** Drop-and-count sanitization of a gate-passed quota section (#2429,
+ * following poolFromFeed's per-element pattern, built on the shared
+ * arrayOf primitive from #2577): malformed pools and burn segments
+ * drop individually, malformed windows drop out of their pool, and the
+ * well-formed remainder renders. The counts ride out on the result so
+ * the caller surfaces them, never swallows them. */
+export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
+  const pools = arrayOf(isQuotaPool)(quota.pools);
+  let droppedWindows = 0;
+  const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
+    const windows = arrayOf(isQuotaWindow)(pool.windows);
+    droppedWindows += windows?.dropped ?? 0;
+    let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
+    if (pool.credentials !== undefined) {
+      const rows = pool.credentials.map((row) => {
+        const rowWindows = arrayOf(isQuotaWindow)(row.windows);
+        droppedWindows += rowWindows?.dropped ?? 0;
+        return { ...row, windows: rowWindows?.values ?? [] };
+      });
+      out = { ...out, credentials: rows };
+    }
+    return out;
+  });
+  const burn = arrayOf(isBurnSegment)(quota.burn);
+  const droppedPools = pools?.dropped ?? 0;
+  const droppedBurn = burn?.dropped ?? 0;
+  // Guidance must describe the surviving usable pools only: the
+  // retained choices were computed over the pre-sanitization pools,
+  // and computeChoices() (quota-guidance.ts) gives no guidance for a
+  // pool with no windows — so filter every list to kept pools that
+  // still have windows. A pool whose data was discarded must not
+  // stay recommended under hasHeadroom or burnBeforeReset.
+  const usable = new Set(keptPools.filter((p) => p.windows.length > 0).map((p) => p.id));
+  const choices = {
+    hasHeadroom: quota.choices.hasHeadroom.filter((id) => usable.has(id)),
+    burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
+    doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
+  };
+  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  // Surface the loss on the view itself (its consumers project the
+  // view, e.g. /api/quota.json), not only on the feed wrapper.
+  if (droppedPools + droppedWindows + droppedBurn > 0) {
+    view.dropped = { pools: droppedPools, windows: droppedWindows, burn: droppedBurn };
+  }
+  return {
+    view,
+    droppedPools,
+    droppedWindows,
+    droppedBurn,
+  };
+}
+
 export function isFleetFeed(v: unknown): v is FleetFeed {
   if (typeof v !== "object" || v === null) return false;
   const f = v as Partial<FleetFeed>;
+  if (!(typeof f.quota === "object" && f.quota !== null)) return false;
+  const q = f.quota as QuotaView;
   return (
     f.version === 1 &&
-    typeof f.generatedAt === "string" &&
-    Number.isFinite(Date.parse(f.generatedAt)) &&
-    typeof f.quota === "object" &&
-    f.quota !== null &&
-    Array.isArray((f.quota as QuotaView).pools) &&
-    Array.isArray(f.attention)
+    // A generatedAt implausibly in the future is invalid, not
+    // "maximally fresh" (#2242, via the shared primitive).
+    isTimestampNotFuture(f.generatedAt) &&
+    Array.isArray(q.pools) &&
+    // burn and choices are mandatory in QuotaView and dereferenced
+    // unguarded by renderQuota (#2429): a feed without them is an old
+    // collector's shape and is rejected whole, like other invalid
+    // feeds, rather than crashing /quota.
+    Array.isArray(q.burn) &&
+    isQuotaChoices(q.choices) &&
+    Array.isArray(f.attention) &&
+    // chargesAttention is optional, but a present non-array value is
+    // a shape failure, not data (#2439): the live source maps it
+    // unguarded, so — like burn/choices above — the feed is rejected
+    // whole. Malformed ELEMENTS inside an array are loadFeed's
+    // drop-and-count concern, not the gate's.
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
   );
+}
+
+export interface SubscriptionSanitization {
+  /** Sanitized rows, or undefined when the section is absent (or was
+   * dropped whole) — consumers already treat absence as an empty strip. */
+  rows?: { name: string; plan: string; renewsAt: string | null }[];
+  dropped: number;
+}
+
+/** One subscription row safe to hand to the renderers (#2446): the
+ * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
+ * a null row or a non-string field 500s /quota and is served verbatim
+ * by /api/quota.json. */
+export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
+  );
+}
+
+/** Drop malformed subscription rows at the loadFeed boundary (#2446,
+ * the #2429 pattern): the section is optional and unvalidated by
+ * isFleetFeed, so element-level damage is dropped here rather than
+ * rejecting the whole feed for one bad row. A non-array section is
+ * dropped whole (treated as absent, counted as one drop). */
+export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isSubscriptionRow);
+  return { rows, dropped: v.length - rows.length };
+}
+
+export interface RegistrySanitization {
+  /** Safe registry rows, or undefined when the optional section is absent. */
+  rows?: SessionRecord[];
+  dropped: number;
+}
+
+/** Drop malformed optional registry rows at the shared loadFeed boundary
+ * (#2539), so registry() and coverage() consume the same safe records.
+ * An absent section stays absent; a non-array section becomes an empty
+ * registry and counts as one dropped section; malformed array entries are
+ * dropped individually. */
+export function sanitizeRegistry(v: unknown): RegistrySanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { rows: [], dropped: 1 };
+  const rows = v.filter(isSessionRecord);
+  return { rows, dropped: v.length - rows.length };
+}
+
+/** A PAYG line safe for both the attention derivation and the quota renderer. */
+export function isPaygLine(v: unknown): v is PaygLine {
+  if (!isRecord(v)) return false;
+  const nullableFinite = (value: unknown) => value === null || isFiniteNumber(value);
+  const isEstimate = (value: unknown) => {
+    if (value === null) return true;
+    return (
+      isRecord(value) &&
+      isFiniteNumber(value.low) &&
+      isFiniteNumber(value.high) &&
+      typeof value.period === "string" &&
+      (value.note === undefined || typeof value.note === "string")
+    );
+  };
+  return (
+    typeof v.id === "string" &&
+    typeof v.label === "string" &&
+    nullableFinite(v.accruedUsd) &&
+    (v.collectedUsd === undefined || nullableFinite(v.collectedUsd)) &&
+    (v.estimate === undefined || isEstimate(v.estimate)) &&
+    nullableFinite(v.unbilledUsd) &&
+    typeof v.note === "string" &&
+    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.sourceClass === "api" ||
+      v.sourceClass === "console" ||
+      v.sourceClass === "manual" ||
+      v.sourceClass === "estimate" ||
+      v.sourceClass === "invoice")
+  );
+}
+
+export interface PaygSanitization {
+  /** Sanitized rows, or undefined when the optional section is absent/dropped whole. */
+  rows?: PaygLine[];
+  dropped: number;
+}
+
+/** Drop malformed PAYG rows at the shared feed boundary (#2450). */
+export function sanitizePayg(v: unknown): PaygSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isPaygLine);
+  return { rows, dropped: v.length - rows.length };
 }
 
 export async function loadFeed(path: string): Promise<FleetFeed | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    return isFleetFeed(parsed) ? parsed : null;
+    if (!isFleetFeed(parsed)) return null;
+    // The gate pins the section-level shape; element-level damage is
+    // dropped here so every loadFeed consumer (live source, server)
+    // sees only renderer-safe pools/windows (#2429). Drop counts are
+    // attached to the feed so they are visible, not swallowed.
+    const san = sanitizeQuotaView(parsed.quota);
+    const meta = sanitizeFeedMetadata(parsed.meta);
+    // Same drop-and-count treatment for chargesAttention elements
+    // (#2439): the gate has already pinned the section to array-or-
+    // absent, so arrayOf cannot return null here; malformed entries
+    // drop individually and well-formed siblings still surface.
+    const charges =
+      parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
+    const subs = sanitizeSubscriptions(parsed.subscriptions);
+    // Registry rows feed both the session registry and coverage, so sanitize
+    // once here rather than letting the two consumers see different inputs.
+    const registry = sanitizeRegistry(parsed.registry);
+    const payg = sanitizePayg(parsed.payg);
+    // Charges rows get the same drop-and-count treatment at this same
+    // shared gate (#2445): the section is optional, so absence stays
+    // absent; a non-array section drops whole (counted as one dropped
+    // section) instead of silently emptying the charges strip or
+    // crashing a consumer; malformed rows drop individually. The
+    // count rides out on the feed when drops occur, never swallowed.
+    let chargesPart: { charges?: ChargeRow[]; chargesDropped?: number } = {};
+    if (parsed.charges !== undefined) {
+      const rows = arrayOf(isChargeRow)(parsed.charges);
+      if (rows === null) {
+        chargesPart = { charges: [], chargesDropped: 1 };
+      } else {
+        chargesPart = { charges: rows.values, ...(rows.dropped > 0 ? { chargesDropped: rows.dropped } : {}) };
+      }
+    }
+    // The raw optional PAYG section may be malformed or absent. Remove
+    // it (and any stale count) before projecting only the sanitized rows
+    // and this load's own drop count.
+    const feed = { ...parsed };
+    delete feed.payg;
+    delete feed.paygDropped;
+    return {
+      ...feed,
+      meta,
+      quota: san.view,
+      quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      ...(charges ? { chargesAttention: charges.values } : {}),
+      ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
+      subscriptions: subs.rows,
+      ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(registry.rows !== undefined ? { registry: registry.rows } : {}),
+      ...(registry.dropped > 0 ? { registryDropped: registry.dropped } : {}),
+      ...(payg.rows !== undefined ? { payg: payg.rows } : {}),
+      ...(payg.dropped > 0 ? { paygDropped: payg.dropped } : {}),
+      ...chargesPart,
+    };
   } catch {
     return null;
   }

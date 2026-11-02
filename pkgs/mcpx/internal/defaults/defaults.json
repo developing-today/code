@@ -164,6 +164,7 @@
     "programs": 64,
     "entries": 8,
     "stderrLimit": 65536,
+    "stdoutLimit": 65536,
     "output": "text",
     "remoteOutput": "structured",
     "delivery": "reference"
@@ -175,6 +176,8 @@
   },
   "artifacts": {
     "ttl": "24h",
+    "idleTtl": "0s",
+    "maxAge": "168h",
     "maxBytes": "64MiB",
     "quota": "1GiB",
     "inlineMaxBytes": "1MiB",

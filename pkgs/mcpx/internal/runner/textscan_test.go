@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/preflight"
+	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
 )
 
 // Codex round (PR #2575): a computed import in a launcher phase must be

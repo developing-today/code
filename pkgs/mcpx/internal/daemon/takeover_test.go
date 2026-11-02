@@ -14,14 +14,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 func unixPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	t.Helper()
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	// SOCK_CLOEXEC is Linux-only (undefined on darwin, #237): create the
+	// pair plainly and set close-on-exec on both ends the portable way.
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fds[0])
+		syscall.CloseOnExec(fds[1])
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +166,7 @@ func TestRegistryHandoffThatIsNotCommittedRestoresTheChild(t *testing.T) {
 	if got := childPID(t, pa); got != pid {
 		t.Fatalf("a restored child has pid %d, want %d", got, pid)
 	}
-	lease, err := pa.Acquire(context.Background(), "global")
+	lease, err := pa.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatalf("the restored pool does not serve: %v", err)
 	}

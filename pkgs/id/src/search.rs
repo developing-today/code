@@ -20,6 +20,7 @@
 //! claims that matched a name or author term; a term set with no name or author term (a kind-only
 //! search) carries all of the subject's live claims. An empty term set matches every subject.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use p2panda_core::Hash;
@@ -195,19 +196,47 @@ pub fn search_store(
 ///
 /// # Errors
 ///
-/// Returns the errors of [`EventStore::tag_claims`] and [`EventStore::event_by_id`].
+/// Returns the errors of [`EventStore::tag_claims`], and if `terms` contains any
+/// [`Term::SubjectKind`], the errors of [`EventStore::event_by_id`].
 pub fn search_store_terms(store: &EventStore, terms: &[Term<'_>]) -> Result<Vec<Hit>, StoreError> {
     let claims = store.tag_claims()?;
-    let mut kinds: HashMap<Hash, Option<String>> = HashMap::new();
-    for subject in claims.iter().map(|claim| claim.subject) {
-        if let std::collections::hash_map::Entry::Vacant(slot) = kinds.entry(subject) {
-            let kind = store
-                .event_by_id(&subject)?
-                .map(|event| event.header.extensions.kind);
-            slot.insert(kind);
-        }
+
+    // ⚡ Bolt optimization: skip per-subject `event_by_id` store queries when no kind
+    // term is present, avoiding O(N) database transactions and eliminating spurious errors.
+    let has_kind_terms = terms
+        .iter()
+        .any(|term| matches!(term, Term::SubjectKind(_)));
+    if !has_kind_terms {
+        return Ok(search_terms(&claims, terms, |_| None));
     }
-    Ok(search_terms(&claims, terms, |subject| {
-        kinds.get(subject).cloned().flatten()
-    }))
+
+    // Lazily resolve and memoize subject kinds only for subjects evaluated during kind filtering.
+    let kinds: RefCell<HashMap<Hash, Option<String>>> = RefCell::new(HashMap::new());
+    let store_err: RefCell<Option<StoreError>> = RefCell::new(None);
+
+    let hits = search_terms(&claims, terms, |subject| {
+        if store_err.borrow().is_some() {
+            return None;
+        }
+        let mut cache = kinds.borrow_mut();
+        if let Some(cached) = cache.get(subject) {
+            return cached.clone();
+        }
+        match store.event_by_id(subject) {
+            Ok(event_opt) => {
+                let kind = event_opt.map(|event| event.header.extensions.kind);
+                cache.insert(*subject, kind.clone());
+                kind
+            }
+            Err(err) => {
+                *store_err.borrow_mut() = Some(err);
+                None
+            }
+        }
+    });
+
+    if let Some(err) = store_err.into_inner() {
+        return Err(err);
+    }
+    Ok(hits)
 }

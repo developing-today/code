@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // progress.message to a 2024-11-05 client: stripped only when 2024-11-05 is

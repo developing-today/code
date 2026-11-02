@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
 )
 
 func TestHandleDiagnose_Validation(t *testing.T) {

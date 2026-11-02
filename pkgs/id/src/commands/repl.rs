@@ -92,7 +92,7 @@ use crate::commands::client::create_local_client_endpoint;
 use crate::commands::put::{add_raw, push_and_name};
 use crate::commands::serve::get_serve_info;
 use crate::commands::tag::{self as tag, TagDisplayOptions};
-use crate::commands::text::plain_field;
+use crate::commands::text::{plain_field, tsv_row};
 use crate::discovery::PeerAnnouncement;
 use crate::local::LocalNode;
 use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
@@ -456,7 +456,7 @@ impl ReplContext {
             let req = postcard::to_allocvec(&MetaRequest::List)?;
             send.write_all(&req).await?;
             send.finish()?;
-            let resp_buf = recv.read_to_end(1024 * 1024).await?;
+            let resp_buf = read_capped_response(&mut recv).await?;
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
             match resp {
@@ -465,7 +465,7 @@ impl ReplContext {
                         println!("(no files stored)");
                     } else {
                         for (hash, name) in items {
-                            println!("{hash}\t{name}");
+                            println!("{}", tsv_row(hash, &name));
                         }
                     }
                 }
@@ -478,7 +478,7 @@ impl ReplContext {
             while let Some(item) = list.next().await {
                 let item = item?;
                 let name = String::from_utf8_lossy(item.name.as_ref());
-                println!("{}\t{}", item.hash, name);
+                println!("{}", tsv_row(item.hash, &name));
                 count += 1;
             }
             if count == 0 {
@@ -865,7 +865,7 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::List)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {
@@ -874,7 +874,7 @@ impl ReplContext {
                     println!("(no files stored on @{})", &node_str[..8]);
                 } else {
                     for (hash, name) in items {
-                        println!("{hash}\t{name}");
+                        println!("{}", tsv_row(hash, &name));
                     }
                 }
             }
@@ -1062,7 +1062,7 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {
@@ -1103,7 +1103,7 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {

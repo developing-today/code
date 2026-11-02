@@ -22,9 +22,17 @@ import {
   type SessionRequest,
   type TaskRequest,
 } from "./validate.ts";
-import { buildPacket, canonicalDedupeKey, describeCaller, dispatchDedupeKey, validatePayload } from "./packet.ts";
+import {
+  buildPacket,
+  canonicalDedupeKey,
+  describeCaller,
+  dispatchDedupeKey,
+  randomDispatchSuffix,
+  validatePayload,
+} from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
-import { handleLaunchFailure } from "./launch_failure.ts";
+import { handleLaunchFailure, withCreatedSession, type LaunchFailureContext } from "./launch_failure.ts";
+import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient } from "./opencode.ts";
 
@@ -45,7 +53,10 @@ function json(status: number, body: unknown): Response {
 
 async function readJsonBody(req: Request): Promise<unknown> {
   const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) throw new ValidationError("body: too large");
+  // The cap is in bytes (MAX_BODY_BYTES): measure the UTF-8 byte length,
+  // not String.length (UTF-16 code units) — a multibyte body can be far
+  // larger in bytes than in code units (#3010).
+  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) throw new ValidationError("body: too large");
   if (!text.trim()) throw new ValidationError("body: required JSON object");
   try {
     return JSON.parse(text);
@@ -101,6 +112,8 @@ async function launchSession(
   task: TaskRow,
   issue: IssueRef | null,
   directory: string,
+  warnings: string[],
+  failureContext: LaunchFailureContext,
 ): Promise<string> {
   const session = await opencode.createSession({
     directory,
@@ -108,26 +121,32 @@ async function launchSession(
     model: req.model,
   });
   const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
-  await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
+  await withCreatedSession(
+    session.id,
+    failureContext,
+    async () => {
+      await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
-  // Assign immediately: PATCH the exact row the enqueue created (the
-  // claim RPC claims the next task in a queue, not a specific one). The
-  // worker identity must exist in agent.workers first (worker_id is an
-  // FK), so register it idempotently.
-  await requireQueue().ensureWorker();
-  const now = new Date();
-  await requireQueue().patchTask(task.id, {
-    status: "claimed",
-    worker_id: "dispatch-opencode",
-    claimed_at: now.toISOString(),
-    lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
-    progress: {
-      lane: "opencode",
-      session_id: session.id,
-      issue_number: issue?.number ?? null,
-      launched_by: caller,
+      // Assign immediately: PATCH the exact row the enqueue created (the
+      // claim RPC claims the next task in a queue, not a specific one). The
+      // worker identity must exist in agent.workers first (worker_id is an
+      // FK), so register it idempotently.
+      await requireQueue().ensureWorker();
+      const now = new Date();
+      await requireQueue().patchTask(task.id, {
+        status: "claimed",
+        worker_id: "dispatch-opencode",
+        claimed_at: now.toISOString(),
+        lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
+        progress: {
+          lane: "opencode",
+          session_id: session.id,
+          issue_number: issue?.number ?? null,
+          launched_by: caller,
+        },
+      });
     },
-  });
+  );
 
   // Lane ledger: the same assignment the queue workers record after a
   // claim, so a later completion can record the executed lane. The
@@ -146,27 +165,24 @@ async function launchSession(
   }
 
   if (issue) {
-    // Post-launch annotations are best-effort: the session is already
-    // running and the task already claimed, so a GitHub failure here
-    // must not reject the launch — callers cancel the task on a
-    // rejected launch (#2901), which would orphan a live session.
-    // Noted on the task instead, like the lane-ledger failure above.
-    try {
-      await github.comment(
+    // Post-claim annotations are best-effort and individually guarded
+    // (#2660, design #2668 phase 2): the claim PATCH above is the
+    // commit point, so a GitHub failure here must not reject the
+    // launch — callers cancel the task on a rejected launch (#2901),
+    // which would orphan a live session. annotateLaunch records each
+    // failure on the task, still runs the remaining steps, and
+    // returns warnings the wait:true response surfaces.
+    warnings.push(
+      ...(await annotateLaunch(
+        github,
+        requireQueue(),
         req.repo,
         issue.number,
+        task.id,
         `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
-      );
-      await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
-    } catch (e) {
-      try {
-        await requireQueue().patchTask(task.id, {
-          last_error: `launch annotation failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
-        });
-      } catch {
-        /* nothing more to do — the claim stands */
-      }
-    }
+        ["queue/claimed", "work/assigned"],
+      )),
+    );
   }
   return session.id;
 }
@@ -223,14 +239,24 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   // 3-5. Launch + assign. wait=false: answer after the enqueue and finish
   // the launch asynchronously, recording the outcome on the task row.
   if (!body.wait) {
+    const failureContext: LaunchFailureContext = { sessionId: null };
     void (async () => {
       try {
-        await launchSession(caller, body, task, issue, directory);
+        await launchSession(caller, body, task, issue, directory, warnings, failureContext);
       } catch (e) {
         // Mirror the wait:true failure path exactly (#2901): cancel the
         // task and note the failure on the issue — never leave a queued
         // task behind for a session that did not launch.
-        await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
+        await handleLaunchFailure(
+          requireQueue(),
+          github,
+          body.repo,
+          task.id,
+          issue?.number ?? null,
+          e,
+          failureContext.sessionId,
+          (sessionId) => opencode.deleteSession(sessionId),
+        );
       }
     })();
     return json(202, {
@@ -243,13 +269,23 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   }
 
   let sessionId: string;
+  const failureContext: LaunchFailureContext = { sessionId: null };
   try {
-    sessionId = await launchSession(caller, body, task, issue, directory);
+    sessionId = await launchSession(caller, body, task, issue, directory, warnings, failureContext);
   } catch (e) {
     // Never leave a queued/claimed task behind for a session that did
     // not launch: cancel it and note the failure on the issue (the
     // shared handler the wait:false path also uses, #2901).
-    const msg = await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
+    const msg = await handleLaunchFailure(
+      requireQueue(),
+      github,
+      body.repo,
+      task.id,
+      issue?.number ?? null,
+      e,
+      failureContext.sessionId,
+      (sessionId) => opencode.deleteSession(sessionId),
+    );
     return json(502, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
   }
 
@@ -264,10 +300,98 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
 }
 
 // ---------------------------------------------------------------------------
+// Pre-existing enqueue rows (issue #2677)
+// ---------------------------------------------------------------------------
+
+/** Queue statuses after which a task will never run again. */
+export const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled", "failed"]);
+
+/**
+ * The enqueue RPC dedupes on dedupe_key against ALL rows incl. terminal
+ * ones and returns the pre-existing row as-is. A returned row is
+ * pre-existing when it was created before this request started, or when
+ * its status is already terminal — it is never the task this request
+ * just queued.
+ */
+export function isPreExistingTaskRow(row: TaskRow, requestStartedAt: Date): boolean {
+  if (TERMINAL_TASK_STATUSES.has(row.status)) return true;
+  const createdAt = row.created_at;
+  if (typeof createdAt === "string") {
+    const parsed = Date.parse(createdAt);
+    if (!Number.isNaN(parsed)) return parsed < requestStartedAt.getTime();
+  }
+  return false;
+}
+
+export interface EnqueueDispatchOutcome {
+  task: TaskRow;
+  /** The final reported task is a pre-existing row, not newly queued. */
+  preExisting: boolean;
+  /** A dispatch-scoped retry was attempted (attach flow only). */
+  retried: boolean;
+  warnings: string[];
+}
+
+/**
+ * Enqueue with pre-existing-row handling (issue #2677):
+ * - attach flow (issue_number) with the CANONICAL key: a pre-existing
+ *   canonical row means the caller's distinct dispatch gets its own task
+ *   via a dispatch-scoped suffix key; if the retry also returns a
+ *   pre-existing row, warn explicitly instead of a silent 201-as-new.
+ * - any other flow (incl. a caller-supplied dedupe_key repeat — also
+ *   when combined with issue_number: the caller explicitly chose that
+ *   key, so a repeat is an intentional dedupe, never a retry): return
+ *   the existing task WITH a warning naming its actual status.
+ */
+export async function enqueueDispatchTask(args: {
+  enqueue: (dedupeKey: string) => Promise<TaskRow>;
+  dedupeKey: string;
+  attach: boolean;
+  callerSuppliedKey: boolean;
+  requestStartedAt: Date;
+}): Promise<EnqueueDispatchOutcome> {
+  const first = await args.enqueue(args.dedupeKey);
+  if (!isPreExistingTaskRow(first, args.requestStartedAt)) {
+    return { task: first, preExisting: false, retried: false, warnings: [] };
+  }
+  if (!args.attach || args.callerSuppliedKey) {
+    return {
+      task: first,
+      preExisting: true,
+      retried: false,
+      warnings: [
+        `dedupe key already in use: task #${first.id} already exists with status "${first.status}"; returning the existing task — no new task was queued`,
+      ],
+    };
+  }
+  const retryKey = `${args.dedupeKey}:dispatch:${randomDispatchSuffix()}`;
+  const second = await args.enqueue(retryKey);
+  if (!isPreExistingTaskRow(second, args.requestStartedAt)) {
+    return {
+      task: second,
+      preExisting: false,
+      retried: true,
+      warnings: [
+        `task #${first.id} already exists for this issue with status "${first.status}"; this dispatch was queued as a distinct task #${second.id} with a dispatch-scoped dedupe key`,
+      ],
+    };
+  }
+  return {
+    task: second,
+    preExisting: true,
+    retried: true,
+    warnings: [
+      `task #${first.id} already exists for this issue with status "${first.status}", and the dispatch-scoped retry also returned a pre-existing task #${second.id} with status "${second.status}"; no new task was queued`,
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // POST /v1/tasks
 // ---------------------------------------------------------------------------
 
 async function handleTasks(req: Request, caller: CallerIdentity): Promise<Response> {
+  const requestStartedAt = new Date();
   const body: TaskRequest = parseTaskRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
@@ -289,32 +413,69 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     issue = await maybeCreateIssue(body.repo, body.title, body.prompt, ["queue/queued", "source/dispatch"], warnings);
   }
 
+  // Verify the attach target before enqueueing (#3007): a nonexistent
+  // number, a PR number, or a closed issue must not silently attach.
+  let attachVerified: boolean | null = null;
+  if (body.issueNumber !== undefined && issue) {
+    const verification = await verifyAttachTarget({
+      appInstalled: APP_INSTALLED_REPOS.has(body.repo),
+      repo: body.repo,
+      issueNumber: body.issueNumber,
+      lookup: async () => {
+        const info = await github.getIssue(body.repo, body.issueNumber!);
+        return info ? { state: info.state, isPullRequest: info.isPullRequest } : null;
+      },
+    });
+    if (verification.outcome === "reject" || verification.outcome === "lookup_failed") {
+      return json(verification.status, {
+        error: verification.error,
+        issue_number: issue.number,
+        issue_url: issue.url,
+        ...(warnings.length ? { warnings } : {}),
+      });
+    }
+    if (verification.outcome === "unverified") warnings.push(verification.warning);
+    attachVerified = verification.outcome === "verified";
+  }
+
   const dedupeKey =
     body.dedupeKey ??
     (issue ? canonicalDedupeKey(body.kind, body.repo, issue.number) : null) ??
     dispatchDedupeKey(body.repo);
-  const packet = buildPacket(
-    {
-      repo: body.repo,
-      kind: body.kind,
-      title: body.title,
-      prompt: body.prompt,
-      priority: body.priority,
-      caller,
-      model: body.model,
-      directory,
-      issue,
-    },
-    dedupeKey,
-  );
+  const packetInput = {
+    repo: body.repo,
+    kind: body.kind,
+    title: body.title,
+    prompt: body.prompt,
+    priority: body.priority,
+    caller,
+    model: body.model,
+    directory,
+    issue,
+  };
+  const packet = buildPacket(packetInput, dedupeKey);
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
     return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
   }
-  let task: TaskRow;
+  let outcome: EnqueueDispatchOutcome;
   try {
-    task = await requireQueue().enqueue(packet, body.repo);
+    outcome = await enqueueDispatchTask({
+      enqueue: async (key) => {
+        const p = key === dedupeKey ? packet : buildPacket(packetInput, key);
+        const errs = validatePayload(p.payload);
+        if (errs.length) throw new QueueError(`internal packet validation failed: ${errs.join("; ")}`);
+        return requireQueue().enqueue(p, body.repo);
+      },
+      dedupeKey,
+      attach: body.issueNumber !== undefined,
+      callerSuppliedKey: body.dedupeKey !== undefined,
+      requestStartedAt,
+    });
   } catch (e) {
+    if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {
+      return json(500, { error: e.message });
+    }
     return json(502, {
       error: e instanceof Error ? e.message : String(e),
       issue_number: issue?.number ?? null,
@@ -322,6 +483,8 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       ...(warnings.length ? { warnings } : {}),
     });
   }
+  const task: TaskRow = outcome.task;
+  warnings.push(...outcome.warnings);
 
   if (issue) {
     // Attach is skipped where the GitHub App is not installed (warning
@@ -329,16 +492,19 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     // exists precisely because the app route worked there.
     const attachSkipped = body.issueNumber !== undefined && !APP_INSTALLED_REPOS.has(body.repo);
     if (!attachSkipped) {
+      const statusLine = outcome.preExisting
+        ? `- Status: already existing (status: ${task.status}) — this dispatch did not create a new task`
+        : `- Status: queued`;
       try {
         await github.comment(
           body.repo,
           issue.number,
-          `Filed by pm-dispatch (${describeCaller(caller)}).\n\n- Queue task: #${task.id} (${REPO_QUEUES[body.repo]}, kind: ${body.kind}, priority: ${body.priority})\n- Status: queued`,
+          `Filed by pm-dispatch (${describeCaller(caller)}).\n\n- Queue task: #${task.id} (${REPO_QUEUES[body.repo]}, kind: ${body.kind}, priority: ${body.priority})\n${statusLine}`,
         );
       } catch (e) {
         warnings.push(`issue agent-note comment failed: ${e instanceof Error ? e.message : String(e)}`);
       }
-      if (body.issueNumber !== undefined) {
+      if (body.issueNumber !== undefined && !outcome.preExisting) {
         try {
           await github.addLabels(body.repo, issue.number, ["queue/queued", "source/dispatch"]);
         } catch (e) {
@@ -351,10 +517,82 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
   return json(201, {
     task_id: task.id,
     issue_number: issue?.number ?? null,
-    ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
+    ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url, attach_verified: attachVerified } : {}),
     queue: REPO_QUEUES[body.repo],
+    ...(outcome.preExisting ? { pre_existing: true, task_status: task.status } : {}),
+    ...(outcome.retried ? { retried: true } : {}),
     ...(warnings.length ? { warnings } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Attach-target verification (issue #3007)
+// ---------------------------------------------------------------------------
+
+export interface AttachTargetInfo {
+  state: string;
+  isPullRequest: boolean;
+}
+
+export type AttachVerification =
+  | { outcome: "verified" }
+  | { outcome: "unverified"; warning: string }
+  | { outcome: "reject"; status: number; error: string }
+  | { outcome: "lookup_failed"; status: 502; error: string };
+
+/**
+ * Verify an issue_number attach target BEFORE anything is enqueued:
+ * the number must exist in the repo, be an issue (not a PR), and be
+ * open. Invalid targets reject with a 4xx and enqueue nothing; GitHub
+ * lookup failures are a retryable 502, never conflated with invalid
+ * targets. Where the GitHub App is not installed the target cannot be
+ * verified — the caller proceeds (the task is the tracking record) but
+ * the unverified state is explicit in the response, never silent.
+ */
+export async function verifyAttachTarget(args: {
+  appInstalled: boolean;
+  repo: string;
+  issueNumber: number;
+  lookup: () => Promise<AttachTargetInfo | null>;
+}): Promise<AttachVerification> {
+  if (!args.appInstalled) {
+    return {
+      outcome: "unverified",
+      warning: `github app is not installed on ${args.repo}; attach target #${args.issueNumber} was NOT verified (it may not exist, may be a pull request, or may be closed)`,
+    };
+  }
+  let info: AttachTargetInfo | null;
+  try {
+    info = await args.lookup();
+  } catch (e) {
+    return {
+      outcome: "lookup_failed",
+      status: 502,
+      error: `attach target verification failed for ${args.repo}#${args.issueNumber}: ${e instanceof Error ? e.message : String(e)}; nothing was enqueued — retry later`,
+    };
+  }
+  if (!info) {
+    return {
+      outcome: "reject",
+      status: 404,
+      error: `issue #${args.issueNumber} not found in ${args.repo}; nothing was enqueued`,
+    };
+  }
+  if (info.isPullRequest) {
+    return {
+      outcome: "reject",
+      status: 422,
+      error: `#${args.issueNumber} in ${args.repo} is a pull request, not an issue; nothing was enqueued`,
+    };
+  }
+  if (info.state !== "open") {
+    return {
+      outcome: "reject",
+      status: 422,
+      error: `issue #${args.issueNumber} in ${args.repo} is ${info.state}, not open; nothing was enqueued`,
+    };
+  }
+  return { outcome: "verified" };
 }
 
 // ---------------------------------------------------------------------------

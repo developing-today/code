@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 )
 
 func diffNS(name string, tools ...codegen.Tool) codegen.Namespace {

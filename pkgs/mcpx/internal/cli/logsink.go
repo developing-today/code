@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // fileOptions builds the durable log's rotation policy from the resolved

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/preflight"
+	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
 )
 
 func TestEveryBadPathIsReportedInOnePass(t *testing.T) {

@@ -242,6 +242,41 @@ mod tests {
         }
     }
 
+    /// #1761: a List response past the hand-rolled 1 MiB bound the CLI,
+    /// REPL, peers and serve-probe paths used to apply must read through
+    /// the shared cap intact — 30,000 items at ~50 wire bytes each is
+    /// ~1.5 MiB, past the old bound and under the shared one. This is
+    /// the shape of store (15–25k items) that could not be listed at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_response_larger_than_1_mib_reads_through() {
+        let items: Vec<(Hash, String)> = (0..30_000)
+            .map(|i| (Hash::from_bytes([9u8; 32]), format!("file-{i:05}.txt")))
+            .collect();
+        let payload = postcard::to_allocvec(&MetaResponse::List { items }).unwrap();
+        assert!(
+            payload.len() > 1024 * 1024,
+            "payload {} bytes must exceed the old 1 MiB bound",
+            payload.len()
+        );
+
+        let server = endpoint(vec![TEST_ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let served = serve_once(server.clone(), payload);
+        let buf = round_trip(&server, &client).await.unwrap();
+        served.await.unwrap();
+        client.close().await;
+        server.close().await;
+
+        let resp: MetaResponse = postcard::from_bytes(&buf).unwrap();
+        match resp {
+            MetaResponse::List { items } => {
+                assert_eq!(items.len(), 30_000);
+                assert_eq!(items[29_999].1, "file-29999.txt");
+            }
+            _ => panic!("unexpected response"),
+        }
+    }
+
     /// A response past the shared cap must fail by name — the limit and its
     /// size — not as noq's bare "stream too long".
     #[test]

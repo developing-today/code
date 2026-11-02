@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 const upgradeRoute = "/v1/upgrade"
@@ -103,7 +105,7 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		// with. See startSuccessor.
 		Start []string `json:"start,omitempty"`
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit)))
 	if err != nil || json.Unmarshal(body, &req) != nil || req.Binary == "" {
 		http.Error(w, "an upgrade needs the path of the new binary", http.StatusBadRequest)
 		return

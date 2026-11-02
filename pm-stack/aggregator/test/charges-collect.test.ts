@@ -42,6 +42,24 @@ describe("parseChargeCandidates", () => {
   });
 });
 
+describe("mergeChargeRows canonical-label dedupe", () => {
+  // Codex finding on PR #3168: the charge catalog canonicalizes a
+  // METAPAY auto-match to "Meta Model API", which no longer
+  // containment-matches the hand-fed "Meta PAYG spill" row for the
+  // same charge, so the charge would appear twice in the feed.
+  test("a canonicalized auto row still dedupes the merchant-spelled hand-fed row", () => {
+    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20 }];
+    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20 }];
+    expect(mergeChargeRows(auto, handFed)).toEqual(auto);
+  });
+
+  test("a different amount under the same provider still keeps both rows", () => {
+    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20 }];
+    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 25 }];
+    expect(mergeChargeRows(auto, handFed)).toHaveLength(2);
+  });
+});
+
 describe("mergeChargeRows", () => {
   const auto: ChargeRow[] = [
     { at: "2026-10-28", label: "METAPAY*UC5DPA22Y4 US", amountUsd: 20, method: "Visa •7535", source: "Plaid" },

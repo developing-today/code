@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // schemaServer serves one tools/list page carrying the given tools and

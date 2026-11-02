@@ -574,6 +574,39 @@ impl EventStore {
                 if let Some(backlink) = event.header.backlink {
                     parents.push(backlink);
                 }
+                // A note revision's causal references live in its note operation, not in
+                // `after`: the note it revises and the parent revisions it builds on are
+                // dependencies too, so a surviving revision keeps its note and its whole
+                // parent history alive through a prune (#3814).
+                if let Some(crate::notes::NoteOp::Revise {
+                    note,
+                    parents: note_parents,
+                    ..
+                }) = &event.header.extensions.note
+                {
+                    parents.push(*note);
+                    parents.extend(note_parents.iter().copied());
+                }
+                // A note link's references live in its link operation, not in the after field:
+                // the source note, the asserting revision, the target note, and the
+                // optional pinned revision are dependencies too, so a surviving link
+                // keeps them alive through a prune; otherwise rebuilding the link
+                // projection after the prune would fail with UnknownTarget (#3816).
+                if let Some(crate::note_links::NoteLinkOp::Assert {
+                    source,
+                    revision,
+                    target,
+                    pin,
+                    ..
+                }) = &event.header.extensions.link
+                {
+                    parents.push(*source);
+                    parents.push(*revision);
+                    parents.push(*target);
+                    if let Some(pin) = pin {
+                        parents.push(*pin);
+                    }
+                }
                 let has_action = actions_table.get(event.id.as_bytes().as_slice())?.is_some();
                 events_by_id.insert(
                     event.id,
@@ -1014,7 +1047,7 @@ impl EventStore {
             let event = row_event(&row)?;
             match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
                 Ok(()) => {}
-                Err(WaitRefusal::AuthorFull) => {
+                Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                     waiting_rows::delete(&txn, &row.id)?;
                     dropped = true;
                 }
@@ -1349,6 +1382,8 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
         }
     }
 

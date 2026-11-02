@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // Phase 1 of #2077 (#2078): a 2025-11-25 upstream's rich enum shapes

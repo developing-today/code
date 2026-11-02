@@ -71,13 +71,15 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
+use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
-    resolve_config,
+    defaults, resolve_config,
 };
 use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
 use crate::groups::warnings::{Evaluator, Observation, Warning};
 use crate::groups::{Key as GroupKey, Projection};
+use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
@@ -136,6 +138,11 @@ pub struct ServeInfo {
     pub addrs: Vec<String>,
     /// Port for the web UI, if enabled.
     pub web_port: Option<u16>,
+    /// Every web listener as `IP:port` strings, in binding order (#2145).
+    /// `web_port` is the first listener's port, kept for back-compat.
+    /// Defaults to empty so lock files written before #2145 still parse.
+    #[serde(default)]
+    pub web_bindings: Vec<String>,
 }
 
 impl ServeInfo {
@@ -195,15 +202,27 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 /// # Returns
 ///
 /// `true` if the process exists, `false` otherwise.
-#[allow(clippy::cast_possible_wrap)] // PID is always positive, wrap is safe for kill()
+#[allow(clippy::cast_possible_wrap)] // The Unix branch validates the PID before casting.
 #[allow(unsafe_code)] // Required for libc::kill
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
+        // PIDs read from the serve lock are untrusted u32 values. Zero checks
+        // the caller's process group, while values above i32::MAX wrap to
+        // negative process selectors, so neither can identify one process.
+        if pid == 0 || pid > i32::MAX as u32 {
+            return false;
+        }
+
         // SAFETY: libc::kill with signal 0 only checks process existence without
-        // sending any signal. The pid cast from u32 to i32 is safe because valid
-        // PIDs on Unix are always positive and fit in i32.
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        // sending any signal. The check above ensures pid is positive and fits
+        // in i32 before the cast.
+        // #2384: a failed probe is not proof of death — EPERM means the
+        // process exists but is owned by another user, so it is alive;
+        // only ESRCH (no such process) and other errnos mean dead. This
+        // mirrors mcpx's ProcessAlive (pkgs/mcpx/internal/daemon/paths.go).
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(not(unix))]
     {
@@ -232,12 +251,14 @@ pub async fn create_serve_lock(
     node_id: &EndpointId,
     addrs: &[SocketAddr],
     web_port: Option<u16>,
+    web_bindings: Vec<String>,
 ) -> Result<()> {
     let info = ServeInfo {
         node_id: node_id.to_string(),
         pid: std::process::id(),
         addrs: addrs.iter().map(ToString::to_string).collect(),
         web_port,
+        web_bindings,
     };
     let contents = serde_json::to_string_pretty(&info)?;
     afs::write(SERVE_LOCK, contents).await?;
@@ -257,6 +278,10 @@ pub async fn remove_serve_lock() -> Result<()> {
 pub struct ServeOptions {
     /// Use an in-memory store.
     pub ephemeral: bool,
+    /// Group log for the group-warning watcher (the global
+    /// `--groups-log` option); `None` reads the default
+    /// `groups.jsonl`, exactly as the group commands resolve it.
+    pub groups_log: Option<PathBuf>,
     /// Disable relay servers.
     pub no_relay: bool,
     /// Disable gossip peer discovery.
@@ -285,6 +310,13 @@ pub struct ServeOptions {
     pub iroh_port: u16,
     /// Address the web interface binds to.
     pub bind: std::net::IpAddr,
+    /// Repeatable `--web-listen <IP:PORT>` listeners (#2145 bindings model).
+    pub web_listen: Vec<SocketAddr>,
+    /// Whether `--bind` was explicitly set on the command line (#2145:
+    /// only an explicit `--bind`/`--port` conflicts with `--web-listen`).
+    pub bind_explicit: bool,
+    /// Whether `--port` was explicitly set on the command line (#2145).
+    pub port_explicit: bool,
     /// Token required by the web interface.
     pub web_token: Option<String>,
     /// Mark the directory explorer's session cookies `Secure` (HTTPS in front).
@@ -333,12 +365,99 @@ pub struct ServeOptions {
     pub world_native: bool,
     /// Accept program changes only through server-side Roc compilation.
     pub world_source_only: bool,
+    /// Ed25519 public keys authorized to sign module artifacts (hex).
+    pub world_module_trust_keys: Vec<String>,
     /// Execution bounds for world programs.
     pub world_runtime: crate::cli::WorldRuntimeArgs,
     /// Nodes allowed to modify the store.
     pub allow_node: Vec<String>,
     /// Let every peer modify the store.
     pub open_writes: bool,
+}
+
+/// One web listener in the bindings model (#2145).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebBinding {
+    /// Full socket address, including any IPv6 scope ID (port 0 = OS-assigned).
+    pub addr: SocketAddr,
+}
+
+impl WebBinding {
+    /// The socket address this binding listens on.
+    #[must_use]
+    pub fn socket_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// The same socket address with the port selected by the OS.
+    #[must_use]
+    pub fn with_port(&self, port: u16) -> SocketAddr {
+        match self.addr {
+            SocketAddr::V4(mut addr) => {
+                addr.set_port(port);
+                SocketAddr::V4(addr)
+            }
+            SocketAddr::V6(mut addr) => {
+                addr.set_port(port);
+                SocketAddr::V6(addr)
+            }
+        }
+    }
+}
+
+/// Resolve the effective web listener set, exactly once at startup
+/// (#2145 bindings model, designed in triage task 3155):
+///
+/// 1. `--web-listen` flags, when given at least once, win entirely.
+///    Combining them with an explicitly-set `--bind` or `--port` is an
+///    error naming the conflicting flag (clap defaults do not count).
+/// 2. Else the `[web_bindings]` section of `defaults.conf`, parsed here
+///    so a malformed line fails startup naming the line.
+/// 3. Else one binding synthesized from the legacy `--bind`/`--port`.
+///
+/// # Errors
+///
+/// Fails on the `--web-listen`/`--bind`/`--port` conflict, or on a
+/// malformed `[web_bindings]` line (named in the error).
+pub fn resolve_web_bindings(
+    web_listen: &[SocketAddr],
+    bind_explicit: bool,
+    port_explicit: bool,
+    legacy_bind: std::net::IpAddr,
+    legacy_port: u16,
+    config_bindings: &[String],
+) -> Result<Vec<WebBinding>> {
+    if !web_listen.is_empty() {
+        ensure!(
+            !bind_explicit,
+            "--web-listen cannot be combined with --bind: pass listener              addresses with --web-listen only, or use --bind/--port for a              single listener"
+        );
+        ensure!(
+            !port_explicit,
+            "--web-listen cannot be combined with --port: pass listener              addresses with --web-listen only, or use --bind/--port for a              single listener"
+        );
+        return Ok(web_listen
+            .iter()
+            .map(|addr| WebBinding { addr: *addr })
+            .collect());
+    }
+    if !config_bindings.is_empty() {
+        return config_bindings
+            .iter()
+            .map(|line| {
+                line.parse::<SocketAddr>()
+                    .map(|addr| WebBinding { addr })
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "invalid [web_bindings] entry {line:?} in defaults.conf: {e}                              (expected IP:PORT, e.g. 127.0.0.1:3000)"
+                        )
+                    })
+            })
+            .collect();
+    }
+    Ok(vec![WebBinding {
+        addr: SocketAddr::new(legacy_bind, legacy_port),
+    }])
 }
 
 fn validate_world_options(
@@ -506,6 +625,7 @@ struct ServeWorlds {
     compiler: Option<crate::world_compile::Compiler>,
     native: bool,
     source_only: bool,
+    trusted_module_keys: Vec<[u8; 32]>,
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
 }
@@ -564,11 +684,13 @@ impl ServeWorlds {
             let blobs = self.blobs.clone();
             let mail = self.mail.clone();
             let source_only = self.source_only;
+            let trusted_module_keys = self.trusted_module_keys.clone();
             move |handle| {
                 let service = WorldService::new(handle, admin_token)
                     .with_blob_store(blobs)
                     .with_runtime_limits(runtime)
-                    .with_source_only(source_only);
+                    .with_source_only(source_only)
+                    .with_module_trust_keys(trusted_module_keys);
                 match &mail {
                     Some(sink) => service.with_mail(Arc::clone(sink)),
                     None => service,
@@ -708,9 +830,18 @@ impl ServeWorlds {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
+/// The group log the serve warning watcher reads: the global
+/// `--groups-log` option when given, else the default file name —
+/// resolved with the group commands' semantics (#2778; serve used
+/// to hardcode the default and ignore the option).
+fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
+    crate::commands::group::log_path(path)
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
+        groups_log,
         no_relay,
         no_gossip,
         web,
@@ -725,6 +856,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         dht,
         iroh_port,
         bind,
+        web_listen,
+        bind_explicit,
+        port_explicit,
         web_token,
         web_cookie_secure,
         world,
@@ -747,6 +881,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         roc_platform,
         world_native,
         world_source_only,
+        world_module_trust_keys,
         world_ssh_port,
         world_runtime,
         allow_node,
@@ -760,8 +895,28 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_cap_policy,
         world_source_only,
     )?;
+    // #2145: resolve the web listener set once, before any startup work,
+    // so a flag conflict or a malformed [web_bindings] line fails fast.
+    let web_bindings = resolve_web_bindings(
+        &web_listen,
+        bind_explicit,
+        port_explicit,
+        bind,
+        port,
+        &defaults().web_bindings,
+    )?;
+    let apps_root = std::env::var_os("ID_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("apps"));
+    let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    for app in app_discovery.apps {
+        info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
+    }
+    for error in app_discovery.errors {
+        warn!(%error, "serve: app discovery failed");
+    }
     #[cfg(not(feature = "world"))]
-    let _ = &world_allowed_caps;
+    let _ = (&world_allowed_caps, &world_module_trust_keys);
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -801,6 +956,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
+    let chat_presence = PresenceTable::new();
 
     // Always create Gossip — iroh-docs needs it even if peer discovery is off
     let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -874,6 +1030,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let runtime = crate::world_limits::RuntimeLimits::from_args(&world_runtime)?;
         let server_caps = allowed_caps(world_allowed_caps.as_deref())?;
         let compiler = resolve_compiler(roc_bin, roc_platform)?;
+        let trusted_module_keys = world_module_trust_keys
+            .iter()
+            .map(|encoded| {
+                let bytes = crate::world_session::decode_hex(encoded).ok_or_else(|| {
+                    anyhow::anyhow!("--world-module-trust-key must be 32-byte hex")
+                })?;
+                <[u8; 32]>::try_from(bytes.as_slice())
+                    .map_err(|_| anyhow::anyhow!("--world-module-trust-key must be 32-byte hex"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        ensure!(
+            trusted_module_keys.is_empty() || world_module.is_none(),
+            "--world-module-trust-key cannot be combined with --world-module: \
+             startup modules cannot carry a signature yet — remove one of the \
+             two, or install the module over the session protocol with a signature"
+        );
         ensure!(
             !world_source_only || compiler.is_some(),
             "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
@@ -891,6 +1063,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             compiler,
             native: world_native,
             source_only: world_source_only,
+            trusted_module_keys,
             runtime,
             mail: mail_sink(
                 world_mail_outbox,
@@ -1076,6 +1249,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
+        let gossip_chat_presence = chat_presence.clone();
+        let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
         let gossip_endpoint = router.endpoint().clone();
@@ -1085,6 +1260,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 sender,
                 receiver,
                 gossip_peer_discovery,
+                gossip_chat_presence,
+                gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
             )
@@ -1109,24 +1286,39 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         })
         .collect();
 
-    // Bind the web server early to capture the actual port for the lock file,
-    // but don't start serving yet (spawn happens after lock file is written).
+    // Bind the web listeners early to capture the actual ports for the
+    // lock file, but don't start serving yet (spawn happens after the
+    // lock file is written). #2145: ALL resolved listeners bind here;
+    // any bind failure aborts startup naming the failing listener -- no
+    // partial start.
     #[allow(unused_mut)] // web_port is only mutated with the `web` feature
     let mut web_port: Option<u16> = None;
+    #[allow(unused_mut)] // web_binding_addrs is only mutated with the `web` feature
+    let mut web_binding_addrs: Vec<String> = Vec::new();
     #[cfg(feature = "web")]
-    let web_listener = if web {
-        info!("serve startup: binding web listener (#190 breadcrumb)");
-        let addr = SocketAddr::new(bind, port);
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        let actual_port = listener.local_addr()?.port();
-        info!(
-            port = actual_port,
-            "serve startup: web listener bound (#190 breadcrumb)"
-        );
-        web_port = Some(actual_port);
-        Some(listener)
+    let web_listeners: Vec<(SocketAddr, tokio::net::TcpListener)> = if web {
+        info!("serve startup: binding web listener(s) (#190 breadcrumb)");
+        let mut listeners = Vec::new();
+        for binding in &web_bindings {
+            let addr = binding.socket_addr();
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| anyhow::anyhow!("web: failed to bind listener {addr}: {e}"))?;
+            let actual_port = listener.local_addr()?.port();
+            let actual_addr = binding.with_port(actual_port);
+            info!(
+                addr = %actual_addr,
+                "serve startup: web listener bound (#190 breadcrumb)"
+            );
+            if web_port.is_none() {
+                web_port = Some(actual_port);
+            }
+            web_binding_addrs.push(actual_addr.to_string());
+            listeners.push((actual_addr, listener));
+        }
+        listeners
     } else {
-        None
+        Vec::new()
     };
 
     #[cfg(feature = "ssh")]
@@ -1158,7 +1350,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
     info!("serve startup: writing serve lock (#190 breadcrumb)");
-    create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
+    create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
     info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
@@ -1198,76 +1390,96 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         }
     }
 
-    // Start web server now that the lock file is written
+    // Start the web servers now that the lock file is written: one
+    // serve task per bound listener (#2145), every listener serving the
+    // same Explorer router with its own per-bind security.
     #[cfg(feature = "web")]
-    let _web_handle = if let Some(listener) = web_listener {
-        let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
-        let web_router = match &event_events {
-            Some(events) => {
-                crate::web::web_router_with_local_events(
-                    store_handle.clone(),
-                    Some(peer_discovery.clone()),
-                    node_id.to_string(),
-                    Arc::clone(&tag_store),
-                    key.to_bytes(),
-                    identity_db_path,
-                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-                    world_hub.clone(),
-                    web_cookie_secure,
-                    Arc::clone(events),
-                )
-                .await?
+    let _web_handles = {
+        let mut handles = Vec::new();
+        if !web_listeners.is_empty() {
+            status!("web: {} listener(s)", web_listeners.len());
+            // One shared AppState for all listeners (the identity store
+            // opens exclusively); each listener's router is finished with
+            // its own per-bind security. Do not initialize web persistence
+            // when serving without the web interface.
+            let securities: Vec<crate::web::WebSecurity> = web_listeners
+                .iter()
+                .map(|(listener_addr, _)| {
+                    crate::web::WebSecurity::for_bind(listener_addr.ip(), web_token.clone(), &[])
+                })
+                .collect();
+            let web_routers = crate::web::web_routers(
+                store_handle.clone(),
+                Some(peer_discovery.clone()),
+                node_id.to_string(),
+                Arc::clone(&tag_store),
+                key.to_bytes(),
+                std::path::Path::new(KEY_FILE).with_file_name(".identity.redb"),
+                securities,
+                world_hub.clone(),
+                web_cookie_secure,
+                event_events.as_ref().map(Arc::clone),
+            )
+            .await?;
+            for ((listener_addr, listener), web_router) in
+                web_listeners.into_iter().zip(web_routers)
+            {
+                let listener_ip = listener_addr.ip();
+                let shown_host = match listener_addr {
+                    SocketAddr::V4(addr)
+                        if addr.ip().is_unspecified() || addr.ip().is_loopback() =>
+                    {
+                        "localhost".to_owned()
+                    }
+                    SocketAddr::V4(addr) => addr.ip().to_string(),
+                    SocketAddr::V6(addr)
+                        if addr.ip().is_unspecified() || addr.ip().is_loopback() =>
+                    {
+                        "localhost".to_owned()
+                    }
+                    SocketAddr::V6(addr) if addr.scope_id() == 0 => {
+                        format!("[{}]", addr.ip())
+                    }
+                    SocketAddr::V6(addr) => {
+                        format!("[{}%25{}]", addr.ip(), addr.scope_id())
+                    }
+                };
+                if web_token.is_some() {
+                    status!(
+                        "web: http://{shown_host}:{}/?token=<redacted>",
+                        listener_addr.port()
+                    );
+                } else {
+                    status!("web: http://{shown_host}:{}", listener_addr.port());
+                }
+                #[cfg(feature = "world")]
+                if world {
+                    status!(
+                        "world: browser http://{shown_host}:{}/world",
+                        listener_addr.port()
+                    );
+                }
+                if !listener_ip.is_loopback() && web_token.is_none() {
+                    status_err!(
+                        "warning: the web UI is bound to {listener_addr} without --web-token; \
+                         anyone who can reach this listener can read and modify files"
+                    );
+                }
+                if world_hub.is_some() && !listener_ip.is_loopback() && !web_cookie_secure {
+                    status_err!(
+                        "warning: the admin sign-in form is served over plain HTTP on {listener_addr}; \
+                         its token and session cookie travel in clear unless HTTPS is terminated \
+                         in front (then pass --web-cookie-secure) or the UI is bound to loopback"
+                    );
+                }
+                handles.push(tokio::spawn(async move {
+                    if let Err(e) = axum::serve(listener, web_router).await {
+                        tracing::error!("web server error: {}", e);
+                    }
+                }));
             }
-            None => {
-                crate::web::web_router(
-                    store_handle.clone(),
-                    Some(peer_discovery.clone()),
-                    node_id.to_string(),
-                    Arc::clone(&tag_store),
-                    key.to_bytes(),
-                    identity_db_path,
-                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-                    world_hub.clone(),
-                    web_cookie_secure,
-                )
-                .await?
-            }
-        };
-        let actual_port = web_port.unwrap_or(port);
-        let shown_host = if bind.is_unspecified() || bind.is_loopback() {
-            "localhost".to_owned()
-        } else {
-            bind.to_string()
-        };
-        if let Some(t) = &web_token {
-            status!("web: http://{shown_host}:{actual_port}/?token={t}");
-        } else {
-            status!("web: http://{shown_host}:{actual_port}");
         }
-        #[cfg(feature = "world")]
-        if world {
-            status!("world: browser http://{shown_host}:{actual_port}/world");
-        }
-        if !bind.is_loopback() && web_token.is_none() {
-            status_err!(
-                "warning: the web UI is bound to {bind} without --web-token; \
-                 anyone who can reach port {actual_port} can read and modify files"
-            );
-        }
-        if world_hub.is_some() && !bind.is_loopback() && !web_cookie_secure {
-            status_err!(
-                "warning: the admin sign-in form is served over plain HTTP on {bind}; \
-                 its token and session cookie travel in clear unless HTTPS is terminated \
-                 in front (then pass --web-cookie-secure) or the UI is bound to loopback"
-            );
-        }
-        Some(tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, web_router).await {
-                tracing::error!("web server error: {}", e);
-            }
-        }))
-    } else {
-        None
+        handles
     };
 
     #[cfg(feature = "ssh")]
@@ -1292,7 +1504,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // the CLI status output at startup; the spawned task then re-evaluates
     // as membership changes and writes fired warnings to the server log.
     let mut group_watcher = GroupWarningWatcher::new();
-    let groups_log = PathBuf::from(GROUPS_FILE_NAME);
+    let groups_log = serve_groups_log_path(groups_log);
     for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
         status!("group warning: {}", warning.message());
     }
@@ -1314,7 +1526,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         let _ = sync_task.await;
     }
     #[cfg(feature = "web")]
-    if let Some(web_task) = _web_handle {
+    for web_task in _web_handles {
         web_task.abort();
         let _ = web_task.await;
     }
@@ -1459,6 +1671,8 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+const MAX_STALE_PROBES_PER_PASS: usize = 4;
+
 /// Background loop for gossip-based peer discovery.
 ///
 /// Runs three concurrent tasks:
@@ -1473,6 +1687,8 @@ async fn run_gossip_loop(
     sender: distributed_topic_tracker::GossipSender,
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
+    chat_presence: PresenceTable,
+    signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
 ) {
@@ -1508,37 +1724,79 @@ async fn run_gossip_loop(
                     .map_or(0, |d| d.as_secs()),
             };
 
-            match postcard::to_allocvec(&announcement) {
-                Ok(bytes) => {
-                    if let Err(e) = sender.broadcast(bytes).await {
-                        debug!("gossip broadcast error: {}", e);
+            match SignedPeerAnnouncement::sign(announcement, &signing_key) {
+                Some(signed) => match signed.encode_frame() {
+                    Ok(bytes) => {
+                        if let Err(e) = sender.broadcast(bytes).await {
+                            debug!("gossip broadcast error: {}", e);
+                        }
                     }
+                    Err(e) => {
+                        debug!("gossip announcement serialization error: {}", e);
+                    }
+                },
+                None => {
+                    warn!(
+                        "could not sign peer announcement for endpoint {}",
+                        announce_node_id
+                    );
                 }
-                Err(e) => {
-                    debug!("gossip announcement serialization error: {}", e);
-                }
+            }
+
+            // Presence rides the same gossip plane (#2809): an ephemeral
+            // heartbeat naming this node. Channel membership lives in the
+            // chat layer above serve, so this heartbeat names no channels;
+            // receivers scope and read it through PresenceTable.
+            let mut presence = PresenceHeartbeat::new(
+                *announce_node_id.as_bytes(),
+                Vec::new(),
+                Vec::new(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            );
+            presence.sign(&signing_key);
+            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                debug!("gossip presence broadcast error: {}", e);
             }
         }
     });
 
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
+    let recv_presence = chat_presence.clone();
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
                 Ok(event) => match event {
                     iroh_gossip::api::Event::Received(msg) => {
-                        match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
-                            Ok(announcement) => {
+                        if let Some(heartbeat) = decode_frame(&msg.content) {
+                            // Presence is a claim about `node`, and the gossip
+                            // topic is public and does not authenticate
+                            // authors: accept the frame only when the
+                            // heartbeat's signature by its claimed node
+                            // verifies, so nobody can forge or suppress
+                            // another node's presence (#2809 Codex review).
+                            if heartbeat.verify() {
                                 debug!(
-                                    "peer announcement from {}: blob_count={}",
-                                    announcement.node_id, announcement.blob_count
+                                    "presence heartbeat from {}: {} channel(s)",
+                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                    heartbeat.channels.len()
                                 );
-                                recv_discovery.update(announcement);
+                                recv_presence.update(heartbeat);
+                            } else {
+                                debug!("presence heartbeat failed signature verification, dropped");
                             }
-                            Err(e) => {
-                                debug!("failed to deserialize peer announcement: {}", e);
-                            }
+                        } else if let Some(announcement) =
+                            SignedPeerAnnouncement::decode_frame(&msg.content)
+                        {
+                            debug!(
+                                "peer announcement from {}: blob_count={}",
+                                announcement.node_id, announcement.blob_count
+                            );
+                            recv_discovery.update(announcement);
+                        } else {
+                            debug!("unauthenticated or invalid peer announcement frame dropped");
                         }
                     }
                     iroh_gossip::api::Event::NeighborUp(peer) => {
@@ -1561,21 +1819,39 @@ async fn run_gossip_loop(
 
     // Spawn stale cleanup task — probes stale peers before removal
     let cleanup_discovery = peer_discovery;
+    let cleanup_presence = chat_presence;
 
     let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(STALE_CHECK_INTERVAL);
+        let mut probe_cursor: Option<EndpointId> = None;
 
         loop {
             interval.tick().await;
+
+            // Presence entries expire on their own stamps; prune them here so a
+            // long-running server does not retain every node key it has ever
+            // seen (#2809 Codex review). This runs even when no discovery peer
+            // is stale.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let pruned = cleanup_presence.prune_at(now_secs);
+            if pruned > 0 {
+                debug!("pruned {} expired presence entrie(s)", pruned);
+            }
 
             let stale = cleanup_discovery.stale_peers();
             if stale.is_empty() {
                 continue;
             }
 
-            debug!("probing {} stale peer(s)", stale.len());
+            let batch = select_stale_probe_batch(&stale, probe_cursor, MAX_STALE_PROBES_PER_PASS);
+            if let Some(last) = batch.last() {
+                probe_cursor = Some(last.announcement.node_id);
+            }
+            debug!("probing {} of {} stale peer(s)", batch.len(), stale.len());
 
-            for info in &stale {
+            for info in &batch {
                 let peer_id = info.announcement.node_id;
 
                 // Try to connect and send ListPeers RPC
@@ -1585,7 +1861,7 @@ async fn run_gossip_loop(
                     let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
                     send.write_all(&req).await?;
                     send.finish()?;
-                    let resp_buf = recv.read_to_end(1024 * 1024).await?;
+                    let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
                     let _resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
                     conn.close(0u32.into(), b"probe");
                     anyhow::Ok(())
@@ -1599,16 +1875,14 @@ async fn run_gossip_loop(
                     }
                     Ok(Err(e)) => {
                         debug!("stale peer {} probe failed: {}, removing", peer_id, e);
+                        cleanup_discovery.remove_if_stale(&peer_id, STALE_THRESHOLD);
                     }
                     Err(_) => {
                         debug!("stale peer {} probe timed out, removing", peer_id);
+                        cleanup_discovery.remove_if_stale(&peer_id, STALE_THRESHOLD);
                     }
                 }
             }
-
-            // Remove peers that are still stale (probes that failed/timed out
-            // didn't call refresh(), so they remain past STALE_THRESHOLD)
-            cleanup_discovery.remove_stale(STALE_THRESHOLD);
         }
     });
 
@@ -1620,10 +1894,83 @@ async fn run_gossip_loop(
     }
 }
 
+/// Select a deterministic, bounded round-robin batch from stale peers.
+fn select_stale_probe_batch(
+    stale: &[crate::discovery::PeerInfo],
+    after: Option<EndpointId>,
+    limit: usize,
+) -> Vec<crate::discovery::PeerInfo> {
+    if stale.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let mut ordered = stale.to_vec();
+    ordered.sort_by(|left, right| {
+        left.announcement
+            .node_id
+            .as_bytes()
+            .cmp(right.announcement.node_id.as_bytes())
+    });
+    let start = after.map_or(0, |cursor| {
+        let next = ordered
+            .partition_point(|info| info.announcement.node_id.as_bytes() <= cursor.as_bytes());
+        if next == ordered.len() { 0 } else { next }
+    });
+    (0..limit.min(ordered.len()))
+        .map(|offset| ordered[(start + offset) % ordered.len()].clone())
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn stale_test_peer(seed: u8) -> crate::discovery::PeerInfo {
+        let node_id = iroh_base::SecretKey::from_bytes(&[seed; 32]).public();
+        crate::discovery::PeerInfo {
+            announcement: PeerAnnouncement {
+                node_id,
+                name: None,
+                blob_count: 0,
+                timestamp_secs: unix_now(),
+            },
+            last_seen: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn stale_probe_batches_are_bounded_sorted_and_round_robin() {
+        let mut peers: Vec<_> = (1..=5).map(stale_test_peer).collect();
+        peers.reverse();
+        let mut expected: Vec<_> = peers.iter().map(|peer| peer.announcement.node_id).collect();
+        expected.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+
+        assert_eq!(MAX_STALE_PROBES_PER_PASS, 4);
+        let first = select_stale_probe_batch(&peers, None, 2);
+        let first_ids: Vec<_> = first.iter().map(|peer| peer.announcement.node_id).collect();
+        assert_eq!(first_ids, expected[..2]);
+
+        let second = select_stale_probe_batch(
+            &peers,
+            first.last().map(|peer| peer.announcement.node_id),
+            2,
+        );
+        let second_ids: Vec<_> = second
+            .iter()
+            .map(|peer| peer.announcement.node_id)
+            .collect();
+        assert_eq!(second_ids, expected[2..4]);
+
+        let third = select_stale_probe_batch(
+            &peers,
+            second.last().map(|peer| peer.announcement.node_id),
+            2,
+        );
+        let third_ids: Vec<_> = third.iter().map(|peer| peer.announcement.node_id).collect();
+        assert_eq!(third_ids, vec![expected[4], expected[0]]);
+        assert!(select_stale_probe_batch(&peers, None, 0).is_empty());
+    }
 
     /// A scratch directory unique to this test process.
     fn serve_test_dir(name: &str) -> PathBuf {
@@ -1637,11 +1984,14 @@ mod tests {
     /// (the author included), returning the group's ID. This is the file the
     /// serve warning path reads.
     fn group_log_with_members(dir: &std::path::Path, members: usize) -> Hash {
+        group_log_with_members_at(&dir.join(GROUPS_FILE_NAME), members)
+    }
+
+    fn group_log_with_members_at(path: &std::path::Path, members: usize) -> Hash {
         use crate::groups::Role;
         use crate::groups::actions::NewGroup;
 
-        let path = dir.join(GROUPS_FILE_NAME);
-        let mut log = GroupLog::open(&path).unwrap();
+        let mut log = GroupLog::open(path).unwrap();
         let author: GroupKey = [1; 32];
         let created = log
             .create(
@@ -1657,6 +2007,46 @@ mod tests {
             log.add(author, created.group, member, Role::Read).unwrap();
         }
         created.group
+    }
+
+    #[test]
+    fn serve_groups_log_path_honours_override_and_default() {
+        // #2778: the group-warning watcher's log path must come
+        // from the global --groups-log option (threaded through
+        // ServeOptions), resolved exactly like the group commands
+        // resolve it; without the option the default file name is
+        // used, unchanged.
+        let custom = PathBuf::from("shared").join("relocated.jsonl");
+        assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
+        assert_eq!(
+            serve_groups_log_path(None),
+            PathBuf::from(GROUPS_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn serve_group_warnings_evaluate_custom_groups_log() {
+        // #2778 regression: warnings are computed from the
+        // --groups-log file, not the default groups.jsonl. The
+        // custom log holds a 96-member group; the default log in
+        // the same directory does not exist, so a watcher reading
+        // the default would silently warn about nothing.
+        let dir = serve_test_dir("customlog");
+        let custom = dir.join("relocated.jsonl");
+        let group = group_log_with_members_at(&custom, 96);
+        let path = serve_groups_log_path(Some(custom));
+        let mut watcher = GroupWarningWatcher::new();
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(
+            fired[0].1,
+            Warning::Size {
+                threshold: 96,
+                members: 96
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1816,6 +2206,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "world")]
     #[test]
     fn world_names_are_bounded_and_are_a_single_path_segment() {
         for bad in [
@@ -1860,6 +2251,23 @@ mod tests {
     }
 
     #[test]
+    fn test_is_process_alive_pid_zero() {
+        #[cfg(unix)]
+        {
+            assert!(!is_process_alive(0));
+        }
+    }
+
+    #[test]
+    fn test_is_process_alive_pid_out_of_i32_range() {
+        #[cfg(unix)]
+        {
+            assert!(!is_process_alive(i32::MAX as u32 + 1));
+            assert!(!is_process_alive(u32::MAX));
+        }
+    }
+
+    #[test]
     fn test_is_process_alive_nonexistent() {
         // Use a very high PID that's unlikely to exist
         // Note: On non-Unix this always returns true
@@ -1871,12 +2279,14 @@ mod tests {
 
     #[test]
     fn test_is_process_alive_pid_1() {
-        // PID 1 (init) should exist on Unix systems, but may not be visible
-        // in containerized environments where the container has its own PID namespace
+        // PID 1 exists in every Unix PID namespace (as init, or as the
+        // namespace's init in a container). #2384: when the test runs
+        // unprivileged, pid 1 is foreign-owned and kill(1, 0) fails with
+        // EPERM — that must still answer alive; as root the probe succeeds
+        // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            // Just check that the function doesn't panic - the result depends on environment
-            let _ = is_process_alive(1);
+            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
         }
     }
 
@@ -1892,6 +2302,7 @@ mod tests {
             pid: 12345,
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:8080".to_owned()],
             web_port: Some(3000),
+            web_bindings: vec!["127.0.0.1:3000".to_owned()],
         };
 
         assert_eq!(info.node_id, node_id.to_string());
@@ -1912,6 +2323,7 @@ mod tests {
             pid: 99,
             addrs: vec!["127.0.0.1:8080".to_owned()],
             web_port: None,
+            web_bindings: Vec::new(),
         };
 
         let cloned = info.clone();
@@ -1928,6 +2340,7 @@ mod tests {
             pid: 42,
             addrs: vec!["127.0.0.1:8080".to_owned(), "[::1]:9090".to_owned()],
             web_port: Some(3001),
+            web_bindings: vec!["127.0.0.1:3001".to_owned(), "[::1]:3001".to_owned()],
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -1945,11 +2358,136 @@ mod tests {
             pid: 100,
             addrs: vec!["127.0.0.1:5555".to_owned()],
             web_port: None,
+            web_bindings: Vec::new(),
         };
 
         let json = serde_json::to_string(&info).unwrap();
         let parsed: ServeInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.web_port, None);
+    }
+
+    #[test]
+    fn test_serve_info_json_pre_bindings_lock_still_parses() {
+        // Lock files written before #2145 have no `web_bindings` key;
+        // the serde default must keep them readable.
+        let parsed: ServeInfo = serde_json::from_str(
+            r#"{"node_id":"abc","pid":7,"addrs":["127.0.0.1:8080"],"web_port":3001}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.web_port, Some(3001));
+        assert!(parsed.web_bindings.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_legacy_fallback() {
+        let bindings =
+            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap();
+        assert_eq!(
+            bindings,
+            vec![WebBinding {
+                addr: "127.0.0.1:3000".parse().unwrap()
+            }]
+        );
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_flags_win_over_config() {
+        let flags: Vec<SocketAddr> = vec![
+            "127.0.0.1:4001".parse().unwrap(),
+            "[::1]:4002".parse().unwrap(),
+        ];
+        let config = vec!["127.0.0.1:3000".to_owned()];
+        let bindings = resolve_web_bindings(
+            &flags,
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(
+            bindings[0].socket_addr(),
+            "127.0.0.1:4001".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            bindings[1].socket_addr(),
+            "[::1]:4002".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_config_only() {
+        let config = vec!["127.0.0.1:3000".to_owned(), "192.0.2.10:3001".to_owned()];
+        let bindings = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            9999,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[1].socket_addr().port(), 3001);
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_preserves_ipv6_scope_id() {
+        let scoped_addr = SocketAddr::V6(std::net::SocketAddrV6::new(
+            "fe80::1".parse().unwrap(),
+            4001,
+            0,
+            3,
+        ));
+        let from_flags = resolve_web_bindings(
+            &[scoped_addr],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(from_flags[0].socket_addr(), scoped_addr);
+        assert_eq!(
+            from_flags[0].with_port(4100).to_string(),
+            "[fe80::1%3]:4100"
+        );
+
+        let from_config = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &[scoped_addr.to_string()],
+        )
+        .unwrap();
+        assert_eq!(from_config[0].socket_addr(), scoped_addr);
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_conflict_names_the_flag() {
+        let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap()];
+        let err = resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("--bind"), "{err}");
+        let err = resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("--port"), "{err}");
+    }
+
+    #[test]
+    fn test_resolve_web_bindings_malformed_config_line_is_named() {
+        let config = vec!["127.0.0.1:3000".to_owned(), "not-an-addr".to_owned()];
+        let err =
+            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
+                .unwrap_err();
+        assert!(err.to_string().contains("not-an-addr"), "{err}");
+        assert!(err.to_string().contains("[web_bindings]"), "{err}");
     }
 
     // Integration tests for lock file functions require file system access

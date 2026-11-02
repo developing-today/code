@@ -75,8 +75,11 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
         return Some(WorldLine::Message("usage: /document <name>".to_owned()));
     }
     if let Some(rest) = line.strip_prefix("/document ") {
+        // The separator is whitespace, not exactly one space: siblings
+        // (/records, /documents, /logs) trim theirs, and a name with
+        // interior spaces ("my file.txt") is still one name.
         let name = rest.trim();
-        if !name.is_empty() && name == rest {
+        if !name.is_empty() {
             return Some(WorldLine::Document(name.to_owned()));
         }
         return Some(WorldLine::Message("usage: /document <name>".to_owned()));
@@ -97,6 +100,7 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
         return Some(WorldLine::Message("usage: /input <hex>".to_owned()));
     }
     if let Some(hex) = line.strip_prefix("/input ") {
+        let hex = hex.trim();
         if !hex.is_empty() && hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Some(WorldLine::Input(hex.to_ascii_lowercase()));
         }
@@ -161,6 +165,34 @@ mod tests {
         assert_eq!(
             parse_line("/input 00aF"),
             Some(WorldLine::Input("00af".into()))
+        );
+    }
+
+    #[test]
+    fn extra_separator_whitespace_still_parses() {
+        // #1946: the separator after /document and /input is whitespace,
+        // not exactly one space — the sibling commands already trim.
+        assert_eq!(
+            parse_line("/document  report.txt"),
+            Some(WorldLine::Document("report.txt".into()))
+        );
+        assert_eq!(
+            parse_line("/input  ab"),
+            Some(WorldLine::Input("ab".into()))
+        );
+        // A name with interior spaces is still one name.
+        assert_eq!(
+            parse_line("/document my file.txt"),
+            Some(WorldLine::Document("my file.txt".into()))
+        );
+        // Extra separator whitespace does not rescue a bad argument.
+        assert_eq!(
+            parse_line("/input  zz"),
+            Some(WorldLine::Message("usage: /input <hex>".into()))
+        );
+        assert_eq!(
+            parse_line("/input  abc"),
+            Some(WorldLine::Message("usage: /input <hex>".into()))
         );
     }
 

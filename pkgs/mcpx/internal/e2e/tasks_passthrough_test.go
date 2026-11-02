@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The daemon's /mcp fronting two upstreams in pass-through mode -- fakemcp

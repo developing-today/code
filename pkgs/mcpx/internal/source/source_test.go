@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/source"
+	"github.com/developing-today/code/pkgs/mcpx/internal/source"
 )
 
 func opts(dir string) source.Options {
@@ -191,5 +191,36 @@ func TestTextAndFileAtTheSameLevelIsAConflict(t *testing.T) {
 	}
 	if err := source.Conflict("script.prefix", "inline", ""); err != nil {
 		t.Errorf("one form alone is fine: %v", err)
+	}
+}
+
+func TestResolveFileWithTildeNameReadsLiteralDirUnderDir(t *testing.T) {
+	// End to end for #2988: @file:~alice/... must read the literal
+	// ~alice directory under Dir, never $HOME/alice.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "alice"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "alice", "note.txt"), []byte("from home"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	literal := filepath.Join(dir, "~alice")
+	if err := os.MkdirAll(literal, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(literal, "note.txt"), []byte("from literal dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := source.Resolve("@file:~alice/note.txt", source.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "from literal dir" {
+		t.Errorf("Resolve(@file:~alice/note.txt) text = %q, want %q", got.Text, "from literal dir")
+	}
+	if len(got.Files) != 1 || got.Files[0] != filepath.Join(literal, "note.txt") {
+		t.Errorf("Resolve(@file:~alice/note.txt) files = %v, want [%s]", got.Files, filepath.Join(literal, "note.txt"))
 	}
 }

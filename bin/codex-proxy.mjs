@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const HOST = process.env.CODEX_PROXY_HOST || '127.0.0.1';
@@ -131,6 +133,9 @@ const STATIC_MODELS = [
 ];
 
 const findCodexBinary = () => {
+  // Explicit override first: the test suite points this at its stub so
+  // a host-installed codex can never shadow it (#694).
+  if (process.env.CODEX_PROXY_CODEX_BIN) return process.env.CODEX_PROXY_CODEX_BIN;
   const candidates = [
     '/run/current-system/sw/bin/codex',
     `${process.env.HOME}/.local/bin/codex`,
@@ -867,6 +872,8 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     child.stdin.end();
 
     let lineBuffer = '';
+    const stdoutDecoder = createStreamDecoder();
+    const stderrDecoder = createStreamDecoder();
     let fullContent = '';
     let promptTokens = Math.max(1, Math.ceil(prompt.length / 4));
     let completionTokens = 0;
@@ -940,7 +947,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     };
 
     child.stdout.on('data', (chunk) => {
-      lineBuffer += chunk.toString('utf-8');
+      lineBuffer += stdoutDecoder.push(chunk);
       const lines = lineBuffer.split('\n');
       lineBuffer = lines.pop(); // remainder
       for (const line of lines) {
@@ -949,7 +956,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     });
 
     child.stderr.on('data', (chunk) => {
-      const msg = chunk.toString('utf-8');
+      const msg = stderrDecoder.push(chunk);
       stderrTail = (stderrTail + msg).slice(-2000);
       if (msg.trim().length > 0) {
         console.warn(`[codex-proxy stderr] ${msg.trim()}`);
@@ -977,7 +984,9 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
           ? spawnError.message
           : signal
             ? `codex exec terminated by signal ${signal}`
-            : `codex exec exited with code ${code}`;
+            : turnFailedMessage !== null && code === 0
+              ? 'codex turn failed (turn.failed event carried no error message)'
+              : `codex exec exited with code ${code}`;
         const detail = (turnFailedMessage || stderrLine || fallback).trim();
         done({
           ok: false,
@@ -1065,10 +1074,10 @@ const server = http.createServer(async (req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -1076,12 +1085,20 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `Invalid JSON body: ${err.message}` } }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
         return;
       }
 

@@ -3,17 +3,17 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/progspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/hooks"
-	"github.com/dezren39/mcpx/internal/opencode"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/hooks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/opencode"
 )
 
 // check is one diagnosis.

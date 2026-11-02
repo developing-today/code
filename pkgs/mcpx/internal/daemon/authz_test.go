@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // A unix-socket connection's principal carries the peer uid the kernel

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // TraceID identifies one thing that started and will end: a daemon, a server

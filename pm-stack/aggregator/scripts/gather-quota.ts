@@ -11,11 +11,15 @@
 //      opencode.db, opened read-only) instead of the OpenCode server
 //      API, so a stopped server cannot zero the tick (the CLI's
 //      wholesale "Transport: fetch failed" failure mode, #1251).
-//      The projection replicates the server's: rows ordered
-//      (active, time_created, id), the last row per integration is
-//      the selected one. Environment-variable keys are not store
-//      rows and never appear here — stored credentials win, which
-//      is the order OpenCode itself uses.
+//      The read is the OpenChamber module's own
+//      openCodeLocalCredentialSource — the same shared implementation
+//      the quota CLI falls back to (#2490 phase 3) — so its
+//      projection (rows ordered (active, time_created, id), the last
+//      row per integration selected, unreadable rows surfaced rather
+//      than silently dropped) is the one every surface gets.
+//      Environment-variable keys are not store rows and never appear
+//      here — stored credentials win, which is the order OpenCode
+//      itself uses.
 //   3. The Turso org usage API (#1049): usage + subscription over
 //      the verified route, token from Bitwarden by name.
 //   2. File exports (the Meta Phase-1 convention, #1301): producers
@@ -42,7 +46,11 @@
 // store cannot be read, the tick writes a heartbeat carrying the
 // error and exits non-zero WITHOUT touching quota-current.json. A
 // single provider failing or exceeding its cap degrades only its own
-// rows; the tick still succeeds.
+// rows; the tick still succeeds. A provider whose run errors keeps
+// its last-known ok entries from the previous tick's
+// quota-current.json (#1268) — retained verbatim, so their original
+// measuredAt makes the hub classify them stale instead of the fresh
+// error rows replacing the last good data.
 //
 // Usage: bun run scripts/gather-quota.ts
 // Env: OPENCHAMBER_LIB_DIR (default: first of ~/git/devtoday-
@@ -51,13 +59,13 @@
 //      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH,
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
 //      USAGE_SNAPSHOT_OUTBOX_PATH, META_QUOTA_EXPORT_PATH,
-//      QUOTA_GATHER_TIMEOUT_MS (15000), TURSO_API_TOKEN (else the
+//      QUOTA_GATHER_TIMEOUT_MS (15000),
+//      QUOTA_GATHER_CONCURRENCY (6), TURSO_API_TOKEN (else the
 //      Bitwarden secret turso.platform-api-token-muse-cli, resolved
 //      by name via ~/tools/bws-env conventions — BWS_BIN and
 //      BWS_ACCESS_TOKEN_FILE override its plumbing),
 //      TURSO_ORG_SLUG (dezren39), TURSO_API_BASE
 //      (https://api.turso.tech).
-import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -70,6 +78,9 @@ import {
   entryFromResult,
   entryFromFileExport,
   entryFromTurso,
+  lastKnownEntries,
+  mapWithConcurrency,
+  markRetained,
   recordsFromEntries,
   type FileExportDoc,
   type QuotaProviderResult,
@@ -101,6 +112,7 @@ const statePath = process.env.QUOTA_GATHERER_STATE_PATH ?? join(PKG, "quota-gath
 const snapshotsDir = process.env.QUOTA_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? null;
 const timeoutMs = Number(process.env.QUOTA_GATHER_TIMEOUT_MS ?? 15_000);
+const gatherConcurrency = Number(process.env.QUOTA_GATHER_CONCURRENCY ?? 6);
 const OBSERVED_BY = "quota-gatherer";
 
 /** File-export producers ingested each tick (the #1301 convention). */
@@ -118,45 +130,15 @@ interface QuotaModule {
 }
 interface AuthModule {
   configureOpenCodeCredentials: (source: unknown) => void;
-}
-
-/**
- * A credential source ({ list }) backed by OpenCode's SQLite store,
- * read-only. Answers the entry shape the server's credential.list
- * returns: { id, integrationID, label, active, value }.
- */
-function directCredentialSource(path: string) {
-  return {
-    list: async () => {
-      const db = new Database(path, { readonly: true });
-      try {
-        const rows = db
-          .query(
-            "SELECT id, integration_id, label, value FROM credential ORDER BY active ASC, time_created ASC, id ASC",
-          )
-          .all() as { id: string; integration_id: string | null; label: string; value: string }[];
-        const selected = new Map<string, string>();
-        const parsed: { id: string; integrationID: string; label: string; value: unknown }[] = [];
-        for (const row of rows) {
-          if (!row.integration_id) continue;
-          let value: unknown;
-          try {
-            value = JSON.parse(row.value);
-          } catch {
-            continue; // the server drops undecodable rows the same way
-          }
-          parsed.push({ id: row.id, integrationID: row.integration_id, label: row.label, value });
-          selected.set(row.integration_id, row.id);
-        }
-        return parsed.map((p) => ({ ...p, active: selected.get(p.integrationID) === p.id }));
-      } finally {
-        db.close();
-      }
-    },
-    // No managed-launch environment to project keys from; stored
-    // credentials are the whole story for this reader.
-    listEnvironmentKeys: async () => ({}),
-  };
+  // The shared direct credential-store read from lib/opencode/auth.js
+  // (#2490 phase 3): same projection and failure semantics as the CLI
+  // fallback — it throws when the store is missing or holds rows but
+  // none are readable, and that throw reaches main()'s failTick via
+  // listConfiguredQuotaProviders, so a bad store fails the tick loudly
+  // instead of producing an empty "not configured" tick. It has no
+  // listEnvironmentKeys: stored credentials are the whole story for
+  // this reader, as before.
+  openCodeLocalCredentialSource: (opts: { dbPath: string }) => unknown;
 }
 
 async function writeAtomic(path: string, text: string): Promise<void> {
@@ -209,16 +191,22 @@ const TURSO_SECRET_NAME = "turso.platform-api-token-muse-cli";
  * yields nothing.
  */
 async function resolveBwsSecret(key: string): Promise<string | null> {
-  const bwsCandidates = [
-    process.env.BWS_BIN,
-    join(HOME, "tools/bin/bws"),
-    join(HOME, ".local/bin/bws"),
-    "bws",
-  ].filter((d): d is string => typeof d === "string" && d !== "");
+  const bwsCandidates = [process.env.BWS_BIN, join(HOME, "tools/bin/bws"), join(HOME, ".local/bin/bws"), "bws"].filter(
+    (d): d is string => typeof d === "string" && d !== "",
+  );
   let bwsBin: string | null = null;
   for (const cand of bwsCandidates) {
-    if (!cand.includes("/")) { bwsBin = cand; break; }
-    try { await access(cand); bwsBin = cand; break; } catch { /* next */ }
+    if (!cand.includes("/")) {
+      bwsBin = cand;
+      break;
+    }
+    try {
+      await access(cand);
+      bwsBin = cand;
+      break;
+    } catch {
+      /* next */
+    }
   }
   if (!bwsBin) return null;
   const tokenFiles = [
@@ -230,8 +218,13 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
   for (const f of tokenFiles) {
     try {
       const v = (await readFile(f, "utf8")).trim();
-      if (v) { accessToken = v; break; }
-    } catch { /* next */ }
+      if (v) {
+        accessToken = v;
+        break;
+      }
+    } catch {
+      /* next */
+    }
   }
   if (!accessToken) return null;
   const run = (args: string[]): Promise<string> =>
@@ -239,7 +232,11 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
       execFile(
         bwsBin as string,
         args,
-        { env: { ...process.env, BWS_ACCESS_TOKEN: accessToken as string }, maxBuffer: 16 * 1024 * 1024, timeout: 30_000 },
+        {
+          env: { ...process.env, BWS_ACCESS_TOKEN: accessToken as string },
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 30_000,
+        },
         (err, stdout) => (err ? reject(err) : resolve(stdout)),
       );
     });
@@ -271,10 +268,12 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
   });
   const token = process.env.TURSO_API_TOKEN?.trim() || (await resolveBwsSecret(TURSO_SECRET_NAME));
   if (!token) {
-    return done(entryFromTurso(null, null, {
-      measuredAt: tickIso,
-      error: `turso token unavailable (Bitwarden secret ${TURSO_SECRET_NAME})`,
-    }));
+    return done(
+      entryFromTurso(null, null, {
+        measuredAt: tickIso,
+        error: `turso token unavailable (Bitwarden secret ${TURSO_SECRET_NAME})`,
+      }),
+    );
   }
   const base = process.env.TURSO_API_BASE ?? "https://api.turso.tech";
   const slug = process.env.TURSO_ORG_SLUG ?? "dezren39";
@@ -300,10 +299,12 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
     const subscription = (await get("/subscription")) as TursoSubscriptionDoc;
     return done(entryFromTurso(usage, subscription, { measuredAt: tickIso }));
   } catch (err) {
-    return done(entryFromTurso(null, null, {
-      measuredAt: tickIso,
-      error: err instanceof Error ? err.message : String(err),
-    }));
+    return done(
+      entryFromTurso(null, null, {
+        measuredAt: tickIso,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
   }
 }
 
@@ -313,6 +314,8 @@ interface ProviderRun {
   ms: number;
   entries: QuotaCurrentEntry[];
   error?: string;
+  /** #1268: entries are last-known retentions, not fresh reads. */
+  retained?: boolean;
 }
 
 async function runProvider(quota: QuotaModule, id: string, tickIso: string): Promise<ProviderRun> {
@@ -371,6 +374,20 @@ async function runFileExport(fx: (typeof FILE_EXPORTS)[number]): Promise<Provide
   };
 }
 
+/** The previous tick's quota-current entries, for #1268 last-known
+ *  retention. Any read/parse failure means no retention this tick. */
+async function readPreviousEntries(): Promise<QuotaCurrentEntry[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(currentPath, "utf8"));
+    if (typeof parsed === "object" && parsed !== null && Array.isArray((parsed as QuotaCurrentFile).providers)) {
+      return (parsed as QuotaCurrentFile).providers;
+    }
+  } catch {
+    // no previous tick yet, or an unreadable file — nothing to retain
+  }
+  return [];
+}
+
 async function readState(): Promise<Map<string, string>> {
   try {
     const parsed: unknown = JSON.parse(await readFile(statePath, "utf8"));
@@ -390,7 +407,7 @@ async function main(): Promise<number> {
   let quota: QuotaModule;
   try {
     const auth = (await import(join(libDir, "opencode/auth.js"))) as unknown as AuthModule;
-    auth.configureOpenCodeCredentials(directCredentialSource(dbPath));
+    auth.configureOpenCodeCredentials(auth.openCodeLocalCredentialSource({ dbPath }));
     quota = (await import(join(libDir, "quota/index.js"))) as unknown as QuotaModule;
   } catch (err) {
     return failTick(tickAt, started, `quota module import failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -407,9 +424,28 @@ async function main(): Promise<number> {
     );
   }
 
-  const runs = await Promise.all(providerIds.map((id) => runProvider(quota, id, tickAt)));
+  // #1268: bounded provider concurrency (default 6, matching the
+  // OpenChamber CLI) instead of one Promise.all over the catalogue.
+  const runs = await mapWithConcurrency(providerIds, gatherConcurrency, (id) => runProvider(quota, id, tickAt));
   for (const fx of FILE_EXPORTS) runs.push(await runFileExport(fx));
   runs.push(await runTurso(tickAt));
+
+  // #1268: an errored run with no ok row of its own retains the
+  // provider's last-known ok entries from the previous tick instead
+  // of replacing them with fresh error rows (or with nothing, on a
+  // whole-fetch timeout). The heartbeat below still reports the run
+  // as an error, with its reason and the retained row count.
+  const prevEntries = await readPreviousEntries();
+  if (prevEntries.length) {
+    for (const run of runs) {
+      if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
+      const retained = lastKnownEntries(prevEntries, run.id);
+      if (retained.length) {
+        run.entries = markRetained(retained, tickAt);
+        run.retained = true;
+      }
+    }
+  }
   const entries = runs.flatMap((r) => r.entries);
 
   const perProvider: QuotaGatherHeartbeat["perProvider"] = {};
@@ -421,7 +457,7 @@ async function main(): Promise<number> {
       ...(run.error ? { error: run.error } : {}),
     };
     console.log(
-      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.error ? ` error=${run.error.slice(0, 140)}` : ""}`,
+      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${run.error.slice(0, 140)}` : ""}`,
     );
   }
 

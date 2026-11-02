@@ -17,18 +17,29 @@ Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                                 | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)                     | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + tailnet `amd-6.raptor-pumpkinseed.ts.net:7777`; no tunnel hostname | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + tailnet `amd-6.raptor-pumpkinseed.ts.net:8484`; no tunnel hostname | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route    | `aggregator/`         |
-| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`              | `dispatch/`           |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                    | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)                        | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route       | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`                 | `dispatch/`           |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as
 containers per the standing container rule. Grist was chosen over
 Baserow — the evaluation is in the design record.
+
+**Capability provenance:** the tables in this README are deployment
+definitions (what the stack configures), not observed runtime. The
+single per-facet matrix — live source, fallback, and deployment
+status for every aggregator facet, naming the comment projector and
+Pad honestly — is the "Capability provenance matrix" in
+[`aggregator/README.md`](aggregator/README.md), kept in step with the
+code and the NixOS module by
+`aggregator/scripts/check-provenance-matrix.ts`. One consequence
+worth stating here: the aggregator reads no Pad data — Pad is the
+planning layer only.
 
 Public address: **https://kaneo.security.cab** — a Cloudflare Tunnel
 (tunnel name `amd-6-pm-stack`, remotely managed) whose ingress maps
@@ -264,6 +275,10 @@ cd grist
   **Program roadmap**, table **Roadmap**, rows from
   `seed/roadmap.json` (the PM-stack phases, the cluster register
   headlines, the four-repo fleet).
+- **Choice-list edits:** use `grist/update-choice-options.py` (REST
+  columns PATCH, verified on v1.7.21 under the roadmap ACL) — never
+  `/apply` `UpdateColumn` (blocked by access rules) and never the
+  document SQLite. Runbook: `grist/CHOICE-OPTIONS.md` (#1287).
 
 ## Day-2 operations
 
@@ -296,7 +311,11 @@ developing-today/code` (dispatch).
   for the install itself.
 - **Move hosts:** copy this directory + `../secrets`, ensure the new
   host's age key is a SOPS recipient, run `./deploy.sh`, install the
-  unit, done. The tunnel is host-agnostic (token-based); only one
+  unit, done. Pad and Grist pick up the new host's tailnet address at
+  render time (`deploy.sh` writes `PM_STACK_TAILNET_IP` from
+  `tailscale ip -4`; set it in the environment to override, and with
+  no tailnet address both bind loopback only). The tunnel is
+  host-agnostic (token-based); only one
   connector should run at a time.
 
 ## Layout

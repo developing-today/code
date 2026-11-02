@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
 	"net/http"
 	"strconv"
@@ -268,6 +268,32 @@ type sseState struct {
 	answered bool
 }
 
+// maxSSERetryMs is the ceiling on the server-controlled SSE retry
+// interval, in milliseconds (#2368). The retry field is upstream input:
+// without a bound, one retry line can stall resume()/listen() for years,
+// and the millisecond-to-Duration conversion wraps for values above
+// ~9.22e12 ms, collapsing the wait to microseconds or a negative
+// duration. 60s keeps the bounded resume loop (5 attempts) within
+// 5 minutes worst case and matches the discoveryRetry scale already
+// used in defaults.
+const maxSSERetryMs = 60000
+
+// parseSSERetry converts an SSE retry field value (decimal
+// milliseconds) to a Duration. The clamp is applied to the millisecond
+// value BEFORE the conversion, so the multiplication can never wrap.
+// ok is false for the values the parser has always ignored —
+// non-numeric or negative — which leave the caller's default in place.
+func parseSSERetry(value string) (d time.Duration, ok bool) {
+	ms, err := strconv.Atoi(value)
+	if err != nil || ms < 0 {
+		return 0, false
+	}
+	if ms > maxSSERetryMs {
+		ms = maxSSERetryMs
+	}
+	return time.Duration(ms) * time.Millisecond, true
+}
+
 // readSSE delivers every message on a stream. reqID, when set, is the
 // request whose response the stream is expected to carry.
 //
@@ -315,8 +341,8 @@ func (t *HTTPTransport) readSSE(origin context.Context, r io.Reader, reqID json.
 				st.lastID = value
 			}
 		case field == "retry":
-			if ms, err := strconv.Atoi(value); err == nil && ms >= 0 {
-				st.retry = time.Duration(ms) * time.Millisecond
+			if d, ok := parseSSERetry(value); ok {
+				st.retry = d
 			}
 		}
 	}

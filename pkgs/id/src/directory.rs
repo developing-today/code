@@ -90,24 +90,11 @@ pub struct Account {
 
 /// A request the directory refuses, carried in the error so transports can
 /// choose a status without parsing messages.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum Refusal {
-    /// No valid credential, session or key was presented.
-    #[error("{0}")]
-    Unauthenticated(String),
-    /// The caller is known but may not do this.
-    #[error("{0}")]
-    Forbidden(String),
-    /// The named account, group or member does not exist.
-    #[error("{0}")]
-    NotFound(String),
-    /// The change clashes with what already exists.
-    #[error("{0}")]
-    Conflict(String),
-    /// Too many requests for the same thing in a short time.
-    #[error("{0}")]
-    RateLimited(String),
-}
+///
+/// The definition lives in `id-core` since the Phase 1 crate split
+/// (#3447) — leaf modules there (petname) produce it too — and it is
+/// re-exported here at its historical path.
+pub use id_core::Refusal;
 
 macro_rules! refuse {
     ($kind:ident, $($arg:tt)*) => {
@@ -538,7 +525,7 @@ impl Directory {
             let entry: DirectoryEntry = serde_json::from_str(line)
                 .with_context(|| format!("directory journal line {} is malformed", number + 1))?;
             directory
-                .apply(&entry)
+                .apply_replay(&entry)
                 .with_context(|| format!("directory journal line {} is refused", number + 1))?;
         }
         Ok(directory)
@@ -1455,12 +1442,12 @@ impl Directory {
         Ok((id.to_owned(), key))
     }
 
-    fn insert_account(&mut self, id: &str, name: &str) -> Result<()> {
+    fn insert_account(&mut self, id: &str, name: &str, refuse_format: bool) -> Result<()> {
         self.accounts.insert(
             id.to_owned(),
             Account {
                 id: id.to_owned(),
-                name: clean_name(name)?,
+                name: clean_name_mode(name, refuse_format)?,
                 verified: false,
                 keys: BTreeSet::new(),
                 emails: BTreeSet::new(),
@@ -1479,7 +1466,19 @@ impl Directory {
     }
 
     pub(crate) fn apply(&mut self, entry: &DirectoryEntry) -> Result<()> {
-        let next = self.checked(entry)?;
+        self.apply_mode(entry, true)
+    }
+
+    /// Replay a historical journal entry. Entries accepted before the
+    /// category-Cf refusal (#1778) may carry format characters; replaying
+    /// them must not refuse, or a world whose journal predates the fix
+    /// can never reopen. New writes still go through `apply` and refuse.
+    fn apply_replay(&mut self, entry: &DirectoryEntry) -> Result<()> {
+        self.apply_mode(entry, false)
+    }
+
+    fn apply_mode(&mut self, entry: &DirectoryEntry, refuse_format: bool) -> Result<()> {
+        let next = self.checked_mode(entry, refuse_format)?;
         if let Some(path) = &self.journal {
             Self::append(path, entry)?;
         }
@@ -1488,13 +1487,21 @@ impl Directory {
     }
 
     fn checked(&self, entry: &DirectoryEntry) -> Result<Self> {
+        self.checked_mode(entry, true)
+    }
+
+    fn checked_mode(&self, entry: &DirectoryEntry, refuse_format: bool) -> Result<Self> {
         let mut next = self.clone();
-        next.change(entry)?;
+        next.change_mode(entry, refuse_format)?;
         next.ensure_admins()?;
         Ok(next)
     }
 
     fn change(&mut self, entry: &DirectoryEntry) -> Result<()> {
+        self.change_mode(entry, true)
+    }
+
+    fn change_mode(&mut self, entry: &DirectoryEntry, refuse_format: bool) -> Result<()> {
         match entry {
             DirectoryEntry::AccountSignedUp { id, name, digest } => {
                 ensure_account_id(id)?;
@@ -1504,7 +1511,7 @@ impl Directory {
                     "account already exists"
                 );
                 let digest = hex_to_array::<32>(digest).context("malformed account digest")?;
-                self.insert_account(id, name)?;
+                self.insert_account(id, name, refuse_format)?;
                 self.digests.insert(id.clone(), digest);
             }
             DirectoryEntry::AccountKeyed { id, name } => {
@@ -1514,7 +1521,7 @@ impl Directory {
                     Conflict,
                     "that key already belongs to an account"
                 );
-                self.insert_account(id, name)?;
+                self.insert_account(id, name, refuse_format)?;
             }
             DirectoryEntry::AccountVerified { id } => {
                 self.accounts
@@ -1585,8 +1592,8 @@ impl Directory {
                     *id,
                     Group {
                         id: *id,
-                        name: clean_name(name)?,
-                        description: clean_description(description)?,
+                        name: clean_name_mode(name, refuse_format)?,
+                        description: clean_description_mode(description, refuse_format)?,
                         scopes: permissions(*scopes)?,
                         public: false,
                     },
@@ -1608,8 +1615,8 @@ impl Directory {
                 description,
                 scopes,
             } => {
-                let name = clean_name(name)?;
-                let description = clean_description(description)?;
+                let name = clean_name_mode(name, refuse_format)?;
+                let description = clean_description_mode(description, refuse_format)?;
                 let scopes = permissions(*scopes)?;
                 let group = self.groups.get_mut(id).context("no such group")?;
                 group.name = name;
@@ -1844,6 +1851,10 @@ fn permissions(bits: u8) -> Result<WorldScopes> {
 }
 
 fn clean_name(name: &str) -> Result<String> {
+    clean_name_mode(name, true)
+}
+
+fn clean_name_mode(name: &str, refuse_format: bool) -> Result<String> {
     let name = name.trim();
     ensure!(!name.is_empty(), "name must not be empty");
     ensure!(
@@ -1854,10 +1865,20 @@ fn clean_name(name: &str) -> Result<String> {
         !name.chars().any(char::is_control),
         "name must not contain control characters"
     );
+    if refuse_format {
+        ensure!(
+            !name.chars().any(crate::petname::is_format_char),
+            "name must not contain format characters"
+        );
+    }
     Ok(name.to_owned())
 }
 
 fn clean_description(description: &str) -> Result<String> {
+    clean_description_mode(description, true)
+}
+
+fn clean_description_mode(description: &str, refuse_format: bool) -> Result<String> {
     let description = description.trim();
     ensure!(
         description.chars().count() <= MAX_DESCRIPTION_CHARS,
@@ -1867,11 +1888,21 @@ fn clean_description(description: &str) -> Result<String> {
         !description.chars().any(|c| c.is_control() && c != '\n'),
         "description must not contain control characters"
     );
+    if refuse_format {
+        ensure!(
+            !description.chars().any(crate::petname::is_format_char),
+            "description must not contain format characters"
+        );
+    }
     Ok(description.to_owned())
 }
 
 pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.is_ascii() {
+    // Every byte must be an ASCII hex digit (#2517): u8::from_str_radix
+    // also accepts a leading '+', so without this gate a byte 0x00-0x0f
+    // has two accepted spellings ('0x' and '+x') and key strings stop
+    // being canonical.
+    if text.len() != N * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0_u8; N];
@@ -1898,6 +1929,61 @@ mod tests {
         let (credential, _) = directory.sign_up(name).unwrap();
         let id = directory.account_for(&credential).unwrap();
         (id, credential)
+    }
+
+    #[test]
+    fn test_cleaners_reject_format_characters_and_accept_plain_text() {
+        assert!(clean_name("Al\u{200B}ice").is_err());
+        assert!(clean_name("Alice\u{202E}Admin").is_err());
+        assert!(clean_description("Group\u{202E} description").is_err());
+
+        assert_eq!(clean_name("Alice").unwrap(), "Alice");
+        assert_eq!(
+            clean_description("Group description\nwith a newline").unwrap(),
+            "Group description\nwith a newline"
+        );
+    }
+
+    #[test]
+    fn replay_tolerates_pre_fix_format_characters_in_group_fields() {
+        // #1778 Codex P1: a journal written before the Cf refusal can
+        // legitimately contain format characters in a group name or
+        // description. Replay must reopen such a world, while new
+        // writes through the public path still refuse Cf.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::new();
+        let (ann, _) = account_into(&mut directory, &path, "Ann");
+        let (group, entry) = directory
+            .create_group(&ann, "Crew", "hello", all())
+            .unwrap();
+        Directory::append(&path, &entry).unwrap();
+
+        let historical = DirectoryEntry::GroupUpdated {
+            id: group,
+            name: "Crew\u{202E}X".to_owned(),
+            description: "hi\u{200B} there".to_owned(),
+            scopes: all().bits(),
+        };
+        let mut line = serde_json::to_string(&historical).unwrap();
+        line.push('\n');
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&line);
+        std::fs::write(&path, text).unwrap();
+
+        let replayed = Directory::replay(&path).unwrap();
+        assert_eq!(replayed.group(group).unwrap().name, "Crew\u{202E}X");
+        assert_eq!(
+            replayed.group(group).unwrap().description,
+            "hi\u{200B} there"
+        );
+
+        assert!(
+            directory
+                .create_group(&ann, "Bad\u{200B}Name", "hello", all())
+                .is_err(),
+            "new writes must still refuse format characters"
+        );
     }
 
     #[test]
@@ -2774,6 +2860,25 @@ mod tests {
     fn malformed_hex_is_refused() {
         assert!(hex_to_array::<32>("zz").is_none());
         assert!(hex_to_array::<32>(&"0".repeat(63)).is_none());
+    }
+
+    #[test]
+    fn plus_encoded_hex_is_refused() {
+        // #2517: '+' pairs decode identically to '0' pairs under
+        // from_str_radix, so they must be refused at the gate — the same
+        // bytes must have exactly one accepted spelling.
+        assert!(hex_to_array::<32>(&"+a".repeat(32)).is_none());
+        assert!(hex_to_array::<32>(&"+7".repeat(32)).is_none());
+        // A single '+' pair anywhere poisons the whole input.
+        let mut mixed = "0a".repeat(32);
+        mixed.replace_range(10..12, "+b");
+        assert!(hex_to_array::<32>(&mixed).is_none());
+        // Canonical hex in either case still decodes, identically.
+        assert_eq!(
+            hex_to_array::<32>(&"0a0b0c0d".repeat(8)),
+            hex_to_array::<32>(&"0A0B0C0D".repeat(8))
+        );
+        assert!(hex_to_array::<32>(&"0a0b0c0d".repeat(8)).is_some());
     }
 
     fn public_key(seed: u8) -> String {

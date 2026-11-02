@@ -11,11 +11,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/recipes"
-	"github.com/dezren39/mcpx/internal/runner"
-	"github.com/dezren39/mcpx/internal/searchpath"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/source"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/source"
 )
 
 // ScriptsDirNames are the per-project directories mcpx looks in for named

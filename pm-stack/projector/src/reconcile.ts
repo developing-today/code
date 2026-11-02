@@ -26,7 +26,14 @@ async function reconcileStream(
   stream: Stream,
   since: string | null,
   fetchFn: typeof fetch,
-): Promise<{ repo: string; stream: Stream; written: number; cursor: string | null; error?: string }> {
+): Promise<{
+  repo: string;
+  stream: Stream;
+  written: number;
+  cursor: string | null;
+  error?: string;
+  errors?: { pr: number; error: string }[];
+}> {
   const q = since ? `since=${encodeURIComponent(since)}&per_page=100&state=all` : "per_page=100&state=all";
   const written = { n: 0 };
   const mark = async (n: number) => {
@@ -98,44 +105,54 @@ async function reconcileStream(
   }
 
   if (stream === "reviews") {
-    // Reviews hang off PRs; pull PRs and their reviews. Guarded so a
-    // failure on one PR does not abort the whole stream.
+    // Reviews hang off PRs; pull PRs and their reviews. Guarded per-PR:
+    // a failure fetching or upserting one PR's reviews is recorded in
+    // `errors` and contained to that PR — later PRs still reconcile in
+    // the same run, `written` counts the upserts that actually landed,
+    // and the cursor advances over those upserted reviews. The failing
+    // PR is retried next poll: the stream re-reads the PR list
+    // unfiltered each time, so no PR is skipped permanently.
     const prs = await listResource<Record<string, any>>(auth, `repos/${repo}/pulls?per_page=100&state=all`, fetchFn);
     let cursor: string | null = null;
+    const errors: { pr: number; error: string }[] = [];
     for (const pr of prs) {
-      const reviews = await listResource<Record<string, any>>(
-        auth,
-        `repos/${repo}/pulls/${pr.number}/reviews?per_page=100`,
-        fetchFn,
-      );
-      for (const r of reviews) {
-        const ref = `${repo}#${pr.number}`;
-        const createdAt = r.submitted_at ?? r.created_at ?? null;
-        if (!createdAt) continue;
-        await store.upsertComment(db, {
-          id: String(r.id),
-          ref,
-          kind: "review",
-          author: r.user?.login ?? null,
-          body: typeof r.body === "string" ? r.body : null,
-          created_at: createdAt,
-          updated_at: null,
-          url: r.html_url ?? null,
-          path: null,
-          line: null,
-          diff_hunk: null,
-          review_state: r.state ?? null,
-          submitted_at: r.submitted_at ?? null,
-          commit_id: r.commit_id ?? null,
-          deleted: 0,
-          source_updated_at: createdAt,
-        });
-        await mark(1);
-        const u = r.submitted_at ?? r.created_at;
-        if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
+      try {
+        const reviews = await listResource<Record<string, any>>(
+          auth,
+          `repos/${repo}/pulls/${pr.number}/reviews?per_page=100`,
+          fetchFn,
+        );
+        for (const r of reviews) {
+          const ref = `${repo}#${pr.number}`;
+          const createdAt = r.submitted_at ?? r.created_at ?? null;
+          if (!createdAt) continue;
+          await store.upsertComment(db, {
+            id: String(r.id),
+            ref,
+            kind: "review",
+            author: r.user?.login ?? null,
+            body: typeof r.body === "string" ? r.body : null,
+            created_at: createdAt,
+            updated_at: null,
+            url: r.html_url ?? null,
+            path: null,
+            line: null,
+            diff_hunk: null,
+            review_state: r.state ?? null,
+            submitted_at: r.submitted_at ?? null,
+            commit_id: r.commit_id ?? null,
+            deleted: 0,
+            source_updated_at: createdAt,
+          });
+          await mark(1);
+          const u = r.submitted_at ?? r.created_at;
+          if (typeof u === "string" && (!cursor || u > cursor)) cursor = u;
+        }
+      } catch (e) {
+        errors.push({ pr: pr.number, error: String((e as Error).message) });
       }
     }
-    return { repo, stream, written: written.n, cursor };
+    return { repo, stream, written: written.n, cursor, ...(errors.length > 0 ? { errors } : {}) };
   }
 
   return { repo, stream, written: 0, cursor: null };

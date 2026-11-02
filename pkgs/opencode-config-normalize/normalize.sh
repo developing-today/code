@@ -32,25 +32,156 @@ import json, re, sys, pathlib
 path = pathlib.Path(sys.argv[1])
 raw = path.read_text()
 
-# Cheap JSONC -> JSON for the membership test only; we never write this back.
-probe = re.sub(r'^\s*//.*$', '', raw, flags=re.M)
-probe = re.sub(r',(\s*[}\]])', r'\1', probe)
+
+def jsonc_to_json(text):
+    # String-aware JSONC -> JSON (#3179): strip // line comments and
+    # /* */ block comments plus trailing commas, but never touch the
+    # contents of string literals — "//", "/*", ",}" and ",]" inside a
+    # string value are data, not comments or trailing commas. Used for
+    # the membership probe and the pre-write verification only; the
+    # repaired output is still spliced from the original text, so
+    # comments in the user's file are preserved.
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '/':
+            while i < n and text[i] != '\n':
+                i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '*':
+            end = text.find('*/', i + 2)
+            if end < 0:
+                raise ValueError('unterminated block comment')
+            i = end + 2
+            out.append(' ')
+            continue
+        out.append(c)
+        i += 1
+    s = ''.join(out)
+    out = []
+    i, n = 0, len(s)
+    in_str = False
+    while i < n:
+        c = s[i]
+        if in_str:
+            out.append(c)
+            if c == '\\' and i + 1 < n:
+                out.append(s[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            out.append(c)
+            i += 1
+            continue
+        if c == ',':
+            j = i + 1
+            while j < n and s[j] in ' \t\r\n':
+                j += 1
+            if j < n and s[j] in '}]':
+                i += 1
+                continue  # trailing comma: drop it
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+# JSONC -> JSON for the membership test only; we never write this back.
 try:
-    doc = json.loads(probe)
+    doc = json.loads(jsonc_to_json(raw))
 except Exception:
     sys.exit(0)  # unparseable: leave it alone rather than risk mangling it
 
 changed = False
 out = raw
 
-# plugins -> plugin
-if 'plugins' in doc and 'plugin' not in doc:
-    out, n = re.subn(r'"plugins"(\s*):', r'"plugin"\1:', out, count=1)
-    changed = changed or bool(n)
+def find_top_level_key(text, key):
+    # Index of the opening quote of the live top-level "key": token in
+    # text, skipping string contents and // /* */ comments (PR #4312
+    # review): a "key": lookalike inside a comment or a nested object
+    # must never be selected for a splice. Returns -1 when absent.
+    i, n = 0, len(text)
+    depth = 0
+    in_str = False
+    str_start = -1
+    while i < n:
+        c = text[i]
+        if in_str:
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+                if depth == 1 and text[str_start + 1:i] == key:
+                    j = i + 1
+                    while j < n and text[j] in ' \t\r\n':
+                        j += 1
+                    if j < n and text[j] == ':':
+                        return str_start
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            str_start = i
+            i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '/':
+            while i < n and text[i] != '\n':
+                i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '*':
+            end = text.find('*/', i + 2)
+            if end < 0:
+                return -1
+            i = end + 2
+            continue
+        if c in '{[':
+            depth += 1
+        elif c in '}]':
+            depth -= 1
+        i += 1
+    return -1
 
-# agents.build -> agent.build, then drop the now-empty agents block
+
+# plugins -> plugin: rename the live top-level key only. A raw-text
+# search can hit "plugins": inside an earlier comment and leave the
+# live key unrepaired (PR #4312 review).
+if 'plugins' in doc and 'plugin' not in doc:
+    at = find_top_level_key(out, 'plugins')
+    if at < 0:
+        sys.exit(1)  # live key not locatable: leave the file untouched
+    out = out[:at] + '"plugin"' + out[at + len('"plugins"'):]
+    changed = True
+
+# agents -> agent: fold the v2 `agents` map into `agent` (existing `agent`
+# wins per key). The `agents` block is dropped only once the merged map has
+# landed in an `agent` block, and the full-document verification before the
+# write below proves no entry was lost; if the splice/insert cannot be
+# done, exit 1 with the file left byte-identical — a repair tool must
+# never be a data-loss path (#2364).
 if 'agents' in doc:
     agents = doc.get('agents') or {}
+    has_agent = 'agent' in doc
     agent = doc.get('agent') or {}
     merged = {**agents, **agent}
     if merged != agent:
@@ -58,24 +189,61 @@ if 'agents' in doc:
         new_agent = '\n'.join(
             ('  ' + ln if i else ln) for i, ln in enumerate(new_agent.split('\n'))
         )
-        out, n = re.subn(
-            r'"agent"(\s*):\s*\{.*?\n  \}',
-            lambda m: '"agent"' + m.group(1) + ': ' + new_agent,
-            out, count=1, flags=re.S,
-        )
+        if has_agent:
+            out, n = re.subn(
+                r'"agent"(\s*):\s*\{.*?\n  \}',
+                lambda m: '"agent"' + m.group(1) + ': ' + new_agent,
+                out, count=1, flags=re.S,
+            )
+            if not n:
+                sys.exit(1)  # cannot splice: leave the file untouched
+            changed = True
+            out, n = re.subn(r'\n\s*"agents"\s*:\s*\{.*?\n  \},?', '', out, count=1, flags=re.S)
+            if not n:
+                sys.exit(1)
+        else:
+            # No `agent` block to splice into: replace the `agents` block
+            # itself with the merged `agent` block, keeping a trailing
+            # comma when the `agents` block had one.
+            def _insert(m):
+                comma = ',' if m.group(0).rstrip().endswith(',') else ''
+                return '"agent"' + m.group(1) + ': ' + new_agent + comma
+            out, n = re.subn(
+                r'"agents"(\s*):\s*\{.*?\n  \},?',
+                _insert,
+                out, count=1, flags=re.S,
+            )
+            if not n:
+                sys.exit(1)  # unrecognised agents shape: leave untouched
+            changed = True
+    else:
+        # Every agents entry is already present in `agent` verbatim, so
+        # dropping the duplicate block cannot lose anything. If the drop
+        # shape misses, verification below refuses the write.
+        out, n = re.subn(r'\n\s*"agents"\s*:\s*\{.*?\n  \},?', '', out, count=1, flags=re.S)
         changed = changed or bool(n)
-    out, n = re.subn(r'\n\s*"agents"\s*:\s*\{.*?\n  \},?', '', out, count=1, flags=re.S)
-    changed = changed or bool(n)
 
 if not changed:
     sys.exit(0)
 
-# Never write something we cannot parse.
-verify = re.sub(r'^\s*//.*$', '', out, flags=re.M)
-verify = re.sub(r',(\s*[}\]])', r'\1', verify)
+# Never write something we cannot parse — and never write a result whose
+# parsed document differs from the intended one. The intended document is
+# `doc` with the renames/folds above applied; comparing the whole document
+# is what proves no `agents` entry was dropped on the floor (#2364).
 try:
-    json.loads(verify)
+    parsed = json.loads(jsonc_to_json(out))
 except Exception:
+    sys.exit(1)
+
+expected = dict(doc)
+if 'plugins' in expected and 'plugin' not in doc:
+    expected['plugin'] = expected.pop('plugins')
+if 'agents' in expected:
+    merged_agent = {**(expected.get('agents') or {}), **(expected.get('agent') or {})}
+    del expected['agents']
+    if merged_agent or 'agent' in doc:
+        expected['agent'] = merged_agent
+if parsed != expected:
     sys.exit(1)
 
 tmp = path.with_suffix(path.suffix + '.normalize-tmp')

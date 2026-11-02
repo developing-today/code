@@ -11,7 +11,26 @@ import (
 )
 
 // setenv adds variables to every later invocation in this environment.
-func (e *env) setenv(pairs ...string) { e.envVars = append(e.envVars, pairs...) }
+//
+// A later setenv for the same variable replaces the earlier one: the
+// settings layer refuses to resolve one setting claimed by two MCPX_
+// variables with different values (the environment has no order), so a
+// test that deliberately opts back in to policy.write=ask after newEnv
+// set allow must not leave both in the list.
+func (e *env) setenv(pairs ...string) {
+	for _, p := range pairs {
+		name := p
+		if i := strings.IndexByte(p, '='); i >= 0 {
+			name = p[:i]
+		}
+		for j := len(e.envVars) - 1; j >= 0; j-- {
+			if e.envVars[j] == name || strings.HasPrefix(e.envVars[j], name+"=") {
+				e.envVars = append(e.envVars[:j], e.envVars[j+1:]...)
+			}
+		}
+	}
+	e.envVars = append(e.envVars, pairs...)
+}
 
 func TestDiagnoseNamesTheArgumentAndTheMinimumThatWorks(t *testing.T) {
 	// The whole claim of the deterministic diagnostic: not "the arguments
