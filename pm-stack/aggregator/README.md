@@ -459,11 +459,16 @@ the load-bearing claims against the code and configuration (see
 | **Projector** (service) | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it |
 | **Pad** (service) | — (the aggregator reads no Pad data; Pad is not a facet source) | — | **Deployed as the planning layer only**: Pad container (compose, `pm-stack/pad/`); named here so its absence from the facet rows is a stated fact, not an omission |
 
-Observed runtime (checked 2026-11-02 by the task 4902 worker):
-`systemctl --user is-active pm-projector pm-aggregator` → both
-`active`; the projector's `/health` answered `ok` with 8,134 items
-and 41,169 comments projected. That is a dated observation, not a
-standing claim — re-run the commands before citing it as current.
+Observed runtime (checked 2026-11-02T06:04:56.726Z by task 6104 via the
+aggregator's `/api/health` status surface): Pad was `up` (HTTP 200), while
+the projector was `down` (probe timed out after 1.5s); the aggregator
+reported the Comments facet as `fixtures`, so live comment projection was
+not observed. This supersedes the earlier task 4902 read from the same
+date, which found both units active and the projector's `/health` healthy
+with 8,134 items and 41,169 comments. These are point-in-time observations,
+not standing health claims. The deployment cells above describe declared
+configuration; they do not imply that a service is currently healthy or
+that its live data is reaching the aggregator.
 
 ### Keeping the matrix honest
 
