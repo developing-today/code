@@ -127,7 +127,14 @@ impl Reference {
                     }
                     surface.push(next);
                 }
-                ']' if chars.next() == Some('(') => {
+                // Peek, never consume, to test for the delimiter: an
+                // unescaped ']' that is not followed by '(' is a literal
+                // label character (documented choice for #4465: the surface
+                // is kept intact rather than refusing the parse), so the
+                // character after it must not be swallowed by the guard.
+                ']' if chars.peek() == Some(&'(') => {
+                    // Consume the '(' the peek just confirmed.
+                    chars.next();
                     let rest: String = chars.collect();
                     // Own the hex slice: `rest` is dropped at the end of
                     // this match arm, so the loop value cannot borrow it.
@@ -850,5 +857,28 @@ mod tests {
         assert_eq!(resolution.candidates.len(), 1);
         assert_eq!(resolution.candidates[0].match_kind, MatchKind::Prefix);
         assert_eq!(resolution.candidates[0].provenance.author, author(2));
+    }
+
+    #[test]
+    fn from_markdown_keeps_the_character_after_an_unescaped_closing_bracket() {
+        // Regression for #4465: the delimiter guard used to consume the
+        // character after an unescaped ']' while testing for '(', so
+        // "[a]b](id://...)" parsed to surface "a]" - the 'b' silently dropped.
+        let target_id = Hash::digest(b"target");
+        let text = format!("[a]b](id://{})", target_id.to_hex());
+        let parsed = Reference::from_markdown(&text, Sigil::Topic).unwrap();
+        assert_eq!(parsed.target_id, target_id);
+        assert_eq!(parsed.surface, "a]b");
+    }
+
+    #[test]
+    fn from_markdown_keeps_an_unescaped_closing_bracket_at_the_label_end() {
+        // Same regression at the label's end: the first ']' is a literal,
+        // the second ']' opens the real "](id://...)" delimiter.
+        let target_id = Hash::digest(b"target");
+        let text = format!("[a]](id://{})", target_id.to_hex());
+        let parsed = Reference::from_markdown(&text, Sigil::Topic).unwrap();
+        assert_eq!(parsed.target_id, target_id);
+        assert_eq!(parsed.surface, "a]");
     }
 }

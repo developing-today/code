@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -479,10 +478,15 @@ func (s *Server) handleArtifactList(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	limit := defaults.ArtifactListLimit
-	if v := q.Get("limit"); v != "" {
-		if n, cerr := strconv.Atoi(v); cerr == nil {
-			limit = n
+	// A present-but-unparseable limit is a 400, not the default (#3485 —
+	// this handler was the seventh member of the class, found by the
+	// registry guard in numeric_params_test.go).
+	if _, present := q["limit"]; present {
+		n, ok := parseOptionalIntQuery(w, q, "limit")
+		if !ok {
+			return
 		}
+		limit = n
 	}
 	list, err := store.List(artifacts.Filter{
 		Run: q.Get("run"), Session: q.Get("session"), Limit: limit,

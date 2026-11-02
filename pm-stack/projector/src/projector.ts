@@ -46,6 +46,12 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
     ? obj.labels.map((l: any) => (typeof l === "string" ? l : l?.name)).filter(Boolean)
     : [];
   const assignees = Array.isArray(obj.assignees) ? obj.assignees.map((a: any) => a?.login).filter(Boolean) : [];
+  // Merge fields (draft / merged / merged_at) exist only on PR-shaped
+  // payloads. Issue-shaped payloads (the `issue` object of issues and
+  // issue_comment events, even when it describes a PR) carry none of them:
+  // emit null so the store preserves the stored values instead of
+  // resetting them to defaults (#4158).
+  const carriesMergeFields = "merged" in obj || "merged_at" in obj || "draft" in obj;
   return {
     ref: itemRef(repo, number),
     repo,
@@ -56,15 +62,15 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
     title: obj.title ?? "",
     state: obj.state === "closed" ? "closed" : "open",
     state_reason: iso(obj.state_reason),
-    draft: obj.draft ? 1 : 0,
-    merged: obj.merged ? 1 : 0,
+    draft: carriesMergeFields ? (obj.draft ? 1 : 0) : null,
+    merged: carriesMergeFields ? (obj.merged ? 1 : 0) : null,
     author: iso(obj.user?.login),
     labels: jstr(labels),
     assignees: jstr(assignees),
     created_at: createdAt,
     updated_at: updatedAt,
     closed_at: iso(obj.closed_at),
-    merged_at: iso(obj.merged_at),
+    merged_at: carriesMergeFields ? iso(obj.merged_at) : null,
     source_updated_at: updatedAt,
   };
 }
