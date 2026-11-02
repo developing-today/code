@@ -142,6 +142,10 @@ const SAAS_MARKERS = [
   // charges to these are exactly the unmatched SaaS/AI charges the
   // hub exists to surface.
   "META",
+  // Known Meta billing descriptor (METAPAY*...): previously matched via
+  // the META substring; listed explicitly so token-boundary matching
+  // keeps surfacing it as unmatched SaaS when Meta is not in the catalog.
+  "METAPAY",
   "CLINE",
   "OPENCODE",
   "OPENDESIGN",

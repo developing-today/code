@@ -101,6 +101,7 @@ describe("matchCharges", () => {
     expect(isSaasLooking(normalizeMerchantName("METAMUCIL"))).toBe(false);
     expect(isSaasLooking(normalizeMerchantName("METAL ROOFING LLC"))).toBe(false);
     expect(isSaasLooking(normalizeMerchantName("META PAY"))).toBe(true);
+    expect(isSaasLooking(normalizeMerchantName("METAPAY*UC5DPA22Y4 US"))).toBe(true);
   });
 
   test("Cursor.com still matches the Cursor service", () => {
