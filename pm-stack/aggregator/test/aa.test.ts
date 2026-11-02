@@ -702,3 +702,30 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(section.catalog?.find((e) => e.id === "claude-code/claude-haiku-5-5")?.disabled).toBe(true);
   });
 });
+
+describe("aa chart expand + zoom/pan (#3298)", () => {
+  test("every server-rendered explorer chart carries the full tool set", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    for (const id of ["xpl-c1", "xpl-c2", "xpl-c3", "xpl-c4", "xpl-c5", "xpl-c6"]) {
+      expect(html).toContain(`data-tools="${id}"`);
+      for (const act of ["expand", "in", "out", "reset"]) {
+        expect(html).toContain(`data-zact="${act}" data-zfor="${id}"`);
+      }
+    }
+  });
+
+  test("the explorer script ships the uniform enhancer for dynamic charts too", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    // band scatters are built client-side; the enhancer must target
+    // their containers and re-run after renders.
+    expect(html).toContain("function enhanceCharts()");
+    expect(html).toContain("#xpl-recs svg, #xpl-bandgroups svg");
+    expect(html).toContain("chart-expanded");
+    expect(html).toContain("data-zbound");
+    expect(html).toContain(".chart-expanded { position: fixed");
+    // the emitted script still parses (same check as #1215)
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+  });
+});
