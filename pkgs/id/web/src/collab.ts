@@ -117,6 +117,12 @@ export interface CollabConnection {
 
 export type StatusCallback = (status: "connecting" | "connected" | "disconnected" | "error") => void;
 
+/** Build the collab WebSocket URL with docId kept in one encoded path segment. */
+export function collabWebSocketUrl(protocol: string, host: string, docId: string): string {
+  const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
+  return `${wsProtocol}//${host}/ws/collab/${encodeURIComponent(docId)}`;
+}
+
 /**
  * Initialize a collaborative editing connection.
  * This connects to the WebSocket first, receives the server version and document,

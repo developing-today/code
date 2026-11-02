@@ -1,6 +1,12 @@
 import { Packr, Unpackr } from "msgpackr";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_STEPS_MESSAGE_BYTES, MAX_STEPS_PER_MESSAGE, initCollab, stepBatch } from "./collab";
+import {
+  collabWebSocketUrl,
+  MAX_STEPS_MESSAGE_BYTES,
+  MAX_STEPS_PER_MESSAGE,
+  initCollab,
+  stepBatch,
+} from "./collab";
 
 // Same MessagePack configuration as collab.ts
 const packr = new Packr({ useRecords: false, structuredClone: true });
@@ -96,6 +102,32 @@ describe("initCollab token handling (#1463)", () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
     document.body.innerHTML = "";
+  });
+
+  it.each([
+    "plain.md",
+    "a b.md",
+    "résumé.md",
+    "folder/note.md",
+    "a#b?c.md",
+    "a%20b.md",
+    "100%.md",
+  ])("encodes the collab path segment and preserves the filename query for %s", (docId) => {
+    const connection = track(initCollab(
+      collabWebSocketUrl("https:", "example.test", docId),
+      makeContainer(),
+      docId,
+      docId,
+      null,
+    ));
+
+    const url = new URL(FakeWebSocket.instances[0].url);
+    const segment = url.pathname.slice("/ws/collab/".length);
+    expect(url.protocol).toBe("wss:");
+    expect(segment).toBe(encodeURIComponent(docId));
+    expect(decodeURIComponent(segment)).toBe(docId);
+    expect(url.searchParams.get("filename")).toBe(docId);
+    connection.disconnect();
   });
 
   it("reconnect AUTH sends the AUTH_OK refreshed token, not the init token", () => {
