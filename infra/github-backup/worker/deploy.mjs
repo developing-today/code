@@ -69,7 +69,9 @@ for (let i = 0; i < args.length; i++) {
   } else if (arg === "--deploy-version") {
     if (deployVersion !== null) usageError("duplicate argument: --deploy-version");
     const value = args[i + 1];
-    if (value === undefined) usageError("--deploy-version needs a version id");
+    if (value === undefined || value === "") {
+      usageError("--deploy-version needs a version id");
+    }
     if (value.startsWith("-")) {
       usageError(`--deploy-version needs a version id, got flag-like value: ${value}`);
     }

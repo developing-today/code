@@ -169,11 +169,16 @@ for args in (["some-positional"], ["--dry-run", "extra"], ["--deploy-version", "
     check(f"{label}: error names the offender", args[-1] in proc.stderr)
     check(f"{label}: no stub call at all", calls == "")
 
-# 3. missing or flag-like --deploy-version values are rejected.
+# 3. missing, empty, or flag-like --deploy-version values are rejected.
 proc, calls = run_simple(["--deploy-version"])
 check("missing value: exit 2", proc.returncode == 2)
 check("missing value: error names --deploy-version", "--deploy-version" in proc.stderr)
 check("missing value: no stub call at all", calls == "")
+
+proc, calls = run_simple(["--deploy-version", ""])
+check("empty value: exit 2", proc.returncode == 2)
+check("empty value: error names --deploy-version", "--deploy-version" in proc.stderr)
+check("empty value: no stub call at all", calls == "")
 
 for flaglike in ("--dry-run", "--bogus-flag"):
     proc, calls = run_simple(["--deploy-version", flaglike])
