@@ -2313,6 +2313,10 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     // long as the opener — a shorter fence line inside a longer
     // fence is literal content, not the end of the block (#1707).
     let mut fence: Option<(u8, usize)> = None;
+    // Whether the current line is a fence line (opens, closes, or is
+    // checked against an open fence): its backticks are fence syntax,
+    // never an inline code span opener.
+    let mut fence_line = false;
     // The open inline code span's backtick run length, when inside
     // one: span content is literal text, so a destination-shaped
     // string inside it must not be protected (#1707).
@@ -2343,11 +2347,13 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             } else {
                 None
             };
+            let was_in_fence = fence.is_some();
             match (fence, fence_run) {
                 (None, Some(open)) => fence = Some(open),
                 (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
                 _ => {}
             }
+            fence_line = fence_run.is_some() && (was_in_fence || fence.is_some());
             // An indented code block starts on a 4+ indented line
             // after a blank line (or at the start, or continuing an
             // indented block); a 4+ indented line inside a paragraph
@@ -2356,7 +2362,7 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
             prev_line_blank = line_blank;
         }
-        let literal_line = fence.is_some() || in_indented;
+        let literal_line = fence.is_some() || in_indented || fence_line;
         if !literal_line && span.is_none() && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
             let lt = if markdown[i..].starts_with("](<") {
                 i + 2
