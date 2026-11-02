@@ -1,7 +1,6 @@
 package settings_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
@@ -20,30 +19,12 @@ func lookupSetting(t *testing.T, path string) settings.Setting {
 	return *s
 }
 
-// The three settings below are passed directly to time.NewTicker, which
-// panics on a non-positive period, so Validate must refuse zero and
-// negative values for them (#3467). Removing the tickerIntervalSettings
-// branch in value.go must fail this test.
-func TestTickerIntervalsRefuseNonPositiveValues(t *testing.T) {
-	for _, path := range []string{"daemon.reapInterval", "daemon.saveInterval", "http.ssePing"} {
-		s := lookupSetting(t, path)
-		for _, raw := range []string{"0s", "-5s", "0", "-1ns"} {
-			err := settings.Validate(s, raw)
-			if err == nil {
-				t.Errorf("%s=%q: want a refusal for a non-positive ticker interval", path, raw)
-				continue
-			}
-			if !strings.Contains(err.Error(), path) {
-				t.Errorf("%s=%q: refusal should name the setting, got %v", path, raw, err)
-			}
-		}
-		for _, raw := range []string{"1ms", "30s", s.Default} {
-			if err := settings.Validate(s, raw); err != nil {
-				t.Errorf("%s=%q: want acceptance for a positive interval, got %v", path, raw, err)
-			}
-		}
-	}
-}
+// The refusal behaviour for the ticker settings themselves is covered
+// by TestEveryTickerIntervalSettingRefusesNonPositiveValues in
+// tickerinterval_internal_test.go, which iterates the authoritative
+// tickerIntervalSettings table (present and future members). The tests
+// here pin the other half of the contract: the durations that are NOT
+// ticker intervals keep their semantics.
 
 // Positivity is per-setting, not blanket: daemon.idleExit=0s means
 // "never exit" and must stay valid (#3467).
