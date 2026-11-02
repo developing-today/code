@@ -1011,3 +1011,97 @@ fn state_only_divergent_copies_resolve_to_the_most_advanced_state() {
     assert_eq!(store.get(11).expect("get canonicalized"), Some(posted));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- #4578 / PR #4622 Codex re-review: alias cleanup (P1) and
+// --- canonically blocked identities in recovery listing (P2)
+
+#[test]
+fn put_never_deletes_a_filesystem_alias_of_the_canonical_file() {
+    // A stray path that NAMES the canonical file (here a symlink to
+    // it; on a case-insensitive filesystem the uppercase-hex spelling
+    // of the canonical name is the same situation) must never be a
+    // cleanup target: after the state-advancing put renames the new
+    // record over the canonical path, the alias resolves to the NEW
+    // record, so removing it would delete the record just persisted
+    // while `put` reports success.
+    let (dir, mut store) = empty_file_store("alias4578");
+    let recorded = bare_record(
+        10,
+        vec![funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&recorded).expect("seed recorded");
+    let canonical = dir.join(canonical_name(10));
+    let alias = dir.join(format!("{:032X}.json", 10));
+    std::os::unix::fs::symlink(&canonical, &alias).expect("plant alias of canonical");
+
+    let mut submitted = recorded.clone();
+    submitted.state = IntentState::Submitted;
+    store.put(&submitted).expect("state-advancing put over an alias");
+
+    assert_eq!(
+        store.get(10).expect("get after alias put"),
+        Some(submitted),
+        "the persisted record survives the cleanup pass"
+    );
+    assert!(
+        alias.exists(),
+        "the alias itself is left in place, never deleted as a stray copy"
+    );
+    // The listing still collapses the alias to the one conversion.
+    let listed = store.unresolved().expect("listing with an alias");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].conversion_id, 10);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn canonically_blocked_conversion_is_skipped_and_reported_during_listing() {
+    // Conversion 1's only record sits in stray.json, while conversion
+    // 1's canonical file stores conversion 2's record: get(1)/put(1)
+    // fail closed on the occupancy, so a listing that yielded
+    // conversion 1 would hand recovery a record whose
+    // state-advancing put errors out and aborts the whole scan. The
+    // listing must skip and report the blocked conversion instead,
+    // and still reconcile the unblocked one.
+    let (dir, mut store) = empty_file_store("blocked4578");
+    let blocked = bare_record(
+        1,
+        vec![funding_transfer(9501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&blocked).expect("seed blocked record");
+    let stray = dir.join("stray.json");
+    std::fs::rename(dir.join(canonical_name(1)), &stray).expect("strand blocked record");
+    let occupant = bare_record(
+        2,
+        vec![funding_transfer(9502, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&occupant).expect("seed occupant record");
+    std::fs::rename(dir.join(canonical_name(2)), dir.join(canonical_name(1)))
+        .expect("occupy conversion 1's canonical file");
+
+    let listed = store
+        .unresolved()
+        .expect("listing with a blocked conversion");
+    assert_eq!(
+        listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(),
+        vec![2],
+        "only the unblocked conversion is listed"
+    );
+    let skipped = store.unreadable_entries();
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].path, dir.join(canonical_name(1)));
+    assert!(
+        skipped[0].reason.contains("blocked") && skipped[0].reason.contains("conversion 2"),
+        "unexpected skip reason: {}",
+        skipped[0].reason
+    );
+
+    // Recovery reconciles the unblocked conversion and never touches
+    // the blocked conversion's stranded copy.
+    let mut backend = funded_ledger();
+    let outcomes = reconcile(&mut backend, &mut store, RecoveryPolicy::Abandon)
+        .expect("reconcile past the blocked conversion");
+    assert_eq!(outcomes, vec![(2, ReconcileOutcome::Abandoned)]);
+    assert!(stray.exists(), "the blocked record's copy stays on disk");
+    let _ = std::fs::remove_dir_all(&dir);
+}

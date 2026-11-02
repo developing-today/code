@@ -181,6 +181,14 @@ impl IntentStore for InMemoryIntentStore {
 /// only under a non-canonical name is still the conversion's record;
 /// different records under one conversion_id fail closed with a
 /// diagnostic naming the paths (see the method implementations).
+/// Two refinements from the Codex re-review of PR #4622: a path that
+/// is a filesystem ALIAS of the canonical file (another spelling of
+/// the same file on a case-insensitive filesystem, a symlink, a
+/// hardlink) is the canonical file, never a stray copy to clean up;
+/// and a conversion whose canonical file currently stores ANOTHER
+/// conversion's record is blocked — `unresolved` skips and reports
+/// it like a conflicting copy instead of handing recovery a record
+/// whose state-advancing `put` is guaranteed to fail.
 pub struct FileIntentStore {
     dir: PathBuf,
     /// Entries skipped by the most recent `unresolved` listing
@@ -283,7 +291,9 @@ impl IntentScan {
     /// restore), and that occupancy is a fact about the path, not
     /// about the content identity `copies_for` groups by.
     fn entry_at(&self, path: &Path) -> Option<&ScannedIntent> {
-        self.entries.iter().find(|entry| entry.path == path)
+        self.entries
+            .iter()
+            .find(|entry| entry.path == path || same_file(&entry.path, path))
     }
 
     /// The one distinct record among `copies`, or `None` when the
@@ -312,6 +322,32 @@ impl IntentScan {
         }
         Some(resolved)
     }
+}
+
+/// True when two paths name the same filesystem object (Codex P1
+/// on PR #4622): on a case-insensitive filesystem the canonical
+/// file's uppercase-hex spelling is the SAME file, and a symlink or
+/// hardlink to it resolves to it too. Lexical path comparison
+/// misses all of these, and treating such an alias as a stray copy
+/// is destructive: after `put` renames the new record over the
+/// canonical path, removing the "stray" alias would delete the
+/// record just persisted. Canonicalisation covers spellings the OS
+/// itself resolves to one path; device+inode covers hardlinks and
+/// symlinks whose canonical paths still differ in spelling.
+fn same_file(a: &Path, b: &Path) -> bool {
+    if let (Ok(canon_a), Ok(canon_b)) = (fs::canonicalize(a), fs::canonicalize(b)) {
+        if canon_a == canon_b {
+            return true;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(meta_a), Ok(meta_b)) = (fs::metadata(a), fs::metadata(b)) {
+            return meta_a.dev() == meta_b.dev() && meta_a.ino() == meta_b.ino();
+        }
+    }
+    false
 }
 
 /// The fail-closed error for a canonical file that currently stores
@@ -423,6 +459,16 @@ impl IntentStore for FileIntentStore {
         // a DIFFERENT record never reach this point (refused above),
         // and unreadable entries are never deleted (#4125).
         for stray in &stray_paths {
+            // Alias guard (Codex P1 on PR #4622): a "stray" that is
+            // the canonical file under another spelling or link is
+            // not a superseded copy — since the rename above, it
+            // names the record just persisted, so removing it would
+            // delete the write-ahead record `put` just made durable.
+            // Leave it in place; listings group by content identity,
+            // so the alias never double-counts the conversion.
+            if same_file(stray, &canonical) {
+                continue;
+            }
             fs::remove_file(stray).map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -510,6 +556,30 @@ impl IntentStore for FileIntentStore {
         }
         let mut records = Vec::new();
         for (conversion_id, copies) in by_conversion {
+            // Canonical occupancy (Codex P2 on PR #4622): when this
+            // conversion's canonical file currently stores ANOTHER
+            // conversion's record, `get` and `put` for this
+            // conversion fail closed by design — so a listing that
+            // still yields the record hands recovery an entry whose
+            // state-advancing `put` is guaranteed to error out and
+            // abort the whole scan. Skip the blocked conversion and
+            // report it through `unreadable_entries()` (the record's
+            // own copies stay on disk for an operator), exactly like
+            // a conflicting copy below; every other conversion still
+            // reconciles.
+            let canonical = self.path_for(conversion_id);
+            if let Some(occupant) = scan.entry_at(&canonical) {
+                if occupant.record.conversion_id != conversion_id {
+                    skipped.push(UnreadableIntent {
+                        path: canonical,
+                        reason: format!(
+                            "conversion {conversion_id} is blocked: its canonical                              intent file currently stores conversion {}'s record,                              so the conversion was skipped during recovery listing;                              reconcile the file manually (its content names the                              conversion it belongs to)",
+                            occupant.record.conversion_id
+                        ),
+                    });
+                    continue;
+                }
+            }
             match IntentScan::distinct(&copies) {
                 Some(record) => {
                     if record.state.is_unresolved() {
