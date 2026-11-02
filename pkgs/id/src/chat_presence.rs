@@ -47,7 +47,7 @@
 //! the table: [`Liveness::Live`] when a heartbeat for that channel is within TTL,
 //! [`Liveness::Offline`] when the member was never seen or its heartbeat went stale.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -75,6 +75,29 @@ pub const TYPING_TTL_SECS: u64 = 12;
 /// The most channels one heartbeat may name. Bounds the frame size and the work a
 /// single received heartbeat can make the table do.
 pub const MAX_HEARTBEAT_CHANNELS: usize = 64;
+
+/// Canonicalizes channel claims consistently for both locally built and received
+/// heartbeats: first-seen deduplication, optional receipt-side membership
+/// filtering, then a cap on distinct channels.
+fn canonicalize_channels(
+    channels: impl IntoIterator<Item = Hash>,
+    mut is_member: impl FnMut(&Hash) -> bool,
+) -> Vec<Hash> {
+    let mut seen = HashSet::new();
+    let mut canonical = Vec::new();
+    for channel in channels {
+        if !seen.insert(channel.clone()) {
+            continue;
+        }
+        if is_member(&channel) {
+            canonical.push(channel);
+            if canonical.len() == MAX_HEARTBEAT_CHANNELS {
+                break;
+            }
+        }
+    }
+    canonical
+}
 
 /// Frame prefix distinguishing presence frames from peer-discovery announcements on
 /// the shared gossip topic. A frame without this prefix is not a presence frame, and
@@ -108,14 +131,7 @@ impl PresenceHeartbeat {
     /// claims for channels the heartbeat does not also claim presence in.
     #[must_use]
     pub fn new(node: AuthorKey, channels: Vec<Hash>, typing: Vec<Hash>, ts: u64) -> Self {
-        let mut unique: Vec<Hash> = Vec::new();
-        for channel in channels {
-            if !unique.contains(&channel) {
-                unique.push(channel);
-            }
-        }
-        unique.truncate(MAX_HEARTBEAT_CHANNELS);
-        let channels = unique;
+        let channels = canonicalize_channels(channels, |_| true);
         let typing: Vec<Hash> = typing
             .into_iter()
             .filter(|channel| channels.contains(channel))
@@ -270,13 +286,9 @@ impl PresenceTable {
             return false;
         }
         let node = heartbeat.node;
-        let channels: Vec<Hash> = heartbeat
-            .channels
-            .iter()
-            .filter(|channel| is_member(&node, channel))
-            .take(MAX_HEARTBEAT_CHANNELS)
-            .cloned()
-            .collect();
+        let channels = canonicalize_channels(heartbeat.channels.iter().cloned(), |channel| {
+            is_member(&node, channel)
+        });
         let typing: Vec<Hash> = heartbeat
             .typing
             .iter()
@@ -743,5 +755,60 @@ mod tests {
             restarted.liveness_at(&alice, &chan, 8_000),
             Liveness::Offline
         );
+    }
+
+    #[test]
+    fn update_at_dedups_wire_channels_before_the_cap() {
+        // #4404: a decoded wire heartbeat may repeat a channel (the constructor
+        // dedups, but the wire carries the raw signed list). Duplicates must not
+        // displace distinct channels the heartbeat genuinely claims.
+        let table = PresenceTable::new();
+        let alice = key(1);
+        let a = channel("a");
+        let b = channel("b");
+        let mut raw = vec![a; MAX_HEARTBEAT_CHANNELS];
+        raw.push(b);
+        let wire = PresenceHeartbeat {
+            node: alice,
+            channels: raw,
+            typing: Vec::new(),
+            ts: 4_100,
+            signature: Vec::new(),
+        };
+        // Through the encode/decode round trip, as the gossip plane carries it.
+        let frame = encode_frame(&wire);
+        let decoded = decode_frame(&frame).expect("presence frame decodes");
+        assert!(table.update_at(decoded, 4_100, &|_, _| true));
+        assert_eq!(table.liveness_at(&alice, &a, 4_100), Liveness::Live);
+        assert_eq!(
+            table.liveness_at(&alice, &b, 4_100),
+            Liveness::Live,
+            "[A x64, B] must keep B live: duplicates fill the cap, not displace B"
+        );
+    }
+
+    #[test]
+    fn update_at_keeps_every_distinct_channel_past_duplicate_fill() {
+        // [A x63, B, C]: after dedup only three distinct channels exist, so all
+        // three survive the cap — C must not be truncated away.
+        let table = PresenceTable::new();
+        let alice = key(1);
+        let (a, b, c) = (channel("a"), channel("b"), channel("c"));
+        let mut raw = vec![a; MAX_HEARTBEAT_CHANNELS - 2];
+        raw.push(b);
+        raw.push(c);
+        let wire = PresenceHeartbeat {
+            node: alice,
+            channels: raw,
+            typing: Vec::new(),
+            ts: 4_200,
+            signature: Vec::new(),
+        };
+        let frame = encode_frame(&wire);
+        let decoded = decode_frame(&frame).expect("presence frame decodes");
+        assert!(table.update_at(decoded, 4_200, &|_, _| true));
+        for chan in [a, b, c] {
+            assert_eq!(table.liveness_at(&alice, &chan, 4_200), Liveness::Live);
+        }
     }
 }
