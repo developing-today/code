@@ -699,6 +699,7 @@ pub async fn ws_collab_handler(
                 state.identity,
             )
         })
+}
 
 async fn store_and_broadcast_cursor(
     doc: &Document,
