@@ -73,7 +73,10 @@ use crate::discovery::{PeerAnnouncement, PeerDiscovery};
 use crate::fileops::{FileOpError, FileOps};
 use crate::tags::TagStore;
 
-/// Maximum time spent reading, handling, and responding to one meta request.
+/// Maximum time for one network phase (request read or response write) of a
+/// meta stream. The phases are bounded separately on purpose: once a request
+/// has been fully read, its handler runs to completion, so the deadline can
+/// never cancel a non-transactional mutation (e.g. a rename) midway through.
 const META_STREAM_DEADLINE: Duration = Duration::from_secs(60);
 
 /// Concurrent meta requests allowed on one connection.
@@ -751,18 +754,39 @@ impl MetaProtocol {
         mut recv: iroh::endpoint::RecvStream,
         stream_deadline: Duration,
     ) {
-        let result = tokio::time::timeout(stream_deadline, async {
-            let resp = match recv.read_to_end(MAX_REQUEST_BYTES).await {
-                Ok(buf) => match postcard::from_bytes::<MetaRequest>(&buf) {
-                    Ok(req) => self.handle(&remote, req).await,
-                    Err(error) => MetaResponse::Error {
-                        message: format!("malformed request: {error}"),
-                    },
-                },
-                Err(error) => MetaResponse::Error {
-                    message: format!("could not read request: {error}"),
-                },
-            };
+        // Phase 1: read the request under the deadline. A stalled or
+        // trickling peer is cut off here, without affecting other streams.
+        let buf = match tokio::time::timeout(stream_deadline, recv.read_to_end(MAX_REQUEST_BYTES))
+            .await
+        {
+            Ok(Ok(buf)) => buf,
+            Ok(Err(error)) => {
+                tracing::debug!(%remote, %error, "meta stream read failed");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!(%remote, ?stream_deadline, "meta stream read deadline exceeded");
+                let _ = send.reset(1_u32.into());
+                return;
+            }
+        };
+
+        // Phase 2: handle the admitted request to completion. This is
+        // deliberately NOT wrapped in the deadline: handlers perform
+        // non-transactional mutations (e.g. FileOps::rename moves a blob and
+        // then transfers metadata), and cancelling one midway would corrupt
+        // state. The handler does no peer-controlled waiting — the network
+        // phases on either side of it carry the deadline.
+        let resp = match postcard::from_bytes::<MetaRequest>(&buf) {
+            Ok(req) => self.handle(&remote, req).await,
+            Err(error) => MetaResponse::Error {
+                message: format!("malformed request: {error}"),
+            },
+        };
+
+        // Phase 3: write the response under the deadline; a peer that stops
+        // reading is cut off and its stream reset.
+        let written = tokio::time::timeout(stream_deadline, async {
             let bytes = postcard::to_allocvec(&resp).map_err(AcceptError::from_err)?;
             send.write_all(&bytes)
                 .await
@@ -772,11 +796,11 @@ impl MetaProtocol {
         })
         .await;
 
-        match result {
+        match written {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::debug!(%remote, %error, "meta stream failed"),
             Err(_) => {
-                tracing::debug!(%remote, ?stream_deadline, "meta stream deadline exceeded");
+                tracing::debug!(%remote, ?stream_deadline, "meta stream write deadline exceeded");
                 let _ = send.reset(1_u32.into());
             }
         }
@@ -1924,7 +1948,15 @@ mod tests {
         let mut streams = Vec::new();
 
         for _ in 0..=MAX_META_STREAMS_PER_CONNECTION {
-            streams.push(conn.open_bi().await.unwrap());
+            let (mut send, recv) = conn.open_bi().await.unwrap();
+            // A stream the client never writes to is never observed by the
+            // server's accept loop (noq only surfaces a stream once it
+            // carries data), so write one incomplete-request byte to make
+            // each stream visible — the same trick the stalled-stream test
+            // uses. Without this the excess stream is never reset and the
+            // test times out regardless of the implementation.
+            send.write_all(b" ").await.unwrap();
+            streams.push((send, recv));
         }
 
         let excess = streams.last_mut().unwrap();
