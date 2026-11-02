@@ -110,6 +110,15 @@ type delimToken struct {
 	// pending-body snapshot (heritageFloorStack): its closing '}'
 	// restores the snapshot it displaced.
 	heritageOwnsFloor bool
+	// savedDecl* snapshot the expectDecl* state at a template
+	// substitution's entry ('${'): the substitution is an
+	// expression context, so the enclosing declaration's pending
+	// body marker is preserved across it and restored when the
+	// substitution's closing '}' pops this token (Codex P2 on
+	// #3354).
+	savedDeclBody       bool
+	savedDeclParenDepth int
+	savedDeclStackDepth int
 }
 
 type blockCommentRange struct {
@@ -169,8 +178,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// new async<newline>function f() {} is a constructor call on
 	// the identifier async plus a function declaration, by ASI).
 	curIdentBrokeLine := false
+	// curIdentBreakIdent records the restricted keyword (return /
+	// yield) that the line break before curIdent immediately
+	// followed — only trivia between keyword and break — or ""
+	// when the break followed any other significant token.
+	curIdentBreakIdent := ""
 	lastIdent := ""
 	lastIdentBrokeLine := false
+	lastIdentBreakIdent := ""
 	prevChar := rune(0)
 	// identPrev is the last significant character before the
 	// identifier currently being accumulated started, and
@@ -191,6 +206,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// (return function() {} / 2 divides after the body closure).
 	prevIdent := ""
 	prevIdentBrokeLine := false
+	prevIdentBreakIdent := ""
 	// prevIdentPrev is the significant character before prevIdent
 	// started (mirroring lastIdentPrev for lastIdent): it tells
 	// whether prevIdent was reached through member access, in
@@ -314,6 +330,17 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// n\n++ /a+/ — the '++' is a prefix on the next statement,
 	// not a postfix on n).
 	lineBreakPending := false
+	// breakFollowsIdent is the restricted keyword the pending
+	// line break immediately follows, captured from
+	// restrictedKeywordPending at the terminator: that variable
+	// is the live candidacy — set when a return/yield keyword
+	// completes, cleared by the next significant character (an
+	// operator or operand means the keyword's operand already
+	// started, so a later break is not the restricted
+	// production's ASI break: Codex P2 on #3354 —
+	// yield +\nasync function(){} /2;).
+	breakFollowsIdent := ""
+	restrictedKeywordPending := ""
 	// expectDeclBody mirrors expectFuncClassBody for DECLARATIONS
 	// (function/class in statement position, interface, enum): a
 	// declaration body '{' opens a statement block whose '}'
@@ -417,10 +444,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
 					prevIdentBrokeLine = lastIdentBrokeLine
+					prevIdentBreakIdent = lastIdentBreakIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
 					prevIdentEnd = lastIdentEnd
 					curIdentBrokeLine = lineBreakPending
+					curIdentBreakIdent = breakFollowsIdent
 				}
 				curIdent = append(curIdent, 'x')
 				// The escape is an identifier character: it
@@ -454,18 +483,32 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
 					prevIdentBrokeLine = lastIdentBrokeLine
+					prevIdentBreakIdent = lastIdentBreakIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
 					prevIdentEnd = lastIdentEnd
 					curIdentBrokeLine = lineBreakPending
+					curIdentBreakIdent = breakFollowsIdent
 				}
 				curIdent = append(curIdent, ch)
 			} else if len(curIdent) > 0 {
 				lastIdent = string(curIdent)
 				lastIdentBrokeLine = curIdentBrokeLine
+				lastIdentBreakIdent = curIdentBreakIdent
 				lastIdentPrev = identPrev
 				lastIdentDotRun = identDotRun
 				lastIdentEnd = i
+				// A return/yield keyword that just completed is the
+				// ASI candidate for a following line break; any other
+				// identifier clears the candidacy. The candidacy is
+				// also cleared by the next significant character (see
+				// the break-consumption point below), so it survives
+				// only across trivia.
+				if (lastIdent == "return" || lastIdent == "yield") && lastIdentPrev != '.' && lastIdentPrev != '#' {
+					restrictedKeywordPending = lastIdent
+				} else {
+					restrictedKeywordPending = ""
+				}
 				curIdent = nil
 				// The next significant character after the
 				// identifier, skipping whitespace and comments:
@@ -546,14 +589,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// {} / 2]}.x {} and the function permutation).
 					asyncFunctionModifier := lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && onlyTriviaBetween(chars, prevIdentEnd, identStart)
 					asyncFunctionExprPosition := asyncFunctionModifier && isExprPositionStart(prevIdentPrev, prevPrevIdent, prevPrevIdentPrev, prevPrevIdentDotRun)
-					if asyncFunctionExprPosition && prevIdentBrokeLine && (prevPrevIdent == "return" || prevPrevIdent == "yield") && prevPrevIdentPrev != '.' && prevPrevIdentPrev != '#' {
+					if asyncFunctionExprPosition && prevIdentBrokeLine && prevIdentBreakIdent == prevPrevIdent && (prevPrevIdent == "return" || prevPrevIdent == "yield") && prevPrevIdentPrev != '.' && prevPrevIdentPrev != '#' {
 						// A line break before `async` ends a preceding
 						// return or yield statement by ASI (both are
-						// restricted productions). The function is then
-						// a declaration in the new statement, not an
-						// expression inherited from `return` (Codex P2
-						// on #3354). Expression position from an operator
-						// still applies across the line break.
+						// restricted productions) — but only when the
+						// break immediately follows the keyword, which
+						// prevIdentBreakIdent records: an intervening
+						// operator starts the keyword's operand, so
+						// yield +\nasync function(){} /2; keeps the
+						// function an expression whose body closure
+						// divides (Codex P2 on #3354). The function is
+						// then a declaration in the new statement, not
+						// an expression inherited from `return`.
+						// Expression position from an operator still
+						// applies across the line break.
 						asyncFunctionExprPosition = false
 					}
 					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (asyncFunctionModifier && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) || asyncFunctionExprPosition {
@@ -639,6 +688,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				line++
 			}
 			lineBreakPending = true
+			breakFollowsIdent = restrictedKeywordPending
 			if inSingleLineComment && lineCommentStart >= 0 {
 				// Record the line comment's range alongside the
 				// block comments: the numeric-token guard must
@@ -739,6 +789,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// yet flagged as a comment here; it restores the
 			// pending break explicitly below.
 			lineBreakPending = false
+			// A significant character also ends a restricted
+			// keyword's ASI candidacy: its operand (or the next
+			// statement's first token) has started, so a later line
+			// break no longer immediately follows the keyword
+			// (Codex P2 on #3354: yield +\nasync — the break
+			// follows '+', not yield). A comment opener is trivia,
+			// not a token, and must not clear it: yield /*\n*/
+			// async keeps the candidacy, because the break inside
+			// the comment still immediately follows yield.
+			if !(ch == '/' && i+1 < n && (chars[i+1] == '/' || chars[i+1] == '*')) {
+				restrictedKeywordPending = ""
+			}
 		}
 
 		if inSingleLineComment {
@@ -770,7 +832,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// nested templates can return to this template's text
 				// without losing the outer tag classification.
 				inString = 0
-				stack = append(stack, delimToken{char: '{', line: line, templateExpr: true})
+				stack = append(stack, delimToken{char: '{', line: line, templateExpr: true, savedDeclBody: expectDeclBody, savedDeclParenDepth: expectDeclParenDepth, savedDeclStackDepth: expectDeclStackDepth})
+				// The substitution is an expression context: an
+				// enclosing declaration's pending body marker does
+				// not belong to it. The marker is saved on the
+				// delimiter (above) and cleared here, so a nested
+				// function/class body inside the substitution
+				// cannot consume the outer declaration's marker;
+				// the matching '}' restores it (Codex P2 on #3354:
+				// class C extends tag`${function() {} / 2}` {} —
+				// the nested body ate the class's marker and its
+				// real body read as an object literal).
+				expectDeclBody = false
+				expectDeclParenDepth = 0
+				expectDeclStackDepth = 0
 				prevSig = 'o'
 				// The substitution is an expression context, not a
 				// statement boundary: record '(' as the previous
@@ -785,16 +860,19 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				closedExprAfter = false
 				curIdent = nil
 				curIdentBrokeLine = false
+				curIdentBreakIdent = ""
 				lastIdent = ""
 				lastIdentPrev = 0
 				lastIdentDotRun = 0
 				lastIdentEnd = -1
 				lastIdentBrokeLine = false
+				lastIdentBreakIdent = ""
 				prevIdent = ""
 				prevIdentPrev = 0
 				prevIdentDotRun = 0
 				prevIdentEnd = -1
 				prevIdentBrokeLine = false
+				prevIdentBreakIdent = ""
 				prevPrevIdent = ""
 				prevPrevIdentPrev = 0
 				prevPrevIdentDotRun = 0
@@ -1193,6 +1271,13 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			closedExprAfter = top.exprAfter
 			if ch == '}' && top.templateExpr {
+				// Restore the enclosing declaration's pending body
+				// marker saved at substitution entry: the nested
+				// expression's bodies never owned it (Codex P2 on
+				// #3354).
+				expectDeclBody = top.savedDeclBody
+				expectDeclParenDepth = top.savedDeclParenDepth
+				expectDeclStackDepth = top.savedDeclStackDepth
 				// The interpolation is complete; resume the surrounding
 				// template as opaque text. Nested literals have popped
 				// their own tag frames, leaving this one intact.
