@@ -63,6 +63,9 @@ export interface FleetFeed {
   /** Rows loadFeed's charges sanitization dropped (#2445), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   chargesDropped?: number;
+  /** PAYG lines loadFeed's sanitization dropped (#2450), set only
+   * when drops occurred; absent on raw parsed feeds and clean loads. */
+  paygDropped?: number;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -577,6 +580,51 @@ export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
   return { rows, dropped: v.length - rows.length };
 }
 
+/** A PAYG line safe for both the attention derivation and the quota renderer. */
+export function isPaygLine(v: unknown): v is PaygLine {
+  if (!isRecord(v)) return false;
+  const nullableFinite = (value: unknown) => value === null || isFiniteNumber(value);
+  const isEstimate = (value: unknown) => {
+    if (value === null) return true;
+    return (
+      isRecord(value) &&
+      isFiniteNumber(value.low) &&
+      isFiniteNumber(value.high) &&
+      typeof value.period === "string" &&
+      (value.note === undefined || typeof value.note === "string")
+    );
+  };
+  return (
+    typeof v.id === "string" &&
+    typeof v.label === "string" &&
+    nullableFinite(v.accruedUsd) &&
+    (v.collectedUsd === undefined || nullableFinite(v.collectedUsd)) &&
+    (v.estimate === undefined || isEstimate(v.estimate)) &&
+    nullableFinite(v.unbilledUsd) &&
+    typeof v.note === "string" &&
+    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.sourceClass === "api" ||
+      v.sourceClass === "console" ||
+      v.sourceClass === "manual" ||
+      v.sourceClass === "estimate" ||
+      v.sourceClass === "invoice")
+  );
+}
+
+export interface PaygSanitization {
+  /** Sanitized rows, or undefined when the optional section is absent/dropped whole. */
+  rows?: PaygLine[];
+  dropped: number;
+}
+
+/** Drop malformed PAYG rows at the shared feed boundary (#2450). */
+export function sanitizePayg(v: unknown): PaygSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isPaygLine);
+  return { rows, dropped: v.length - rows.length };
+}
+
 export async function loadFeed(path: string): Promise<FleetFeed | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -594,6 +642,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     const charges =
       parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    const payg = sanitizePayg(parsed.payg);
     // Charges rows get the same drop-and-count treatment at this same
     // shared gate (#2445): the section is optional, so absence stays
     // absent; a non-array section drops whole (counted as one dropped
@@ -609,8 +658,14 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
         chargesPart = { charges: rows.values, ...(rows.dropped > 0 ? { chargesDropped: rows.dropped } : {}) };
       }
     }
+    // The raw optional PAYG section may be malformed or absent. Remove
+    // it (and any stale count) before projecting only the sanitized rows
+    // and this load's own drop count.
+    const feed = { ...parsed };
+    delete feed.payg;
+    delete feed.paygDropped;
     return {
-      ...parsed,
+      ...feed,
       meta,
       quota: san.view,
       quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
@@ -618,6 +673,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...(payg.rows !== undefined ? { payg: payg.rows } : {}),
+      ...(payg.dropped > 0 ? { paygDropped: payg.dropped } : {}),
       ...chargesPart,
     };
   } catch {

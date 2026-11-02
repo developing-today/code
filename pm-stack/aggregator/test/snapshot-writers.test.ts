@@ -198,6 +198,64 @@ describe("recordsFromProviderUsage", () => {
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
   });
+
+  test("skips an invalid window without suppressing sessions or a valid companion", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      sessions: [1],
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: -1, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
+      "opencode-server/sessions-listed=1",
+      "openai:codex/5-hour=100",
+    ]);
+  });
+
+  test("skips percentages above 100 and non-finite values", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      sessions: [],
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: 100.01, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: Number.POSITIVE_INFINITY, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
+      "opencode-server/sessions-listed=0",
+    ]);
+  });
+
+  test("accepts the inclusive percentage boundaries", () => {
+    const snapshot = {
+      generated_at: "2026-10-26T10:59:33Z",
+      codex_usage: {
+        usage: {
+          rate_limit: {
+            primary_window: { used_percent: 0, limit_window_seconds: 604800 },
+            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
+          },
+        },
+      },
+    };
+
+    expect(recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`)).toEqual([
+      "openai:codex/7-day=0",
+      "openai:codex/5-hour=100",
+    ]);
+  });
 });
 
 describe("DeepSeek CNY balance (#1052)", () => {

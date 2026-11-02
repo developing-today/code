@@ -222,3 +222,37 @@ test('concurrent CLI appends produce only whole lines', async () => {
   }
   assert.equal(seen.size, writers);
 });
+
+test('loose __proto__ fields are preserved as own data properties (#2828)', () => {
+  const protoBefore = Object.getPrototypeOf({});
+  // String value: assignment would have dropped the field entirely.
+  const looseString = parseLoose('kind: note | __proto__: polluted');
+  assert.ok(Object.hasOwn(looseString, '__proto__'));
+  assert.equal(looseString['__proto__'], 'polluted');
+  assert.equal(Object.getPrototypeOf(looseString), Object.prototype);
+  // Object value: assignment would have replaced the prototype.
+  const looseObject = parseLoose('kind: note | __proto__: {"injected": true}');
+  assert.ok(Object.hasOwn(looseObject, '__proto__'));
+  assert.deepEqual(looseObject['__proto__'], { injected: true });
+  assert.equal(Object.getPrototypeOf(looseObject), Object.prototype);
+  assert.equal({}.injected, undefined, 'Object.prototype must not be polluted');
+  assert.equal(Object.getPrototypeOf({}), protoBefore);
+});
+
+test('loose __proto__ survives normalisation and record() append, like the JSON path (#2828)', () => {
+  const { entry } = normaliseInput('kind: note | __proto__: {"injected": true}', stamps);
+  assert.ok(Object.hasOwn(entry, '__proto__'));
+  assert.deepEqual(entry['__proto__'], { injected: true });
+  // JSON-path control: an own __proto__ field is preserved there too.
+  const control = normaliseInput('{"kind":"note","__proto__":{"injected":true}}', stamps).entry;
+  assert.ok(Object.hasOwn(control, '__proto__'));
+  assert.deepEqual(control['__proto__'], { injected: true });
+  // End to end: the appended JSONL line carries the field.
+  const target = tmpTarget();
+  const outcome = record('kind: note | __proto__: polluted', { target, env: {} });
+  assert.equal(outcome, 'recorded');
+  const line = JSON.parse(readLines(target)[0]);
+  assert.ok(Object.hasOwn(line, '__proto__'));
+  assert.equal(line['__proto__'], 'polluted');
+  assert.equal({}.polluted, undefined, 'Object.prototype must not be polluted');
+});

@@ -884,13 +884,23 @@ export function applySupabaseExport(
   nowMs: number = Date.now(),
 ): SaasService[] {
   if (!doc || (doc.status !== "ok" && doc.status !== "partial")) return services;
-  if (!doc.measuredAt || !Array.isArray(doc.metrics)) return services;
+  if (typeof doc.measuredAt !== "string" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
   const measuredMs = Date.parse(doc.measuredAt);
   if (!Number.isFinite(measuredMs)) return services;
   if (nowMs - measuredMs > SUPABASE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   const supabase = services.find((s) => s.id === "supabase");
   if (!supabase) return services;
-  const byId = new Map(doc.metrics.filter((m) => m && typeof m.id === "string").map((m) => [m.id, m]));
+  const byId = new Map(
+    doc.metrics
+      .filter(
+        (m) =>
+          m &&
+          typeof m.id === "string" &&
+          !(typeof m.used === "number" && m.used < 0) &&
+          !(typeof m.limit === "number" && m.limit < 0),
+      )
+      .map((m) => [m.id, m]),
+  );
   if (!byId.size) return services;
   supabase.metrics = supabase.metrics.map((m) => {
     const live = byId.get(m.id);
@@ -923,7 +933,8 @@ export function applySupabaseExport(
     doc.billing &&
     doc.billing.measured !== false &&
     typeof doc.billing.billedUsd === "number" &&
-    Number.isFinite(doc.billing.billedUsd)
+    Number.isFinite(doc.billing.billedUsd) &&
+    doc.billing.billedUsd >= 0
   ) {
     supabase.billedUsd = doc.billing.billedUsd;
   } else {

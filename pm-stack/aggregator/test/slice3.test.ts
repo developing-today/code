@@ -4,7 +4,7 @@ import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommentsStore, validateNewComment } from "../src/comments.ts";
-import { dnsSectionFromRegister, parseDnsRegister, summarizeDns } from "../src/dns.ts";
+import { dnsSectionFromRegister, isDnsSection, parseDnsRegister, summarizeDns } from "../src/dns.ts";
 import type { SessionFeedEntry } from "../src/model.ts";
 import { PAGES } from "../src/pages.ts";
 import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
@@ -117,6 +117,36 @@ describe("dns register parser", () => {
     expect(parseDnsRegister("# nothing here\n")).toEqual([]);
     expect(dnsSectionFromRegister("# nothing\n", "2026-10-25T00:00:00Z", "test")).toBeNull();
   });
+
+  test("isDnsSection owns the finite-number + status rules (#2412)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    const noTotal = { ...good! } as Record<string, unknown>;
+    delete noTotal.totalAnnualListUsd;
+    expect(isDnsSection(noTotal)).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: "46.29" })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: null })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: Number.NaN })).toBe(false);
+    expect(isDnsSection({ ...good, totalAnnualListUsd: Number.POSITIVE_INFINITY })).toBe(false);
+    const withEntry = (priceUsd: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, priceUsd } : e)),
+    });
+    expect(isDnsSection(withEntry("4.07"))).toBe(false);
+    expect(isDnsSection(withEntry(Number.NaN))).toBe(false);
+    expect(isDnsSection(withEntry(null))).toBe(true);
+    const withStatus = (status: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, status } : e)),
+    });
+    expect(isDnsSection(withStatus("bogus"))).toBe(false);
+    expect(isDnsSection(withStatus(undefined))).toBe(false);
+    expect(isDnsSection(withStatus("active"))).toBe(true);
+    expect(isDnsSection(withStatus("earmarked"))).toBe(true);
+    expect(isDnsSection(withStatus("unused"))).toBe(true);
+  });
+
 });
 
 // --- Identity registry (#906 §3) ---------------------------------------------
@@ -501,7 +531,8 @@ describe("slice-3 routes", () => {
     expect(dnsJson.totalAnnualListUsd).toBe(595.62);
     const sessions = await (await fetch(`http://127.0.0.1:${port}/sessions`)).text();
     expect(sessions).toContain("identity registry");
-    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json`)).json()) as {
+    // window=all: fixture last-activity is a fixed date; the default 7-day window ages it out and fails this test on later run dates.
+    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json?window=all`)).json()) as {
       records: { source: string }[];
       identities: { kind: string }[];
     };

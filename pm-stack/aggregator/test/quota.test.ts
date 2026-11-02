@@ -267,6 +267,44 @@ describe("quota extractors", () => {
   });
 });
 
+describe("America/Chicago dated reads", () => {
+  const extractClaudeReset = (date: string, time: string) =>
+    extractQuotaPools(`### Claude\nweekly 68% used; weekly reset Wed ${date} ${time} CDT`).find(
+      (pool) => pool.id === "anthropic:claude-pro",
+    )!.windows[0].resetsAt;
+
+  test("CST-month reads use UTC-6", () => {
+    expect(extractClaudeReset("2026-12-16", "14:00")).toBe("2026-12-16T14:00:00-06:00");
+    expect(Date.parse(extractClaudeReset("2026-12-16", "14:00")!)).toBe(Date.parse("2026-12-16T20:00:00.000Z"));
+  });
+
+  test("CDT-month reads keep UTC-5", () => {
+    expect(extractClaudeReset("2026-07-16", "14:00")).toBe("2026-07-16T14:00:00-05:00");
+    expect(Date.parse(extractClaudeReset("2026-07-16", "14:00")!)).toBe(Date.parse("2026-07-16T19:00:00.000Z"));
+  });
+
+  test("a fall-back transition date uses the post-transition offset", () => {
+    expect(extractClaudeReset("2026-11-01", "03:30")).toBe("2026-11-01T03:30:00-06:00");
+    expect(Date.parse(extractClaudeReset("2026-11-01", "03:30")!)).toBe(Date.parse("2026-11-01T09:30:00.000Z"));
+  });
+
+  test("Meta does not treat a winter reset as passed an hour early", () => {
+    const view = `### Meta Model API\nweekly quota 46% used at 03:20 CDT, then burned to empty. Weekly reset today 2026-12-16 14:00 CDT.`;
+    const pool = extractQuotaPools(view, new Date("2026-12-16T19:30:00.000Z")).find(
+      (candidate) => candidate.id === "meta:high-usage",
+    )!;
+    expect(pool.state).toBe("walled");
+    expect(pool.wallLiftsAt).toBe("2026-12-16T14:00:00-06:00");
+  });
+
+  test("ClinePass relative windows anchor to a winter read in CST", () => {
+    const view = `### ClinePass\nMeasured 2026-12-16 ~14:00 CDT: 5-hour **0%** used; weekly **26%** used (resets in 0d 1h); monthly **69%** used (resets in 0d 2h).`;
+    const pool = extractQuotaPools(view).find((candidate) => candidate.id === "cline-pass:cline-pass")!;
+    expect(pool.windows[1].resetsAt).toBe("2026-12-16T21:00:00.000Z");
+    expect(pool.windows[2].resetsAt).toBe("2026-12-16T22:00:00.000Z");
+  });
+});
+
 describe("windowPercent + guidance", () => {
   test("explicit percent wins when the limit is unknown", () => {
     expect(windowPercent({ name: "w", unit: "other", limit: null, used: 0, resetsAt: null, percent: 42 })).toBe(42);
