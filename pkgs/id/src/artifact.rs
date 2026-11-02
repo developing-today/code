@@ -62,6 +62,8 @@ pub const MAX_AFTER: usize = 32;
 pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 /// The kind of a friend removal.
 pub const FRIEND_REMOVE: &str = "friend_remove";
+/// Pending friendship requests a single friend removal can void.
+pub const MAX_FRIEND_REMOVE_REQUESTS: usize = 3;
 /// The kind of a home-server declaration.
 pub const HOME_DECLARED: &str = "home_declared";
 /// The kind of a generic structured document.
@@ -132,6 +134,13 @@ fn is_hash(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn is_friend_request_id(text: &str) -> bool {
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// A friendship ends, and the request IDs it covers are void.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FriendRemove {
@@ -139,7 +148,7 @@ pub struct FriendRemove {
     pub a: String,
     /// The other account.
     pub b: String,
-    /// Request IDs the removal covers: the one that formed the friendship, and any still pending.
+    /// At most three lowercase 32-character hex request IDs covered by this removal.
     #[serde(default)]
     pub requests: Vec<String>,
 }
@@ -325,6 +334,20 @@ impl SignedArtifact {
                 let body: FriendRemove = self.decode()?;
                 check_key(&body.a)?;
                 check_key(&body.b)?;
+                if body.requests.len() > MAX_FRIEND_REMOVE_REQUESTS {
+                    return Err(forbidden(format!(
+                        "a friend removal names at most {MAX_FRIEND_REMOVE_REQUESTS} requests"
+                    )));
+                }
+                if body
+                    .requests
+                    .iter()
+                    .any(|request| !is_friend_request_id(request))
+                {
+                    return Err(forbidden(
+                        "a friend removal request ID is not 32 lowercase hexadecimal characters",
+                    ));
+                }
                 if body.a == body.b {
                     return Err(forbidden("no one befriends themselves"));
                 }
@@ -1011,7 +1034,10 @@ mod tests {
         Kind::FriendRemove(FriendRemove {
             a: public(a),
             b: public(b),
-            requests: requests.iter().map(|r| (*r).to_owned()).collect(),
+            requests: requests
+                .iter()
+                .map(|request| format!("{:0>32}", request.trim_start_matches('r')))
+                .collect(),
         })
     }
 
@@ -1080,7 +1106,11 @@ mod tests {
             1,
             "",
             FRIEND_REMOVE,
-            json!({"a": public(1), "b": public(2), "requests": ["r2"]}),
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [format!("{:032x}", 2)]
+            }),
         )
         .unwrap();
         let fork = log.insert(other).unwrap_err();
@@ -1105,7 +1135,11 @@ mod tests {
             json!({"a": public(1), "b": public(2), "requests": []}),
         )
         .unwrap();
-        tampered.body = json!({"a": public(1), "b": public(2), "requests": ["r9"]});
+        tampered.body = json!({
+            "a": public(1),
+            "b": public(2),
+            "requests": [format!("{:032x}", 9)]
+        });
         let error = log.insert(tampered).unwrap_err();
         assert!(
             matches!(
@@ -1151,6 +1185,65 @@ mod tests {
             matches!(error.downcast_ref::<Refusal>(), Some(Refusal::Forbidden(_))),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn friend_removal_refuses_too_many_or_malformed_request_ids_before_storage() {
+        let valid_id = |n: u8| format!("{n:032x}");
+        let valid_three = SignedArtifact::sign(
+            &key(1),
+            1,
+            "",
+            FRIEND_REMOVE,
+            json!({
+                "a": public(1),
+                "b": public(2),
+                "requests": [valid_id(1), valid_id(2), valid_id(3)]
+            }),
+        )
+        .unwrap();
+        assert!(matches!(
+            valid_three.parsed(),
+            Ok(Some(Kind::FriendRemove(_)))
+        ));
+
+        let cases = [
+            vec![valid_id(1), valid_id(2), valid_id(3), valid_id(4)],
+            vec!["g".repeat(32)],
+            vec!["a".repeat(31)],
+            vec!["a".repeat(33)],
+            vec!["A".repeat(32)],
+        ];
+
+        for requests in cases {
+            let artifact = SignedArtifact::sign(
+                &key(1),
+                1,
+                "",
+                FRIEND_REMOVE,
+                json!({"a": public(1), "b": public(2), "requests": requests}),
+            )
+            .unwrap();
+            let parsed = artifact.parsed().unwrap_err();
+            assert!(
+                matches!(
+                    parsed.downcast_ref::<Refusal>(),
+                    Some(Refusal::Forbidden(_))
+                ),
+                "{parsed:#}"
+            );
+
+            let mut log = ArtifactLog::default();
+            let inserted = log.insert(artifact).unwrap_err();
+            assert!(
+                matches!(
+                    inserted.downcast_ref::<Refusal>(),
+                    Some(Refusal::Forbidden(_))
+                ),
+                "{inserted:#}"
+            );
+            assert_eq!(log.head_seq(&public(1)), 0);
+        }
     }
 
     #[test]
