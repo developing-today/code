@@ -1060,6 +1060,21 @@ impl std::str::FromStr for SshTarget {
                 None => (rest, 22),
             }
         };
+        // #3267: whitespace, control characters, and `/` in the user or
+        // host are never legitimate — without this check they parse and
+        // fail later inside russh as opaque DNS/auth errors, and a
+        // newline-bearing host lands verbatim in error messages and the
+        // known-hosts lookup key. The bracketed-IPv6 host is held to the
+        // same rule: valid IPv6 literals contain none of these.
+        let has_bad_chars = |part: &str| {
+            part.chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == '/')
+        };
+        anyhow::ensure!(
+            !has_bad_chars(user) && !has_bad_chars(host),
+            "`{text}` is not [user@]host[:port]: user and host must not \
+             contain whitespace, control characters, or `/`"
+        );
         anyhow::ensure!(
             !host.is_empty() && !user.is_empty(),
             "`{text}` is not [user@]host[:port]"
@@ -2443,7 +2458,30 @@ mod tests {
         );
         assert_eq!(parse("[::1]:2022").unwrap(), target("id", "::1", 2022));
         assert_eq!(parse("me@[::1]").unwrap(), target("me", "::1", 22));
+        assert_eq!(
+            parse("me@[2001:db8::1]:2222").unwrap(),
+            target("me", "2001:db8::1", 2222)
+        );
         for bad in ["", "host:", "host:99999", "::1", "[::1", "@host", "[::1]x"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        // #3267: whitespace, control characters, and `/` in the user or
+        // the host (the bracketed-IPv6 host included) refuse at parse
+        // time instead of failing later inside russh.
+        for bad in [
+            "exam ple.org",
+            "ada@exam ple.org",
+            " @host",
+            "ada @host",
+            "ada@host ",
+            "ada@ho/st",
+            "a/b@example.org",
+            "[:: 1]",
+            "ada@[:: 1]",
+            "ada@example.org\n.evil",
+            "us\ter@host",
+            "ada@ho\rst",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }
