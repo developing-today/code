@@ -3,6 +3,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { parseProxyPort } from './proxy-port.mjs';
 import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('DESIGN_CODE_PROXY_PORT', 18746);
 const HOST = process.env.DESIGN_CODE_PROXY_HOST || '127.0.0.1';
@@ -408,8 +409,9 @@ const dispatchWithFallback = (body, clientRes) => {
       if (stream) {
         writeHead();
         let buffer = '';
+        const streamDecoder = createStreamDecoder();
         localRes.on('data', chunk => {
-          buffer += chunk.toString('utf-8');
+          buffer += streamDecoder.push(chunk);
           const lines = buffer.split('\n');
           buffer = lines.pop();
           for (const line of lines) {
@@ -432,11 +434,12 @@ const dispatchWithFallback = (body, clientRes) => {
           clientRes.end();
         });
       } else {
-        let fullBody = '';
+        const fullBodyChunks = [];
         localRes.on('data', chunk => {
-          fullBody += chunk.toString('utf-8');
+          fullBodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         });
         localRes.on('end', () => {
+          const fullBody = Buffer.concat(fullBodyChunks).toString('utf-8');
           try {
             const json = JSON.parse(fullBody);
             if (json.error && (json.error.code === 429 || json.error.type === 'insufficient_quota')) {
