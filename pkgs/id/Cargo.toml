@@ -294,7 +294,7 @@ strip = true
 # Nix test-phase profile (#3195): release-shaped codegen so tests keep
 # release behaviour (opt-level 3, fuel budgets), without paying release
 # LTO, single-codegen-unit, or symbol stripping for throwaway test
-# binaries. Wired in via checkType in default.nix; the release binary
+# binaries. Wired in via checkType in default.nix and flake.nix; the release binary
 # build is untouched.
 inherits = "release"
 lto = false
