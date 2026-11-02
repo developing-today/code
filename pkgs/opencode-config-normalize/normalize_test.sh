@@ -408,4 +408,22 @@ if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1
 fi
+# Case: agent as the last entry, with an inline comment between the
+# preceding entry's comma and the agent key (PR #4625 Codex P2). The
+# backward separator scan in delete_top_level_entry must skip the
+# comment; the fold must succeed and stay idempotent.
+cat >"$tmp/comment-before-agent-last.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "plan": { "model": "anthropic/claude-sonnet-4-5" }
+  }, // native agents live here
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check comment-before-agent-last "$tmp/comment-before-agent-last.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+
 echo "normalize_test: all cases passed"

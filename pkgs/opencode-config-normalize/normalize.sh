@@ -248,6 +248,31 @@ def find_value_span(text, key):
     return (start, i)
 
 
+def _line_comment_start(text, start, end):
+    # Index of the '//' opening a line comment within text[start:end],
+    # skipping string contents, or -1 when the segment holds none.
+    i = start
+    in_str = False
+    while i < end:
+        c = text[i]
+        if in_str:
+            if c == '\\' and i + 1 < end:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            i += 1
+            continue
+        if c == '/' and i + 1 < end and text[i + 1] == '/':
+            return i
+        i += 1
+    return -1
+
+
 def delete_top_level_entry(text, key):
     # Remove the live top-level "key": value entry, with its comma.
     # Returns the new text, or None when the entry cannot be located.
@@ -270,13 +295,31 @@ def delete_top_level_entry(text, key):
             while j < len(text) and text[j] in ' \t':
                 j += 1
         return text[:at] + text[j:]
-    # Last entry in the object: the separator comma precedes the key.
+    # Last entry in the object: the separator comma precedes the key,
+    # with only whitespace and comments between it and the key. Skip
+    # both while scanning back (PR #4625 review): an inline // note
+    # after the previous entry, or a /* */ block, must not make a
+    # previously supported commented layout un-deletable. The skipped
+    # segment is preserved in the output — a repair tool never
+    # deletes a user's comment (#2364) — only the comma and the entry
+    # go. Anything else in the gap still returns None, fail-closed.
     k = at
-    while k > 0 and text[k - 1] in ' \t\r\n':
-        k -= 1
-    if k > 0 and text[k - 1] == ',':
-        return text[:k - 1] + text[ve:]
-    return None
+    while True:
+        while k > 0 and text[k - 1] in ' \t\r\n':
+            k -= 1
+        if k > 0 and text[k - 1] == ',':
+            return text[:k - 1] + text[k:at] + text[ve:]
+        if k >= 2 and text[k - 2:k] == '*/':
+            start = text.rfind('/*', 0, k - 2)
+            if start < 0:
+                return None
+            k = start
+            continue
+        line_start = text.rfind('\n', 0, k) + 1
+        comment_at = _line_comment_start(text, line_start, k)
+        if comment_at < 0 or comment_at >= k:
+            return None
+        k = comment_at
 
 
 # plugin -> plugins. When `plugins` is absent this is a bare key rename
