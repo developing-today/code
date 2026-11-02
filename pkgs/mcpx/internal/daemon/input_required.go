@@ -72,13 +72,17 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	rs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	res, err := p.Call(withRequestedCallTimeout(ctx), rs, tool, args)
+
+	res, err := p.Call(withRequestedCallTimeout(ctx), rs, effTool, effArgs)
+
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
