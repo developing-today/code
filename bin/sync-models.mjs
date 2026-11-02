@@ -3,6 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 
+const KNOWN_ARGS = new Set(['--dry-run', '--verbose', '-v']);
+const unknownArgs = process.argv.slice(2).filter(arg => !KNOWN_ARGS.has(arg));
+if (unknownArgs.length > 0) {
+  console.error(`[sync-models] Error: unknown argument '${unknownArgs[0]}'`);
+  console.error('Usage: sync-models.mjs [--dry-run] [--verbose|-v]');
+  process.exit(2);
+}
+
 const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v');
 
