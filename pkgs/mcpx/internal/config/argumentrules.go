@@ -195,7 +195,7 @@ func (s *ArgumentRuleSet) Check(tool string, args any) *ArgumentRuleViolation {
 // scopedSchemaMember), so a rule's local references keep their own
 // scope no matter what the root already defines.
 func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage) json.RawMessage {
-	return s.effectiveSchema(tool, upstream, nil)
+	return s.effectiveSchema(tool, upstream, nil, nil)
 }
 
 // EffectiveSchemaPinned is EffectiveSchema for a tool reached through
@@ -208,11 +208,29 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 // schema no caller can satisfy. Pinned names are therefore dropped
 // from the rules' required and dependentRequired lists in the
 // advertised projection only; enforcement is unchanged.
+// This compatibility form treats every pin as hidden; callers with
+// view visibility metadata should use EffectiveSchemaPinnedWithHidden.
 func (s *ArgumentRuleSet) EffectiveSchemaPinned(tool string, upstream json.RawMessage, pinned map[string]any) json.RawMessage {
-	return s.effectiveSchema(tool, upstream, pinned)
+	return s.effectiveSchema(tool, upstream, pinned, nil)
 }
 
-func (s *ArgumentRuleSet) effectiveSchema(tool string, upstream json.RawMessage, pinned map[string]any) json.RawMessage {
+// EffectiveSchemaPinnedWithHidden is EffectiveSchemaPinned with the
+// view's hidden pin names. A visible pin remains declared in a
+// projected rule when adjacent additionalProperties would otherwise
+// reject the caller's supplied value before the runtime merge replaces
+// it; hidden pins stay absent from the caller-facing rule.
+func (s *ArgumentRuleSet) EffectiveSchemaPinnedWithHidden(tool string, upstream json.RawMessage, pinned map[string]any, hidden []string) json.RawMessage {
+	visible := make(map[string]bool, len(pinned))
+	for name := range pinned {
+		visible[name] = true
+	}
+	for _, name := range hidden {
+		delete(visible, name)
+	}
+	return s.effectiveSchema(tool, upstream, pinned, visible)
+}
+
+func (s *ArgumentRuleSet) effectiveSchema(tool string, upstream json.RawMessage, pinned map[string]any, visiblePins map[string]bool) json.RawMessage {
 	matching := s.Matching(tool)
 	if len(matching) == 0 {
 		return upstream
@@ -252,7 +270,7 @@ func (s *ArgumentRuleSet) effectiveSchema(tool string, upstream json.RawMessage,
 		}
 		schema := r.Schema
 		if len(pinned) > 0 {
-			schema = projectPinnedRule(schema, pinned)
+			schema = projectPinnedRuleWithVisiblePins(schema, pinned, visiblePins)
 		}
 		member, scoped := scopedSchemaMemberTaken(schema, fmt.Sprintf("argumentrule%d", i), taken)
 		for name, def := range scoped {
@@ -827,28 +845,30 @@ func compactJSON(raw json.RawMessage) string {
 // the projection is presentation, and a malformed rule keeps its
 // verbatim meaning rather than a guessed one.
 func projectPinnedRule(raw json.RawMessage, pinned map[string]any) json.RawMessage {
+	return projectPinnedRuleWithVisiblePins(raw, pinned, nil)
+}
+
+func projectPinnedRuleWithVisiblePins(raw json.RawMessage, pinned map[string]any, visiblePins map[string]bool) json.RawMessage {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var doc any
 	if err := dec.Decode(&doc); err != nil {
 		return raw
 	}
-	out, err := json.Marshal(stripPinnedRequirements(doc, pinned))
+	out, err := json.Marshal(stripPinnedRequirementsWithVisiblePins(doc, pinned, visiblePins))
 	if err != nil {
 		return raw
 	}
 	return out
 }
 
-// stripPinnedRequirements projects one schema at its own instance
-// scope; see projectPinnedRule for the contract.
-func stripPinnedRequirements(v any, pinned map[string]any) any {
+func stripPinnedRequirementsWithVisiblePins(v any, pinned map[string]any, visiblePins map[string]bool) any {
 	root, _ := v.(map[string]any)
 	set := make(map[string]bool, len(pinned))
 	for name := range pinned {
 		set[name] = true
 	}
-	return stripPinnedScope(v, set, pinned, root, map[string]bool{})
+	return stripPinnedScopeWithVisiblePins(v, set, pinned, visiblePins, root, map[string]bool{})
 }
 
 // conjoinRefProjection combines the projections of a $ref target and
@@ -897,38 +917,36 @@ func conjoinRefProjection(target, siblings any) any {
 	return out
 }
 
-// stripPinnedScope is stripPinnedRequirements with the rule document's
-// root available for resolving local references and a set of the
-// references currently being resolved, so a self-referential
+// stripPinnedScopeWithVisiblePins projects one scope with the rule
+// document's root available for resolving local references and a set
+// of references currently being resolved, so a self-referential
 // definition cannot recurse forever. A local $ref applies its target
-// at the very instance scope where the reference sits -- a definition
+// at the instance scope where the reference sits -- a definition
 // referenced from the root is a root constraint, not a nested scope
-// -- so a resolvable reference is projected together with its
-// siblings as a same-instance conjunction; a requirement reached
-// only through a reference must not survive the projection
-// unexamined (Codex P2 on PR #2976).
-func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) any {
-	return stripPinnedScopeResAt(v, pinned, pinVals, root, root, resolving, true)
+// -- so a resolvable reference is projected together with its siblings
+// as a same-instance conjunction (Codex P2 on PR #2976).
+func stripPinnedScopeWithVisiblePins(v any, pinned map[string]bool, pinVals map[string]any, visiblePins map[string]bool, root map[string]any, resolving map[string]bool) any {
+	return stripPinnedScopeResAtWithVisiblePins(v, pinned, pinVals, visiblePins, root, root, resolving, true)
 }
 
-// stripPinnedScopeRes is stripPinnedScope with the enclosing
-// resource root tracked separately: a subschema declaring its own
+// stripPinnedScopeResWithVisiblePins also tracks the enclosing resource
+// root separately: a subschema declaring its own
 // $id is a separate resource, and fragment references inside it
 // resolve against that resource's own definitions, not the outer
 // document's (Codex P2 on PR #2976). resRoot is the root of the
 // resource the traversal is currently inside; root remains the
 // rule document's root for the dialect and verdict helpers, which
 // decline $id-carrying shapes on their own.
-func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resRoot map[string]any, resolving map[string]bool) any {
-	return stripPinnedScopeResAt(v, pinned, pinVals, root, resRoot, resolving, false)
+func stripPinnedScopeResWithVisiblePins(v any, pinned map[string]bool, pinVals map[string]any, visiblePins map[string]bool, root map[string]any, resRoot map[string]any, resolving map[string]bool) any {
+	return stripPinnedScopeResAtWithVisiblePins(v, pinned, pinVals, visiblePins, root, resRoot, resolving, false)
 }
 
-// stripPinnedScopeResAt adds vIsResRoot: whether v is the root of
+// stripPinnedScopeResAtWithVisiblePins adds vIsResRoot: whether v is the root of
 // its own schema resource (the document root, or a subschema whose
 // $id makes it one). Only at a resource root do fragment references
 // like "#/properties/<name>" point at this scope's own properties,
 // so only there can dropping a pinned declaration strand one.
-func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resRoot map[string]any, resolving map[string]bool, vIsResRoot bool) any {
+func stripPinnedScopeResAtWithVisiblePins(v any, pinned map[string]bool, pinVals map[string]any, visiblePins map[string]bool, root map[string]any, resRoot map[string]any, resolving map[string]bool, vIsResRoot bool) any {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return v
@@ -973,7 +991,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				// along verbatim when the projected target does
 				// not carry its own (Codex P2 on PR #2976).
 				resolving[resKey(ref)] = true
-				projected := stripPinnedScopeRes(target, pinned, pinVals, root, resRoot, resolving)
+				projected := stripPinnedScopeResWithVisiblePins(target, pinned, pinVals, visiblePins, root, resRoot, resolving)
 				delete(resolving, resKey(ref))
 				if pm, isMap := projected.(map[string]any); isMap {
 					for _, defsKey := range []string{"$defs", "definitions"} {
@@ -1016,8 +1034,8 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 					}
 				}
 				resolving[resKey(ref)] = true
-				projectedTarget := stripPinnedScopeRes(tm, pinned, pinVals, root, resRoot, resolving)
-				projectedSiblings := stripPinnedScopeRes(siblings, pinned, pinVals, root, resRoot, resolving)
+				projectedTarget := stripPinnedScopeResWithVisiblePins(tm, pinned, pinVals, visiblePins, root, resRoot, resolving)
+				projectedSiblings := stripPinnedScopeResWithVisiblePins(siblings, pinned, pinVals, visiblePins, root, resRoot, resolving)
 				delete(resolving, resKey(ref))
 				return conjoinRefProjection(projectedTarget, projectedSiblings)
 			}
@@ -1036,7 +1054,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				return target
 			}
 			resolving[resKey(ref)] = true
-			projectedSiblings := stripPinnedScopeRes(siblings, pinned, pinVals, root, resRoot, resolving)
+			projectedSiblings := stripPinnedScopeResWithVisiblePins(siblings, pinned, pinVals, visiblePins, root, resRoot, resolving)
 			delete(resolving, resKey(ref))
 			return conjoinRefProjection(target, projectedSiblings)
 		}
@@ -1048,8 +1066,26 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 	// property and picks the branch enforcement -- which merges the
 	// pin first -- does not (Codex P2 on PR #2976). Fold the decided
 	// branch in as an unconditional conjunct instead.
+	var preservedConditionals []preservedBranch
 	if _, hasIf := m["if"]; hasIf {
 		if branch, decided := pinDecidedBranch(m, pinned, pinVals, verdictRoot, resolving); decided {
+			if atResRoot {
+				for _, key := range []string{"if", "then", "else"} {
+					if value, exists := m[key]; exists {
+						pointer := "#/" + key
+						if schemaPointerReferenced(m, pointer) {
+							// Folding removes this original location. Keep its
+							// schema in the resource definitions for other
+							// references before the selected branch moves
+							// into allOf (Codex P2 on PR #2976).
+							preservedConditionals = append(preservedConditionals, preservedBranch{
+								pointer: pointer,
+								value:   cloneSchemaValue(value),
+							})
+						}
+					}
+				}
+			}
 			folded := make(map[string]any, len(m))
 			for k, val := range m {
 				if k != "if" && k != "then" && k != "else" {
@@ -1077,7 +1113,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 	var promoted []string
 	var promotedSubs []any
 	var preserved map[string]any
-	var preservedBranches []preservedBranch
+	preservedBranches := preservedConditionals
 	var branchRemaps []branchRemap
 	var unsatisfiable bool
 	for k, val := range m {
@@ -1095,20 +1131,32 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 					if valid, decided := pinnedSchemaVerdict(predicate, pinned, pinVals, verdictRoot, resolving); decided {
 						if !valid {
 							unsatisfiable = true
-						} else if atResRoot && schemaPointerReferenced(m, "#/properties/"+escapePointerSegment(name)) {
-							// Another schema in this resource
-							// references this declaration (a
-							// property whose schema is a $ref to
-							// it): dropping it would leave the
-							// advertised schema with an
-							// unresolved reference, so the
-							// declaration is preserved under
-							// $defs below (Codex P2 on
-							// PR #2976).
-							if preserved == nil {
-								preserved = map[string]any{}
+						} else {
+							if visiblePins[name] {
+								if _, hasAdditionalProperties := m["additionalProperties"]; hasAdditionalProperties {
+									// A visible pin remains caller-addressable. Keep
+									// an unconstrained declaration beside
+									// additionalProperties so the caller's raw
+									// value is not rejected before the runtime
+									// merge overwrites it with the validated pin.
+									kept[name] = true
+								}
 							}
-							preserved[name] = sub
+							if atResRoot && schemaPointerReferenced(m, "#/properties/"+escapePointerSegment(name)) {
+								// Another schema in this resource
+								// references this declaration (a
+								// property whose schema is a $ref to
+								// it): dropping it would leave the
+								// advertised schema with an
+								// unresolved reference, so the
+								// declaration is preserved under
+								// $defs below (Codex P2 on
+								// PR #2976).
+								if preserved == nil {
+									preserved = map[string]any{}
+								}
+								preserved[name] = sub
+							}
 						}
 						continue
 					}
@@ -1228,7 +1276,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				if atResRoot && len(kept) != i {
 					branchRemaps = append(branchRemaps, branchRemap{key: k, oldIndex: i, newIndex: len(kept)})
 				}
-				kept = append(kept, stripPinnedScopeRes(sub, pinned, pinVals, root, resRoot, resolving))
+				kept = append(kept, stripPinnedScopeResWithVisiblePins(sub, pinned, pinVals, visiblePins, root, resRoot, resolving))
 				keptIndices = append(keptIndices, i)
 			}
 			switch k {
@@ -1350,10 +1398,10 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				// same equivalence-preserving projection used
 				// elsewhere; parts the projection cannot decide
 				// keep their verbatim meaning inside it.
-				out[k] = stripPinnedScopeRes(val, pinned, pinVals, root, resRoot, resolving)
+				out[k] = stripPinnedScopeResWithVisiblePins(val, pinned, pinVals, visiblePins, root, resRoot, resolving)
 			}
 		case "if", "then", "else":
-			out[k] = stripPinnedScopeRes(val, pinned, pinVals, root, resRoot, resolving)
+			out[k] = stripPinnedScopeResWithVisiblePins(val, pinned, pinVals, visiblePins, root, resRoot, resolving)
 		case "dependencies":
 			// The draft-07 predecessor of dependentRequired /
 			// dependentSchemas: under a pre-2019-09 dialect it
@@ -1401,7 +1449,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 						keptDeps[prop] = kept
 					}
 				case map[string]any, bool:
-					sub := stripPinnedScopeRes(depVal, pinned, pinVals, root, resRoot, resolving)
+					sub := stripPinnedScopeResWithVisiblePins(depVal, pinned, pinVals, visiblePins, root, resRoot, resolving)
 					if pinned[prop] {
 						if pm, isMap := sub.(map[string]any); isMap && len(pm) == 0 {
 							continue
@@ -1429,7 +1477,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				}
 				sort.Strings(triggers)
 				for _, prop := range triggers {
-					sub := stripPinnedScopeRes(subs[prop], pinned, pinVals, root, resRoot, resolving)
+					sub := stripPinnedScopeResWithVisiblePins(subs[prop], pinned, pinVals, visiblePins, root, resRoot, resolving)
 					if pinned[prop] {
 						// The pin always supplies the trigger, so
 						// the projected dependent schema applies
@@ -2170,6 +2218,27 @@ func PinnedBranchVerdict(schema any, pinVals map[string]any, root map[string]any
 type preservedBranch struct {
 	pointer string
 	value   any
+}
+
+// cloneSchemaValue detaches a preserved reference target from the
+// projected branch that may be mutated during traversal.
+func cloneSchemaValue(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		clone := make(map[string]any, len(value))
+		for key, child := range value {
+			clone[key] = cloneSchemaValue(child)
+		}
+		return clone
+	case []any:
+		clone := make([]any, len(value))
+		for i, child := range value {
+			clone[i] = cloneSchemaValue(child)
+		}
+		return clone
+	default:
+		return value
+	}
 }
 
 // branchRemap records a kept applicator branch whose index in its

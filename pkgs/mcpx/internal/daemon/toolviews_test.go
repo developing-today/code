@@ -267,6 +267,35 @@ func TestAdvertisedViewSchemaDropsPinnedRuleRequirements(t *testing.T) {
 	}
 }
 
+// Codex P2 on PR #2976: visible pins must remain declared where a
+// projected rule's additionalProperties would otherwise reject the
+// caller value before the runtime merge overwrites it.
+func TestAdvertisedViewSchemaAllowsVisiblePinnedNameWithAdditionalProperties(t *testing.T) {
+	view := tailscaleView(t)
+	tv := view.ToolViews["listHostnames"]
+	tv.Pin = map[string]any{"tailnet": "prod"}
+	tv.Hide = nil
+	view.ToolViews["listHostnames"] = tv
+	set, err := config.CompileArgumentRules([]config.ArgumentRuleSource{{
+		Key: "list_devices", Origin: "test config",
+		Schema: json.RawMessage(`{"properties":{"tailnet":{"const":"prod"}},"additionalProperties":false}`),
+	}})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	view.ArgumentRules = set
+	effective := effectiveViewSchema(view, "listHostnames", json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"}}}`))
+	compiled, err := schemaval.Compile(effective)
+	if err != nil {
+		t.Fatalf("compile effective view schema %s: %v", effective, err)
+	}
+	for _, input := range []string{`{}`, `{"tailnet":"caller-value"}`} {
+		if err := compiled.ValidateJSON(json.RawMessage(input)); err != nil {
+			t.Errorf("visible pinned input %s should remain valid after the merge: %v (schema %s)", input, err, effective)
+		}
+	}
+}
+
 // Codex P2 on PR #2976: hiding a pinned property must also project
 // it out of same-instance allOf constraints. Left in place, an
 // allOf member requiring the hidden property -- whose declaration
@@ -783,6 +812,106 @@ func TestHideSchemaPropsPinnedProjectsConditionals(t *testing.T) {
 	} {
 		if got := compiled.ValidateJSON(json.RawMessage(tc.input)) == nil; got != tc.valid {
 			t.Errorf("%s valid=%v want %v (schema %s)", tc.input, got, tc.valid, out)
+		}
+	}
+}
+
+// Codex P2 on PR #2976: a hidden pin participates in upstream negation
+// after runtime merging, so the caller-facing projection must account
+// for its fixed contribution instead of leaving the negated schema
+// unchanged.
+func TestHideSchemaPropsPinnedProjectsNegations(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		negate string
+		cases  []struct {
+			input string
+			valid bool
+		}
+	}{
+		{
+			name:   "pin alone satisfies negated requirement",
+			negate: `{"required":["tailnet"]}`,
+			cases: []struct {
+				input string
+				valid bool
+			}{{`{}`, false}, {`{"limit":1}`, false}},
+		},
+		{
+			name:   "mixed caller requirement is projected",
+			negate: `{"required":["tailnet","limit"]}`,
+			cases: []struct {
+				input string
+				valid bool
+			}{{`{}`, true}, {`{"limit":1}`, false}},
+		},
+		{
+			name:   "pin assertion makes negated schema pass",
+			negate: `{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}`,
+			cases: []struct {
+				input string
+				valid bool
+			}{{`{}`, true}, {`{"limit":1}`, true}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"additionalProperties":false,"not":` + tc.negate + `}`)
+			projected := hideSchemaPropsPinned(schema, []string{"tailnet"}, map[string]any{"tailnet": "prod"})
+			advertised, err := schemaval.Compile(projected)
+			if err != nil {
+				t.Fatalf("compile projected schema %s: %v", projected, err)
+			}
+			original, err := schemaval.Compile(schema)
+			if err != nil {
+				t.Fatalf("compile original schema: %v", err)
+			}
+			for _, check := range tc.cases {
+				var merged map[string]any
+				if err := json.Unmarshal([]byte(check.input), &merged); err != nil {
+					t.Fatal(err)
+				}
+				merged["tailnet"] = "prod"
+				mergedJSON, _ := json.Marshal(merged)
+				caller, _ := schemaval.DecodeInstance(json.RawMessage(check.input))
+				actual, _ := schemaval.DecodeInstance(mergedJSON)
+				want := original.Validate(actual) == nil
+				if want != check.valid {
+					t.Fatalf("test case has wrong expected validity: %s got %v want %v", check.input, want, check.valid)
+				}
+				if got := advertised.Validate(caller) == nil; got != want {
+					t.Errorf("%s: advertised validity=%v, merged enforcement validity=%v (schema %s)", check.input, got, want, projected)
+				}
+			}
+		})
+	}
+}
+
+// Codex P2 on PR #2976: a caller-dependent conditional can still be
+// settled by a pin-only conjunct, which must be applied before hidden
+// pin names are projected out of the condition.
+func TestHideSchemaPropsPinnedMixedConditionalKeepsPinVerdict(t *testing.T) {
+	schema := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"string"},"cursor":{"type":"boolean"}},"additionalProperties":false,"if":{"properties":{"tailnet":{"const":"prod"},"limit":{"const":"go"}},"required":["tailnet","limit"]},"then":{"required":["cursor"]},"else":{"required":["limit"]}}`)
+	projected := hideSchemaPropsPinned(schema, []string{"tailnet"}, map[string]any{"tailnet": "dev"})
+	advertised, err := schemaval.Compile(projected)
+	if err != nil {
+		t.Fatalf("compile projected schema %s: %v", projected, err)
+	}
+	original, err := schemaval.Compile(schema)
+	if err != nil {
+		t.Fatalf("compile original schema: %v", err)
+	}
+	for _, input := range []string{`{"limit":"go"}`, `{"limit":"stop"}`, `{"cursor":true}`} {
+		var merged map[string]any
+		if err := json.Unmarshal([]byte(input), &merged); err != nil {
+			t.Fatal(err)
+		}
+		merged["tailnet"] = "dev"
+		mergedJSON, _ := json.Marshal(merged)
+		caller, _ := schemaval.DecodeInstance(json.RawMessage(input))
+		actual, _ := schemaval.DecodeInstance(mergedJSON)
+		want := original.Validate(actual) == nil
+		if got := advertised.Validate(caller) == nil; got != want {
+			t.Errorf("%s: advertised validity=%v, merged enforcement validity=%v (schema %s)", input, got, want, projected)
 		}
 	}
 }

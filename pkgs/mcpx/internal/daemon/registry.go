@@ -431,7 +431,7 @@ func effectiveViewSchema(view *config.Resolved, name string, schema json.RawMess
 		return schema
 	}
 	if tv, ok := view.ToolViews[name]; ok && len(tv.Pin) > 0 {
-		return view.ArgumentRules.EffectiveSchemaPinned(ruleToolName(view, name), schema, tv.Pin)
+		return view.ArgumentRules.EffectiveSchemaPinnedWithHidden(ruleToolName(view, name), schema, tv.Pin, tv.Hide)
 	}
 	return view.ArgumentRules.EffectiveSchema(ruleToolName(view, name), schema)
 }
@@ -817,8 +817,40 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 	}
 	defer func() { p.resRoot, p.resPath = savedResRoot, savedResPath }()
 	var promotedSubs []any
+	if negated, hasNot := m["not"]; hasNot && len(p.pinVals) > 0 {
+		if valid, decided := p.branchVerdict(negated); decided {
+			if valid {
+				// The inner schema always matches after pins merge,
+				// so its negation rejects every caller instance.
+				m["not"] = map[string]any{}
+			} else {
+				// The inner schema never matches after pins merge;
+				// its negation imposes no caller constraint.
+				delete(m, "not")
+			}
+		} else if valid, decided := p.branchConjunctVerdict(negated); decided && !valid {
+			// A pinned-only conjunct already makes the inner schema
+			// impossible, even though other parts depend on the caller.
+			delete(m, "not")
+		} else if sm, ok := negated.(map[string]any); ok {
+			// Preserve the caller-dependent remainder, but project its
+			// hidden-pin contribution before the outer negation is applied.
+			p.hidePropsAtPath(sm, p.path+"/not")
+		}
+	}
 	if condition, hasIf := m["if"]; len(p.pinVals) > 0 && hasIf {
-		if valid, decided := p.branchVerdict(condition); decided {
+		valid, decided := p.branchVerdict(condition)
+		if !decided {
+			// A condition may also inspect caller properties, but a
+			// pinned-only conjunct can still make it impossible. Fold
+			// that false verdict before name projection removes the pin
+			// assertion and changes the selected branch (Codex P2 on
+			// PR #2976).
+			if conjunctValid, conjunctDecided := p.branchConjunctVerdict(condition); conjunctDecided && !conjunctValid {
+				valid, decided = false, true
+			}
+		}
+		if decided {
 			// The pin fixes the conditional before enforcement.
 			// Replace the predicate with its fixed verdict so
 			// references into the selected then/else schema keep

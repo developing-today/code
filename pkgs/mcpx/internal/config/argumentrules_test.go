@@ -1333,6 +1333,89 @@ func TestEffectiveSchemaPinnedModernRootRefHoistsDefinitions(t *testing.T) {
 	}
 }
 
+// Codex P2 on PR #2976: folding a pin-decided conditional moves its
+// selected branch, so references into the original then/else locations
+// must be preserved and rewritten before those locations disappear.
+func TestEffectiveSchemaPinnedConditionalFoldKeepsReferencedTargets(t *testing.T) {
+	for _, branch := range []struct {
+		name      string
+		refBranch string
+		pin       string
+		cases     []struct {
+			input string
+			valid bool
+		}
+	}{
+		{
+			name:      "selected then target",
+			refBranch: "then",
+			pin:       "prod",
+			cases: []struct {
+				input string
+				valid bool
+			}{{`{"cursor":1}`, true}, {`{"cursor":"x"}`, false}},
+		},
+		{
+			name:      "selected else target",
+			refBranch: "else",
+			pin:       "dev",
+			cases: []struct {
+				input string
+				valid bool
+			}{{`{"cursor":"x"}`, true}, {`{"cursor":1}`, false}},
+		},
+		{
+			name:      "unselected then target",
+			refBranch: "then",
+			pin:       "dev",
+			cases: []struct {
+				input string
+				valid bool
+			}{{`{"cursor":1}`, true}, {`{"cursor":"x"}`, false}},
+		},
+	} {
+		t.Run(branch.name, func(t *testing.T) {
+			rule := `{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"cursor":{"$ref":"#/` + branch.refBranch + `/properties/limit"}},"if":{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},"then":{"properties":{"limit":{"type":"integer"}}},"else":{"properties":{"limit":{"type":"string"}}}}`
+			set, err := CompileArgumentRules([]ArgumentRuleSource{{
+				Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule),
+			}})
+			if err != nil {
+				t.Fatalf("CompileArgumentRules: %v", err)
+			}
+			upstream := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}`)
+			pins := map[string]any{"tailnet": branch.pin}
+			effective := set.EffectiveSchemaPinned("list_devices", upstream, pins)
+			advertised, err := schemaval.Compile(effective)
+			if err != nil {
+				t.Fatalf("effective schema does not compile: %v (%s)", err, effective)
+			}
+			original, err := schemaval.Compile(json.RawMessage(rule))
+			if err != nil {
+				t.Fatalf("compile original rule: %v", err)
+			}
+			for _, tc := range branch.cases {
+				var merged map[string]any
+				if err := json.Unmarshal([]byte(tc.input), &merged); err != nil {
+					t.Fatal(err)
+				}
+				for name, value := range pins {
+					merged[name] = value
+				}
+				mergedJSON, _ := json.Marshal(merged)
+				caller, _ := schemaval.DecodeInstance(json.RawMessage(tc.input))
+				actual, _ := schemaval.DecodeInstance(mergedJSON)
+				want := original.Validate(actual) == nil
+				if want != tc.valid {
+					t.Fatalf("test case has wrong expected validity: %s got %v want %v", tc.input, want, tc.valid)
+				}
+				if got := advertised.Validate(caller) == nil; got != want {
+					t.Errorf("%s: advertised validity=%v, merged enforcement validity=%v (schema %s)", tc.input, got, want, effective)
+				}
+			}
+		})
+	}
+}
+
 func TestEffectiveSchemaPinnedDraft07RootRefKeepsDialect(t *testing.T) {
 	rule := `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"need":{"required":["tailnet"],"dependencies":{"limit":["cursor"]}}},"$ref":"#/definitions/need"}`
 	set, err := CompileArgumentRules([]ArgumentRuleSource{
@@ -1746,4 +1829,43 @@ func TestEffectiveSchemaPinnedAdditionalPropertiesChecksPins(t *testing.T) {
 		{`{}`, false},
 		{`{"limit":1}`, false},
 	})
+}
+
+// Codex P2 on PR #2976: a visible pinned name must remain declared in
+// the projected rule when additionalProperties would otherwise reject
+// the caller's value before the runtime pin merge overwrites it.
+func TestEffectiveSchemaPinnedVisibleNameWithAdditionalProperties(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{{
+		Key: "list_devices", Origin: "test",
+		Schema: json.RawMessage(`{"properties":{"tailnet":{"const":"prod"}},"additionalProperties":false}`),
+	}})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"}}}`)
+	effective := set.EffectiveSchemaPinnedWithHidden("list_devices", upstream, map[string]any{"tailnet": "prod"}, nil)
+	compiled, err := schemaval.Compile(effective)
+	if err != nil {
+		t.Fatalf("compile %s: %v", effective, err)
+	}
+	for _, input := range []string{`{}`, `{"tailnet":"prod"}`, `{"tailnet":"caller-value"}`} {
+		instance, err := schemaval.DecodeInstance(json.RawMessage(input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compiled.Validate(instance); err != nil {
+			t.Errorf("visible pinned property %s should remain allowed after the runtime merge: %v (schema %s)", input, err, effective)
+		}
+	}
+	hidden := set.EffectiveSchemaPinnedWithHidden("list_devices", json.RawMessage(`{"type":"object"}`), map[string]any{"tailnet": "prod"}, []string{"tailnet"})
+	hiddenCompiled, err := schemaval.Compile(hidden)
+	if err != nil {
+		t.Fatalf("compile hidden-pin schema %s: %v", hidden, err)
+	}
+	if err := hiddenCompiled.ValidateJSON(json.RawMessage(`{}`)); err != nil {
+		t.Errorf("a hidden pin must not become a caller-facing requirement: %v (schema %s)", err, hidden)
+	}
+	if err := hiddenCompiled.ValidateJSON(json.RawMessage(`{"tailnet":"caller-value"}`)); err == nil {
+		t.Errorf("a hidden pinned name should remain absent from the rule's additionalProperties allowance: %s", hidden)
+	}
 }
