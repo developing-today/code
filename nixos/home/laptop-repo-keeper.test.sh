@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercises the real keeper against temporary primary repos: tracked
 # residue must block snapshot commits, while clean trees still snapshot.
+# An untracked secret inside a wholly untracked directory (code#2268)
+# must never be swept into a snapshot (status collapses it to `?? dir/`).
 set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,6 +152,25 @@ grep -Fq -- 'detached HEAD without origin — skipped' "$TMP_ROOT/detached-dirty
   fail 'detached dirty case: report missing skip reason'
 ! grep -Fq -- 'PRIMARY ON  ' "$TMP_ROOT/detached-dirty.log" ||
   fail 'detached dirty case: report contains an empty branch name'
+
+# A secret inside a wholly untracked directory (code#2268) must never be
+# swept into a snapshot: `git status --porcelain` collapses it to
+# `?? config/`, so no path entry ever names the nested file — and the
+# keeper commits tracked changes only (`git add -u`), leaving it alone.
+H7="$TMP_ROOT/untracked-secret-home"
+R7="$H7/code"
+new_repo "$R7"
+printf 'snapshot candidate\n' >>"$R7/tracked.txt"
+mkdir -p "$R7/config"
+printf 'fake-password hunter2\n' >"$R7/config/credentials.json"
+run_keeper "$H7" "$TMP_ROOT/untracked-secret.log"
+
+check 'untracked-secret case: snapshot holds the tracked change only' \
+  'tracked.txt' "$(git -C "$R7" show HEAD --name-only --format='')"
+check 'untracked-secret case: secret still untracked on disk' \
+  '?? config/' "$(git -C "$R7" status --porcelain -- config)"
+grep -Fq -- 'untracked file(s)' "$TMP_ROOT/untracked-secret.log" ||
+  fail 'untracked-secret case: report missing untracked count'
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2
