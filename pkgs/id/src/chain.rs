@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
+use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
 use crate::notes::{NoteOp, check_note_op, is_note_kind};
 use crate::tag_claims::{TagOp, check_op, is_tag_kind};
 
@@ -120,6 +121,10 @@ pub struct ChainExt {
     /// other kind. It is the note's body (#3814): signed with the header, so an event
     /// carries its whole note operation, and sync needs no separate body.
     pub note: Option<NoteOp>,
+    /// The note link operation of a `note.link`, and `None` for every other kind.
+    /// It is the link body (#3816): signed with the header, so an event carries
+    /// its whole link operation, and sync needs no separate body.
+    pub link: Option<NoteLinkOp>,
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
@@ -140,6 +145,8 @@ struct Wire {
     removes: Option<Hash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     note: Option<NoteOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    link: Option<NoteLinkOp>,
 }
 
 impl From<ChainExt> for Wire {
@@ -153,6 +160,7 @@ impl From<ChainExt> for Wire {
             document: ext.document,
             removes: ext.removes,
             note: ext.note,
+            link: ext.link,
         }
     }
 }
@@ -172,6 +180,7 @@ impl TryFrom<Wire> for ChainExt {
             document: wire.document,
             removes: wire.removes,
             note: wire.note,
+            link: wire.link,
         };
         ext.validate()?;
         Ok(ext)
@@ -277,6 +286,25 @@ impl ChainExt {
             }
             (true, Some(op)) => {
                 check_note_op(&self.kind, op)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_note_link_kind(&self.kind), &self.link) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a note link operation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its note link operation",
+                    self.kind
+                )));
+            }
+            (true, Some(op)) => {
+                check_note_link_op(&self.kind, op)
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
@@ -433,6 +461,7 @@ mod tests {
             document: None,
             removes: None,
             note: None,
+            link: None,
         }
     }
 
@@ -911,6 +940,7 @@ mod golden {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             },
         )
         .unwrap();
@@ -928,6 +958,7 @@ mod golden {
                 document: None,
                 removes: None,
                 note: None,
+                link: None,
             },
         )
         .unwrap();
