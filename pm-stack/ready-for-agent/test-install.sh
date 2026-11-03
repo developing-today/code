@@ -14,6 +14,7 @@ fail() {
 
 run_case() {
   local name="$1" initial_version="$2" active="$3" unit_matches="$4"
+  local extra_args="${5:-}" git_fail_once="${6:-0}"
   local case_root="${TEST_ROOT}/${name}"
   local home="${case_root}/home" deploy="${case_root}/deploy"
   local stub_bin="${case_root}/bin" state="${case_root}/state"
@@ -47,6 +48,7 @@ LAUNCHER
     printf '0\n' >"${state}/pid"
     printf '0\n' >"${state}/start"
   fi
+  printf '%s\n' "${git_fail_once}" >"${state}/git_fail_once"
   : >"${log}"
 
   cat >"${stub_bin}/systemctl" <<'SYSTEMCTL'
@@ -101,6 +103,20 @@ printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
 LAUNCHER
 chmod +x "${HOME}/.local/bin/ready-for-agent"
 NPM
+  cat >"${stub_bin}/git" <<'GIT'
+#!/usr/bin/env bash
+set -euo pipefail
+# Fail once when the case arms it (npm-ok / git-fail sequence), then
+# succeed; clone creates its target dir like the real thing.
+if [[ $(cat "${STUB_STATE}/git_fail_once") == 1 ]]; then
+  printf '0\n' > "${STUB_STATE}/git_fail_once"
+  exit 1
+fi
+if [[ ${1:-} == clone ]]; then
+  mkdir -p "${@: -1}"
+fi
+exit 0
+GIT
   cat >"${stub_bin}/curl" <<'CURL'
 #!/usr/bin/env bash
 exit 0
@@ -109,10 +125,36 @@ CURL
 #!/usr/bin/env bash
 exit 0
 SLEEP
-  chmod +x "${stub_bin}/systemctl" "${stub_bin}/npm" "${stub_bin}/curl" "${stub_bin}/sleep"
+  chmod +x "${stub_bin}/systemctl" "${stub_bin}/npm" "${stub_bin}/git" "${stub_bin}/curl" "${stub_bin}/sleep"
 
-  if ! output="$(HOME="${home}" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
-    bash "${deploy}/install.sh" 2>&1)"; then
+  if [[ ${name} == clone-fail-retry ]]; then
+    # #4839: npm upgrades the package, then the clone step fails; the
+    # retry must restart (pending marker), not report the pinned
+    # version already running, and must clear the marker on success.
+    local marker="${home}/.local/state/ready-for-agent.pending-restart" retry_output
+    if output="$(HOME="${home}" XDG_STATE_HOME="${home}/.local/state" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
+      bash "${deploy}/install.sh" ${extra_args} 2>&1)"; then
+      printf '%s\n' "${output}" >&2
+      fail "${name}: first run (failing clone) unexpectedly succeeded"
+    fi
+    [[ -f ${marker} ]] || fail "${name}: pending-restart marker missing after failed run"
+    ! grep -Fxq restart "${log}" || fail "${name}: restarted before the clone failure"
+    : >"${log}"
+    if ! retry_output="$(HOME="${home}" XDG_STATE_HOME="${home}/.local/state" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
+      bash "${deploy}/install.sh" ${extra_args} 2>&1)"; then
+      printf '%s\n' "${retry_output}" >&2
+      fail "${name}: retry exited unsuccessfully"
+    fi
+    grep -Fxq restart "${log}" || fail "${name}: retry did not restart"
+    printf '%s\n' "${retry_output}" | grep -Fq 'after restart' || fail "${name}: retry missing after-restart report"
+    printf '%s\n' "${retry_output}" | grep -Fq 'already running' && fail "${name}: retry falsely reported no-op"
+    [[ ! -f ${marker} ]] || fail "${name}: marker not cleared after verified restart"
+    echo "PASS: ${name}"
+    return 0
+  fi
+
+  if ! output="$(HOME="${home}" XDG_STATE_HOME="${home}/.local/state" PATH="${stub_bin}:${ORIGINAL_PATH}" STUB_STATE="${state}" STUB_LOG="${log}" \
+    bash "${deploy}/install.sh" ${extra_args} 2>&1)"; then
     printf '%s\n' "${output}" >&2
     fail "${name}: installer exited unsuccessfully"
   fi
@@ -152,3 +194,4 @@ run_case unit-change-active 1.1.0 active false
 run_case unchanged-active 1.1.0 active true
 run_case inactive 1.1.0 inactive true
 run_case first-install missing inactive missing
+run_case clone-fail-retry 1.0.0 active true clone 1

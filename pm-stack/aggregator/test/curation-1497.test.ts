@@ -45,6 +45,10 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // enters at dropdown tier — no curation ruling promotes it, and
   // new pages do not take primary slots without one.
   "comments-queue": "dropdown",
+  // Post-#1497 addition (#1739, 2026-11-02): the events page
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  events: "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

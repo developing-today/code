@@ -597,7 +597,18 @@ in
         "CLEF_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install: clef-proxy.socket owns the listener and activates this
+    # service on first connection (#1821). Enabling the service directly
+    # as well would race the socket for the same port.
+  };
+
+  systemd.user.sockets.clef-proxy = {
+    Unit.Description = "Clef proxy listener";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString clefProxyPort}";
+      Service = "clef-proxy.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
   };
 
   # Antigravity Direct (agy CLI wire clone) Local Proxy Bridge. Speaks
@@ -657,7 +668,18 @@ in
         "CODEX_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install: codex-proxy.socket owns the listener and activates this
+    # service on first connection (#1821). Enabling the service directly
+    # as well would race the socket for the same port.
+  };
+
+  systemd.user.sockets.codex-proxy = {
+    Unit.Description = "Codex proxy listener";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString codexProxyPort}";
+      Service = "codex-proxy.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
   };
 
   # Antigravity LS proxy retired (2026-10-30, Drew): its unit definition

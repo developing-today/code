@@ -978,6 +978,27 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     }
     let endpoint = builder.bind().await?;
 
+    // Do not announce readiness before the endpoint is reachable through
+    // its home relay (#3028). The wait is bounded and non-fatal: a dead
+    // relay entry must not hold startup, so on timeout we warn and carry on.
+    // With `--no-relay` no relay ever connects, so the wait is skipped.
+    if no_relay {
+        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    } else {
+        match crate::connectivity::await_home_relay(
+            &endpoint,
+            crate::connectivity::HOME_RELAY_DEADLINE,
+        )
+        .await
+        {
+            Ok(()) => info!("serve startup: home relay connected"),
+            Err(e) => warn!(
+                "serve startup: proceeding without a home relay after {:?}: {e:#}",
+                crate::connectivity::HOME_RELAY_DEADLINE,
+            ),
+        }
+    }
+
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
     let chat_presence = PresenceTable::new();
@@ -2331,10 +2352,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -2536,7 +2554,8 @@ mod tests {
         // Removing the other account leaves the device authorized
         // through the author alone; the evaluation reconciles the
         // tracked grant owners with the fold. Not itself a re-add.
-        log.remove(author, group, other, None).unwrap();
+        log.remove(author, group, other, crate::groups::RemoveMode::Revoke)
+            .unwrap();
         assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
 
         // Four genuine revoke + re-add cycles by the remaining account,
@@ -2709,7 +2728,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
@@ -2895,20 +2917,28 @@ mod tests {
     #[test]
     fn test_resolve_web_bindings_conflict_names_the_flag() {
         let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap()];
-        let err = resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--bind"), "{err}");
-        let err = resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--port"), "{err}");
     }
 
     #[test]
     fn test_resolve_web_bindings_malformed_config_line_is_named() {
         let config = vec!["127.0.0.1:3000".to_owned(), "not-an-addr".to_owned()];
-        let err =
-            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
-                .unwrap_err();
+        let err = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
         assert!(err.to_string().contains("[web_bindings]"), "{err}");
     }

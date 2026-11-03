@@ -196,6 +196,7 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
+pub mod hosted_binding;
 pub mod idset;
 pub mod invite;
 pub mod invites;

@@ -29,6 +29,18 @@ PINNED_VERSION="1.1.0"
 cd "$(dirname "$0")"
 DEPLOY_DIR="${PWD}"
 
+# Pending-restart marker (#4839): a package upgrade that never reached
+# its restart (e.g. the clone step fails under `set -e` after npm
+# replaced the binary) must not be forgotten — the next run would see
+# matching on-disk versions and report the pinned version running while
+# the old process serves. Written when the package changes, cleared
+# only after a verified restart/start.
+PENDING_RESTART_FILE="${XDG_STATE_HOME:-${HOME}/.local/state}/ready-for-agent.pending-restart"
+restart_pending=false
+if [[ -f ${PENDING_RESTART_FILE} ]]; then
+  restart_pending=true
+fi
+
 # Capture the serving process before changing its executable or unit.
 service_was_active=false
 previous_main_pid=""
@@ -51,6 +63,8 @@ if [[ ${current} != "${PINNED_VERSION}" ]]; then
   package_changed=true
   echo "installing ready-for-agent@${PINNED_VERSION} (found: ${current:-none})"
   npm install -g --prefix "${HOME}/.local" "ready-for-agent@${PINNED_VERSION}"
+  mkdir -p "$(dirname "${PENDING_RESTART_FILE}")"
+  printf '%s\n' "${PINNED_VERSION}" >"${PENDING_RESTART_FILE}"
 else
   echo "ready-for-agent@${PINNED_VERSION} already installed"
 fi
@@ -90,7 +104,7 @@ if ! cmp -s "${source_unit}" "${installed_unit}"; then
 fi
 
 service_changed=false
-if [[ ${package_changed} == true || ${unit_changed} == true ]]; then
+if [[ ${package_changed} == true || ${unit_changed} == true || ${restart_pending} == true ]]; then
   service_changed=true
 fi
 
@@ -103,7 +117,7 @@ if [[ ${service_was_active} == true ]]; then
     systemctl --user restart ready-for-agent.service
     service_action="restarted"
   else
-    echo "no package or unit changes detected; leaving ready-for-agent.service running"
+    echo "no package or unit changes detected and no restart pending; leaving ready-for-agent.service running"
     service_action="unchanged"
   fi
 else
@@ -153,6 +167,13 @@ for ((i = 1; i <= 30; i++)); do
       exit 1
       ;;
     esac
+    # The new process is verified serving the installed package: any
+    # pending restart from an earlier interrupted deployment is now
+    # satisfied. The unchanged path never clears — it is only reached
+    # with no marker pending, so a marker always forces a restart first.
+    if [[ ${service_action} == restarted || ${service_action} == started ]]; then
+      rm -f "${PENDING_RESTART_FILE}"
+    fi
     systemctl --user --no-pager status ready-for-agent.service | head -5
     exit 0
   fi

@@ -307,6 +307,10 @@ pre { max-width: 100%; overflow-x: auto; }
 .chart-expanded { position: fixed !important; inset: 12px; z-index: 80; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 14px; overflow: auto; box-shadow: 0 12px 48px rgba(0,0,0,.6); }
 .chart-expanded svg { width: 100% !important; max-width: none !important; height: auto; max-height: calc(100vh - 150px); }
 circle.xpt { cursor: pointer; }
+g.xpt-control { cursor: pointer; }
+g.xpt-control .xpt-hit { fill: transparent; stroke: transparent; stroke-width: 0; pointer-events: all; }
+g.xpt-control:focus-visible .xpt-hit { stroke: #fff; stroke-width: 2; }
+g.xpt-control .xpt { pointer-events: none; }
 .xpl-table td.num, .xpl-table th.num { text-align: right; }
 .xpl-table tr { cursor: pointer; }
 .xpl-table tr:hover td { background: #161b22; }
@@ -407,11 +411,16 @@ body.xp-plan .xpl-costcol { display: none; }
 }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
+  body { overflow-x: clip; }
   main { padding: 12px 10px 60px; }
   nav { padding: 7px 10px; gap: 2px 8px; }
   .navgroup + .navgroup { padding-left: 8px; }
   .navlabel { font-size: 10px; margin-right: 2px; }
   nav a { padding: 5px 7px; }
+  [id] { scroll-margin-top: 192px; }
+  button, select, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, summary { min-height: 40px; }
+  label:has(input[type="checkbox"]), label:has(input[type="radio"]) { display: inline-flex; align-items: center; min-height: 40px; }
+  a.today-health-link { min-height: 40px; }
   h1 { font-size: 16px; }
   .board { grid-template-columns: 1fr; }
   .pool { grid-template-columns: 1fr; }
@@ -5220,7 +5229,9 @@ const AA_EXPLORER_SCRIPT = `<script>
         var py = cy + ((pi % 5) - 2) * 2.5;
         var color = famColor[p.family] || "#8b949e";
         var desc = shortLabel(p) + " — " + axisLabel + " " + valueLabel(v);
-        svg += '<circle class="xpt" data-pick="' + esc(p.key) + '" cx="' + x(v).toFixed(1) + '" cy="' + py.toFixed(1) + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></circle>";
+        const pointX = x(v).toFixed(1);
+        const pointY = py.toFixed(1);
+        svg += '<g class="xpt-control" data-pick="' + esc(p.key) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><circle class="xpt-hit" cx="' + pointX + '" cy="' + pointY + '" r="40"/><circle class="xpt" cx="' + pointX + '" cy="' + pointY + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '"/><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></g>";
       });
     });
     return '<div class="xpl-band-lane-wrap">' + svg + "</svg></div>";
@@ -6346,7 +6357,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
-<table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
+ <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table></div>
 <p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
@@ -6928,7 +6939,7 @@ ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") :
 ${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
 ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
-<table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
+ <div class="tblwrap"><table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table></div>`;
   const script = `<script>
 const VAPID = ${JSON.stringify(vapidPublicKey)};
 const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
