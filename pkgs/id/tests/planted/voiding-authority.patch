@@ -1,0 +1,13 @@
+diff --git a/pkgs/id/crates/id-core/src/membership/layer.rs b/pkgs/id/crates/id-core/src/membership/layer.rs
+index fe30bd38c..88caa96af 100644
+--- a/pkgs/id/crates/id-core/src/membership/layer.rs
++++ b/pkgs/id/crates/id-core/src/membership/layer.rs
+@@ -382,7 +382,7 @@ impl Membership {
+         let filtered =
+             self.state.inner.ignore.contains(id) && !self.state.inner.mutual_removes.contains(id);
+         if filtered {
+-            return false;
++            return true;
+         }
+         let Some(op) = self.state.inner.operations.get(id) else {
+             return false;
