@@ -70,28 +70,49 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 4. For each candidate, highest queue priority first, while cap room
    remains:
    a. Re-verify the task is still claimed, still lane `opencode`,
-   still unbound (re-run poll.py for that task id). If it changed,
-   skip it -- someone else owns the launch now.
-   b. Create the worker session on the standing OpenCode server
-   (`POST /api/session`, directory = the repo's laptop primary,
-   title naming the queue task and issue, model = the route above).
+   still unbound, and still at stage `handed_off` (re-run poll.py
+   for that task id -- its candidate filter encodes all four). If
+   it changed, skip it -- someone else owns the launch now. A task
+   that is assigned `opencode` but NOT handed off belongs to its
+   claiming lane, which is working it: never launch into it.
+   b. Create the worker session on the standing OpenCode server:
+   `POST /api/session` with JSON body `{"directory": <the repo's
+   laptop primary>, "title": <names the queue task and issue>,
+   "model": {"id": <route model>, "providerID": "opencode-route"},
+   "agent": "build"}`. The model goes in the `model` OBJECT --
+   there is no `modelID` field; a create body with one is rejected
+   before any session exists (2026-11-02, task 5857: the fire's one
+   launch window closed while the request shape was corrected).
    From the moment creation succeeds, the session id is KNOWN and
    the steps below are ordered so it can never be lost.
    c. BIND AT LAUNCH, immediately after creation and BEFORE sending
-   the prompt or anything else that can interleave: PATCH the
-   task row (the pm-dispatch precedent: a launch that knows its
-   exact task binds by direct PATCH, then records the lane) setting
-   `progress.session_id` to the new session id and
-   `progress.launched_by: "opencode-claimant"`, then run the helper
-   `checkpoint <id> --worker opencode-claimant --stage launched`
-   with the session id in the progress JSON. A launch without this
-   binding is the Oct 28 duplicate-PR defect -- never leave one.
+   the prompt or anything else that can interleave: run the helper
+   `bind <id> --worker opencode-claimant --session-id <session id>`
+   (bind_repo_task_lane_session, migration 0021). That one call
+   atomically writes the session id into the lane ledger AND sets
+   `progress.session_id` + `progress.launched_by:
+   "opencode-claimant"` on the task row, and it refuses to overwrite
+   a different existing binding -- a bind error means someone else
+   owns the launch; do not prompt your session, note it in the fire
+   log, and move on. Then run the helper
+   `checkpoint <id> --worker <worker_id> --stage launched`
+   with the session id in the progress JSON -- the checkpoint verb
+   enforces claim ownership, so it runs as the candidate's
+   `worker_id` (the claiming repo worker), not as yourself. A
+   launch without this binding is the Oct 28 duplicate-PR defect
+   -- never leave one.
    d. Send the worker prompt to the bound session: the queue runbook
    for its queue with the task id, issue, and packet inlined,
    instructing it to work THAT task (it is already claimed and
-   lane-bound; it must not claim another) and to finish with the
-   helper terminal verbs (complete / park / block / fail) carrying
-   `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`.
+   lane-bound; it must not claim another). The claim belongs to the
+   queue's repo worker (the candidate record's `worker_id` from
+   poll.py), NOT to you: instruct the worker to pass
+   `--worker <worker_id>` on EVERY helper verb it uses (heartbeat,
+   checkpoint, and the terminal verbs), to heartbeat while it works
+   so the claim's lease stays alive, and to finish with the helper
+   terminal verbs (complete / park / block / fail) carrying
+   `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`
+   with the SAME session id you bound in step c.
    e. Post the launch agent-note on the issue (agent-note:v1,
    state=handed off) naming task id + session id.
 5. Terminal states are recorded by the worker session itself via the

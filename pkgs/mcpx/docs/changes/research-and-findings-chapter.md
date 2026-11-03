@@ -1,0 +1,3 @@
+sections: book-summary, chapters-in-order, the-migration-mapping, research-and-incidental-findings, ai-and-llms, harnesses, research-plugins, token-providers, cloudflare, the-typescript-ecosystem, sse, sockets-and-tcp, rpc-and-websockets, research-mcp, oauth, command-line, openapi-and-rest, containers-and-ci, nix, harvesting-how-findings-get-here, quality-bar-for-an-entry
+kind: Added
+summary: the compendium gains its research & incidental findings chapter (#1871 first slice): section outline across the research areas plus the standalone Nix section placeholder, seed findings harvested with citations and measured / read-from-source / hearsay tags, and the harvesting process + quality bar; SUMMARY and the compendium chapter order/migration mapping name the new chapter

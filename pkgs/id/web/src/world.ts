@@ -2,7 +2,7 @@
 
 import { terminalBytesForKey } from "./world-keyboard";
 import { parseWorldSeed } from "./world-seed";
-import { renderWorldSurface, type ScreenSurface } from "./world-surface";
+import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
 type WorldFrame = {
   type:
@@ -18,6 +18,7 @@ type WorldFrame = {
   snapshot?: {
     world_id: string;
     current_sequence: number;
+    active_module_hash?: string | null;
     participants: Array<{ id: number; display_name: string }>;
   };
   event?: {
@@ -28,6 +29,9 @@ type WorldFrame = {
   sequence?: number;
   data?: string;
   surface?: ScreenSurface;
+  view_revision?: number;
+  base_view_revision?: number;
+  patch?: ScreenPatch;
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
   records?: Record<string, unknown>;
@@ -67,6 +71,7 @@ function initWorld(): void {
   const installButton = element<HTMLButtonElement>(root, "[data-world-install]");
   const compileButton = element<HTMLButtonElement>(root, "[data-world-compile]");
   const joinButton = element<HTMLButtonElement>(root, "[data-world-join]");
+  const hostViewButton = element<HTMLButtonElement>(root, "[data-world-host-view]");
   const chatForm = element<HTMLFormElement>(root, "[data-world-chat-form]");
   const chatInput = element<HTMLInputElement>(root, "[data-world-chat]");
   const inputForm = element<HTMLFormElement>(root, "[data-world-input-form]");
@@ -92,6 +97,7 @@ function initWorld(): void {
     !installButton ||
     !compileButton ||
     !joinButton ||
+    !hostViewButton ||
     !chatForm ||
     !chatInput ||
     !inputForm ||
@@ -107,6 +113,10 @@ function initWorld(): void {
   )
     return;
 
+  // The live channel this page's app bound, rendered by the server
+  // as a data attribute on the root element (#2325); the historical
+  // /ws/world remains the default for pages rendered without one.
+  const worldSocketPath = root.dataset.worldSocket ?? "/ws/world";
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
   // The world a request is addressed to; `null` means the server's default.
@@ -116,16 +126,57 @@ function initWorld(): void {
   capability.value = sessionStorage.getItem(storageKey) ?? "";
   let socket: WebSocket | null = null;
   let cursor = 0;
+  let renderedSurface: ScreenSurface | null = null;
+  let renderedViewRevision: number | null = null;
   let records: Record<string, unknown> = {};
   let recordsAfter: string | null = null;
   let recordsPending = false;
   let recordsRefetch = false;
   let reconnects = 0;
   let intentionalClose = false;
+  let hostMode = false;
+  // Bumped when a host-view load starts and when the user leaves host
+  // mode (Join world): a host response that lands after a mode switch is
+  // stale and must not overwrite the guest session (same discipline as
+  // the #1461 socket identity guard, for the HTTP path).
+  let hostViewGeneration = 0;
+  let refreshHostView: () => Promise<void> = async () => {};
 
   const setStatus = (text: string, state: "idle" | "good" | "error" = "idle") => {
     status.textContent = text;
     status.dataset.state = state;
+  };
+
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+  const isWorldSnapshot = (value: unknown): value is NonNullable<WorldFrame["snapshot"]> =>
+    isRecord(value) &&
+    typeof value.world_id === "string" &&
+    isFiniteNumber(value.current_sequence) &&
+    Array.isArray(value.participants) &&
+    value.participants.every(
+      (participant) =>
+        isRecord(participant) && isFiniteNumber(participant.id) && typeof participant.display_name === "string",
+    );
+  const isWorldEvent = (value: unknown): value is NonNullable<WorldFrame["event"]> => {
+    if (
+      !isRecord(value) ||
+      !isFiniteNumber(value.sequence) ||
+      !isFiniteNumber(value.participant_id) ||
+      !isRecord(value.kind)
+    ) {
+      return false;
+    }
+    if (value.kind.kind === "chat") return typeof value.kind.data === "string";
+    if (value.kind.kind === "input") {
+      return Array.isArray(value.kind.data) && value.kind.data.every(isFiniteNumber);
+    }
+    return false;
+  };
+  const rejectFrame = () => {
+    setStatus("Received an invalid world frame", "error");
+    appendLine(log, "error: invalid world frame");
   };
 
   const showCapability = (value: string) => {
@@ -135,33 +186,45 @@ function initWorld(): void {
   };
 
   const receive = (raw: string) => {
-    let frame: WorldFrame;
+    let parsed: unknown;
     try {
-      frame = JSON.parse(raw) as WorldFrame;
+      parsed = JSON.parse(raw) as unknown;
     } catch {
-      setStatus("Received an invalid world frame", "error");
+      rejectFrame();
       return;
     }
+    if (!isRecord(parsed) || typeof parsed.type !== "string") {
+      rejectFrame();
+      return;
+    }
+    const frame = parsed as WorldFrame;
     switch (frame.type) {
       case "snapshot": {
-        if (!frame.snapshot) return;
-        cursor = frame.snapshot.current_sequence;
+        const snapshot = frame.snapshot;
+        if (!isWorldSnapshot(snapshot)) {
+          rejectFrame();
+          return;
+        }
+        cursor = snapshot.current_sequence;
         participants.replaceChildren();
-        for (const participant of frame.snapshot.participants) {
+        for (const participant of snapshot.participants) {
           const tag = document.createElement("span");
           tag.className = "badge badge-outline mr-2";
           tag.dataset.participant = String(participant.id);
           tag.textContent = participant.display_name;
           participants.append(tag);
         }
-        appendLine(log, `Connected to ${frame.snapshot.world_id} at event ${cursor}`);
+        appendLine(log, `Connected to ${snapshot.world_id} at event ${cursor}`);
         setStatus("Connected", "good");
-        requestRecords();
+        if (!hostMode) requestRecords();
         break;
       }
       case "event": {
         const event = frame.event;
-        if (!event) return;
+        if (!isWorldEvent(event)) {
+          rejectFrame();
+          return;
+        }
         cursor = Math.max(cursor, event.sequence);
         if (event.kind.kind === "chat") {
           const who = participants.querySelector<HTMLElement>(`[data-participant="${event.participant_id}"]`);
@@ -173,12 +236,43 @@ function initWorld(): void {
         break;
       }
       case "view":
-        if (frame.surface && renderWorldSurface(view, frame.surface)) break;
-        if (frame.data !== undefined) view.textContent = frame.data;
+        if (frame.patch) {
+          if (
+            renderedSurface &&
+            renderedViewRevision === frame.base_view_revision &&
+            typeof frame.view_revision === "number"
+          ) {
+            const patched = applyScreenPatch(renderedSurface, frame.patch);
+            if (patched && renderWorldSurface(view, patched)) {
+              renderedSurface = patched;
+              renderedViewRevision = frame.view_revision;
+              break;
+            }
+          }
+          // A gap or invalid patch means the browser no longer has the exact
+          // base. A same-size resize asks the server to reset with a full view.
+          sendViewport();
+          break;
+        }
+        if (frame.surface && renderWorldSurface(view, frame.surface)) {
+          renderedSurface = frame.surface;
+          renderedViewRevision = frame.view_revision ?? null;
+          break;
+        }
+        if (frame.data !== undefined) {
+          view.textContent = frame.data;
+          renderedSurface = null;
+          renderedViewRevision = frame.view_revision ?? null;
+        }
         break;
       case "records": {
         if (!recordsPending) return;
-        Object.assign(records, frame.records ?? {});
+        // #2953 (define, don't assign): frame.records is peer-supplied, so
+        // its keys are stored with define semantics — Object.assign would
+        // run a "__proto__" key through the setter instead of storing it.
+        for (const [k, v] of Object.entries(frame.records ?? {})) {
+          Object.defineProperty(records, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
         recordsAfter = frame.next_after ?? null;
         if (recordsAfter === null) {
           recordsPending = false;
@@ -218,6 +312,10 @@ function initWorld(): void {
   };
 
   const requestRecords = () => {
+    if (hostMode) {
+      void refreshHostView();
+      return;
+    }
     if (socket?.readyState !== WebSocket.OPEN) {
       setStatus("Join the world before reading records", "error");
       return;
@@ -245,6 +343,10 @@ function initWorld(): void {
   };
 
   const sendInputBytes = (bytes: Uint8Array) => {
+    if (hostMode) {
+      setStatus("Host view is read-only", "error");
+      return false;
+    }
     if (socket?.readyState !== WebSocket.OPEN) {
       setStatus("Join the world before sending game input", "error");
       return false;
@@ -260,6 +362,10 @@ function initWorld(): void {
     if (sendInputBytes(bytes)) event.preventDefault();
   });
   view.addEventListener("paste", (event: ClipboardEvent) => {
+    if (hostMode) {
+      event.preventDefault();
+      return;
+    }
     const text = event.clipboardData?.getData("text/plain");
     if (text === undefined || !text) return;
     if (new TextEncoder().encode(text).length > 4096) {
@@ -274,7 +380,7 @@ function initWorld(): void {
   });
 
   const sendViewport = () => {
-    if (socket?.readyState !== WebSocket.OPEN) return;
+    if (hostMode || socket?.readyState !== WebSocket.OPEN) return;
     const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
     const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
     const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
@@ -284,6 +390,97 @@ function initWorld(): void {
   viewportObserver.observe(view);
 
   recordsRefresh.addEventListener("click", requestRecords);
+
+  refreshHostView = async () => {
+    const secret = admin.value.trim();
+    if (!secret) {
+      setStatus("Enter the world admin token to view as host", "error");
+      return;
+    }
+    if (socket) {
+      intentionalClose = true;
+      const retired = socket;
+      socket = null;
+      retired.close();
+    }
+    const generation = ++hostViewGeneration;
+    hostMode = true;
+    chatForm.hidden = true;
+    inputForm.hidden = true;
+    view.tabIndex = -1;
+    hostViewButton.disabled = true;
+    setStatus("Loading read-only host view…");
+    renderedSurface = null;
+    renderedViewRevision = null;
+    const world = selectedWorld();
+    let after: string | null = null;
+    let recordsSequence: number | null = null;
+    const allRecords: Record<string, unknown> = {};
+    let firstPage = true;
+    try {
+      do {
+        const params = new URLSearchParams();
+        if (world) params.set("world", world);
+        if (after) params.set("after", after);
+        const response = await fetch(`/api/world/host-view?${params}`, {
+          headers: { "x-world-admin-token": secret },
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error(response.status === 401 ? "Host authorization denied" : "Host view unavailable");
+        }
+        if (generation !== hostViewGeneration || !hostMode) return;
+        const result = (await response.json()) as {
+          snapshot?: NonNullable<WorldFrame["snapshot"]>;
+          view?: string | null;
+          surface?: ScreenSurface | null;
+          records_sequence: number;
+          records: Record<string, unknown>;
+          next_after: string | null;
+        };
+        if (recordsSequence !== null && recordsSequence !== result.records_sequence) {
+          throw new Error("World records changed while paging; refresh the host view");
+        }
+        recordsSequence = result.records_sequence;
+        for (const [k, v] of Object.entries(result.records)) {
+          Object.defineProperty(allRecords, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
+        if (firstPage) {
+          firstPage = false;
+          cursor = result.snapshot?.current_sequence ?? 0;
+          participants.replaceChildren();
+          for (const participant of result.snapshot?.participants ?? []) {
+            const tag = document.createElement("span");
+            tag.className = "badge badge-outline mr-2";
+            tag.textContent = participant.display_name;
+            participants.append(tag);
+          }
+          renderedSurface = null;
+          renderedViewRevision = null;
+          if (result.surface && renderWorldSurface(view, result.surface)) {
+            renderedSurface = result.surface;
+          } else if (result.view) {
+            view.textContent = result.view;
+          } else if (!result.snapshot?.active_module_hash) {
+            view.textContent = "No program is installed. Use Install or update program below.";
+          } else {
+            view.textContent = "The active program has no text view.";
+          }
+          appendLine(log, `Viewing ${result.snapshot?.world_id ?? world ?? "default world"} as host (read-only)`);
+        }
+        after = result.next_after;
+      } while (after !== null);
+      recordsView.textContent = JSON.stringify(allRecords, null, 2);
+      setStatus("Read-only host view", "good");
+    } catch (error) {
+      if (generation === hostViewGeneration && hostMode) {
+        setStatus(error instanceof Error ? error.message : "Host view unavailable", "error");
+      }
+    } finally {
+      hostViewButton.disabled = false;
+    }
+  };
+  hostViewButton.addEventListener("click", () => void refreshHostView());
 
   const connect = () => {
     const token = capability.value.trim();
@@ -297,6 +494,8 @@ function initWorld(): void {
     // (block) this connection's first fetch.
     recordsPending = false;
     recordsRefetch = false;
+    renderedSurface = null;
+    renderedViewRevision = null;
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     // #1461: every handler captures THIS connection's socket (`ws`) and
     // ignores events once it is no longer the current one. The handlers
@@ -304,13 +503,21 @@ function initWorld(): void {
     // async close event (dispatched after a rejoin had already replaced
     // it) scheduled a duplicate reconnect, and a stale socket's open
     // sent its join frame on the newer socket.
-    const ws = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    const ws = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
     socket = ws;
     setStatus("Connecting…");
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
       reconnects = 0;
-      ws.send(JSON.stringify({ type: "join", capability: token, after: cursor || null, world: selectedWorld() }));
+      ws.send(
+        JSON.stringify({
+          type: "join",
+          capability: token,
+          after: cursor || null,
+          world: selectedWorld(),
+          screen_patches: true,
+        }),
+      );
       sendViewport();
     });
     ws.addEventListener("message", (event) => {
@@ -390,7 +597,7 @@ function initWorld(): void {
     installButton.disabled = true;
     setStatus(`Uploading ${file.name} (${file.size} bytes)…`);
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    const upload = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    const upload = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
     let uploadStarted = false;
     upload.addEventListener("open", () => {
       upload.send(
@@ -512,7 +719,7 @@ function initWorld(): void {
     compileButton.disabled = true;
     setStatus(`Reading ${files.length} Roc source file${files.length === 1 ? "" : "s"} (${totalBytes} bytes)…`);
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    const compiler = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    const compiler = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
     compiler.addEventListener("open", () => {
       setStatus("Sources sent; compiling and installing on the host…");
       compiler.send(
@@ -554,6 +761,11 @@ function initWorld(): void {
   });
 
   joinButton.addEventListener("click", () => {
+    hostViewGeneration += 1;
+    hostMode = false;
+    chatForm.hidden = false;
+    inputForm.hidden = false;
+    view.tabIndex = 0;
     if (socket) {
       // #1461: retire the old socket BEFORE closing it - clear the
       // current-socket reference first, so when its close event fires
@@ -574,6 +786,10 @@ function initWorld(): void {
 
   chatForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (hostMode) {
+      setStatus("Host view is read-only", "error");
+      return;
+    }
     const text = chatInput.value.trim();
     if (!text) return;
     if (socket?.readyState !== WebSocket.OPEN) {

@@ -17,17 +17,20 @@ use std::path::PathBuf;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::world_caps::{MAX_NAME_BYTES, validate_ceiling_names, validate_grant_names};
+use crate::world_caps::{
+    MAX_NAME_BYTES, MAX_PENDING_SCHEDULES, validate_ceiling_names, validate_grant_names,
+};
 use crate::world_limits::WorldExecutionProfile;
 
 /// A declarative description of a world. Fields the manifest omits are left
 /// alone by [`plan`], so a minimal manifest drifts nothing; a field that is
 /// present — even empty, like `grants = []` — is authoritative.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "snake_case")]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
 pub struct WorldManifest {
-    /// A content hash of an already-installed module (`blake3:<hex>`). Mutually
-    /// exclusive with `module_source`.
+    /// A content hash of an already-installed module, encoded as 1 to 64 plain
+    /// hexadecimal digits (no `blake3:` prefix). Mutually exclusive with
+    /// `module_source`.
     pub module_hash: Option<String>,
     /// A source file or directory to compile on the host before install.
     /// Mutually exclusive with `module_hash`.
@@ -147,16 +150,65 @@ impl ApplyStep {
 ///
 /// # Errors
 ///
-/// Invalid TOML, or fields that name an unknown capability.
+/// Invalid TOML, an unknown key (top-level, or inside `[profile]`), or
+/// fields that name an unknown capability.
 pub fn parse(text: &str) -> Result<WorldManifest> {
+    reject_unknown_profile_keys(text)?;
     let manifest: WorldManifest = toml::from_str(text).map_err(anyhow::Error::new)?;
     manifest.validate()?;
     Ok(manifest)
 }
 
+/// Reject unknown keys in a manifest's `[profile]` table, naming the key.
+///
+/// `WorldManifest` denies unknown top-level keys via serde, but the
+/// nested profile cannot use `deny_unknown_fields` on
+/// [`WorldExecutionProfile`] itself: that struct must stay lenient
+/// because it is also deserialized from host-returned JSON (see
+/// `current_world_state` in `commands::world`), where a newer host may
+/// send fields this build does not know. So [`parse`] runs this probe
+/// instead: a typo'd limit key (`wasm_fuell = 1`) must fail loudly
+/// instead of silently leaving the live profile alone (#2876).
+///
+/// The probe deserializes through the typed TOML deserializer, never
+/// `toml::Value` — whose integers are `i64`-capped — so full-width
+/// `u64` values the real types accept (a `seed` or `wasm_fuel` above
+/// `i64::MAX`) pass through untouched. The known fields' values are
+/// irrelevant here (the real parse validates them), so they are read
+/// as [`serde::de::IgnoredAny`].
+fn reject_unknown_profile_keys(text: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct ProfileProbe {
+        #[serde(default)]
+        profile: Option<ProfileKeysProbe>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ProfileKeysProbe {
+        #[serde(default)]
+        wasm_fuel: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        wasm_memory_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        wasm_message_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_memory_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_cpu_seconds: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_call_deadline_ms: Option<serde::de::IgnoredAny>,
+    }
+
+    let _: ProfileProbe = toml::from_str(text).map_err(anyhow::Error::new)?;
+    Ok(())
+}
+
 impl WorldManifest {
     /// Validate the manifest: grants and ceiling name only known capabilities,
-    /// schedule ids are bounded printable ASCII, and fire times are positive.
+    /// the requested profile bounds satisfy the execution-profile floors, the
+    /// schedule count is within the pending-schedule cap, schedule ids are
+    /// bounded printable ASCII, and fire times are positive.
     ///
     /// # Errors
     ///
@@ -168,7 +220,17 @@ impl WorldManifest {
         if let Some(ceiling) = &self.ceiling {
             validate_ceiling_names(ceiling)?;
         }
+        // The requested profile bounds are refused here, at parse time,
+        // with the same checks resolve() runs at apply time — an invalid
+        // manifest must never parse and plan clean, then fail partway
+        // through a live apply (#3015).
+        self.profile.validate()?;
         if let Some(schedules) = &self.schedules {
+            ensure!(
+                schedules.len() <= MAX_PENDING_SCHEDULES,
+                "too many schedules: {} exceeds the maximum of {MAX_PENDING_SCHEDULES} pending schedules",
+                schedules.len()
+            );
             for (id, at_ms) in schedules {
                 crate::world_caps::validate_schedule_id(id)?;
                 ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
@@ -306,14 +368,27 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
 ///
 /// # Errors
 ///
-/// A step that names an unknown capability (a manifest should be validated
-/// first; this is a defensive re-check).
+/// A step that names an unknown capability, or that would fold a value
+/// `WorldManifest::validate` refuses — a schedule firing at time zero or
+/// past the pending-schedule cap, a profile outside its bounds, or a
+/// module hash that is not 1 to `MAX_NAME_BYTES` hex digits (a manifest
+/// should be validated first; this is a defensive re-check, #4769).
 pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
     let mut changed = 0;
     for step in steps {
         match step {
             ApplyStep::InstallModule { hash, source, seed } => {
                 if let Some(hash) = hash {
+                    // Same hash form validate() enforces (lines above):
+                    // a non-hex, empty, or over-long hash must not fold
+                    // into state as the live module hash.
+                    let valid = !hash.is_empty()
+                        && hash.len() <= MAX_NAME_BYTES
+                        && hash.bytes().all(|b| b.is_ascii_hexdigit());
+                    ensure!(
+                        valid,
+                        "module hash must be 1 to {MAX_NAME_BYTES} hex digits"
+                    );
                     state.module_hash = Some(hash.clone());
                 }
                 state.seed = *seed;
@@ -337,6 +412,7 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
                 }
             }
             ApplyStep::SetProfile { profile } => {
+                profile.validate()?;
                 if state.profile != *profile {
                     state.profile = *profile;
                     changed += 1;
@@ -344,6 +420,17 @@ pub fn apply(steps: &[ApplyStep], state: &mut WorldState) -> Result<usize> {
             }
             ApplyStep::ScheduleAt { id, at_ms } => {
                 crate::world_caps::validate_schedule_id(id)?;
+                ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
+                // Replacing an existing schedule never grows the map; a
+                // new id must not push it past the pending-schedule cap
+                // validate() enforces.
+                if !state.schedules.contains_key(id) {
+                    ensure!(
+                        state.schedules.len() < MAX_PENDING_SCHEDULES,
+                        "too many schedules: {} exceeds the maximum of {MAX_PENDING_SCHEDULES} pending schedules",
+                        state.schedules.len() + 1
+                    );
+                }
                 if state.schedules.get(id) != Some(at_ms) {
                     state.schedules.insert(id.clone(), *at_ms);
                     changed += 1;
@@ -463,6 +550,94 @@ wasm_fuel = 5_000_000
     }
 
     #[test]
+    fn unknown_top_level_keys_are_rejected() {
+        // #2876: a typo'd or bogus top-level key must fail parse, naming
+        // the key — never silently drop a revocation the admin wrote.
+        let err = parse("grant = []").unwrap_err();
+        assert!(format!("{err}").contains("grant"), "{err}");
+        let err = parse("bogus_key = 1").unwrap_err();
+        assert!(format!("{err}").contains("bogus_key"), "{err}");
+    }
+
+    #[test]
+    fn typoed_field_keys_are_rejected() {
+        // The probe matrix from #2876: each of these used to parse clean
+        // and plan zero steps.
+        for text in ["ceilin = []", "schedule = {}", "seeds = 99"] {
+            assert!(parse(text).is_err(), "parsed clean: {text}");
+        }
+    }
+
+    #[test]
+    fn unknown_profile_keys_are_rejected() {
+        // #2876: same strictness inside [profile], enforced by parse
+        // itself because the profile struct stays lenient for host JSON.
+        let err = parse("[profile]\nwasm_fuell = 1").unwrap_err();
+        assert!(format!("{err}").contains("wasm_fuell"), "{err}");
+    }
+
+    #[test]
+    fn test_invalid_profile_bounds_are_rejected() {
+        // #3015: each bound resolve() refuses at apply time must already
+        // fail parse(), with the same checks.
+        for text in [
+            "[profile]
+wasm_fuel = 0",
+            "[profile]
+wasm_memory_bytes = 1024",
+            "[profile]
+wasm_message_bytes = 0",
+            "[profile]
+native_memory_bytes = 1024",
+            "[profile]
+native_cpu_seconds = 0",
+            "[profile]
+native_call_deadline_ms = 0",
+        ] {
+            assert!(parse(text).is_err(), "parsed clean: {text}");
+        }
+    }
+
+    #[test]
+    fn test_minimum_profile_bounds_are_accepted() {
+        // #3015: the boundary-valid values (one Wasm page, 16 MiB native)
+        // sit exactly on the floors and must parse.
+        let manifest = parse("[profile]
+wasm_memory_bytes = 65536
+native_memory_bytes = 16777216")
+            .unwrap();
+        assert_eq!(manifest.profile.wasm_memory_bytes, Some(65_536));
+        assert_eq!(manifest.profile.native_memory_bytes, Some(16_777_216));
+    }
+
+    #[test]
+    fn test_schedule_count_is_capped_at_parse() {
+        // #3015: a manifest may declare at most MAX_PENDING_SCHEDULES
+        // pending schedules; one more must fail parse, not a live apply.
+        let build = |count: usize| {
+            let entries: Vec<String> = (0..count)
+                .map(|i| format!("\"s{i}\" = 1800000000000"))
+                .collect();
+            format!("schedules = {{ {} }}", entries.join(", "))
+        };
+        assert!(parse(&build(MAX_PENDING_SCHEDULES)).is_ok());
+        let err = parse(&build(MAX_PENDING_SCHEDULES + 1)).unwrap_err();
+        assert!(format!("{err}").contains("too many schedules"), "{err}");
+    }
+
+    #[test]
+    fn full_width_u64_values_still_parse() {
+        // Regression (Codex review of the fix for this issue): the
+        // [profile] key check must not route the document through
+        // toml::Value, whose i64 integers would reject u64 values the
+        // typed manifest accepts.
+        let manifest = parse("seed = 18446744073709551615").unwrap();
+        assert_eq!(manifest.seed, Some(u64::MAX));
+        let manifest = parse("[profile]\nwasm_fuel = 18446744073709551615").unwrap();
+        assert_eq!(manifest.profile.wasm_fuel, Some(u64::MAX));
+    }
+
+    #[test]
     fn an_empty_manifest_drifts_nothing() {
         let manifest = WorldManifest::default();
         // A default (empty) manifest leaves a default (empty) world alone.
@@ -559,6 +734,85 @@ wasm_fuel = 5_000_000
     }
 
     #[test]
+    fn apply_refuses_schedule_at_time_zero() {
+        // #4769: validate() refuses at_ms == 0; apply()'s re-check must too,
+        // naming the schedule id, and must not store the schedule.
+        let mut state = WorldState::default();
+        let steps = [ApplyStep::ScheduleAt {
+            id: "wake".to_owned(),
+            at_ms: 0,
+        }];
+        let err = apply(&steps, &mut state).unwrap_err();
+        assert!(format!("{err}").contains("wake"), "{err}");
+        assert!(state.schedules.is_empty());
+    }
+
+    #[test]
+    fn apply_refuses_schedules_past_the_cap() {
+        // #4769: a step list that would leave more than
+        // MAX_PENDING_SCHEDULES schedules in state is refused.
+        let steps: Vec<ApplyStep> = (0..=MAX_PENDING_SCHEDULES)
+            .map(|i| ApplyStep::ScheduleAt {
+                id: format!("s{i}"),
+                at_ms: 1,
+            })
+            .collect();
+        let mut state = WorldState::default();
+        let err = apply(&steps, &mut state).unwrap_err();
+        assert!(format!("{err}").contains("too many schedules"), "{err}");
+        assert_eq!(state.schedules.len(), MAX_PENDING_SCHEDULES);
+        // Replacing an existing schedule at the cap is not growth and
+        // still folds.
+        let replace = [ApplyStep::ScheduleAt {
+            id: "s0".to_owned(),
+            at_ms: 2,
+        }];
+        assert_eq!(apply(&replace, &mut state).unwrap(), 1);
+        assert_eq!(state.schedules.len(), MAX_PENDING_SCHEDULES);
+    }
+
+    #[test]
+    fn apply_refuses_a_profile_that_fails_validation() {
+        // #4769: SetProfile must run WorldExecutionProfile::validate(),
+        // which refuses a zero wasm_fuel bound.
+        let mut state = WorldState::default();
+        let steps = [ApplyStep::SetProfile {
+            profile: WorldExecutionProfile {
+                wasm_fuel: Some(0),
+                ..WorldExecutionProfile::default()
+            },
+        }];
+        assert!(apply(&steps, &mut state).is_err());
+        assert_eq!(state.profile, WorldExecutionProfile::default());
+    }
+
+    #[test]
+    fn apply_refuses_a_malformed_module_hash() {
+        // #4769: InstallModule must enforce the same 1..=64 hex form
+        // validate() enforces — non-hex, empty, and over-long hashes are
+        // refused and never stored; a valid hash folds as before.
+        for hash in ["", "zz!", &"a".repeat(MAX_NAME_BYTES + 1)] {
+            let mut state = WorldState::default();
+            let steps = [ApplyStep::InstallModule {
+                hash: Some(hash.to_owned()),
+                source: None,
+                seed: 1,
+            }];
+            let err = apply(&steps, &mut state).unwrap_err();
+            assert!(format!("{err}").contains("module hash"), "{err}");
+            assert_eq!(state.module_hash, None, "hash {hash:?} was stored");
+        }
+        let mut state = WorldState::default();
+        let steps = [ApplyStep::InstallModule {
+            hash: Some("abc123".to_owned()),
+            source: None,
+            seed: 1,
+        }];
+        assert_eq!(apply(&steps, &mut state).unwrap(), 1);
+        assert_eq!(state.module_hash.as_deref(), Some("abc123"));
+    }
+
+    #[test]
     fn drift_is_detected_after_a_manual_change() {
         let manifest = parse(manifest_toml()).unwrap();
         let mut state = WorldState::default();
@@ -601,6 +855,16 @@ wasm_fuel = 5_000_000
                 .iter()
                 .any(|s| matches!(s, ApplyStep::ScheduleAt { id, .. } | ApplyStep::CancelSchedule { id } if id == "keep"))
         );
+    }
+
+    #[test]
+    fn module_hash_uses_plain_hex_without_a_blake3_prefix() {
+        let full_hash = "a".repeat(64);
+        let manifest = parse(&format!("module_hash = \"{full_hash}\"")).unwrap();
+        assert_eq!(manifest.module_hash.as_deref(), Some(full_hash.as_str()));
+
+        assert!(parse("module_hash = \"blake3:abc123\"").is_err());
+        assert!(parse(&format!("module_hash = \"blake3:{full_hash}\"")).is_err());
     }
 
     #[test]

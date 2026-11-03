@@ -236,3 +236,226 @@ test('streaming emits a tool_calls delta and a tool_calls finish', async () => {
   const finish = chunks[chunks.length - 1];
   assert.equal(finish.choices[0].finish_reason, 'tool_calls');
 });
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async () => {
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
+});
+
+// --- RPC timeouts (#2102) ---------------------------------------------------
+// A language server that passes heartbeat but never answers an RPC used to
+// hang /v1/models and every chat request forever: callRpc fetched with no
+// timeout. These tests run their own stub + proxy pairs with short injected
+// budgets (ANTIGRAVITY_LS_RPC_TIMEOUTS / ANTIGRAVITY_LS_CASCADE_DEADLINE_MS)
+// so nothing waits for the production budgets.
+
+const startTimeoutRig = async ({ hang = [], delayMs = {}, cascadeSteps = [], timeouts = {}, cascadeDeadlineMs = 30_000 } = {}) => {
+  const hangSet = new Set(hang);
+  const stub = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const method = req.url.split('/').pop();
+      if (hangSet.has(method)) return; // heartbeat-ok, RPC never answers
+      const respond = () => {
+        if (res.destroyed) return;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        if (method === 'GetAvailableModels') res.end(JSON.stringify({ response: { models: {} } }));
+        else if (method === 'GetModelResponse') res.end(JSON.stringify({ response: 'slow but alive' }));
+        else if (method === 'StartCascade') res.end(JSON.stringify({ cascadeId: 'cascade-timeout-test' }));
+        else if (method === 'GetCascadeTrajectorySteps') res.end(JSON.stringify({ steps: cascadeSteps }));
+        else res.end('{}');
+      };
+      const d = delayMs[method] || 0;
+      if (d) setTimeout(respond, d); else respond();
+    });
+  });
+  const lsPort = await freePort();
+  await new Promise((resolve) => stub.listen(lsPort, '127.0.0.1', resolve));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-proxy-timeout-test-'));
+  const port = await freePort();
+  const child = spawn(process.execPath, [path.join(binDir, 'antigravity-ls-proxy.mjs')], {
+    env: {
+      ...process.env,
+      ANTIGRAVITY_LS_PROXY_PORT: String(port),
+      ANTIGRAVITY_LS_ADDRESS: `127.0.0.1:${stub.address().port}`,
+      ANTIGRAVITY_CSRF_TOKEN: 'test-token',
+      ANTIGRAVITY_LS_RPC_TIMEOUTS: JSON.stringify(timeouts),
+      ANTIGRAVITY_LS_CASCADE_DEADLINE_MS: String(cascadeDeadlineMs),
+      XDG_STATE_HOME: path.join(tmp, 'state')
+    },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let log = '';
+  child.stdout.on('data', (d) => { log += d; });
+  child.stderr.on('data', (d) => { log += d; });
+  const deadline = Date.now() + 10000;
+  for (;;) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/health`);
+      if (res.ok) break;
+    } catch {}
+    if (Date.now() > deadline) throw new Error(`timeout-rig proxy did not start: ${log}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return {
+    port,
+    close: () => { child.kill('SIGKILL'); stub.close(); }
+  };
+};
+
+test('a hung GetAvailableModels still serves the static catalog, bounded (#2102)', async () => {
+  const rig = await startTimeoutRig({ hang: ['GetAvailableModels'], timeouts: { GetAvailableModels: 200 } });
+  try {
+    const t0 = Date.now();
+    const res = await fetch(`http://127.0.0.1:${rig.port}/v1/models`);
+    const elapsed = Date.now() - t0;
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.data.some((m) => m.id === 'gemini-3.8-flash'), 'static MODEL_MAP catalog must be served');
+    assert.ok(elapsed < 5000, `models took ${elapsed}ms; the catalog RPC must be bounded`);
+  } finally { rig.close(); }
+});
+
+test('a hung GetModelResponse returns a clean bounded API error (#2102)', async () => {
+  const rig = await startTimeoutRig({ hang: ['GetModelResponse'], timeouts: { GetModelResponse: 200 } });
+  try {
+    const t0 = Date.now();
+    const res = await fetch(`http://127.0.0.1:${rig.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemini-3.8-flash', messages: [{ role: 'user', content: 'hello' }] })
+    });
+    const elapsed = Date.now() - t0;
+    assert.notEqual(res.status, 200);
+    const body = await res.json();
+    assert.match(JSON.stringify(body), /GetModelResponse timed out after 200ms/);
+    assert.ok(elapsed < 5000, `chat took ${elapsed}ms; the RPC must be bounded`);
+  } finally { rig.close(); }
+});
+
+test('a slow-but-alive RPC below its budget still succeeds (#2102)', async () => {
+  const rig = await startTimeoutRig({ delayMs: { GetModelResponse: 100 }, timeouts: { GetModelResponse: 2000 } });
+  try {
+    const res = await fetch(`http://127.0.0.1:${rig.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemini-3.8-flash', messages: [{ role: 'user', content: 'hello' }] })
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, 'slow but alive');
+  } finally { rig.close(); }
+});
+
+test('cascade polling stops at the elapsed deadline, not an iteration count (#2102)', async () => {
+  const rig = await startTimeoutRig({
+    timeouts: { GetCascadeTrajectorySteps: 1000 },
+    cascadeDeadlineMs: 600,
+    cascadeSteps: []
+  });
+  try {
+    const t0 = Date.now();
+    const res = await fetch(`http://127.0.0.1:${rig.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemini-3.8-flash', mode: 'cascade', messages: [{ role: 'user', content: 'hello' }] })
+    });
+    const elapsed = Date.now() - t0;
+    assert.notEqual(res.status, 200);
+    const body = await res.json();
+    assert.match(JSON.stringify(body), /Cascade execution timed out after 600ms/);
+    assert.ok(elapsed < 5000, `cascade took ${elapsed}ms; the deadline must bound it`);
+  } finally { rig.close(); }
+});
+
+test('a cascade poll that lands after the deadline is not accepted (#2102)', async () => {
+  // Codex repro on PR #4080: with a 100ms cascade deadline and a 1000ms
+  // trajectory delay, the old loop accepted the late completion and
+  // answered 200 after ~1.3s. The poll must be bounded by the remaining
+  // deadline budget and the late response discarded.
+  const rig = await startTimeoutRig({
+    cascadeDeadlineMs: 100,
+    delayMs: { GetCascadeTrajectorySteps: 1000 },
+    cascadeSteps: [{
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      plannerResponse: { response: 'late answer' },
+      metadata: {}
+    }]
+  });
+  try {
+    const t0 = Date.now();
+    const res = await fetch(`http://127.0.0.1:${rig.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemini-3.8-flash', mode: 'cascade', messages: [{ role: 'user', content: 'hello' }] })
+    });
+    const elapsed = Date.now() - t0;
+    assert.notEqual(res.status, 200);
+    const body = await res.json();
+    assert.match(JSON.stringify(body), /Cascade execution timed out after 100ms/);
+    assert.ok(elapsed < 800, `cascade took ${elapsed}ms; a late poll must not stretch past the deadline`);
+  } finally { rig.close(); }
+});
+
+test('a healthy cascade still completes (#2102)', async () => {
+  const rig = await startTimeoutRig({
+    cascadeSteps: [{
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      plannerResponse: { response: 'cascade answer' },
+      metadata: {}
+    }]
+  });
+  try {
+    const res = await fetch(`http://127.0.0.1:${rig.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemini-3.8-flash', mode: 'cascade', messages: [{ role: 'user', content: 'hello' }] })
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, 'cascade answer');
+  } finally { rig.close(); }
+});
+test('preserves UTF-8 split across HTTP request-body chunks (#3186)', async () => {
+  const content = 'before-😀-after';
+  const body = Buffer.from(JSON.stringify({
+    model: 'gemini-3.8-flash',
+    messages: [{ role: 'user', content }]
+  }), 'utf8');
+  const emojiStart = body.indexOf(Buffer.from('😀', 'utf8'));
+  const chunks = [body.subarray(0, emojiStart + 2), body.subarray(emojiStart + 2)];
+  capturedPrompt = undefined;
+
+  const response = await new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: proxyPort,
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    request.on('error', reject);
+    request.write(chunks[0]);
+    request.write(chunks[1]);
+    request.end();
+  });
+
+  assert.equal(response, 200);
+  assert.match(capturedPrompt, /before-😀-after/);
+});

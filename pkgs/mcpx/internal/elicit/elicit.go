@@ -14,7 +14,6 @@ package elicit
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -359,7 +358,7 @@ CREATE TABLE IF NOT EXISTS elicitation_answers (
 // NewID mints an identifier.
 func NewID() string {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
+	_, _ = RandSource.Read(b[:])
 	return "elc-" + hex.EncodeToString(b[:])
 }
 
@@ -481,6 +480,16 @@ func (b *Broker) Respond(a Answer) error {
 		// first answer stands and the caller is told so.
 		return b.alreadyAnswered(a.ID)
 	}
+	if a.By != "expiry" && a.At.After(r.ExpiresAt) {
+		// The deadline is enforced on the answer path too, not only on
+		// the wait/list paths: a question whose deadline has passed is
+		// settled as expired (expiry-as-cancel) and the late answer is
+		// refused, instead of being recorded as if the question were
+		// still live (#3129). The answer's own timestamp (defaulted to
+		// now above) is the instant judged: an answer given inside the
+		// lifetime is timely even if it is recorded later.
+		return b.refuseOverdue(a.ID)
+	}
 	// JSON null is content by length and nothing by meaning: it unmarshals
 	// into a nil map, and a null sampling answer crashed the daemon on its
 	// way to the server. Refused here, the question stays open for a real one.
@@ -514,14 +523,32 @@ func (b *Broker) Respond(a Answer) error {
 	// zero rows and is told the documented already-answered outcome instead
 	// of tripping the answer table's primary key (#1691). Writers queue on
 	// the write lock (busy_timeout), so the loser reads the winner's state.
-	claimed, err := tx.Exec(`UPDATE elicitations SET state=? WHERE id=? AND state='pending'`,
-		string(state), a.ID)
+	claim := `UPDATE elicitations SET state=? WHERE id=? AND state='pending'`
+	claimArgs := []any{string(state), a.ID}
+	if a.By != "expiry" {
+		// The claim itself enforces the deadline, so an answer whose
+		// first read raced the deadline across processes cannot land
+		// after it: the row must still be inside its lifetime at claim
+		// time (#3129). Expiry's own claim is exempt -- settling an
+		// overdue question is its job.
+		claim += ` AND expires_ms > ?`
+		claimArgs = append(claimArgs, a.At.UnixMilli())
+	}
+	claimed, err := tx.Exec(claim, claimArgs...)
 	if err != nil {
 		return err
 	}
 	if n, err := claimed.RowsAffected(); err != nil {
 		return err
 	} else if n == 0 {
+		if a.By != "expiry" {
+			// Zero rows with the row still pending means the deadline
+			// condition refused the claim: settle it as expired.
+			_ = tx.Rollback()
+			if cur, ok, gerr := b.get(a.ID); gerr == nil && ok && cur.State == Pending && a.At.After(cur.ExpiresAt) {
+				return b.refuseOverdue(a.ID)
+			}
+		}
 		return b.alreadyAnswered(a.ID)
 	}
 	if _, err := tx.Exec(`INSERT INTO elicitation_answers
@@ -558,6 +585,21 @@ func (b *Broker) alreadyAnswered(id string) error {
 	return fmt.Errorf("%s was already %s", id, r.State)
 }
 
+// refuseOverdue settles an overdue pending question as expired
+// (expiry-as-cancel) and returns the error a late answerer is told.
+// A real answer that claimed the question first keeps #1691's outcome:
+// the winner stands and this caller hears it was already answered.
+func (b *Broker) refuseOverdue(id string) error {
+	landed, err := b.expire(id)
+	if err != nil {
+		return err
+	}
+	if landed.By != "expiry" {
+		return b.alreadyAnswered(id)
+	}
+	return fmt.Errorf("%s expired before it could be answered", id)
+}
+
 // expire answers cancel on the asker's behalf and tolerates losing the
 // race to do it: a real answer (or another expiry) that claimed the
 // question after Await's last Lookup is what the asker was waiting for,
@@ -583,7 +625,21 @@ func (b *Broker) Get(id string) (Request, bool, error) {
 		return r, ok, err
 	}
 	if r.State == Pending {
-		if terr := b.touch(&r, time.Now()); terr != nil {
+		if time.Now().After(r.ExpiresAt) {
+			// An item read enforces the deadline too: an overdue
+			// question is settled as expired (expiry-as-cancel)
+			// rather than presented as live pending with no time
+			// left, which invited answers Respond then had to
+			// refuse (#3129). Touch already refuses to revive it;
+			// expiring here makes the state the answerer sees true.
+			if _, err := b.expire(id); err != nil {
+				return r, true, err
+			}
+			r, ok, err = b.get(id)
+			if err != nil || !ok {
+				return r, ok, err
+			}
+		} else if terr := b.touch(&r, time.Now()); terr != nil {
 			return r, true, terr
 		}
 	}

@@ -18,6 +18,7 @@
 import type { GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { refUrl } from "./model.ts";
 import { PROJECT_URL } from "./projects.ts";
+import { assembleWorkItems, type WorkItem } from "./work-items.ts";
 
 export interface ProgramLink {
   label: string;
@@ -88,7 +89,8 @@ export const PROGRAM: ProgramDoc = {
     },
     {
       title: "Pad — planning",
-      detail: "The planning layer; board cards and roadmap rows link out to Pad notes.",
+      detail:
+        "The standalone planning layer for shared plans and docs; no board-card or roadmap-row Pad links are currently wired.",
     },
     {
       title: "Grist — roadmap & registers",
@@ -140,6 +142,11 @@ export const PROGRAM: ProgramDoc = {
       links: [prLink(920)],
     },
     {
+      title: "GitHub comment projection live via the projector",
+      detail:
+        "Item pages render the GitHub comment stream live from the projector (deployed 2026-10-27, #1199); dashboard-native comments work too. The projector is a declared service of the stack (the pm-projector unit; the aggregator's PM_PROJECTOR_URL is pinned to it in the NixOS module), with fixtures as the per-facet fallback when it is unreachable. Capability provenance: the matrix in the aggregator README (#1200).",
+    },
+    {
       title: "Oct 26 fixes — accuracy pass",
       detail:
         "/today crash fixed on both sides of the data contract; /quota corrected to current console reads with Meta shown walled, not healthy; the board gained its in-flight lane from the orchestrator's lined-up work; the board/roadmap GitHub layer switched from fixtures to the live Project pool.",
@@ -165,11 +172,6 @@ export const PROGRAM: ProgramDoc = {
       detail:
         "The last unimplemented program item: the fleet's work-picking jobs (issue sweeps, the issue creator) should consult the orchestrator's published priorities and blocked-by data first, falling back to their current rules when it is stale. Today only the orchestration pass itself reads it.",
       refs: [issue(911)],
-    },
-    {
-      title: "GitHub comment projection off fixtures",
-      detail:
-        "Item pages render the GitHub comment stream live from the projector (deployed 2026-10-27, #1199); dashboard-native comments work too.",
     },
     {
       title: "Project Roadmap dates",
@@ -209,10 +211,6 @@ export const PROGRAM: ProgramDoc = {
         "Muse sessions are visible only via launch records appended at spawn (scripts/record-claude-launch.ts) — a session that never wrote one is invisible to the dashboard. OpenCode (both machines) and Jules are wired; this gap is also stated on the Needs you coverage note.",
       refs: [issue(898)],
     },
-    {
-      title: "GitHub comment projection is fixture-backed",
-      detail: "See What's next — the dashboard's own comment store is live; the projected GitHub stream is not.",
-    },
   ],
 };
 
@@ -241,6 +239,10 @@ export interface ProgramLive {
   tracked: TrackedIssue[];
   pool: PoolSummary;
   orchestration: OrchestrationFreshness | null;
+  /** The canonical work-item projection (#1206) of the section: the
+   *  same items, ids, statuses, ranks, and blockers every other page
+   *  shows, exposed on the /api/program.json twin. */
+  workItems: WorkItem[];
 }
 
 function counts(values: (string | null)[]): { name: string; count: number }[] {
@@ -271,6 +273,7 @@ export function buildProgramLive(
       byArea: counts(pool.map((p) => p.area)),
     },
     orchestration: orchestration ? { generatedAt: orchestration.generatedAt, runId: orchestration.runId } : null,
+    workItems: orchestration ? assembleWorkItems(orchestration) : [],
   };
 }
 

@@ -16,6 +16,8 @@ use super::derive;
 use super::freshness::{DEFAULT_WINDOW, Freshness};
 use super::token::{ALPHABET, Token, TokenError};
 
+use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+
 const VECTOR_TOKEN: &str = "4uywza+b3cga7rd6yc";
 const VECTOR_INVITE_ID: &str = "6303ec43bd61d21edb95a433faf06227";
 const VECTOR_SIKEY_B64: &str = "Il9ZFgI1yP2b6Hvt53jWIoo8sDre3puyNH8b2es9TTQ=";
@@ -273,6 +275,38 @@ fn a_proof_from_another_token_fails_under_this_key() {
     let other = accept_from(&Token::generate(), "alice", 3, CREATED);
     assert_eq!(
         accept::verify(&invite.public_key(), &other),
+        Err(ProofError::BadSignature)
+    );
+}
+
+#[test]
+fn the_identity_forgery_fails_under_the_identity_key() {
+    // #1386: the identity point is a small-order key, and the shared
+    // forgery (R = identity, S = 0) passes plain verify for any message
+    // under it — only verify_strict keeps it out.
+    let proof = Proof {
+        message: b"any accept message".to_vec(),
+        signature: identity_forgery(),
+    };
+    assert_eq!(
+        accept::verify(&IDENTITY_KEY, &proof),
+        Err(ProofError::BadSignature)
+    );
+}
+
+#[test]
+fn a_non_canonical_s_fails() {
+    // #1386: a genuine proof mutated to S + L must be refused, while
+    // the original verifies.
+    let invite = vector_invite();
+    let proof = accept_from(&vector_token(), "alice", 3, CREATED);
+    assert_eq!(accept::verify(&invite.public_key(), &proof), Ok(()));
+    let malleated = Proof {
+        signature: with_non_canonical_s(proof.signature),
+        ..proof
+    };
+    assert_eq!(
+        accept::verify(&invite.public_key(), &malleated),
         Err(ProofError::BadSignature)
     );
 }

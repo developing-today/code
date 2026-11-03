@@ -16,7 +16,8 @@ if ! bws secret list >/dev/null 2>&1; then
     if [ -f "$f" ]; then source "$f" || true; fi
   done
 fi
-eval "$(python3 - <<'PY'
+eval "$(
+  python3 - <<'PY'
 import json, subprocess
 lst = json.loads(subprocess.run(["bws", "secret", "list"],
                                 capture_output=True, text=True).stdout or "[]")
