@@ -740,15 +740,17 @@ async fn build_blob_gate(
     store: &iroh_blobs::api::Store,
     groups_log: &std::path::Path,
 ) -> crate::blob_gate::FoldedWorlds {
-    let empty_worlds = crate::groups::worlds::Worlds::empty;
-    let worlds = match GroupLog::open(groups_log) {
-        Ok(log) => crate::blob_gate::fold_group_events(log.events()).unwrap_or_else(|error| {
-            warn!("blob gate: group log does not fold: {error}");
-            empty_worlds()
-        }),
+    let group_projection = match GroupLog::open(groups_log) {
+        Ok(log) => match crate::blob_gate::fold_group_events(log.events()) {
+            Ok(projection) => Some(projection),
+            Err(error) => {
+                warn!("blob gate: group log does not fold: {error}");
+                None
+            }
+        },
         Err(error) => {
             warn!("blob gate: cannot open group log: {error}");
-            empty_worlds()
+            None
         }
     };
     let references = {
@@ -798,7 +800,12 @@ async fn build_blob_gate(
     let index = crate::blob_gate::build_reference_index(named, |hash| {
         children.get(hash).cloned().unwrap_or_default()
     });
-    crate::blob_gate::FoldedWorlds::new(worlds, index)
+    match group_projection {
+        Some(projection) => {
+            crate::blob_gate::FoldedWorlds::from_group_projection(projection, index)
+        }
+        None => crate::blob_gate::FoldedWorlds::new(crate::groups::worlds::Worlds::empty(), index),
+    }
 }
 
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
