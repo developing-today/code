@@ -1728,9 +1728,8 @@ async fn records_ticket_session<I: SessionIo>(
     }
 }
 
-/// Largest page of records returned in one frame, comfortably inside
-/// [`MAX_FRAME_BYTES`] after JSON framing overhead.
-pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+/// Compatibility alias for the provider manifest's shared records-page bound.
+pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = crate::world_caps::MAX_RECORDS_PAGE_BYTES;
 
 async fn records_session<I: SessionIo>(
     meter: &WorldMetrics,

@@ -278,12 +278,15 @@ impl WorldScopes {
     /// connected participant may read; `chat.say` also needs `CHAT`.
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
-        match cap {
-            "chat.say" => self.contains(Self::CHAT),
+        match crate::world_caps::PROVIDER_REGISTRY.get(cap).map_or(
+            crate::world_caps::RequiredScope::Join,
+            |provider| provider.required_scope,
+        ) {
+            crate::world_caps::RequiredScope::Chat => self.contains(Self::CHAT),
             // Reading chat needs only the right to read it (`CHAT` or
             // `HISTORY`), the same rule the event stream applies.
-            "chat.history" => self.reads_chat(),
-            _ => self.contains(Self::JOIN),
+            crate::world_caps::RequiredScope::ChatRead => self.reads_chat(),
+            crate::world_caps::RequiredScope::Join => self.contains(Self::JOIN),
         }
     }
 
