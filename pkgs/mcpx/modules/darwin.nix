@@ -72,10 +72,10 @@ in
     # discovery, so a CLI or MCP client in a user session computes
     # the same daemon socket.
     # String interpolation, not the bare value: nix-darwin's
-  # launchd.user.envVariables is typed string with no derivation
-  # coercion, unlike the sessionVariables options on the other
-  # platforms, which accept cfg.configFile directly.
-  launchd.user.envVariables.MCPX_CONFIG = "${cfg.configFile}";
+    # launchd.user.envVariables is typed string with no derivation
+    # coercion, unlike the sessionVariables options on the other
+    # platforms, which accept cfg.configFile directly.
+    launchd.user.envVariables.MCPX_CONFIG = "${cfg.configFile}";
 
     launchd.user.agents.mcpx = {
       serviceConfig = {

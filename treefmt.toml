@@ -98,7 +98,11 @@ includes = ["*.go"]
 # raw-source consumers of the plugin. Idempotent.
 [formatter.mcpx-ops]
 command = "bash"
-options = ["-c", "cd pkgs/mcpx && go test ./internal/api -run '^TestPluginOpsAreGenerated$' -update", "_"]
+options = [
+  "-c",
+  "cd pkgs/mcpx && go test ./internal/api -run '^TestPluginOpsAreGenerated$' -update",
+  "_",
+]
 includes = ["pkgs/mcpx/internal/api/*.go"]
 
 [formatter.haskell]
