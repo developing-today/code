@@ -299,10 +299,13 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
 
-	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	rs, effTool, effArgs, script, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 
 	if err != nil {
 		return nil, err
+	}
+	if script != nil {
+		return callScriptView(ctx, effTool, script, effArgs)
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
