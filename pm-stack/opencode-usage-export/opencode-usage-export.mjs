@@ -59,10 +59,10 @@
  *   read-failed    any other read error. Exit 6.
  */
 import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import fs, { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
 export const SOURCE = "file-export/opencode-usage-laptop";
@@ -380,7 +380,15 @@ export async function run({
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
   const { exitCode, doc } = await run({ argv: process.argv.slice(2) });
   console.log(JSON.stringify({ status: doc.status, exitCode }));
   process.exit(exitCode);
