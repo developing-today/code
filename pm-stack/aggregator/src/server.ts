@@ -90,6 +90,7 @@ import {
   renderQueueShell,
   buildRoadmapDrill,
   renderRoadmap,
+  renderSearch,
   renderServiceDetail,
   renderSessions,
   renderToday,
@@ -113,6 +114,7 @@ import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, esc } from "./render.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
@@ -430,6 +432,13 @@ async function roadmapContext() {
   const drill =
     reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
   return { rows, items, pool: poolResult.pool, reconciliation, drill };
+}
+
+async function searchContext(query: string) {
+  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
+  const items = await source.items(refs);
+  return { query, results: searchWork(board, rows, items, query), items };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -1319,6 +1328,14 @@ async function handler(req: Request): Promise<Response> {
         view,
       ),
     );
+  }
+  if (path === "/search") {
+    const { query, results, items } = await searchContext(url.searchParams.get("q") ?? "");
+    return html(renderSearch(query, results, items, prov(), provDetail()));
+  }
+  if (path === "/api/search.json") {
+    const { query, results } = await searchContext(url.searchParams.get("q") ?? "");
+    return json({ query: query.trim(), total: results.length, results });
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
