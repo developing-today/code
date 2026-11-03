@@ -32,13 +32,23 @@ describe("light theme (#1215)", () => {
   });
 
   test("the dark palette is unchanged as the default", () => {
-    expect(renderSource).toContain("body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }");
+    expect(renderSource).toContain(
+      "body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }",
+    );
   });
 });
 
 describe("non-colour cues (#1215)", () => {
   test("colour-coded state badges also differ by icon prefix", () => {
-    for (const sel of [".badge.walled::before", ".badge.blocked::before", ".badge.drew::before", ".badge.act-pending::before", ".badge.act-applied::before", ".badge.healthy::before", ".badge.stale::before"]) {
+    for (const sel of [
+      ".badge.walled::before",
+      ".badge.blocked::before",
+      ".badge.drew::before",
+      ".badge.act-pending::before",
+      ".badge.act-applied::before",
+      ".badge.healthy::before",
+      ".badge.stale::before",
+    ]) {
       expect(renderSource).toContain(sel);
     }
     expect(renderSource).toContain(String.raw`content: "\\26a0`);
@@ -58,11 +68,17 @@ describe("non-colour cues (#1215)", () => {
 
 describe("one navigation model (#1215, curated by #1497)", () => {
   const hrefs = [...navLinks("/quota").matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
-  const values = [...pageDropdown("/quota").matchAll(/<option value="([^"]+)"/g)].map((m) => m[1]).filter((v) => v !== "");
+  const values = [...pageDropdown("/quota").matchAll(/<option value="([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((v) => v !== "");
 
   test("the dropdown lists every manifest route; the bar lists the primary tier only", () => {
     expect(new Set(values).size).toBe(PAGES.length);
-    expect([...new Set(hrefs)].sort()).toEqual(PAGES.filter((p) => p.nav === "primary").map((p) => p.route).sort());
+    expect([...new Set(hrefs)].sort()).toEqual(
+      PAGES.filter((p) => p.nav === "primary")
+        .map((p) => p.route)
+        .sort(),
+    );
     for (const href of hrefs) expect(values).toContain(href);
   });
 
@@ -92,22 +108,37 @@ describe("one navigation model (#1215, curated by #1497)", () => {
 describe("the emitted explorer script stays valid (#1215, Codex P1 on PR #3308)", () => {
   test("the /aa inline script parses — attribute quotes survive both string layers", () => {
     const prov = {
-      board: "x", roadmap: "x", items: "x", comments: "x", quota: "x",
-      usage: "x", attention: "x", orchestration: "x", dns: "x",
-      registry: "x", aa: "fixtures",
+      board: "x",
+      roadmap: "x",
+      items: "x",
+      comments: "x",
+      quota: "x",
+      usage: "x",
+      attention: "x",
+      orchestration: "x",
+      dns: "x",
+      registry: "x",
+      aa: "fixtures",
     } as never;
     const html = renderAa(FIXTURE_AA, prov);
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((m) => ({
+      tag: m[0].slice(0, m[0].indexOf(">") + 1),
+      body: m[1],
+    }));
     expect(scripts.length).toBeGreaterThan(0);
-    for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+    const module = scripts.find((script) => script.tag.includes('type="module"') && !script.tag.includes(" src="));
+    expect(module?.body).toContain('/assets/aa-explorer-computations.js');
+    for (const script of scripts) {
+      if (script.tag.includes('type="application/json"')) continue;
+      const source = script.body.replace(/^\s*import [^\n]*\n/, "");
+      expect(() => new Function(source)).not.toThrow();
+    }
     // The row-header cells reach the browser as real scope attributes.
-    expect(scripts[0]).toContain('scope=\\"row\\"');
+    expect(module?.body).toContain('scope=\\"row\\"');
   });
 
   test("hidden-configuration restore buttons are themed in the light theme (Codex P2 on PR #3308)", () => {
-    const light = renderSource.slice(
-      renderSource.indexOf("@media (prefers-color-scheme: light)"),
-    );
+    const light = renderSource.slice(renderSource.indexOf("@media (prefers-color-scheme: light)"));
     expect(light).toContain(".hchip button { color: #1f2328;");
   });
 

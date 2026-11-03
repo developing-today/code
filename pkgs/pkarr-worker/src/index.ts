@@ -14,6 +14,7 @@
 // verifies before storing, but is trusted for availability, not integrity.
 
 import { DurableObject } from "cloudflare:workers";
+import { retentionMilliseconds } from "./retention";
 import {
   MAX_RELAY_PAYLOAD,
   buildDohResponse,
@@ -64,8 +65,9 @@ export class PkarrStore extends DurableObject<Env> {
       payload,
       Number(timestampMicros),
     );
-    const retentionMs = Number(this.env.RETENTION_SECONDS || "604800") * 1000;
-    await this.ctx.storage.setAlarm(Date.now() + retentionMs);
+    const now = Date.now();
+    const retentionMs = retentionMilliseconds(this.env.RETENTION_SECONDS, now);
+    await this.ctx.storage.setAlarm(now + retentionMs);
     return "stored";
   }
 

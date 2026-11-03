@@ -11,6 +11,11 @@
 // via the `meta` provider. There is no "muse plan" pool and the
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
+// exactly TWO ChatGPT pools — the main account (drewrypope) reached
+// through the `codex` gatherer door (pool openai:codex) and the
+// alternate account (popesdrew) through the `openai.alternate` door
+// (pool openai.alternate). Separate accounts, separate allowances:
+// never collapse them into one pool.
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
 
@@ -30,18 +35,140 @@ const MONTHS: Record<string, number> = {
 };
 
 /** "Oct 30" + "18:01" UTC -> ISO. Year = now's; rolls forward if past. */
-function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string {
+function monthDayTime(mon: string, day: string, hhmm: string, now: Date): string | null {
+  const normalizedMonth = `${mon.slice(0, 1).toUpperCase()}${mon.slice(1).toLowerCase()}`;
+  const month = MONTHS[normalizedMonth];
+  if (month === undefined) return null;
+
   const [h, m] = hhmm.split(":").map(Number);
-  let d = new Date(Date.UTC(now.getUTCFullYear(), MONTHS[mon], Number(day), h, m));
+  const dayNumber = Number(day);
+  const dateInYear = (year: number) => new Date(Date.UTC(year, month, dayNumber, h, m));
+  const isRequestedDate = (date: Date) => date.getUTCMonth() === month && date.getUTCDate() === dayNumber;
+
+  let d = dateInYear(now.getUTCFullYear());
+  if (!isRequestedDate(d)) return null;
   if (d.getTime() < now.getTime() - 30 * 86_400_000) {
-    d = new Date(Date.UTC(now.getUTCFullYear() + 1, MONTHS[mon], Number(day), h, m));
+    d = dateInYear(now.getUTCFullYear() + 1);
+    if (!isRequestedDate(d)) return null;
   }
   return d.toISOString();
 }
 
-/** "2026-10-28" + "14:00" CDT (UTC-5) -> ISO. */
-function dateTimeCDT(date: string, hhmm: string): string {
-  return `${date}T${hhmm}:00-05:00`;
+const CHICAGO_WALL_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+interface WallTimeParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+}
+
+function wallPartsAt(instant: number): WallTimeParts {
+  const parts = Object.fromEntries(
+    CHICAGO_WALL_FORMATTER.formatToParts(new Date(instant)).map(({ type, value }) => [type, value]),
+  );
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+  };
+}
+
+function wallPartsEpoch(parts: WallTimeParts): number {
+  const date = new Date(0);
+  date.setUTCFullYear(parts.year, parts.month - 1, parts.day);
+  date.setUTCHours(parts.hour, parts.minute, 0, 0);
+  return date.getTime();
+}
+
+/** Interpret a dated Central wall time using its America/Chicago offset. */
+function dateTimeCentral(date: string, hhmm: string): string {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const timeMatch = /^(\d{2}):(\d{2})$/.exec(hhmm);
+  if (!dateMatch || !timeMatch) throw new RangeError(`Invalid Central wall time: ${date} ${hhmm}`);
+
+  const requested: WallTimeParts = {
+    year: Number(dateMatch[1]),
+    month: Number(dateMatch[2]),
+    day: Number(dateMatch[3]),
+    hour: Number(timeMatch[1]),
+    minute: Number(timeMatch[2]),
+  };
+  const wallEpoch = wallPartsEpoch(requested);
+  const normalizedInput = new Date(wallEpoch);
+  if (
+    requested.month < 1 ||
+    requested.month > 12 ||
+    requested.day < 1 ||
+    requested.hour > 23 ||
+    requested.minute > 59 ||
+    normalizedInput.getUTCFullYear() !== requested.year ||
+    normalizedInput.getUTCMonth() + 1 !== requested.month ||
+    normalizedInput.getUTCDate() !== requested.day ||
+    normalizedInput.getUTCHours() !== requested.hour ||
+    normalizedInput.getUTCMinutes() !== requested.minute
+  ) {
+    throw new RangeError(`Invalid Central wall time: ${date} ${hhmm}`);
+  }
+
+  // Sampling either side of the wall date finds both offsets on transition
+  // days. Round-trip candidates to reject skipped times; for a repeated time,
+  // choose the earlier instant deterministically.
+  const offsets = new Set(
+    [-36, 0, 36].map((hours) => {
+      const instant = wallEpoch + hours * 3_600_000;
+      return wallPartsEpoch(wallPartsAt(instant)) - instant;
+    }),
+  );
+  const candidates = [...offsets]
+    .map((offset) => wallEpoch - offset)
+    .filter((instant) => {
+      const actual = wallPartsAt(instant);
+      return (
+        actual.year === requested.year &&
+        actual.month === requested.month &&
+        actual.day === requested.day &&
+        actual.hour === requested.hour &&
+        actual.minute === requested.minute
+      );
+    })
+    .sort((a, b) => a - b);
+  if (candidates.length === 0) throw new RangeError(`Nonexistent Central wall time: ${date} ${hhmm}`);
+
+  const offsetMinutes = Math.round((wallEpoch - candidates[0]) / 60_000);
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absoluteMinutes = Math.abs(offsetMinutes);
+  const offset = `${sign}${String(Math.floor(absoluteMinutes / 60)).padStart(2, "0")}:${String(absoluteMinutes % 60).padStart(2, "0")}`;
+  return `${date}T${hhmm}:00${offset}`;
+}
+
+/**
+ * Reset captures (#2470): the hand-maintained quota view can carry an
+ * impossible calendar date or clock time (month 13, Feb 30, day 39,
+ * 99:99). The shared dateTimeCentral conversion validates Gregorian
+ * dates and 24-hour times and throws on those; for a reset the right
+ * outcome is resetsAt: null with the usage window preserved — never
+ * the verbatim invalid string, never a discarded read, and never a
+ * wallLiftsAt derived from a reset that does not exist. Valid captures
+ * flow through the shared conversion unchanged.
+ */
+function resetDateTimeCentral(date: string, hhmm: string): string | null {
+  try {
+    return dateTimeCentral(date, hhmm);
+  } catch {
+    return null;
+  }
 }
 
 function pctWindow(name: string, pct: number, resetsAt: string | null): QuotaWindow {
@@ -97,7 +224,7 @@ const extractClaude: Extractor = (s, now) => {
   if (!pct) return null;
   const reset = first(s, /weekly reset \w+ (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/i);
   return {
-    windows: [pctWindow("weekly", Number(pct[1]), reset ? dateTimeCDT(reset[1], reset[2]) : null)],
+    windows: [pctWindow("weekly", Number(pct[1]), reset ? resetDateTimeCentral(reset[1], reset[2]) : null)],
     note: "Freshest dated read in the stewardship quota view; Claude exposes no host-side meter.",
   };
 };
@@ -109,6 +236,28 @@ const extractCodex: Extractor = (s, now) => {
   return {
     windows: [pctWindow("7-day", Number(pct[1]), reset ? monthDayTime(reset[1], reset[2], reset[3], now) : null)],
     note: "Codex window read (the Plus/Pro chat allowances are a separate, unresolved record).",
+  };
+};
+
+/**
+ * The alternate ChatGPT account (popesdrew). It has no dated-read
+ * section in the stewardship view yet — its live windows arrive
+ * through the quota gatherer (the openai.alternate credential) and
+ * are overlaid onto this pool by overlayQuotaCurrent. The extractor
+ * exists so a future "### ChatGPT (Alternate)" section is picked up
+ * like every other pool's dated read; until then it fail-softs to
+ * the shell, like any extractor whose pattern stops matching.
+ */
+const extractChatGptAlternate: Extractor = (s) => {
+  const fiveHour = first(s, /5-hour\s+(\d+(?:\.\d+)?)%\s+used/i);
+  const weekly = first(s, /7-day\s+(\d+(?:\.\d+)?)%\s+used/i);
+  if (!fiveHour && !weekly) return null;
+  const windows: QuotaWindow[] = [];
+  if (fiveHour) windows.push(pctWindow("5-hour", Number(fiveHour[1]), null));
+  if (weekly) windows.push(pctWindow("7-day", Number(weekly[1]), null));
+  return {
+    windows,
+    note: "Alternate ChatGPT account (popesdrew) — a separate pool from the main account; the two are never combined.",
   };
 };
 
@@ -129,7 +278,7 @@ const extractMeta: Extractor = (s, now) => {
     };
   }
   const reset = first(s, /[Ww]eekly reset (?:today )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/);
-  const resetIso = reset ? dateTimeCDT(reset[1], reset[2]) : null;
+  const resetIso = reset ? resetDateTimeCentral(reset[1], reset[2]) : null;
   const burned = /burned to empty/i.test(s);
   if (resetIso && now.getTime() >= Date.parse(resetIso)) {
     return {
@@ -186,7 +335,7 @@ const extractClinePass: Extractor = (s) => {
     /5-hour \*\*(\d+(?:\.\d+)?)%\*\* used; weekly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\); monthly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\)/i,
   );
   if (!measured || !m) return null;
-  const base = Date.parse(dateTimeCDT(measured[1], measured[2]));
+  const base = Date.parse(dateTimeCentral(measured[1], measured[2]));
   const rel = (d: string, h: string) => new Date(base + (Number(d) * 24 + Number(h)) * 3_600_000).toISOString();
   return {
     windows: [
@@ -344,6 +493,15 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
   },
   {
+    id: "openai.alternate",
+    provider: "OpenAI",
+    plan: "ChatGPT (Alternate — popesdrew)",
+    heading: /^### ChatGPT \(Alternate\)/,
+    extract: extractChatGptAlternate,
+    shellNote:
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai:codex); the two are never combined.",
+  },
+  {
     id: "opencode-go:personal",
     provider: "OpenCode Go",
     plan: "Personal workspace",
@@ -401,7 +559,7 @@ const SHELL_POOLS: QuotaPool[] = [
     plan: "Go",
     state: "healthy",
     windows: [],
-    note: "Usage uninstrumented — no current read. API route verified; a manual dashboard read is required for a percentage.",
+    note: "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
   },
   {
     id: "deepseek:api",
@@ -464,6 +622,28 @@ export function poolFilteredByDisabled(poolId: string, disabledProviderIds: Read
 }
 
 /**
+ * Pools that stay on the board even when every door provider is
+ * disabled — #1114's filter yields to this list. The filter exists so
+ * the board never presents a pool nobody can burn; an exempt pool IS
+ * burned (through the route layer, not the disabled direct door) and
+ * its quota is measured through OpenCode's credential machinery, so
+ * hiding it would leave a live pool unreported. Drew, 2026-11-03:
+ * meta and opendesign are standard report members and must show real
+ * quotas gathered by asking OpenCode. Today the list holds only
+ * meta:high-usage: the deployed config disables the `meta` provider
+ * as a direct session door, which otherwise filtered the pool at
+ * assembly and left the board with no Meta row at all, while the
+ * gatherer's module read (serviceId meta:high-usage) had no pool to
+ * land on.
+ */
+export const FILTER_EXEMPT_POOL_IDS: ReadonlySet<string> = new Set(["meta:high-usage"]);
+
+/** True when the disabled-door filter must not drop this pool. */
+export function poolFilterExempt(poolId: string): boolean {
+  return FILTER_EXEMPT_POOL_IDS.has(poolId);
+}
+
+/**
  * Extract every pool's freshest dated read from the quota view text.
  *
  * #1114: a pool whose provider id is in the deployed opencode config's
@@ -486,7 +666,7 @@ export function extractQuotaPools(
 ): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
-    if (poolFilteredByDisabled(spec.id, disabledProviderIds)) {
+    if (!poolFilterExempt(spec.id) && poolFilteredByDisabled(spec.id, disabledProviderIds)) {
       onFiltered?.(spec.id, poolProviderIds(spec.id).join(","));
       continue;
     }
@@ -525,7 +705,7 @@ export function extractQuotaPools(
     pools.push(pool);
   }
   const shells = SHELL_POOLS.filter((p) => {
-    if (!poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
+    if (poolFilterExempt(p.id) || !poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
     onFiltered?.(p.id, poolProviderIds(p.id).join(","));
     return false;
   });

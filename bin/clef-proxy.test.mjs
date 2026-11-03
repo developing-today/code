@@ -106,6 +106,7 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
 
   const { child, base } = await startProxy({
     CLEF_PROXY_GATEWAY_BASE: `http://127.0.0.1:${stubPort}/v1`,
+    CLEF_PROXY_DATA_PATH_TIMEOUT_MS: '300',
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost'
   });
@@ -156,6 +157,44 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
     const data = await res.json();
     assert.deepEqual(data.answers, { q1: 'answer one' });
     assert.match(stubPaths.at(-1), /\/workers-ai\/run\//);
+  });
+
+  await t.test('array body is a 400 and never reaches the stub upstream (#2938)', async () => {
+    stubBehavior = (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, result: { answers: { q1: 'answer one' } } }));
+    };
+    const hitsBefore = stubPaths.length;
+    for (const raw of ['[]', '[1,2]']) {
+      const res = await fetch(`${base}/v1/systemone`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
+        body: raw
+      });
+      assert.equal(res.status, 400);
+      const data = await res.json();
+      assert.equal(data.error, 'Invalid JSON body: expected an object');
+    }
+    assert.equal(stubPaths.length, hitsBefore);
+  });
+
+  await t.test('upstream that never sends headers returns a 504', async () => {
+    stubBehavior = () => {};
+    const res = await ask();
+    assert.equal(res.status, 504);
+    const data = await res.json();
+    assert.match(data.error, /timed out/i);
+  });
+
+  await t.test('response body that never completes returns a 504', async () => {
+    stubBehavior = (_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"success":true,"result":');
+    };
+    const res = await ask();
+    assert.equal(res.status, 504);
+    const data = await res.json();
+    assert.match(data.error, /timed out/i);
   });
 });
 
@@ -229,4 +268,67 @@ test('clef-proxy config cache contract (#782)', async (t) => {
     assert.equal(res.status, 401);
     assert.equal(seenAuth.length, callsBefore);
   });
+});
+
+// Model grammar (#2410): the resolved model is interpolated raw into the
+// gateway run URL, so anything outside the Clef family grammar
+// (^@cf/cloudflare/clef[A-Za-z0-9._-]*$) must be refused with a 400
+// BEFORE any upstream fetch, and Clef spellings must reach the stub at
+// the exact expected run path.
+test('clef-proxy model grammar (#2410)', async (t) => {
+  const stubPaths = [];
+  const stub = http.createServer((req, res) => {
+    stubPaths.push(req.url);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, result: { answers: { q1: 'answer one' } } }));
+  });
+  const stubPort = await freePort();
+  await new Promise((resolve) => stub.listen(stubPort, '127.0.0.1', resolve));
+  t.after(() => { stub.close(); });
+
+  const { child, base } = await startProxy({
+    CLEF_PROXY_GATEWAY_BASE: `http://127.0.0.1:${stubPort}/v1`,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost'
+  });
+  t.after(() => { child.kill('SIGTERM'); });
+
+  const ask = (model) => fetch(`${base}/v1/systemone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer <redacted>' },
+    body: JSON.stringify({ state: {}, questions: { q1: 'question one' }, ...(model === undefined ? {} : { model }) })
+  });
+
+  const hostile = [
+    '@cf/meta/llama-3.1-8b-instruct',
+    '@cf/cloudflare/../../ai/models/search',
+    'clef/../../../../client/v4/accounts/OTHER/ai/run/x',
+    '@cf/cloudflare/clef?per_page=1#frag',
+    'my-clef-thing'
+  ];
+  for (const model of hostile) {
+    await t.test(`hostile model is refused 400 with no upstream call: ${model}`, async () => {
+      const callsBefore = stubPaths.length;
+      const res = await ask(model);
+      assert.equal(res.status, 400);
+      const data = await res.json();
+      assert.match(data.error, /Refused model/);
+      assert.equal(stubPaths.length, callsBefore);
+    });
+  }
+
+  const controls = [
+    [undefined, '@cf/cloudflare/clef-flash'],
+    ['clef', '@cf/cloudflare/clef'],
+    ['clef-flash', '@cf/cloudflare/clef-flash'],
+    ['@cf/cloudflare/clef', '@cf/cloudflare/clef'],
+    ['@cf/cloudflare/clef-omni', '@cf/cloudflare/clef-omni']
+  ];
+  for (const [model, resolved] of controls) {
+    await t.test(`control model reaches the stub at the exact run path: ${model}`, async () => {
+      const res = await ask(model);
+      assert.equal(res.status, 200);
+      assert.ok(stubPaths.at(-1).endsWith(`/workers-ai/run/${resolved}`), stubPaths.at(-1));
+    });
+  }
 });

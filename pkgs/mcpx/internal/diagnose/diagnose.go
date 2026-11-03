@@ -502,6 +502,14 @@ func CallError(in CallErrorInput, cat Catalog) []Diagnostic {
 			}
 		}
 	}
+	// Rung 1's second half (#1927): when a supplied name does not fit
+	// the called tool at all, a unique argument-shape fit -- another
+	// tool whose schema the names satisfy, or one declared parameter
+	// the name prefixes -- explains the rejection better than the
+	// missing-argument list does, so it is answered first.
+	if d, ok := shapeFit(in, tool, sent, cat); ok {
+		return []Diagnostic{d}
+	}
 	var out []Diagnostic
 	for _, req := range tool.Shape.Required {
 		if sent[req] {
@@ -576,7 +584,9 @@ func looksLikeSchemaError(msg string) bool {
 // larger word never names a field — "id" inside "invalid" blamed the
 // wrong argument (#1646). An occurrence wrapped in matching quotes or
 // backticks outranks a bare-token occurrence — servers quote the field
-// they mean — and within a class the longest name wins, as before.
+// they mean — and within a class the longest name wins; equal-length
+// matches use the lexicographically smallest name for a deterministic
+// result.
 // Matching stays case-sensitive, and separator variants are not
 // folded: "user-id" does not name "user_id".
 func fieldInMessage(msg string, shape Shape) string {
@@ -597,7 +607,7 @@ func fieldInMessage(msg string, shape Shape) string {
 			if !quoted {
 				continue
 			}
-		} else if len(name) <= len(best) {
+		} else if len(name) < len(best) || (len(name) == len(best) && name >= best) {
 			continue
 		}
 		best, bestQuoted = name, quoted

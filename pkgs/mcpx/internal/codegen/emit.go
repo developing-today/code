@@ -1435,7 +1435,7 @@ export async function call(serverOrTool: string, toolOrArgs?: any, args?: unknow
 /** Execute multiple tool calls in a single turn. */
 export async function batch(
   calls: Array<{ server?: string; namespace?: string; tool: string; args?: unknown; arguments?: unknown }>,
-  options?: { stopOnError?: boolean; parallel?: boolean }
+  options?: { stopOnError?: boolean; parallel?: boolean; safePrefix?: boolean }
 ): Promise<Array<{ index: number; server?: string; tool: string; status: string; result?: any; error?: string; isError?: boolean }>> {
   const resp = await TRANSPORT.fetch(base() + "/v1/batch", {
     method: "POST",
@@ -1457,6 +1457,7 @@ export async function batch(
       })),
       stopOnError: options?.stopOnError ?? true,
       parallel: options?.parallel ?? false,
+      safePrefix: options?.safePrefix ?? false,
     }),
   });
   const body = await resp.json();
@@ -1515,7 +1516,7 @@ export interface ArtifactOptions {
  * a tool result.
  *
  * This behaves identically wherever the script runs, and that is the whole
- * point of it. Locally the daemon hardlinks the file it was pointed at.
+ * point of it. Locally the daemon reads and copies the file into its store.
  * Remotely the bytes travel once, to the daemon, and the caller fetches them
  * only if it wants them. The script does not ask which case it is in, because
  * a script that has to ask is a script with two code paths and one of them is
@@ -1542,8 +1543,8 @@ export async function artifact(
   if (declared) headers["content-type"] = declared;
   let body: BodyInit | undefined;
   if (norm.path !== undefined && env("MCPX_ARTIFACTS_LOCAL") === "1") {
-    // The daemon can see this file. Naming it lets the store hardlink rather
-    // than read, hash into memory and write again.
+    // The daemon can see this file. Naming it avoids uploading the body over
+    // the client transport; the store still reads, hashes, and copies it.
     headers["x-mcpx-path"] = norm.path;
   } else if (norm.path !== undefined) {
     body = await readFileBytes(norm.path) as unknown as BodyInit;

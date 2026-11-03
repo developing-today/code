@@ -61,7 +61,17 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isObjectRef, validateAuthor } from "./comments.ts";
+import type { ViewFilters } from "./views.ts";
+import { validateViewFilters, validateViewName } from "./views.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
+import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
+import {
+  archiveStoreBytes,
+  quarantineUnreadableStore,
+  quarantineWholeStore,
+  type InvalidStoreRecord,
+  type StoreArchive,
+} from "./store-recovery.ts";
 
 export type DashActionKind = "triage" | "status-request" | "session" | "preference";
 
@@ -91,7 +101,13 @@ export type DashActionVerb =
   // preference (#1290)
   | "set-delegation-default"
   // preference — Needs-you card order (#1456)
-  | "set-needs-order";
+  | "set-needs-order"
+  // preference — saved views (#1276): named per-person filter sets,
+  // applied by the aggregator to the views store (src/views.ts).
+  | "save-view"
+  | "rename-view"
+  | "delete-view"
+  | "set-default-view";
 
 export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = {
   triage: [
@@ -109,8 +125,45 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
-  preference: ["set-delegation-default", "set-needs-order"],
+  preference: [
+    "set-delegation-default",
+    "set-needs-order",
+    "save-view",
+    "rename-view",
+    "delete-view",
+    "set-default-view",
+  ],
 };
+
+const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
+const ACTION_STATES = new Set(["new", "applied", "rejected", "superseded"]);
+
+function actionRecordProblem(value: unknown): string | null {
+  if (!isRecord(value)) return "record must be an object";
+  if (!isNonEmptyString(value.id)) return "id must be a non-empty string";
+  if (!isObjectRef(value.objectRef)) return "objectRef must be a non-empty ref string";
+  if (typeof value.kind !== "string" || !ACTION_KINDS.has(value.kind as DashActionKind)) {
+    return "kind must be triage, status-request, session, or preference";
+  }
+  const kind = value.kind as DashActionKind;
+  if (typeof value.verb !== "string" || !VERBS_BY_KIND[kind].includes(value.verb as DashActionVerb)) {
+    return "verb must be supported for the action kind";
+  }
+  if (parseIsoDate(value.createdAt) === null) return "createdAt must be a valid ISO date/time string";
+  if (!isRecord(value.payload)) return "payload must be an object";
+  if (!validateAuthor(value.author)) return "author must have a supported kind, id, and label";
+  if (typeof value.state !== "string" || !ACTION_STATES.has(value.state)) {
+    return "state must be new, applied, rejected, or superseded";
+  }
+  // Pre-token audit rows remain readable; when a token exists it must be
+  // a string so dedupe comparisons have their intended semantics.
+  if (value.clientToken !== undefined && !isNonEmptyString(value.clientToken)) {
+    return "clientToken must be a non-empty string when present";
+  }
+  // Historical payloads are intentionally only required to be records;
+  // individual verbs tolerate older payload shapes at their consumers.
+  return null;
+}
 
 export interface DashActionPayload {
   /** snooze horizon (ISO). */
@@ -143,6 +196,13 @@ export interface DashActionPayload {
   /** set-needs-order: the Needs-you card ordering (#1456). "urgency" is
    *  the orchestrator's published order; the rest sort at render. */
   needsOrder?: "urgency" | "newest" | "oldest" | "deadline";
+  /** save-view / rename-view: the view's display name (#1276). */
+  viewName?: string;
+  /** save-view: the view's filter set (#1276). */
+  viewFilters?: ViewFilters;
+  /** rename-view / delete-view / set-default-view: the view id in the
+   *  views store (#1276). Absent on set-default-view = clear default. */
+  viewId?: string;
 }
 
 export interface DashAction {
@@ -260,6 +320,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       return { ok: false, error: "payload.answers must be an array of at most 50 {questionId, value}" };
     }
     const answers: { questionId: string; value: string | string[] }[] = [];
+    const seenQuestionIds = new Set<string>();
     for (const entry of rawPayload.answers) {
       if (typeof entry !== "object" || entry === null) {
         return { ok: false, error: "payload.answers entries must be {questionId, value}" };
@@ -282,6 +343,14 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       if (q === undefined || v === undefined) {
         return { ok: false, error: "payload.answers entries need non-empty questionId and value" };
       }
+      // #4291: one action answers each question at most once — a
+      // repeated questionId (same or contradictory value) resolves
+      // differently per reader (cardState merges latest-wins, a raw
+      // payload consumer sees both), so reject it here.
+      if (seenQuestionIds.has(q)) {
+        return { ok: false, error: `payload.answers answers question "${q}" more than once` };
+      }
+      seenQuestionIds.add(q);
       answers.push({ questionId: q, value: v });
     }
     if (answers.length) payload.answers = answers;
@@ -311,6 +380,15 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       return { ok: false, error: "payload.needsOrder must be urgency | newest | oldest | deadline" };
     }
     payload.needsOrder = rawPayload.needsOrder;
+  }
+  const viewName = cleanText(rawPayload.viewName, 120);
+  if (viewName !== undefined) payload.viewName = viewName;
+  const viewId = cleanText(rawPayload.viewId, 120);
+  if (viewId !== undefined) payload.viewId = viewId;
+  if (rawPayload.viewFilters !== undefined) {
+    const vf = validateViewFilters(rawPayload.viewFilters);
+    if (!vf.ok) return { ok: false, error: `payload.viewFilters: ${vf.error}` };
+    payload.viewFilters = vf.value;
   }
 
   let targetRef: RefKey | undefined;
@@ -359,6 +437,23 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   }
   if (verb === "set-needs-order" && payload.needsOrder === undefined) {
     return { ok: false, error: "set-needs-order requires payload.needsOrder" };
+  }
+  if (verb === "save-view") {
+    if (payload.viewName === undefined || validateViewName(payload.viewName) === null) {
+      return { ok: false, error: "save-view requires payload.viewName" };
+    }
+    if (payload.viewFilters === undefined) {
+      return { ok: false, error: "save-view requires payload.viewFilters (at least one filter)" };
+    }
+  }
+  if (verb === "rename-view") {
+    if (payload.viewId === undefined) return { ok: false, error: "rename-view requires payload.viewId" };
+    if (payload.viewName === undefined || validateViewName(payload.viewName) === null) {
+      return { ok: false, error: "rename-view requires payload.viewName" };
+    }
+  }
+  if (verb === "delete-view" && payload.viewId === undefined) {
+    return { ok: false, error: "delete-view requires payload.viewId" };
   }
   if (verb === "restore" && supersedes === undefined) {
     return { ok: false, error: "restore requires supersedes (the id of the action it undoes)" };
@@ -416,11 +511,15 @@ export function newClientToken(): string {
 
 export class ActionsStore {
   private actions: DashAction[] = [];
+  private fileExtras: Record<string, unknown> = {};
   private loadPromise: Promise<void> | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
 
-  constructor(private readonly file: string) {}
+  constructor(
+    private readonly file: string,
+    private readonly archive: StoreArchive = archiveStoreBytes,
+  ) {}
 
   // The load is memoized as a single promise (#1509): the old
   // loaded-flag version let concurrent first callers proceed before
@@ -438,38 +537,81 @@ export class ActionsStore {
     // original bytes to <file>.corrupt-<timestamp>, start empty, and
     // log loudly — the next persist then writes a fresh valid file and
     // never touches the quarantined copy.
-    let raw: string;
+    let raw: Buffer;
     try {
-      raw = await readFile(this.file, "utf8");
-    } catch {
-      this.actions = []; // no store yet — the first write creates it
+      raw = await readFile(this.file);
+    } catch (err) {
+      if ((err as { code?: unknown })?.code === "ENOENT") {
+        this.actions = []; // no store yet — the first write creates it
+        this.fileExtras = {};
+        return;
+      }
+      // #2980: a non-ENOENT read failure (EACCES, a transient I/O error,
+      // a directory in place of the file, ...) is NOT "no store yet":
+      // the on-disk audit history may be intact but unread. Handle it
+      // like the corrupt case below — quarantine the original bytes
+      // before starting empty, and log loudly — so the next persist
+      // cannot silently overwrite history the read never saw.
+      let quarantined: string;
+      try {
+        quarantined = await quarantineUnreadableStore(this.file);
+      } catch (renameErr) {
+        throw new Error(
+          `[actions] refusing to continue because ${this.file} could not be read or quarantined: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`,
+          { cause: err },
+        );
+      }
+      this.actions = [];
+      this.fileExtras = {};
+      console.error(
+        `[actions] WARNING: actions store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+          `quarantined the original to ${quarantined} and started empty. The quarantined item holds the prior audit history — do not delete it.`,
+      );
       return;
     }
+
+    let parsed: unknown;
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as ActionsFile).actions)) {
-        throw new Error("store file does not have the expected { actions: [...] } shape");
-      }
-      this.actions = (parsed as ActionsFile).actions.filter(
-        (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
-      );
+      parsed = JSON.parse(raw.toString("utf8"));
     } catch (err) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.actions = [];
-      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-      try {
-        await rename(this.file, quarantined);
-        console.error(
-          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); ` +
-            `quarantined the original bytes to ${quarantined} and started empty. ` +
-            `The quarantined file holds the prior audit history — do not delete it.`,
-        );
-      } catch (renameErr) {
-        console.error(
-          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}) ` +
-            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
-            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
-        );
-      }
+      this.fileExtras = {};
+      console.error(
+        `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`,
+      );
+      return;
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.actions)) {
+      const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
+      this.actions = [];
+      this.fileExtras = {};
+      console.error(
+        `[actions] WARNING: actions store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`,
+      );
+      return;
+    }
+
+    this.fileExtras = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key !== "version" && key !== "actions"),
+    );
+    const valid: DashAction[] = [];
+    const invalid: InvalidStoreRecord[] = [];
+    parsed.actions.forEach((action, index) => {
+      const reason = actionRecordProblem(action);
+      if (reason) invalid.push({ index, reason });
+      else valid.push(action as DashAction);
+    });
+    this.actions = valid;
+    if (invalid.length > 0) {
+      const quarantined = await this.archive(this.file, raw, invalid);
+      console.error(
+        `[actions] WARNING: quarantined ${invalid.length} malformed record(s) from ${this.file}; ` +
+          `original bytes: ${quarantined}; index/reason diagnostics: ${quarantined}.diagnostics.json.`,
+      );
+      // Do not rewrite the active audit log until the original bytes and
+      // the per-record diagnostics are durable.
+      await this.persist();
     }
   }
 
@@ -477,7 +619,7 @@ export class ActionsStore {
   // CommentsStore.persist (#1509).
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
-      const data: ActionsFile = { version: 1, actions: this.actions };
+      const data = { ...this.fileExtras, version: 1 as const, actions: this.actions };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
       await writeFile(tmp, JSON.stringify(data, null, 2));
@@ -559,16 +701,25 @@ export class ActionsStore {
     id: string,
     result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
   ): Promise<DashAction | null> {
+    return (await this.markResultTransition(id, result))?.action ?? null;
+  }
+
+  /** Like markResult, but tells audit writers whether this call consumed
+   *  the action or merely observed an already-terminal record. */
+  async markResultTransition(
+    id: string,
+    result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
+  ): Promise<{ action: DashAction; transitioned: boolean } | null> {
     await this.load();
     const a = this.actions.find((x) => x.id === id);
     if (!a) return null;
-    if (a.state !== "new") return a;
+    if (a.state !== "new") return { action: a, transitioned: false };
     a.state = result.outcome;
     a.appliedAt = new Date().toISOString();
     a.appliedByRun = result.byRun.slice(0, 200);
     if (result.note) a.resultNote = result.note.slice(0, 2_000);
     await this.persist();
-    return a;
+    return { action: a, transitioned: true };
   }
 }
 

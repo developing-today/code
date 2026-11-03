@@ -281,6 +281,34 @@ func TestCompletionIsForwardedToTheOwningServer(t *testing.T) {
 	})
 }
 
+// #2878: when the backend's answer was already capped by the daemon,
+// the full match count it reported must survive to the client —
+// recomputing total from the capped values would claim total=50,
+// hasMore=false for a set of 150.
+func TestCompletionPreservesTheBackendsTotal(t *testing.T) {
+	complete := func(s *mcpserver.Server) string {
+		b, _ := json.Marshal(s.Handle(context.Background(), mcpserver.Request(1, "completion/complete",
+			map[string]any{"ref": map[string]any{"type": "ref/prompt", "name": "capped"},
+				"argument": map[string]any{"name": "text", "value": ""}})))
+		return string(b)
+	}
+	b := complete(mcpserver.New(newBackend(), "mcpx", "test"))
+	if !strings.Contains(b, `"total":150`) || !strings.Contains(b, `"hasMore":true`) {
+		t.Fatalf("backend total not preserved: %s", b)
+	}
+	if !strings.Contains(b, `"capped-49"`) || strings.Contains(b, `"capped-50"`) {
+		t.Fatalf("values are not the backend's capped page: %s", b)
+	}
+	// A lower MCP-side cap truncates the page further but never the total.
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.MaxCompletions = func() int { return 10 }
+	b = complete(s)
+	if !strings.Contains(b, `"total":150`) || !strings.Contains(b, `"hasMore":true`) ||
+		!strings.Contains(b, `"capped-09"`) || strings.Contains(b, `"capped-10"`) {
+		t.Fatalf("lower cap lost the total: %s", b)
+	}
+}
+
 // Conflict #12: prompts/get answered every failure with -32602.
 func TestPromptErrorsAreClassified(t *testing.T) {
 	s := mcpserver.New(newBackend(), "mcpx", "test")

@@ -148,7 +148,18 @@ export class GitHubClient {
       // gh fallback for label creation is best-effort: `gh issue create
       // --label` fails on a missing label, so create it there too.
       try {
-        await this.gh(["label", "create", label, "--repo", repo, "--color", def.color, "--description", def.description, "--force"]);
+        await this.gh([
+          "label",
+          "create",
+          label,
+          "--repo",
+          repo,
+          "--color",
+          def.color,
+          "--description",
+          def.description,
+          "--force",
+        ]);
       } catch {
         /* label may already exist — the create call below will say so */
       }
@@ -272,6 +283,42 @@ export class GitHubClient {
       }
     }
     await this.gh(["issue", "edit", String(issueNumber), "--repo", repo, ...labels.flatMap((l) => ["--add-label", l])]);
+  }
+
+  /**
+   * Close an issue with a state reason (#4917). Used to compensate a
+   * dispatch-created tracking issue when the launch fails before the
+   * dispatch becomes real, so the issue does not linger open as an
+   * orphan. Only ever called on issues this service created itself —
+   * never on attach targets a caller supplied.
+   */
+  async closeIssue(
+    repo: string,
+    issueNumber: number,
+    stateReason: "not_planned" | "completed" = "not_planned",
+  ): Promise<void> {
+    if (this.appConfigured) {
+      try {
+        const token = await this.installationToken(repo);
+        const res = await this.appApi("PATCH", `/repos/${repo}/issues/${issueNumber}`, token, {
+          state: "closed",
+          state_reason: stateReason,
+        });
+        if (!res.ok) throw new GitHubError(`issue close failed (HTTP ${res.status})`);
+        return;
+      } catch {
+        /* fall through to gh */
+      }
+    }
+    await this.gh([
+      "issue",
+      "close",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--reason",
+      stateReason === "not_planned" ? "not planned" : "completed",
+    ]);
   }
 
   async comment(repo: string, issueNumber: number, body: string): Promise<void> {

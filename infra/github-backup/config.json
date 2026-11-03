@@ -94,10 +94,7 @@
       "metadata": "read",
       "contents": "read"
     },
-    "events": [
-      "push",
-      "repository"
-    ],
+    "events": ["push", "repository"],
     "bitwarden_secret_names": {
       "app_id": "github-app.backup-app-id",
       "client_id": "github-app.backup-client-id",
