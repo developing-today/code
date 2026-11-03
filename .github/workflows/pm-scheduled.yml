@@ -50,6 +50,7 @@ jobs:
   #     contents: read
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Resolve the target repo and the task list
         id: resolve

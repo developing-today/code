@@ -1655,12 +1655,12 @@ mod tests {
         // App A keeps the historical binding; app B binds its own
         // socket from its [interfaces.web] section (#2325).
         let addr_a = serve(world_routes().with_state(WorldWebState {
-            hub: None,
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
             cookie_secure: false,
         }))
         .await;
         let addr_b = serve(world_routes_at("/ws/arena").with_state(WorldWebState {
-            hub: None,
+            hub: Some(WorldHub::single(WorldService::new(lobby(), None))),
             cookie_secure: false,
         }))
         .await;

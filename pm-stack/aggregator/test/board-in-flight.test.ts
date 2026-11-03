@@ -111,14 +111,16 @@ describe("inFlightBoardItems", () => {
       ]),
       [],
     );
-    expect(out.map((i) => i.orchStatus)).toEqual(["in-progress", "queued", "blocked"]);
+    // #1206: the lane is in canonical queue-rank order (in-progress,
+    // then blocked, then queued), not raw section order.
+    expect(out.map((i) => i.orchStatus)).toEqual(["in-progress", "blocked", "queued"]);
     expect(out.every((i) => i.source === "orchestrator" && i.status === "in-flight")).toBe(true);
     expect(out.every((i) => i.updatedAt === GENERATED)).toBe(true);
     expect(out[0].links.map((l) => l.ref)).toEqual(["developing-today/code#944", "developing-today/code#985"]);
     expect(out[0].repo).toBe("developing-today/code");
-    expect(out[2].blockedBy).toEqual(["Drew's Plaid/Citi sign-in (stalled)"]);
-    expect(out[2].links).toEqual([]);
-    expect(out[2].goal).toBe("Keep the four repos healthy");
+    expect(out[1].blockedBy).toEqual(["Drew's Plaid/Citi sign-in (stalled)"]);
+    expect(out[1].links).toEqual([]);
+    expect(out[1].goal).toBe("Keep the four repos healthy");
   });
 
   test("an explicit linedUp ref is linked even when the title carries none", () => {

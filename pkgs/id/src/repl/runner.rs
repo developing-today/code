@@ -1493,6 +1493,16 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
     if peek_opts.lines == 0 {
         anyhow::bail!("--lines must be at least 1 (got 0)");
     }
+    // The CLI declares both pairs conflicts_with (cli.rs); accepting
+    // both would silently render only one member (#3890).
+    anyhow::ensure!(
+        !(peek_opts.head_only && peek_opts.tail_only),
+        "--head-only and --tail-only cannot be used together"
+    );
+    anyhow::ensure!(
+        !(peek_opts.chars && peek_opts.words),
+        "--chars and --words cannot be used together"
+    );
     Ok((find_args, peek_opts))
 }
 
@@ -2319,6 +2329,34 @@ mod tests {
 
         assert!(parse_peek_args(&["readme", "--first", "2"]).is_ok());
         assert!(parse_peek_args(&["readme", "--last", "3"]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_peek_args_rejects_head_only_and_tail_only_together() {
+        let err = parse_peek_args(&["readme", "--head-only", "--tail-only"])
+            .err()
+            .expect("conflicting peek modes should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--head-only and --tail-only cannot be used together"
+        );
+
+        assert!(parse_peek_args(&["readme", "--head-only"]).is_ok());
+        assert!(parse_peek_args(&["readme", "--tail-only"]).is_ok());
+    }
+
+    #[test]
+    fn test_parse_peek_args_rejects_chars_and_words_together() {
+        let err = parse_peek_args(&["readme", "--chars", "--words"])
+            .err()
+            .expect("conflicting peek units should be rejected");
+        assert_eq!(
+            err.to_string(),
+            "--chars and --words cannot be used together"
+        );
+
+        assert!(parse_peek_args(&["readme", "--chars"]).is_ok());
+        assert!(parse_peek_args(&["readme", "--words"]).is_ok());
     }
 
     #[test]

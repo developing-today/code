@@ -29,7 +29,17 @@ use thiserror::Error;
 
 use crate::tags::{TagStore, now_unix};
 
-const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 3] = [b"name", b"file", b"path"];
+const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
+    b"name",
+    b"file",
+    b"path",
+    // Archive references describe the live file's archives, so they
+    // stay on the live name when its other metadata moves onto an
+    // archive. Letting one travel onto the archive subject orphans
+    // every earlier archive from the live file's delete (#4574).
+    b"archive.rename",
+    b"archive.replace",
+];
 
 /// Errors from file operations, distinguishable so callers can map them to
 /// protocol errors or HTTP status codes.
@@ -241,6 +251,24 @@ impl<'a> FileOps<'a> {
         let Some(existing) = self.store.tags().get(name).await? else {
             return Ok(None);
         };
+        // Archive references belong to the live file: they name the
+        // archives a future delete of this file must also remove. The
+        // transfer below discards them from this name (and the
+        // exclusion list keeps them off the archive), so snapshot them
+        // here and restore them onto the live name afterwards -
+        // otherwise each replacement orphans every earlier archive.
+        let mut archive_refs = Vec::new();
+        for key in [&b"archive.rename"[..], &b"archive.replace"[..]] {
+            for tag in self
+                .tags
+                .get_by_key(&self.tags.global, name.as_bytes(), key)
+                .await?
+            {
+                if let Some(value) = tag.value.as_ref().and_then(|value| value.as_str()) {
+                    archive_refs.push((key, value.to_owned()));
+                }
+            }
+        }
         let archive = claim_archive_name(self.store, name, ts, existing.hash)
             .await
             .with_context(|| format!("archiving replaced file {name}"))?;
@@ -257,6 +285,18 @@ impl<'a> FileOps<'a> {
             .refresh_identity_tags(&self.tags.global, archive.as_bytes())
             .await
             .with_context(|| format!("refreshing identity for archive {archive}"))?;
+        for (key, value) in &archive_refs {
+            self.tags
+                .set_tag(
+                    &self.tags.global,
+                    name.as_bytes(),
+                    key,
+                    Some(value.as_bytes()),
+                    b"",
+                )
+                .await
+                .with_context(|| format!("restoring archive references for {name}"))?;
+        }
         Ok(Some(archive))
     }
 

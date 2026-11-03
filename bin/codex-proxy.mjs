@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { listenTarget } from './socket-activation.mjs';
 import { createRequestBodyCollector } from './request-body.mjs';
 import { createStreamDecoder } from './stream-decode.mjs';
 
@@ -64,6 +65,12 @@ const publishEndpoint = () => {
 // row, never `openai.alternate`), and both outcomes are logged: a failed sync
 // must never again be indistinguishable from a successful one.
 const syncCodexTokensToOpenCode = () => {
+  // Cutover switch for opencode#1154: the fork's in-server credential sync
+  // (credential/codex-sync) replaces this sync as the credential store's
+  // writer. CODEX_PROXY_TOKEN_SYNC=0 turns this door's sync off so the two
+  // never write the openai credential row in alternation; the listen callback
+  // logs the disabled state once at startup.
+  if (process.env.CODEX_PROXY_TOKEN_SYNC === '0') return;
   let db = null;
   try {
     const codexAuthPath = `${process.env.HOME}/.codex/auth.json`;
@@ -1322,10 +1329,16 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: { message: `Route not found: ${req.method} ${pathname}` } }));
 });
 
-server.listen(PORT, HOST, () => {
+// Socket activation (#1821): under systemd the listener arrives as fd 3
+// and systemd owns the bind; a manual launch binds PORT/HOST directly.
+server.listen(listenTarget({ port: PORT, host: HOST }), () => {
   publishEndpoint();
   console.log(`[codex-proxy] OpenAI-compatible bridge listening on http://${HOST}:${PORT}`);
   console.log(`[codex-proxy] Resolved codex binary: ${CODEX_BIN}`);
-  syncCodexTokensToOpenCode();
+  if (process.env.CODEX_PROXY_TOKEN_SYNC === '0') {
+    console.log('[codex-proxy] codex-token-sync: disabled by CODEX_PROXY_TOKEN_SYNC=0 (in-fork sync owns the credential store)');
+  } else {
+    syncCodexTokensToOpenCode();
+  }
   setInterval(syncCodexTokensToOpenCode, 5 * 60 * 1000);
 });
