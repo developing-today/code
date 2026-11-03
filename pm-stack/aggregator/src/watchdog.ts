@@ -82,7 +82,15 @@ export interface WatchdogInputs {
 
 const WATCHDOG_REF = "developing-today/code#1148" as TierItem["ref"];
 
-function item(input: string, title: string, state: string, reason: string, sinceMs: number, now: number, action: string): TierItem {
+function item(
+  input: string,
+  title: string,
+  state: string,
+  reason: string,
+  sinceMs: number,
+  now: number,
+  action: string,
+): TierItem {
   return {
     id: `watchdog:${input}`,
     kind: "gap",

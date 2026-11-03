@@ -268,16 +268,26 @@ fn decode_kind(kind: &str, args: &Value<'static>) -> Result<GroupAction<AuthId, 
     }
 }
 
-/// `[kind, id]` back to a member.
+/// `[kind, id]` back to a member. The outer kind must agree with the inner identity tag:
+/// kind `0` (individual) holds a key (tag `0`), kind `1` (group) holds a group hash (tag `1`).
+/// A contradictory pair is refused so one identity can never acquire both membership semantics.
 fn decode_member(value: &Value<'static>) -> Result<GroupMember<AuthId>, BodyError> {
     let [kind, id] = list(value, 2)? else {
         return Err(BodyError::Shape("a member has two items".to_owned()));
     };
     let id = decode_auth(id)?;
-    match unsigned(kind)? {
-        0 => Ok(GroupMember::Individual(id)),
-        1 => Ok(GroupMember::Group(id)),
-        other => Err(BodyError::Shape(format!("member kind {other}"))),
+    match (unsigned(kind)?, &id) {
+        (0, AuthId::Key(_)) => Ok(GroupMember::Individual(id)),
+        (1, AuthId::Group(_)) => Ok(GroupMember::Group(id)),
+        (0, AuthId::Group(_)) => Err(BodyError::Shape(
+            "an individual member (kind 0) holds a group identity (tag 1), expected a key (tag 0)"
+                .to_owned(),
+        )),
+        (1, AuthId::Key(_)) => Err(BodyError::Shape(
+            "a group member (kind 1) holds a key identity (tag 0), expected a group hash (tag 1)"
+                .to_owned(),
+        )),
+        (other, _) => Err(BodyError::Shape(format!("member kind {other}"))),
     }
 }
 
@@ -561,6 +571,52 @@ mod tests {
             "tag 2 is not an identity"
         );
         assert!(decode_body(&tagged(0, 33)).is_err(), "34 bytes is too long");
+    }
+
+    #[test]
+    fn test_a_member_kind_must_match_its_identity_tag() {
+        let body_with = |kind: &str, outer_kind: u64, id: &AuthId, with_access: bool| {
+            let member = Value::Array(vec![
+                Value::Unsigned(outer_kind),
+                Value::ByteString(auth_bytes(id).into()),
+            ]);
+            let args = if with_access {
+                Value::Array(vec![member, Value::Unsigned(1)])
+            } else {
+                Value::Array(vec![member])
+            };
+            Value::Array(vec![
+                Value::TextString(TAG.into()),
+                Value::Unsigned(VERSION),
+                Value::TextString(kind.into()),
+                args,
+            ])
+            .encode()
+        };
+        let key_id = key(7);
+        let group_id = AuthId::Group(Hash::digest(b"a group"));
+        // Matching pairs decode for remove and for join.
+        assert!(decode_body(&body_with("remove", 0, &key_id, false)).is_ok());
+        assert!(decode_body(&body_with("remove", 1, &group_id, false)).is_ok());
+        assert!(decode_body(&body_with("join", 0, &key_id, true)).is_ok());
+        assert!(decode_body(&body_with("join", 1, &group_id, true)).is_ok());
+        // Contradictory pairs are refused as shapes for remove and for join.
+        for (kind, with_access) in [("remove", false), ("join", true)] {
+            assert!(
+                matches!(
+                    decode_body(&body_with(kind, 0, &group_id, with_access)),
+                    Err(BodyError::Shape(_))
+                ),
+                "an outer individual holding a group hash is refused for {kind}"
+            );
+            assert!(
+                matches!(
+                    decode_body(&body_with(kind, 1, &key_id, with_access)),
+                    Err(BodyError::Shape(_))
+                ),
+                "an outer group holding a key is refused for {kind}"
+            );
+        }
     }
 
     #[test]

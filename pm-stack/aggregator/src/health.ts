@@ -263,11 +263,12 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
       : undefined;
   const section = (key: string, generatedAt: string | undefined, present: boolean, note?: string) => {
     const outcome = feed.meta?.sections[key];
-    const outcomeNote = outcome?.status === "error"
-      ? outcome.error
-      : outcome?.status === "skipped"
-        ? "intentionally skipped by collector"
-        : undefined;
+    const outcomeNote =
+      outcome?.status === "error"
+        ? outcome.error
+        : outcome?.status === "skipped"
+          ? "intentionally skipped by collector"
+          : undefined;
     return {
       key,
       status: outcome?.status ?? "unknown",

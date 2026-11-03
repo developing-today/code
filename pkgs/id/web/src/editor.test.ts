@@ -13,6 +13,7 @@ import {
   hasToolbar,
   initEditor,
   isEditable,
+  parseImageDimension,
   parseOrderedListStart,
   rawSchema,
   richSchema,
@@ -244,7 +245,9 @@ describe("richSchema list tight attrs (#1469)", () => {
       content: [{ type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] }],
     };
     const out = richSchema.nodeFromJSON(json).toJSON();
-    expect(out.content[0].attrs).toEqual({ order: 3, tight });
+    // #1380: the schema fills the delimiter default ("period") when the
+    // input omits it, so the round-tripped attrs carry it explicitly.
+    expect(out.content[0].attrs).toEqual({ order: 3, tight, delimiter: "period" });
     expect(out.content[0].content).toEqual([item("a"), item("b")]);
   });
 });
@@ -656,5 +659,65 @@ describe("getSendableSteps", () => {
     expect(result).toHaveProperty("clientID");
     expect(Array.isArray(result!.steps)).toBe(true);
     expect(result!.steps.length).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
+// #2010: image parseDOM width/height parsing — only plain non-negative
+// safe integers survive; everything else is dropped to null at parse time
+// (no NaN, fractions, negatives, or reinterpreted hex/scientific values)
+// ============================================================================
+
+describe("image dimension parsing (#2010)", () => {
+  it.each([
+    ["200", 200],
+    ["0", 0],
+    ["42", 42],
+  ])("preserves valid dimension=%s as %i", (raw, expected) => {
+    expect(parseImageDimension(raw)).toBe(expected);
+  });
+
+  it.each(["200px", "50%", "2.5", "-5", "abc", "0x10", "1e3", "", "9007199254740993"])(
+    "drops invalid dimension=%s to null",
+    (raw) => {
+      expect(parseImageDimension(raw)).toBeNull();
+    },
+  );
+
+  it("drops an absent dimension to null", () => {
+    expect(parseImageDimension(null)).toBeNull();
+  });
+
+  const imgGetAttrs = () => {
+    const rule = richSchema.nodes.image.spec.parseDOM?.[0];
+    if (!rule || !("getAttrs" in rule) || typeof rule.getAttrs !== "function") {
+      throw new Error("image parseDOM rule has no getAttrs");
+    }
+    return rule.getAttrs;
+  };
+
+  it.each([
+    ["200", 200],
+    ["200px", null],
+    ["50%", null],
+    ["2.5", null],
+    ["-5", null],
+    ["0x10", null],
+  ])("parseDOM getAttrs maps width=%s to %s", (raw, expected) => {
+    const el = document.createElement("img");
+    el.setAttribute("src", "x.png");
+    el.setAttribute("width", raw);
+    el.setAttribute("height", raw);
+    const attrs = imgGetAttrs()(el) as { width: unknown; height: unknown };
+    expect(attrs.width).toBe(expected);
+    expect(attrs.height).toBe(expected);
+  });
+
+  it("parseDOM getAttrs defaults dimensions to null when absent", () => {
+    const el = document.createElement("img");
+    el.setAttribute("src", "x.png");
+    const attrs = imgGetAttrs()(el) as { width: unknown; height: unknown };
+    expect(attrs.width).toBeNull();
+    expect(attrs.height).toBeNull();
   });
 });

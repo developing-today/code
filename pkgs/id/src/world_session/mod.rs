@@ -59,11 +59,19 @@ pub(crate) use types::{
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
-    MAX_WORLD_MODULE_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, SessionConfig, SessionIo, WorldService,
-    check_invite_bounds,
+    MAX_WORLD_MODULE_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, ModuleSignature, SessionConfig,
+    SessionIo, WorldService, check_invite_bounds,
 };
 
 impl WorldService {
+    /// Require module artifacts to carry a valid signature from one of these
+    /// Ed25519 public keys. An empty list preserves the legacy unsigned path.
+    #[must_use]
+    pub fn with_module_trust_keys(mut self, keys: Vec<[u8; 32]>) -> Self {
+        self.trusted_module_keys = keys;
+        self
+    }
+
     /// Accept native (ELF) module installs. Wasm stays the default tier.
     #[must_use]
     pub const fn with_native_enabled(mut self) -> Self {
@@ -180,6 +188,7 @@ impl WorldService {
             compiler: None,
             native: false,
             source_only: false,
+            trusted_module_keys: Vec::new(),
             runtime: crate::world_limits::RuntimeLimits::default(),
             mail: None,
             outbox: None,
@@ -329,6 +338,7 @@ impl WorldService {
                 permit,
                 true,
                 Some(provenance),
+                None,
             )
             .await
             .map_err(|error| format!("install failed: {error:?}"))?;
@@ -492,6 +502,21 @@ impl WorldService {
         seed: u64,
         claimed_hash: &str,
     ) -> Result<(String, u64), InstallError> {
+        self.install_wasm_with_signature(supplied_admin, wasm, seed, claimed_hash, None)
+            .await
+    }
+
+    /// As [`Self::install_wasm`], with an optional signer signature for
+    /// servers that configure a non-empty module trust list.
+    #[cfg(feature = "sandbox")]
+    pub async fn install_wasm_with_signature(
+        &self,
+        supplied_admin: Option<&str>,
+        wasm: Vec<u8>,
+        seed: u64,
+        claimed_hash: &str,
+        signature: Option<&ModuleSignature>,
+    ) -> Result<(String, u64), InstallError> {
         let permit = self.try_reserve_module_upload()?;
         self.install_wasm_reserved(
             supplied_admin,
@@ -501,6 +526,7 @@ impl WorldService {
             permit,
             false,
             None,
+            signature,
         )
         .await
     }
@@ -515,6 +541,7 @@ impl WorldService {
         _permit: OwnedSemaphorePermit,
         compiled_from_source: bool,
         provenance: Option<crate::world::ModuleProvenance>,
+        signature: Option<&ModuleSignature>,
     ) -> Result<(String, u64), InstallError> {
         let _profile_operation = self.profile_operation.lock().await;
         self.authorize_admin(supplied_admin)
@@ -538,6 +565,30 @@ impl WorldService {
         if claimed_hash != module_hash {
             return Err(InstallError::InvalidUpload);
         }
+        // The trust gate governs uploaded artifacts. A module the server
+        // compiled itself from source (`compiled_from_source`) never crosses
+        // the upload path, so it needs no publisher signature — requiring one
+        // would disable source-only program updates entirely (Codex review
+        // on PR #4088).
+        let trust_decision = if compiled_from_source {
+            crate::world::TrustDecision {
+                basis: crate::world::TrustBasis::ServerCompiled,
+                publisher: None,
+            }
+        } else {
+            verify_module_signature(&self.trusted_module_keys, &wasm, signature)?;
+            if self.trusted_module_keys.is_empty() {
+                crate::world::TrustDecision {
+                    basis: crate::world::TrustBasis::NoTrustList,
+                    publisher: None,
+                }
+            } else {
+                crate::world::TrustDecision {
+                    basis: crate::world::TrustBasis::SignatureVerified,
+                    publisher: signature.map(|sig| sig.public_key.clone()),
+                }
+            }
+        };
         let is_native = crate::world_native::is_native_module(&wasm);
         if is_native && !self.native {
             return Err(InstallError::InvalidModule);
@@ -643,10 +694,12 @@ impl WorldService {
         };
         let installed = self
             .world
-            .install_program_with_provenance(
+            .install_program_with_trust(
                 module_hash.clone(),
                 seed,
                 Some(provenance.unwrap_or(crate::world::ModuleProvenance::Artifact)),
+                None,
+                Some(trust_decision),
                 guest,
             )
             .await
@@ -732,6 +785,38 @@ pub fn module_hash(wasm: &[u8]) -> String {
     Hash::new(wasm).to_string()
 }
 
+/// Verify an upload against the configured publisher trust list. Signatures
+/// cover a domain-separated BLAKE3 digest, not a transport-specific encoding.
+fn verify_module_signature(
+    trusted_keys: &[[u8; 32]],
+    wasm: &[u8],
+    signature: Option<&ModuleSignature>,
+) -> Result<(), InstallError> {
+    if trusted_keys.is_empty() {
+        return Ok(());
+    }
+    let signature = signature.ok_or(InstallError::UntrustedModule)?;
+    let public_key = decode_hex(&signature.public_key).ok_or(InstallError::UntrustedModule)?;
+    let public_key: [u8; 32] = public_key
+        .try_into()
+        .map_err(|_| InstallError::UntrustedModule)?;
+    if !trusted_keys.contains(&public_key) {
+        return Err(InstallError::UntrustedModule);
+    }
+    let signature_bytes = decode_hex(&signature.signature).ok_or(InstallError::UntrustedModule)?;
+    let signature_bytes: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| InstallError::UntrustedModule)?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
+        .map_err(|_| InstallError::UntrustedModule)?;
+    let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
+    let digest = blake3::hash(wasm);
+    let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+    message.extend_from_slice(digest.as_bytes());
+    key.verify_strict(&message, &signature)
+        .map_err(|_| InstallError::UntrustedModule)
+}
+
 /// Constant-time (for equal lengths) secret comparison.
 #[must_use]
 pub fn secret_eq(expected: &[u8], supplied: &[u8]) -> bool {
@@ -744,7 +829,7 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
 }
 
 /// The admin secret a first frame carries, if it is an administrative one.
-/// A valid secret lets the frame create the world it names.
+/// Most admin frames can create the world they name; history reads cannot.
 pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     match frame {
         ClientFrame::Invite { admin_token, .. }
@@ -752,6 +837,7 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         | ClientFrame::Compile { admin_token, .. }
         | ClientFrame::CreateWorld { admin_token }
         | ClientFrame::ListWorlds { admin_token } => Some(admin_token),
+        ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
         _ => None,
     }
@@ -819,6 +905,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
+            io.mark_authorized();
             let worlds = hub.list();
             let _ = send_json(
                 &unattributed,
@@ -836,6 +923,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
+            io.mark_authorized();
             let name = world.as_deref().unwrap_or_else(|| hub.default_world());
             match hub.create(name).await {
                 Ok(created) => {
@@ -857,14 +945,28 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         }
         _ => {}
     }
+    if let ClientFrame::EventHistoryAdmin { admin_token } = &frame
+        && (admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token))
+    {
+        let _ = send_error(&unattributed, io, "admin denied").await;
+        return;
+    }
     let admin = frame_admin_token(&frame).filter(|token| token.len() <= MAX_ADMIN_TOKEN_BYTES);
-    let lease = match hub.lease(world.as_deref(), admin).await {
+    let create_token = if matches!(&frame, ClientFrame::EventHistoryAdmin { .. }) {
+        None
+    } else {
+        admin
+    };
+    let lease = match hub.lease(world.as_deref(), create_token).await {
         Ok(lease) => lease,
         Err(error) => {
             let _ = send_error(&unattributed, io, error.message()).await;
             return;
         }
     };
+    if admin.is_some_and(|token| lease.service().authorize_admin(Some(token)).is_ok()) {
+        io.mark_authorized();
+    }
     if let ClientFrame::SetIsolation {
         isolation,
         admin_token,
@@ -881,6 +983,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         .await
         {
             Ok(isolation) => {
+                io.mark_authorized();
                 let _ = send_json(
                     lease.service().frame_meter(),
                     io,
@@ -900,6 +1003,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     if let Some(result) = policy_frame(hub, &lease, &frame).await {
         match result {
             Ok(policy) => {
+                io.mark_authorized();
                 let _ = send_json(
                     lease.service().frame_meter(),
                     io,
@@ -1139,6 +1243,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             admin_token,
             total_bytes,
             module_hash,
+            signature,
             seed,
         } => {
             if service.source_only() {
@@ -1160,6 +1265,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 &admin_token,
                 total_bytes,
                 module_hash.as_deref(),
+                signature.as_ref(),
                 seed,
             )
             .await
@@ -1172,6 +1278,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             if service.world().participant_id(token).await.is_err() {
                 let _ = send_error(service.frame_meter(), io, "join denied").await;
             } else {
+                io.mark_authorized();
                 match service.world().caps_report().await {
                     Ok(report) => {
                         let _ = send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
@@ -1282,6 +1389,11 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             if let Err(message) =
                 download_module_admin_session(service, io, &admin_token, &module_hash).await
             {
+                let _ = send_error(service.frame_meter(), io, message).await;
+            }
+        }
+        ClientFrame::EventHistoryAdmin { admin_token } => {
+            if let Err(message) = event_history_admin_session(service, io, &admin_token).await {
                 let _ = send_error(service.frame_meter(), io, message).await;
             }
         }
@@ -1476,6 +1588,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             ClientFrame::Info { capability } => {
                 let token = JoinCapability::from_wire(capability);
                 if let Ok(snapshot) = service.world().snapshot(token).await {
+                    io.mark_authorized();
                     if !send_json(
                         service.frame_meter(),
                         io,
@@ -1500,24 +1613,28 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 // that snapshots the world is enough to read its metrics.
                 let token = JoinCapability::from_wire(capability);
                 match service.world().snapshot(token).await {
-                    Ok(_) => match service.world().metrics().await {
-                        Ok(metrics) => {
-                            if !send_json(
-                                service.frame_meter(),
-                                io,
-                                &ServerFrame::Metrics { metrics },
-                            )
-                            .await
-                            {
+                    Ok(_) => {
+                        io.mark_authorized();
+                        match service.world().metrics().await {
+                            Ok(metrics) => {
+                                if !send_json(
+                                    service.frame_meter(),
+                                    io,
+                                    &ServerFrame::Metrics { metrics },
+                                )
+                                .await
+                                {
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                let _ =
+                                    send_error(service.frame_meter(), io, &format!("{error:#}"))
+                                        .await;
                                 return;
                             }
                         }
-                        Err(error) => {
-                            let _ =
-                                send_error(service.frame_meter(), io, &format!("{error:#}")).await;
-                            return;
-                        }
-                    },
+                    }
                     Err(_) => {
                         let _ = send_error(service.frame_meter(), io, "join denied").await;
                         return;
@@ -1530,6 +1647,9 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 after,
             } => {
                 let token = JoinCapability::from_wire(capability);
+                if service.world().participant_id(token.clone()).await.is_ok() {
+                    io.mark_authorized();
+                }
                 if let Err(message) = records_session(
                     service.frame_meter(),
                     service.world(),
@@ -1550,6 +1670,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                     let _ = send_error(service.frame_meter(), io, "join denied").await;
                     return;
                 }
+                io.mark_authorized();
                 match records_ticket_session(service, io).await {
                     Ok(()) => {}
                     Err(message) => {
@@ -1567,6 +1688,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                     let _ = send_error(service.frame_meter(), io, "join denied").await;
                     return;
                 }
+                io.mark_authorized();
                 if let Err(message) = download_module_session(service, io, &module_hash).await {
                     let _ = send_error(service.frame_meter(), io, message).await;
                     return;
@@ -1668,6 +1790,89 @@ async fn records_session<I: SessionIo>(
     Ok(())
 }
 
+async fn event_history_admin_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    admin_token: &str,
+) -> Result<(), &'static str> {
+    service
+        .authorize_admin(Some(admin_token))
+        .map_err(|_| "admin denied")?;
+    let history = service
+        .world()
+        .admin_event_history()
+        .await
+        .map_err(|_| "admin history unavailable")?;
+    if !send_json(
+        service.frame_meter(),
+        io,
+        &ServerFrame::EventHistoryBegin {
+            world_id: history.world_id,
+            module_hash: history.module_hash,
+            current_sequence: history.current_sequence,
+            complete: history.complete,
+            event_count: history.events.len(),
+        },
+    )
+    .await
+    {
+        return Err("connection closed");
+    }
+    for event in &history.events {
+        if !send_json(
+            service.frame_meter(),
+            io,
+            &ServerFrame::EventHistoryEvent { event },
+        )
+        .await
+        {
+            return Err("event history exceeds the frame limit");
+        }
+    }
+
+    let mut after: Option<String> = None;
+    loop {
+        let mut page = crate::world::Records::new();
+        let mut used = 0usize;
+        let mut last_included: Option<String> = None;
+        let mut more = false;
+        for (key, value) in &history.records {
+            if after.as_deref().is_some_and(|after| key.as_str() <= after) {
+                continue;
+            }
+            let size = key.len() + serde_json::to_vec(value).map_or(0, |bytes| bytes.len()) + 8;
+            if used + size > MAX_RECORDS_PAGE_BYTES {
+                if page.is_empty() {
+                    return Err("a record is too large to serve in one page");
+                }
+                more = true;
+                break;
+            }
+            used += size;
+            last_included = Some(key.clone());
+            page.insert(key.clone(), value.clone());
+        }
+        let next_after = more.then_some(last_included).flatten();
+        if !send_json(
+            service.frame_meter(),
+            io,
+            &ServerFrame::Records {
+                sequence: history.current_sequence,
+                records: page,
+                next_after: next_after.clone(),
+            },
+        )
+        .await
+        {
+            return Err("connection closed");
+        }
+        match next_after {
+            Some(next) => after = Some(next),
+            None => return Ok(()),
+        }
+    }
+}
+
 async fn download_module_session<I: SessionIo>(
     service: &WorldService,
     io: &mut I,
@@ -1700,6 +1905,9 @@ async fn download_module_admin_session<I: SessionIo>(
     {
         return Err("admin denied");
     }
+    // The admin credential validated: this session is authorized, so its
+    // outbound chunks charge the authorized bucket, not the pre-auth one.
+    io.mark_authorized();
     let bytes = service
         .stored_module_bytes(requested_hash)
         .await
@@ -1758,6 +1966,7 @@ async fn install_module_session<I: SessionIo>(
     admin_token: &str,
     total_bytes: usize,
     claimed_hash: Option<&str>,
+    signature: Option<&ModuleSignature>,
     seed: u64,
 ) -> Result<(), &'static str> {
     if admin_token.len() > MAX_ADMIN_TOKEN_BYTES
@@ -1778,7 +1987,7 @@ async fn install_module_session<I: SessionIo>(
         .map_err(|_| "world is busy installing another module")?;
     #[cfg(not(feature = "sandbox"))]
     {
-        let _ = (io, seed, upload_permit);
+        let _ = (io, seed, upload_permit, signature);
         return Err("module installation requires the sandbox feature");
     }
 
@@ -1840,6 +2049,7 @@ async fn install_module_session<I: SessionIo>(
                 upload_permit,
                 false,
                 None,
+                signature,
             )
             .await
             .map_err(|error| match error {
@@ -1850,6 +2060,7 @@ async fn install_module_session<I: SessionIo>(
                     "raw module uploads are disabled by source-only policy"
                 }
                 InstallError::InvalidModule => "Wasm module failed validation or initialization",
+                InstallError::UntrustedModule => "module signature is not trusted",
                 InstallError::Unavailable => "world could not activate the module",
             })?;
         if !send_json(
@@ -1888,6 +2099,7 @@ async fn joined<I: SessionIo>(
         let _ = send_error(service.frame_meter(), io, "join denied").await;
         return;
     };
+    io.mark_authorized();
     let mut cursor = snapshot.current_sequence;
     let mut viewport = None;
     let mut view_state = ViewRevisionState::default();
@@ -2602,6 +2814,7 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::DownloadModuleAdmin { .. }
+        | ClientFrame::EventHistoryAdmin { .. }
         | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd => {

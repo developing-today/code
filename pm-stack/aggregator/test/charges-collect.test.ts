@@ -40,15 +40,55 @@ describe("parseChargeCandidates", () => {
     expect(parseChargeCandidates("nope")).toEqual([]);
     expect(parseChargeCandidates({ charges: [] })).toEqual([]);
   });
+
+  test("rejects impossible calendar dates but keeps leap days and timestamp slicing", () => {
+    const dates = [
+      "2026-13-45",
+      "2026-02-30",
+      "2026-00-00",
+      "2026-10-00",
+      "2026-02-29",
+      "2026-04-31",
+      "2024-02-29",
+      "2026-02-28T14:03:00Z",
+    ];
+
+    expect(
+      parseChargeCandidates(dates.map((at) => ({ source: "plaid", at, merchant: "Example", amountUsd: 1 }))).map(
+        (candidate) => candidate.at,
+      ),
+    ).toEqual(["2024-02-29", "2026-02-28"]);
+  });
 });
 
 describe("mergeChargeRows canonical-label dedupe", () => {
   // Codex finding on PR #3168: the charge catalog canonicalizes a
-  // METAPAY auto-match to "Meta Model API", which no longer
-  // containment-matches the hand-fed "Meta PAYG spill" row for the
-  // same charge, so the charge would appear twice in the feed.
+  // METAPAY auto-match to "Meta Model API". Alias expansion must keep
+  // the whole-token "Meta" spelling so it still matches the hand-fed
+  // "Meta PAYG spill" row for the same charge.
   test("a canonicalized auto row still dedupes the merchant-spelled hand-fed row", () => {
     const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20 }];
+    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20 }];
+    expect(mergeChargeRows(auto, handFed)).toEqual(auto);
+  });
+
+  for (const [handFedLabel, autoLabel] of [
+    ["Meta", "METAMUCIL"],
+    ["AI", "RAILWAY"],
+  ]) {
+    test(`a short label does not match inside unrelated merchant token ${autoLabel}`, () => {
+      const auto = [{ at: "2026-10-01", label: autoLabel, amountUsd: 20 }];
+      const handFed = [{ at: "2026-10-01", label: handFedLabel, amountUsd: 20 }];
+      expect(
+        mergeChargeRows(auto, handFed)
+          .map((row) => row.label)
+          .sort(),
+      ).toEqual([autoLabel, handFedLabel].sort());
+    });
+  }
+
+  test("Meta PAYG spill still dedupes against the METAPAY merchant alias", () => {
+    const auto = [{ at: "2026-10-01", label: "METAPAY", amountUsd: 20 }];
     const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20 }];
     expect(mergeChargeRows(auto, handFed)).toEqual(auto);
   });
@@ -77,8 +117,8 @@ describe("mergeChargeRows", () => {
       },
     ];
     // 2026-10-25 vs 2026-10-28 is inside the 3-day window, same
-    // amount, and squashed "METAPAYGSPILL" contains "METAPAY" — so
-    // the hand-fed row dedupes against the auto row (date order out).
+    // amount, and the auto METAPAY alias group shares the whole-token
+    // "Meta" spelling with the hand-fed row (date order out).
     expect(mergeChargeRows(auto, handFed)).toEqual([auto[1], auto[0]]);
   });
 

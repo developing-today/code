@@ -5,7 +5,7 @@
 // the identical set), the shareable-URL encode/parse round-trip, and
 // the mediated preference verbs that mutate the store.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateNewAction } from "../src/actions.ts";
@@ -32,7 +32,11 @@ function tmpStore(): { dir: string; file: string; store: ViewsStore } {
 describe("views store (#1276)", () => {
   test("save -> reload round-trip persists views with filters and timestamps", async () => {
     const { file, store } = tmpStore();
-    const v = await store.save({ owner: drewKey, name: "Code bugs", filters: { repo: "developing-today/code", state: "open" } });
+    const v = await store.save({
+      owner: drewKey,
+      name: "Code bugs",
+      filters: { repo: "developing-today/code", state: "open" },
+    });
     expect(v.id).toStartWith("vw-");
     expect(v.isDefault).toBe(false);
     const reloaded = new ViewsStore(file);
@@ -45,7 +49,9 @@ describe("views store (#1276)", () => {
   test("duplicate name per owner is refused; same name for another owner is fine", async () => {
     const { store } = tmpStore();
     await store.save({ owner: drewKey, name: "Mine", filters: { area: "Fleet" } });
-    await expect(store.save({ owner: drewKey, name: "mine", filters: { area: "Other" } })).rejects.toThrow("already exists");
+    await expect(store.save({ owner: drewKey, name: "mine", filters: { area: "Other" } })).rejects.toThrow(
+      "already exists",
+    );
     await store.save({ owner: ownerKey(claude), name: "Mine", filters: { area: "Fleet" } });
     expect(await store.all()).toHaveLength(2);
   });
@@ -106,28 +112,108 @@ describe("views store (#1276)", () => {
     expect(existsSync(file)).toBe(true);
     expect(readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"))).toHaveLength(1);
   });
+
+  test("well-formed JSON with a row missing its name is quarantined before later saves", async () => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [
+        {
+          id: "vw-1",
+          owner: drewKey,
+          filters: { repo: "a/b" },
+          isDefault: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    writeFileSync(file, raw);
+
+    expect(await store.all()).toEqual([]);
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
+    await expect(store.save({ owner: drewKey, name: "Fresh", filters: { state: "open" } })).resolves.toMatchObject({
+      name: "Fresh",
+    });
+  });
+
+  test("malformed default filters are quarantined instead of becoming a match-all view", async () => {
+    const { dir, file, store } = tmpStore();
+    const raw = JSON.stringify({
+      version: 1,
+      views: [
+        {
+          id: "vw-1",
+          name: "Default",
+          owner: drewKey,
+          filters: "repo:other/repo",
+          isDefault: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    writeFileSync(file, raw);
+
+    expect(await store.defaultFor(drewKey)).toBeNull();
+    const quarantined = readdirSync(dir).filter((f) => f.startsWith("views.json.corrupt-"));
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(dir, quarantined[0]), "utf8")).toBe(raw);
+  });
 });
 
 const items: ViewItemLike[] = [
-  { ref: "developing-today/code#1", repo: "developing-today/code", area: "Fleet", horizon: "Now", owner: "dezren39", state: "open", epic: "developing-today/code#100" },
-  { ref: "developing-today/code#2", repo: "developing-today/code", area: "Fleet", horizon: "Next", owner: "someone", state: "closed", epic: null },
-  { ref: "dezren39/nix#3", repo: "dezren39/nix", area: "Infra", horizon: "Now", owner: "dezren39", state: "open", epic: null },
+  {
+    ref: "developing-today/code#1",
+    repo: "developing-today/code",
+    area: "Fleet",
+    horizon: "Now",
+    owner: "dezren39",
+    state: "open",
+    epic: "developing-today/code#100",
+  },
+  {
+    ref: "developing-today/code#2",
+    repo: "developing-today/code",
+    area: "Fleet",
+    horizon: "Next",
+    owner: "someone",
+    state: "closed",
+    epic: null,
+  },
+  {
+    ref: "dezren39/nix#3",
+    repo: "dezren39/nix",
+    area: "Infra",
+    horizon: "Now",
+    owner: "dezren39",
+    state: "open",
+    epic: null,
+  },
 ];
 
 describe("view filter matching (#1276)", () => {
   test("filters compose across dimensions and compare case-insensitively", () => {
-    expect(applyView(items, { repo: "Developing-Today/Code", state: "OPEN" }).map((i) => i.ref)).toEqual(["developing-today/code#1"]);
+    expect(applyView(items, { repo: "Developing-Today/Code", state: "OPEN" }).map((i) => i.ref)).toEqual([
+      "developing-today/code#1",
+    ]);
     expect(applyView(items, { owner: "dezren39", horizon: "now" }).map((i) => i.ref)).toEqual([
       "developing-today/code#1",
       "dezren39/nix#3",
     ]);
-    expect(applyView(items, { epic: "developing-today/code#100" }).map((i) => i.ref)).toEqual(["developing-today/code#1"]);
+    expect(applyView(items, { epic: "developing-today/code#100" }).map((i) => i.ref)).toEqual([
+      "developing-today/code#1",
+    ]);
   });
 
   test("republish survival: reordering the feed does not change the matched set", () => {
     const filters = { area: "Fleet" };
     const forward = applyView(items, filters).map((i) => i.ref);
-    const reversed = applyView([...items].reverse(), filters).map((i) => i.ref).sort();
+    const reversed = applyView([...items].reverse(), filters)
+      .map((i) => i.ref)
+      .sort();
     expect([...forward].sort()).toEqual(reversed);
   });
 
@@ -154,7 +240,9 @@ describe("shareable view URLs (#1276)", () => {
     expect(parsed.searchParams.get("view")).toBe(v.id);
     // Another viewer reproduces the view from the URL alone.
     expect(filtersFromQuery(parsed.searchParams)).toEqual(v.filters);
-    expect(applyView(items, filtersFromQuery(parsed.searchParams)!).map((i) => i.ref)).toEqual(["developing-today/code#1"]);
+    expect(applyView(items, filtersFromQuery(parsed.searchParams)!).map((i) => i.ref)).toEqual([
+      "developing-today/code#1",
+    ]);
   });
 
   test("a plain page URL carries no view", () => {
@@ -172,20 +260,48 @@ describe("mediated view preference verbs (#1276)", () => {
   const token = () => `ct-views-${++seq}-abcdefgh`;
 
   test("save-view requires a name and a non-empty filter set", () => {
-    const ok = validateNewAction({ ...base, clientToken: token(), verb: "save-view", payload: { viewName: "Mine", viewFilters: { repo: "a/b" } } });
+    const ok = validateNewAction({
+      ...base,
+      clientToken: token(),
+      verb: "save-view",
+      payload: { viewName: "Mine", viewFilters: { repo: "a/b" } },
+    });
     expect(ok.ok).toBe(true);
-    const noFilters = validateNewAction({ ...base, clientToken: token(), verb: "save-view", payload: { viewName: "Mine" } });
+    const noFilters = validateNewAction({
+      ...base,
+      clientToken: token(),
+      verb: "save-view",
+      payload: { viewName: "Mine" },
+    });
     expect(noFilters.ok).toBe(false);
-    const badFilters = validateNewAction({ ...base, clientToken: token(), verb: "save-view", payload: { viewName: "Mine", viewFilters: { nope: "x" } } });
+    const badFilters = validateNewAction({
+      ...base,
+      clientToken: token(),
+      verb: "save-view",
+      payload: { viewName: "Mine", viewFilters: { nope: "x" } },
+    });
     expect(badFilters.ok).toBe(false);
   });
 
   test("rename-view and delete-view require viewId; set-default-view allows clearing", () => {
-    expect(validateNewAction({ ...base, clientToken: token(), verb: "rename-view", payload: { viewName: "X" } }).ok).toBe(false);
-    expect(validateNewAction({ ...base, clientToken: token(), verb: "rename-view", payload: { viewId: "vw-1", viewName: "X" } }).ok).toBe(true);
+    expect(
+      validateNewAction({ ...base, clientToken: token(), verb: "rename-view", payload: { viewName: "X" } }).ok,
+    ).toBe(false);
+    expect(
+      validateNewAction({
+        ...base,
+        clientToken: token(),
+        verb: "rename-view",
+        payload: { viewId: "vw-1", viewName: "X" },
+      }).ok,
+    ).toBe(true);
     expect(validateNewAction({ ...base, clientToken: token(), verb: "delete-view", payload: {} }).ok).toBe(false);
-    expect(validateNewAction({ ...base, clientToken: token(), verb: "delete-view", payload: { viewId: "vw-1" } }).ok).toBe(true);
+    expect(
+      validateNewAction({ ...base, clientToken: token(), verb: "delete-view", payload: { viewId: "vw-1" } }).ok,
+    ).toBe(true);
     expect(validateNewAction({ ...base, clientToken: token(), verb: "set-default-view", payload: {} }).ok).toBe(true);
-    expect(validateNewAction({ ...base, clientToken: token(), verb: "set-default-view", payload: { viewId: "vw-1" } }).ok).toBe(true);
+    expect(
+      validateNewAction({ ...base, clientToken: token(), verb: "set-default-view", payload: { viewId: "vw-1" } }).ok,
+    ).toBe(true);
   });
 });

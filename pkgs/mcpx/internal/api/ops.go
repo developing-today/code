@@ -748,6 +748,7 @@ func Ops() []Op {
 	ops = append(ops, settingsOps()...)
 	ops = append(ops, resolveOps()...)
 	ops = append(ops, secretsOps()...)
+	ops = append(ops, writesOps()...)
 	sort.Slice(ops, func(i, j int) bool {
 		if ops[i].Path == ops[j].Path {
 			return ops[i].Method < ops[j].Method

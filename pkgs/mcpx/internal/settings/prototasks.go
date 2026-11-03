@@ -43,6 +43,16 @@ func protoTasksSettings() []Setting {
 				"way (#2498, Phase 1 of #2497).",
 		},
 		{
+			Path: "protoTasks.cancelGrace", Scope: ScopeDaemon, Kind: KindDuration,
+			Default:  tasks.DefaultCancelGrace.String(),
+			Commands: []string{"serve", "daemon"},
+			Name:     "Task cancellation grace",
+			Short:    "how long cooperative task work may finish after cancellation",
+			Long: "After cancellation is requested, work may record its own terminal " +
+				"result during this window; otherwise the store records cancelled " +
+				"with the caller's reason (#2499, Phase 2 of #2497).",
+		},
+		{
 			Path: "protoTasks.perMinute", Scope: ScopeDaemon, Kind: KindInt,
 			Default:  strconv.Itoa(tasks.DefaultPerMinute),
 			Commands: []string{"serve", "daemon"},
