@@ -314,6 +314,16 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
 // Probed 2026-11-03 (opencode#1548): an ARRAY schema with neither items
 // nor prefixItems is likewise rejected ("items: missing field"), so a
 // bare {type: "array"} gets an unconstrained items synthesized below.
+// Probed 2026-11-03 (opencode#1550): for Claude models the upstream
+// re-serializes the proto Schema into an Anthropic input_schema, and
+// Anthropic's validator rejects `anyOf` outright -- any branch count, any
+// position, root or nested ("tools.N.custom.input_schema: JSON schema is
+// invalid. It must match JSON Schema draft 2020-12") -- while accepting
+// oneOf and allOf in every probed shape. Gemini models accept anyOf
+// verbatim. So for Claude targets anyOf is emitted as oneOf below: tool
+// unions are disjoint alternatives in practice (type unions, nullable
+// encodings), where exactly-one is the faithful reading, and oneOf is
+// the only union keyword the Anthropic side takes.
 // ---------------------------------------------------------------------------
 
 const SCHEMA_FIELDS = new Set([
@@ -376,7 +386,7 @@ const resolveSchemaRefs = (root) => {
   return walkSchema(root, []);
 };
 
-const convertSchemaNode = (node) => {
+const convertSchemaNode = (node, anthropic = false) => {
   // Boolean schemas and stray values become an unconstrained object schema.
   if (!isSchemaRecord(node)) return {};
   const out = {};
@@ -407,23 +417,31 @@ const convertSchemaNode = (node) => {
     if (k === 'properties') {
       if (isSchemaRecord(v)) {
         const props = {};
-        for (const [name, sub] of Object.entries(v)) defineValue(props, name, convertSchemaNode(sub));
+        for (const [name, sub] of Object.entries(v)) defineValue(props, name, convertSchemaNode(sub, anthropic));
         out.properties = props;
       }
       continue;
     }
     if (k === 'anyOf' || k === 'oneOf' || k === 'allOf') {
-      if (Array.isArray(v)) out[k] = v.map(convertSchemaNode);
+      if (Array.isArray(v)) {
+        const branches = v.map(sub => convertSchemaNode(sub, anthropic));
+        if (k === 'allOf') out.allOf = branches;
+        // anyOf folds into oneOf for Anthropic targets (see the header
+        // probe note); a node carrying both keywords merges both branch
+        // sets into the single oneOf the Anthropic side accepts.
+        else if (k === 'oneOf' || anthropic) out.oneOf = out.oneOf ? [...out.oneOf, ...branches] : branches;
+        else out.anyOf = branches;
+      }
       continue;
     }
-    if (k === 'not') { out.not = convertSchemaNode(v); continue; }
+    if (k === 'not') { out.not = convertSchemaNode(v, anthropic); continue; }
     if (k === 'type' || k === 'required' || k === 'minimum' || k === 'maximum' || k === 'items' || k === 'prefixItems') continue; // handled outside the loop
     out[k] = v; // scalar constraint fields: format, title, pattern, ...
   }
   if (minimum !== undefined) out.minimum = minimum;
   if (maximum !== undefined) out.maximum = maximum;
-  if (items !== undefined) out.items = convertSchemaNode(items);
-  if (prefixItems !== undefined) out.prefixItems = (Array.isArray(prefixItems) ? prefixItems : [prefixItems]).map(convertSchemaNode);
+  if (items !== undefined) out.items = convertSchemaNode(items, anthropic);
+  if (prefixItems !== undefined) out.prefixItems = (Array.isArray(prefixItems) ? prefixItems : [prefixItems]).map(sub => convertSchemaNode(sub, anthropic));
   // Type: uppercase it; collapse an array of types ("null" -> nullable,
   // first concrete type wins); infer OBJECT when properties are present
   // (the proto allows properties only for OBJECT).
@@ -455,8 +473,8 @@ const convertSchemaNode = (node) => {
   return out;
 };
 
-const convertSchema = (schema) => {
-  const converted = convertSchemaNode(resolveSchemaRefs(isSchemaRecord(schema) ? schema : {}));
+const convertSchema = (schema, anthropic = false) => {
+  const converted = convertSchemaNode(resolveSchemaRefs(isSchemaRecord(schema) ? schema : {}), anthropic);
   // The parameters root must declare OBJECT (tool-schema.ts's objectRoot:
   // providers reject a tool schema whose root does not declare it).
   if (converted.type === undefined) converted.type = 'OBJECT';
@@ -500,7 +518,7 @@ const toolChoiceConfig = (toolChoice, declaredNames) => {
 };
 
 const buildV1Request = (body) => {
-  const { fullName, effort } = resolveModelAndEffort(body.model, body.reasoning_effort);
+  const { base, fullName, effort } = resolveModelAndEffort(body.model, body.reasoning_effort);
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const systemParts = [];
   const contents = [];
@@ -573,7 +591,7 @@ const buildV1Request = (body) => {
     for (const t of body.tools) {
       const fn = t && t.type === 'function' ? t.function : t;
       if (fn && fn.name) {
-        decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }) });
+        decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }, base.startsWith('claude')) });
         declaredNames.push(fn.name);
       }
     }

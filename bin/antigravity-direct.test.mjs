@@ -223,6 +223,63 @@ test('bare array tool properties reach upstream with synthesized items (opencode
   assertArraysCarryItems(decls[0].parameters, 'parameters');
 });
 
+// --- opencode#1550: anyOf folds to oneOf for Claude targets ---------------
+// For Claude models the upstream re-serializes the proto Schema into an
+// Anthropic input_schema, and Anthropic's validator rejects anyOf in any
+// position ("tools.N.custom.input_schema: JSON schema is invalid. It must
+// match JSON Schema draft 2020-12"), which 400'd workhorse sessions on
+// the Claude leaf all day 2026-11-03 (any tool with a zod-union or
+// nullable-anyOf property). Conversion for Claude targets must emit
+// oneOf instead; Gemini targets keep anyOf verbatim.
+
+const assertNoKey = (node, key, where) => {
+  if (Array.isArray(node)) { node.forEach((v, i) => assertNoKey(v, key, `${where}[${i}]`)); return; }
+  if (!node || typeof node !== 'object') return;
+  assert.ok(!(key in node), `${where}: unexpected ${key}`);
+  for (const [k, v] of Object.entries(node)) assertNoKey(v, key, `${where}.${k}`);
+};
+
+const UNION_TOOLS = [{
+  type: 'function',
+  function: {
+    name: 'probe_union',
+    description: 'union-shaped parameters',
+    parameters: {
+      type: 'object',
+      properties: {
+        nullable_note: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        either: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+        listed: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'boolean' }] } },
+        pick: { oneOf: [{ type: 'string' }, { type: 'number' }] }
+      }
+    }
+  }
+}];
+
+test('anyOf tool schemas fold to oneOf for claude models (opencode#1550)', async () => {
+  const { status } = await chat({ model: 'claude-sonnet-5-5', tools: UNION_TOOLS });
+  assert.equal(status, 200);
+  const decls = lastFunctionDeclarations();
+  assert.equal(decls.length, 1);
+  const props = decls[0].parameters.properties;
+  assert.deepEqual(props.nullable_note, { oneOf: [{ type: 'STRING' }, { type: 'NULL' }] });
+  assert.deepEqual(props.either, { oneOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+  assert.deepEqual(props.listed, { type: 'ARRAY', items: { oneOf: [{ type: 'STRING' }, { type: 'BOOLEAN' }] } });
+  assert.deepEqual(props.pick, { oneOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+  assertNoKey(decls[0].parameters, 'anyOf', 'parameters');
+});
+
+test('anyOf tool schemas stay anyOf for gemini models (opencode#1550)', async () => {
+  const { status } = await chat({ tools: UNION_TOOLS });
+  assert.equal(status, 200);
+  const decls = lastFunctionDeclarations();
+  const props = decls[0].parameters.properties;
+  assert.deepEqual(props.nullable_note, { anyOf: [{ type: 'STRING' }, { type: 'NULL' }] });
+  assert.deepEqual(props.either, { anyOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+  assert.deepEqual(props.listed, { type: 'ARRAY', items: { anyOf: [{ type: 'STRING' }, { type: 'BOOLEAN' }] } });
+  assert.deepEqual(props.pick, { oneOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+});
+
 // --- #2823: env parsing is strict -----------------------------------------
 // A bad ANTIGRAVITY_DIRECT_PORT used to reach listen() as an anonymous
 // ERR_SOCKET_BAD_PORT (or bind 0 / a hex-decoded port), and a bad
