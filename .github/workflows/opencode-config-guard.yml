@@ -22,7 +22,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - name: Run provider-catalog audit fixtures
+        run: node --test bin/provider-catalog-sync.test.mjs bin/provider-catalog-snapshot.test.mjs
       - name: Run guard fixtures
         run: node --test bin/check-opencode-metered-providers.test.mjs
       - name: Check canonical OpenCode config
         run: node bin/check-opencode-metered-providers.mjs .opencode/opencode.jsonc
+      - name: Run route-rule guard fixtures
+        run: node --test bin/check-opencode-route-rules.test.mjs
+      - name: Check canonical route rules
+        run: node bin/check-opencode-route-rules.mjs .opencode/opencode.jsonc
