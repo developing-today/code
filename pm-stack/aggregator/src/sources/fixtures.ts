@@ -357,9 +357,9 @@ export const FIXTURE_QUOTA: QuotaView = {
       activeSessions: [],
     },
     {
-      id: "opencode-go:personal",
+      id: "opencode-go:drewrypope",
       provider: "OpenCode Go",
-      plan: "Personal",
+      plan: "drewrypope",
       state: "near",
       windows: [{ name: "monthly", unit: "tokens", limit: null, used: 18_000_000, resetsAt: null, percent: 85 }],
       burnTokensPerMin: 210,
@@ -439,7 +439,7 @@ export const FIXTURE_QUOTA: QuotaView = {
   choices: {
     hasHeadroom: ["antigravity:claude", "antigravity:gemini", "meta:model-api", "openai:chatgpt"],
     burnBeforeReset: ["antigravity:gemini", "antigravity:claude"],
-    doNotStart: ["anthropic:claude-subscription", "opencode-go:personal"],
+    doNotStart: ["anthropic:claude-subscription", "opencode-go:drewrypope"],
   },
 };
 
@@ -945,9 +945,9 @@ export const FIXTURE_AA: AaSection = {
       aaTimePerTask: 191.6,
     },
     {
-      id: "opencode-go.personal/gpt-6-luna",
-      provider: "opencode-go.personal",
-      providerName: "OpenCode Go — Personal",
+      id: "opencode-go.drewrypope/gpt-6-luna",
+      provider: "opencode-go.drewrypope",
+      providerName: "OpenCode Go — drewrypope",
       model: "gpt-6-luna",
       name: "GPT-6 Luna",
       contextLimit: 1050000,
@@ -955,7 +955,7 @@ export const FIXTURE_AA: AaSection = {
       variants: ["low", "medium", "high", "xhigh", "max"],
       routes: ["luna-plan"],
       disabled: false,
-      plan: "OpenCode Go — Personal",
+      plan: "OpenCode Go — drewrypope",
       multiplier: 6,
       planNote:
         "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-02.",
