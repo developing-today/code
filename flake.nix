@@ -22,6 +22,7 @@ rec {
       lib.make-root-apps
       lib.make-id
       lib.make-mcpx-overlay
+      lib.make-mcpx-modules
       lib.make-laptop-backups-checks
     ];
   inputs = {
