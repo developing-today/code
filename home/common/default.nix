@@ -815,7 +815,9 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "sync-models-run" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs}
+          # #883: run the checkout copy, not a store-baked bin snapshot,
+          # so the timer never goes stale the way the pre-Oct-24 home-layer tree did.
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/sync-models.mjs"
         ''
       );
     };
@@ -1499,32 +1501,34 @@ in
       with pkgs;
       [
         libnotify
+        # #883: shims run the $HOME/code checkout, not store-baked bin
+        # snapshots, so they track the live tree like the #2107 proxy units.
         (pkgs.writeShellScriptBin "clef-proxy" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/clef-proxy.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "agy-proxy" ''
           export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs "$@"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/agy-proxy.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "codex-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/codex-proxy.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "antigravity-ls-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs "$@"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/antigravity-ls-proxy.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "design-code-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs "$@"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/design-code-proxy.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "update-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/sync-models.mjs" "$@"
         '')
         (pkgs.writeShellScriptBin "opencode" ''
           if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
