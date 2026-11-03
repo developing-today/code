@@ -1,7 +1,12 @@
 // Tests for the pure parsing core of meta-quota-export.mjs.
 // Run: node --test pm-stack/meta-exporter/
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   ExportError,
   failureDocument,
@@ -10,6 +15,78 @@ import {
   parseSubscriptionQuota,
   successDocument,
 } from "./meta-quota-export.mjs";
+
+const exporterPath = fileURLToPath(new URL("./meta-quota-export.mjs", import.meta.url));
+
+function invokeExporter(entrypoint, outDir) {
+  return spawnSync(
+    process.execPath,
+    [entrypoint, "--cdp-port", "1", "--out-dir", outDir],
+    { encoding: "utf8", timeout: 5_000 },
+  );
+}
+
+function assertCdpFailure(result, outDir) {
+  assert.equal(result.status, 4, result.stderr || result.error?.message);
+  const doc = JSON.parse(fs.readFileSync(path.join(outDir, "latest.json"), "utf8"));
+  assert.equal(doc.status, "cdp-unavailable");
+  assert.equal(doc.measuredAt, null);
+  assert.equal("windows" in doc, false);
+}
+
+test("CLI direct invocation writes the expected CDP failure document", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "meta-exporter-entry-"));
+  try {
+    const outDir = path.join(root, "out");
+    const result = invokeExporter(exporterPath, outDir);
+    assertCdpFailure(result, outDir);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI invocation through a symlinked file runs main and writes its failure document", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "meta-exporter-symlink-"));
+  try {
+    const link = path.join(root, "export-link.mjs");
+    fs.symlinkSync(exporterPath, link);
+    const outDir = path.join(root, "out");
+    const result = invokeExporter(link, outDir);
+    assertCdpFailure(result, outDir);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("CLI invocation through a symlinked directory runs main and writes its failure document", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "meta-exporter-dir-symlink-"));
+  try {
+    const linkDir = path.join(root, "export-dir");
+    fs.symlinkSync(path.dirname(exporterPath), linkDir, "dir");
+    const entrypoint = path.join(linkDir, path.basename(exporterPath));
+    const outDir = path.join(root, "out");
+    const result = invokeExporter(entrypoint, outDir);
+    assertCdpFailure(result, outDir);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("importing the exporter as a library does not start the CLI", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "meta-exporter-import-"));
+  try {
+    const specifier = JSON.stringify(pathToFileURL(exporterPath).href);
+    const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `await import(${specifier})`], {
+      encoding: "utf8",
+      timeout: 5_000,
+      env: { ...process.env, HOME: home },
+    });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.equal(fs.existsSync(path.join(home, "atlas", "meta-quota-export")), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 
 // The live payload captured 2026-10-27 (#1167): 1.02% / 8.83%.
 const QUOTA = {

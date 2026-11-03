@@ -39,9 +39,10 @@
  * latest.json (> 2 ticks = > 30 min without a fresh document).
  */
 import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/meta-laptop";
 export const DEFAULT_TEAM_ID = "1073226932208501"; // "My Team" (#1167)
@@ -400,6 +401,15 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   await main();
 }
