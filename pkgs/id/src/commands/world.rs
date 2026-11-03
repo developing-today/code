@@ -337,6 +337,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     native_memory_bytes,
                     native_cpu_seconds,
                     native_call_deadline_ms,
+                    total_memory_bytes: None,
                 };
                 client.set_execution_profile(&admin_token, profile).await
             } else {
