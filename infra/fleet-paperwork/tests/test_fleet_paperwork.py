@@ -60,13 +60,15 @@ class TestLedgerPacing(unittest.TestCase):
 
     def test_pace_waits_remainder(self):
         fp.ledger_append("create", "developing-today/code", "42", "t")
+        last = fp.last_write_epoch(Path(self.tmp.name))
         start = time.time()
         fp.pace(1.0)
         elapsed = time.time() - start
         # Waits out the remainder of the 1 s window since the ledger write:
-        # substantial, but less than a full fresh second.
+        # substantial, but no more than the stamp-derived remainder plus a
+        # small wake-up tolerance (a fixed 1.0 bound flakes on overshoot).
         self.assertGreaterEqual(elapsed, 0.4)
-        self.assertLess(elapsed, 1.0)
+        self.assertLess(elapsed, 1.0 - (start - last) + 0.1)
 
     def test_append_records_subsecond_precision(self):
         fp.ledger_append("create", "developing-today/code", "42", "t")
