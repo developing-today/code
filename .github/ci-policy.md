@@ -59,6 +59,22 @@ the PR head alone. Operationally: `gh pr merge` now ENQUEUES a
 PR instead of merging it; "in the merge queue" is merge-pending,
 not a failure.
 
+## mcpx fix-test guard (#1969)
+
+`.github/workflows/mcpx-fix-test-guard.yml` is a **basic-tier** check
+(job `basic: mcpx fix carries a test (#1969)`): on pull requests
+touching `pkgs/mcpx/**` it fails a fix PR — title starting with `fix`,
+or a body `Fixes`/`Closes`/`Resolves` link to a `bug`/`kind/bug`
+issue — that changes no `*_test.go` / `*.test.ts` file under
+`pkgs/mcpx/`, unless the body carries `No test: <reason>` (the reason
+is echoed in the check output and job summary). This is the option-C
+enforcement of the failing-first rule in
+`pkgs/mcpx/docs/testing.md` ("A test per bug"); the match logic lives
+in `.github/scripts/check-mcpx-fix-test.sh` with shell contract tests
+in `.github/scripts/check-mcpx-fix-test.test.sh`, which also run on
+pushes to main. PRs outside the workflow's `pkgs/mcpx/**` path filter
+never fire the check.
+
 ## OpenCode metered-provider config guard
 
 `.github/workflows/opencode-config-guard.yml` runs the static guard and
@@ -109,6 +125,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                        | —                                                                |
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                 | —                                                                |
 | mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                      | — (main covers it)                                               |
+| mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                     | —                                                                |
 
 ## Coverage rule
 

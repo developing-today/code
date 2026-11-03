@@ -3,9 +3,11 @@
 # on this host.
 #
 #   ./install.sh            install pinned package + unit, restart on
-#                           change (or start when inactive), wait for the UI
-#   ./install.sh clone      additionally clone (or fetch) the
-#                           repositories the harness serves into
+#                           change (or start when inactive), wait for the
+#                           UI, apply config.json (./apply-config.sh,
+#                           #1203), print status
+#   ./install.sh clone      additionally clone (or fetch) every
+#                           repository config.json serves into
 #                           ./repos/
 #
 # Registration note (learned 2026-10-24, first deployment): register
@@ -74,15 +76,25 @@ fi
 #    Only with the explicit `clone` argument — cloning is a one-time,
 #    network-heavy step.
 if [[ ${1:-} == clone ]]; then
-  mkdir -p "${DEPLOY_DIR}/repos"
-  if [[ -d ${DEPLOY_DIR}/repos/code ]]; then
-    git -C "${DEPLOY_DIR}/repos/code" fetch --all --prune
-    echo "fetched code"
-  else
-    GIT_TERMINAL_PROMPT=0 git clone \
-      https://github.com/developing-today/code.git "${DEPLOY_DIR}/repos/code"
-    echo "cloned code"
-  fi
+  mkdir -p "$DEPLOY_DIR/repos"
+  # Every repository the declarative config serves (#1203) — not
+  # only developing-today/code. Rows are localDir<TAB>cloneUrl.
+  while IFS=$'\t' read -r local_dir clone_url; do
+    [[ -n $local_dir ]] || continue
+    if [[ -d $DEPLOY_DIR/repos/$local_dir ]]; then
+      git -C "$DEPLOY_DIR/repos/$local_dir" fetch --all --prune
+      echo "fetched $local_dir"
+    else
+      GIT_TERMINAL_PROMPT=0 git clone "$clone_url" "$DEPLOY_DIR/repos/$local_dir"
+      echo "cloned $local_dir"
+    fi
+  done < <(python3 -c '
+import json
+with open("config.json") as f:
+    cfg = json.load(f)
+for repo in cfg["repositories"]:
+    print(repo["localDir"] + "\t" + repo["cloneUrl"])
+')
 fi
 
 # 3. systemd user unit.
@@ -174,6 +186,10 @@ for ((i = 1; i <= 30; i++)); do
     if [[ ${service_action} == restarted || ${service_action} == started ]]; then
       rm -f "${PENDING_RESTART_FILE}"
     fi
+    # Apply the declarative configuration (#1203) once the new process is
+    # verified serving: register the clones and converge the harness
+    # settings on config.json, idempotently.
+    ./apply-config.sh
     systemctl --user --no-pager status ready-for-agent.service | head -5
     exit 0
   fi

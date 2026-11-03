@@ -14,6 +14,7 @@ import {
   ExportError,
   failureDocument,
   foldKv,
+  listR2Buckets,
   parseGraphqlUsage,
   R2_STORAGE_GROUP_LIMIT,
   run,
@@ -391,6 +392,26 @@ test("aiNeuronsDayAlertThreshold: env override with honest fallback (#2287)", ()
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "" }), 50000);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "abc" }), 50000);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "-5" }), 50000);
+  // Zero is a typo, never a threshold: every spelling falls back to the
+  // default, so a single neuron can never trip the daily alert (#4381).
+  for (const zero of ["0", "-0", "0.0", " 0 ", "0e5"]) {
+    assert.equal(
+      aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: zero }),
+      50000,
+      `zero spelling ${JSON.stringify(zero)} must fall back to the default`,
+    );
+  }
+  // Spellings that denote a positive number are accepted as that number;
+  // pinned so the parse cannot drift silently either way.
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0x10" }), 16);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0.5" }), 0.5);
+  // The gate a zeroed threshold would have opened: at the threshold exactly
+  // nothing fires, one neuron above it does.
+  const oneDay = (neurons) => [
+    { dimensions: { date: "2026-11-01", modelId: "@cf/meta/llama" }, sum: { totalNeurons: neurons } },
+  ];
+  assert.deepEqual(aiNeuronsDayAlerts(oneDay(50000), 50000).alerts, []);
+  assert.equal(aiNeuronsDayAlerts(oneDay(50001), 50000).alerts.length, 1);
   // A custom threshold actually gates the alert through parseGraphqlUsage.
   const parsed = parseGraphqlUsage(ACCOUNT, { now: NOW, cycleStart: START, aiThreshold: 4000000 });
   assert.deepEqual(parsed.aiNeurons.alerts, []);
@@ -491,4 +512,110 @@ test("measurement strings use plain decimals; request counts remain integers (#2
         error.message.includes("ai.totalNeurons"),
     );
   }
+});
+
+// #2574: R2 bucket enumeration is explicit — unknown is null plus a
+// detail, never a silent [] or a truncated page. Bucket pages are
+// consumed in order for /r2/buckets; billing probes and GraphQL stay
+// benign so the document's metrics prove the degradation is isolated.
+function bucketPage(names, { page = 1, totalPages } = {}) {
+  return {
+    status: 200,
+    body: {
+      result: { buckets: names.map((name) => ({ name })) },
+      ...(totalPages === undefined ? {} : {
+        result_info: { page, per_page: 100, total_pages: totalPages, count: names.length, total_count: 150 },
+      }),
+    },
+  };
+}
+
+async function runWithBuckets(bucketPages) {
+  let i = 0;
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/r2/buckets")) {
+      const p = bucketPages[Math.min(i++, bucketPages.length - 1)];
+      return { status: p.status, json: async () => p.body };
+    }
+    if (u.includes("/graphql")) {
+      return { status: 200, json: async () => ({ data: { viewer: { accounts: [ACCOUNT] } } }) };
+    }
+    return { status: 200, json: async () => ({}) };
+  };
+  try {
+    return await run({ token: "tok", accountId: "acct", now: NOW });
+  } finally {
+    globalThis.fetch = prev;
+  }
+}
+
+test("run: an HTTP 500 on buckets keeps metrics and marks enumeration unknown (#2574)", async () => {
+  const doc = await runWithBuckets([{ status: 500, body: {} }]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.metrics.length, 11); // GraphQL metrics survive
+  assert.equal(doc.r2Buckets, null);
+  assert.match(doc.r2BucketsDetail, /HTTP 500/);
+});
+
+test("run: missing or malformed result.buckets marks enumeration unknown (#2574)", async () => {
+  for (const body of [{}, { result: {} }, { result: { buckets: "nope" } }, { result: { buckets: null } }]) {
+    const doc = await runWithBuckets([{ status: 200, body }]);
+    assert.equal(doc.status, "ok");
+    assert.equal(doc.r2Buckets, null);
+    assert.match(doc.r2BucketsDetail, /missing or malformed/);
+  }
+});
+
+test("run: pagination follows every reported page (#2574)", async () => {
+  const first = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const rest = Array.from({ length: 50 }, (_, i) => `b${100 + i}`);
+  const doc = await runWithBuckets([bucketPage(first, { page: 1, totalPages: 2 }), bucketPage(rest, { page: 2, totalPages: 2 })]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.r2Buckets.length, 150);
+  assert.equal(doc.r2Buckets[0], "b0");
+  assert.equal(doc.r2Buckets[149], "b149");
+  assert.equal("r2BucketsDetail" in doc, false);
+});
+
+test("run: a later-page failure publishes unknown, never the partial list (#2574)", async () => {
+  const first = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const doc = await runWithBuckets([
+    bucketPage(first, { page: 1, totalPages: 2 }),
+    { status: 500, body: {} },
+  ]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.r2Buckets, null); // not the 100-name partial page
+  assert.match(doc.r2BucketsDetail, /page 2/);
+});
+
+test("run: a malformed later page publishes unknown, never the partial list (#2574)", async () => {
+  const first = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const doc = await runWithBuckets([
+    bucketPage(first, { page: 1, totalPages: 2 }),
+    { status: 200, body: { result: { buckets: "nope" } } },
+  ]);
+  assert.equal(doc.r2Buckets, null);
+  assert.match(doc.r2BucketsDetail, /page 2/);
+});
+
+test("run: a full page with no pagination metadata is unknown, not complete (#2574)", async () => {
+  const full = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const doc = await runWithBuckets([bucketPage(full)]);
+  assert.equal(doc.r2Buckets, null);
+  assert.match(doc.r2BucketsDetail, /truncated/);
+  // A short page without metadata is still provably complete (existing shape).
+  const short = await runWithBuckets([bucketPage(["b1"])]);
+  assert.deepEqual(short.r2Buckets, ["b1"]);
+  assert.equal("r2BucketsDetail" in short, false);
+});
+
+test("run: 401/403 on buckets still throws the token-scope contract (#2574)", async () => {
+  await assert.rejects(runWithBuckets([{ status: 403, body: {} }]), (e) => {
+    assert.ok(e instanceof ExportError);
+    assert.equal(e.status, "token-scope");
+    assert.equal(e.exitCode, 3);
+    return true;
+  });
 });

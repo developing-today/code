@@ -4577,6 +4577,112 @@ mod tests {
         );
     }
 
+    struct OversizedFallbackText;
+
+    impl WorldProgram for OversizedFallbackText {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            // A non-screen fallback text far beyond the presentation limit.
+            Ok(Some("y".repeat(9000)))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            _width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            let pad = "x".repeat(9000);
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_over_limit_fallback_text_is_bounded_by_presentation_bytes() {
+        let mut core = WorldCore::new("oversized-fallback-text", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedFallbackText), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token,
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains("world presentation exceeds 8192 bytes")),
+            "an over-limit fallback text is refused, not delivered: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an over-limit fallback must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 2,
+            "the oversized layout and the over-limit fallback are both counted"
+        );
+    }
+
+    struct OversizedFallbackScreen;
+
+    impl WorldProgram for OversizedFallbackScreen {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            // A full 120x50 screen whose cropped serialization is far beyond
+            // the presentation limit (6000 populated cells).
+            let cell = serde_json::json!({"symbol": "x", "fg": 1, "bg": 2, "bold": true, "columns": 1});
+            let cells: Vec<_> = std::iter::repeat_n(cell, 120 * 50).collect();
+            Ok(Some(
+                serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": cells})
+                    .to_string(),
+            ))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            _width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            let pad = "x".repeat(9000);
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_over_limit_cropped_fallback_screen_is_bounded_by_presentation_bytes() {
+        let mut core = WorldCore::new("oversized-fallback-screen", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedFallbackScreen), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token,
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains("world presentation exceeds 8192 bytes")),
+            "an over-limit cropped fallback screen is refused, not delivered: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an over-limit cropped fallback must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 2,
+            "the oversized layout and the over-limit cropped fallback are both counted"
+        );
+    }
+
     #[test]
     fn signed_moves_chain_verify_and_replay_the_journal_order() {
         use p2panda_core::{Hash, SigningKey};
@@ -5481,6 +5587,7 @@ mod schedule_tests {
             .handle(WorldCommand::Input {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
+                session_id: None,
                 signed_move: None,
                 reply,
             })
@@ -5488,6 +5595,57 @@ mod schedule_tests {
         actor.after_change().await;
         actor.acting = None;
         let _ = response.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn input_session_attribution_is_ephemeral_and_distinguishes_connections() {
+        let (mut actor, _, token, journal) = scheduling_actor("sessions", &[], false);
+        const SESSION_A: u64 = 0x5eed_cafe_0000_0001;
+        const SESSION_B: u64 = 0x5eed_cafe_0000_0002;
+        let session_ids = [SessionId::new(SESSION_A), SessionId::new(SESSION_B)];
+        let mut participant = None;
+
+        for session_id in session_ids {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Input {
+                    token: token.clone(),
+                    input: b"{}".to_vec(),
+                    session_id: Some(session_id),
+                    signed_move: None,
+                    reply,
+                })
+                .await;
+
+            let acting = actor
+                .acting
+                .expect("input participant is set while processing");
+            if let Some(first) = participant {
+                assert_eq!(acting, first);
+            } else {
+                participant = Some(acting);
+            }
+            assert!(actor.acting_session == Some(session_id));
+            response.await.unwrap().unwrap();
+            actor.after_change().await;
+            actor.acting = None;
+            actor.acting_session = None;
+        }
+
+        let committed: Vec<_> = journal
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, JournalEntry::Committed { .. }))
+            .collect();
+        assert_eq!(committed.len(), 2);
+        for entry in committed {
+            let value = serde_json::to_value(entry).unwrap();
+            assert_eq!(value.as_object().unwrap().len(), 2);
+            assert!(value.get("session_id").is_none());
+            let serialized = value.to_string();
+            assert!(!serialized.contains(&SESSION_A.to_string()));
+            assert!(!serialized.contains(&SESSION_B.to_string()));
+        }
     }
 
     /// The records the program last published.

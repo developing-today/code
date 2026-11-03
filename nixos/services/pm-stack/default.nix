@@ -144,6 +144,15 @@ in
               # roadmap-annotations.json inside this checkout and block
               # pm-git-sync the same way (Codex P1 on PR #4054).
               "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${aggState}/roadmap-annotations.json"
+              # The event log and saved views are runtime state too
+              # (2026-11-03, code#4906): events.json was still written
+              # into the checkout, where a repo-keeper snapshot of it
+              # onto main blocked every fast-forward of the primary.
+              # Declared here like the two paths above; the same two
+              # vars were also added to the state .env so the deployed
+              # (pre-switch) unit resolves them identically.
+              "PM_AGG_EVENTS_FILE=${aggState}/events.json"
+              "PM_AGG_VIEWS_FILE=${aggState}/views.json"
             ];
             Restart = "on-failure";
             RestartSec = 5;

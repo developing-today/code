@@ -325,6 +325,11 @@ required file aggregator/quota-current.json
 required file aggregator/registry.json
 required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
+required file aggregator/events.json
+required file aggregator/coverage-snapshot.json
+required file aggregator/aa-last-good.json
+optional file aggregator/views.json
+optional tree aggregator/charge-inputs
 required file meta-quota-export/latest.json
 required file meta-quota-export/history.jsonl
 conditional tree db-dumps
@@ -344,7 +349,8 @@ optional file journals/meta-quota-export.log"
 # before the cursor can advance. A missing file stays a WARN, as
 # before: absent and present-but-unreadable are different events.
 for f in actions.json comments.json fleet-feed.json quota-current.json \
-  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+  events.json views.json coverage-snapshot.json aa-last-good.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
       fail "dataset copy failed: $AGG/$f"
@@ -352,6 +358,8 @@ for f in actions.json comments.json fleet-feed.json quota-current.json \
 done
 if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots" ||
   fail "dataset copy failed: $AGG/snapshots"; fi
+if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
+  fail "dataset copy failed: $AGG/charge-inputs"; fi
 for f in latest.json history.jsonl; do
   if [ -f "$META/$f" ]; then
     cp -a "$META/$f" "$STAGE/meta-quota-export/$f" ||

@@ -43,6 +43,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import { isCredentialLifecycleRow, safeProviderReason } from "./credential-lifecycle.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -64,6 +65,7 @@ export interface FleetFeed {
     burn: number;
     poolFreshness: number;
     burnTokensPerMin: number;
+    credentialLifecycle?: number;
   };
   /** Element drops loadFeed's chargesAttention sanitization made
    * (#2439), set only when at least one entry dropped; absent on raw
@@ -595,6 +597,7 @@ export interface QuotaSanitization {
   droppedBurn: number;
   droppedPoolFreshness: number;
   droppedBurnTokensPerMin: number;
+  droppedCredentialLifecycle: number;
 }
 
 /** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921/#4546,
@@ -611,6 +614,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   let droppedActiveSessions = 0;
   let droppedPoolFreshness = 0;
   let droppedBurnTokensPerMin = 0;
+  const lifecycleRows = quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
+  const droppedCredentialLifecycle = lifecycleRows?.dropped ?? (quota.credentialLifecycle === undefined ? 0 : 1);
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
     droppedWindows += windows?.dropped ?? 0;
@@ -662,7 +667,23 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
     doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
   };
-  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  const view: QuotaView = {
+    ...quota,
+    pools: keptPools,
+    burn: burn?.values ?? [],
+    choices,
+    ...(lifecycleRows
+      ? {
+          credentialLifecycle: lifecycleRows.values.map((row) => ({
+            ...row,
+            providerName: safeProviderReason(row.providerName),
+            label: safeProviderReason(row.label),
+            ...(row.reason ? { reason: safeProviderReason(row.reason) } : {}),
+            ...(row.userAction ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } } : {}),
+          })),
+        }
+      : {}),
+  };
   // Surface the loss on the view itself (its consumers project the
   // view, e.g. /api/quota.json), not only on the feed wrapper.
   if (
@@ -672,7 +693,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
       droppedActiveSessions +
       droppedBurn +
       droppedPoolFreshness +
-      droppedBurnTokensPerMin >
+      droppedBurnTokensPerMin +
+      droppedCredentialLifecycle >
     0
   ) {
     view.dropped = {
@@ -683,6 +705,7 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
       burn: droppedBurn,
       poolFreshness: droppedPoolFreshness,
       burnTokensPerMin: droppedBurnTokensPerMin,
+      ...(droppedCredentialLifecycle > 0 ? { credentialLifecycle: droppedCredentialLifecycle } : {}),
     };
   }
   return {
@@ -694,6 +717,7 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     droppedBurn,
     droppedPoolFreshness,
     droppedBurnTokensPerMin,
+    droppedCredentialLifecycle,
   };
 }
 
@@ -734,11 +758,13 @@ export interface SubscriptionSanitization {
 /** One subscription row safe to hand to the renderers (#2446): the
  * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
  * a null row or a non-string field 500s /quota and is served verbatim
- * by /api/quota.json. */
+ * by /api/quota.json. renewsAt must be null or a real ISO calendar
+ * date (#3513): invalid strings survive sanitization otherwise and
+ * render verbatim as renewal dates. */
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
   return (
-    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
+    typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt))
   );
 }
 
@@ -775,13 +801,15 @@ export function sanitizeRegistry(v: unknown): RegistrySanitization {
 /** A PAYG line safe for both the attention derivation and the quota renderer. */
 export function isPaygLine(v: unknown): v is PaygLine {
   if (!isRecord(v)) return false;
-  const nullableFinite = (value: unknown) => value === null || isFiniteNumber(value);
+  const nullableNonNegative = (value: unknown) => value === null || isNonNegative(value);
   const isEstimate = (value: unknown) => {
     if (value === null) return true;
+    if (!isRecord(value)) return false;
+    const { low, high } = value;
     return (
-      isRecord(value) &&
-      isFiniteNumber(value.low) &&
-      isFiniteNumber(value.high) &&
+      isNonNegative(low) &&
+      isNonNegative(high) &&
+      low <= high &&
       typeof value.period === "string" &&
       (value.note === undefined || typeof value.note === "string")
     );
@@ -789,12 +817,12 @@ export function isPaygLine(v: unknown): v is PaygLine {
   return (
     typeof v.id === "string" &&
     typeof v.label === "string" &&
-    nullableFinite(v.accruedUsd) &&
-    (v.collectedUsd === undefined || nullableFinite(v.collectedUsd)) &&
+    nullableNonNegative(v.accruedUsd) &&
+    (v.collectedUsd === undefined || nullableNonNegative(v.collectedUsd)) &&
     (v.estimate === undefined || isEstimate(v.estimate)) &&
-    nullableFinite(v.unbilledUsd) &&
+    nullableNonNegative(v.unbilledUsd) &&
     typeof v.note === "string" &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     (v.sourceClass === "api" ||
       v.sourceClass === "console" ||
       v.sourceClass === "manual" ||
@@ -871,6 +899,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
         burn: san.droppedBurn,
         poolFreshness: san.droppedPoolFreshness,
         burnTokensPerMin: san.droppedBurnTokensPerMin,
+        ...(san.droppedCredentialLifecycle > 0 ? { credentialLifecycle: san.droppedCredentialLifecycle } : {}),
       },
       ...(charges ? { chargesAttention: charges.values } : {}),
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
