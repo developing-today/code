@@ -921,6 +921,64 @@ fn conflicting_copies_fail_closed_and_are_reported() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// --- #4578 / PR #4622 Codex re-review: casing aliases of the
+// --- canonical name (P1/P2) ---
+
+#[test]
+fn uppercase_extension_alias_is_scanned_and_blocks_conflicting_put() {
+    // A record stored under the canonical stem with an UPPERCASE
+    // extension is still the conversion's record (Codex P1 on
+    // PR #4622): the scan must not skip it, or get() reads the
+    // conversion as absent and a conflicting put overwrites it.
+    let (dir, mut store) = empty_file_store("upext4578");
+    let original = bare_record(
+        10,
+        vec![funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    store.put(&original).expect("seed put");
+    let alias = dir.join(format!("{:032x}.JSON", 10));
+    std::fs::rename(dir.join(canonical_name(10)), &alias).expect("rename to .JSON alias");
+
+    assert_eq!(store.get(10).expect("get via .JSON alias"), Some(original.clone()));
+    let listed = store.unresolved().expect("listing via .JSON alias");
+    assert_eq!(listed, vec![original.clone()]);
+
+    let conflicting = bare_record(
+        10,
+        vec![funding_transfer(601, ISSUER_SRC, USER_SRC, 10_000, SRC)],
+    );
+    let error = store
+        .put(&conflicting)
+        .expect_err("conflicting put over the .JSON alias must fail closed");
+    assert!(
+        error.to_string().contains("refusing to write conversion 10"),
+        "unexpected put error: {error}"
+    );
+    // The alias still holds the original record, byte for byte.
+    assert_eq!(store.get(10).expect("get after refusal"), Some(original));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unreadable_uppercase_canonical_spelling_fails_get_closed() {
+    // A corrupt file at the canonical name spelled with UPPERCASE
+    // hex digits is still the conversion's canonical file (Codex
+    // P2 on PR #4622): get() must fail closed on it, not read the
+    // conversion as absent and let prepare() overwrite it.
+    let (dir, store) = empty_file_store("uphex4578");
+    let alias = dir.join(format!("{:032X}.json", 10));
+    std::fs::write(&alias, b"{ not an intent record").expect("plant corrupt alias");
+
+    let error = store
+        .get(10)
+        .expect_err("get with an unreadable uppercase canonical file must fail closed");
+    assert!(
+        error.to_string().contains("is unreadable"),
+        "unexpected get error: {error}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- #4578 / PR #4622 Codex findings: canonical occupancy (P1) and
 // --- state-only divergence after an interrupted canonicalization (P2)
 

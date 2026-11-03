@@ -189,6 +189,12 @@ impl IntentStore for InMemoryIntentStore {
 /// conversion's record is blocked — `unresolved` skips and reports
 /// it like a conflicting copy instead of handing recovery a record
 /// whose state-advancing `put` is guaranteed to fail.
+/// The next re-review round added: the scan's extension match is
+/// case-insensitive (an uppercase-extension alias is scanned, never
+/// invisible), the unreadable-canonical check in `get` matches
+/// filesystem aliases and casing variants of the canonical name,
+/// and occupant resolution goes through a per-scan index instead
+/// of pairwise `same_file` calls (linear, not quadratic, I/O).
 pub struct FileIntentStore {
     dir: PathBuf,
     /// Entries skipped by the most recent `unresolved` listing
@@ -230,7 +236,17 @@ impl FileIntentStore {
         paths.sort();
         let mut scanned = Vec::new();
         for path in paths {
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            // The extension match is case-insensitive (Codex P1 on
+            // PR #4622): on a case-insensitive filesystem a file
+            // named with an uppercase .JSON extension can BE a
+            // canonical intent file, and excluding it from the scan
+            // would hide its conversion's record from every guard
+            // this contract backs.
+            let is_json = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+            if !is_json {
                 continue;
             }
             // fs::read also fails for a subdirectory named *.json;
@@ -255,9 +271,34 @@ impl FileIntentStore {
             }
         }
         unreadable.sort_by(|a, b| a.path.cmp(&b.path));
+        // Occupant index (Codex P2 on PR #4622): resolve every
+        // entry's filesystem identity ONCE here - its own path, its
+        // canonicalized path, and (on Unix) its device+inode - so
+        // entry_at is a map lookup per query. The previous shape
+        // called same_file() (canonicalize + metadata syscalls) for
+        // every (entry, query) pair, which made unresolved()
+        // quadratic in the number of stored records even when the
+        // listing came back empty.
+        let mut by_path: HashMap<PathBuf, usize> = HashMap::new();
+        let mut by_file_id: HashMap<(u64, u64), usize> = HashMap::new();
+        for (index, entry) in scanned.iter().enumerate() {
+            by_path.entry(entry.path.clone()).or_insert(index);
+            if let Ok(canon) = fs::canonicalize(&entry.path) {
+                by_path.entry(canon).or_insert(index);
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if let Ok(meta) = fs::metadata(&entry.path) {
+                    by_file_id.entry((meta.dev(), meta.ino())).or_insert(index);
+                }
+            }
+        }
         Ok(IntentScan {
             entries: scanned,
             unreadable,
+            by_path,
+            by_file_id,
         })
     }
 }
@@ -272,6 +313,12 @@ struct ScannedIntent {
 struct IntentScan {
     entries: Vec<ScannedIntent>,
     unreadable: Vec<UnreadableIntent>,
+    /// Occupant index: path (as scanned, or canonicalized) -> entry.
+    by_path: HashMap<PathBuf, usize>,
+    /// Occupant index: (device, inode) -> entry; populated on Unix,
+    /// empty elsewhere. Covers hardlinks, whose canonical paths
+    /// still differ in spelling.
+    by_file_id: HashMap<(u64, u64), usize>,
 }
 
 impl IntentScan {
@@ -291,9 +338,58 @@ impl IntentScan {
     /// restore), and that occupancy is a fact about the path, not
     /// about the content identity `copies_for` groups by.
     fn entry_at(&self, path: &Path) -> Option<&ScannedIntent> {
-        self.entries
-            .iter()
-            .find(|entry| entry.path == path || same_file(&entry.path, path))
+        if let Some(&index) = self.by_path.get(path) {
+            return Some(&self.entries[index]);
+        }
+        if let Ok(canon) = fs::canonicalize(path) {
+            if let Some(&index) = self.by_path.get(&canon) {
+                return Some(&self.entries[index]);
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(meta) = fs::metadata(path) {
+                if let Some(&index) = self.by_file_id.get(&(meta.dev(), meta.ino())) {
+                    return Some(&self.entries[index]);
+                }
+            }
+        }
+        // Lexical alias: a file whose NAME differs from the query
+        // path's name only in casing spells the same canonical name
+        // (the hex stem is case-insensitive, like the extension),
+        // so it is the canonical occupant even where the filesystem
+        // keeps the spellings distinct. String compares only - no
+        // syscalls - so this never reintroduces the quadratic I/O
+        // the index above removed.
+        let name = path.file_name()?;
+        self.entries.iter().find(|entry| {
+            entry.path.file_name().is_some_and(|other| {
+                other
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&name.to_string_lossy())
+            })
+        })
+    }
+
+    /// The unreadable entry sitting at `path`, with the same alias
+    /// matching `entry_at` applies (Codex P2 on PR #4622): an
+    /// unreadable canonical file spelled with different casing -
+    /// uppercase hex digits, say - is still this conversion's
+    /// canonical file, so `get` must fail closed on it instead of
+    /// treating the conversion as absent.
+    fn unreadable_at(&self, path: &Path) -> Option<&UnreadableIntent> {
+        self.unreadable.iter().find(|entry| {
+            if entry.path == path || same_file(&entry.path, path) {
+                return true;
+            }
+            match (entry.path.file_name(), path.file_name()) {
+                (Some(a), Some(b)) => a
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&b.to_string_lossy()),
+                _ => false,
+            }
+        })
     }
 
     /// The one distinct record among `copies`, or `None` when the
@@ -497,7 +593,7 @@ impl IntentStore for FileIntentStore {
         // NON-canonical file is a #4125 skipped entry, not this
         // conversion's canonical record.)
         let canonical = self.path_for(conversion_id);
-        if let Some(bad) = scan.unreadable.iter().find(|entry| entry.path == canonical) {
+        if let Some(bad) = scan.unreadable_at(&canonical) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
