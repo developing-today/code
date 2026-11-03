@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { listenTarget } from './socket-activation.mjs';
 import { createRequestBodyCollector } from './request-body.mjs';
 
 const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
@@ -311,7 +312,9 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'Not Found', path: pathname }));
 });
 
-server.listen(PORT, HOST, () => {
+// Socket activation (#1821): under systemd the listener arrives as fd 3
+// and systemd owns the bind; a manual launch binds PORT/HOST directly.
+server.listen(listenTarget({ port: PORT, host: HOST }), () => {
   publishEndpoint();
   console.log(`Clef System One Proxy listening on http://${HOST}:${PORT}`);
   console.log(`Endpoint: http://${HOST}:${PORT}/v1/systemone`);
