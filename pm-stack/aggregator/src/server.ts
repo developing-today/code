@@ -1029,7 +1029,10 @@ async function handler(req: Request): Promise<Response> {
       ref: url.searchParams.get("ref") ?? undefined,
       actor: url.searchParams.get("actor") ?? undefined,
     });
-    return json({ events });
+    // #3322 slice A: the audit health surface rides along — pending
+    // retry-outbox count + hash-chain integrity verdict.
+    const health = await eventsStore.health();
+    return json({ events, health });
   }
   if (path === "/events") {
     // #1739: the human page over the same stream /api/events.json

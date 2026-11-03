@@ -187,3 +187,126 @@ describe("events store (#1739)", () => {
     expect((await store.list()).length).toBe(1);
   });
 });
+
+// #3322 slice A: audit v2 — versioned records with stable ids,
+// attribution confidence, separate event/ingest timestamps, source
+// identity, hash-linked integrity, append-only corrections, v1
+// dual-read, and the durable retry outbox.
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { verifyEventChain } from "../src/events.ts";
+
+describe("events audit v2 (#3322 slice A)", () => {
+  test("record stamps v2 audit fields: stable id, ingest time, attribution, source, hash link", async () => {
+    const { store } = tmpStore();
+    const at = new Date(Date.now() - 60_000).toISOString();
+    const e = await store.record({ ...base, at });
+    expect(e.version).toBe(2);
+    expect(typeof e.id).toBe("string");
+    expect(e.id.length).toBeGreaterThan(0);
+    // Event time is the supplied `at`; ingest time is stamped by the
+    // store and is not the event time.
+    expect(e.at).toBe(at);
+    expect(Number.isFinite(Date.parse(e.ingestedAt))).toBe(true);
+    expect(e.ingestedAt).not.toBe(at);
+    // Unknown actors are marked unknown and never asserted.
+    expect(e.attribution).toEqual({ confidence: "unknown", asserted: false });
+    expect(e.source.identity.length).toBeGreaterThan(0);
+    expect(e.hash.length).toBe(64);
+    const second = await store.record({ ...base, summary: "second" });
+    expect(second.prevHash).toBe(e.hash);
+    expect(verifyEventChain(await store.list().then((l) => [...l].reverse())).ok).toBe(true);
+    const health = await store.health();
+    expect(health.integrity.ok).toBe(true);
+    expect(health.pendingRetries).toBe(0);
+    expect(health.events).toBe(2);
+  });
+
+  test("authenticated attribution must be asserted; unasserted claims are rejected", async () => {
+    const { store } = tmpStore();
+    const ok = await store.record({
+      ...base,
+      attribution: { confidence: "authenticated", asserted: true },
+      source: { identity: "dashboard", link: "https://example.test/x" },
+    });
+    expect(ok.attribution.confidence).toBe("authenticated");
+    expect(ok.source.link).toBe("https://example.test/x");
+    await expect(
+      store.record({ ...base, attribution: { confidence: "authenticated", asserted: false } }),
+    ).rejects.toThrow("asserted");
+  });
+
+  test("v1 store files remain readable and migrate with deterministic ids", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-v1-"));
+    const file = join(dir, "events.json");
+    const at = new Date(Date.now() - 60_000).toISOString();
+    writeFileSync(file, JSON.stringify({ version: 1, events: [{ ...base, at }] }, null, 2));
+    const first = await new EventsStore(file).list();
+    expect(first.length).toBe(1);
+    expect(first[0]?.version).toBe(2);
+    expect(first[0]?.migratedFromVersion).toBe(1);
+    expect(first[0]?.attribution.confidence).toBe("unknown");
+    const second = await new EventsStore(file).list();
+    expect(second[0]?.id).toBe(first[0]?.id); // deterministic migration id
+    // The next append persists the file as v2.
+    const store = new EventsStore(file);
+    await store.record({ ...base, summary: "after migration" });
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { version: number };
+    expect(onDisk.version).toBe(2);
+  });
+
+  test("a silently edited stored record fails the integrity check", async () => {
+    const { file, store } = tmpStore();
+    await store.record({ ...base });
+    await store.record({ ...base, summary: "second" });
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { events: { summary: string }[] };
+    onDisk.events[0]!.summary = "tampered";
+    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    const reloaded = new EventsStore(file);
+    const health = await reloaded.health();
+    expect(health.integrity.ok).toBe(false);
+    // The stream itself stays readable; the violation is surfaced,
+    // not hidden.
+    expect((await reloaded.list()).length).toBe(2);
+  });
+
+  test("corrections are separate append-only records naming their target", async () => {
+    const { store } = tmpStore();
+    const original = await store.record({ ...base, summary: "original claim" });
+    const correction = await store.recordCorrection(original.id, {
+      actor: "keeper",
+      summary: "correction: the claim above was about code#2",
+    });
+    expect(correction.kind).toBe("correction");
+    expect(correction.corrects).toBe(original.id);
+    const list = await store.list();
+    expect(list.length).toBe(2);
+    expect(list.find((e) => e.id === original.id)?.summary).toBe("original claim"); // untouched
+    await expect(store.recordCorrection("no-such-id", { actor: "keeper", summary: "x" })).rejects.toThrow(
+      "no such record",
+    );
+  });
+
+  test("a failed append is persisted to the retry outbox and merged on the next append", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-retry-"));
+    const file = join(dir, "events.json");
+    const store = new EventsStore(file);
+    await store.record({ ...base, summary: "landed" });
+    // Make persist fail: the events path becomes a non-empty
+    // directory, so the atomic rename over it fails — while the
+    // sibling outbox file stays writable.
+    rmSync(file);
+    mkdirSync(file);
+    writeFileSync(join(file, "occupant"), "x");
+    await expect(store.record({ ...base, summary: "queued for retry" })).rejects.toThrow();
+    expect(existsSync(store.outboxFile)).toBe(true);
+    expect(await store.health().then((h) => h.pendingRetries)).toBe(1);
+    // Recover and append again: the outbox flushes first.
+    rmSync(file, { recursive: true });
+    await store.record({ ...base, summary: "after recovery" });
+    const summaries = (await new EventsStore(file).list()).map((e) => e.summary);
+    expect(summaries).toContain("queued for retry");
+    expect(summaries).toContain("after recovery");
+    expect(summaries).toContain("landed");
+    expect(existsSync(store.outboxFile)).toBe(false);
+  });
+});
