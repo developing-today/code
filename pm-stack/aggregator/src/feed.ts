@@ -801,13 +801,15 @@ export function sanitizeRegistry(v: unknown): RegistrySanitization {
 /** A PAYG line safe for both the attention derivation and the quota renderer. */
 export function isPaygLine(v: unknown): v is PaygLine {
   if (!isRecord(v)) return false;
-  const nullableFinite = (value: unknown) => value === null || isFiniteNumber(value);
+  const nullableNonNegative = (value: unknown) => value === null || isNonNegative(value);
   const isEstimate = (value: unknown) => {
     if (value === null) return true;
+    if (!isRecord(value)) return false;
+    const { low, high } = value;
     return (
-      isRecord(value) &&
-      isFiniteNumber(value.low) &&
-      isFiniteNumber(value.high) &&
+      isNonNegative(low) &&
+      isNonNegative(high) &&
+      low <= high &&
       typeof value.period === "string" &&
       (value.note === undefined || typeof value.note === "string")
     );
@@ -815,12 +817,12 @@ export function isPaygLine(v: unknown): v is PaygLine {
   return (
     typeof v.id === "string" &&
     typeof v.label === "string" &&
-    nullableFinite(v.accruedUsd) &&
-    (v.collectedUsd === undefined || nullableFinite(v.collectedUsd)) &&
+    nullableNonNegative(v.accruedUsd) &&
+    (v.collectedUsd === undefined || nullableNonNegative(v.collectedUsd)) &&
     (v.estimate === undefined || isEstimate(v.estimate)) &&
-    nullableFinite(v.unbilledUsd) &&
+    nullableNonNegative(v.unbilledUsd) &&
     typeof v.note === "string" &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     (v.sourceClass === "api" ||
       v.sourceClass === "console" ||
       v.sourceClass === "manual" ||
