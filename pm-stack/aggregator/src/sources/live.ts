@@ -38,6 +38,7 @@ import {
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
+import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
@@ -741,6 +742,20 @@ export function liveSource(
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #1226: the Needs-Drew label census hits the GitHub search API
+  // (8 queries per sweep). The sweeper caches for 5 minutes and shares
+  // one in-flight sweep between concurrent callers, so the three
+  // attention fragments rendering together do not each pay that cost or
+  // burn the search rate limit (#3970).
+  const needsDrewSweep = createNeedsDrewSweeper((url) => {
+    const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(token ? { Authorization: "Bearer " + token } : {}),
+    };
+    return getJson(url, headers);
+  });
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
     const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
@@ -950,6 +965,9 @@ export function liveSource(
     async projectsAvailable(): Promise<boolean> {
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
+    },
+    async needsDrew(): Promise<NeedsDrewCensus | null> {
+      return needsDrewSweep();
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();

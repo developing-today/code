@@ -26,6 +26,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -439,11 +440,22 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   });
 }
 
-async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([
+async function attentionContext(opts: { census?: boolean } = {}) {
+  // #1226/#3970: the Needs-Drew census costs up to eight sequential
+  // GitHub search calls (up to ~64 s when the API is unreachable). Only
+  // the attention page render consumes it, so it opts in; the overview,
+  // Today, /api/attention.json and /api/coverage.json must not inherit
+  // that external dependency (Codex P2 on PR #3970).
+  const wantsCensus = shouldFetchNeedsDrewCensus(opts);
+  const [feed, summary, coverage, census] = await Promise.all([
     source.attention().catch(() => []),
     source.orchestration().catch(() => null),
     source.coverage().catch(() => []),
+    // A source without the census (or a failed sweep) yields null and
+    // the view renders it as unavailable, never as an empty queue.
+    wantsCensus
+      ? ((source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>)
+      : Promise.resolve<NeedsDrewCensus | null>(null),
   ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
@@ -454,6 +466,7 @@ async function attentionContext() {
     coverage,
     orchestration: summary,
     diagnosis,
+    census,
   };
 }
 
@@ -506,7 +519,7 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage, orchestration, diagnosis } = await attentionContext();
+  const { view, coverage, orchestration, diagnosis, census } = await attentionContext({ census: true });
   const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
     source.projects().catch(() => []),
     commentFormOpts(),
@@ -529,7 +542,7 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act, briefs };
+  return { view, coverage, counts, act, briefs, census };
 }
 
 async function todaySignals() {
@@ -1199,14 +1212,14 @@ async function handler(req: Request): Promise<Response> {
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail()));
     }
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs));
+    const { view, coverage, counts, act, briefs, census } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs, census));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs);
+    const { view, coverage, counts, act, briefs, census } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act, briefs, census);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
   if (path === "/assets/datastar.js") {
@@ -1507,6 +1520,15 @@ async function handler(req: Request): Promise<Response> {
       .map((metricId) => ({ metricId, pace: projectPace(history, metricId) }))
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
+  }
+  if (path === "/api/needs-drew.json") {
+    // #1226: the Needs-Drew label census as data — open user/review +
+    // user/escalated items across the four repos with per-source
+    // status and freshness. 503 when this source cannot census, so a
+    // consumer never mistakes "unavailable" for "nothing waiting".
+    const census = (await source.needsDrew?.().catch(() => null)) ?? null;
+    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    return json(census);
   }
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
