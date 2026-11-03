@@ -48,10 +48,66 @@ declare -A GRANDFATHERED=(
 # declaration, use, ...) excludes only its own lines; a test item
 # whose braces balance on one line (fn helper() {}) excludes only
 # that line — skipping must end there, or the production items after
-# it are silently discarded (Codex finding on PR #4709).
+# it are silently discarded (Codex findings on PR #4709). Brace
+# counting ignores braces inside // and /* */ comments, "..."
+# strings, raw strings, and char literals: a test that builds a
+# malformed-JSON string containing "{" must not stretch the skipped
+# region over the production code that follows the test module.
 production_lines() {
   awk '
-    function braces(s,   t) { t = s; return gsub(/\{/, "{", t) - gsub(/\}/, "}", t) }
+    BEGIN {
+      rawhash = -1; instring = 0; blockdepth = 0
+      skipdepth = 0; pending = 0; count = 0
+      q = sprintf("%c", 39)
+      pat_u = "^" q "\\\\u\\{[0-9a-fA-F]+\\}" q
+      pat_x = "^" q "\\\\x[0-9a-fA-F][0-9a-fA-F]" q
+      pat_e = "^" q "\\\\." q
+      pat_c = "^" q "[^\\\\" q "]" q
+    }
+    # scan_braces(s): net { } count of one line, ignoring braces in
+    # comments, strings, raw strings, and char literals. Lexer state
+    # persists across the lines of one file (one awk run per file).
+    function scan_braces(s,   i, c, n, h, rest) {
+      n = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (rawhash >= 0) {
+          if (c == "\"" && (rawhash == 0 || (substr(s, i + 1, rawhash) ~ /^#+$/ && length(substr(s, i + 1, rawhash)) == rawhash))) {
+            i += rawhash; rawhash = -1
+          }
+          continue
+        }
+        if (instring) {
+          if (c == "\\") i++
+          else if (c == "\"") instring = 0
+          continue
+        }
+        if (blockdepth > 0) {
+          if (c == "/" && substr(s, i + 1, 1) == "*") { blockdepth++; i++ }
+          else if (c == "*" && substr(s, i + 1, 1) == "/") { blockdepth--; i++ }
+          continue
+        }
+        if (c == "/" && substr(s, i + 1, 1) == "/") break
+        if (c == "/" && substr(s, i + 1, 1) == "*") { blockdepth = 1; i++; continue }
+        if (c == "\"") { instring = 1; continue }
+        if (c == "r") {
+          h = 0
+          while (substr(s, i + 1 + h, 1) == "#") h++
+          if (substr(s, i + 1 + h, 1) == "\"") { rawhash = h; i += 1 + h; continue }
+          continue
+        }
+        if (c == q) {
+          rest = substr(s, i)
+          if (match(rest, pat_u) || match(rest, pat_x) || match(rest, pat_e) || match(rest, pat_c)) {
+            i += RLENGTH - 1
+          }
+          continue
+        }
+        if (c == "{") n++
+        else if (c == "}") n--
+      }
+      return n
+    }
     # test_only(pred): whitespace-stripped cfg predicate requires a
     # test build: exactly "test", or all(...) with a top-level arm
     # that is itself test_only. any(...) / not(...) / feature arms
@@ -90,29 +146,30 @@ production_lines() {
       gsub(/[[:space:]]/, "", pred)
       return test_only(pred)
     }
-    skipdepth > 0 {
-      skipdepth += braces($0)
-      if (skipdepth <= 0) skipdepth = 0
-      next
+    {
+      d = scan_braces($0)
+      if (skipdepth > 0) {
+        skipdepth += d
+        if (skipdepth <= 0) skipdepth = 0
+        next
+      }
+      if (pending) {
+        if (d > 0) { pending = 0; skipdepth = d; next }
+        if (d < 0) { pending = 0; next }
+        if ($0 ~ /;[[:space:]]*$/) { pending = 0; next }
+        if ($0 ~ /\{/) { pending = 0; next }
+        next   # multi-line item header: keep waiting for { or ;
+      }
+      if (is_test_attr($0)) {
+        if (d > 0) skipdepth = d
+        else if (d < 0) { }
+        else if ($0 ~ /;[[:space:]]*$/) { }
+        else if ($0 ~ /\{/) { }
+        else pending = 1
+        next
+      }
+      count++
     }
-    pending {
-      d = braces($0)
-      if (d > 0) { pending = 0; skipdepth = d; next }
-      if (d < 0) { pending = 0; next }
-      if ($0 ~ /;[[:space:]]*$/) { pending = 0; next }
-      if ($0 ~ /\{/) { pending = 0; next }
-      next   # multi-line item header: keep waiting for { or ;
-    }
-    is_test_attr($0) {
-      d = braces($0)
-      if (d > 0) skipdepth = d
-      else if (d < 0) { }
-      else if ($0 ~ /;[[:space:]]*$/) { }
-      else if ($0 ~ /\{/) { }
-      else pending = 1
-      next
-    }
-    { count++ }
     END { print count + 0 }
   ' "$1"
 }

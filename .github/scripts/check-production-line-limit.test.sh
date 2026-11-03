@@ -100,6 +100,29 @@ fi
 grep -q "OVER LIMIT pkgs/id/src/prodcfg.rs" "$TMP/prodcfg.out"
 echo "pass: compound cfg without test stays production"
 
+# Braces inside literals and comments do not move the skip region
+# (Codex finding on PR #4709): a test module that builds a malformed
+# JSON string containing "{" must end at its real closing brace, and
+# the production code after it must count.
+mkdir -p "$TMP/litbrace/pkgs/id/src"
+{ echo "#[cfg(test)]"
+  echo "mod tests {"
+  echo "  fn t() {"
+  echo '    let s = "{\"author\":\"tor";'
+  echo '    let u = "}";'
+  echo '    let c = '"'"'}'"'"';'
+  echo '    let e = '"'"'\u{1F600}'"'"';'
+  echo "    // } closes nothing"
+  echo "  }"
+  echo "}"
+  for i in $(seq 1 2501); do echo "fn p$i() {}"; done
+} > "$TMP/litbrace/pkgs/id/src/litbrace.rs"
+if bash "$SCRIPT" "$TMP/litbrace" > "$TMP/litbrace.out" 2>&1; then
+  echo "FAIL: guard let a brace inside a string stretch the test skip region" >&2; exit 1
+fi
+grep -q "OVER LIMIT pkgs/id/src/litbrace.rs: 2501 production lines" "$TMP/litbrace.out"
+echo "pass: braces in literals/comments do not move the skip region"
+
 # Test code is out of scope: tests/ trees and tests.rs modules.
 mkdir -p "$TMP/tests/pkgs/id/tests" "$TMP/tests/pkgs/id/src/encryption"
 gen "$TMP/tests/pkgs/id/tests/cli_integration.rs" 4000
