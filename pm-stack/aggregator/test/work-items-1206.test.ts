@@ -167,4 +167,40 @@ describe("canonical work-item projection (#1206)", () => {
     const programItem = workItemForRef(live.workItems, REF);
     expect(programItem).toEqual(canonical);
   });
+
+  test("keeps Drew-tier precedence when both attention tiers claim one ref", () => {
+    const section = fixtureSection();
+    section.tiers!.needsOrchestrator!.push({
+      ...section.tiers!.needsDrew![0]!,
+      reason: "orchestrator follow-up",
+    });
+
+    const item = workItemForRef(assembleWorkItems(section), REF)!;
+    expect(item.status).toBe("needs-drew");
+    expect(item.tier).toBe("needs-drew");
+    expect(item.reason).toBe("a decision only Drew can make");
+    expect(item.rank).toBe(0);
+  });
+
+  test("does not merge distinct unreferenced tier items just because titles match", () => {
+    const section = fixtureSection();
+    section.tiers!.needsOrchestrator = [
+      { ...section.tiers!.needsOrchestrator![0]!, id: "session-a", title: "Review changes" },
+      { ...section.tiers!.needsOrchestrator![0]!, id: "session-b", title: "Review changes" },
+    ];
+
+    const sameTitle = assembleWorkItems(section).filter((item) => item.title === "Review changes");
+    expect(sameTitle.map((item) => item.id)).toEqual(["session-a", "session-b"]);
+  });
+
+  test("ignores malformed optional blockers rather than throwing", () => {
+    const section = fixtureSection();
+    const drew = section.tiers!.needsDrew![0]! as unknown as { blockedBy: unknown };
+    drew.blockedBy = {};
+    const linedUp = section.goals![0]!.linedUp![0]! as unknown as { blockedBy: unknown };
+    linedUp.blockedBy = 42;
+
+    expect(() => assembleWorkItems(section)).not.toThrow();
+    expect(workItemForRef(assembleWorkItems(section), REF)!.blockers).toEqual([]);
+  });
 });

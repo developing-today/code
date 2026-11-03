@@ -127,10 +127,29 @@ function unionBlockers(into: DependencyRef[], extra: DependencyRef[]): Dependenc
   return out;
 }
 
+/** Malformed publishers can omit or mistype the optional blockedBy
+ *  field; the canonical layer must not throw on it. Anything but an
+ *  array of dependency records becomes no blockers. */
+function asBlockers(value: unknown): DependencyRef[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((d): d is DependencyRef => {
+    if (typeof d !== "object" || d === null) return false;
+    const blocker = d as Record<string, unknown>;
+    return typeof blocker.task === "string" &&
+      ["in-progress", "queued", "stalled", "done", "unknown"].includes(String(blocker.status)) &&
+      (blocker.ref === undefined || typeof blocker.ref === "string");
+  });
+}
+
 /** Assemble the canonical work-item list from one orchestration section. */
 export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
   const items: WorkItem[] = [];
   const byKey = new Map<string, WorkItem>();
+  // Items assembled from goal lined-up lists. A ref-free tier item may
+  // merge into one of these by title — but never into another tier
+  // item: two tier items with different ids and no refs are distinct
+  // work even when their titles match.
+  const fromGoals = new Set<WorkItem>();
   const keyFor = (ref: RefKey | undefined, title: string): string => ref ?? `title:${normTitle(title)}`;
 
   for (const goal of section.goals ?? []) {
@@ -140,7 +159,7 @@ export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
       if (existing) {
         // The same task lined up under a second goal (or twice under
         // one) is one item: first goal wins, blockers union.
-        existing.blockers = unionBlockers(existing.blockers, task.blockedBy ?? []);
+        existing.blockers = unionBlockers(existing.blockers, asBlockers(task.blockedBy));
         continue;
       }
       const item: WorkItem = {
@@ -152,12 +171,13 @@ export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
         linedUpStatus: task.status,
         horizon: task.horizon,
         horizonWhy: task.horizonWhy,
-        blockers: [...(task.blockedBy ?? [])],
+        blockers: asBlockers(task.blockedBy),
         goal: goal.goal,
         goalId: goal.goalId,
         source: "orchestrator",
       };
       byKey.set(key, item);
+      fromGoals.add(item);
       // A tier item may name this task by its ref-as-id; index that too.
       if (task.ref) byKey.set(task.ref, item);
       items.push(item);
@@ -166,16 +186,21 @@ export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
 
   const addTier = (tierItems: TierItem[], tier: WorkItemTier): void => {
     tierItems.forEach((t, index) => {
+      const titleCandidate = byKey.get(keyFor(t.ref, t.title));
       const match =
         (t.ref ? byKey.get(t.ref) : undefined) ??
         byKey.get(t.id) ??
-        byKey.get(keyFor(t.ref, t.title));
+        (titleCandidate && fromGoals.has(titleCandidate) ? titleCandidate : undefined);
       if (match) {
-        match.tier = tier;
-        match.status = tier;
-        match.reason = t.reason;
+        // If both tiers claim one item, preserve the higher-priority
+        // needs-drew claim (the lower rank number) and its explanation.
+        if (!match.tier || TIER_RANK_BASE[tier] < TIER_RANK_BASE[match.tier]) {
+          match.tier = tier;
+          match.status = tier;
+          match.reason = t.reason;
+        }
         match.rank = Math.min(match.rank, TIER_RANK_BASE[tier] + index);
-        match.blockers = unionBlockers(match.blockers, t.blockedBy ?? []);
+        match.blockers = unionBlockers(match.blockers, asBlockers(t.blockedBy));
         if (!match.ref && t.ref) match.ref = t.ref;
         return;
       }
@@ -185,12 +210,14 @@ export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
         status: tier,
         rank: TIER_RANK_BASE[tier] + index,
         ref: t.ref,
-        blockers: [...(t.blockedBy ?? [])],
+        blockers: asBlockers(t.blockedBy),
         tier,
         reason: t.reason,
         source: t.source,
       };
-      byKey.set(keyFor(t.ref, t.title), item);
+      // Do not put an unreferenced tier item in the title index: titles
+      // are not identities for independently published tier items.
+      if (t.ref) byKey.set(keyFor(t.ref, t.title), item);
       if (t.ref) byKey.set(t.ref, item);
       byKey.set(t.id, item);
       items.push(item);
