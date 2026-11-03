@@ -396,6 +396,73 @@ func TestPathsConfigDeclarationsApplyInChainOrder(t *testing.T) {
 	}
 }
 
+// PR #5165 review: a nearer list inserting a symlink alias of an
+// already-discovered file makes identity dedupe keep the alias
+// spelling in load and drop the discovery spelling — the aliased
+// file's declaration must still apply (matched by identity), or
+// what it adds is lost to a pass-2 divergence report.
+func TestPathsConfigAliasedFileDeclarationStillApplies(t *testing.T) {
+	isolateChain(t)
+	root := t.TempDir()
+	dirA := filepath.Join(root, "a")
+	dirB := filepath.Join(root, "b")
+	dirX := filepath.Join(root, "x")
+	linkB := filepath.Join(root, "link-to-b")
+	writeChainFile(t, filepath.Join(dirA, ".mcpx.json"),
+		`{"paths":{"config":[`+quoteJSON(linkB)+`,null]}, "mcpServers":{"aSrv":{"command":"a"}}}`)
+	writeChainFile(t, filepath.Join(dirB, ".mcpx.json"),
+		`{"paths":{"config":[`+quoteJSON(dirX)+`]}, "mcpServers":{"bSrv":{"command":"b"}}}`)
+	writeChainFile(t, filepath.Join(dirX, ".mcpx.json"),
+		`{"mcpServers":{"xSrv":{"command":"x"}}}`)
+	if err := os.Symlink(dirB, linkB); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MCPX_PATHS_CONFIG", dirA+","+dirB)
+
+	cfg, err := config.LoadFrom("", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.MCPServers["xSrv"]; !ok {
+		t.Errorf("the aliased file's declaration did not apply; X did not load: %v", cfg.Sources)
+	}
+	for _, d := range cfg.Chain.Divergent {
+		if strings.Contains(d, "link-to-b") || strings.Contains(d, dirB) {
+			t.Errorf("B's declaration was reported divergent instead of applied: %v", d)
+		}
+	}
+}
+
+// PR #5165 review: on the command line the splice marker is spelled
+// "-", and the bootstrap flag must decode it — otherwise a seed of
+// "/custom" + "-" has no null and (since the seed splice is now
+// honoured) replaces the default walk instead of extending it.
+func TestPathsConfigFlagSeedDashSplicesDefaults(t *testing.T) {
+	home := isolateChain(t)
+	custom := filepath.Join(t.TempDir(), "custom")
+	writeChainFile(t, filepath.Join(home, ".mcpx.json"),
+		`{"mcpServers":{"homeSrv":{"command":"h"}}}`)
+	writeChainFile(t, filepath.Join(custom, ".mcpx.json"),
+		`{"mcpServers":{"customSrv":{"command":"c"}}}`)
+	config.AddPathsConfigSeed([]string{custom})
+	config.AddPathsConfigSeed([]string{"-"})
+
+	cfg, err := config.LoadFrom("", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.MCPServers["customSrv"]; !ok {
+		t.Errorf("flag-seeded file did not load: %v", cfg.Sources)
+	}
+	if _, ok := cfg.MCPServers["homeSrv"]; !ok {
+		t.Errorf("the '-' splice must retain the default walk, but the home file did not load: %v", cfg.Sources)
+	}
+	env, ok := config.PathsConfigSeedEnv()
+	if !ok || !strings.Contains(env, "null") {
+		t.Errorf("seed env form should carry the decoded null splice, got %q (ok=%v)", env, ok)
+	}
+}
+
 func quoteJSON(s string) string {
 	return `"` + strings.ReplaceAll(s, `\`, `\\`) + `"`
 }
