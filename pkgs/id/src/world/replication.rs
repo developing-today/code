@@ -576,7 +576,10 @@ pub enum ReplicationError {
     /// refused at the header boundary, before any entry is applied.
     #[error("unsupported journal header version {0}")]
     UnsupportedJournalVersion(u32),
-    /// A tail/terminal frame's header version differs from the chain's.
+    /// A frame's header version moved backwards: a tail/terminal frame
+    /// whose version differs from the chain's, or a snapshot older than
+    /// the chain's (a rollback, #4487) — refused before any entry is
+    /// applied.
     #[error("journal header version changed without a reset snapshot")]
     HeaderVersionChanged,
     /// The frame names a different world than the receiver replicates.
@@ -743,6 +746,13 @@ impl ReplicationTracker {
                 // A snapshot rebases the chain: its before-cursor must be
                 // the base for its own header version, whatever the
                 // current chain is (first sync, compaction, header bump).
+                // A snapshot on an older header version than the
+                // tracker's is a rollback, not a rebase: refuse it
+                // (#4487), leaving state unchanged. Equal (compaction)
+                // and higher (bump) versions rebase as before.
+                if envelope.header_version < self.header_version {
+                    return Err(ReplicationError::HeaderVersionChanged);
+                }
                 let base =
                     chain_base_cursor(&envelope.world_id, &envelope.source, envelope.header_version);
                 if envelope.cursor_before != base {
@@ -1263,6 +1273,38 @@ mod tests {
             receiver.accept(&stale_bytes),
             Err(ReplicationError::HeaderVersionChanged)
         );
+    }
+
+    #[test]
+    fn snapshot_refuses_a_header_version_downgrade() {
+        // Regression test for #4487: a snapshot naming an older header
+        // version than the tracker's is a rollback, not a rebase —
+        // refuse it with the verified state untouched. Equal
+        // (compaction) and higher (bump) snapshots still rebase.
+        let key = signing_key(1);
+        let mut receiver = tracker(&key);
+        let bump = signed_snapshot(&key, 2, [0; 32], entry_payload_with_version(2));
+        receiver.accept(&bump).unwrap();
+        assert_eq!(receiver.header_version(), 2);
+        let reached = receiver.cursor();
+
+        // Downgrade: a snapshot on the version-1 chain is refused...
+        let downgrade =
+            signed_snapshot(&key, 1, frame_digest(&bump), entry_payload_with_version(1));
+        assert_eq!(
+            receiver.accept(&downgrade),
+            Err(ReplicationError::HeaderVersionChanged)
+        );
+        // ...with the verified state untouched.
+        assert_eq!(receiver.cursor(), reached);
+        assert_eq!(receiver.header_version(), 2);
+
+        // Equal version (compaction rebase) is still accepted.
+        let compaction =
+            signed_snapshot(&key, 2, frame_digest(&bump), entry_payload_with_version(2));
+        let accepted = receiver.accept(&compaction).unwrap();
+        assert_eq!(accepted.kind, ReplicationKind::Snapshot);
+        assert_eq!(receiver.header_version(), 2);
     }
 
     /// A signed snapshot frame over `payload` on the version-`version`
