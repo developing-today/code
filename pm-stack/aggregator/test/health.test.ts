@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { FleetFeed, SectionDiagnosis } from "../src/feed.ts";
 import {
@@ -56,7 +59,7 @@ function inputs(over: Partial<HealthInputs> = {}): HealthInputs {
   return {
     mode: "live",
     cfg,
-    feed: feedAt(5 * 60_000),
+    feed: feedAt(4 * 60_000),
     feedFileMtimeMs: NOW - 4 * 60_000,
     diagnosis: LIVE_DIAGNOSIS,
     ...over,
@@ -84,6 +87,35 @@ function service(view: Awaited<ReturnType<typeof buildHealth>>, id: string) {
 }
 
 describe("buildHealth probes", () => {
+  test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
+    // An isolated stand-in collector writes only a temporary feed. Freeze the
+    // observation clock immediately after its last write and advance it to the
+    // next interval: this tests the worst-case stop without a five-minute wait.
+    const stoppedAt = NOW;
+    const dir = await mkdtemp(join(tmpdir(), "collector-stop-"));
+    const path = join(dir, "feed.json");
+    const collector = spawn({ cmd: [process.execPath, "-e", "await Bun.write(process.argv[1], process.argv[2]); setInterval(() => {}, 1000)", path, JSON.stringify(feedAt(0))], stdout: "ignore", stderr: "inherit" });
+    try {
+      for (let i = 0; i < 100 && !(await Bun.file(path).exists()); i++) await Bun.sleep(10);
+      const feed = await Bun.file(path).json() as FleetFeed;
+      collector.kill();
+      await collector.exited;
+      const { fetcher } = fakeFetcher(allUp);
+      const opts = { fetcher, cache: createProbeCache() };
+      const before = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt });
+      expect(service(before, "fleet-feed").state).toBe("up");
+      const view = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 5 * 60_000 });
+      expect(service(view, "fleet-feed").state).toBe("stale");
+      expect(view.degraded).toBe(true);
+      const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+      expect(html).toContain("past the 5m freshness threshold");
+      expect(html).toContain("stale");
+    } finally {
+      collector.kill();
+      await collector.exited;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("all services up: 200s and Grist's 302 prove life; projector never probed", async () => {
     const { fetcher, calls } = fakeFetcher((url) =>
       url.startsWith("http://127.0.0.1:8484") ? { status: 302 } : allUp(),
@@ -180,6 +212,55 @@ describe("buildHealth probes", () => {
     expect(orchSection?.ageMs).toBe(20 * 60_000);
     const saas = view.feed.sections.find((s) => s.key === "saas");
     expect(saas?.present).toBe(false);
+  });
+
+  test("collector section errors and skips are explicit and degrade health", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const feed = feedAt(5 * 60_000);
+    delete feed.dns;
+    delete feed.projects;
+    feed.meta = {
+      sections: {
+        dns: { status: "error", at: new Date(NOW - 2 * 60_000).toISOString(), error: "register parse failed" },
+        projects: { status: "skipped", at: new Date(NOW - 2 * 60_000).toISOString() },
+      },
+    };
+    const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
+    const dns = view.feed.sections.find((section) => section.key === "dns");
+    const projects = view.feed.sections.find((section) => section.key === "projects");
+    expect(dns?.status).toBe("error");
+    expect(dns?.note).toContain("register parse failed");
+    expect(dns?.ageMs).toBe(2 * 60_000);
+    expect(projects?.status).toBe("skipped");
+    expect(view.degraded).toBe(true);
+
+    const html = renderHealth(view, {
+      board: "",
+      roadmap: "",
+      items: "",
+      comments: "",
+      quota: "",
+      usage: "",
+      attention: "",
+      orchestration: "",
+      dns: "error",
+      registry: "",
+      aa: "",
+    });
+    expect(html).toContain("error");
+    expect(html).toContain("register parse failed");
+    expect(html).toContain("skipped");
+  });
+
+  test("legacy feeds keep presence reporting without inventing collection status", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs({ feed: feedAt(5 * 60_000) }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    expect(view.feed.sections.find((section) => section.key === "dns")?.present).toBe(true);
+    expect(view.feed.sections.find((section) => section.key === "dns")?.status).toBe("unknown");
   });
 
   test("a feed stamped far in the future is stale, never up/fresh (#1564)", async () => {
@@ -343,7 +424,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
       status: string;
       source: { board: string };
       services: { id: string; state: string }[];
-      feed: { generatedAt: unknown };
+      feed: { generatedAt: unknown; sections: unknown[] };
       pages: { route: string; lastRenderedAt: unknown }[];
       jobs: { orchestration: { state: string } };
     };
@@ -352,6 +433,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
     expect(Array.isArray(body.services)).toBe(true);
     expect(body.services.find((s) => s.id === "projector")?.state).toBe("fixtures");
     expect("generatedAt" in body.feed).toBe(true);
+    expect(Array.isArray(body.feed.sections)).toBe(true);
     expect(body.pages.some((p) => p.route === "/health")).toBe(true);
     expect(body.jobs.orchestration.state).toBeDefined();
   });
