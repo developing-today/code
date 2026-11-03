@@ -1206,6 +1206,9 @@ impl Directory {
         // All groups exist before any nested `MemberSet` references them.
         // Directory replay refuses a membership naming a not-yet-created
         // group, even when both IDs belong to one contiguous replica prefix.
+        // Founder downgrades are collected here and emitted only after
+        // every group's memberships exist (see the deferral below).
+        let mut founder_downgrades: Vec<DirectoryEntry> = Vec::new();
         for id in &ordered {
             // Subject memberships reproduce subject ceilings; nested links
             // reproduce the paths levels flow through. Other accounts stay
@@ -1233,13 +1236,32 @@ impl Directory {
                 {
                     continue;
                 }
-                entries.push(DirectoryEntry::MemberSet {
+                let entry = DirectoryEntry::MemberSet {
                     group: *id,
                     member,
                     level: Some(level),
-                });
+                };
+                // A founder whose direct level is below `Admin` was chosen
+                // because they hold the group's admin through an inherited
+                // path. Sorted order emits account memberships before
+                // nested-group ones, so the downgrade could land before
+                // the nested membership carrying that path exists, leaving
+                // the group momentarily admin-less — `checked_mode`
+                // rejects it through `ensure_admins` and replica startup
+                // fails. Defer founder downgrades until all memberships
+                // are in place.
+                if member
+                    == (Member::Account {
+                        id: founders[id].clone(),
+                    })
+                {
+                    founder_downgrades.push(entry);
+                } else {
+                    entries.push(entry);
+                }
             }
         }
+        entries.extend(founder_downgrades);
         // Current friendships among the exported accounts. Preserve the
         // request ID when one exists: a signed FriendRemove artifact uses
         // it to distinguish this friendship from an older relationship
@@ -2278,6 +2300,50 @@ mod tests {
         artifact::append(&artifact_path(&journal), &removal).unwrap();
         let replayed = Directory::replay_read_only(&journal).unwrap();
         assert!(!replayed.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn replica_facts_restore_founder_with_direct_read_and_inherited_admin() {
+        // Codex P2 on PR #4708: a founder with direct `Read` membership
+        // who inherits `Admin` through a nested group could not be
+        // restored — the projection emitted the founder's `MemberSet`
+        // downgrade before the nested membership, so replay failed
+        // `ensure_admins` and replica startup failed.
+        let mut writer = Directory::new();
+        let (ann, _) = account(&mut writer, "Ann");
+        let (outer, _) = writer
+            .create_group(&ann, "Outer", "nested", WorldScopes::JOIN)
+            .unwrap();
+        let (inner, _) = writer
+            .create_group(&ann, "Inner", "nested", WorldScopes::DELEGATE)
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Group { id: inner },
+                Some(Level::Admin),
+            )
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Account { id: ann.clone() },
+                Some(Level::Read),
+            )
+            .unwrap();
+        // Ann's effective level in `outer` is Admin, inherited via her
+        // founder admin of `inner`; her direct level there is only Read.
+        assert_eq!(writer.level_in(&ann, outer), Some(Level::Admin));
+        let subjects = BTreeSet::from([ann.clone()]);
+        let facts = writer.replica_facts_for(&subjects).unwrap();
+        let mut replica = Directory::new();
+        for fact in &facts {
+            replica.apply_replica_fact(fact).unwrap();
+        }
+        assert_eq!(replica.level_in(&ann, outer), Some(Level::Admin));
+        assert_eq!(replica.ceiling(&ann), writer.ceiling(&ann));
     }
 
     #[test]

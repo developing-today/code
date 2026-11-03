@@ -988,6 +988,19 @@ mod tests {
         assert_eq!(report.sequence, writer_sequence);
         assert_eq!(cursor.sequence, writer_sequence);
         assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
+        // PR #4708 Codex P2: the replica cleared its blob store, leaving
+        // the spectator module download with no source. The restored
+        // module is served read-only from the replica's module
+        // directory, while uploads stay refused (the writer admin token
+        // was stripped at replica open).
+        let expected_wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        assert_eq!(replica.module_bytes(&hash).await.unwrap(), expected_wasm);
+        assert!(
+            replica
+                .install_wasm(Some("must-be-stripped"), expected_wasm, 42, &hash)
+                .await
+                .is_err()
+        );
         assert_eq!(report.replayed_inputs, 3);
         let (replica_sequence, replica_records) = replica.world().records();
         assert_eq!(replica_sequence, writer_sequence);
