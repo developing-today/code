@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { poolState, windowPercent } from "../src/derive.ts";
 import { disabledProvidersFromConfig } from "../src/aa.ts";
-import { extractQuotaPools, poolProviderId, poolProviderIds } from "../src/quota-extract.ts";
+import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 
 // A synthetic quota view carrying the same dated-read phrasing the
@@ -152,7 +152,6 @@ describe("quota extractors", () => {
     // the pool renders as a shell; the gatherer overlay supplies the
     // live windows (see quota-current.test.ts).
     expect(p.windows).toEqual([]);
-    expect(poolProviderId("openai.alternate")).toBe("openai.alternate");
   });
 
   test("meta is walled until the weekly reset — and it is the only Meta pool", () => {
@@ -163,15 +162,22 @@ describe("quota extractors", () => {
     expect(pools.filter((x) => x.provider.includes("Meta")).length).toBe(1);
   });
 
-  test("meta billing-blocked read walls the pool with a truthful note, even after the reset", () => {
+  test("meta billing-blocked prose no longer promotes into a wall (Drew, 2026-11-03)", () => {
+    // The extractMeta promotion branch is REMOVED by Drew's
+    // pass-through ruling: a dated billing_not_configured mention in
+    // steward prose once fabricated a walled 100% window + BLOCKED
+    // note that outranked the live read for days. This view carries
+    // no parseable dated % read, so the pool fail-softs to its shell;
+    // a real billing wall now arrives as the quota read's own error
+    // state through overlayQuotaCurrent (quota-current.test.ts).
     const blockedView = VIEW.replace(
       "weekly quota **46% used at 03:20 CDT**, then burned to empty by morning sessions and spilled to PAYG. **Weekly reset today 2026-10-25 19:00 CDT.**",
       "**Freshest dated read (2026-10-26, laptop meta-provider probes 14:30–14:42Z): API returns 402 billing_not_configured (billing-verification wall) on all 11 probes — pool BLOCKED, no usable quota.** Weekly reset was today 2026-10-25 19:00 CDT (that reset has since passed).",
     );
     const p = extractQuotaPools(blockedView, new Date("2026-10-26T17:00:00Z")).find((x) => x.id === "meta")!;
-    expect(p.state).toBe("walled");
-    expect(p.note).toContain("billing_not_configured");
-    expect(p.note).toContain("2026-10-26");
+    expect(p.state).toBe("healthy");
+    expect(p.windows).toEqual([]);
+    expect(p.note).not.toContain("billing_not_configured");
     expect(p.wallLiftsAt).toBeUndefined();
   });
 
@@ -281,8 +287,8 @@ describe("quota extractors", () => {
   });
 
   test("antigravity pools are independent, remaining -> used", () => {
-    expect(byId.get("antigravity:gemini")!.windows[0].percent).toBeCloseTo(0.9);
-    expect(byId.get("antigravity:claude-gpt")!.windows[0].percent).toBe(0);
+    expect(byId.get("antigravity-direct.gemini")!.windows[0].percent).toBeCloseTo(0.9);
+    expect(byId.get("antigravity-direct.claude-gpt")!.windows[0].percent).toBe(0);
   });
 
   test("unreadable doc fails soft: identity + note, no invented numbers", () => {
@@ -352,10 +358,14 @@ describe("windowPercent + guidance", () => {
   });
 });
 
-describe("disabled_providers enforcement (#1114)", () => {
-  const KEEPERS = ["cloudflare-gateway", "cloudflare-workers-ai", "code-design", "design-code", "open-design"];
-
-  test("config parsing reuses the AA JSONC parse: comments tolerated, junk fails soft", () => {
+describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
+  // Drew's ruling — "the dashboard should not be doing any of that":
+  // the board is a straight display of the OpenCode quota read. The
+  // #1114 disabled_providers filter and its FILTER_EXEMPT hack are
+  // gone; extractQuotaPools takes no disabled set and returns every
+  // pool. disabledProvidersFromConfig survives in aa.ts for the AA
+  // section's own config parsing — only its quota use was removed.
+  test("config parsing still reuses the AA JSONC parse: comments tolerated, junk fails soft", () => {
     const cfg = `{
       // deployed config shape
       "disabled_providers": ["openrouter", "github-copilot", 42, null],
@@ -366,100 +376,49 @@ describe("disabled_providers enforcement (#1114)", () => {
     expect(disabledProvidersFromConfig("{}").size).toBe(0);
   });
 
-  test("a disabled provider's pool is filtered at assembly and visibly noted; guidance never names it", () => {
-    const filtered: Array<[string, string]> = [];
-    const disabled = new Set(["openrouter", "github-copilot", "openai", "meta"]);
-    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
-    const ids = pools.map((p) => p.id);
-    expect(ids).not.toContain("openai");
-    expect(filtered).toEqual([["openai", "openai"]]);
-    const choices = computeChoices(pools, NOW.getTime());
-    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
-    expect(named).not.toContain("openai");
-    // The one exemption (Drew, 2026-11-03): meta is a
-    // standard report member whose quota is gathered by asking
-    // OpenCode; its disabled entry is the direct session door only,
-    // so the pool stays on the board — and in guidance — while
-    // every other named pool still answers to an enabled door.
-    expect(ids).toContain("meta");
-    for (const id of named) {
-      if (id === "meta") continue;
-      expect(disabled.has(poolProviderId(id))).toBe(false);
-    }
+  test("every pool renders, in spec order — disabled doors drop nothing", () => {
+    // The deployed config disables claude-code, commandcode, deepseek,
+    // meta, antigravity-ls and antigravity-agy (among others). Under
+    // #1114 the board lost anthropic:claude-pro, commandcode, deepseek
+    // and BOTH Antigravity pools, and meta survived only through an
+    // exemption hack — while the OpenCode quota read reported all of
+    // them. All twelve pools now render unconditionally; the dated
+    // reads are the live read's fail-soft fallback, nothing more.
+    expect(extractQuotaPools(VIEW, NOW).map((p) => p.id)).toEqual([
+      "meta",
+      "anthropic:claude-pro",
+      "openai",
+      "openai.alternate",
+      "opencode-go.drewrypope",
+      "opencode-go.popesdrew",
+      "cline-pass",
+      "commandcode",
+      "antigravity-direct.gemini",
+      "antigravity-direct.claude-gpt",
+      "opendesign",
+      "deepseek",
+    ]);
   });
 
-  test("the Claude pool's door is claude-code: disabling it filters anthropic:claude-pro", () => {
-    expect(poolProviderId("anthropic:claude-pro")).toBe("claude-code");
-    const filtered: Array<[string, string]> = [];
-    const disabled = disabledProvidersFromConfig(JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }));
-    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
-    expect(pools.map((p) => p.id)).not.toContain("anthropic:claude-pro");
-    expect(filtered).toContainEqual(["anthropic:claude-pro", "claude-code"]);
-    const choices = computeChoices(pools, NOW.getTime());
-    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
-    expect(named).not.toContain("anthropic:claude-pro");
-  });
-
-  test("the issue's fixture disabled set (openrouter/copilot) emits no pool for them", () => {
-    const disabled = disabledProvidersFromConfig(
-      JSON.stringify({ disabled_providers: ["openrouter", "github-copilot"], provider: {} }),
-    );
-    const pools = extractQuotaPools(VIEW, NOW, disabled);
-    for (const p of pools) {
-      expect(poolProviderId(p.id)).not.toBe("openrouter");
-      expect(poolProviderId(p.id)).not.toBe("github-copilot");
-    }
-  });
-
-  test("keeper set can never appear in pools or guidance choices", () => {
-    const pools = extractQuotaPools(VIEW, NOW, new Set(KEEPERS));
+  test("keeper design doors never had pools and still do not", () => {
+    const KEEPERS = ["cloudflare-gateway", "cloudflare-workers-ai", "code-design", "design-code", "open-design"];
+    const pools = extractQuotaPools(VIEW, NOW);
     const choices = computeChoices(pools, NOW.getTime());
     const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
     for (const keeper of KEEPERS) {
-      expect(pools.map((p) => poolProviderId(p.id))).not.toContain(keeper);
-      expect(named.map((id) => poolProviderId(id))).not.toContain(keeper);
+      expect(pools.map((p) => p.id)).not.toContain(keeper);
       expect(named).not.toContain(keeper);
     }
   });
 
-  test("antigravity pools answer to antigravity-ls/antigravity-agy/google jointly: filtered only when every door is disabled", () => {
-    // There is no "antigravity" provider: poolFor attributes the two
-    // antigravity pools to these three doors (Codex P2 on PR #2377).
-    for (const id of ["antigravity:gemini", "antigravity:claude-gpt"]) {
-      expect(poolProviderIds(id)).toEqual(["antigravity-ls", "antigravity-agy", "google"]);
+  test("the issue's fixture disabled set (openrouter/copilot) still emits no pool for them", () => {
+    // No pool ever answered to those providers; with the filter gone
+    // the guarantee is structural (POOL_SPECS has no such pool), not
+    // a runtime check.
+    const pools = extractQuotaPools(VIEW, NOW);
+    for (const p of pools) {
+      expect(p.id).not.toBe("openrouter");
+      expect(p.id).not.toBe("github-copilot");
     }
-    // One usable door remaining (the deployed set disables google alone)
-    // keeps both pools.
-    const partial = extractQuotaPools(VIEW, NOW, new Set(["antigravity-ls", "antigravity-agy"])).map((p) => p.id);
-    expect(partial).toContain("antigravity:gemini");
-    expect(partial).toContain("antigravity:claude-gpt");
-    const deployedLike = extractQuotaPools(VIEW, NOW, new Set(["google"])).map((p) => p.id);
-    expect(deployedLike).toContain("antigravity:gemini");
-    expect(deployedLike).toContain("antigravity:claude-gpt");
-    // Every door disabled: both pools filtered at assembly, visibly
-    // noted, and guidance never names them.
-    const filtered: Array<[string, string]> = [];
-    const disabled = new Set(["antigravity-ls", "antigravity-agy", "google"]);
-    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
-    const ids = pools.map((p) => p.id);
-    expect(ids).not.toContain("antigravity:gemini");
-    expect(ids).not.toContain("antigravity:claude-gpt");
-    expect(filtered).toContainEqual(["antigravity:gemini", "antigravity-ls,antigravity-agy,google"]);
-    expect(filtered).toContainEqual(["antigravity:claude-gpt", "antigravity-ls,antigravity-agy,google"]);
-    const choices = computeChoices(pools, NOW.getTime());
-    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
-    expect(named).not.toContain("antigravity:gemini");
-    expect(named).not.toContain("antigravity:claude-gpt");
-  });
-
-  test("exact-match only: near-miss disabled ids do not filter lookalike pools", () => {
-    // The deployed disabled set contains openai-codex/chatgpt (not openai),
-    // open-design (not opendesign) and opencode (not opencode-go).
-    const disabled = new Set(["openai-codex", "chatgpt", "open-design", "opencode"]);
-    const ids = extractQuotaPools(VIEW, NOW, disabled).map((p) => p.id);
-    expect(ids).toContain("openai");
-    expect(ids).toContain("opendesign");
-    expect(ids).toContain("opencode-go.drewrypope");
-    expect(ids).toContain("opencode-go.popesdrew");
   });
 });

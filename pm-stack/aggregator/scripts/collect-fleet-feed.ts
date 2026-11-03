@@ -74,7 +74,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
 import {
-  disabledProvidersFromConfig,
   aaAbsent,
   aaSectionFromSupabase,
   isAaSection,
@@ -199,10 +198,11 @@ function poolFor(provider: string, model: string): string | null {
       return "opendesign";
     case "deepseek":
       return "deepseek";
+    case "antigravity-direct":
     case "antigravity-ls":
     case "antigravity-agy":
     case "google":
-      return model.startsWith("gemini") ? "antigravity:gemini" : "antigravity:claude-gpt";
+      return model.startsWith("gemini") ? "antigravity-direct.gemini" : "antigravity-direct.claude-gpt";
     default:
       // opencode-go is deliberately unattributed in slice 1: which
       // workspace (Personal vs Lab) a sandbox session burns is not
@@ -537,20 +537,14 @@ async function main(): Promise<void> {
   let quotaViewText = "";
   try {
     quotaViewText = await readFile(quotaViewPath, "utf8");
-    // #1114: enforce the deployed config's disabled_providers at pool
-    // assembly. The config read mirrors the AA section's; an unreadable
-    // config leaves the set empty (fail soft, pools unfiltered).
-    let disabledProviderIds: ReadonlySet<string> = new Set();
-    try {
-      disabledProviderIds = disabledProvidersFromConfig(await readFile(opencodeConfigPath, "utf8"));
-    } catch {
-      console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
-    }
-    pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(
-        `collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`,
-      ),
-    );
+    // Pass-through (Drew, 2026-11-03): pool assembly applies NO
+    // disabled_providers filter. The #1114 filter dropped every pool
+    // whose direct config door was disabled — including live pools
+    // burned through model routes and measured by OpenCode (meta, the
+    // Antigravity splits, commandcode, anthropic:claude-pro, deepseek
+    // at removal time). The board displays the OpenCode quota read;
+    // the dated reads extracted here are only its fail-soft fallback.
+    pools = extractQuotaPools(quotaViewText, now);
     markSection("quota", "ok");
   } catch (err) {
     console.error(`collector: quota view unreadable (${sanitizeCollectionError(err)}); emitting no pools`);

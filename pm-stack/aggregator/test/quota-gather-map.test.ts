@@ -534,6 +534,11 @@ describe("serviceIdFor", () => {
     expect(serviceIdFor("deepseek")).toBe("deepseek");
     expect(serviceIdFor("meta")).toBe("meta");
     expect(serviceIdFor("opendesign")).toBe("opendesign");
+    // The module's provider id is "command-code"; the pool (and the
+    // OpenCode config provider) is "commandcode". Without the mapping
+    // the read filed under a key no pool carries and never landed
+    // (the silent-mismatch family Drew ruled out, 2026-11-03).
+    expect(serviceIdFor("command-code")).toBe("commandcode");
     expect(serviceIdFor("openai.alternate")).toBe("openai.alternate");
   });
 });
