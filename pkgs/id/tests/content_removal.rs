@@ -97,7 +97,6 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         document: Some(doc.clone()),
         removes: None,
         note: None,
-        link: None,
     }
 }
 
@@ -114,7 +113,6 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         document: None,
         removes: None,
         note: None,
-        link: None,
     }
 }
 
@@ -127,7 +125,6 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         document: None,
         removes: Some(target),
         note: None,
-        link: None,
     }
 }
 

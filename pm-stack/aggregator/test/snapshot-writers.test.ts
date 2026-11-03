@@ -89,15 +89,7 @@ describe("recordsFromSaasServices", () => {
 describe("recordsFromPaygLines", () => {
   test("backfill ids are reused so the series continues", () => {
     const lines: PaygLine[] = [
-      {
-        id: "meta-payg",
-        label: "Meta",
-        accruedUsd: 23.92,
-        unbilledUsd: 0.01,
-        note: "",
-        measuredAt: "2026-10-25",
-        sourceClass: "console",
-      },
+      { id: "meta-payg", label: "Meta", accruedUsd: 23.92, unbilledUsd: 0.01, note: "", measuredAt: "2026-10-25", sourceClass: "console" },
       {
         id: "cloudflare-gateway",
         label: "GW",
@@ -136,9 +128,7 @@ describe("recordsFromPools", () => {
       provider: "Anthropic",
       plan: "Claude Pro",
       state: "healthy",
-      windows: [
-        { name: "weekly", unit: "other", limit: 100, used: 42, percent: 42, resetsAt: "2026-10-28T14:00:00-05:00" },
-      ],
+      windows: [{ name: "weekly", unit: "other", limit: 100, used: 42, percent: 42, resetsAt: "2026-10-28T14:00:00-05:00" }],
     };
     // The 2027 renewal date elsewhere in the section is an operational
     // date, not a read — the Last checked bullet wins.
@@ -174,11 +164,7 @@ describe("recordsFromDns", () => {
 
 describe("recordsFromProviderUsage", () => {
   test("session count always; codex windows only when the endpoint answered", () => {
-    const walled = {
-      generated_at: "2026-10-26T10:59:33Z",
-      sessions: [1, 2, 3],
-      codex_usage: { status: "http 403", usage: null },
-    };
+    const walled = { generated_at: "2026-10-26T10:59:33Z", sessions: [1, 2, 3], codex_usage: { status: "http 403", usage: null } };
     expect(recordsFromProviderUsage(walled, "check-usage")).toEqual([
       {
         ts: "2026-10-26T10:59:33Z",
@@ -211,62 +197,6 @@ describe("recordsFromProviderUsage", () => {
     ]);
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
-  });
-
-  test("skips an invalid window without suppressing sessions or a valid companion", () => {
-    const snapshot = {
-      generated_at: "2026-10-26T10:59:33Z",
-      sessions: [1],
-      codex_usage: {
-        usage: {
-          rate_limit: {
-            primary_window: { used_percent: -1, limit_window_seconds: 604800 },
-            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
-          },
-        },
-      },
-    };
-
-    expect(
-      recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["opencode-server/sessions-listed=1", "openai:codex/5-hour=100"]);
-  });
-
-  test("skips percentages above 100 and non-finite values", () => {
-    const snapshot = {
-      generated_at: "2026-10-26T10:59:33Z",
-      sessions: [],
-      codex_usage: {
-        usage: {
-          rate_limit: {
-            primary_window: { used_percent: 100.01, limit_window_seconds: 604800 },
-            secondary_window: { used_percent: Number.POSITIVE_INFINITY, limit_window_seconds: 18000 },
-          },
-        },
-      },
-    };
-
-    expect(
-      recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["opencode-server/sessions-listed=0"]);
-  });
-
-  test("accepts the inclusive percentage boundaries", () => {
-    const snapshot = {
-      generated_at: "2026-10-26T10:59:33Z",
-      codex_usage: {
-        usage: {
-          rate_limit: {
-            primary_window: { used_percent: 0, limit_window_seconds: 604800 },
-            secondary_window: { used_percent: 100, limit_window_seconds: 18000 },
-          },
-        },
-      },
-    };
-
-    expect(
-      recordsFromProviderUsage(snapshot, "check-usage").map((r) => `${r.serviceId}/${r.metricId}=${r.value}`),
-    ).toEqual(["openai:codex/7-day=0", "openai:codex/5-hour=100"]);
   });
 });
 
@@ -302,37 +232,6 @@ describe("DeepSeek CNY balance (#1052)", () => {
     expect(recordsFromDeepseekBalance("# Nothing\n", "b")).toEqual([]);
     expect(recordsFromDeepseekBalance("### DeepSeek\n- balance: $6.00\n", "b")).toEqual([]);
     expect(recordsFromDeepseekBalance("### DeepSeek\n- balance: ¥44.63\n", "b")).toEqual([]);
-  });
-
-  test("an impossible on-line day falls back to Last checked and passes the gate (#3379)", () => {
-    const doc = `# Quota view
-
-### DeepSeek
-- **PAYG balance:** ¥44.63 (2026-02-30 read), parked.
-- **Last checked:** 2026-10-30 refresh
-`;
-    const recs = recordsFromDeepseekBalance(doc, "b");
-    expect(recs).toHaveLength(1);
-    expect(recs[0].ts).toBe(dayTs("2026-10-30"));
-    expect(isSnapshotRecord(recs[0])).toBe(true);
-  });
-
-  test("an impossible on-line month falls back to Last checked and passes the gate (#3379)", () => {
-    const doc = `# Quota view
-
-### DeepSeek
-- **PAYG balance:** ¥44.63 (2026-13-01 read), parked.
-- **Last checked:** 2026-10-30 refresh
-`;
-    const recs = recordsFromDeepseekBalance(doc, "b");
-    expect(recs).toHaveLength(1);
-    expect(recs[0].ts).toBe(dayTs("2026-10-30"));
-    expect(isSnapshotRecord(recs[0])).toBe(true);
-  });
-
-  test("an impossible on-line date with no other valid date yields no record (#3379)", () => {
-    expect(recordsFromDeepseekBalance("### DeepSeek\n- **PAYG balance:** ¥44.63 (2026-02-30 read)\n", "b")).toEqual([]);
-    expect(recordsFromDeepseekBalance("### DeepSeek\n- **PAYG balance:** ¥44.63 (2026-13-01 read)\n", "b")).toEqual([]);
   });
 
   test("a cny record validates, round-trips the store, and no DeepSeek record is usd", async () => {
@@ -416,21 +315,13 @@ describe("writer dedupe invariant", () => {
       const store = new SnapshotStore(dir);
       const batch = [
         ...recordsFromSaasServices(
-          [
-            svc({
-              metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }],
-            }),
-          ],
+          [svc({ metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }] })],
           "fleet-feed-collector",
         ),
         // The same fact derived by another writer (different
         // observedBy) is the same record to the store.
         ...recordsFromSaasServices(
-          [
-            svc({
-              metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }],
-            }),
-          ],
+          [svc({ metrics: [{ id: "databases", label: "Databases", unit: "count", used: 1, limit: 100, highlight: true }] })],
           "stewardship-cycle",
         ),
       ];

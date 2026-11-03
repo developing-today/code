@@ -11,7 +11,10 @@ import { join } from "node:path";
 
 const script = join(import.meta.dir, "../scripts/append-usage-snapshots.ts");
 
-async function runScript(dir: string, args: string[]): Promise<{ code: number; stderr: string; stdout: string }> {
+async function runScript(
+  dir: string,
+  args: string[],
+): Promise<{ code: number; stderr: string; stdout: string }> {
   const proc = Bun.spawn([process.execPath, script, ...args], {
     env: {
       ...process.env,
@@ -23,7 +26,10 @@ async function runScript(dir: string, args: string[]): Promise<{ code: number; s
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
   return { code: await proc.exited, stdout, stderr };
 }
 

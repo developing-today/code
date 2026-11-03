@@ -98,11 +98,6 @@ pub enum TransferError {
     ExistsWithDifferentFields,
     /// Another leg of the same linked chain failed; this leg did not post.
     LinkedEventFailed,
-    /// The batch ended while this leg's linked chain was still open:
-    /// this leg is the final leg of the batch and still has
-    /// `linked == true`, so the chain it promised never terminated
-    /// (mirrors TigerBeetle's `linked_event_chain_open`).
-    LinkedEventChainOpen,
     DebitAccountNotFound,
     CreditAccountNotFound,
     AccountsMustBeDifferent,
@@ -120,17 +115,6 @@ pub trait LedgerBackend {
     fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>>;
     /// Submit a batch. Contiguous runs ending at a transfer with
     /// `linked == false` form linked chains and post atomically.
-    ///
-    /// A batch whose final chain is unterminated — its last transfer
-    /// still has `linked == true` — is rejected atomically for that
-    /// chain: no leg of the open chain posts and no balance moves.
-    /// Every leg of the open chain reports an error: the final leg
-    /// reports [`TransferError::LinkedEventChainOpen`] and every
-    /// earlier leg reports [`TransferError::LinkedEventFailed`].
-    /// Terminated chains earlier in the same batch are unaffected,
-    /// and the transfers of a rejected open chain may be resubmitted
-    /// (properly terminated) in a later batch. A production binding
-    /// must implement the same rule.
     fn create_transfers(&mut self, batch: &[Transfer]) -> Vec<Result<(), TransferError>>;
     fn lookup_transfer(&self, id: TransferId) -> Option<Transfer>;
     fn lookup_account(&self, id: AccountId) -> Option<Account>;
@@ -272,23 +256,6 @@ impl LedgerBackend for InMemoryLedger {
                 chain_end += 1;
             }
             let chain = &batch[chain_start..=chain_end];
-            // A chain that reaches the end of the batch with its last
-            // leg still `linked` is unterminated: the linked flag
-            // promises a following leg that never arrived. Reject the
-            // whole chain atomically — nothing is validated, staged,
-            // or stored — instead of committing it as if the end of
-            // the batch terminated it.
-            if chain[chain.len() - 1].linked {
-                for (offset, _) in chain.iter().enumerate() {
-                    results.push(Err(if offset == chain.len() - 1 {
-                        TransferError::LinkedEventChainOpen
-                    } else {
-                        TransferError::LinkedEventFailed
-                    }));
-                }
-                chain_start = chain_end + 1;
-                continue;
-            }
             let mut staged = self.balances.clone();
             let mut staged_transfers: HashMap<TransferId, Transfer> = HashMap::new();
             // Per-leg validation outcome. An idempotent `Exists` leg

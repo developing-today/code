@@ -32,7 +32,7 @@ default-members = [".", "crates/id-core"]
 [features]
 default = ["sandbox", "world"]
 sandbox = ["dep:wasmtime", "world", "id-core/sandbox"]
-world = ["dep:subtle", "dep:hmac", "dep:scrypt", "dep:rmp-serde", "id-core/world"]
+world = ["dep:sha2", "dep:subtle", "dep:hmac", "dep:scrypt", "dep:rmp-serde", "id-core/world"]
 ssh = ["world", "dep:russh"]
 web = [
   "world",
@@ -46,7 +46,9 @@ web = [
   "dep:comrak",
   "dep:urlencoding",
   "dep:aes-gcm",
+  "dep:base64",
   "dep:hkdf",
+  "dep:sha2",
   "dep:qrcode",
   "id-core/web",
 ]
@@ -126,13 +128,11 @@ aes-gcm = { version = "0.11", default-features = false, features = [
   "aes",
   "alloc",
 ], optional = true }
-base64 = "0.22"
+base64 = { version = "0.22", optional = true }
 blake3 = "1"
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
-# SHA-256 for the hosted binding ceremony's service attestation (slice 1,
-# #3808): required in every build variant, not only `world`/`web`.
-sha2 = "0.11"
+sha2 = { version = "0.11", optional = true }
 # HMAC-SHA512 for the Seitan V2 invite ID and Ed25519 seed (P6.1, src/seitan/derive.rs). Already in the lock.
 hmac = { version = "0.13", optional = true }
 # scrypt for the Seitan V2 stretch (P6.1). Already in the lock as a transitive dependency.
@@ -289,17 +289,6 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
-
-[profile.ci-check]
-# Nix test-phase profile (#3195): release-shaped codegen so tests keep
-# release behaviour (opt-level 3, fuel budgets), without paying release
-# LTO, single-codegen-unit, or symbol stripping for throwaway test
-# binaries. Wired in via checkType in default.nix and flake.nix; the release binary
-# build is untouched.
-inherits = "release"
-lto = false
-codegen-units = 256
-strip = false
 
 [profile.test]
 # Include debug info for better error messages

@@ -163,6 +163,8 @@ export interface BoardItem {
   kaneoUrl?: string;
   /** Every linked issue/PR, from any of the four repos. */
   links: Link[];
+  /** Pad notes linked to the item (planning layer), by title + URL. */
+  notes?: { title: string; url: string }[];
 }
 
 /** One row of the Grist "Roadmap" table (doc "Program roadmap"). */
@@ -320,28 +322,15 @@ export interface BurnSegment {
 
 export interface QuotaView {
   pools: QuotaPool[];
-  /** Safe per-credential lifecycle status from the configured provider set. */
-  credentialLifecycle?: import("./credential-lifecycle.ts").CredentialLifecycleRow[];
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
-  /** Feed-load sanitization counts (#2429/#3921): present only when the
-   * loader dropped malformed pools, credentials, windows, active sessions,
-   * or burn segments, so an
+  /** Feed-load sanitization counts (#2429): present only when the
+   * loader dropped malformed pools/windows/burn segments, so an
    * incomplete read is distinguishable from a successful empty one
-   * in the public payload (/api/quota.json projects this view). Optional
-   * pool freshness and burn-rate drops are counted without dropping the pool.
+   * in the public payload (/api/quota.json projects this view).
    * Additive for existing consumers. */
-  dropped?: {
-    pools: number;
-    credentials: number;
-    windows: number;
-    activeSessions: number;
-    burn: number;
-    poolFreshness: number;
-    burnTokensPerMin: number;
-    credentialLifecycle?: number;
-  };
+  dropped?: { pools: number; windows: number; burn: number };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
@@ -463,9 +452,7 @@ export function refKey(ref: GhRef): RefKey {
 export function parseRef(key: RefKey): GhRef {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(key);
   if (!m) throw new Error(`not a repo-qualified ref: ${key}`);
-  const number = Number(m[2]);
-  if (!Number.isSafeInteger(number)) throw new Error(`ref number is not a safe integer: ${key}`);
-  return { repo: m[1], number };
+  return { repo: m[1], number: Number(m[2]) };
 }
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
@@ -1279,7 +1266,7 @@ export interface ChargeRow {
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge";
   label: string;
   detail: string;
   href: string;
@@ -1318,12 +1305,6 @@ export interface QuotaCurrentEntry {
   serviceId: string;
   credentialId?: string;
   credentialLabel?: string;
-  /** Internal provenance marker: this row came from the configured quota-credential registry. */
-  credentialWatch?: boolean;
-  /** Present only when the provider exposes an authoritative expiry instant. */
-  credentialExpiresAt?: string;
-  /** Provenance class for the provider's credential source; never a credential value. */
-  credentialSource?: "claude-code" | "opencode" | "environment";
   planLabel?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;
@@ -1357,8 +1338,6 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
-  /** Parser diagnostics for malformed entries removed at the ingest boundary. */
-  sanitized?: { droppedProviders: number; droppedWindows: number };
 }
 
 /**

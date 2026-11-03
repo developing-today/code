@@ -24,7 +24,6 @@ var Python = Language{
 	ClientFile:   "mcpx_client.py",
 	GlobalsFile:  "mcpx_globals.pyi",
 	ScriptExt:    ".py",
-	ContentType:  "text/x-python",
 	module:       PythonModule,
 	globals:      PythonGlobals,
 	declarations: PythonDeclarations,

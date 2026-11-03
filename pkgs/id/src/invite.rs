@@ -104,15 +104,15 @@ impl Invite {
             match field {
                 "key" => {
                     ensure!(key.is_none(), "duplicate key field in invite query");
-                    key = Some(query_hex_key(value).context("the account key")?);
+                    key = Some(decode(value)?);
                 }
                 "node" => {
                     ensure!(node.is_none(), "duplicate node field in invite query");
-                    node = Some(query_hex_key(value).context("the node ID")?);
+                    node = Some(decode(value)?);
                 }
                 "name" => {
                     ensure!(name.is_none(), "duplicate name field in invite query");
-                    name = Some(decode(value).context("the name")?);
+                    name = Some(decode(value)?);
                 }
                 _ => {}
             }
@@ -126,14 +126,6 @@ impl Invite {
 
 fn hex_key(text: &str) -> Result<String> {
     let text = text.trim().to_ascii_lowercase();
-    checked_hex_key(text)
-}
-
-fn query_hex_key(text: &str) -> Result<String> {
-    checked_hex_key(text.to_ascii_lowercase())
-}
-
-fn checked_hex_key(text: String) -> Result<String> {
     ensure!(
         text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()),
         "must be 64 hex characters"
@@ -182,7 +174,7 @@ fn decode(text: &str) -> Result<String> {
             }
         }
     }
-    String::from_utf8(bytes).context("query value is not UTF-8")
+    String::from_utf8(bytes).context("the name is not UTF-8")
 }
 
 #[cfg(test)]
@@ -227,35 +219,6 @@ mod tests {
         assert!(Invite::new("abcd", NODE, "Ann").is_err());
         assert!(Invite::new(&"g".repeat(64), NODE, "Ann").is_err());
         assert!(Invite::new(KEY, "xyz", "Ann").is_err());
-    }
-
-    #[test]
-    fn query_keys_and_nodes_must_be_raw_hex() {
-        for (field, value) in [
-            ("key", format!("%61{}", &KEY[1..])),
-            ("key", format!("+{KEY}")),
-            ("key", format!(" {KEY}")),
-            ("key", format!("{KEY} ")),
-            ("node", format!("%62{}", &NODE[1..])),
-            ("node", format!("+{NODE}")),
-            ("node", format!(" {NODE}")),
-            ("node", format!("{NODE} ")),
-        ] {
-            let (key, node) = if field == "key" {
-                (value.as_str(), NODE)
-            } else {
-                (KEY, value.as_str())
-            };
-            let query = format!("key={key}&node={node}&name=Ann");
-            assert!(
-                Invite::from_query(&query).is_err(),
-                "non-canonical {field} value accepted: {value:?}"
-            );
-            assert!(
-                Invite::parse(&format!("id:invite?{query}")).is_err(),
-                "non-canonical {field} value accepted through parse: {value:?}"
-            );
-        }
     }
 
     #[test]

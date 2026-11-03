@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -27,44 +26,16 @@ const (
 	port = 23234
 )
 
-// sender is the subset of tea.Program used for broadcast. Keeping the
-// registry behind this interface lets tests exercise pruning and
-// synchronization without running real terminal programs.
-type sender interface {
-	Send(tea.Msg)
-}
-
-// app contains a wish server and the registry of running programs.
-// The registry is guarded by mu: sessions register on connect and are
-// pruned when their program ends, so dead sessions neither accumulate
-// nor receive fan-out traffic.
+// app contains a wish server and the list of running programs.
 type app struct {
 	*ssh.Server
-	mu    sync.RWMutex
-	progs []sender
+	progs []*tea.Program
 }
 
 // send dispatches a message to all running programs.
 func (a *app) send(msg tea.Msg) {
-	a.mu.RLock()
-	progs := make([]sender, len(a.progs))
-	copy(progs, a.progs)
-	a.mu.RUnlock()
-	for _, p := range progs {
+	for _, p := range a.progs {
 		go p.Send(msg)
-	}
-}
-
-// remove drops a finished program from the registry. Removing an
-// unknown program is a no-op.
-func (a *app) remove(p sender) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for i, q := range a.progs {
-		if q == p {
-			a.progs = append(a.progs[:i], a.progs[i+1:]...)
-			return
-		}
 	}
 }
 
@@ -118,13 +89,7 @@ func (a *app) ProgramHandler(s ssh.Session) *tea.Program {
 	model.id = s.User()
 
 	p := tea.NewProgram(model, tea.WithOutput(s), tea.WithInput(s))
-	a.mu.Lock()
 	a.progs = append(a.progs, p)
-	a.mu.Unlock()
-	go func() {
-		p.Wait()
-		a.remove(p)
-	}()
 
 	return p
 }
@@ -202,17 +167,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
 		case tea.KeyEnter:
-			// An empty or whitespace-only input sends nothing (#3273):
-			// broadcasting it would append a bare "name: " line to every
-			// session's history. The textarea is left exactly as it is.
-			// Real text, including surrounding spaces, is sent verbatim.
-			if strings.TrimSpace(m.textarea.Value()) != "" {
-				m.app.send(chatMsg{
-					id:   m.id,
-					text: m.textarea.Value(),
-				})
-				m.textarea.Reset()
-			}
+			m.app.send(chatMsg{
+				id:   m.id,
+				text: m.textarea.Value(),
+			})
+			m.textarea.Reset()
 		}
 
 	case chatMsg:

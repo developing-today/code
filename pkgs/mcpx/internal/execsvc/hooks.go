@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
@@ -61,7 +60,7 @@ const hookActionModule = "module"
 // script it was meant to wrap, and a hook that hangs must not hold the whole
 // run open. Bounded generously, because a hook that shells out to install
 // something is a legitimate thing to ask for.
-var hookTimeout = defaults.ExecHookTimeout
+const hookTimeout = 60 * time.Second
 
 // Hook is one entry in the hooks list: a phase and the script that runs in it.
 //

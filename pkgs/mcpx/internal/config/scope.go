@@ -64,100 +64,64 @@ func (c CallContext) CallerOwned(key string) bool {
 		(c.PID > 0 && !c.PIDShared && key == "pid:"+strconv.Itoa(c.PID))
 }
 
-// ResolvedScope is the full result of resolving a Scope against a
-// CallContext: the instance Key, the directory the scope resolved to
-// (Root, "" when the scope has none), and Degraded, exactly as Key
-// reports it. Root is a pure function of the key for repo, worktree and
-// cwd scopes, so two callers who share a key always resolve the same
-// root (decision 0004 Â§1).
-type ResolvedScope struct {
-	Key      string
-	Root     string
-	Degraded string
-}
-
-// Resolve resolves the scope against ctx: the instance key, the
-// scope-resolved root, and whether resolution degraded to something
-// weaker than the scope asked for.
-func (s Scope) Resolve(ctx CallContext) ResolvedScope {
+// Key resolves the instance key for a scope. The returned key is opaque; only
+// equality matters. Degraded reports whether a more specific scope fell back
+// to something weaker, which the daemon logs once so the cause is visible.
+func (s Scope) Key(ctx CallContext) (key string, degraded string) {
 	switch s {
 	case ScopeGlobal:
-		return ResolvedScope{Key: "global"}
+		return "global", ""
 
 	case ScopeCwd:
 		if ctx.Cwd == "" {
-			return ResolvedScope{Key: fallback(ctx), Degraded: "cwd is unknown"}
+			return fallback(ctx), "cwd is unknown"
 		}
-		root := keyPath(ctx.Cwd)
-		return ResolvedScope{Key: "cwd:" + root, Root: root}
+		return "cwd:" + keyPath(ctx.Cwd), ""
 
 	case ScopeRepo, ScopeWorktree:
 		if ctx.Cwd == "" {
-			return ResolvedScope{Key: fallback(ctx), Degraded: "cwd is unknown"}
+			return fallback(ctx), "cwd is unknown"
 		}
 		// A directory outside any repository -- or one whose repository
 		// cannot be read -- keys by itself: narrower than the scope asked
-		// for, never wider. The degraded key is a cwd key, so the root
-		// follows it: the instance is effectively per-cwd.
+		// for, never wider.
 		w, _, err := locateGit(ctx.Cwd)
 		switch {
 		case err != nil:
-			root := keyPath(ctx.Cwd)
-			return ResolvedScope{Key: "cwd:" + root, Root: root, Degraded: err.Error()}
+			return "cwd:" + keyPath(ctx.Cwd), err.Error()
 		case s == ScopeRepo:
-			// The main worktree is the parent of the common dir, but
-			// only when that dir is a worktree's .git: a bare repo's
-			// common dir, or a submodule-style one, has no worktree
-			// root to name, and guessing one would root an instance
-			// in the wrong checkout.
-			root := ""
-			if filepath.Base(w.commonDir) == ".git" {
-				root = canonical(filepath.Dir(w.commonDir))
-			}
-			return ResolvedScope{Key: "repo:" + keyPath(w.commonDir), Root: root}
+			return "repo:" + keyPath(w.commonDir), ""
 		case w.worktree != "":
-			return ResolvedScope{Key: "worktree:" + keyPath(w.worktree), Root: canonical(w.worktree)}
+			return "worktree:" + keyPath(w.worktree), ""
 		default:
-			root := keyPath(ctx.Cwd)
-			return ResolvedScope{Key: "cwd:" + root, Root: root, Degraded: "no worktree: " + w.noWorktree}
+			return "cwd:" + keyPath(ctx.Cwd), "no worktree: " + w.noWorktree
 		}
 
 	case ScopeSession:
 		if ctx.SessionID != "" {
-			return ResolvedScope{Key: "session:" + ctx.SessionID}
+			return "session:" + ctx.SessionID, ""
 		}
-		return ResolvedScope{Key: fallback(ctx), Degraded: "no session id; set MCPX_SESSION_ID or pass --session"}
+		return fallback(ctx), "no session id; set MCPX_SESSION_ID or pass --session"
 
 	case ScopeParentSession:
 		if ctx.ParentSessionID != "" {
-			return ResolvedScope{Key: "psession:" + ctx.ParentSessionID}
+			return "psession:" + ctx.ParentSessionID, ""
 		}
 		if ctx.SessionID != "" {
-			return ResolvedScope{Key: "session:" + ctx.SessionID, Degraded: "no parent session id; using the session id"}
+			return "session:" + ctx.SessionID, "no parent session id; using the session id"
 		}
-		return ResolvedScope{Key: fallback(ctx), Degraded: "no parent or session id; set MCPX_PARENT_SESSION_ID"}
+		return fallback(ctx), "no parent or session id; set MCPX_PARENT_SESSION_ID"
 
 	case ScopePid:
 		if ctx.PID > 0 {
-			return ResolvedScope{Key: "pid:" + strconv.Itoa(ctx.PID)}
+			return "pid:" + strconv.Itoa(ctx.PID), ""
 		}
-		return ResolvedScope{Key: fallback(ctx), Degraded: "caller pid is unknown"}
+		return fallback(ctx), "caller pid is unknown"
 
 	case ScopeCall:
-		return ResolvedScope{Key: fallback(ctx)}
+		return fallback(ctx), ""
 	}
-	return ResolvedScope{Key: fallback(ctx), Degraded: fmt.Sprintf("unknown scope %q", s)}
-}
-
-// Key resolves the instance key for a scope. The returned key is opaque; only
-// equality matters. Degraded reports whether a more specific scope fell back
-// to something weaker, which the daemon logs once so the cause is visible.
-//
-// Key is Resolve's key and nothing else, so there is one resolution
-// path, not two that can drift (decision 0004 Â§1).
-func (s Scope) Key(ctx CallContext) (key string, degraded string) {
-	rs := s.Resolve(ctx)
-	return rs.Key, rs.Degraded
+	return fallback(ctx), fmt.Sprintf("unknown scope %q", s)
 }
 
 // fallback is per-call isolation: the safe direction to fail, since sharing a

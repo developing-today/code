@@ -37,7 +37,7 @@ beforeAll(async () => {
       goals: [],
       actions: [],
     },
-    registry: [{ id: "ses-watchdog-1", source: "opencode-sandbox", label: "Watchdog probe session", taskRefs: [] }],
+    registry: [{ id: "ses-watchdog-1", source: "opencode-sandbox", label: "Watchdog probe session" }],
   };
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));

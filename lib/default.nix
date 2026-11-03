@@ -478,41 +478,6 @@ let
           user = { };
           # sara = { };
         };
-        # clanServices replacements for the clanModules.* imports that
-        # modules/shared.nix used to carry (clanModules was removed
-        # upstream; see #159). state-version is not listed here:
-        # clanCore enables it by default.
-        inventory.instances = {
-          # Runs the OpenSSH server with persistent host keys.
-          # Root's authorized keys stay in machines/user/configuration.nix.
-          sshd = {
-            roles.server.tags.all = { };
-            # The old sshd module only generated host keys; CA-signed host
-            # certificates are a new-service extra that would require
-            # shared openssh-ca vars this repo does not have.
-            roles.server.settings.certificate.enable = false;
-          };
-          # Generates the root password (was clanModules.root-password).
-          user-root = {
-            module.name = "users";
-            roles.default.tags.all = { };
-            roles.default.settings.user = "root";
-          };
-          # Zerotier network (was clan.core.networking.zerotier.controller
-          # in machines/user/configuration.nix; the direct option was
-          # removed upstream). This machine is the controller and a peer.
-          zerotier = {
-            module.name = "zerotier";
-            roles.controller.machines.user = { };
-            roles.peer.machines.user = { };
-          };
-          # Generates the "user" password (was clanModules.user-password).
-          user-user = {
-            module.name = "users";
-            roles.default.tags.all = { };
-            roles.default.settings.user = "user";
-          };
-        };
       };
     in
     {
@@ -582,32 +547,6 @@ let
                   shellcheck
                   actionlint
                 ];
-              };
-
-              # Lean shell for the fleet build container and GHA job
-              # containers (dezren39/fleet, containers/fleet-build).
-              # Same motivation as mcpx-lint above: `default` is the
-              # whole monorepo workstation environment (Android SDK,
-              # clan, desktop tooling via nix-common.nix) and is far
-              # too heavy to warm into a shared CI image. This shell
-              # carries only the CI toolchains — the repo's pinned
-              # Rust toolchain, Go, Bun, Node, zig — plus basic tools,
-              # all from the same nixpkgs-unstable tree as `default`,
-              # so container CI and the workstation agree on versions.
-              # The fleet image warms THIS shell for this repo.
-              fleet = pkgs.mkShell {
-                packages = [
-                  nixCommon.rustToolchain
-                ]
-                ++ (with pkgs; [
-                  git
-                  jq
-                  ripgrep
-                  go_1_27
-                  bun
-                  nodejs
-                  zig
-                ]);
               };
             }
           );
@@ -1163,27 +1102,6 @@ let
     };
   };
 
-  # The mcpx daemon modules (code#4801): the canonical module files
-  # live in pkgs/mcpx/modules; these outputs wrap them with this
-  # flake's own mcpx build as the package default. The opencode fork
-  # re-exports the same files defaulted to its build, and
-  # openchamber passes them through — the option set never forks.
-  make-mcpx-modules =
-    let
-      wrap =
-        module:
-        { lib, pkgs, ... }:
-        {
-          imports = [ module ];
-          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
-        };
-    in
-    {
-      nixosModules.mcpx = wrap ../pkgs/mcpx/modules/nixos.nix;
-      homeManagerModules.mcpx = wrap ../pkgs/mcpx/modules/home-manager.nix;
-      darwinModules.mcpx = wrap ../pkgs/mcpx/modules/darwin.nix;
-    };
-
   _self = merge [
     lib
     {
@@ -1228,7 +1146,6 @@ let
         make-root-apps
         make-id
         make-mcpx-overlay
-        make-mcpx-modules
         make-laptop-backups-checks
         ;
     }

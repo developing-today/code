@@ -127,9 +127,7 @@ export class WorldObject {
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname === "/cold-start") {
       this.dropGuest(); // force the next request through ensureGuest()'s restore path
-      const rows = this.sql.exec(`SELECT step FROM journal ORDER BY step DESC LIMIT 1`).toArray();
-      const journaledStep = rows.length > 0 ? Number(rows[0].step) : 0;
-      return Response.json({ cold: true, journaledStep });
+      return Response.json({ cold: true, journaledStep: this.step });
     }
     if (req.method === "POST" && url.pathname === "/step") {
       // Validate before touching the guest: a malformed request must never
@@ -152,25 +150,23 @@ export class WorldObject {
         );
       }
       const guest = await this.ensureGuest();
+      guest.update(participant, enc.encode(event));
+      const view = guest.view();
+      const records = guest.records();
+      const snapshot = guest.snapshot();
+      if (!snapshot) throw new Error("guest exports no snapshot; journaling requires the snapshot/restore pair");
+      const snapshotHash = await sha256Hex(snapshot);
       const nextStep = this.step + 1;
-      let view: Uint8Array;
-      let records: Uint8Array | null;
-      let snapshotHash: string;
       try {
-        guest.update(participant, enc.encode(event));
-        view = guest.view();
-        records = guest.records();
-        const snapshot = guest.snapshot();
-        if (!snapshot) throw new Error("guest exports no snapshot; journaling requires the snapshot/restore pair");
-        snapshotHash = await sha256Hex(snapshot);
         this.sql.exec(
           `INSERT INTO journal (step, participant, event, snapshot, view, records, snapshot_hash) VALUES (?, ?, ?, ?, ?, ?, ?)`,
           nextStep, participant, event, snapshot, dec.decode(view),
           records ? dec.decode(records) : null, snapshotHash,
         );
       } catch (err) {
-        // Any failure before the journal commit may leave the guest advanced
-        // without a matching row; restore from the journal on the next request.
+        // The guest advanced but nothing was journaled: discard it, so the
+        // next request restores from the journal and the unjournaled event
+        // cannot contaminate later snapshots.
         this.dropGuest();
         throw err;
       }

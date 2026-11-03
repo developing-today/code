@@ -182,7 +182,6 @@ pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
 pub use id_core::discovery;
-mod peer_announcement;
 pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
@@ -196,7 +195,6 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
-pub mod hosted_binding;
 pub mod idset;
 pub mod invite;
 pub mod invites;
@@ -205,13 +203,11 @@ pub mod local_events;
 pub mod log_sync;
 pub use id_core::membership;
 pub mod meta_client;
-pub mod note_links;
 pub mod notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
 pub mod protocol;
 pub mod pull_policy;
-pub mod references;
 pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
@@ -219,7 +215,6 @@ pub mod sandbox;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
-pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod server_config;
 #[cfg(feature = "world")]
@@ -232,7 +227,6 @@ pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
-pub(crate) use id_core::is_format_char;
 pub(crate) use id_core::time;
 pub use id_core::tuple;
 pub use id_core::waiting;
@@ -258,8 +252,6 @@ pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;
 #[cfg(feature = "world")]
-pub mod world_replication_net;
-#[cfg(feature = "world")]
 pub use id_core::world_presentation;
 #[cfg(feature = "world")]
 pub mod world_records;
@@ -269,8 +261,6 @@ pub mod world_session;
 pub mod world_ssh;
 #[cfg(feature = "world")]
 pub mod world_store;
-#[cfg(feature = "world")]
-pub(crate) mod world_terminal;
 
 #[cfg(feature = "web")]
 pub use id_core::qr;
@@ -289,12 +279,11 @@ pub use commands::{
 };
 pub use discovery::{
     ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,
-    MAX_PEERS, MAX_PEER_NAME_BYTES, PeerDiscovery, PeerInfo, ResolvedConfig,
-    STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
+    parse_defaults, resolve_config,
 };
 pub use helpers::{
-    download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
-    print_matches_cli,
+    parse_get_spec, parse_put_spec, print_match_cli, print_match_repl, print_matches_cli,
 };
 pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
 pub use repl::run_repl;

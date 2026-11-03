@@ -19,7 +19,6 @@
 //   fresh ok entry wins over an error entry; otherwise the newest
 //   entry decides the surfaced state.
 import { poolState } from "./derive.ts";
-import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
 import { computeChoices } from "./quota-guidance.ts";
 import type {
   GathererSummary,
@@ -34,7 +33,6 @@ import type {
   UsageMetric,
   UsageUnit,
 } from "./model.ts";
-import { arrayOf, isFiniteNumber, isIsoDate, isNonEmptyString, isRecord } from "./validate.ts";
 
 /** Freshness bound for gatherer precedence: two missed ticks. */
 export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
@@ -49,81 +47,21 @@ export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
  */
 export const QUOTA_CURRENT_FUTURE_SKEW_MS = 60_000;
 
-function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["providers"][number]["windows"][number] {
-  if (!isRecord(value)) return false;
-  const finiteOrNull = (v: unknown) => v === null || isFiniteNumber(v);
-  return (
-    isNonEmptyString(value.name) &&
-    finiteOrNull(value.value) &&
-    finiteOrNull(value.pctOfLimit) &&
-    (value.valueLabel === null || typeof value.valueLabel === "string") &&
-    finiteOrNull(value.windowSeconds) &&
-    (value.resetsAt === null || isIsoDate(value.resetsAt)) &&
-    isIsoDate(value.measuredAt) &&
-    typeof value.source === "string" &&
-    (value.state === "ok" || value.state === "error")
-  );
-}
-
-function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
-  return (
-    isRecord(value) &&
-    typeof value.providerId === "string" &&
-    typeof value.providerName === "string" &&
-    typeof value.serviceId === "string" &&
-    (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
-    isIsoDate(value.measuredAt) &&
-    typeof value.source === "string" &&
-    (value.credentialWatch === undefined || typeof value.credentialWatch === "boolean") &&
-    (value.error === undefined || typeof value.error === "string") &&
-    (value.credentialExpiresAt === undefined ||
-      (typeof value.credentialExpiresAt === "string" && isIsoDate(value.credentialExpiresAt))) &&
-    (value.credentialSource === undefined ||
-      value.credentialSource === "claude-code" ||
-      value.credentialSource === "opencode" ||
-      value.credentialSource === "environment") &&
-    Array.isArray(value.windows)
-  );
-}
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Structural check of a parsed quota-current.json document. */
 export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
   if (!isRecord(doc)) return null;
   if (doc.version !== 1 || typeof doc.generatedAt !== "string") return null;
-  const providers = arrayOf(isQuotaCurrentEntry)(doc.providers);
-  // Keep rejecting a wholly malformed provider list; when at least one entry is valid,
-  // isolate malformed siblings so one provider cannot suppress unrelated overlays.
-  if (!providers || (providers.values.length === 0 && providers.dropped > 0)) return null;
-  let droppedWindows = 0;
-  const validProviders = providers.values.map((provider) => {
-    const windows = arrayOf(isQuotaCurrentWindow)(provider.windows)!;
-    droppedWindows += windows.dropped;
-    if (provider.state === "ok" && provider.windows.length > 0 && windows.values.length === 0) {
-      // Entirely discarded read (#2416, Codex finding on PR #4182): left
-      // as "ok", the entry would still win fresh-ok precedence in the
-      // overlay, stamp the pool's older windows with fresh provenance,
-      // and block a valid fresh sibling for the same service from
-      // supplying the headline. Downgrade it to the error it is. An
-      // entry that arrived with no windows at all is a legitimate
-      // balance-only read and keeps its state.
-      return {
-        ...provider,
-        state: "error" as const,
-        error: "all quota windows were malformed and dropped at ingest",
-        windows: windows.values,
-      };
-    }
-    return {
-      ...provider,
-      ...(typeof provider.error === "string" ? { error: safeProviderReason(provider.error) } : {}),
-      windows: windows.values,
-    };
-  });
-  return {
-    ...doc,
-    providers: validProviders,
-    sanitized: { droppedProviders: providers.dropped, droppedWindows },
-  } as unknown as QuotaCurrentFile;
+  if (!Array.isArray(doc.providers)) return null;
+  for (const p of doc.providers) {
+    if (!isRecord(p)) return null;
+    if (typeof p.providerId !== "string" || typeof p.serviceId !== "string") return null;
+    if (p.state !== "ok" && p.state !== "error" && p.state !== "unconfigured") return null;
+    if (typeof p.measuredAt !== "string" || typeof p.source !== "string") return null;
+    if (!Array.isArray(p.windows)) return null;
+  }
+  return doc as unknown as QuotaCurrentFile;
 }
 
 type FreshState = PoolFreshness["state"];
@@ -178,20 +116,9 @@ function windowName(name: string): string {
   return name === "5h" ? "5-hour" : name;
 }
 
-/**
- * A pctOfLimit is usable only as a finite number inside [0, 100] (#2582,
- * gate pinned by triage task 3837). Out-of-range reads DROP, never clamp:
- * clamping 150 -> 100 would still wall a healthy pool, and publishing -20
- * would report negative usage. Shared by both reader sites below so the
- * two can never drift apart.
- */
-function usablePct(v: unknown): v is number {
-  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100;
-}
-
 function pctWindows(entry: QuotaCurrentEntry): QuotaWindow[] {
   return entry.windows
-    .filter((w) => usablePct(w.pctOfLimit))
+    .filter((w) => typeof w.pctOfLimit === "number" && Number.isFinite(w.pctOfLimit))
     .map((w) => ({
       name: windowName(w.name),
       unit: "other" as const,
@@ -345,10 +272,6 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
   });
 
   const out: QuotaView = { ...view, pools, gatherer: summarize(file, nowMs) };
-  const credentialLifecycle = file.providers
-    .filter((entry) => entry.credentialWatch === true)
-    .map((entry) => lifecycleForEntry(entry, now));
-  if (credentialLifecycle.length) out.credentialLifecycle = credentialLifecycle;
   if (anyFreshWindows) out.choices = computeChoices(pools, nowMs);
   return out;
 }
@@ -394,7 +317,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
         used: w.value,
         limit: meta.limit,
         unit: meta.unit,
-        ...(usablePct(w.pctOfLimit) ? { percent: w.pctOfLimit } : {}),
+        ...(w.pctOfLimit != null ? { percent: w.pctOfLimit } : {}),
         highlight: prev.get(w.name)?.highlight ?? true,
       });
     }

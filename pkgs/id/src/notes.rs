@@ -216,14 +216,6 @@ pub enum NoteFoldError {
         /// The note the parent belongs to.
         note: Hash,
     },
-    /// A revision graph contains a cycle, so its revisions cannot be folded causally.
-    #[error("revision {revision} names parent {parent} in a cycle")]
-    CyclicParent {
-        /// A revision in the cycle.
-        revision: Hash,
-        /// The present, same-note revision it is waiting on.
-        parent: Hash,
-    },
 }
 
 /// Folds applied note events into one record per note, in note ID order.
@@ -235,7 +227,7 @@ pub enum NoteFoldError {
 ///
 /// Returns [`NoteFoldError`] when two events share an ID, a revision names a note with no
 /// create event in the set, or a revision names a parent that is unknown or belongs to
-/// another note. Returns [`NoteFoldError::CyclicParent`] when revisions form a cycle.
+/// another note.
 pub fn fold_notes(events: &[AppliedNote]) -> Result<Vec<NoteRecord>, NoteFoldError> {
     let mut by_id: HashMap<Hash, &AppliedNote> = HashMap::with_capacity(events.len());
     for event in events {
@@ -333,7 +325,7 @@ pub fn fold_notes(events: &[AppliedNote]) -> Result<Vec<NoteRecord>, NoteFoldErr
                     .find(|parent| !folded.contains(parent))
                     .copied()
                     .unwrap_or(stuck.id);
-                return Err(NoteFoldError::CyclicParent {
+                return Err(NoteFoldError::UnknownParent {
                     revision: stuck.id,
                     parent,
                 });
@@ -558,43 +550,5 @@ mod tests {
                 note: hash(20),
             })
         );
-    }
-
-    #[test]
-    fn test_the_fold_reports_cycles_separately_from_unknown_parents() {
-        for (events, revision, parent) in [
-            (
-                vec![create(10, b"a"), revise(11, 10, b"self", &[11])],
-                11,
-                11,
-            ),
-            (
-                vec![
-                    create(10, b"a"),
-                    revise(11, 10, b"first", &[12]),
-                    revise(12, 10, b"second", &[11]),
-                ],
-                11,
-                12,
-            ),
-            (
-                vec![
-                    create(10, b"a"),
-                    revise(11, 10, b"first", &[12]),
-                    revise(12, 10, b"second", &[13]),
-                    revise(13, 10, b"third", &[11]),
-                ],
-                11,
-                12,
-            ),
-        ] {
-            assert_eq!(
-                fold_notes(&events),
-                Err(NoteFoldError::CyclicParent {
-                    revision: hash(revision),
-                    parent: hash(parent),
-                })
-            );
-        }
     }
 }

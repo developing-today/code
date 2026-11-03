@@ -9,12 +9,9 @@
 import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
-import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
-import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
-import { EventsStore, emitEvent } from "./events.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
@@ -26,7 +23,6 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -44,7 +40,7 @@ import {
   unavailableRoadmapReconciliation,
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
-import type { Comment, DashComment, GhItem, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
+import type { DashComment, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -77,9 +73,6 @@ import {
   renderProgram,
   renderProgramProject,
   renderQuota,
-  renderQueue,
-  renderQueueBody,
-  renderQueueShell,
   buildRoadmapDrill,
   renderRoadmap,
   renderServiceDetail,
@@ -89,26 +82,22 @@ import {
   renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
-import { buildBriefs } from "./brief.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
   getAlertsStore,
   sendTestPush,
   startAlertEngine,
-  toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, esc } from "./render.ts";
-import { readJsonBody } from "./request-body.ts";
+import { renderAlerts } from "./render.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
-import { buildQueueView } from "./queue-view.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -140,18 +129,6 @@ async function coverageSnapshot(
   return next;
 }
 const actionsStore = new ActionsStore(cfg.actionsFile);
-const viewsStore = new ViewsStore(cfg.viewsFile);
-const eventsStore = new EventsStore(cfg.eventsFile);
-
-/** #1739: the event log's fire-and-forget sink for source-side
- *  writers (orchestration publishes, registry merges). Never awaited,
- *  never throws: a failed event write loses the event, nothing else. */
-function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
-  void emitEvent(eventsStore, event);
-}
-async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
-  return eventsStore.has(kind, ref);
-}
 
 function pickSource(): Source {
   // #1290: the live source reads the standing delegation default from
@@ -160,18 +137,11 @@ function pickSource(): Source {
   return cfg.source === "live"
     ? liveSource(cfg, {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
-        onEvent: recordStreamEvent,
-        hasEvent: hasStreamEvent,
       })
     : fixtureSource();
 }
 
 const source = pickSource();
-
-// #1279: prefer the latest-comment-per-ref read so a busy batch cannot
-// truncate an item's most recent activity out of its brief.
-const briefCommentsFor = async (refs: RefKey[]): Promise<Comment[]> =>
-  (source.latestComments ? source.latestComments(refs) : source.comments(refs)).catch(() => []);
 
 /**
  * #1267: the live source populates its provenance strings lazily, one
@@ -292,6 +262,12 @@ async function discussTitle(objectRef: string): Promise<{ title: string; githubR
   return { title: `Comments — ${objectRef}`, githubRefs: [] };
 }
 
+async function readJsonBody(req: Request): Promise<unknown> {
+  const text = await req.text();
+  if (text.length > 100_000) throw new Error("body too large");
+  return JSON.parse(text);
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
@@ -406,7 +382,7 @@ async function roadmapContext() {
   // available — an unavailable source must not render as "no epic yet".
   const drill =
     reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
-  return { rows, items, pool: poolResult.pool, reconciliation, drill };
+  return { rows, items, reconciliation, drill };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -439,34 +415,17 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   });
 }
 
-async function attentionContext(opts: { census?: boolean } = {}) {
-  // #1226/#3970: the Needs-Drew census costs up to eight sequential
-  // GitHub search calls (up to ~64 s when the API is unreachable). Only
-  // the attention page render consumes it, so it opts in; the overview,
-  // Today, /api/attention.json and /api/coverage.json must not inherit
-  // that external dependency (Codex P2 on PR #3970).
-  const wantsCensus = shouldFetchNeedsDrewCensus(opts);
-  const [feed, summary, coverage, census] = await Promise.all([
+async function attentionContext() {
+  const [feed, summary, coverage] = await Promise.all([
     source.attention().catch(() => []),
     source.orchestration().catch(() => null),
     source.coverage().catch(() => []),
-    // A source without the census (or a failed sweep) yields null and
-    // the view renders it as unavailable, never as an empty queue.
-    wantsCensus
-      ? ((source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>)
-      : Promise.resolve<NeedsDrewCensus | null>(null),
   ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
-  return {
-    view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog),
-    coverage,
-    orchestration: summary,
-    diagnosis,
-    census,
-  };
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
 }
 
 /**
@@ -491,25 +450,16 @@ function sseResponse(body: string): Response {
 /** The render inputs the board page and its fragment share. */
 async function boardRender() {
   const { board, items } = await boardContext();
-  const [pool, orchestration, formOpts, actionsByObject, counts] = await Promise.all([
+  const [pool, formOpts, actionsByObject, counts] = await Promise.all([
     source.projects().catch(() => []),
-    source.orchestration().catch(() => null),
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.countsDetailed(),
   ]);
-  const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-  const refs = [
-    ...new Set(board.flatMap((item) => item.links.map((link) => link.ref)).filter((ref) => poolByRef.has(ref))),
-  ];
-  const comments = refs.length ? await briefCommentsFor(refs) : [];
-  const orchestrationStatus = source.diagnostics?.().orchestration.state;
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus });
   const act = {
     actionsByObject,
-    poolByRef,
+    poolByRef: new Map(pool.map((p) => [p.ref, p])),
     identities: formOpts.identities,
-    briefs,
   };
   return { board, items, counts, act };
 }
@@ -518,9 +468,8 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage, orchestration, diagnosis, census } = await attentionContext({ census: true });
-  const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
-    source.projects().catch(() => []),
+  const { view, coverage } = await attentionContext();
+  const [formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.byObject(),
@@ -528,11 +477,6 @@ async function attentionRender() {
     actionsStore.all(),
   ]);
   const order = effectiveNeedsOrder(allActions);
-  const refs = [
-    ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
-  ];
-  const comments = refs.length ? await briefCommentsFor(refs) : [];
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state });
   const act = {
     actionsByObject,
     identities: formOpts.identities,
@@ -541,163 +485,34 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act, briefs, census };
-}
-
-async function todaySignals() {
-  const [health, quotaResult] = await Promise.all([
-    healthContext(false).catch(() => null),
-    source
-      .quota()
-      .then((quota) => ({ quota, unavailable: false }))
-      .catch(() => ({ quota: emptyQuotaView(), unavailable: true })),
-  ]);
-  return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
+  return { view, coverage, counts, act };
 }
 
 async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
+  const [{ board, items }, { rows }, { view, coverage }, quota, summary] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
-    todaySignals(),
+    source.quota().catch(() => emptyQuotaView()),
     source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
-}
-
-async function queueContext() {
-  const [{ board, items }, pool, orchestration] = await Promise.all([
-    boardContext(),
-    source.projects().catch(() => [] as ProjectPoolItem[]),
-    source.orchestration().catch(() => null),
-  ]);
-  return buildQueueView({ board, pool, items, orchestration });
+  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
 }
 
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
 async function overviewContext() {
-  const [{ view }, pool, quota, health, { board, items }, orchestration, actionsByObject] = await Promise.all([
+  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.quota().catch(() => emptyQuotaView()),
     healthContext(),
     boardContext(),
-    source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
-}
-
-// -- Saved views (#1276) -------------------------------------------------
-// A request names a view three ways, in precedence order: explicit
-// vf.* filter params (the shareable-URL form — reproduces the view for
-// any viewer with no store lookup), a view id (store lookup), or the
-// viewer's own default view (the viewer is named by the `viewer` query
-// param, the dashboard author key "<kind>:<id>"). No view named = the
-// pages render exactly as before.
-
-interface ResolvedView {
-  filters: ViewFilters;
-  view: SavedView | null;
-}
-
-async function resolveView(url: URL): Promise<ResolvedView | null> {
-  const fromQuery = filtersFromQuery(url.searchParams);
-  if (fromQuery) {
-    const id = url.searchParams.get("view");
-    return { filters: fromQuery, view: id ? await viewsStore.get(id).catch(() => null) : null };
-  }
-  const id = url.searchParams.get("view");
-  if (id) {
-    const view = await viewsStore.get(id).catch(() => null);
-    return view ? { filters: view.filters, view } : null;
-  }
-  const viewer = url.searchParams.get("viewer");
-  if (viewer) {
-    const view = await viewsStore.defaultFor(viewer).catch(() => null);
-    return view ? { filters: view.filters, view } : null;
-  }
-  return null;
-}
-
-function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewItemLike {
-  return {
-    ref: item.ref,
-    repo: item.ref.replace(/#\d+$/, ""),
-    area: item.projectArea ?? pool?.area ?? null,
-    horizon: item.projectHorizon ?? pool?.horizon ?? null,
-    owner: item.author,
-    state: item.state,
-    epic: pool?.epicRef ?? null,
-  };
-}
-
-function poolItemLike(item: ProjectPoolItem): ViewItemLike {
-  return {
-    ref: item.ref,
-    repo: item.repo,
-    area: item.area,
-    horizon: item.horizon,
-    owner: item.author ?? null,
-    state: item.state,
-    epic: item.epicRef ?? null,
-  };
-}
-
-/** A board card / roadmap row matches when its own fields match, or
- *  when any canonical item it links to matches. */
-function linkedLike(
-  own: ViewItemLike,
-  links: readonly { ref: RefKey }[],
-  items: Map<RefKey, GhItem>,
-  poolByRef: Map<RefKey, ProjectPoolItem>,
-  filters: ViewFilters,
-): boolean {
-  if (itemMatchesView(own, filters)) return true;
-  for (const l of links) {
-    const item = items.get(l.ref);
-    if (item && itemMatchesView(ghItemLike(item, poolByRef.get(l.ref)), filters)) return true;
-  }
-  return false;
-}
-
-/** Apply a preference view verb to the views store (#1276). Returns a
- *  result note for the action record, or throws — the caller maps a
- *  throw to a rejected action so the audit trail says what happened. */
-async function applyViewAction(action: DashAction): Promise<string> {
-  const owner = ownerKey(action.author);
-  const pl = action.payload;
-  switch (action.verb) {
-    case "save-view": {
-      const view = await viewsStore.save({ owner, name: pl.viewName!, filters: pl.viewFilters! });
-      return `saved view ${view.id} "${view.name}"`;
-    }
-    case "rename-view": {
-      const view = await viewsStore.rename(pl.viewId!, owner, pl.viewName!);
-      if (!view) throw new Error(`no view ${pl.viewId} for this owner`);
-      return `renamed view ${view.id} to "${view.name}"`;
-    }
-    case "delete-view": {
-      const gone = await viewsStore.remove(pl.viewId!, owner);
-      if (!gone) throw new Error(`no view ${pl.viewId} for this owner`);
-      return `deleted view ${pl.viewId}`;
-    }
-    case "set-default-view": {
-      if (pl.viewId === undefined) {
-        await viewsStore.setDefault(null, owner);
-        return "default view cleared";
-      }
-      const view = await viewsStore.setDefault(pl.viewId, owner);
-      if (!view) throw new Error(`no view ${pl.viewId} for this owner`);
-      return `default view is now ${view.id} "${view.name}"`;
-    }
-    default:
-      throw new Error(`not a view verb: ${action.verb}`);
-  }
+  return { attention: view, pool, quota, health, board, actionsByObject };
 }
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
@@ -828,35 +643,6 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
       const { action, created } = added;
-      // #1276: saved-view preference verbs are applied by the
-      // aggregator itself to the views store and marked applied (or
-      // rejected, with the reason) in the same request — the action
-      // record stays the audit trail for every view change.
-      if (
-        created &&
-        action.kind === "preference" &&
-        (action.verb === "save-view" ||
-          action.verb === "rename-view" ||
-          action.verb === "delete-view" ||
-          action.verb === "set-default-view")
-      ) {
-        try {
-          const note = await applyViewAction(action);
-          const updated = await actionsStore.markResult(action.id, {
-            outcome: "applied",
-            byRun: "aggregator-views",
-            note,
-          });
-          return json({ action: updated ?? action }, 201);
-        } catch (err) {
-          const updated = await actionsStore.markResult(action.id, {
-            outcome: "rejected",
-            byRun: "aggregator-views",
-            note: err instanceof Error ? err.message : String(err),
-          });
-          return json({ action: updated ?? action, error: err instanceof Error ? err.message : String(err) }, 400);
-        }
-      }
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
@@ -902,11 +688,7 @@ async function handler(req: Request): Promise<Response> {
           continue;
         }
         if (parsed.value.kind === "triage" && section) {
-          const problem = checkActionAgainstItem(
-            parsed.value,
-            findTierItem(section, parsed.value.objectRef),
-            Date.now(),
-          );
+          const problem = checkActionAgainstItem(parsed.value, findTierItem(section, parsed.value.objectRef), Date.now());
           if (problem) {
             results.push({ index, objectRef, ok: false, error: problem });
             continue;
@@ -938,72 +720,15 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: 'outcome must be "applied" | "rejected"' }, 400);
       }
       if (typeof body.byRun !== "string" || body.byRun.trim() === "") return json({ error: "byRun required" }, 400);
-      const result = await actionsStore.markResultTransition(body.id, {
+      const updated = await actionsStore.markResult(body.id, {
         outcome: body.outcome,
         byRun: body.byRun,
         note: typeof body.note === "string" ? body.note : undefined,
       });
-      if (result?.transitioned) {
-        const updated = result.action;
-        // #1739: the action-result route is one of the event log's
-        // writers — the outcome lands in the cross-stack stream.
-        // Fire-and-forget: the response never waits on, and is never
-        // failed by, the event append.
-        recordStreamEvent({
-          actor: updated.appliedByRun ?? body.byRun.slice(0, 200),
-          kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
-          ref: updated.objectRef,
-          summary: (
-            `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
-            (typeof body.note === "string" && body.note ? ` — ${body.note}` : "")
-          ).slice(0, 500),
-        });
-      }
-      const updated = result?.action;
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
     }
-  }
-  if (path === "/api/events.json") {
-    // #1739: the cross-stack event stream, newest first, with
-    // kind/ref/actor filters — the machine twin of /events below.
-    const events = await eventsStore.list({
-      kind: url.searchParams.get("kind") ?? undefined,
-      ref: url.searchParams.get("ref") ?? undefined,
-      actor: url.searchParams.get("actor") ?? undefined,
-    });
-    return json({ events });
-  }
-  if (path === "/events") {
-    // #1739: the human page over the same stream /api/events.json
-    // serves — same records, same filters (?kind=&ref=&actor=).
-    const filter = {
-      kind: url.searchParams.get("kind") ?? undefined,
-      ref: url.searchParams.get("ref") ?? undefined,
-      actor: url.searchParams.get("actor") ?? undefined,
-    };
-    const events = await eventsStore.list(filter);
-    const rows = events
-      .map(
-        (e) =>
-          `<tr><td>${esc(e.at)}</td><td>${esc(e.actor)}</td><td>${esc(e.kind)}</td>` +
-          `<td>${esc(e.ref)}</td><td>${esc(e.summary)}</td></tr>`,
-      )
-      .join("\n");
-    return html(
-      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title></head><body>` +
-        `<h1>Events</h1><p>${events.length} event(s), newest first. ` +
-        `Machine twin: <a href="/api/events.json">/api/events.json</a> (filters: kind, ref, actor).</p>` +
-        `<table><thead><tr><th>at</th><th>actor</th><th>kind</th><th>ref</th><th>summary</th></tr></thead>` +
-        `<tbody>${rows}</tbody></table></body></html>`,
-    );
-  }
-  if (path === "/api/views.json") {
-    // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
-    const owner = url.searchParams.get("owner");
-    const views = owner ? await viewsStore.forOwner(owner) : await viewsStore.all();
-    return json({ views });
   }
   if (path === "/api/actions.json") {
     const object = url.searchParams.get("object");
@@ -1050,30 +775,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/board") {
     const { board, items, counts, act } = await boardRender();
-    const resolved = await resolveView(url);
-    if (!resolved) {
-      return html(
-        renderBoard(board, items, prov(), counts, provDetail(), act, {
-          showAllDone: url.searchParams.get("done") === "all",
-        }),
-      );
-    }
-    const poolByRef = act.poolByRef;
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
-    );
-    const keptRefs = new Set<string>();
-    for (const b of keptBoard) for (const l of b.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
-    );
-    return html(
-      renderBoard(keptBoard, keptItems, prov(), counts, provDetail(), act, {
-        showAllDone: url.searchParams.get("done") === "all",
-      }),
-    );
+    return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
@@ -1083,106 +785,26 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
-      const signals = await todaySignals();
-      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
+      return html(renderTodayShell(prov(), provDetail()));
     }
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable));
+    const { today, view, coverage, quota } = await todayContext();
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable)}</div>`;
+    const { today, view, coverage, quota } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
-  if (path === "/queue") {
-    if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
-    return html(renderQueue(await queueContext(), prov(), provDetail()));
-  }
-  if (path === "/frag/queue") {
-    const view = await queueContext();
-    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
-    return sseResponse(ssePatch("#queue-main", wrapped));
-  }
-
   if (path === "/roadmap") {
-    const { rows, items, pool, reconciliation, drill } = await roadmapContext();
-    const orchestration = await source.orchestration().catch(() => null);
-    const orchestrationStatus = source.diagnostics?.().orchestration.state;
-    const poolRefs = new Set(pool.map((item) => item.ref));
-    const briefRefs = [...new Set(rows.flatMap((row) => allRefs([row]).filter((ref) => poolRefs.has(ref))))];
-    const briefs = buildBriefs(pool, {
-      comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
-      orchestration,
-      orchestrationStatus,
-    });
+    const { rows, items, reconciliation, drill } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    const resolved = await resolveView(url);
-    // Codex P2, PR #4013: grain links inside renderRoadmap must keep
-    // the active view parameters, or switching grain drops the view.
-    const viewParams = new URLSearchParams();
-    for (const [k, v] of url.searchParams) {
-      if (k === "view" || k === "viewer" || k.startsWith("vf.")) viewParams.set(k, v);
-    }
-    const viewQuery = viewParams.toString();
-    const annotationsFor = async (rs: typeof rows) =>
-      new Map(
-        await Promise.all(
-          rs.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const),
-        ),
-      );
-    if (!resolved) {
-      return html(
-        renderRoadmap(
-          rows,
-          items,
-          prov(),
-          grain,
-          await commentsStore.countsDetailed(),
-          provDetail(),
-          reconciliation,
-          drill,
-          await annotationsFor(rows),
-          viewQuery,
-          briefs,
-        ),
-      );
-    }
-    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
-    // Codex P2, PR #4013: items linked from a KEPT row keep their
-    // metadata (links/badges in roadmapCard) even when they fail the
-    // item filter themselves — same rule the board handler applies.
-    const keptRefs = new Set<string>();
-    for (const r of keptRows) for (const l of r.links) keptRefs.add(l.ref);
-    const keptItems = new Map(
-      [...items].filter(
-        ([ref, it]) => keptRefs.has(ref) || itemMatchesView(ghItemLike(it, poolByRef.get(ref)), resolved.filters),
-      ),
+    const annotations = new Map(
+      await Promise.all(rows.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
     );
     return html(
-      renderRoadmap(
-        keptRows,
-        keptItems,
-        prov(),
-        grain,
-        await commentsStore.countsDetailed(),
-        provDetail(),
-        reconciliation,
-        drill,
-        await annotationsFor(keptRows),
-        viewQuery,
-        briefs,
-      ),
+      renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, annotations),
     );
   }
 
@@ -1200,7 +822,7 @@ async function handler(req: Request): Promise<Response> {
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
     if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
-      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${esc(serviceMatch[1])}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
       404,
     );
   }
@@ -1211,29 +833,20 @@ async function handler(req: Request): Promise<Response> {
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail()));
     }
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs, census));
+    const { view, coverage, counts, act } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs, census } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs, census);
+    const { view, coverage, counts, act } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
   if (path === "/assets/datastar.js") {
     // The vendored Datastar bundle (#1444) — a static asset, never a
     // service worker; /sw.js keeps serving the kill switch.
     const file = Bun.file(new URL("./assets/datastar.js", import.meta.url));
-    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
-    return new Response(file, {
-      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
-    });
-  }
-  if (path === "/assets/aa-explorer-computations.js") {
-    // Shared with Bun tests so the browser and regression suite exercise the
-    // same Cost Explorer calculations.
-    const file = Bun.file(new URL("./assets/aa-explorer-computations.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
     return new Response(file, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
@@ -1249,7 +862,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/aa") {
-    return html(renderAa(await source.aa(), prov(), provDetail()));
+    return html(renderAa(await source.aa(), prov()));
   }
   if (path === "/api/aa.json") {
     const section = await source.aa();
@@ -1296,18 +909,9 @@ async function handler(req: Request): Promise<Response> {
     // the #projects-pool section of /program now. The route redirects
     // (area filter preserved); /api/projects.json below is unchanged.
     const area = url.searchParams.get("area");
-    const keep = new URLSearchParams();
-    if (area) keep.set("area", area);
-    for (const [k, v] of url.searchParams) {
-      if (k === "view" || k === "viewer" || k.startsWith("vf.")) keep.set(k, v);
-    }
-    const qs = keep.toString();
-    const target = qs ? `/program?${qs}#projects-pool` : "/program#projects-pool";
+    const target = area ? `/program?area=${encodeURIComponent(area)}#projects-pool` : "/program#projects-pool";
     return new Response(null, { status: 302, headers: { Location: target } });
   }
-  // #1279: briefs need the latest comment per item, guaranteed per ref —
-  // the bulk comments() read can truncate an item's latest comment away
-  // in a busy batch, so prefer the source's per-ref latest read.
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
@@ -1315,23 +919,9 @@ async function handler(req: Request): Promise<Response> {
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
-    // #1279: the JSON twin of the brief panels on the pool cards — the
-    // identical brief objects, built with comment activity folded in.
-    const [briefComments, orchestration] = await Promise.all([
-      pool.length ? briefCommentsFor(pool.map((p) => p.ref)) : Promise.resolve([]),
-      source.orchestration().catch(() => null),
-    ]);
-    const orchestrationStatus = source.diagnostics?.().orchestration.state;
-    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus });
-    const resolved = await resolveView(url);
-    const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
-    const outRefs = new Set(outPool.map((item) => item.ref));
     return json({
       project: "developing-today#4",
-      items: outPool,
-      // Build with the full pool so a filtered-out blocker can still have
-      // its state resolved, but only expose briefs for the visible items.
-      briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
+      items: pool,
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -1353,36 +943,20 @@ async function handler(req: Request): Promise<Response> {
       source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
-    // #1276 (Codex P2, PR #4013): /projects redirects here with the
-    // view parameters preserved, but this handler never resolved the
-    // view — apply it to the pool before rendering, exactly as
-    // /api/projects.json does, so shared/default views filter the
-    // HTML page (and its JSON twin) too.
-    const resolved = await resolveView(url);
-    const viewPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const data = {
-      ...buildProgramData(items, viewPool, orchestration),
-      projects: buildProjectSummaries(PROJECT_CONFIGS, viewPool, rows),
+      ...buildProgramData(items, pool, orchestration),
+      projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
-    // #1279: the pool cards on /program carry the same comment-backed
-    // briefs as the JSON twin — building them here, not the comment-less
-    // fallback projectsBodyHtml would derive on its own.
-    const briefs = buildBriefs(pool, {
-      comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
-      orchestration,
-      orchestrationStatus: source.diagnostics?.().orchestration.state,
-    });
     return html(
       renderProgram(data, items, prov(), provDetail(), {
-        pool: viewPool,
+        pool,
         area: url.searchParams.get("area"),
         orchestration,
         coverage,
         actionsByObject,
         identities: formOpts.identities,
-        briefs,
       }),
     );
   }
@@ -1392,7 +966,7 @@ async function handler(req: Request): Promise<Response> {
     const config = projectConfigById(programProjectMatch[1]);
     if (!config) {
       return html(
-        `<h1>Not found</h1><p class="muted">no project with id <code>${esc(programProjectMatch[1])}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
         404,
       );
     }
@@ -1451,55 +1025,18 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
-    const resolved = await resolveView(url);
-    if (!resolved) return json({ board, items: [...items.values()] });
-    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
-    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptBoard = board.filter((b) =>
-      linkedLike({ ref: b.id, repo: b.repo, state: b.status }, b.links, items, poolByRef, resolved.filters),
-    );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
-    return json({ board: keptBoard, items: keptItems, view: resolved.view?.id ?? null });
+    return json({ board, items: [...items.values()] });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
-    const resolved = await resolveView(url);
-    if (!resolved) {
-      const annotatedRows = await Promise.all(
-        rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
-      );
-      return json({
-        rows: annotatedRows,
-        items: [...items.values()],
-        drift: roadmapDriftReport(reconciliation),
-        annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
-      });
-    }
-    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
-    const poolByRef = new Map(pool.map((p) => [p.ref, p]));
-    const keptRows = rows.filter((r) =>
-      linkedLike(
-        { ref: r.subject, area: r.area, horizon: r.horizon, state: r.status },
-        r.links,
-        items,
-        poolByRef,
-        resolved.filters,
-      ),
-    );
-    const keptItems = [...items.values()].filter((it) =>
-      itemMatchesView(ghItemLike(it, poolByRef.get(it.ref)), resolved.filters),
-    );
-    const annotatedKeptRows = await Promise.all(
-      keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+    const annotatedRows = await Promise.all(
+      rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
     );
     return json({
-      rows: annotatedKeptRows,
-      items: keptItems,
+      rows: annotatedRows,
+      items: [...items.values()],
       drift: roadmapDriftReport(reconciliation),
       annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
-      view: resolved.view?.id ?? null,
     });
   }
   if (path === "/api/quota.json") {
@@ -1529,15 +1066,6 @@ async function handler(req: Request): Promise<Response> {
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
   }
-  if (path === "/api/needs-drew.json") {
-    // #1226: the Needs-Drew label census as data — open user/review +
-    // user/escalated items across the four repos with per-source
-    // status and freshness. 503 when this source cannot census, so a
-    // consumer never mistakes "unavailable" for "nothing waiting".
-    const census = (await source.needsDrew?.().catch(() => null)) ?? null;
-    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
-    return json(census);
-  }
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
     // (expired dropped) and tier-annotated (tier/drewReason/
@@ -1556,9 +1084,6 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/today.json") {
     const { today } = await todayContext();
     return json(today);
-  }
-  if (path === "/api/queue.json") {
-    return json(await queueContext());
   }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
@@ -1616,13 +1141,12 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/push/subscriptions") {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
-    if (req.method === "GET")
-      return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
+    if (req.method === "GET") return json({ subscriptions: await store.listSubscriptions() });
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
+        return json({ subscription: await store.upsertSubscription(parsed.value) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
@@ -1737,10 +1261,6 @@ async function handler(req: Request): Promise<Response> {
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
-    // #1203: the ready-for-agent harness facet — backend readiness,
-    // repository settings, work-item counts and GraphQL errors reach the
-    // machine surface too, not only the rendered page.
-    body.rfa = view.rfa;
     body.degraded = view.degraded;
     return json(body);
   }
@@ -1758,25 +1278,17 @@ async function handler(req: Request): Promise<Response> {
     if (subject) {
       const title = subject.title;
       const links = subject.links;
+      const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records, pool, orchestration, allActions, roadmapAnnotations] =
-        await Promise.all([
-          source.items(refs).catch(() => new Map()),
-          source.comments(refs).catch(() => []),
-          commentsStore.all(),
-          source.registry().catch(() => []),
-          source.projects().catch(() => []),
-          source.orchestration().catch(() => null),
-          actionsStore.all(),
-          roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
-        ]);
-      const briefRefs = refs.filter((ref) => pool.some((item) => item.ref === ref));
-      const briefComments = briefRefs.length ? await briefCommentsFor(briefRefs) : [];
-      const briefs = buildBriefs(pool, {
-        comments: briefComments,
-        orchestration,
-        orchestrationStatus: source.diagnostics?.().orchestration.state,
-      });
+      const [items, comments, allComments, records, pool, allActions, roadmapAnnotations] = await Promise.all([
+        source.items(refs).catch(() => new Map()),
+        source.comments(refs).catch(() => []),
+        commentsStore.all(),
+        source.registry().catch(() => []),
+        source.projects().catch(() => []),
+        actionsStore.all(),
+        roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
+      ]);
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
       const wanted = new Set([id, ...refs.map((r) => ghObjectRef(r))]);
@@ -1804,14 +1316,10 @@ async function handler(req: Request): Promise<Response> {
             }
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
-        briefs,
       };
-      return html(renderItem(title, id, links, items, comments, prov(), extras));
+      return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }
-    return html(
-      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
-      404,
-    );
+    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
   }
 
   return notFoundResponse(path);
@@ -1860,27 +1368,6 @@ const servers = cfg.hosts.map((hostname) =>
 
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
-}
-
-// Collector feeds are replaced on a ~5-minute cadence. Land their
-// snapshot records from a server-owned writer tick rather than from
-// usage() so GET /quota and /quota/service/* never require store writes.
-const SNAPSHOT_INGEST_INTERVAL_MS = 5 * 60_000;
-if (source.ingestSnapshots) {
-  let snapshotIngestRunning = false;
-  const ingestSnapshots = async (): Promise<void> => {
-    if (snapshotIngestRunning) return;
-    snapshotIngestRunning = true;
-    try {
-      await source.ingestSnapshots?.();
-    } catch {
-      // Feed and store failures are retried on the next tick; reads stay up.
-    } finally {
-      snapshotIngestRunning = false;
-    }
-  };
-  void ingestSnapshots(); // recover the latest feed immediately on startup
-  setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation

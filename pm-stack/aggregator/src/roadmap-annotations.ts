@@ -108,12 +108,7 @@ export class RoadmapAnnotationsStore {
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed !== "object" || parsed === null) throw new Error("not an object");
       const file = parsed as Partial<RoadmapAnnotationsFile>;
-      if (
-        file.version !== 1 ||
-        !Array.isArray(file.annotations) ||
-        typeof file.aliases !== "object" ||
-        file.aliases === null
-      ) {
+      if (file.version !== 1 || !Array.isArray(file.annotations) || typeof file.aliases !== "object" || file.aliases === null) {
         throw new Error("unexpected roadmap annotation store shape");
       }
       this.annotations = file.annotations.filter(isAnnotation);

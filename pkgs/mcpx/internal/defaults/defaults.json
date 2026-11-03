@@ -160,9 +160,6 @@
   },
   "exec": {
     "timeout": "120s",
-    "hookTimeout": "60s",
-    "resolveTimeout": "3m",
-    "resolveWaitDelay": "2s",
     "workDirs": 8,
     "programs": 64,
     "entries": 8,
@@ -268,11 +265,7 @@
     "taskAfter": "2s"
   },
   "protoTasks": {
-    "pollInterval": "1s",
-    "cancelGrace": "5s"
-  },
-  "wasm": {
-    "logLineSize": "64KiB"
+    "pollInterval": "1s"
   },
   "stdioShutdown": {
     "stdinGrace": "2s",

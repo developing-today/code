@@ -260,8 +260,7 @@ export default (async ({ directory, worktree, project, client }, options) => {
   };
   const forget = () => {
     found = undefined;
-    // A transient daemon failure is not a discovery miss; retry immediately.
-    missedAt = 0;
+    missedAt = Date.now();
   };
 
   // One discovery at boot, awaited.

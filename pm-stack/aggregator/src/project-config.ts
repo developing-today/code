@@ -12,10 +12,9 @@
 // config. A project with no Area / roadmap area yet says so honestly
 // (null), and the page renders the gap instead of an empty section.
 import type { GhItem, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
-import { parseRef, refUrl } from "./model.ts";
+import { refUrl } from "./model.ts";
 import { PROGRAM, TRACKED_REFS, type ProgramEntry, type TrackedIssue } from "./program.ts";
 import { summarizeWeights, type WeightSummary } from "./weights.ts";
-import { isIsoDate } from "./validate.ts";
 
 export interface ProjectHomeDoc {
   repo: string;
@@ -639,15 +638,12 @@ export function projectRoute(id: string): string {
 
 // --- Validation (strict in tests, never throws at render) ------------------
 
+const REF_PATTERN = /^[^/\s]+\/[^#\s]+#\d+$/;
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function checkRefs(refs: RefKey[], errors: string[], where: string): void {
   for (const r of refs) {
-    try {
-      parseRef(r);
-    } catch {
-      errors.push(`${where}: malformed ref "${r}" (want owner/repo#N)`);
-    }
+    if (!REF_PATTERN.test(r)) errors.push(`${where}: malformed ref "${r}" (want owner/repo#N)`);
   }
 }
 
@@ -697,7 +693,7 @@ export function validateProjectConfigs(configs: ProjectConfig[]): string[] {
       if (!card.role.trim()) errors.push(`${where}: repoCard ${card.repo} role is empty`);
       if (!Number.isInteger(card.openIssues) || card.openIssues < 0)
         errors.push(`${where}: repoCard ${card.repo} openIssues is not a non-negative integer`);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(card.openIssuesAsOf) || !isIsoDate(card.openIssuesAsOf))
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(card.openIssuesAsOf))
         errors.push(`${where}: repoCard ${card.repo} openIssuesAsOf "${card.openIssuesAsOf}" is not a YYYY-MM-DD date`);
       checkRefs(card.trackedRefs, errors, where);
     }

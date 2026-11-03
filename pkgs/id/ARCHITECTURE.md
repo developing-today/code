@@ -11,7 +11,7 @@ System architecture for the `id` peer-to-peer file sharing CLI.
 │                        User Interface                            │
 │  ┌──────────┐  ┌──────────┐  ┌───────────────────────────────┐   │
 │  │   CLI    │  │   REPL   │  │         Web UI (opt)          │   │
-│  │  (clap)  │  │ (rustyline│  │  Datastar + ProseMirror      │   │
+│  │  (clap)  │  │ (rustyline│  │  Axum + HTMX + ProseMirror   │   │
 │  └────┬─────┘  │ + shell) │  └──────────────┬────────────────┘   │
 │       │        └────┬─────┘                 │                    │
 ├───────┴─────────────┴─────────────────────┬─┘────────────────────┤

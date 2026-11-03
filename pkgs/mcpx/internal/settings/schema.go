@@ -137,14 +137,6 @@ type Setting struct {
 	// would turn one silent answer into another.
 	Floor int
 
-	// Ceiling is the largest whole number a KindInt setting accepts. Zero
-	// means no ceiling, which is what every integer had before this field
-	// existed. A setting that declares a Ceiling declares a range: its
-	// Floor — zero when unset — is then a real lower bound too, so
-	// daemon.port's range is 0-65535, not "anything up to 65535". Like
-	// Floor it is checked by Validate, the one parser every layer shares.
-	Ceiling int
-
 	// Default is the value when nothing sets it. It is stated here as a
 	// string in the same syntax a user would write, so that the default and
 	// a user's override go through identical parsing -- a default that skips

@@ -203,15 +203,9 @@ func (t *StdioTransport) Send(ctx context.Context, msg []byte) error {
 	if t.closed.Load() || t.detached {
 		return errors.New("stdio transport closed")
 	}
-	frame := append(msg, '\n')
-	n, err := t.stdin.Write(frame)
-	if err != nil {
+	if _, err := t.stdin.Write(append(msg, '\n')); err != nil {
 		return fmt.Errorf("write to %s: %w (stderr: %s)", t.label, err, t.lastWords(400))
 	}
-	if n != len(frame) {
-		return fmt.Errorf("write to %s: %w", t.label, io.ErrShortWrite)
-	}
-	markToolCallDispatched(ctx, msg)
 	return nil
 }
 

@@ -51,19 +51,11 @@ export interface CardState {
 
 /** Ids cancelled by a restore: any non-superseded, non-rejected
  *  restore action cancels the action it names in `supersedes`
- *  (a consumer rejection is non-effective, as for every other verb) —
- *  unless the restore is itself cancelled by a later effective
- *  restore (#4310). A restore chain therefore alternates: restore R1
- *  cancels dismiss D, restore R2 superseding R1 cancels R1 and so
- *  revives D, R3 superseding R2 cancels R2 and re-cancels D, and so
- *  on. Deriving newest first (input is oldest first) makes each
- *  restore's own cancellation known before its target is considered,
- *  which settles chains of any depth in one pass. */
+ *  (a consumer rejection is non-effective, as for every other verb). */
 export function cancelledActionIds(actions: DashAction[]): Set<string> {
   const out = new Set<string>();
-  for (let i = actions.length - 1; i >= 0; i--) {
-    const a = actions[i];
-    if (a.verb === "restore" && a.state !== "superseded" && a.state !== "rejected" && a.supersedes && !out.has(a.id))
+  for (const a of actions) {
+    if (a.verb === "restore" && a.state !== "superseded" && a.state !== "rejected" && a.supersedes)
       out.add(a.supersedes);
   }
   return out;

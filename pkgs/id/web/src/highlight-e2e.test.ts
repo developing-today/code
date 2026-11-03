@@ -49,7 +49,9 @@ function decorationStyles(plugin: ReturnType<typeof createSyntaxHighlightPlugin>
     | { decorations?: { find: () => { type: { attrs?: Record<string, string> } }[] } }
     | undefined;
   const decorations = state?.decorations?.find() ?? [];
-  return decorations.map((d) => d.type.attrs?.style).filter((s): s is string => typeof s === "string" && s.length > 0);
+  return decorations
+    .map((d) => d.type.attrs?.style)
+    .filter((s): s is string => typeof s === "string" && s.length > 0);
 }
 
 describe("end-to-end highlighting for the #749 grammars", () => {
@@ -58,7 +60,9 @@ describe("end-to-end highlighting for the #749 grammars", () => {
       expect(detectLanguage(filename)).toBe(lang);
 
       const plugin = createSyntaxHighlightPlugin({ filename, lineNumbers: false });
-      const doc = rawSchema.node("doc", null, [rawSchema.node("code_block", null, [rawSchema.text(sample)])]);
+      const doc = rawSchema.node("doc", null, [
+        rawSchema.node("code_block", null, [rawSchema.text(sample)]),
+      ]);
       const state = EditorState.create({ schema: rawSchema, doc, plugins: [plugin] });
       const container = document.createElement("div");
       document.body.appendChild(container);

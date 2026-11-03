@@ -36,31 +36,14 @@ set -euo pipefail
 STATE="${T3CODE_HOME:-$HOME/.local/share/t3code}/userdata"
 SETTINGS="$STATE/settings.json"
 mkdir -p "$STATE"
-if [ -L "$SETTINGS" ]; then
-  echo "t3code-seed-providers: refusing symlinked settings.json; " \
-    "leaving it and its target unchanged: $SETTINGS" >&2
-  exit 0
-fi
 [ -e "$SETTINGS" ] || echo '{}' >"$SETTINGS"
 
 python3 - "$SETTINGS" <<'PY'
-import json, os, pathlib, stat, sys, tempfile
+import json, os, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
-def refuse_symlink():
-    print(
-        f"t3code-seed-providers: refusing symlinked settings.json; "
-        f"leaving it and its target unchanged: {path}",
-        file=sys.stderr,
-    )
-    sys.exit(0)
-
-if path.is_symlink():
-    refuse_symlink()
-
 try:
     doc = json.loads(path.read_text() or "{}")
-    original_mode = stat.S_IMODE(path.stat().st_mode)
 except (OSError, ValueError) as exc:
     print(f"t3code-seed-providers: cannot read settings: {exc}", file=sys.stderr)
     sys.exit(0)  # don't clobber something we can't parse
@@ -220,22 +203,9 @@ for k, inst in instances.items():
 if not added and not refreshed and not disabled:
     sys.exit(0)
 
-fd, tmp_name = tempfile.mkstemp(
-    prefix=f".{path.name}.", suffix=".seed-tmp", dir=path.parent
-)
-tmp = pathlib.Path(tmp_name)
-try:
-    with os.fdopen(fd, "w") as stream:
-        stream.write(json.dumps(doc, indent=2) + "\n")
-    os.chmod(tmp, original_mode)
-    if path.is_symlink():
-        refuse_symlink()
-    os.replace(tmp, path)
-finally:
-    try:
-        tmp.unlink()
-    except FileNotFoundError:
-        pass
+tmp = path.with_suffix(".seed-tmp")
+tmp.write_text(json.dumps(doc, indent=2) + "\n")
+tmp.replace(path)
 changes = []
 if added:
     changes.append("added " + ", ".join(sorted(added)))

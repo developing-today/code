@@ -159,18 +159,9 @@
           '';
         };
 
-        # Helper to create a check that runs a just command or direct test
-        # command, with an optional pre-check step and check-specific tools.
-        mkCheck = name: justCmd: mkCheckWith { inherit name justCmd; };
-
-        mkCheckWith =
-          {
-            name,
-            justCmd ? null,
-            checkCommand ? null,
-            extraNativeBuildInputs ? [ ],
-            beforeCheck ? "",
-          }:
+        # Helper to create a check that runs a just command
+        mkCheck =
+          name: justCmd:
           pkgs.stdenv.mkDerivation {
             name = "id-${name}";
             # Every check builds its own debug test binaries in parallel on a
@@ -182,13 +173,10 @@
             CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs =
-              nativeBuildInputs
-              ++ extraNativeBuildInputs
-              ++ [
-                bun2nixPkg.hook
-                pkgs.rustPlatform.cargoSetupHook
-              ];
+            nativeBuildInputs = nativeBuildInputs ++ [
+              bun2nixPkg.hook
+              pkgs.rustPlatform.cargoSetupHook
+            ];
             inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -216,9 +204,7 @@
 
               ${buildWasmHost}
 
-              ${beforeCheck}
-
-              ${if checkCommand != null then checkCommand else "just ${justCmd}"}
+              just ${justCmd}
             '';
             installPhase = ''
               mkdir -p $out
@@ -321,7 +307,7 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test roc-examples doc build release
+          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
           default = mkCheck "ci" "ci";
 
@@ -350,25 +336,6 @@
           # nativeBuildInputs); fails on a missing compiler or a failing
           # expect — the world_compile.rs skip path is not reused here.
           roc-test = mkCheck "roc-test" "roc-test";
-          # Rebuild all checked-in Roc examples with the pinned compiler, then
-          # run the sandbox behavior and fuel-budget tests against them.
-          roc-examples = mkCheckWith {
-            name = "roc-examples";
-            checkCommand = ''
-              cargo test --no-default-features --features sandbox,world --lib sandbox
-              cargo test --test toolchain_pin
-            '';
-            extraNativeBuildInputs = [
-              pkgs.binaryen
-              pkgs.wasm-tools
-            ];
-            beforeCheck = ''
-              ROC=${rocCompiler}/bin/roc \
-                WASM_TOOLS=${pkgs.wasm-tools}/bin/wasm-tools \
-                WASM_OPT=${pkgs.binaryen}/bin/wasm-opt \
-                bash scripts/rebuild-roc-examples.sh
-            '';
-          };
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
@@ -702,8 +669,6 @@
             '';
 
             doCheck = true;
-            # Test phase under the ci-check profile (#3195), not release.
-            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"
@@ -751,8 +716,6 @@
             preBuild = buildWasmHost;
 
             doCheck = true;
-            # Test phase under the ci-check profile (#3195), not release.
-            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"

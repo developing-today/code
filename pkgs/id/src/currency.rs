@@ -20,12 +20,11 @@
 //!   untouched (#2063 §2).
 //!
 //! State is a fold over the objects alone ([`fold_authorisation`]):
-//! the live object is the highest version, with the lexicographically
-//! greatest canonical body bytes breaking equal-version ties; a signed
-//! revoke covering that version folds the authorisation as revoked,
-//! and no older version revives in its place. A body naming an issuer
-//! other than the event's verified author is invalid, not merely
-//! untrusted (design record, gateway verification step 1).
+//! the live object is the highest version; a signed revoke covering
+//! that version folds the authorisation as revoked, and no older
+//! version revives in its place. A body naming an issuer other than
+//! the event's verified author is invalid, not merely untrusted
+//! (design record, gateway verification step 1).
 //!
 //! Library-only: no gateway or control-plane code lives here (that is
 //! Phases 2–3, #3801/#3802).
@@ -254,13 +253,6 @@ pub enum AuthorisationState {
     },
 }
 
-// Every field in RateAuthorisation is infallibly serializable by serde_json.
-#[allow(clippy::expect_used, clippy::panic)]
-fn canonical_authorisation_body_bytes(body: &RateAuthorisation) -> Vec<u8> {
-    body.body()
-        .expect("RateAuthorisation fields are always JSON-serializable")
-}
-
 /// Folds one authorisation's state from its signed objects alone.
 ///
 /// `authorisations` pairs each authorisation event's verified author
@@ -281,10 +273,8 @@ fn canonical_authorisation_body_bytes(body: &RateAuthorisation) -> Vec<u8> {
 /// [`AuthorisationState::Revoked`] with the *earliest* effective
 /// covering revocation (ties break to the smallest
 /// `revoked_version_from`, deterministically); otherwise
-/// [`AuthorisationState::Live`]. If valid bodies tie at the highest
-/// version, the lexicographically greatest canonical body bytes win,
-/// independent of input order. Returns `None` when the expected issuer
-/// has no valid version of the authorisation.
+/// [`AuthorisationState::Live`]. Returns `None` when the expected
+/// issuer has no valid version of the authorisation.
 #[must_use]
 pub fn fold_authorisation(
     authorisation_id: u128,
@@ -297,12 +287,7 @@ pub fn fold_authorisation(
         .filter(|(author, _)| author == expected_issuer)
         .filter(|(_, body)| body.authorisation_id == authorisation_id)
         .filter(|(author, body)| body.validate(author).is_ok())
-        .max_by(|(_, left), (_, right)| {
-            left.version.cmp(&right.version).then_with(|| {
-                canonical_authorisation_body_bytes(left)
-                    .cmp(&canonical_authorisation_body_bytes(right))
-            })
-        })?;
+        .max_by_key(|(_, body)| body.version)?;
     let covering = revokes
         .iter()
         .filter(|(author, _)| author == expected_issuer)
@@ -346,8 +331,6 @@ pub fn sign_authorisation(
             document: None,
             removes: None,
             note: None,
-            link: None,
-            checkpoint: None,
         },
     )?)
 }
@@ -378,8 +361,6 @@ pub fn sign_revoke(
             document: None,
             removes: None,
             note: None,
-            link: None,
-            checkpoint: None,
         },
     )?)
 }
@@ -418,7 +399,6 @@ impl std::fmt::Display for SignError {
 impl std::error::Error for SignError {}
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -528,28 +508,6 @@ mod tests {
             fold_authorisation(7, &author, &objects, &[]),
             Some(AuthorisationState::Live(v2))
         );
-    }
-
-    #[test]
-    fn same_version_authorisation_tie_break_is_input_order_independent() {
-        let author = issuer_id(&lp_key());
-        let mut rate_8000 = forward();
-        rate_8000.rate_num = 8000;
-        let mut rate_9000 = rate_8000.clone();
-        rate_9000.rate_num = 9000;
-
-        // The canonical signed body is the tie-break key. For these two
-        // valid bodies, the lexicographically greater bytes select 9000.
-        assert!(matches!(
-            (rate_8000.body(), rate_9000.body()),
-            (Ok(lower), Ok(greater)) if lower < greater
-        ));
-
-        let forward_order = [(author, rate_8000.clone()), (author, rate_9000.clone())];
-        let reverse_order = [(author, rate_9000.clone()), (author, rate_8000)];
-        let expected = Some(AuthorisationState::Live(rate_9000));
-        assert_eq!(fold_authorisation(7, &author, &forward_order, &[]), expected);
-        assert_eq!(fold_authorisation(7, &author, &reverse_order, &[]), expected);
     }
 
     #[test]

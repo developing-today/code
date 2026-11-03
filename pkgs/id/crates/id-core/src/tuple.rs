@@ -71,23 +71,6 @@ const ESC: u8 = 0xFF;
 /// so it cannot be confused with an escaped NUL (`0x00 0xFF`).
 const TERM: [u8; 2] = [NULL, NULL];
 
-/// Maximum nesting depth [`decode`] will descend into nested tuples.
-///
-/// Decoded keys can come from peers (iroh-docs entry keys decoded as tag
-/// keys), so unbounded recursion is a stack-overflow / process-abort vector:
-/// ~20k nested tags in a 40 KB key overflow a 2 MiB thread stack (#2121).
-/// The cap matches the peer-CBOR `RECURSION_LIMIT` (64) in `chain.rs`.
-/// Inputs nested deeper than this return a normal decode error instead.
-///
-/// Asymmetry: [`TupleEncoder`] is infallible and does not enforce this cap —
-/// `array()` / `build()` can encode tuples nested deeper than [`decode`]
-/// will accept. That asymmetry is kept deliberately: changing the encoder's
-/// public infallible signature to reject deep nesting would be a breaking
-/// API change, and locally produced keys are trusted in a way peer-supplied
-/// keys are not. Callers encoding untrusted structure should keep nesting
-/// at or below this cap.
-pub const MAX_TUPLE_NESTING_DEPTH: usize = 64;
-
 // ============================================================================
 // Value type
 // ============================================================================
@@ -182,9 +165,6 @@ impl TupleValue {
 /// `float()` returns `Result` because NaN is rejected.
 ///
 /// Use `*_prefix()` methods to omit terminators for prefix-match queries.
-///
-/// Note: the encoder is infallible and does not enforce the decoder's
-/// nesting cap — see [`MAX_TUPLE_NESTING_DEPTH`] for the asymmetry.
 ///
 /// # Examples
 ///
@@ -396,13 +376,12 @@ fn push_f64(buf: &mut Vec<u8>, v: f64) {
 /// # Errors
 ///
 /// Returns error for malformed data: truncated fields, invalid UTF-8 in
-/// string elements, unknown type tags, or tuple nesting deeper than
-/// [`MAX_TUPLE_NESTING_DEPTH`].
+/// string elements, or unknown type tags.
 pub fn decode(bytes: &[u8]) -> Result<Vec<TupleValue>> {
     let mut pos = 0;
     let mut out = Vec::new();
     while pos < bytes.len() {
-        match decode_one(bytes, &mut pos, false, 0)? {
+        match decode_one(bytes, &mut pos, false)? {
             Some(v) => out.push(v),
             None => bail!("unexpected end-of-tuple marker at top level"),
         }
@@ -411,12 +390,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<TupleValue>> {
 }
 
 /// Decode a single element. Returns `None` for end-of-nested-tuple marker.
-fn decode_one(
-    data: &[u8],
-    pos: &mut usize,
-    nested: bool,
-    depth: usize,
-) -> Result<Option<TupleValue>> {
+fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<TupleValue>> {
     ensure!(*pos < data.len(), "unexpected end of tuple data");
     let tag = data[*pos];
     *pos += 1;
@@ -452,17 +426,10 @@ fn decode_one(
 
         // Nested tuple / array
         NESTED => {
-            // Reject before recursing further: `depth` counts the nested
-            // tuples already enclosing this one, so this element would be
-            // nesting level depth + 1.
-            ensure!(
-                depth < MAX_TUPLE_NESTING_DEPTH,
-                "tuple nesting exceeds maximum decode depth of {MAX_TUPLE_NESTING_DEPTH}"
-            );
             let mut elements = Vec::new();
             loop {
                 ensure!(*pos < data.len(), "unterminated nested tuple");
-                match decode_one(data, pos, true, depth + 1)? {
+                match decode_one(data, pos, true)? {
                     Some(v) => elements.push(v),
                     None => break,
                 }
@@ -1255,49 +1222,6 @@ mod tests {
         assert!(decode(&[STRING, b'a', 0x00]).is_err());
         assert!(decode(&[STRING, b'a', 0x00, 0x01]).is_err());
         assert!(decode(&[BYTES, 0x00, 0x01, 0x00, 0x00]).is_err());
-    }
-
-    // --- Nesting depth limit tests (#2121) ---
-
-    /// Bytes for `depth` nested tuples wrapping a single int element:
-    /// `NESTED` * depth, int 1, `NULL` * depth.
-    fn nested_key(depth: usize) -> Vec<u8> {
-        let mut key = vec![NESTED; depth];
-        key.extend_from_slice(&[POS_INT_1, 0x01]);
-        key.extend(std::iter::repeat_n(NULL, depth));
-        key
-    }
-
-    #[test]
-    fn test_decode_at_nesting_limit_roundtrips() {
-        let key = nested_key(MAX_TUPLE_NESTING_DEPTH);
-        let vals = decode(&key).unwrap();
-        let mut cur = &vals[0];
-        for _ in 0..MAX_TUPLE_NESTING_DEPTH {
-            let elems = cur.as_tuple().unwrap();
-            assert_eq!(elems.len(), 1);
-            cur = &elems[0];
-        }
-        assert_eq!(cur.as_int(), Some(1));
-    }
-
-    #[test]
-    fn test_decode_one_over_nesting_limit_errors() {
-        let key = nested_key(MAX_TUPLE_NESTING_DEPTH + 1);
-        assert!(decode(&key).is_err());
-    }
-
-    #[test]
-    fn test_decode_hostile_depth_errors_on_small_stack() {
-        // ~50k nested tags in a 100 KB key aborted the process with a stack
-        // overflow before the cap (#2121). On a 2 MiB stack the capped
-        // decoder must return an ordinary Err instead.
-        let hostile = vec![NESTED; 50_000];
-        let handle = std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
-            .spawn(move || decode(&hostile).is_err())
-            .unwrap();
-        assert!(handle.join().unwrap());
     }
 
     // --- Accessor tests ---

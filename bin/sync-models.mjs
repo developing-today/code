@@ -3,53 +3,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 
-// #2953 (define, don't assign): store an externally-spelled key with
-// define semantics, so "__proto__" becomes an own property instead of
-// invoking the Object.prototype setter and "constructor"/"toString"
-// shadow like any other key.
-const defineValue = (obj, key, value) => {
-  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
-  return value;
-};
-
-
-const KNOWN_ARGS = new Set(['--dry-run', '--verbose', '-v']);
-const unknownArgs = process.argv.slice(2).filter(arg => !KNOWN_ARGS.has(arg));
-if (unknownArgs.length > 0) {
-  console.error(`[sync-models] Error: unknown argument '${unknownArgs[0]}'`);
-  console.error('Usage: sync-models.mjs [--dry-run] [--verbose|-v]');
-  process.exit(2);
-}
-
 const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v');
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
 const HOME_DIR = process.env.HOME || '/home/user';
-// Config resolution (#591, #4544): the model catalogs this script maintains
-// live in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc),
-// which the OpenCode server layers over the tracked configured default via
-// OPENCODE_CONFIG. The tracked file carries deliberate configuration only,
-// so these automatic rewrites never dirty the repo tree. $OPENCODE_CONFIG_PATH
-// overrides everything. When no runtime overlay exists yet (pre-split
-// installs), fall back to the historical chain: in a repo checkout, sync the
-// repo's own .opencode/opencode.jsonc; when home-manager installs this script
-// it lands alone in the Nix store, so ROOT_DIR resolves to /nix and the
-// repo-relative path never exists — fall back to the deployed user config,
-// which is the file the sync-models service actually maintains.
-const RUNTIME_CONFIG_PATH = path.join(
-  HOME_DIR,
-  '.local/state/opencode/opencode-runtime.jsonc',
-);
+// Config resolution (#591): in a repo checkout, sync the repo's own
+// .opencode/opencode.jsonc. When home-manager installs this script it lands
+// alone in the Nix store, so ROOT_DIR resolves to /nix and the repo-relative
+// path never exists — fall back to the deployed user config, which is the
+// file the sync-models service actually maintains. $OPENCODE_CONFIG_PATH
+// overrides both.
 const REPO_CONFIG_PATH = path.join(ROOT_DIR, '.opencode/opencode.jsonc');
 const USER_CONFIG_PATH = path.join(HOME_DIR, '.config/opencode/opencode.jsonc');
 const OPENCODE_CONFIG_PATH =
   process.env.OPENCODE_CONFIG_PATH ||
-  (fs.existsSync(RUNTIME_CONFIG_PATH)
-    ? RUNTIME_CONFIG_PATH
-    : fs.existsSync(REPO_CONFIG_PATH)
-      ? REPO_CONFIG_PATH
-      : USER_CONFIG_PATH);
+  (fs.existsSync(REPO_CONFIG_PATH) ? REPO_CONFIG_PATH : USER_CONFIG_PATH);
 const POLICY_PATH = path.join(import.meta.dirname, 'sync-models.policy.json');
 const CODEX_CACHE_PATH = path.join(HOME_DIR, '.codex/models_cache.json');
 const GEMINI_CACHE_PATH = path.join(HOME_DIR, '.gemini/antigravity_models_cache.json');
@@ -213,7 +182,7 @@ function loadPolicy() {
   const policy = JSON.parse(fs.readFileSync(POLICY_PATH, 'utf-8'));
   for (const [name, provider] of Object.entries(policy.providers || {})) {
     for (const family of provider.keep || []) {
-      if (!Object.hasOwn(policy.families || {}, family) || !policy.families[family]) {
+      if (!policy.families?.[family]) {
         throw new Error(`sync-models.policy.json: ${name} keeps unknown family "${family}"`);
       }
     }
@@ -238,7 +207,6 @@ function allowedModelIds(policy, providerPolicy, ids) {
     for (const family of providerPolicy.keep || []) {
       const match = id.match(new RegExp(policy.families[family]));
       if (!match) continue;
-      if (match[1] === undefined) continue;
       const version = match[1].replace(/-/g, '.').split('.').map(Number);
       const current = newest.get(family);
       if (!current || compareVersions(version, current.version) > 0) {
@@ -426,8 +394,7 @@ function setJsoncPath(text, keys, value) {
 }
 
 // Removes the member at `keys` by deleting its lines (and its comma). Comments
-// on other lines are kept; an inline comment on the removed member is refused
-// rather than silently discarded.
+// on other lines are kept.
 function removeJsoncPath(text, keys) {
   let object = parseJsoncTree(text);
   for (const key of keys.slice(0, -1)) {
@@ -439,16 +406,6 @@ function removeJsoncPath(text, keys) {
   const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
   if (text.slice(lineStart, member.keyStart).trim() !== '') {
     throw new Error(`cannot remove ${keys.join('/')}: it shares a line with other JSON`);
-  }
-  const lineEnd = text.indexOf('\n', member.value.end);
-  const memberLineEnd = lineEnd < 0 ? text.length : lineEnd;
-  const trailing = text.slice(member.value.end, memberLineEnd);
-  if (trailing.includes('//') || trailing.includes('/*')) {
-    const error = new Error(
-      `cannot remove ${keys.join('/')}: inline comment on the member line would be lost`,
-    );
-    error.name = 'JsoncCommentRemovalError';
-    throw error;
   }
   let end = member.value.end;
   while (text[end] === ' ' || text[end] === '\t') end++;
@@ -517,12 +474,12 @@ async function run() {
         }
       }
       if (!grouped[baseId]) {
-        defineValue(grouped, baseId, {
+        grouped[baseId] = {
           baseId,
           name: m.name.replace(/\s*\((Low|Medium|High|Extra-Low)\)$/i, ''),
           efforts: new Set(),
           variants: {}
-        });
+        };
       }
       if (effort) {
         grouped[baseId].efforts.add(effort);
@@ -574,7 +531,7 @@ async function run() {
 
         if (!prov.models[baseId]) {
           console.log(`[sync-models] + Adding ${targetProvider}/${baseId}`);
-          defineValue(prov.models, baseId, modelEntry);
+          prov.models[baseId] = modelEntry;
           edits.push({ set: [...modelsPath, baseId], value: modelEntry });
           totalAdded++;
         } else {
@@ -620,7 +577,7 @@ async function run() {
 
       if (!codexProv.models[m.slug]) {
         console.log(`[sync-models] + Adding openai-codex/${m.slug}`);
-        defineValue(codexProv.models, m.slug, entry);
+        codexProv.models[m.slug] = entry;
         edits.push({ set: [...modelsPath, m.slug], value: entry });
         totalAdded++;
       } else {
@@ -652,7 +609,7 @@ async function run() {
             };
           }
           console.log(`[sync-models] + Adding google/${mId}`);
-          defineValue(gProv.models, mId, entry);
+          gProv.models[mId] = entry;
           edits.push({ set: ['provider', 'google', 'models', mId], value: entry });
           totalAdded++;
         }
@@ -677,7 +634,7 @@ async function run() {
             };
           }
           if (VERBOSE) console.log(`[sync-models] + Adding openai/${mId}`);
-          defineValue(oProv.models, mId, entry);
+          oProv.models[mId] = entry;
           edits.push({ set: ['provider', 'openai', 'models', mId], value: entry });
           totalAdded++;
         }
@@ -702,7 +659,7 @@ async function run() {
             };
           }
           if (VERBOSE) console.log(`[sync-models] + Adding cloudflare-gateway/${mId}`);
-          defineValue(cfProv.models, mId, entry);
+          cfProv.models[mId] = entry;
           edits.push({ set: ['provider', 'cloudflare-gateway', 'models', mId], value: entry });
           totalAdded++;
         }

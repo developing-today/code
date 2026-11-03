@@ -1,30 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { APP_INSTALLED_REPOS, FLEET_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig } from "../src/config.ts";
+import {
+  APP_INSTALLED_REPOS,
+  FLEET_REPOS,
+  REPO_DIRS,
+  REPO_QUEUES,
+  loadConfig,
+} from "../src/config.ts";
 
 describe("fleet config", () => {
-  for (const value of ["abc", "4879.5", "0", "-1", "99999", "0x1234", "1e4"]) {
-    test(`rejects invalid DISPATCH_PORT ${JSON.stringify(value)}`, () => {
-      expect(() => loadConfig({ DISPATCH_PORT: value })).toThrow(`DISPATCH_PORT "${value}"`);
-    });
-  }
-
-  test("keeps the default and accepts a decimal DISPATCH_PORT", () => {
-    expect(loadConfig({}).port).toBe(4879);
-    expect(loadConfig({ DISPATCH_PORT: "" }).port).toBe(4879);
-    expect(loadConfig({ DISPATCH_PORT: "   " }).port).toBe(4879);
-    expect(loadConfig({ DISPATCH_PORT: "4879" }).port).toBe(4879);
-  });
-
-  for (const value of [",", " , ,"]) {
-    test(`rejects DISPATCH_HOSTS ${JSON.stringify(value)} when it has no hosts`, () => {
-      expect(() => loadConfig({ DISPATCH_HOSTS: value })).toThrow(`DISPATCH_HOSTS "${value}"`);
-    });
-  }
-
-  test("keeps a normal DISPATCH_HOSTS list unchanged", () => {
-    expect(loadConfig({ DISPATCH_HOSTS: "0.0.0.0, 127.0.0.1" }).hosts).toEqual(["0.0.0.0", "127.0.0.1"]);
-  });
-
   test("the allowlist default is exactly the six fleet repos", () => {
     expect([...FLEET_REPOS]).toEqual([
       "developing-today/code",

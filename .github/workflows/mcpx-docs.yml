@@ -19,6 +19,12 @@ name: mcpx docs
 # differ only in that one value (#1941).
 
 on:
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/mcpx-docs.yml"
   push:
     branches: [main]
     paths:

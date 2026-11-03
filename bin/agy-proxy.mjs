@@ -45,8 +45,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
-import { createRequestBodyCollector } from './request-body.mjs';
-import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
@@ -262,7 +260,6 @@ const pullModelsLive = () => new Promise((resolve) => {
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stdout = '';
-  const stdoutDecoder = createStreamDecoder();
   let settled = false;
   const done = (ok, fullIds) => {
     if (settled) return;
@@ -270,7 +267,7 @@ const pullModelsLive = () => new Promise((resolve) => {
     resolve(ok ? fullIds : null);
   };
   const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} done(false); }, MODELS_PULL_TIMEOUT_MS);
-  child.stdout.on('data', d => { stdout += stdoutDecoder.push(d); });
+  child.stdout.on('data', d => { stdout += d; });
   child.stderr.on('data', () => {});
   child.on('error', () => { clearTimeout(timer); done(false); });
   child.on('close', (code) => {
@@ -495,8 +492,6 @@ class AgyWorker {
     this.dead = null; // Error once the process is gone
     this.lineBuffer = '';
     this.stderrTail = '';
-    this.stdoutDecoder = createStreamDecoder();
-    this.stderrDecoder = createStreamDecoder();
     this.turnWaiter = null;
     this.ready = false; // set when the init event arrives
     this.prevUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, cache_read_tokens: 0 };
@@ -541,7 +536,7 @@ class AgyWorker {
 
     child.stdout.on('data', chunk => this._onStdout(chunk));
     child.stderr.on('data', chunk => {
-      this.stderrTail = (this.stderrTail + this.stderrDecoder.push(chunk)).slice(-4000);
+      this.stderrTail = (this.stderrTail + chunk.toString()).slice(-4000);
     });
     child.on('error', err => {
       this._fail(turnError(err.message, { isSpawnError: true }));
@@ -575,7 +570,7 @@ class AgyWorker {
   }
 
   _onStdout(chunk) {
-    this.lineBuffer += this.stdoutDecoder.push(chunk);
+    this.lineBuffer += chunk.toString();
     const lines = this.lineBuffer.split('\n');
     this.lineBuffer = lines.pop() || '';
     for (const line of lines) this._processLine(line);
@@ -729,25 +724,14 @@ const takeSpare = (fullName) => {
 const evictLiveWorkersIfNeeded = () => {
   const now = Date.now();
   for (const [lk, w] of liveWorkers) {
-    if (w.dead) {
-      w.kill();
-      liveWorkers.delete(lk);
-      continue;
-    }
-    // lastUsedAt is refreshed when a turn finishes, so an over-TTL worker
-    // can still be actively serving a long turn. Keep it until that turn
-    // settles; the next sweep can then apply the refreshed idle timestamp.
-    if (w.turnWaiter !== null) continue;
-    if (now - w.lastUsedAt > SESSION_IDLE_TTL_MS) {
+    if (w.dead || now - w.lastUsedAt > SESSION_IDLE_TTL_MS) {
       w.kill();
       liveWorkers.delete(lk);
     }
   }
-  const idle = [...liveWorkers.entries()]
-    .filter(([, w]) => w.turnWaiter === null)
-    .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
-  while (liveWorkers.size >= MAX_LIVE_WORKERS && idle.length > 0) {
-    const [lk, w] = idle.shift();
+  const live = [...liveWorkers.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
+  while (live.length >= MAX_LIVE_WORKERS) {
+    const [lk, w] = live.shift();
     w.kill();
     liveWorkers.delete(lk);
   }
@@ -872,10 +856,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    const bodyCollector = createRequestBodyCollector(20 * 1024 * 1024);
+    let bodyText = '';
     req.on('data', chunk => {
-      if (bodyCollector.tooLarge) return;
-      if (!bodyCollector.push(chunk)) {
+      bodyText += chunk;
+      if (bodyText.length > 20 * 1024 * 1024) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request payload exceeds 20MB limit' }));
         req.destroy();
@@ -883,8 +867,6 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', async () => {
-      if (bodyCollector.tooLarge) return;
-      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);

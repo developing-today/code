@@ -10,9 +10,7 @@ const jwk = publicKey.export({ format: "jwk" }) as unknown as Record<string, unk
 jwk.kid = "test-kid-1";
 jwk.alg = "RS256";
 
-// Use the production constant, never a copy: a hard-coded copy of the
-// old bogus .json URL is exactly how code#4886 stayed hidden by tests.
-import { GITHUB_JWKS_URL as JWKS_URL } from "../src/auth.ts";
+const JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks.json";
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: unknown) => {
   if (String(input) === JWKS_URL) {
@@ -58,14 +56,7 @@ function sessionsRequest(token: string, body: Record<string, unknown>): Request 
   });
 }
 
-// issue:false keeps these tests hermetic (#4917): session requests
-// default issue creation ON, and the GitHub client's gh-CLI fallback is
-// a subprocess the fetch stub above cannot intercept — with issue left
-// on, these tests file REAL tracking issues in developing-today/code
-// (the exact orphan class #4917 tracks; baseline runs of this file
-// filed #4937/#4938). Issue-creation and failure-compensation behaviour
-// is covered hermetically by launch_failure.test.ts stubs.
-const base = { repo: "developing-today/code", prompt: "do the thing", issue: false };
+const base = { repo: "developing-today/code", prompt: "do the thing" };
 
 describe("POST /v1/sessions directory scoping (issue #2903)", () => {
   test("OIDC + foreign directory is rejected with 400 before any side effect", async () => {

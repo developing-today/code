@@ -12,18 +12,15 @@
 }:
 
 let
-  # Shared with the example build scripts so the executable guard and Nix
-  # package cannot silently pin different Roc nightlies.
-  tag = lib.removeSuffix "\n" (builtins.readFile ./roc-version);
-  tagSuffix = lib.removePrefix "nightly-" tag;
+  tag = "nightly-2026-10-04-130536d";
 
   sources = {
     x86_64-linux = {
-      asset = "roc_nightly-linux_x86_64-${tagSuffix}.tar.gz";
+      asset = "roc_nightly-linux_x86_64-2026-10-04-130536d.tar.gz";
       hash = "sha256-iTyG0toKTDkMvb1CWM5F1obl7BW0Lu64Ef0axEU3cU8=";
     };
     aarch64-linux = {
-      asset = "roc_nightly-linux_arm64-${tagSuffix}.tar.gz";
+      asset = "roc_nightly-linux_arm64-2026-10-04-130536d.tar.gz";
       hash = "sha256-9FMtKQyDkg0j8ZHaRlCxmqgwJ0PtNcq06a3IO+rwwds=";
     };
   };

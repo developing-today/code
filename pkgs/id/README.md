@@ -150,12 +150,6 @@ it is — a valid world capability, minted by the host's admin with
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files       |
 | `id`           |                                | Print local node public ID                      |
 | `peers`        |                                | Discover and list known peers                   |
-| `world`        |                                | Mint invites for, and join, multiplayer worlds  |
-| `group`        |                                | Groups: create, policy, add, remove, roles, join |
-| `delegate`     |                                | Grant a delegate a scope in a group             |
-| `revoke`       |                                | Revoke a delegation by its grant event ID       |
-| `doc`          |                                | Publish documents; list events/frontier/history |
-| `claim`        |                                | Tag claims on any subject (set, clear, search)  |
 
 ### Tag Subcommands
 

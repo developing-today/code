@@ -1,0 +1,12 @@
+#!/bin/bash
+# Laptop start wrapper for commandcode-proxy (fleet pattern, mirrors the
+# sandbox wrapper minus the sandbox-only egress pins).
+export HOME=/home/user
+export COMMANDCODE_PROXY_PORT=${COMMANDCODE_PROXY_PORT:-18748}
+export COMMANDCODE_PROXY_MAX_TURNS=1
+export COMMANDCODE_PROXY_HOST=127.0.0.1
+# Empty egress override: on the laptop the CLI reaches CommandCode
+# directly; the proxy must NOT pin the sandbox egress proxy for children.
+export COMMANDCODE_PROXY_EGRESS=
+export PATH="/run/current-system/sw/bin:$HOME/.local/bin:/run/current-system/sw/bin:/usr/local/bin:$PATH"
+exec /run/current-system/sw/bin/node "$HOME/code/bin/commandcode-proxy.mjs"

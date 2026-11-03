@@ -54,11 +54,9 @@ names.
 
 ## Binding, and why it closes the Oct 28 gap
 
-The launch binding is one atomic helper call (migration 0021,
-`bind_repo_task_lane_session`, exposed as `repo-queue.py bind`):
-create session, bind (ledger `session_id` + `progress.session_id` +
-`launched_by` in a single transaction; overwriting a different
-existing binding is refused), checkpoint `launched`,
+The launch PATCH-then-ledger order copies pm-dispatch (the one
+precedent that binds a known task to a known session): create session,
+PATCH `progress.session_id` + `launched_by`, checkpoint `launched`,
 agent-note on the issue. A session without a binding is treated as a
 defect, not a launch.
 

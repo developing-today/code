@@ -10,7 +10,6 @@
 """
 
 import json, os, subprocess, sys, time
-from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghb_common import load_config, backup_root, mirror_path, valid_mirror
@@ -19,54 +18,18 @@ import manifest as manifest_mod
 COALESCE_S = 12 * 3600
 
 
-def record_failure_day(days, today):
-    """Keep only the trailing consecutive calendar-day failure streak."""
-    today_date = date.fromisoformat(today)
-    start = len(days) - 1
-    try:
-        date.fromisoformat(days[start])
-        while start > 0:
-            current = date.fromisoformat(days[start])
-            previous = date.fromisoformat(days[start - 1])
-            if previous + timedelta(days=1) != current:
-                break
-            start -= 1
-        streak = days[start:]
-    except (TypeError, ValueError, IndexError):
-        streak = []
-
-    if streak:
-        last_date = date.fromisoformat(streak[-1])
-        if last_date == today_date:
-            days[:] = streak
-            return
-        if last_date + timedelta(days=1) == today_date:
-            days[:] = streak + [today]
-            return
-
-    days[:] = [today]
-
-
 def fetch_repo(root, repo, state):
     path = mirror_path(root, repo)
     if not valid_mirror(path):
         return "missing"
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    try:
-        r = subprocess.run(
-            ["git", "-C", path, "fetch", "--all", "--prune"],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            env=env,
-        )
-    except subprocess.TimeoutExpired as e:
-        st = state.setdefault(repo, {})
-        today = time.strftime("%Y-%m-%d")
-        days = st.setdefault("fail_days", [])
-        record_failure_day(days, today)
-        st["last_error"] = f"fetch timed out after {e.timeout} seconds"
-        return "fail"
+    r = subprocess.run(
+        ["git", "-C", path, "fetch", "--all", "--prune"],
+        capture_output=True,
+        text=True,
+        timeout=3600,
+        env=env,
+    )
     now = time.time()
     st = state.setdefault(repo, {})
     if r.returncode == 0:
@@ -75,7 +38,8 @@ def fetch_repo(root, repo, state):
         return "ok"
     today = time.strftime("%Y-%m-%d")
     days = st.setdefault("fail_days", [])
-    record_failure_day(days, today)
+    if today not in days:
+        days.append(today)
     st["last_error"] = (r.stderr or r.stdout)[-300:]
     return "fail"
 

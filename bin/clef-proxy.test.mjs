@@ -106,7 +106,6 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
 
   const { child, base } = await startProxy({
     CLEF_PROXY_GATEWAY_BASE: `http://127.0.0.1:${stubPort}/v1`,
-    CLEF_PROXY_DATA_PATH_TIMEOUT_MS: '300',
     NO_PROXY: '127.0.0.1,localhost',
     no_proxy: '127.0.0.1,localhost'
   });
@@ -157,44 +156,6 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
     const data = await res.json();
     assert.deepEqual(data.answers, { q1: 'answer one' });
     assert.match(stubPaths.at(-1), /\/workers-ai\/run\//);
-  });
-
-  await t.test('array body is a 400 and never reaches the stub upstream (#2938)', async () => {
-    stubBehavior = (req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, result: { answers: { q1: 'answer one' } } }));
-    };
-    const hitsBefore = stubPaths.length;
-    for (const raw of ['[]', '[1,2]']) {
-      const res = await fetch(`${base}/v1/systemone`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test' },
-        body: raw
-      });
-      assert.equal(res.status, 400);
-      const data = await res.json();
-      assert.equal(data.error, 'Invalid JSON body: expected an object');
-    }
-    assert.equal(stubPaths.length, hitsBefore);
-  });
-
-  await t.test('upstream that never sends headers returns a 504', async () => {
-    stubBehavior = () => {};
-    const res = await ask();
-    assert.equal(res.status, 504);
-    const data = await res.json();
-    assert.match(data.error, /timed out/i);
-  });
-
-  await t.test('response body that never completes returns a 504', async () => {
-    stubBehavior = (_req, res) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.write('{"success":true,"result":');
-    };
-    const res = await ask();
-    assert.equal(res.status, 504);
-    const data = await res.json();
-    assert.match(data.error, /timed out/i);
   });
 });
 

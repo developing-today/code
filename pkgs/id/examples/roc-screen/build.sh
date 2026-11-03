@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
-export ROC="${ROC:-roc}"
-source ../roc-toolchain.sh
+ROC="${ROC:-roc}"
 
 if [ -z "${WASM_TOOLS:-}" ]; then
   if command -v wasm-tools >/dev/null 2>&1; then
@@ -25,7 +24,7 @@ if [ -z "${WASM_OPT:-}" ]; then
     if [ -n "$STORE_OPT" ] && [ -x "$STORE_OPT" ]; then
       WASM_OPT="$STORE_OPT"
     else
-      WASM_OPT="nix shell nixpkgs#binaryen --command wasm-opt"
+      WASM_OPT="nix run nixpkgs#binaryen --"
     fi
   fi
 fi

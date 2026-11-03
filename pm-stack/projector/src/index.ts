@@ -1,10 +1,9 @@
 // Entry point: migrate + serve the projector HTTP API.
 import { openDb, migrate } from "./store";
 import { serve, type ServerEnv } from "./server";
-import { parsePort } from "./config";
 
 const env = process.env as unknown as ServerEnv;
-const port = parsePort(env.PORT);
+const port = Number(env.PORT ?? 7801);
 
 const db = openDb(env);
 await migrate(db);

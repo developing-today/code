@@ -49,7 +49,11 @@ export class OpenCodeClient {
     return parsed;
   }
 
-  async createSession(opts: { directory: string; title: string; model: ModelRef | null }): Promise<{ id: string }> {
+  async createSession(opts: {
+    directory: string;
+    title: string;
+    model: ModelRef | null;
+  }): Promise<{ id: string }> {
     const body: Record<string, unknown> = {
       title: opts.title,
       location: { directory: opts.directory },
@@ -64,10 +68,6 @@ export class OpenCodeClient {
 
   async sendPrompt(sessionId: string, text: string): Promise<void> {
     await this.api("POST", `/api/session/${encodeURIComponent(sessionId)}/prompt`, { text });
-  }
-
-  async deleteSession(sessionId: string): Promise<void> {
-    await this.api("DELETE", `/api/session/${encodeURIComponent(sessionId)}`);
   }
 
   async listSessions(): Promise<unknown> {

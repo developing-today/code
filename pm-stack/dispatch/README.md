@@ -66,14 +66,6 @@ Repo <repo>` so the session knows its tracking ids.
 5. Comment the task/session ids on the issue; label it `queue/claimed` +
    `work/assigned`.
 
-Stage/failure semantics (design #2668): step 4's claim PATCH is the
-launch's commit point. Steps before it are pre-commit — a failure
-cancels the task and fails the launch. Step 5 is post-commit: the
-comment and the labels are each guarded independently, a failure is
-recorded on the task and (for `wait: true`) returned as a response
-`warnings` entry, the remaining annotation steps still run, and the
-launch itself never fails because of an annotation.
-
 Responses: `wait: true` → `201 {task_id, session_id, issue_number|null,
 queue, status: "claimed"}` after the launch. `wait: false` → `202
 {task_id, issue_number|null, status: "launching"}` right after the
@@ -85,8 +77,7 @@ handling for both wait modes. For `wait: true` the response is
 `502 {task_id, error}`; for `wait: false` the `202` has already been
 returned, so the cancellation and the issue note are the record — a
 task is never left `queued` for a session that did not launch, nor
-`claimed` without a session id, nor claimed-and-running reported as
-failed.
+`claimed` without a session id.
 
 ### `POST /v1/tasks` — enqueue only
 

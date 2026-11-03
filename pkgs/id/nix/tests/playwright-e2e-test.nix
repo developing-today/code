@@ -18,20 +18,6 @@
   e2eTestRunner,
   playwrightBrowsers,
 }:
-let
-  # World E2E (#1322): the world-surface spec joins the lobby world, so every
-  # server instance hosts it with the roc-screen fixture program and the same
-  # guest-invite admin token the spec expects by default
-  # (ID_E2E_WORLD_ADMIN_TOKEN, see pkgs/id/e2e/playwright.config.ts).
-  worldModule = ../../examples/roc-screen/roc-screen.wasm;
-  worldExtraArgs = [
-    "--world"
-    "--world-admin-token"
-    "e2e-world-admin-token"
-    "--world-module"
-    "/etc/id-e2e/roc-screen.wasm"
-  ];
-in
 {
   name = "id-playwright-e2e";
 
@@ -40,8 +26,6 @@ in
     { ... }:
     {
       imports = [ ../id-module.nix ];
-
-      environment.etc."id-e2e/roc-screen.wasm".source = worldModule;
 
       services.id = {
         package = idPackage;
@@ -54,7 +38,6 @@ in
           noGossip = true;
           noMdns = true;
           openFirewall = true;
-          extraArgs = worldExtraArgs;
         };
         instances.secondary = {
           enable = true;
@@ -65,7 +48,6 @@ in
           noGossip = true;
           noMdns = true;
           openFirewall = true;
-          extraArgs = worldExtraArgs;
         };
       };
     };
@@ -74,8 +56,6 @@ in
     { ... }:
     {
       imports = [ ../id-module.nix ];
-
-      environment.etc."id-e2e/roc-screen.wasm".source = worldModule;
 
       services.id = {
         package = idPackage;
@@ -88,7 +68,6 @@ in
           noGossip = true;
           noMdns = true;
           openFirewall = true;
-          extraArgs = worldExtraArgs;
         };
         instances.secondary = {
           enable = true;
@@ -99,7 +78,6 @@ in
           noGossip = true;
           noMdns = true;
           openFirewall = true;
-          extraArgs = worldExtraArgs;
         };
       };
     };

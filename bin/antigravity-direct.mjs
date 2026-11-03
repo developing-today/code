@@ -55,27 +55,11 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
-import { parseProxyPort, parseProxyMillis } from './proxy-port.mjs';
-
-// #2953 (define, don't assign): store an externally-spelled key with
-// define semantics, so "__proto__" becomes an own property instead of
-// invoking the Object.prototype setter and "constructor"/"toString"
-// shadow like any other key.
-const defineValue = (obj, key, value) => {
-  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
-  return value;
-};
-
 
 const HOST = process.env.ANTIGRAVITY_DIRECT_HOST || '127.0.0.1';
-// #2823: both env values go through the house helpers, like every other
-// bin/* proxy. A bare Number() let 'abc'/'18941.9'/'99999' reach listen()
-// as an anonymous ERR_SOCKET_BAD_PORT, and let '0'/'0x4a35' bind a port
-// nobody configured; a bad timeout started healthy and 502'd every
-// request. Both now fail at startup naming the variable and its value.
-const PORT = parseProxyPort('ANTIGRAVITY_DIRECT_PORT', 18751);
+const PORT = Number(process.env.ANTIGRAVITY_DIRECT_PORT || 18751);
 const UPSTREAM = (process.env.ANTIGRAVITY_DIRECT_UPSTREAM || 'https://daily-cloudcode-pa.googleapis.com').replace(/\/$/, '');
-const TIMEOUT_MS = parseProxyMillis('ANTIGRAVITY_DIRECT_TIMEOUT_MS', 300000);
+const TIMEOUT_MS = Number(process.env.ANTIGRAVITY_DIRECT_TIMEOUT_MS || 300000);
 const PROJECT = 'aicode-consumers';
 
 // The CLI's OAuth client id (public identifier, appears in its sign-in URLs).
@@ -354,7 +338,7 @@ const resolveSchemaRefs = (root) => {
       const target = $ref.startsWith('#') ? lookup($ref) : undefined;
       const merged = (target === undefined || chain.includes($ref) || chain.length >= 10)
         ? {} : { ...walkSchema(target, [...chain, $ref]) };
-      for (const [k, v] of Object.entries(siblings)) defineValue(merged, k, walkSchema(v, chain));
+      for (const [k, v] of Object.entries(siblings)) merged[k] = walkSchema(v, chain);
       return merged;
     }
     const out = {};
@@ -362,11 +346,11 @@ const resolveSchemaRefs = (root) => {
       if (SCHEMA_VALUE_KEYS.has(k)) { out[k] = v; continue; }
       if (SCHEMA_MAP_KEYS.has(k) && isSchemaRecord(v)) {
         const sub = {};
-        for (const [name, s] of Object.entries(v)) defineValue(sub, name, walkSchema(s, chain));
+        for (const [name, s] of Object.entries(v)) sub[name] = walkSchema(s, chain);
         out[k] = sub;
         continue;
       }
-      defineValue(out, k, walkSchema(v, chain));
+      out[k] = walkSchema(v, chain);
     }
     return out;
   };
@@ -404,7 +388,7 @@ const convertSchemaNode = (node) => {
     if (k === 'properties') {
       if (isSchemaRecord(v)) {
         const props = {};
-        for (const [name, sub] of Object.entries(v)) defineValue(props, name, convertSchemaNode(sub));
+        for (const [name, sub] of Object.entries(v)) props[name] = convertSchemaNode(sub);
         out.properties = props;
       }
       continue;
@@ -458,36 +442,6 @@ const textOf = (content) => {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.filter(p => p && (p.type === 'text' || typeof p.text === 'string')).map(p => p.text || '').join('');
   return '';
-};
-
-// tool_choice translation (code#2822): the string forms map to a bare
-// mode; a specific-function choice {type:'function', function:{name:X}}
-// must pin X via allowedFunctionNames — flattening it to bare ANY would
-// let the model call any declared function instead of the one the client
-// required. A specific choice whose name is missing/malformed or not
-// among the declared functions is a caller error: fail closed with a 400
-// (invalidRequest), never widen to unrestricted ANY.
-const invalidToolChoice = (message) => {
-  const err = new Error(message);
-  err.invalidRequest = true;
-  return err;
-};
-const toolChoiceConfig = (toolChoice, declaredNames) => {
-  if (typeof toolChoice === 'string') {
-    return { mode: toolChoice === 'none' ? 'NONE' : toolChoice === 'auto' ? 'AUTO' : 'ANY' };
-  }
-  if (toolChoice && typeof toolChoice === 'object') {
-    const name = (toolChoice.function && typeof toolChoice.function.name === 'string' && toolChoice.function.name)
-      || (typeof toolChoice.name === 'string' && toolChoice.name) || null;
-    if (toolChoice.type !== 'function' || !name) {
-      throw invalidToolChoice('tool_choice must name a specific function: {type: "function", function: {name: "..."}}');
-    }
-    if (!declaredNames.includes(name)) {
-      throw invalidToolChoice('tool_choice names function "' + name + '" which is not among the declared tools');
-    }
-    return { mode: 'ANY', allowedFunctionNames: [name] };
-  }
-  throw invalidToolChoice('tool_choice must be a string or a specific-function object');
 };
 
 const buildV1Request = (body) => {
@@ -557,26 +511,16 @@ const buildV1Request = (body) => {
   }
   const request = { contents };
   if (systemParts.length) request.systemInstruction = { role: 'user', parts: systemParts };
-  const hasToolsArray = Array.isArray(body.tools) && body.tools.length > 0;
-  const declaredNames = [];
-  if (hasToolsArray) {
+  if (Array.isArray(body.tools) && body.tools.length) {
     const decls = [];
     for (const t of body.tools) {
       const fn = t && t.type === 'function' ? t.function : t;
-      if (fn && fn.name) {
-        decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }) });
-        declaredNames.push(fn.name);
-      }
+      if (fn && fn.name) decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }) });
     }
     if (decls.length) request.tools = [{ functionDeclarations: decls }];
-  }
-  if (body.tool_choice) {
-    // An object (specific-function) choice is always validated, even with
-    // no declared tools (its name cannot be declared then -> 400). The
-    // string forms keep their historic gating: a toolConfig is only sent
-    // when the request carried a tools array.
-    if (typeof body.tool_choice === 'object' || hasToolsArray) {
-      request.toolConfig = { functionCallingConfig: toolChoiceConfig(body.tool_choice, declaredNames) };
+    if (body.tool_choice) {
+      const mode = body.tool_choice === 'none' ? 'NONE' : body.tool_choice === 'auto' ? 'AUTO' : 'ANY';
+      request.toolConfig = { functionCallingConfig: { mode } };
     }
   }
   const generationConfig = {
@@ -770,13 +714,7 @@ const handleChatCompletions = async (req, res) => {
   try { body = JSON.parse(await readBody(req) || '{}'); }
   catch { return sendJson(res, 400, { error: { message: 'invalid JSON body', type: 'invalid_request_error' } }); }
   const requestedModel = body.model || 'gemini-3.8-flash';
-  let built;
-  try { built = buildV1Request(body); }
-  catch (e) {
-    if (e && e.invalidRequest) return sendJson(res, 400, { error: { message: e.message, type: 'invalid_request_error' } });
-    throw e;
-  }
-  const { fullName, payload } = built;
+  const { fullName, payload } = buildV1Request(body);
   const id = 'chatcmpl-' + crypto.randomUUID();
   const created = Math.floor(Date.now() / 1000);
   let upstream;

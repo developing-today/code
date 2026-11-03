@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-
-	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 // Resource subscriptions, upstream.
@@ -30,10 +28,9 @@ import (
 var ErrNotSubscribable = errors.New("the server does not declare resources.subscribe")
 
 // Watch subscribes to updates for uri on this server until release is
-// called. rs is the resolved scope the instance is resolved under.
-func (p *Pool) Watch(ctx context.Context, rs config.ResolvedScope, uri string) (release func(), err error) {
-	key := rs.Key
-	lease, err := p.Acquire(ctx, rs)
+// called. key is the scope key the instance is resolved under.
+func (p *Pool) Watch(ctx context.Context, key, uri string) (release func(), err error) {
+	lease, err := p.Acquire(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +44,6 @@ func (p *Pool) Watch(ctx context.Context, rs config.ResolvedScope, uri string) (
 	}
 	p.watched[uri]++
 	p.watchKey = key
-	p.watchRoot = rs.Root
 	p.watchMu.Unlock()
 	if err := p.subscribeOn(ctx, lease.inst, uri); err != nil {
 		p.unwatch(uri)
@@ -150,7 +146,6 @@ func (p *Pool) monitor(in *Instance) {
 	p.watchMu.Lock()
 	wanted := len(p.watched) > 0
 	key := p.watchKey
-	root := p.watchRoot
 	p.watchMu.Unlock()
 	if closed || !wanted {
 		return
@@ -158,7 +153,7 @@ func (p *Pool) monitor(in *Instance) {
 	// Acquire starts the replacement, and start() subscribes it. A failure
 	// here is the pool's ordinary start failure, recorded as lastErr; the
 	// next caller that reaches this server retries it and resubscribes.
-	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: key, Root: root})
+	lease, err := p.Acquire(context.Background(), key)
 	if err == nil {
 		lease.Release()
 	}

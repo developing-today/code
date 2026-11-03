@@ -28,13 +28,6 @@
 //      the gatherer ingests them in the same tick. A document older
 //      than 30 minutes means the producer is unreachable — an error
 //      entry, never zeros.
-//   4. The native ClinePass token adapter (#1159, src/clinepass-
-//      adapter.ts on the #1153 framework): fills the ClinePass row
-//      when the OpenChamber module did not already produce a fresh
-//      one this tick, and only when CLINEPASS_CREDENTIAL_REF names
-//      a credential reference on this host. An expired token is
-//      session-expired / re-login with the last-known row retained
-//      (#1268) — never a 0% row.
 //
 // Outputs:
 //   - quota-current.json — the latest-state contract (model.ts
@@ -72,11 +65,7 @@
 //      by name via ~/tools/bws-env conventions — BWS_BIN and
 //      BWS_ACCESS_TOKEN_FILE override its plumbing),
 //      TURSO_ORG_SLUG (dezren39), TURSO_API_BASE
-//      (https://api.turso.tech),
-//      CLINEPASS_CREDENTIAL_REF (bitwarden:<name> or file:<path> —
-//      a CredentialRef for the native ClinePass adapter (#1159),
-//      never a credential value; unset = not configured on this
-//      host, live verification gated on #1155).
+//      (https://api.turso.tech).
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -86,7 +75,6 @@ import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
-  entriesWithPoolSplits,
   entryFromResult,
   entryFromFileExport,
   entryFromTurso,
@@ -100,14 +88,6 @@ import {
   type TursoUsageDoc,
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
-import {
-  CLINEPASS_PROVIDER_ID,
-  clinePassErrorEntry,
-  credentialRefFromConfig,
-  gatherClinePass,
-} from "../src/clinepass-adapter.ts";
-import type { CredentialRef } from "../src/token-adapter.ts";
-import { safeProviderReason } from "../src/credential-lifecycle.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -161,36 +141,6 @@ interface AuthModule {
   openCodeLocalCredentialSource: (opts: { dbPath: string }) => unknown;
 }
 
-interface ClaudeCredentialSource {
-  loadClaudeCredential: () => Promise<{
-    expiresAt?: number | null;
-    source?: "keychain" | "credentials-file" | "opencode-auth" | "env";
-  } | null>;
-}
-
-/** Read only Claude expiry metadata; credential values stay local and are discarded. */
-async function claudeExpiryMetadata(): Promise<{
-  expiresAt?: string;
-  source?: "claude-code" | "opencode" | "environment";
-} | null> {
-  try {
-    const auth = (await import(join(libDir, "quota/providers/claude/auth.js"))) as unknown as ClaudeCredentialSource;
-    const credential = await auth.loadClaudeCredential();
-    if (!credential) return null;
-    const metadata: { expiresAt?: string; source?: "claude-code" | "opencode" | "environment" } = {};
-    if (typeof credential.expiresAt === "number" && Number.isFinite(credential.expiresAt)) {
-      const expiry = new Date(credential.expiresAt);
-      if (Number.isFinite(expiry.getTime())) metadata.expiresAt = expiry.toISOString();
-    }
-    if (credential.source === "keychain" || credential.source === "credentials-file") metadata.source = "claude-code";
-    else if (credential.source === "opencode-auth") metadata.source = "opencode";
-    else if (credential.source === "env") metadata.source = "environment";
-    return metadata;
-  } catch {
-    return null;
-  }
-}
-
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}`;
@@ -208,10 +158,10 @@ async function failTick(tickAt: string, started: number, error: string): Promise
     ok: false,
     durationMs: Date.now() - started,
     perProvider: {},
-    error: safeProviderReason(error),
+    error,
   };
   await writeHeartbeat(hb).catch(() => {});
-  console.error(`quota-gatherer: tick failed before providers ran: ${safeProviderReason(error)}`);
+  console.error(`quota-gatherer: tick failed before providers ran: ${error}`);
   return 1;
 }
 
@@ -352,72 +302,10 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
     return done(
       entryFromTurso(null, null, {
         measuredAt: tickIso,
-        error: safeProviderReason(err instanceof Error ? err.message : String(err)),
+        error: err instanceof Error ? err.message : String(err),
       }),
     );
   }
-}
-
-/**
- * Resolve a ClinePass CredentialRef to its value at tick time
- * (#1159): Bitwarden by name (the resolveBwsSecret plumbing), or a
- * file whose owner-only mode is enforced, not assumed. The value is
- * handed to the adapter's fetch and never logged or stored.
- */
-async function resolveClinePassCredentialValue(ref: CredentialRef): Promise<string | null> {
-  if (ref.kind === "bitwarden") return resolveBwsSecret(ref.name);
-  try {
-    const st = await stat(ref.path);
-    if ((st.mode & 0o077) !== 0) return null;
-    const v = (await readFile(ref.path, "utf8")).trim();
-    return v || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The native ClinePass adapter run (#1159). Null when no credential
- * reference is configured on this host — the adapter is registered
- * but dormant until #1155 names the provenance. A misconfigured
- * reference is an error row naming the defect, never a value.
- * Previous-value retention is the tick's #1268 pass below, so the
- * adapter is collected with no previous here.
- */
-async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
-  const t0 = Date.now();
-  let ref: CredentialRef | null;
-  try {
-    ref = credentialRefFromConfig(process.env.CLINEPASS_CREDENTIAL_REF);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    const entry = clinePassErrorEntry(safeProviderReason(detail), tickIso);
-    entry.credentialWatch = true;
-    return {
-      id: CLINEPASS_PROVIDER_ID,
-      state: "error",
-      ms: Date.now() - t0,
-      entries: [entry],
-      error: safeProviderReason(detail),
-    };
-  }
-  if (!ref) return null;
-  const outcome = await gatherClinePass({
-    now: new Date(tickIso),
-    previous: null,
-    credentialRef: ref,
-    resolveCredentialValue: resolveClinePassCredentialValue,
-  });
-  const entry =
-    outcome.value ?? clinePassErrorEntry(outcome.detail ?? `cline-pass adapter: ${outcome.status}`, tickIso);
-  entry.credentialWatch = true;
-  return {
-    id: CLINEPASS_PROVIDER_ID,
-    state: outcome.status === "ok" ? "ok" : "error",
-    ms: Date.now() - t0,
-    entries: [entry],
-    ...(outcome.status !== "ok" ? { error: outcome.detail ?? outcome.status } : {}),
-  };
 }
 
 interface ProviderRun {
@@ -453,7 +341,7 @@ async function runProvider(quota: QuotaModule, id: string, tickIso: string): Pro
       state: "error",
       ms: Date.now() - t0,
       entries: [],
-      error: safeProviderReason(err instanceof Error ? err.message : String(err)),
+      error: err instanceof Error ? err.message : String(err),
     };
   }
 }
@@ -542,36 +430,6 @@ async function main(): Promise<number> {
   for (const fx of FILE_EXPORTS) runs.push(await runFileExport(fx));
   runs.push(await runTurso(tickAt));
 
-  // #1159: register the native ClinePass adapter. Exactly one
-  // cline-pass run survives: a fresh module row wins and the native
-  // adapter is never even started (no duplicate credential resolve
-  // or dashboard fetch that tick); otherwise the native run
-  // replaces the module's errored run so #1268 retention below
-  // applies to one run only.
-  const clineIdx = runs.findIndex((r) => r.id === CLINEPASS_PROVIDER_ID);
-  if (clineIdx !== -1 && runs[clineIdx].entries.some((e) => e.state === "ok")) {
-    console.log("quota-gatherer: cline-pass ok via openchamber module - native adapter run skipped");
-  } else {
-    const clineRun = await runClinePass(tickAt);
-    if (clineRun) {
-      if (clineIdx === -1) runs.push(clineRun);
-      else runs[clineIdx] = clineRun;
-    }
-  }
-
-  // The Claude auth source exposes an expiry timestamp. Persist only that
-  // metadata and its source class, never the credential object or values.
-  const claudeRun = runs.find((run) => run.id === "claude");
-  if (claudeRun?.entries.length) {
-    const metadata = await claudeExpiryMetadata();
-    if (metadata) {
-      for (const entry of claudeRun.entries) {
-        if (metadata.expiresAt) entry.credentialExpiresAt = metadata.expiresAt;
-        if (metadata.source) entry.credentialSource = metadata.source;
-      }
-    }
-  }
-
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
@@ -588,14 +446,7 @@ async function main(): Promise<number> {
       }
     }
   }
-  // #1331: file the split pool rows (Go per-workspace, Antigravity
-  // per-pool) alongside the combined rows, so the overlay maps them
-  // onto the four split hub pools and the snapshot writer continues
-  // the pool-level series.
-  const entries = entriesWithPoolSplits(runs.flatMap((r) => r.entries));
-  for (const entry of entries) {
-    if (entry.error) entry.error = safeProviderReason(entry.error);
-  }
+  const entries = runs.flatMap((r) => r.entries);
 
   const perProvider: QuotaGatherHeartbeat["perProvider"] = {};
   for (const run of runs) {
@@ -603,10 +454,10 @@ async function main(): Promise<number> {
       state: run.state,
       ms: run.ms,
       rows: run.entries.length,
-      ...(run.error ? { error: safeProviderReason(run.error) } : {}),
+      ...(run.error ? { error: run.error } : {}),
     };
     console.log(
-      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${safeProviderReason(run.error).slice(0, 140)}` : ""}`,
+      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${run.error.slice(0, 140)}` : ""}`,
     );
   }
 

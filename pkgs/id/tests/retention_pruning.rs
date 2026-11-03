@@ -17,7 +17,6 @@ use id::documents::{DOCUMENT_KIND, DocumentRef};
 use id::event_store::EventStore;
 use id::membership::AuthId;
 use id::notes::{CREATE_KIND as NOTE_CREATE_KIND, NoteOp, REVISE_KIND as NOTE_REVISE_KIND};
-use id::note_links::{LINK_KIND, NoteLinkOp};
 use id::membership::body::encode_body;
 use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp};
 use id::waiting::WaitingLimits;
@@ -71,7 +70,6 @@ impl Chains {
             document,
             removes: None,
             note: None,
-            link: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -134,7 +132,6 @@ impl Chains {
             document: None,
             removes: None,
             note: Some(NoteOp::Create { content: doc }),
-            link: None,
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -169,41 +166,6 @@ impl Chains {
                 note,
                 content: doc,
                 parents: parents.to_vec(),
-            }),
-            link: None,
-        };
-        let event = sign(&key(who), seq, backlink, None, ext).unwrap();
-        self.last.insert(who, (seq, event.id));
-        (event, None)
-    }
-
-    fn note_link(
-        &mut self,
-        who: u8,
-        source: Hash,
-        revision: Hash,
-        target: Hash,
-        surface: &str,
-        pin: Option<Hash>,
-    ) -> (Event, Option<Vec<u8>>) {
-        let (seq, backlink) = match self.last.get(&who) {
-            Some((seq, hash)) => (seq + 1, Some(*hash)),
-            None => (0, None),
-        };
-        let ext = ChainExt {
-            kind: LINK_KIND.to_owned(),
-            group: None,
-            after: Vec::new(),
-            tag: None,
-            document: None,
-            removes: None,
-            note: None,
-            link: Some(NoteLinkOp::Assert {
-                source,
-                revision,
-                target,
-                surface: surface.to_owned(),
-                pin,
             }),
         };
         let event = sign(&key(who), seq, backlink, None, ext).unwrap();
@@ -592,69 +554,6 @@ fn test_prune_preserves_note_parents_reachable_only_via_note_refs() {
     assert!(store.event_by_id(&rev1.id).unwrap().is_some());
     assert!(store.event_by_id(&rev2.id).unwrap().is_some());
     assert!(store.event_by_id(&anchor_event.id).unwrap().is_some());
-
-    store.check_invariants().unwrap();
-}
-
-#[test]
-fn test_prune_preserves_link_targets_reachable_only_via_link_refs() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = open(dir.path());
-    let mut chains = Chains::new();
-
-    // Alice creates the target note and revises it once.
-    let (t_create, t_create_body) = chains.note_create(1, Hash::digest(b"target v1"));
-    deliver(&mut store, &t_create, t_create_body.as_deref());
-    let (t_rev, t_rev_body) = chains.note_revise(
-        1,
-        &[t_create.id],
-        t_create.id,
-        &[t_create.id],
-        Hash::digest(b"target v2"),
-    );
-    deliver(&mut store, &t_rev, t_rev_body.as_deref());
-
-    // Bob creates the source note and revises it; the revision asserts the link.
-    let (s_create, s_create_body) = chains.note_create(2, Hash::digest(b"source v1"));
-    deliver(&mut store, &s_create, s_create_body.as_deref());
-    let (s_rev, s_rev_body) = chains.note_revise(
-        2,
-        &[s_create.id],
-        s_create.id,
-        &[s_create.id],
-        Hash::digest(b"source v2"),
-    );
-    deliver(&mut store, &s_rev, s_rev_body.as_deref());
-
-    // Bob links source -> target, pinning the target revision. The link event's
-    // after is empty: the ONLY references to the target note and its revision
-    // are inside the link operation itself.
-    let (link, link_body) = chains.note_link(
-        2,
-        s_create.id,
-        s_rev.id,
-        t_create.id,
-        "target",
-        Some(t_rev.id),
-    );
-    deliver(&mut store, &link, link_body.as_deref());
-
-    // Charlie anchors on the link, keeping it in the surviving frontier.
-    let (anchor_event, anchor_body) =
-        chains.sign(3, None, &[link.id], "message", Some(b"seen".to_vec()), None, None);
-    deliver(&mut store, &anchor_event, anchor_body.as_deref());
-
-    store.check_invariants().unwrap();
-
-    // Cut at the target revision: it and the target create are behind the cut
-    // and would be pruned unless the surviving link's references protect them.
-    let count = store
-        .prune_behind_cut(&[t_rev.id], &[anchor_event.id])
-        .unwrap();
-    assert_eq!(count, 0, "link target and pin reachable only via link refs must survive");
-    assert!(store.event_by_id(&t_create.id).unwrap().is_some());
-    assert!(store.event_by_id(&t_rev.id).unwrap().is_some());
-    assert!(store.event_by_id(&link.id).unwrap().is_some());
 
     store.check_invariants().unwrap();
 }

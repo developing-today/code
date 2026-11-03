@@ -16,5 +16,9 @@ export interface SaveShortcutEvent {
 }
 
 export function isSaveShortcut(event: SaveShortcutEvent): boolean {
-  return (event.ctrlKey || event.metaKey) && !event.shiftKey && event.code === "KeyS";
+  return (
+    (event.ctrlKey || event.metaKey) &&
+    !event.shiftKey &&
+    event.code === "KeyS"
+  );
 }

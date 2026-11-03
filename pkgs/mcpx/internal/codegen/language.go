@@ -31,10 +31,6 @@ type Language struct {
 	GlobalsFile string
 	// ScriptExt is the extension a script in this language carries.
 	ScriptExt string
-	// ContentType is what the generated client is served as. The client
-	// routes set it, so a fetched module identifies its language instead of
-	// arriving as an unlabelled bytes.
-	ContentType string
 
 	module       func(nss []Namespace, endpoint, session string) string
 	globals      func(nss []Namespace) string
@@ -55,7 +51,6 @@ var TypeScript = Language{
 	ClientFile:   typescriptClientFile,
 	GlobalsFile:  "mcpx-globals.d.ts",
 	ScriptExt:    ".ts",
-	ContentType:  "application/typescript",
 	module:       Module,
 	globals:      GlobalDeclarations,
 	declarations: Declarations,

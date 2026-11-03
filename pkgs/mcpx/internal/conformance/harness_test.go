@@ -273,7 +273,7 @@ func (b *backend) ReadResource(_ context.Context, uri string) ([]mcpserver.Resou
 }
 
 // Complete offers completions values for the one prompt there is.
-func (b *backend) Complete(_ context.Context, params json.RawMessage) (mcpserver.Completion, error) {
+func (b *backend) Complete(_ context.Context, params json.RawMessage) ([]string, error) {
 	var p struct {
 		Ref struct {
 			Name string `json:"name"`
@@ -281,7 +281,7 @@ func (b *backend) Complete(_ context.Context, params json.RawMessage) (mcpserver
 	}
 	_ = json.Unmarshal(params, &p)
 	if p.Ref.Name != "greet" {
-		return mcpserver.Completion{}, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
+		return nil, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
 	}
 	n := b.completions
 	if n == 0 {
@@ -291,7 +291,7 @@ func (b *backend) Complete(_ context.Context, params json.RawMessage) (mcpserver
 	for i := range out {
 		out[i] = fmt.Sprintf("v%03d", i)
 	}
-	return mcpserver.Completion{Values: out}, nil
+	return out, nil
 }
 func (b *backend) GetPrompt(_ context.Context, name string, args map[string]string) (string, error) {
 	if name != "greet" {

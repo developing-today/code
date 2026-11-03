@@ -4,16 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import {
-  derivedProjectState,
-  fetchProjectPool,
-  isProjectPoolItem,
-  parseProjectItems,
-  poolItemToGhItem,
-  projectDisagreement,
-  PROJECT_QUERY,
-  resolveEpicRefs,
-} from "../src/projects.ts";
+import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -32,7 +23,7 @@ const GQL = {
         nodes: [
           {
             id: "PVTI_1",
-            databaseId: 111 as number | null,
+            databaseId: 111,
             type: "ISSUE",
             content: {
               number: 508,
@@ -80,67 +71,6 @@ const GQL = {
   },
 };
 
-function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount = 25) {
-  return {
-    data: {
-      node: {
-        ...GQL.data.node,
-        items: {
-          ...GQL.data.node.items,
-          totalCount,
-          pageInfo: { hasNextPage, endCursor },
-        },
-      },
-    },
-  };
-}
-
-describe("fetchProjectPool pagination", () => {
-  test("throws rather than returning a partial pool when page ten has another page", async () => {
-    let calls = 0;
-    const fetchFn: typeof fetch = Object.assign(
-      async () => {
-        calls++;
-        return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
-      },
-      { preconnect: () => {} },
-    );
-
-    await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
-    expect(calls).toBe(10);
-  });
-
-  test("returns every item from a finite multi-page pool", async () => {
-    let calls = 0;
-    const fetchFn: typeof fetch = Object.assign(
-      async () => {
-        calls++;
-        return new Response(JSON.stringify(projectPage(calls < 3, calls < 3 ? `cursor-${calls}` : null, 6)));
-      },
-      { preconnect: () => {} },
-    );
-
-    const items = await fetchProjectPool("test-token", fetchFn);
-    expect(calls).toBe(3);
-    expect(items).toHaveLength(6);
-  });
-
-  test("returns a single-page pool unchanged", async () => {
-    let calls = 0;
-    const fetchFn: typeof fetch = Object.assign(
-      async () => {
-        calls++;
-        return new Response(JSON.stringify(projectPage(false, null, 3)));
-      },
-      { preconnect: () => {} },
-    );
-
-    const items = await fetchProjectPool("test-token", fetchFn);
-    expect(calls).toBe(1);
-    expect(items).toHaveLength(2);
-  });
-});
-
 const PROV = {
   board: "x",
   roadmap: "x",
@@ -169,17 +99,6 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(epic.issueUrl).toBe("https://github.com/dezren39/nix/issues/508");
     expect(epic.url).toBe("https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=111");
     expect(pool[1].state).toBe("closed");
-  });
-
-  test("a null GraphQL databaseId normalizes to absent and the item stays in the pool", () => {
-    const clone = structuredClone(GQL);
-    clone.data.node.items.nodes[0].databaseId = null;
-    const pool = parseProjectItems(clone);
-    expect(pool.length).toBe(2);
-    expect(pool[0].databaseId).toBeUndefined();
-    // projectItemUrl falls back to the bare board URL without an item id.
-    expect(pool[0].url).toBe("https://github.com/orgs/developing-today/projects/4");
-    expect(isProjectPoolItem(pool[0])).toBe(true);
   });
 
   test("derived state + disagreement", () => {

@@ -103,10 +103,6 @@ pub fn search_terms(
             .or_default()
             .push(claim.id);
     }
-    // `subject_kind` is resolved at most once per subject, however many kind terms the
-    // search carries: the resolved kind (including an unresolvable `None`) is memoised
-    // here on first use, and every kind term reads the memo.
-    let mut kind_memo: HashMap<[u8; 32], Option<String>> = HashMap::new();
     // For each term, the subjects it matches and, for claim terms, the claims that match it.
     let mut matched: Vec<(BTreeSet<[u8; 32]>, BTreeMap<[u8; 32], BTreeSet<[u8; 32]>>)> =
         Vec::with_capacity(terms.len());
@@ -141,11 +137,7 @@ pub fn search_terms(
                 .keys()
                 .copied()
                 .filter(|subject| {
-                    kind_memo
-                        .entry(*subject)
-                        .or_insert_with(|| subject_kind(&Hash::from_bytes(*subject)))
-                        .as_deref()
-                        == Some(*kind)
+                    subject_kind(&Hash::from_bytes(*subject)).as_deref() == Some(*kind)
                 })
                 .collect(),
             _ => claims_by_subject.keys().copied().collect(),

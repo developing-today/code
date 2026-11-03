@@ -14,8 +14,6 @@
 //! rate and its authorisation are control-plane data (#2063), carried
 //! here as a [`RateQuote`] and recorded on the intent record.
 
-use std::collections::HashSet;
-
 use anyhow::{Context, Result, bail};
 
 use super::intent::{IntentRecord, IntentState, IntentStore};
@@ -134,48 +132,10 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     }
 
     /// Pre-flight (§4 of #2063): every account exists on the right
-    /// ledger, every transfer has distinct debit/credit accounts, the
-    /// user can cover amount + fee, and the LP holds enough destination
-    /// inventory. Failing here means no intent is written and nothing
-    /// is submitted.
+    /// ledger, the user can cover amount + fee, and the LP holds
+    /// enough destination inventory. Failing here means no intent is
+    /// written and nothing is submitted.
     pub fn preflight(&self, request: &ConversionRequest) -> Result<()> {
-        if request.user_source == request.lp_source {
-            bail!(
-                "preflight: user source and LP source accounts must differ (account {})",
-                request.user_source
-            );
-        }
-        if request.fee_amount > 0 && request.fee_account.is_none() {
-            bail!("preflight: fee_amount > 0 requires a fee_account");
-        }
-        if request.fee_amount > 0 && request.fee_account == Some(request.user_source) {
-            bail!(
-                "preflight: user source and fee accounts must differ (account {})",
-                request.user_source
-            );
-        }
-        if request.lp_dest == request.user_dest {
-            bail!(
-                "preflight: LP destination and user destination accounts must differ (account {})",
-                request.lp_dest
-            );
-        }
-
-        let expected_transfer_ids = if request.fee_amount > 0 { 3 } else { 2 };
-        if request.transfer_ids.len() != expected_transfer_ids {
-            bail!(
-                "preflight: transfer_ids must cover every leg (T1, fee, T3): expected {expected_transfer_ids} IDs, got {}",
-                request.transfer_ids.len()
-            );
-        }
-
-        let mut transfer_ids = HashSet::with_capacity(request.transfer_ids.len());
-        for id in &request.transfer_ids {
-            if !transfer_ids.insert(*id) {
-                bail!("preflight: duplicate transfer ID {id}");
-            }
-        }
-
         if request.quote.denominator == 0 {
             bail!("preflight: rate quote has a zero denominator");
         }

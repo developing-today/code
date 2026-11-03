@@ -25,8 +25,6 @@ pub mod membership;
 pub mod sync_method;
 pub mod time;
 pub mod tuple;
-mod unicode;
-pub use unicode::is_format_char;
 pub mod waiting;
 
 #[cfg(feature = "world")]

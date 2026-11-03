@@ -7,17 +7,7 @@
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
-import { parseRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
-
-function isValidTaskRef(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    parseRef(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { type SessionFeedEntry, type SessionRecord, refsInText } from "./model.ts";
 
 /** Agent identity for an OpenCode session entry. */
 export function agentIdentityOf(e: SessionFeedEntry): { agentId: string; agentLabel: string } {
@@ -176,16 +166,12 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
     typeof r.label === "string" &&
     (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
     (r.startedAt === undefined || typeof r.startedAt === "string") &&
-    // #2408/#2485/#4284: mergeRecords spreads taskRefs as an array, and
-    // querying/rendering dereferences it unconditionally (spread in
-    // matchesText, .some in the ?task= filter and the item-page linked-
-    // sessions filter, .flatMap in sessionRecordLine). The validator owns
-    // the rule, per the #2347/#2376 precedent above: SessionRecord.taskRefs
-    // is required, so taskRefs must be a present array of parseable refs
-    // with safe-integer issue numbers; absent or malformed records are
-    // rejected, not coerced.
-    Array.isArray(r.taskRefs) &&
-    r.taskRefs.every(isValidTaskRef)
+    // #2408: mergeRecords spreads taskRefs as an array, so a present-but-
+    // non-array taskRefs throws TypeError on the duplicate-key merge (and
+    // a string silently spreads into single-character refs). The validator
+    // owns the rule, per the #2347/#2376 precedent above: taskRefs must be
+    // absent or an array of strings; anything else rejects the record.
+    (r.taskRefs === undefined || (Array.isArray(r.taskRefs) && r.taskRefs.every((t) => typeof t === "string")))
   );
 }
 

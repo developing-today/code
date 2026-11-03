@@ -26,7 +26,6 @@ an unreadable session list must never become a launch decision.
 import importlib.util
 import json
 import os
-import re
 import sys
 import time
 import urllib.request
@@ -49,39 +48,6 @@ CAP = 12
 # whose client died mid-run, so it stops counting too — the claimant
 # fires every 10 min and a working session updates far more often.
 ACTIVE_WINDOW_MS = 30 * 60 * 1000
-
-
-UUID_LANE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-
-
-def is_candidate(row):
-    """A claimed task is a claimant candidate iff the opencode execution
-    lane was assigned (progress.lane, stamped by assign_repo_task_lane
-    since migration 0021), no session is bound yet, and the claiming
-    lane is not itself an OpenChamber scheduled lane. OpenChamber lanes
-    ARE opencode sessions executing their own claims, so a claimant
-    launch for one would double-execute; they are registered in
-    agent.lanes under their scheduled-task UUIDs, while Muse shift
-    lanes use short ids (code-a, opencode-a, ...) and legacy claims
-    carry no lane id at all."""
-    prog = row.get("progress") or {}
-    if prog.get("lane") != "opencode" or prog.get("session_id"):
-        return False
-    # The claiming lane must have RECORDED its yield (instruction
-    # section 1b: checkpoint stage "handed_off"). Assignment alone is
-    # not a handoff: lanes on pre-1b instructions assign and then work
-    # the task themselves, and a launch into a task whose lane is
-    # mid-work double-executes it (first live batch, 2026-11-02:
-    # tasks 5565/5867/6397 were launched while their claiming lanes
-    # worked/parked/failed them in parallel). The recorded yield is
-    # the only launch-safe signal.
-    if prog.get("stage") != "handed_off":
-        return False
-    lane_id = row.get("lane_id")
-    if lane_id and UUID_LANE.match(lane_id):
-        return False
-    return True
 
 
 def is_root_session(s):
@@ -201,7 +167,7 @@ def main():
             helper.http(
                 "GET",
                 f"tasks?queue=eq.{q}&status=eq.claimed"
-                "&select=id,queue,status,worker_id,priority,progress,lease_until,lane_id"
+                "&select=id,queue,status,worker_id,priority,progress,lease_until"
                 "&limit=500",
                 key,
             )
@@ -209,9 +175,9 @@ def main():
         )
         cands = []
         for r in rows:
-            if not is_candidate(r):
-                continue
             prog = r.get("progress") or {}
+            if prog.get("lane") != "opencode" or prog.get("session_id"):
+                continue
             cands.append(
                 {
                     "id": r["id"],
@@ -219,7 +185,6 @@ def main():
                     "priority": r.get("priority"),
                     "worker_id": r.get("worker_id"),
                     "lease_until": r.get("lease_until"),
-                    "lane_id": r.get("lane_id"),
                     "issue_number": prog.get("issue_number"),
                 }
             )

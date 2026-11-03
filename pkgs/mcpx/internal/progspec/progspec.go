@@ -32,14 +32,13 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"time"
 )
 
 // DefaultTimeout bounds one nix resolution. A first build of a large
 // flake can legitimately take minutes; a hanging one must not hang the
 // launch forever.
-var DefaultTimeout = defaults.ExecResolveTimeout
+const DefaultTimeout = 3 * time.Minute
 
 // Spec is a parsed program specification.
 type Spec struct {
@@ -99,21 +98,7 @@ type Resolved struct {
 var (
 	memoMu sync.Mutex
 	memo   = map[string]Resolved{}
-	// flights holds one in-flight nix resolution per memo key, so
-	// concurrent resolves of the same spec share a single build
-	// (#2826). Guarded by memoMu, like the memo itself.
-	flights = map[string]*flight{}
 )
-
-// flight is one in-flight resolution. done is closed when the
-// resolution completes; res and err are written before the close and
-// read by waiters only after it, so the channel close is the
-// happens-before edge and the read side needs no further locking.
-type flight struct {
-	done chan struct{}
-	res  Resolved
-	err  error
-}
 
 // Resolve turns a program specification into the executable to spawn.
 func Resolve(ctx context.Context, raw string) (Resolved, error) {
@@ -166,46 +151,20 @@ func ResolveInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	}
 	memoMu.Unlock()
 
-	return resolveNixFlight(ctx, spec, dir, key)
+	return resolveNixMemoized(ctx, spec, dir, key)
 }
 
-// resolveNixFlight resolves a nix spec through the per-key flight
-// map: the first caller for a key leads the build, and concurrent
-// callers for the same key wait for and share its outcome instead of
-// each running their own build (#2826). A failed flight is never
-// memoised -- every waiter receives the leader's error and a later
-// call retries. A waiter whose context is cancelled returns at once
-// without disturbing the build; the build runs under the leader's
-// context, so if that fails, every waiter sees the leader's error and
-// nothing is stored. On success the leader stores its own fresh
-// result, and only if the path is still executable: an output deleted
-// mid-flight must not be resurrected into the memo.
-func resolveNixFlight(ctx context.Context, spec Spec, dir, key string) (Resolved, error) {
-	memoMu.Lock()
-	if f, ok := flights[key]; ok {
-		memoMu.Unlock()
-		select {
-		case <-f.done:
-			return f.res, f.err
-		case <-ctx.Done():
-			return Resolved{}, fmt.Errorf("progspec: resolving %q: %w", spec.Raw, ctx.Err())
-		}
-	}
-	f := &flight{done: make(chan struct{})}
-	flights[key] = f
-	memoMu.Unlock()
-
+// resolveNixMemoized resolves a nix spec and records the outcome in
+// the memo under key.
+func resolveNixMemoized(ctx context.Context, spec Spec, dir, key string) (Resolved, error) {
 	r, err := resolveNix(ctx, spec, dir)
-
-	memoMu.Lock()
-	if err == nil && isExecutable(r.Path) {
-		memo[key] = r
+	if err != nil {
+		return Resolved{}, err
 	}
-	delete(flights, key)
-	f.res, f.err = r, err
-	close(f.done)
+	memoMu.Lock()
+	memo[key] = r
 	memoMu.Unlock()
-	return r, err
+	return r, nil
 }
 
 // ResolveFreshInDir is ResolveInDir without the memo READ: the
@@ -215,12 +174,7 @@ func resolveNixFlight(ctx context.Context, spec Spec, dir, key string) (Resolved
 // use this form: a memoized path names whatever an earlier context
 // resolved — possibly a build output that has since been cleaned
 // up, or one produced under a different PATH — and the receiving
-// process cannot tell. The fresh result still updates the memo. "Fresh" governs the memo
-// READ only: if a resolution of the same key is already in flight in
-// this process, this call joins it rather than start a duplicate
-// build -- an in-flight result is resolved now, in this process, with
-// the current environment, which is everything the no-memo-read rule
-// exists to guarantee (#2826).
+// process cannot tell. The fresh result still updates the memo.
 func ResolveFreshInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	spec, err := Parse(raw)
 	if err != nil {
@@ -233,7 +187,7 @@ func ResolveFreshInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	if dir != "" {
 		key = raw + "\x00dir:" + dir
 	}
-	return resolveNixFlight(ctx, spec, dir, key)
+	return resolveNixMemoized(ctx, spec, dir, key)
 }
 
 // ResolvePath is Resolve for callers that only need the executable.
@@ -275,7 +229,7 @@ func resolveNix(ctx context.Context, spec Spec, dir string) (Resolved, error) {
 	// A timed-out build's children can hold the output pipes open after
 	// the kill; WaitDelay bounds how long Run waits for them to close,
 	// so the timeout the caller set is the timeout they get.
-	cmd.WaitDelay = defaults.ExecResolveWaitDelay
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

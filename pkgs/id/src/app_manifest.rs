@@ -1,14 +1,4 @@
 //! App-folder manifests and host-side discovery.
-//!
-//! Symlink rule for app folders (resolve and contain): discovery
-//! canonicalizes each candidate app folder and the apps root. A
-//! candidate whose resolved path lies outside the canonicalized apps
-//! root is reported as a named per-app error and is never registered,
-//! so a symlinked folder cannot smuggle an external folder in as a
-//! local app. A symlink whose resolved target stays inside the apps
-//! root registers normally, under the symlink's own folder name.
-//! Symlinks *inside* a real app folder are explicitly out of scope
-//! here; they are owned by the Phase 4 audit (issue #4203).
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -133,13 +123,33 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             !cli.commands.is_empty(),
             "interfaces.cli.commands must list at least one command"
         );
-        ensure_distinct_entries(&cli.commands, "interfaces.cli.commands")?;
+        ensure!(
+            cli.commands
+                .iter()
+                .all(|command| !command.trim().is_empty()),
+            "interfaces.cli.commands must not contain empty command names"
+        );
     }
     if let Some(capabilities) = &manifest.capabilities {
-        ensure_distinct_entries(&capabilities.request, "capabilities.request")?;
-    }
-    if let Some(resources) = &manifest.resources {
-        ensure_distinct_entries(&resources.files, "resources.files")?;
+        ensure!(
+            capabilities
+                .request
+                .iter()
+                .all(|capability| !capability.trim().is_empty()),
+            "capabilities.request must not contain empty entries"
+        );
+        // Duplicate requests are rejected, not deduplicated: the manifest is
+        // the strict record of what an app asks for, and a repeated entry is
+        // an authoring mistake the gate should name rather than silently
+        // absorb. (Rule pinned by rejects_blank_and_duplicate_capability_requests.)
+        let mut seen = std::collections::HashSet::new();
+        ensure!(
+            capabilities
+                .request
+                .iter()
+                .all(|capability| seen.insert(capability)),
+            "capabilities.request must not contain duplicates"
+        );
     }
     if let Some(program) = &manifest.program {
         ensure!(
@@ -174,15 +184,9 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             "interfaces.web.mode must be adapter or direct"
         );
         ensure!(
-            is_safe_web_path(&web.route),
-            "interfaces.web.route must be an absolute path without traversal segments, whitespace, ? or #"
+            web.route.starts_with('/'),
+            "interfaces.web.route must start with /"
         );
-        if let Some(socket) = &web.socket {
-            ensure!(
-                is_safe_web_path(socket),
-                "interfaces.web.socket must be an absolute path without traversal segments, whitespace, ? or #"
-            );
-        }
     }
     Ok(manifest)
 }
@@ -191,21 +195,9 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
 pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     let root = root.as_ref();
     let mut discovery = AppDiscovery::default();
-    // The canonicalized root is the containment boundary for the
-    // resolve-and-contain symlink rule documented at the top of this
-    // module. A root that cannot be canonicalized is reported exactly
-    // like a root that cannot be read.
-    let canonical_root = match fs::canonicalize(root) {
-        Ok(path) => path,
-        Err(error) => {
-            discovery
-                .errors
-                .push(format!("{}: {error}", root.display()));
-            return discovery;
-        }
-    };
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return discovery,
         Err(error) => {
             discovery
                 .errors
@@ -233,30 +225,6 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
         if !manifest_path.is_file() {
             continue;
         }
-        // Resolve and contain: the candidate folder itself must resolve
-        // to a path inside the canonicalized apps root. A resolution
-        // failure or an outside resolution is a named per-app error and
-        // the folder is not registered.
-        let resolved = match fs::canonicalize(&folder) {
-            Ok(path) => path,
-            Err(error) => {
-                discovery.errors.push(format!(
-                    "{}: cannot resolve app folder {}: {error}",
-                    folder.display(),
-                    folder.display()
-                ));
-                continue;
-            }
-        };
-        if !resolved.starts_with(&canonical_root) {
-            discovery.errors.push(format!(
-                "{}: app folder resolves to {} outside the apps root {} - symlinked app folders must resolve inside the apps root",
-                folder.display(),
-                resolved.display(),
-                canonical_root.display()
-            ));
-            continue;
-        }
         let folder_name = folder
             .file_name()
             .and_then(|name| name.to_str())
@@ -282,44 +250,6 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         continue;
                     }
                 }
-                if let Some(web) = manifest.interfaces.web.as_ref() {
-                    if let Some(existing) = discovery.apps.iter().find(|app| {
-                        app.manifest
-                            .interfaces
-                            .web
-                            .as_ref()
-                            .map(|existing| existing.route.as_str())
-                            == Some(web.route.as_str())
-                    }) {
-                        discovery.errors.push(format!(
-                            "{}: app {:?} duplicates interfaces.web.route {:?} already registered by app {:?}; app not registered",
-                            manifest_path.display(),
-                            manifest.app.id,
-                            web.route,
-                            existing.manifest.app.id
-                        ));
-                        continue;
-                    }
-                    if let Some(socket) = &web.socket {
-                        if let Some(existing) = discovery.apps.iter().find(|app| {
-                            app.manifest
-                                .interfaces
-                                .web
-                                .as_ref()
-                                .and_then(|existing| existing.socket.as_deref())
-                                == Some(socket.as_str())
-                        }) {
-                            discovery.errors.push(format!(
-                                "{}: app {:?} duplicates interfaces.web.socket {:?} already registered by app {:?}; app not registered",
-                                manifest_path.display(),
-                                manifest.app.id,
-                                socket,
-                                existing.manifest.app.id
-                            ));
-                            continue;
-                        }
-                    }
-                }
                 discovery.apps.push(DiscoveredApp {
                     path: folder,
                     manifest,
@@ -333,43 +263,6 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     discovery
 }
 
-fn is_safe_web_path(path: &str) -> bool {
-    path.starts_with('/')
-        && !path.chars().any(char::is_whitespace)
-        && !path.contains('?')
-        && !path.contains('#')
-        && !path.split('/').any(|segment| segment == "..")
-}
-
-/// One consistent list-entry rule for manifest string lists
-/// (`interfaces.cli.commands`, `capabilities.request`, `resources.files`):
-/// every entry must be non-blank with no leading or trailing whitespace, and
-/// no entry may repeat. Duplicate and blank comparisons use the trimmed form,
-/// so a whitespace-padded entry can neither evade the duplicate gate nor be
-/// stored verbatim — padded entries are rejected, not silently trimmed.
-/// Rejections name the field: like the #4082 duplicate gate this extends, a
-/// repeated or padded entry is an authoring mistake the gate should name
-/// rather than silently absorb.
-fn ensure_distinct_entries(entries: &[String], field: &str) -> Result<()> {
-    let mut seen = std::collections::HashSet::new();
-    for entry in entries {
-        let trimmed = entry.trim();
-        ensure!(
-            !trimmed.is_empty(),
-            "{field} must not contain empty entries"
-        );
-        ensure!(
-            entry.as_str() == trimmed,
-            "{field} must not contain entries with leading or trailing whitespace: {entry:?}"
-        );
-        ensure!(
-            seen.insert(trimmed.to_owned()),
-            "{field} must not contain duplicates"
-        );
-    }
-    Ok(())
-}
-
 fn is_kebab_id(id: &str) -> bool {
     !id.is_empty()
         && !id.starts_with('-')
@@ -381,7 +274,6 @@ fn is_kebab_id(id: &str) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -400,21 +292,6 @@ mode = "adapter"
 route = "/tic-tac-toe"
 "#;
 
-    fn manifest_with_web(id: &str, route: &str, socket: Option<&str>) -> String {
-        let socket = socket
-            .map(|socket| format!("socket = {socket:?}\n"))
-            .unwrap_or_default();
-        format!(
-            "[app]\nid = {id:?}\nname = {id:?}\nversion = \"0.1.0\"\n\n[program]\nkind = \"roc-world\"\nsource = \"program/\"\n\n[interfaces.web]\nmode = \"adapter\"\nroute = {route:?}\n{socket}"
-        )
-    }
-
-    fn write_discoverable_app(root: &Path, folder: &str, manifest: &str) {
-        let app = root.join(folder);
-        fs::create_dir_all(app.join("program")).unwrap();
-        fs::write(app.join("app.toml"), manifest).unwrap();
-    }
-
     #[test]
     fn parses_app_manifest_and_matches_folder() {
         let manifest = parse_app_manifest(MANIFEST, "tic-tac-toe").unwrap();
@@ -423,85 +300,6 @@ route = "/tic-tac-toe"
             manifest.program.unwrap().source,
             Some(PathBuf::from("program/"))
         );
-    }
-
-    #[test]
-    fn web_route_and_socket_must_be_safe_absolute_paths() {
-        for route in ["/a/../b", "/a b", "/a?query", "/a#fragment"] {
-            let source =
-                MANIFEST.replace("route = \"/tic-tac-toe\"", &format!("route = {route:?}"));
-            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
-            assert!(error.to_string().contains("interfaces.web.route"));
-        }
-
-        let absolute_url_socket = MANIFEST.replace(
-            "route = \"/tic-tac-toe\"",
-            "route = \"/tic-tac-toe\"\nsocket = \"https://example.test/socket\"",
-        );
-        let error = parse_app_manifest(&absolute_url_socket, "tic-tac-toe").unwrap_err();
-        assert!(error.to_string().contains("interfaces.web.socket"));
-
-        let valid_socket = MANIFEST.replace(
-            "route = \"/tic-tac-toe\"",
-            "route = \"/tic-tac-toe\"\nsocket = \"/ws/world\"",
-        );
-        assert!(parse_app_manifest(&valid_socket, "tic-tac-toe").is_ok());
-    }
-
-    #[test]
-    fn checked_in_tic_tac_toe_manifest_remains_valid() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/tic-tac-toe/app.toml");
-        let source = fs::read_to_string(path).unwrap();
-        let manifest = parse_app_manifest(&source, "tic-tac-toe").unwrap();
-        assert_eq!(manifest.interfaces.web.unwrap().route, "/tic-tac-toe");
-    }
-
-    #[test]
-    fn discovery_keeps_first_duplicate_route_and_names_loser() {
-        let root = tempfile::tempdir().unwrap();
-        write_discoverable_app(
-            root.path(),
-            "a-first",
-            &manifest_with_web("a-first", "/same", None),
-        );
-        write_discoverable_app(
-            root.path(),
-            "b-second",
-            &manifest_with_web("b-second", "/same", None),
-        );
-
-        let discovery = discover_apps(root.path());
-
-        assert_eq!(discovery.apps.len(), 1);
-        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
-        assert_eq!(discovery.errors.len(), 1);
-        assert!(discovery.errors[0].contains("b-second"));
-        assert!(discovery.errors[0].contains("interfaces.web.route"));
-        assert!(discovery.errors[0].contains("/same"));
-    }
-
-    #[test]
-    fn discovery_keeps_first_duplicate_socket_and_names_loser() {
-        let root = tempfile::tempdir().unwrap();
-        write_discoverable_app(
-            root.path(),
-            "a-first",
-            &manifest_with_web("a-first", "/first", Some("/ws/shared")),
-        );
-        write_discoverable_app(
-            root.path(),
-            "b-second",
-            &manifest_with_web("b-second", "/second", Some("/ws/shared")),
-        );
-
-        let discovery = discover_apps(root.path());
-
-        assert_eq!(discovery.apps.len(), 1);
-        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
-        assert_eq!(discovery.errors.len(), 1);
-        assert!(discovery.errors[0].contains("b-second"));
-        assert!(discovery.errors[0].contains("interfaces.web.socket"));
-        assert!(discovery.errors[0].contains("/ws/shared"));
     }
 
     #[test]
@@ -557,47 +355,6 @@ commands = ["play"]
     }
 
     #[test]
-    fn rejects_duplicate_and_padded_cli_commands() {
-        // Exact duplicate commands are rejected, naming the field.
-        let duplicate =
-            CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \"play\"]");
-        let error = parse_app_manifest(&duplicate, "tic-tac-toe").unwrap_err();
-        assert!(
-            error.to_string().contains("interfaces.cli.commands"),
-            "duplicate error names the field: {error:#}"
-        );
-        // A whitespace-padded entry cannot evade the duplicate gate.
-        let padded_duplicate =
-            CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \" play \"]");
-        let error = parse_app_manifest(&padded_duplicate, "tic-tac-toe").unwrap_err();
-        assert!(
-            error.to_string().contains("interfaces.cli.commands"),
-            "padded-duplicate error names the field: {error:#}"
-        );
-        // A lone padded entry is rejected rather than stored verbatim.
-        let padded = CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\" play \"]");
-        assert!(parse_app_manifest(&padded, "tic-tac-toe").is_err());
-    }
-
-    #[test]
-    fn rejects_padded_capability_requests() {
-        // A padded duplicate cannot evade the #4082 duplicate gate.
-        let padded_duplicate =
-            format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\", \" store.read \"]\n");
-        let error = parse_app_manifest(&padded_duplicate, "tic-tac-toe").unwrap_err();
-        assert!(
-            error.to_string().contains("capabilities.request"),
-            "padded-duplicate error names the field: {error:#}"
-        );
-        // A lone padded entry is rejected rather than stored untrimmed.
-        let padded = format!("{MANIFEST}\n[capabilities]\nrequest = [\" store.read \"]\n");
-        assert!(parse_app_manifest(&padded, "tic-tac-toe").is_err());
-        // The unpadded baseline still parses.
-        let valid = format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\"]\n");
-        assert!(parse_app_manifest(&valid, "tic-tac-toe").is_ok());
-    }
-
-    #[test]
     fn rejects_blank_and_duplicate_capability_requests() {
         // Duplicate rule: duplicates are REJECTED, not deduplicated — a
         // repeated request entry is an authoring mistake the gate names.
@@ -608,35 +365,6 @@ commands = ["play"]
         let duplicate =
             format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\", \"store.read\"]\n");
         assert!(parse_app_manifest(&duplicate, "tic-tac-toe").is_err());
-    }
-
-    #[test]
-    fn rejects_blank_duplicate_and_padded_resource_files() {
-        for files in [
-            r#"["", "assets/**"]"#,
-            r#"["  ", "assets/**"]"#,
-            r#"["assets/**", "assets/**"]"#,
-            r#"["assets/**", " assets/**"]"#,
-        ] {
-            let source = format!("{MANIFEST}\n[resources]\nfiles = {files}\n");
-            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
-            assert!(
-                error.to_string().contains("resources.files"),
-                "resource-file validation error names the field: {error:#}"
-            );
-        }
-    }
-
-    #[test]
-    fn accepts_design_resource_files_and_empty_optional_list() {
-        let design_example =
-            format!("{MANIFEST}\n[resources]\nfiles = [\"assets/**\", \"web/templates/**\"]\n");
-        assert!(parse_app_manifest(&design_example, "tic-tac-toe").is_ok());
-
-        // The resources section is optional, and an explicitly empty files
-        // list remains legal.
-        let empty = format!("{MANIFEST}\n[resources]\nfiles = []\n");
-        assert!(parse_app_manifest(&empty, "tic-tac-toe").is_ok());
     }
 
     #[test]
@@ -655,18 +383,6 @@ commands = ["play"]
         // A 64-digit hex hash is accepted.
         assert!(parse_app_manifest(&with_hash(&"a".repeat(64)), "tic-tac-toe").is_ok());
         assert!(parse_app_manifest(&with_hash("0123456789abcdef"), "tic-tac-toe").is_ok());
-    }
-
-    #[test]
-    fn discovery_reports_missing_root() {
-        let parent = tempfile::tempdir().unwrap();
-        let missing_root = parent.path().join("missing-apps-root");
-
-        let discovery = discover_apps(&missing_root);
-
-        assert!(discovery.apps.is_empty());
-        assert_eq!(discovery.errors.len(), 1);
-        assert!(discovery.errors[0].contains(&missing_root.display().to_string()));
     }
 
     #[test]
@@ -700,59 +416,5 @@ commands = ["play"]
         assert!(discovery.errors[0].contains("program.source"));
         assert!(discovery.errors[0].contains("program/"));
         assert!(discovery.errors[0].contains("does not exist"));
-    }
-    #[cfg(unix)]
-    #[test]
-    fn discovery_rejects_symlinked_app_folder_pointing_outside_root() {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        let external_app = outside.path().join("tic-tac-toe");
-        fs::create_dir_all(external_app.join("program")).unwrap();
-        fs::write(external_app.join("app.toml"), MANIFEST).unwrap();
-        symlink(&external_app, root.path().join("tic-tac-toe")).unwrap();
-
-        let discovery = discover_apps(root.path());
-
-        assert!(
-            discovery.apps.is_empty(),
-            "outside symlink must not register: {:?}",
-            discovery.apps
-        );
-        assert_eq!(discovery.errors.len(), 1);
-        assert!(
-            discovery.errors[0].contains("tic-tac-toe"),
-            "error names the app folder: {}",
-            discovery.errors[0]
-        );
-        assert!(
-            discovery.errors[0].contains("outside the apps root"),
-            "error names the containment rule: {}",
-            discovery.errors[0]
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn discovery_registers_symlinked_app_folder_resolving_inside_root() {
-        use std::os::unix::fs::symlink;
-        let root = tempfile::tempdir().unwrap();
-        // The real app is nested under the root but is not an immediate
-        // child, so the only discovery path to it is through the symlink.
-        let stored = root.path().join("stored").join("tic-tac-toe");
-        fs::create_dir_all(stored.join("program")).unwrap();
-        fs::write(stored.join("app.toml"), MANIFEST).unwrap();
-        symlink(&stored, root.path().join("tic-tac-toe")).unwrap();
-
-        let discovery = discover_apps(root.path());
-
-        assert_eq!(
-            discovery.errors.len(),
-            0,
-            "in-root symlink errors: {:?}",
-            discovery.errors
-        );
-        assert_eq!(discovery.apps.len(), 1);
-        assert_eq!(discovery.apps[0].manifest.app.id, "tic-tac-toe");
     }
 }
