@@ -942,7 +942,7 @@ async function handler(req: Request): Promise<Response> {
           ref: updated.objectRef,
           summary: (
             `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
-            (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+            (typeof body.note === "string" && body.note ? ` — ${body.note}` : "")
           ).slice(0, 500),
         });
       }
