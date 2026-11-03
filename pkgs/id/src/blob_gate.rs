@@ -24,7 +24,7 @@
 //! wires [`blob_events`] with those pieces whenever it has the node's event store open.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap},
     sync::{Arc, RwLock},
 };
 
@@ -110,10 +110,11 @@ pub fn decide(
     })
 }
 
-/// [`WorldAccess`] over the folded worlds.
+/// [`WorldAccess`] over a full group-log projection or the older per-world folds.
 ///
-/// Membership is the world's own authority, as [`Worlds::holds_here`] gives it: a member of its
-/// group, or a grant in its own chains. A crossing from another world does not count.
+/// For a full group-log projection, membership is queried by the exact group hash the world
+/// names, so another group's membership or grants cannot leak across worlds. A per-world fold
+/// uses [`Worlds::holds_here`], which likewise excludes crossings from another world.
 ///
 /// The reference index maps a blob hash to the worlds that name it. It is built by
 /// [`build_reference_index`] from the event store's document references; artifacts are not a
@@ -122,21 +123,51 @@ pub fn decide(
 /// unreferenced, which refuses it to every requester.
 #[derive(Debug)]
 pub struct FoldedWorlds {
-    worlds: Worlds,
+    membership: FoldedMembership,
     references: HashMap<Hash, BTreeSet<String>>,
+}
+
+#[derive(Debug)]
+enum FoldedMembership {
+    PerWorld(Worlds),
+    GroupProjection(crate::groups::Projection),
 }
 
 impl FoldedWorlds {
     /// Pairs the folded worlds with a reference index.
     pub const fn new(worlds: Worlds, references: HashMap<Hash, BTreeSet<String>>) -> Self {
-        Self { worlds, references }
+        Self {
+            membership: FoldedMembership::PerWorld(worlds),
+            references,
+        }
+    }
+
+    /// Pairs a full group-log projection with a reference index.
+    ///
+    /// Unlike `new`, the projection spans all groups in the group log and therefore preserves
+    /// its complete causal graph. Each membership request is limited to the group named by its
+    /// world key.
+    pub const fn from_group_projection(
+        projection: crate::groups::Projection,
+        references: HashMap<Hash, BTreeSet<String>>,
+    ) -> Self {
+        Self {
+            membership: FoldedMembership::GroupProjection(projection),
+            references,
+        }
     }
 }
 
 impl WorldAccess for FoldedWorlds {
     fn is_current_member(&self, world: &str, requester: &EndpointId) -> bool {
-        self.worlds
-            .holds_here(world, *requester.as_bytes(), Role::Pull)
+        match &self.membership {
+            FoldedMembership::PerWorld(worlds) => {
+                worlds.holds_here(world, *requester.as_bytes(), Role::Pull)
+            }
+            FoldedMembership::GroupProjection(projection) => {
+                group_projection_member(projection, world, requester)
+            }
+        }
     }
 
     fn worlds_referencing(&self, hash: &Hash) -> Vec<String> {
@@ -154,44 +185,52 @@ pub fn world_key(group: &p2panda_core::Hash) -> String {
     group.to_string()
 }
 
-/// Folds group-log events into the [`Worlds`] the gate reads membership from.
+/// Folds group-log events into one projection the gate reads membership from.
 ///
-/// Events are partitioned by world: a create event opens the world keyed by its own hash
-/// (a friendship's create names its derived group instead), and every other event joins
-/// the world its `group` names. An event that names no group and creates none belongs to
-/// no world and is skipped.
+/// The whole log is folded once, as one causal graph: `GroupLog::record` names the log's
+/// global heads as `after`, so an event's dependencies routinely live in another group, and
+/// partitioning the log by world hands `fold` dependencies it cannot resolve. Keeping the
+/// complete graph also preserves cross-group vetoes and removals, which per-world partitions
+/// would silently drop.
+///
+/// The one projection holds every group. [`group_projection_member`] reads membership for the
+/// group the requested world names, so another group's membership cannot leak authority.
 ///
 /// # Errors
 ///
-/// Any error [`Worlds::fold`] gives for one world.
+/// Any error [`crate::groups::fold`] gives for the log.
 pub fn fold_group_events(
     events: &[crate::groups::Event],
-) -> Result<Worlds, crate::groups::FoldError> {
-    let mut by_world: BTreeMap<String, Vec<crate::groups::Event>> = BTreeMap::new();
-    for event in events {
-        let key = match (&event.body, &event.group) {
-            (_, Some(group)) => world_key(group),
-            (crate::groups::Body::Create(_), None) => world_key(&event.id),
-            _ => continue,
-        };
-        by_world.entry(key).or_default().push(event.clone());
-    }
-    // Causality spans the whole log: `GroupLog::record` names the log's global heads as
-    // `after`, so an event's dependencies routinely live in another world's partition, and
-    // `fold` rejects a partition that names an absent dependency. Keep only the
-    // intra-partition edges: ordering inside a world is preserved, and the gate reads each
-    // world's own projection for membership, so a cross-world `after` edge carries no
-    // authority the fold would lose. Without this, any second group fails the whole gate
-    // closed and denies even authorized members every fetch.
-    for partition in by_world.values_mut() {
-        let present: BTreeSet<_> = partition.iter().map(|event| event.id).collect();
-        for event in partition.iter_mut() {
-            event
-                .after
-                .retain(|dependency| present.contains(dependency));
-        }
-    }
-    Worlds::fold(&by_world, BTreeMap::new())
+) -> Result<crate::groups::Projection, crate::groups::FoldError> {
+    crate::groups::fold(events)
+}
+
+/// Whether `requester` is a current `Pull` member of the group `world` names in the full log.
+///
+/// A world key is the hex of the group's create event hash (see [`world_key`]), so the global
+/// projection can be asked about exactly that group.
+#[must_use]
+fn group_projection_member(
+    projection: &crate::groups::Projection,
+    world: &str,
+    requester: &EndpointId,
+) -> bool {
+    let Ok(group_id) = crate::groups::log::hash_from_hex(world) else {
+        return false;
+    };
+    let actor = *requester.as_bytes();
+    projection.group(&group_id).is_some_and(|group| {
+        group.is_active()
+            && group
+                .members
+                .get(&actor)
+                .is_some_and(|role| *role >= Role::Pull)
+    }) || projection.grants_in_force().any(|grant| {
+        grant.group == group_id
+            && grant.target.is_none()
+            && grant.to == actor
+            && grant.scope >= Role::Pull
+    })
 }
 
 /// The child hashes a blob's bytes name when the blob is a `HashSeq`: the sequence is the
@@ -600,8 +639,8 @@ mod tests {
     }
 
     /// `GroupLog::record` names the log's global heads as `after`, so a group created after
-    /// another names the first group's events — which land in another partition. The fold
-    /// must tolerate that cross-world causality instead of failing the whole gate closed.
+    /// another names the first group's events. Fold the complete graph and still keep each
+    /// group's membership isolated.
     #[test]
     fn fold_group_events_tolerates_cross_world_causality() {
         fn create() -> Body {
@@ -655,12 +694,13 @@ mod tests {
                 }),
             },
         ];
-        let worlds = fold_group_events(&events).expect("cross-world causality must fold");
+        let projection = fold_group_events(&events).expect("cross-world causality must fold");
         let (key_a, key_b) = (world_key(&create_a), world_key(&create_b));
-        assert!(worlds.holds_here(&key_a, member_a, Role::Pull));
-        assert!(!worlds.holds_here(&key_a, member_b, Role::Pull));
-        assert!(worlds.holds_here(&key_b, member_b, Role::Pull));
-        assert!(!worlds.holds_here(&key_b, member_a, Role::Pull));
+        let folded = FoldedWorlds::from_group_projection(projection, HashMap::new());
+        assert!(folded.is_current_member(&key_a, &id(2)));
+        assert!(!folded.is_current_member(&key_a, &id(3)));
+        assert!(folded.is_current_member(&key_b, &id(3)));
+        assert!(!folded.is_current_member(&key_b, &id(2)));
     }
 
     #[test]
@@ -827,9 +867,9 @@ mod producer_tests {
     fn folded_group_log_gates_fetch_and_refresh_revokes_it() {
         let member = id(2);
         let (events, world) = group_events(member, false);
-        let worlds = fold_group_events(&events).expect("the log folds");
+        let projection = fold_group_events(&events).expect("the log folds");
         let index = build_reference_index([(blob(7), world.clone())], |_| Vec::new());
-        let gate = RefreshingWorlds::new(FoldedWorlds::new(worlds, index));
+        let gate = RefreshingWorlds::new(FoldedWorlds::from_group_projection(projection, index));
         let policy = BlobPolicy::default();
         assert!(
             decide(&gate, &policy, &member, &blob(7), Request::Fetch),
@@ -846,9 +886,9 @@ mod producer_tests {
 
         // The member is removed; a refreshed fold must revoke the fetch at once.
         let (events, world) = group_events(member, true);
-        let worlds = fold_group_events(&events).expect("the log folds");
+        let projection = fold_group_events(&events).expect("the log folds");
         let index = build_reference_index([(blob(7), world)], |_| Vec::new());
-        gate.refresh(FoldedWorlds::new(worlds, index));
+        gate.refresh(FoldedWorlds::from_group_projection(projection, index));
         assert!(
             !decide(&gate, &policy, &member, &blob(7), Request::Fetch),
             "a removed member loses fetch on the next request"
