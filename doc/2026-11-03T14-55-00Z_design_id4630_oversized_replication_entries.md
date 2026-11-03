@@ -235,10 +235,10 @@ as prose.
 
 ## Implementation follow-ups
 
-Filed from this note (see the issues linked below; #4630 stays open until the
-implementation merges):
+Filed from this note (linked on #4630; #4630 stays open until the implementation
+merges):
 
-1. **Primary — `id(world): bound every journal entry at write time by splitting the checkpoint`**
+1. **[#4966](https://github.com/developing-today/code/issues/4966) — primary — `id(world): bound every journal entry at write time by splitting the checkpoint`**
    — new part entry kinds, compaction emission, restore assembly, `JOURNAL_VERSION`
    6, part bound 192 KiB, plus the #4630 regression test (an oversized-Checkpoint
    journal image — program snapshot > 256 KiB — round-trips
@@ -246,7 +246,7 @@ implementation merges):
    lands on a matching cursor) and the existing suites
    (`cargo test -p id --lib world::replication`, the `world_store` replication feed
    tests, the journal-version/restore tests).
-2. **Residual — replication diagnostics and re-compaction for legacy oversized
+2. **[#4967](https://github.com/developing-today/code/issues/4967) — residual — replication diagnostics and re-compaction for legacy oversized
    checkpoints** — detect at feed build, re-compact when legal, otherwise return an
    actionable error naming the entry and the bound.
 
