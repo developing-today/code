@@ -559,7 +559,7 @@ const SHELL_POOLS: QuotaPool[] = [
     plan: "Go",
     state: "healthy",
     windows: [],
-    note: "Usage uninstrumented — no current read. API route verified; a manual dashboard read is required for a percentage.",
+    note: "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
   },
   {
     id: "deepseek:api",
@@ -622,6 +622,28 @@ export function poolFilteredByDisabled(poolId: string, disabledProviderIds: Read
 }
 
 /**
+ * Pools that stay on the board even when every door provider is
+ * disabled — #1114's filter yields to this list. The filter exists so
+ * the board never presents a pool nobody can burn; an exempt pool IS
+ * burned (through the route layer, not the disabled direct door) and
+ * its quota is measured through OpenCode's credential machinery, so
+ * hiding it would leave a live pool unreported. Drew, 2026-11-03:
+ * meta and opendesign are standard report members and must show real
+ * quotas gathered by asking OpenCode. Today the list holds only
+ * meta:high-usage: the deployed config disables the `meta` provider
+ * as a direct session door, which otherwise filtered the pool at
+ * assembly and left the board with no Meta row at all, while the
+ * gatherer's module read (serviceId meta:high-usage) had no pool to
+ * land on.
+ */
+export const FILTER_EXEMPT_POOL_IDS: ReadonlySet<string> = new Set(["meta:high-usage"]);
+
+/** True when the disabled-door filter must not drop this pool. */
+export function poolFilterExempt(poolId: string): boolean {
+  return FILTER_EXEMPT_POOL_IDS.has(poolId);
+}
+
+/**
  * Extract every pool's freshest dated read from the quota view text.
  *
  * #1114: a pool whose provider id is in the deployed opencode config's
@@ -644,7 +666,7 @@ export function extractQuotaPools(
 ): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
-    if (poolFilteredByDisabled(spec.id, disabledProviderIds)) {
+    if (!poolFilterExempt(spec.id) && poolFilteredByDisabled(spec.id, disabledProviderIds)) {
       onFiltered?.(spec.id, poolProviderIds(spec.id).join(","));
       continue;
     }
@@ -683,7 +705,7 @@ export function extractQuotaPools(
     pools.push(pool);
   }
   const shells = SHELL_POOLS.filter((p) => {
-    if (!poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
+    if (poolFilterExempt(p.id) || !poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
     onFiltered?.(p.id, poolProviderIds(p.id).join(","));
     return false;
   });

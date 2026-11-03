@@ -74,6 +74,10 @@ export function serviceIdFor(providerId: string): string {
       return "cline-pass:cline-pass";
     case "deepseek":
       return "deepseek:api";
+    case "meta":
+      return "meta:high-usage";
+    case "opendesign":
+      return "opendesign:go";
     default:
       return providerId;
   }
