@@ -42,3 +42,25 @@ func TestStartTaskAuditsMCPTaskCreationAndTerminal(t *testing.T) {
 		t.Errorf("MCP terminal record = %#v", terminal.Attrs)
 	}
 }
+
+func TestPrivateTaskStoreAuditsViaServerSeam(t *testing.T) {
+	records := make(chan logging.Record, 4)
+	server := New(nil, "mcpx", "test")
+	server.TaskAudit = func(record logging.Record) { records <- record }
+
+	task, rpcErr := server.startTask(context.Background(), "connection-9", 60_000, func(context.Context) (any, *rpcError) {
+		return map[string]any{"result": "ok"}, nil
+	})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	store := server.tasks()
+	if _, fault, err := store.Result(context.Background(), task.TaskID); err != nil || fault != nil {
+		t.Fatalf("Result() fault=%v err=%v", fault, err)
+	}
+	created, terminal := <-records, <-records
+	if created.Attrs[logging.KeyEvent] != "task.created" || terminal.Attrs[logging.KeyEvent] != "task.terminal" {
+		t.Errorf("private-store audit events = %q, %q; want task.created, task.terminal",
+			created.Attrs[logging.KeyEvent], terminal.Attrs[logging.KeyEvent])
+	}
+}

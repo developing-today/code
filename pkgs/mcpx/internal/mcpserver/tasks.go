@@ -45,6 +45,12 @@ func (s *Server) tasks() *taskStore {
 			s.taskStore.MaxPerRequestor = tm.TaskMaxPerRequestor
 			s.taskStore.PerMinute = tm.TaskWindowPerMinute
 			s.taskStore.CancelGrace = tm.TaskCancelGrace
+			// A private store still audits: without a seam the
+			// store's nil-Audit guard drops every record, and a
+			// standalone server's tasks leave no trace (#2500).
+			if s.TaskAudit != nil {
+				s.taskStore.Audit = s.TaskAudit
+			}
 		}
 	}
 	return s.taskStore
