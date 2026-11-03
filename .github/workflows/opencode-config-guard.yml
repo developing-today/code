@@ -14,6 +14,12 @@ on:
       - ".opencode/opencode.jsonc"
       - "bin/check-opencode-metered-providers.mjs"
       - "bin/check-opencode-metered-providers.test.mjs"
+      - "bin/check-opencode-route-rules.mjs"
+      - "bin/check-opencode-route-rules.test.mjs"
+      - "bin/provider-catalog-sync.mjs"
+      - "bin/provider-catalog-sync.test.mjs"
+      - "bin/snapshot-provider-catalogs.mjs"
+      - "bin/provider-catalog-snapshot.test.mjs"
       - ".github/workflows/opencode-config-guard.yml"
   merge_group:
   push:

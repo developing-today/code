@@ -140,7 +140,8 @@ export function inspectRouteRules(config) {
           addIssue(`${tier}: provider route "${parsed.provider}" has an invalid provider at ${trace}`);
           return [];
         }
-        if (provider === 'opencode-route' || isObject(providerRoutes?.[provider])) return [];
+        const concreteProvider = isObject(config.provider?.[provider]) || BUILTIN_PROVIDER_IDS.has(provider);
+        if (provider === 'opencode-route' || (!concreteProvider && isObject(providerRoutes?.[provider]))) return [];
         if (disabled.has(provider)) {
           return appendLeaf(provider, parsed.model, selectedEffort, tier, `${trace} -> ${parsed.provider}`);
         }

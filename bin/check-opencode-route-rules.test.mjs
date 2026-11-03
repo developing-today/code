@@ -87,6 +87,15 @@ test('provider-route expansion skips members whose tracked catalogs lack the tar
   assert.deepEqual(result.tiers.scout.coverage.map(({ provider }) => provider), ['good']);
 });
 
+test('provider-route members use concrete-provider precedence over same-named groups', () => {
+  const config = configWith({ scout: ['plan/model#low'] });
+  config.experimental.provider_routes.good = { providers: ['disabled'] };
+  config.experimental.provider_routes.plan.providers = ['good'];
+  const result = inspectRouteRules(config);
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.tiers.scout.coverage.map(({ provider }) => provider), ['good']);
+});
+
 test('a built-in concrete provider takes precedence over a same-named provider route', () => {
   const config = configWith({ scout: ['openai/model#low'] });
   config.experimental.provider_routes.openai = { providers: ['good'] };
