@@ -392,6 +392,26 @@ test("aiNeuronsDayAlertThreshold: env override with honest fallback (#2287)", ()
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "" }), 50000);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "abc" }), 50000);
   assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "-5" }), 50000);
+  // Zero is a typo, never a threshold: every spelling falls back to the
+  // default, so a single neuron can never trip the daily alert (#4381).
+  for (const zero of ["0", "-0", "0.0", " 0 ", "0e5"]) {
+    assert.equal(
+      aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: zero }),
+      50000,
+      `zero spelling ${JSON.stringify(zero)} must fall back to the default`,
+    );
+  }
+  // Spellings that denote a positive number are accepted as that number;
+  // pinned so the parse cannot drift silently either way.
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0x10" }), 16);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0.5" }), 0.5);
+  // The gate a zeroed threshold would have opened: at the threshold exactly
+  // nothing fires, one neuron above it does.
+  const oneDay = (neurons) => [
+    { dimensions: { date: "2026-11-01", modelId: "@cf/meta/llama" }, sum: { totalNeurons: neurons } },
+  ];
+  assert.deepEqual(aiNeuronsDayAlerts(oneDay(50000), 50000).alerts, []);
+  assert.equal(aiNeuronsDayAlerts(oneDay(50001), 50000).alerts.length, 1);
   // A custom threshold actually gates the alert through parseGraphqlUsage.
   const parsed = parseGraphqlUsage(ACCOUNT, { now: NOW, cycleStart: START, aiThreshold: 4000000 });
   assert.deepEqual(parsed.aiNeurons.alerts, []);
