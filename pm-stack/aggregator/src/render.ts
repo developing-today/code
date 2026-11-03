@@ -53,6 +53,7 @@ import {
 import { summarizeDns } from "./dns.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
+import type { NotificationRollup } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
@@ -7052,4 +7053,60 @@ document.getElementById("push-test").addEventListener("click", async () => {
 });
 </script>`;
   return layout("Alerts", body, provenance, "/alerts", script);
+}
+
+// --- Notifications page (#3319, notification measurement) -------------------
+
+export interface NotificationsPageView {
+  available: boolean;
+  rollup: NotificationRollup | null;
+}
+
+function pct(ratio: number | null): string {
+  return ratio === null ? "—" : `${Math.round(ratio * 100)}%`;
+}
+
+export function renderNotifications(view: NotificationsPageView, provenance: Provenance): string {
+  if (!view.available || !view.rollup) {
+    return layout(
+      "Notifications",
+      `<h1>Notifications</h1><p class="muted">The notification send ledger (Supabase <code>alerts.notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/notifications",
+    );
+  }
+  const rollup = view.rollup;
+  const proposals = rollup.classes.filter((c) => c.proposal);
+  const rows = rollup.classes
+    .map((c) => {
+      const cells = c.weeks
+        .map((w) => `<td>${w.sent} sent · ${w.acted} acted (${pct(w.ratio)})</td>`)
+        .join("");
+      return `<tr><td><strong>${esc(c.class)}</strong></td>${cells}<td>${c.sent} sent · ${c.acted} acted (${pct(c.ratio)})</td></tr>`;
+    })
+    .join("");
+  const weekHeads = rollup.classes[0]
+    ? rollup.classes[0].weeks.map((w) => `<th scope="col">week of ${esc(fmtDate(w.start))}</th>`).join("")
+    : "";
+  const proposalHtml = proposals.length
+    ? `<h2>Default-off proposals</h2>${proposals
+        .map(
+          (c) =>
+            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the Alerts page's subscription preferences.</span></div>`,
+        )
+        .join("")}`
+    : `<h2>Default-off proposals</h2><p class="muted">No class is under the 10% acted-on threshold over the rolling window.</p>`;
+  const body = `<h1>Notifications</h1>
+<p class="muted">Weekly sent-vs-acted-on roll-up over the alert throat's send ledger (<code>alerts.notification_sends</code>), rolling four weeks ending ${esc(fmtDate(rollup.asOf))}. Read-only: this page measures; it never changes a notification preference or default. Machine-first: <a href="/api/notifications.json">/api/notifications.json</a>.</p>
+<h2>How acted-on is counted (attribution)</h2>
+<p class="muted">A send counts as acted-on when the incident's Ack lands within 24 hours of the send: Ack is the exactly-once transition that stamps the send's <code>acted_on_at</code>, so it is the durable acted-on signal. Only ledger rows with outcome <code>sent</code> count as sends — suppressed (quiet hours / dedupe), gone, and error attempts never reached a device and never enter the denominator, and no send is inferred from delivered/escalated incident events. What this cannot attribute: reading a notification without acking, acting on the incident through another surface (GitHub, chat, a later dashboard visit that does not ack), and sends to subscriptions that were later removed — those count as sent-but-not-acted even when a human did see them. Test sends (class <code>test</code>) are real ledger rows and are reported as their own class.</p>
+${rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no usable send timestamp and were excluded from the roll-up.</p>` : ""}
+<h2>Per class, per week</h2>
+${
+  rollup.classes.length
+    ? `<div class="tblwrap"><table><caption>Sent vs acted-on by class and rolling week</caption><tr><th scope="col">class</th>${weekHeads}<th scope="col">rolling 4 weeks</th></tr>${rows}</table></div>`
+    : `<p class="muted">No sends in the rolling four-week window.</p>`
+}
+${proposalHtml}`;
+  return layout("Notifications", body, provenance, "/notifications");
 }
