@@ -4226,6 +4226,20 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      "workhorse-ordered": {
+        "name": "Workhorse ordered - DeepSeek Flash plan first, strictly ordered",
+        // 2026-11-03 (Drew): a dedicated ordered pool in FRONT of
+        // workhorse-primary inside the workhorse chain, seating ONLY
+        // deepseek-flash-plan#high. Workhorse traffic tries this pool
+        // first; the pool yields nothing ready when every Flash door is
+        // walled or demoted, and the chain falls through to
+        // workhorse-primary unchanged. deepseek-flash-plan KEEPS its
+        // workhorse-primary seat (weight 2) in the same edit - this is
+        // an addition, not a move.
+        "targets": ["opencode-route/deepseek-flash-plan#high"],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "workhorse-primary": {
         "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor) + DeepSeek Flash plan",
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
@@ -4386,7 +4400,11 @@
         // deepseek-flash#high, meta/muse-spark-1.3, and
         // antigravity-agy/gemini-4-argon#high) — see that route's
         // comment for the revert steps.
+        // 2026-11-03 (Drew): workhorse-ordered (deepseek-flash-plan
+        // only, ordered) joins the chain IN FRONT of workhorse-primary.
+        // deepseek-flash-plan is NOT removed from workhorse-primary.
         "targets": [
+          "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted"
         ],
@@ -4417,15 +4435,20 @@
         // 2026-11-02 (Drew): DeepSeek Flash plan leaves this pool -
         // it moves up into workhorse-primary at weight 2 (see that
         // route's note). Haiku and Spark keep their seats and weights.
+        // 2026-11-03 (Drew): deepseek-flash-plan#high rejoins this
+        // pool at weight 2 (it also keeps its workhorse-primary seat
+        // and its new workhorse-ordered seat - additions only).
         "targets": [
           "opencode-route/haiku-plan#high",
-          "opencode-route/spark-plan#xhigh"
+          "opencode-route/spark-plan#xhigh",
+          "opencode-route/deepseek-flash-plan#high"
         ],
         "selection": "weighted",
         "autonomy": "rules",
         "weights": {
           "opencode-route/haiku-plan": 2,
-          "opencode-route/spark-plan": 1
+          "opencode-route/spark-plan": 1,
+          "opencode-route/deepseek-flash-plan": 2
         }
       },
       "specialist": {
