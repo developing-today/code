@@ -541,16 +541,18 @@ grep -qF '/* example syntax: /* text */' "$tmp/block-comment-inner-delimiter.jso
 }
 
 # Case 7: a repair preserves the config's original permission bits.
+# (Input is the v1 `plugin` spelling — the canonical direction since
+# the v2 rename — so the run performs a real rewrite.)
 cat > "$tmp/mode.fixture" <<'EOF'
 {
-  "plugins": ["opencode-plugin-x"]
+  "plugin": ["opencode-plugin-x"]
 }
 EOF
 cp "$tmp/mode.fixture" "$tmp/mode.jsonc"
 chmod 0600 "$tmp/mode.jsonc"
 OPENCODE_CONFIG="$tmp/mode.jsonc" bash "$script" 2>/dev/null
 if [ "$?" -ne 0 ] || [ "$(stat -c '%a' "$tmp/mode.jsonc")" != "600" ] \
-  || [ "$(parsed_doc "$tmp/mode.jsonc")" != '{"plugin": ["opencode-plugin-x"]}' ]; then
+  || [ "$(parsed_doc "$tmp/mode.jsonc")" != '{"plugins": ["opencode-plugin-x"]}' ]; then
   echo "FAIL mode-preserved: repair must preserve 0600 and normalize plugins"
   failures=$((failures+1))
 else
@@ -561,7 +563,7 @@ fi
 # target and its contents unchanged.
 cat > "$tmp/symlink-target.jsonc" <<'EOF'
 {
-  "plugins": ["opencode-plugin-x"]
+  "plugin": ["opencode-plugin-x"]
 }
 EOF
 ln -s symlink-target.jsonc "$tmp/symlink.jsonc"
