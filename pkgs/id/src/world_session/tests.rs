@@ -2400,7 +2400,13 @@ mod tests {
             let svc = WorldService::new(world.clone(), None);
             let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
 
-            for token in ["", "deadbeef", "00000000000000000000000000000000"] {
+            let tokens = ["", "deadbeef", "00000000000000000000000000000000"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(std::iter::once(
+                    "x".repeat(crate::world_session::MAX_RESUME_TOKEN_BYTES + 1),
+                ));
+            for token in tokens {
                 let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
                 peer.say(serde_json::json!({
                     "type": "join",
@@ -2418,6 +2424,69 @@ mod tests {
                     "a full view issues a fresh token"
                 );
             }
+        }
+
+        /// A 3x1 program: its default view is 3x1, a 2x1 viewport fits it to 2x1.
+        struct WideScreen;
+
+        impl crate::world::WorldProgram for WideScreen {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some(
+                    r#"{"kind":"screen","version":1,"width":3,"height":1,"rows":["abc"]}"#
+                        .to_owned(),
+                ))
+            }
+        }
+
+        #[tokio::test]
+        async fn a_wrong_viewport_resume_token_falls_back_to_a_full_view() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(WideScreen),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world.issue("player", WorldScopes::GUEST).await.unwrap();
+
+            // The token is issued for the 2x1 viewport this session resized to.
+            let mut first = Peer::connect(svc.clone(), SessionConfig::default());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                }))
+                .await;
+            assert_eq!(first.next().await.unwrap()["type"], "snapshot");
+            assert!(next_view(&mut first).await["patch"].is_null());
+            first
+                .say(serde_json::json!({"type": "resize", "width": 2, "height": 1}))
+                .await;
+            let resized = next_view(&mut first).await;
+            assert_eq!(screen_of(&resized).width, 2);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+
+            // Reconnecting without that viewport asks for the default 3x1
+            // view: the retained baseline is the wrong shape, so it is a miss.
+            let mut resumed = Peer::connect(svc, SessionConfig::default());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
+            let view = next_view(&mut resumed).await;
+            assert!(
+                view["patch"].is_null(),
+                "a wrong-viewport token gets a full view: {view}"
+            );
+            assert_eq!(screen_of(&view).width, 3);
+            assert!(
+                view["resume_token"].is_string(),
+                "the full view issues a token for the new viewport"
+            );
         }
 
         #[tokio::test]

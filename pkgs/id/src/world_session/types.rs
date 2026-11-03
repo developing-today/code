@@ -27,6 +27,10 @@ pub const MAX_WORLD_MODULE_CHUNK_BYTES: usize = 6 * 1024;
 /// Longest accepted capability string, in bytes.
 pub(crate) const MAX_CAPABILITY_BYTES: usize = 256;
 
+/// Longest accepted resume token, in bytes. A longer token is not an error:
+/// it simply cannot name a retained baseline, so the client gets a full view.
+pub(crate) const MAX_RESUME_TOKEN_BYTES: usize = 64;
+
 /// Longest accepted admin secret, in bytes.
 pub(crate) const MAX_ADMIN_TOKEN_BYTES: usize = 256;
 /// Sent with a capability ceiling change: unlike a profile, it takes effect now.

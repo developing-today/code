@@ -57,7 +57,7 @@ mod types;
 
 pub(crate) use types::{
     CAPS_CEILING_NOTICE, ClientFrame, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
-    MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
+    MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -2159,8 +2159,13 @@ async fn joined<I: SessionIo>(
     let mut view_state = ViewRevisionState::default();
     view_state.participant = participant_id;
     // The token is a cursor for a later view send, never a bypass: the join
-    // capability above already authorized this session.
-    view_state.pending_resume = screen_patches.then_some(resume_token).flatten();
+    // capability above already authorized this session. An oversized token
+    // cannot name a retained baseline, so it is dropped here and the client
+    // gets a full view.
+    view_state.pending_resume = screen_patches
+        .then_some(resume_token)
+        .flatten()
+        .filter(|token| token.len() <= MAX_RESUME_TOKEN_BYTES);
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {
