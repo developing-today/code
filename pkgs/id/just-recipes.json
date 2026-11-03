@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/4856/root.just",
+      "source": "/home/user/git/fleet/6592/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -2003,6 +2003,19 @@
       "namepath": "outdated",
       "shebang": false
     },
+    "prod-lines-check": {
+      "attributes": [{ "group": "lint" }],
+      "body": [["bash scripts/prod-lines-check.sh && bash scripts/prod-lines-check-test.sh"]],
+      "dependencies": [],
+      "doc": "the companion self-test proves the guard fails, not just that it passes",
+      "name": "prod-lines-check",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "prod-lines-check",
+      "shebang": false
+    },
     "release": {
       "attributes": [{ "group": "build" }],
       "body": [["./scripts/build.sh web release"]],
@@ -2103,23 +2116,7 @@
     },
     "roc-test": {
       "attributes": [{ "group": "test" }],
-      "body": [
-        ["#!/usr/bin/env bash"],
-        ["set -euo pipefail"],
-        ["if ! command -v roc >/dev/null 2>&1; then"],
-        ["    echo \"roc-test: the pinned Roc compiler (nix/roc.nix) is not on PATH.\" >&2"],
-        [
-          "    echo \"roc-test: run inside 'nix develop' or the roc-test flake check — refusing to skip silently (#813).\" >&2"
-        ],
-        ["    exit 1"],
-        ["fi"],
-        ["echo \"roc-test: $(roc version)\""],
-        ["for module in RocJson Screen Key; do"],
-        ["    echo \"=== roc test examples/roc-world/${module}.roc ===\""],
-        ["    roc test \"examples/roc-world/${module}.roc\""],
-        ["done"],
-        ["echo \"✓ Roc library expectations passed (RocJson, Screen, Key)\""]
-      ],
+      "body": [["bash scripts/roc-test.sh"]],
       "dependencies": [],
       "doc": "Run the Roc library expect() tests (RocJson, Screen, Key) with the pinned Roc compiler (#813)",
       "name": "roc-test",
@@ -2128,7 +2125,7 @@
       "private": false,
       "quiet": false,
       "namepath": "roc-test",
-      "shebang": true
+      "shebang": false
     },
     "run": {
       "attributes": [{ "group": "run" }],
@@ -3329,7 +3326,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/4856/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/6592/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }
