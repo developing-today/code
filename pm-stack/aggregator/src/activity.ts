@@ -591,6 +591,38 @@ export async function syncWatchdogGaps(
   }
 }
 
+/** Serialize whole watchdog gap-sync passes in observation order
+ *  (Codex P2, PR #5141 round 5). A pass is a multi-step
+ *  reconciliation — record a gap per current breach, then resolve
+ *  the open gaps whose breach is gone — and the store's write chain
+ *  serializes only the individual persists, not the pass. Two
+ *  passes started fire-and-forget from overlapping derivations can
+ *  interleave: an older pass that observed breaches A and B pauses
+ *  while persisting A, a newer healthy pass resolves A and
+ *  finishes, and the older pass then creates B — an outage the
+ *  newest observation says is over stays reported as open until
+ *  some later derivation repairs it. Chaining the passes whole, in
+ *  the order they were enqueued, makes the newest observation the
+ *  last word. A failed pass does not wedge the chain. */
+export function createWatchdogGapSyncQueue(): (
+  store: IngestionStore,
+  items: readonly TierItem[],
+  now?: Date,
+) => Promise<void> {
+  let chain: Promise<void> = Promise.resolve();
+  return (store, items, now) => {
+    const run = chain.then(
+      () => syncWatchdogGaps(store, items, now),
+      () => syncWatchdogGaps(store, items, now),
+    );
+    chain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  };
+}
+
 // -- rendering ---------------------------------------------------------------
 
 function esc(s: unknown): string {

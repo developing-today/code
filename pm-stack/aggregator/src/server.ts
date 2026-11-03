@@ -25,7 +25,7 @@ import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
   ingestActivity,
-  syncWatchdogGaps,
+  createWatchdogGapSyncQueue,
   watchdogDeliveries,
   activityCoverageHtml,
   gapsHtml,
@@ -500,6 +500,12 @@ async function searchContext(query: string) {
   return { query, results: searchWork(board, rows, items, query), items };
 }
 
+// #3321: watchdog gap-sync passes run whole and in observation
+// order through this queue (Codex P2, PR #5141 round 5) — see
+// createWatchdogGapSyncQueue in activity.ts for why the bare
+// fire-and-forget sync interleaved.
+const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
+
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
 // current diagnoses (feed age + probes via the health assembly —
 // its probe cache keeps this cheap — plus the orchestration
@@ -535,7 +541,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   // breach clears), so one continuous outage is one delivery.
   const stableItems = watchdogEpisodes.stabilize(items);
   void recordActivity(watchdogDeliveries(stableItems));
-  void syncWatchdogGaps(activityStore, stableItems).catch((err) => {
+  void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
     console.error(
       `[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`,
     );

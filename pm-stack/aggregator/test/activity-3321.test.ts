@@ -12,6 +12,7 @@ import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
   activityCoverageHtml,
+  createWatchdogGapSyncQueue,
   gapsHtml,
   ingestActivity,
   kaneoChangeDeliveries,
@@ -298,6 +299,44 @@ describe("ingestion store (#3321)", () => {
     gaps = await store.gaps();
     expect(gaps[0]?.status).toBe("backfilled");
     expect(gaps[0]?.resolvedAt).toBeTruthy();
+  });
+
+  test("watchdog gap sync queue: an older overlapping pass cannot resurrect a gap the newest pass resolved (PR #5141 codex round 5)", async () => {
+    const { store } = tmpStores();
+    const itemA = watchdogItem("watchdog:a", 600_000);
+    const itemB = watchdogItem("watchdog:b", 600_000);
+    // Gate the older pass mid-reconciliation: its second recordGap
+    // waits until the test releases it. Without the queue, the
+    // newer healthy pass would run inside that window — resolving
+    // A and finishing — and the older pass would then create B,
+    // leaving an outage the newest observation says is over still
+    // reported open.
+    let releaseB: () => void = () => {};
+    const gateB = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    let recordCalls = 0;
+    const realRecord = store.recordGap.bind(store);
+    store.recordGap = async (source: string, from: string, to: string) => {
+      recordCalls += 1;
+      if (recordCalls === 2) await gateB;
+      return realRecord(source, from, to);
+    };
+    const enqueue = createWatchdogGapSyncQueue();
+    const older = enqueue(store, [itemA, itemB], new Date());
+    const newer = enqueue(store, [], new Date());
+    // Wait until the older pass is provably parked on B's record,
+    // then release it; the newer pass may only run after it.
+    for (let i = 0; i < 200 && recordCalls < 2; i += 1) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(recordCalls).toBe(2);
+    releaseB();
+    await Promise.all([older, newer]);
+    const gaps = await store.gaps();
+    expect(gaps.map((g) => g.source).sort()).toEqual(["watchdog:a", "watchdog:b"]);
+    expect(gaps.filter((g) => g.status === "open")).toHaveLength(0);
+    expect(gaps.every((g) => g.status === "backfilled")).toBe(true);
   });
 
   test("coverage documents github as unsupported pending #2072", () => {
