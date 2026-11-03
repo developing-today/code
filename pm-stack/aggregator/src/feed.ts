@@ -81,6 +81,9 @@ export interface FleetFeed {
   /** Rows loadFeed's charges sanitization dropped (#2445), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   chargesDropped?: number;
+  /** SaaS service rows loadFeed's sanitization dropped (#2451), set
+   * only when drops occurred; absent on raw parsed feeds and clean loads. */
+  saasDropped?: number;
   /** PAYG lines loadFeed's sanitization dropped (#2450), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   paygDropped?: number;
@@ -582,6 +585,102 @@ export function isChargeRow(v: unknown): v is ChargeRow {
   );
 }
 
+const SAAS_GROUPS = ["database", "object-storage", "compute", "dev-platform", "domains", "account-tooling"];
+const USAGE_UNITS = [
+  "pct",
+  "usd",
+  "cny",
+  "count",
+  "gb",
+  "tokens",
+  "minutes",
+  "hours",
+  "ms",
+  "rows",
+  "ops",
+  "neurons",
+  "other",
+];
+const USAGE_SOURCE_CLASSES = ["api", "console", "manual", "estimate", "invoice"];
+
+function isUsageMetric(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.id === "string" &&
+    typeof v.label === "string" &&
+    (v.used === null || isFiniteNumber(v.used)) &&
+    (v.limit === null || isFiniteNumber(v.limit)) &&
+    typeof v.unit === "string" &&
+    USAGE_UNITS.includes(v.unit) &&
+    (v.percent === undefined || isFiniteNumber(v.percent)) &&
+    (v.lowerBound === undefined || typeof v.lowerBound === "boolean") &&
+    typeof v.highlight === "boolean" &&
+    (v.note === undefined || typeof v.note === "string")
+  );
+}
+
+function isPaygEstimate(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    isFiniteNumber(v.low) &&
+    isFiniteNumber(v.high) &&
+    typeof v.period === "string" &&
+    (v.note === undefined || typeof v.note === "string")
+  );
+}
+
+function isSaasService(v: unknown): v is SaasService {
+  if (!isRecord(v)) return false;
+  const sources = v.sources;
+  const sourcesValid =
+    sources === undefined ||
+    (isRecord(sources) &&
+      typeof sources.quotaViewSection === "string" &&
+      (typeof sources.trackerRow === "string" || sources.trackerRow === null) &&
+      typeof sources.baselineDoc === "string");
+  return (
+    typeof v.id === "string" &&
+    typeof v.name === "string" &&
+    typeof v.group === "string" &&
+    SAAS_GROUPS.includes(v.group) &&
+    typeof v.plan === "string" &&
+    (v.status === "active" || v.status === "candidate" || v.status === "no-account" || v.status === "unknown") &&
+    Array.isArray(v.metrics) &&
+    v.metrics.every(isUsageMetric) &&
+    (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
+    (v.paygNote === undefined || typeof v.paygNote === "string") &&
+    (v.billedUsd === undefined || v.billedUsd === null || isFiniteNumber(v.billedUsd)) &&
+    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    typeof v.sourceClass === "string" &&
+    USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
+    typeof v.sourceNote === "string" &&
+    sourcesValid &&
+    (v.nextDate === undefined || typeof v.nextDate === "string" || v.nextDate === null) &&
+    isFiniteNumber(v.cadenceDays) &&
+    isStringArray(v.conflicts) &&
+    Array.isArray(v.reads) &&
+    v.reads.every((read) => isRecord(read) && typeof read.at === "string" && typeof read.text === "string") &&
+    (v.usageNote === undefined || typeof v.usageNote === "string")
+  );
+}
+
+export interface SaasSanitization {
+  /** Renderer-safe services, or undefined when the optional section is absent/non-array. */
+  rows?: SaasService[];
+  /** Invalid array elements, or one when a present section is not an array. */
+  dropped: number;
+}
+
+/** Drop malformed service rows at the feed boundary (#2451). One bad
+ * service must not take down usage(); non-arrays are treated as absent
+ * so they cannot silently choose the feed usage branch. */
+export function sanitizeSaasServices(v: unknown): SaasSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isSaasService);
+  return { rows, dropped: v.length - rows.length };
+}
+
 /** The choices block renderQuota dereferences (hasHeadroom et al.). */
 function isQuotaChoices(v: unknown): boolean {
   if (!isRecord(v)) return false;
@@ -855,6 +954,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // attached to the feed so they are visible, not swallowed.
     const san = sanitizeQuotaView(parsed.quota);
     const meta = sanitizeFeedMetadata(parsed.meta);
+    const saas = sanitizeSaasServices(parsed.saas);
     // Same drop-and-count treatment for chargesAttention elements
     // (#2439): the gate has already pinned the section to array-or-
     // absent, so arrayOf cannot return null here; malformed entries
@@ -891,6 +991,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...feed,
       meta,
       quota: san.view,
+      saas: saas.rows,
+      saasDropped: saas.dropped || undefined,
       quotaDropped: {
         pools: san.droppedPools,
         credentials: san.droppedCredentials,

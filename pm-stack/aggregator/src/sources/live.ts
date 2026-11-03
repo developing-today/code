@@ -1098,6 +1098,10 @@ export function liveSource(
       const chargesDroppedNote = feed?.chargesDropped
         ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
         : "";
+      const saasDroppedNote = feed?.saasDropped
+        ? ` · sanitized at load: dropped ${feed.saasDropped} malformed SaaS service row(s) (#2451)`
+        : "";
+      const feedSanitizationNotes = saasDroppedNote + chargesDroppedNote;
       const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
         kind: "unmatched-charge",
         label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -1107,7 +1111,7 @@ export function liveSource(
       }));
       if (feed?.saas && feed.saas.length) {
         provenance.usage =
-          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + chargesDroppedNote;
+          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + feedSanitizationNotes;
         // The Cloudflare live export overlays tracker prose on BOTH
         // service sources — a healthy fleet feed must not keep stale
         // prose values when a fresh export exists (Codex, PR #2228).
@@ -1155,7 +1159,7 @@ export function liveSource(
         partial.services = await tursoOverlay(cfg, partial.services);
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
-          chargesDroppedNote;
+          feedSanitizationNotes;
         return {
           ...partial,
           chargesNote: partial.charges.length
@@ -1166,7 +1170,7 @@ export function liveSource(
           history,
         };
       } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + chargesDroppedNote;
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + feedSanitizationNotes;
         const fallback = await fix.usage();
         // #3124: even the fixtures fallback keeps the feed's charge
         // evidence when a feed exists — fixtures stand in for the
