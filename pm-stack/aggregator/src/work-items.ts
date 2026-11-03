@@ -173,6 +173,21 @@ export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
           }
           existing.horizon = task.horizon;
           existing.horizonWhy = task.horizonWhy;
+        } else if (
+          existing.horizon !== undefined &&
+          (HORIZON_RANK[task.horizon] ?? 4) < (HORIZON_RANK[existing.horizon] ?? 4)
+        ) {
+          // A later observation may schedule the same task sooner
+          // (e.g. horizon "today" under a second goal). Canonical
+          // linkage keeps the first goal, but must not discard the
+          // earlier scheduling: consumers filter on horizon (Today
+          // keeps only "today"), so keep the most urgent horizon any
+          // observation claims. (Codex P2 on PR #4674.)
+          existing.horizon = task.horizon;
+          existing.horizonWhy = task.horizonWhy;
+          if (!existing.tier && existing.linedUpStatus) {
+            existing.rank = linedUpRank({ ...task, status: existing.linedUpStatus });
+          }
         }
         continue;
       }
@@ -216,6 +231,12 @@ export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
         match.rank = Math.min(match.rank, TIER_RANK_BASE[tier] + index);
         match.blockers = unionBlockers(match.blockers, asBlockers(t.blockedBy));
         if (!match.ref && t.ref) match.ref = t.ref;
+        // Register the publisher's own id (and ref) against the merged
+        // item: a later tier item that names this work only by that id
+        // must merge into the same canonical item, not mint a second
+        // one. (Codex P2 on PR #4674.)
+        if (t.id) byKey.set(t.id, match);
+        if (t.ref) byKey.set(t.ref, match);
         return;
       }
       const item: WorkItem = {

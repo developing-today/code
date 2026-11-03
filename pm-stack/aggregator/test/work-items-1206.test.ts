@@ -220,6 +220,47 @@ describe("canonical work-item projection (#1206)", () => {
     expect(board.some((b) => b.links.some((l) => l.ref === REF))).toBe(true);
   });
 
+  test("registers a merged tier item's publisher id so a later tier item with that id merges too", () => {
+    const section = fixtureSection();
+    const base = section.tiers!.needsDrew![0]!;
+    section.tiers = {
+      needsDrew: [{ ...base, id: "session-S", ref: REF }],
+      needsOrchestrator: [{ ...base, id: "session-S", ref: undefined, title: "Ship the thing (orchestrator view)", reason: "orchestrator also sees it" }],
+    };
+
+    const items = assembleWorkItems(section);
+    // Goal A's two lined-up items only: the orchestrator tier item must
+    // merge into the canonical REF item via the registered publisher
+    // id, not mint a second item carrying the same published identity.
+    expect(items).toHaveLength(2);
+    const merged = workItemForRef(items, REF)!;
+    expect(merged.tier).toBe("needs-drew");
+    expect(items.some((item) => item.id === "session-S")).toBe(false);
+  });
+
+  test("keeps Today eligibility when a later goal lines the same task up for today", () => {
+    const section = fixtureSection();
+    section.goals = [
+      {
+        goalId: "goal-a", goal: "Goal A", momentum: "moving", summary: "one goal",
+        linedUp: [{ title: "Ship the thing", ref: REF, status: "queued", horizon: "tomorrow", horizonWhy: "planned tomorrow" }],
+        progressedSinceLastRun: [], stalled: [], gaps: [],
+      },
+      {
+        goalId: "goal-b", goal: "Goal B", momentum: "moving", summary: "another goal",
+        linedUp: [{ title: "Ship the thing", ref: REF, status: "queued", horizon: "today", horizonWhy: "pulled forward to today" }],
+        progressedSinceLastRun: [], stalled: [], gaps: [],
+      },
+    ];
+    section.tiers = { needsDrew: [], needsOrchestrator: [] };
+
+    const item = workItemForRef(assembleWorkItems(section), REF)!;
+    expect(item.horizon).toBe("today");
+    // Today must list the item: one goal still schedules it for today.
+    const today = todayFromSection(section);
+    expect(today.objectives.some((o) => o.ref === REF)).toBe(true);
+  });
+
   test("does not throw on a tier item with a non-string title", () => {
     const section = fixtureSection();
     const bad = section.tiers!.needsOrchestrator![0]! as unknown as { title: unknown; ref?: unknown };
