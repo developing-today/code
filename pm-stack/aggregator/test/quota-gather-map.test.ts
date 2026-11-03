@@ -64,7 +64,7 @@ describe("normalizeResetAt", () => {
 describe("entryFromResult", () => {
   test("maps windows onto the quota-current shape", () => {
     const entry = entryFromResult(OK_RESULT, "2026-10-27T05:00:00.000Z");
-    expect(entry.serviceId).toBe("cline-pass:cline-pass");
+    expect(entry.serviceId).toBe("cline-pass");
     expect(entry.state).toBe("ok");
     expect(entry.measuredAt).toBe(new Date(1793075143879).toISOString());
     const weekly = entry.windows.find((w) => w.name === "weekly");
@@ -258,7 +258,7 @@ describe("recordsFromEntries", () => {
     const first = recordsFromEntries([entry], new Map(), "quota-gatherer");
     expect(first.records).toHaveLength(1);
     expect(first.records[0]).toMatchObject({
-      serviceId: "cline-pass:cline-pass",
+      serviceId: "cline-pass",
       metricId: "weekly",
       value: 29,
       unit: "pct",
@@ -320,7 +320,7 @@ describe("recordsFromEntries — CNY balances (#1052)", () => {
     const first = recordsFromEntries([entry], new Map(), "quota-gatherer");
     expect(first.records).toHaveLength(1);
     expect(first.records[0]).toMatchObject({
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value: 44.63,
       unit: "cny",
@@ -456,7 +456,7 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
   };
   test("success document maps windows + dollar labels", () => {
     const entry = entryFromFileExport(okDoc, { fileMtimeIso: "2026-10-27T05:30:05.000Z", stale: false });
-    expect(entry.serviceId).toBe("meta:high-usage");
+    expect(entry.serviceId).toBe("meta");
     expect(entry.state).toBe("ok");
     expect(entry.source).toBe("file-export/meta-laptop");
     expect(entry.planLabel).toBe("PAID");
@@ -530,10 +530,10 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
 
 describe("serviceIdFor", () => {
   test("known pools map to hub ids; others pass through", () => {
-    expect(serviceIdFor("codex")).toBe("openai:codex");
-    expect(serviceIdFor("deepseek")).toBe("deepseek:api");
-    expect(serviceIdFor("meta")).toBe("meta:high-usage");
-    expect(serviceIdFor("opendesign")).toBe("opendesign:go");
+    expect(serviceIdFor("codex")).toBe("openai");
+    expect(serviceIdFor("deepseek")).toBe("deepseek");
+    expect(serviceIdFor("meta")).toBe("meta");
+    expect(serviceIdFor("opendesign")).toBe("opendesign");
     expect(serviceIdFor("openai.alternate")).toBe("openai.alternate");
   });
 });
@@ -714,10 +714,10 @@ describe("pool splits (#1331)", () => {
     // ...and the pool-level series continue in the snapshot records.
     const { records } = recordsFromEntries(split, new Map(), "quota-gatherer");
     expect(records.map((r) => `${r.serviceId}|${r.metricId}`).sort()).toEqual([
-      "opencode-go:drewrypope|5h",
-      "opencode-go:drewrypope|monthly",
-      "opencode-go:popesdrew|5h",
-      "opencode-go:popesdrew|monthly",
+      "opencode-go.drewrypope|5h",
+      "opencode-go.drewrypope|monthly",
+      "opencode-go.popesdrew|5h",
+      "opencode-go.popesdrew|monthly",
       "opencode-go|5h",
       "opencode-go|monthly",
     ]);

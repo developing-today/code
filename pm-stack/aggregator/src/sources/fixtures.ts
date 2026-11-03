@@ -357,7 +357,7 @@ export const FIXTURE_QUOTA: QuotaView = {
       activeSessions: [],
     },
     {
-      id: "opencode-go:drewrypope",
+      id: "opencode-go.drewrypope",
       provider: "OpenCode Go",
       plan: "drewrypope",
       state: "near",
@@ -403,7 +403,7 @@ export const FIXTURE_QUOTA: QuotaView = {
       ],
     },
     {
-      id: "deepseek:api",
+      id: "deepseek",
       provider: "DeepSeek",
       plan: "API balance",
       state: "healthy",
@@ -439,7 +439,7 @@ export const FIXTURE_QUOTA: QuotaView = {
   choices: {
     hasHeadroom: ["antigravity:claude", "antigravity:gemini", "meta:model-api", "openai:chatgpt"],
     burnBeforeReset: ["antigravity:gemini", "antigravity:claude"],
-    doNotStart: ["anthropic:claude-subscription", "opencode-go:drewrypope"],
+    doNotStart: ["anthropic:claude-subscription", "opencode-go.drewrypope"],
   },
 };
 
