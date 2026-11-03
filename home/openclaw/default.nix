@@ -97,7 +97,6 @@ in
         "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "commandcode-proxy.service"
-        "design-code-proxy.service"
         "agy-proxy.service"
         "codex-proxy.service"
         "mcpx.service"
@@ -277,7 +276,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
+          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
