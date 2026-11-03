@@ -791,6 +791,7 @@ mod tests {
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

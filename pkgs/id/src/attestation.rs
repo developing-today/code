@@ -179,6 +179,7 @@ pub fn sign_genesis(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         },
     )?)
 }
@@ -210,6 +211,7 @@ pub fn sign_claim(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         },
     )?)
 }
