@@ -86,6 +86,7 @@ import { fileURLToPath } from "node:url";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
+  entriesWithPoolSplits,
   entryFromResult,
   entryFromFileExport,
   entryFromTurso,
@@ -539,7 +540,11 @@ async function main(): Promise<number> {
       }
     }
   }
-  const entries = runs.flatMap((r) => r.entries);
+  // #1331: file the split pool rows (Go per-workspace, Antigravity
+  // per-pool) alongside the combined rows, so the overlay maps them
+  // onto the four split hub pools and the snapshot writer continues
+  // the pool-level series.
+  const entries = entriesWithPoolSplits(runs.flatMap((r) => r.entries));
 
   const perProvider: QuotaGatherHeartbeat["perProvider"] = {};
   for (const run of runs) {
