@@ -321,8 +321,54 @@ export function validateNewSubscription(
 
 // --- The store (Supabase `alerts` schema) ------------------------------------
 
+interface PendingIncidentCursor {
+  timestamp: string;
+  id: string;
+}
+
+type PendingIncidentOrder = "first_seen_at" | "delivered_at";
+
 export class AlertsStore {
+  // Each queue advances independently, even when a send fails and leaves
+  // the incident eligible. The keyset cursor lives for this store's lifetime.
+  private readonly deliveryCursor: { last: PendingIncidentCursor | null } = { last: null };
+  private readonly escalationCursor: { last: PendingIncidentCursor | null } = { last: null };
+
   constructor(private readonly db: SupabaseClient) {}
+
+  private async pendingBatch(
+    eligibility: string,
+    orderColumn: PendingIncidentOrder,
+    cursor: { last: PendingIncidentCursor | null },
+    limit: number,
+  ): Promise<Incident[]> {
+    const previous = cursor.last;
+    const page = (wrap: boolean, pageLimit: number) => {
+      const cursorFilter = previous
+        ? `and (${orderColumn}, id) ${wrap ? "<=" : ">"} (${sqlStr(previous.timestamp)}, ${sqlStr(previous.id)})`
+        : "";
+      return this.db.query<Incident>(
+        `select * from alerts.incidents
+         where ${eligibility} ${cursorFilter}
+         order by ${orderColumn}, id limit ${sqlInt(pageLimit)}`,
+      );
+    };
+
+    const rows = await page(false, limit);
+    let advanceTo = rows.at(-1);
+    if (previous && rows.length < limit) {
+      const wrapped = await page(true, limit - rows.length);
+      rows.push(...wrapped);
+      if (wrapped.length) advanceTo = wrapped.at(-1);
+    }
+
+    if (advanceTo) {
+      const timestamp = advanceTo[orderColumn];
+      if (timestamp === null) throw new Error(`pending incident has no ${orderColumn}`);
+      cursor.last = { timestamp, id: advanceTo.id };
+    }
+    return rows;
+  }
 
   private async addEvent(incidentId: string, kind: IncidentEvent["kind"], detail?: Record<string, unknown>) {
     await this.db.query(
@@ -459,20 +505,22 @@ export class AlertsStore {
   }
 
   async pendingDeliveries(limit = 20): Promise<Incident[]> {
-    return this.db.query<Incident>(
-      `select * from alerts.incidents
-       where status = 'open' and severity = 'critical' and delivered_at is null
-       order by first_seen_at limit ${sqlInt(limit)}`,
+    return this.pendingBatch(
+      "status = 'open' and severity = 'critical' and delivered_at is null",
+      "first_seen_at",
+      this.deliveryCursor,
+      limit,
     );
   }
 
   async pendingEscalations(ackWindowMin: number, limit = 20): Promise<Incident[]> {
-    return this.db.query<Incident>(
-      `select * from alerts.incidents
-       where status = 'open' and severity = 'critical'
-         and delivered_at is not null and escalated_at is null
-         and delivered_at < now() - make_interval(mins => ${sqlInt(ackWindowMin)})
-       order by delivered_at limit ${sqlInt(limit)}`,
+    return this.pendingBatch(
+      `status = 'open' and severity = 'critical'
+       and delivered_at is not null and escalated_at is null
+       and delivered_at < now() - make_interval(mins => ${sqlInt(ackWindowMin)})`,
+      "delivered_at",
+      this.escalationCursor,
+      limit,
     );
   }
 

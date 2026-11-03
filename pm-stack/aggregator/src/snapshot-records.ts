@@ -129,7 +129,7 @@ export function recordsFromPaygLines(lines: PaygLine[], observedBy: string): Sna
     if (line.accruedUsd != null) {
       out.push({
         ts,
-        serviceId: line.id === "meta-payg" ? "meta:high-usage" : line.id,
+        serviceId: line.id === "meta-payg" ? "meta" : line.id,
         metricId: "payg-accrued",
         value: line.accruedUsd,
         unit: "usd",
@@ -183,7 +183,7 @@ export function recordsFromDeepseekBalance(quotaViewText: string, observedBy: st
   return [
     {
       ts: dayTs(date),
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value,
       unit: "cny",
@@ -308,7 +308,7 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     if (!metricId) return;
     out.push({
       ts,
-      serviceId: "openai:codex",
+      serviceId: "openai.main",
       metricId,
       value: win.used_percent,
       unit: "pct",

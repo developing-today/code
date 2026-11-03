@@ -9,7 +9,10 @@
 // orchestration (enqueueDispatchTask) with a stubbed queue — no network,
 // no Supabase.
 import { describe, expect, test } from "bun:test";
-import { enqueueDispatchTask, isPreExistingTaskRow } from "../src/server.ts";
+// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// (#5120), so pin a fixture project before the dynamic import below.
+process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
+const { enqueueDispatchTask, isPreExistingTaskRow } = await import("../src/server.ts");
 import type { TaskRow } from "../src/queue.ts";
 
 // BEFORE/AFTER stand in for the two skew directions: a DB-behind fresh

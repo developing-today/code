@@ -106,6 +106,23 @@ describe("model parsing", () => {
     });
   });
 
+  test("string form trims whitespace around each segment like the object form", () => {
+    const clean = { providerID: "anthropic", id: "claude-sonnet" };
+    expect(parseModel("anthropic / claude-sonnet")).toEqual(clean);
+    expect(parseModel("anthropic/ claude-sonnet")).toEqual(clean);
+    expect(parseModel("anthropic /claude-sonnet")).toEqual(clean);
+    expect(parseModel("  anthropic / claude-sonnet  ")).toEqual(clean);
+    expect(parseModel({ providerID: " anthropic ", id: " claude-sonnet " })).toEqual(clean);
+    // Trimming must not eat slashes that belong to the model id.
+    expect(parseModel("meta / claude/sonnet")).toEqual({ providerID: "meta", id: "claude/sonnet" });
+  });
+
+  test("string form rejects a segment that is empty after trimming", () => {
+    expect(() => parseModel("anthropic / ")).toThrow(ValidationError);
+    expect(() => parseModel(" / claude-sonnet")).toThrow(ValidationError);
+    expect(() => parseModel("   /   ")).toThrow(ValidationError);
+  });
+
   test("malformed models are rejected", () => {
     expect(() => parseModel("noslash")).toThrow(ValidationError);
     expect(() => parseModel("/model")).toThrow(ValidationError);
