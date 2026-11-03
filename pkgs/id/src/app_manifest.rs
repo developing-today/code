@@ -13,7 +13,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 /// The strict, version-one description of one unpacked app folder.
@@ -171,9 +171,15 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             "interfaces.web.mode must be adapter or direct"
         );
         ensure!(
-            web.route.starts_with('/'),
-            "interfaces.web.route must start with /"
+            is_safe_web_path(&web.route),
+            "interfaces.web.route must be an absolute path without traversal segments, whitespace, ? or #"
         );
+        if let Some(socket) = &web.socket {
+            ensure!(
+                is_safe_web_path(socket),
+                "interfaces.web.socket must be an absolute path without traversal segments, whitespace, ? or #"
+            );
+        }
     }
     Ok(manifest)
 }
@@ -273,6 +279,44 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         continue;
                     }
                 }
+                if let Some(web) = manifest.interfaces.web.as_ref() {
+                    if let Some(existing) = discovery.apps.iter().find(|app| {
+                        app.manifest
+                            .interfaces
+                            .web
+                            .as_ref()
+                            .map(|existing| existing.route.as_str())
+                            == Some(web.route.as_str())
+                    }) {
+                        discovery.errors.push(format!(
+                            "{}: app {:?} duplicates interfaces.web.route {:?} already registered by app {:?}; app not registered",
+                            manifest_path.display(),
+                            manifest.app.id,
+                            web.route,
+                            existing.manifest.app.id
+                        ));
+                        continue;
+                    }
+                    if let Some(socket) = &web.socket {
+                        if let Some(existing) = discovery.apps.iter().find(|app| {
+                            app.manifest
+                                .interfaces
+                                .web
+                                .as_ref()
+                                .and_then(|existing| existing.socket.as_deref())
+                                == Some(socket.as_str())
+                        }) {
+                            discovery.errors.push(format!(
+                                "{}: app {:?} duplicates interfaces.web.socket {:?} already registered by app {:?}; app not registered",
+                                manifest_path.display(),
+                                manifest.app.id,
+                                socket,
+                                existing.manifest.app.id
+                            ));
+                            continue;
+                        }
+                    }
+                }
                 discovery.apps.push(DiscoveredApp {
                     path: folder,
                     manifest,
@@ -284,6 +328,14 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
         }
     }
     discovery
+}
+
+fn is_safe_web_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.chars().any(char::is_whitespace)
+        && !path.contains('?')
+        && !path.contains('#')
+        && !path.split('/').any(|segment| segment == "..")
 }
 
 /// One consistent list-entry rule for manifest string lists
@@ -345,6 +397,21 @@ mode = "adapter"
 route = "/tic-tac-toe"
 "#;
 
+    fn manifest_with_web(id: &str, route: &str, socket: Option<&str>) -> String {
+        let socket = socket
+            .map(|socket| format!("socket = {socket:?}\n"))
+            .unwrap_or_default();
+        format!(
+            "[app]\nid = {id:?}\nname = {id:?}\nversion = \"0.1.0\"\n\n[program]\nkind = \"roc-world\"\nsource = \"program/\"\n\n[interfaces.web]\nmode = \"adapter\"\nroute = {route:?}\n{socket}"
+        )
+    }
+
+    fn write_discoverable_app(root: &Path, folder: &str, manifest: &str) {
+        let app = root.join(folder);
+        fs::create_dir_all(app.join("program")).unwrap();
+        fs::write(app.join("app.toml"), manifest).unwrap();
+    }
+
     #[test]
     fn parses_app_manifest_and_matches_folder() {
         let manifest = parse_app_manifest(MANIFEST, "tic-tac-toe").unwrap();
@@ -353,6 +420,85 @@ route = "/tic-tac-toe"
             manifest.program.unwrap().source,
             Some(PathBuf::from("program/"))
         );
+    }
+
+    #[test]
+    fn web_route_and_socket_must_be_safe_absolute_paths() {
+        for route in ["/a/../b", "/a b", "/a?query", "/a#fragment"] {
+            let source =
+                MANIFEST.replace("route = \"/tic-tac-toe\"", &format!("route = {route:?}"));
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(error.to_string().contains("interfaces.web.route"));
+        }
+
+        let absolute_url_socket = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"https://example.test/socket\"",
+        );
+        let error = parse_app_manifest(&absolute_url_socket, "tic-tac-toe").unwrap_err();
+        assert!(error.to_string().contains("interfaces.web.socket"));
+
+        let valid_socket = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"/ws/world\"",
+        );
+        assert!(parse_app_manifest(&valid_socket, "tic-tac-toe").is_ok());
+    }
+
+    #[test]
+    fn checked_in_tic_tac_toe_manifest_remains_valid() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/tic-tac-toe/app.toml");
+        let source = fs::read_to_string(path).unwrap();
+        let manifest = parse_app_manifest(&source, "tic-tac-toe").unwrap();
+        assert_eq!(manifest.interfaces.web.unwrap().route, "/tic-tac-toe");
+    }
+
+    #[test]
+    fn discovery_keeps_first_duplicate_route_and_names_loser() {
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-first",
+            &manifest_with_web("a-first", "/same", None),
+        );
+        write_discoverable_app(
+            root.path(),
+            "b-second",
+            &manifest_with_web("b-second", "/same", None),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 1);
+        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("b-second"));
+        assert!(discovery.errors[0].contains("interfaces.web.route"));
+        assert!(discovery.errors[0].contains("/same"));
+    }
+
+    #[test]
+    fn discovery_keeps_first_duplicate_socket_and_names_loser() {
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-first",
+            &manifest_with_web("a-first", "/first", Some("/ws/shared")),
+        );
+        write_discoverable_app(
+            root.path(),
+            "b-second",
+            &manifest_with_web("b-second", "/second", Some("/ws/shared")),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 1);
+        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("b-second"));
+        assert!(discovery.errors[0].contains("interfaces.web.socket"));
+        assert!(discovery.errors[0].contains("/ws/shared"));
     }
 
     #[test]
