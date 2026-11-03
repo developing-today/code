@@ -14,7 +14,6 @@ package tasks
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -411,7 +410,7 @@ func (s *Store) ensure() {
 // now let the store grow to.
 func NewID() string {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
+	_, _ = RandSource.Read(b[:])
 	return "tsk-" + hex.EncodeToString(b[:])
 }
 

@@ -191,6 +191,9 @@ pub struct WorldCore {
     pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
     /// Accepted signed moves, in world sequence order.
     pub(crate) signed_moves: Vec<signed::SignedMoveRecord>,
+    /// This core came from a verified journal and may only be served as a
+    /// spectator replica. It is set only by `restore_replica`.
+    pub(crate) replica_mode: bool,
 }
 
 /// The abuse-evaluator policy for world chat: the historical caps
@@ -334,6 +337,7 @@ impl WorldCore {
             author_keys: HashMap::new(),
             move_chains: HashMap::new(),
             signed_moves: Vec::new(),
+            replica_mode: false,
         };
         core.sync_ledger_ceiling();
         Ok(core)
@@ -377,10 +381,50 @@ impl WorldCore {
         )
     }
 
+    /// Rebuild a replica world from its verified journal (F12.13 phase 4).
+    ///
+    /// Same admission rules as [`Self::restore`], but presence-preserving:
+    /// no synthetic presence-off events are fed into the program for
+    /// participants the journal still shows present. That synthesis is
+    /// correct for a writer restart (its sessions really ended) but wrong
+    /// for a replica: a snapshot taken while participants remain connected
+    /// to the writer would otherwise mark them offline in the replica's
+    /// program state even though the journal is intact, breaking
+    /// writer-record parity at the snapshot cursor. The replica restores
+    /// presence as session state (its actor tracks live sessions) without
+    /// journaling or replaying synthetic events.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::restore`].
+    pub fn restore_replica(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        Self::restore_replica_with_runtime(
+            world_id,
+            limits,
+            crate::world_limits::RuntimeLimits::default(),
+            entries,
+        )
+    }
+
+    /// Like [`Self::restore_replica`], using the current server's resource
+    /// ceilings while admitting the verified journal.
+    pub fn restore_replica_with_runtime(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        let mut restored = Self::restore_inner(world_id, limits, runtime, entries, true)?;
+        restored.core.replica_mode = true;
+        Ok(restored)
+    }
+
     /// Rebuild a world from its journal, resolving the persisted
-    /// per-world total memory budget against the server ceiling the
-    /// process is currently configured with (`runtime`), not the
-    /// ceiling in force when the journal was written.
+    /// per-world total memory budget against the server ceiling in `runtime`.
     ///
     /// # Errors
     ///
@@ -390,6 +434,17 @@ impl WorldCore {
         limits: WorldLimits,
         runtime: crate::world_limits::RuntimeLimits,
         entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        Self::restore_inner(world_id, limits, runtime, entries, false)
+    }
+
+    /// Shared restore; `preserve_presence` selects replica semantics.
+    fn restore_inner(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+        preserve_presence: bool,
     ) -> Result<RestoredWorld> {
         let mut core = Self::new(world_id, limits)?;
         let mut program = None;
@@ -468,6 +523,7 @@ impl WorldCore {
                     core,
                     program,
                     replay,
+                    presence: BTreeMap::new(),
                 });
             }
         };
@@ -752,12 +808,25 @@ impl WorldCore {
                         "journal system entry has a non-system payload"
                     );
                     if let WorldEventKind::System { event: text } = &event.kind
-                        && let Some((participant, _)) = presence_change(text)
+                        && let Some((participant, joined)) = presence_change(text)
                     {
                         ensure!(
                             core.capabilities.contains_key(&participant),
                             "journal presence event names an unknown participant"
                         );
+                        // Replica restore also needs per-participant
+                        // session counts (F12.13): `open_presence` records
+                        // only that a participant is present, not how many
+                        // sessions hold them there.
+                        let count = present.entry(participant).or_insert(0);
+                        if joined {
+                            *count += 1;
+                        } else {
+                            *count = count.saturating_sub(1);
+                        }
+                        if *count == 0 {
+                            present.remove(&participant);
+                        }
                     }
                     replay.push(event.clone());
                     core.record_admin_history(event);
@@ -948,28 +1017,37 @@ impl WorldCore {
             }
         }
         // Sessions end with the process, and a crash skips their leave, so
-        // anyone the journal still shows present is gone by now.
-        for participant in std::mem::take(&mut core.open_presence) {
-            let name = core
-                .participant(participant)
-                .map_or_else(|| participant.to_string(), |p| p.display_name);
-            replay.push(WorldEvent {
-                sequence: 0,
-                participant_id: 0,
-                kind: WorldEventKind::System {
-                    event: presence_event(participant, &name, false),
-                },
-            });
-            if let Some(event) = replay.last() {
-                core.record_admin_history(event.clone());
+        // anyone the journal still shows present is gone by now. Replicas
+        // (F12.13) skip this synthesis: see `restore_replica`.
+        if !preserve_presence {
+            for participant in std::mem::take(&mut core.open_presence) {
+                let name = core
+                    .participant(participant)
+                    .map_or_else(|| participant.to_string(), |p| p.display_name);
+                replay.push(WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: presence_event(participant, &name, false),
+                    },
+                });
+                if let Some(event) = replay.last() {
+                    core.record_admin_history(event.clone());
+                }
             }
         }
+        let presence = if preserve_presence {
+            present
+        } else {
+            BTreeMap::new()
+        };
         core.memory_budget = memory_budget;
         core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
             program,
             replay,
+            presence,
         })
     }
 
@@ -1381,7 +1459,11 @@ impl WorldCore {
             }
             current = record.parent;
         }
-        Some(scopes)
+        if self.replica_mode {
+            Some(scopes.intersect(WorldScopes::JOIN))
+        } else {
+            Some(scopes)
+        }
     }
 
     /// Fewest actions the capability or any ancestor may still take, or `None`

@@ -92,14 +92,19 @@ manifest, so a new page never touches the chrome. To add one:
    twin when the page has data worth polling.
 4. Wire any new data through `Source` (with its fixture twin), and
    through the fleet feed when the data originates on the sandbox.
-5. Pass the mobile checklist (#1180, 390x844 audit): no page-level
-   horizontal scroll (wide tables live inside `.tblwrap`, `pre` blocks
-   scroll inside themselves); every control-class tap target (nav
-   links, chips, buttons, form controls, checkbox labels) is at least
-   40px tall; the sticky nav never permanently covers content
-   (anchored elements carry `scroll-margin-top`). Inline text links
-   inside prose and table cells are exempt from the 40px floor.
-   Re-run the per-page audit when a page's layout changes materially.
+5. Pass the mobile checklist (#1180) at **390x844**: compare the
+   document's `scrollWidth` with its viewport `clientWidth` and attempt a
+   horizontal scroll (no page-level horizontal movement; a 1px rounding
+   residual is acceptable only when `scrollX` stays zero and no content
+   escapes its wrapper). Keep intentionally wide tables and charts inside
+   `.tblwrap` / `.chart`, and `pre` blocks scrolling inside themselves.
+   Check actual rendered targets: nav links, chips, buttons, selects,
+   form fields, disclosure summaries, and checkbox/radio labels are at
+   least 40px tall (inline text links in prose and table cells are exempt).
+   Follow an in-page link or call `scrollIntoView()` and confirm its target
+   starts below the sticky nav; use enough `scroll-margin-top` for the
+   wrapped mobile nav, not a desktop-only offset. Re-run the per-page audit
+   when a page's layout changes materially.
 
 `/dns` is the worked example: the register file lives on the sandbox
 (#902 owns it), the collector parses it into a `dns` feed section
@@ -798,3 +803,23 @@ test/
                     cache/degraded), fixtures story, /health boot
                     (#1137, #1147)
 ```
+
+## Store contract: define semantics (#2953)
+
+Define semantics for externally-spelled keys (#2953). A value keyed by a
+name a caller, document, feed, file, peer or user can spell is stored with
+define semantics, never assignment semantics: the store is built in a Map
+or a null-prototype object and converted at the boundary with
+Object.fromEntries / spread, or the entry is written with
+Object.defineProperty. The non-conforming forms for external keys are
+obj[key] = v, obj[key] ??= ..., dst[k] = src[k] copy loops, and
+Object.assign(dst, src) with an externally-keyed src — all go through
+[[Set]], and for the one spelling "__proto__" [[Set]] invokes the
+Object.prototype setter instead of creating an own property, silently
+dropping the entry or moving the container's prototype. Keys are data:
+preserve, don't reject. Code-constructed tables whose keys are all
+internal are exempt. Probe matrix for every covered site — keys
+"__proto__" (string value), "__proto__" (object value), "constructor",
+"toString", and an ordinary key: the entry exists as an own property with
+its value, a JSON round-trip preserves it, and neither the container's
+prototype nor Object.prototype moves or gains own properties.

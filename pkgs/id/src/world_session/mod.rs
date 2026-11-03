@@ -15,6 +15,7 @@
 //! is (an Iroh node ID); that never grants world authority.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -30,8 +31,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
-    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldHandle,
-    WorldMetrics, WorldPolicy, WorldScopes,
+    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, SessionId,
+    WorldHandle, WorldMetrics, WorldPolicy, WorldScopes,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
@@ -64,6 +65,11 @@ pub use types::{
 };
 
 impl WorldService {
+    /// Allocate an ephemeral identity for one accepted connection.
+    pub(crate) fn next_session_id(&self) -> SessionId {
+        SessionId::new(self.next_session_id.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Require module artifacts to carry a valid signature from one of these
     /// Ed25519 public keys. An empty list preserves the legacy unsigned path.
     #[must_use]
@@ -193,6 +199,7 @@ impl WorldService {
             mail: None,
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
+            next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -717,24 +724,47 @@ impl WorldService {
 
     /// Read the currently pinned module artifact for peer download.
     /// The caller must already have authenticated as a world participant.
+    ///
+    /// Falls back to the module directory when there is no blob pin to
+    /// serve from. A read-only replica clears its blob store so module
+    /// uploads stay refused, but the module it restored was loaded out of
+    /// its module directory, so spectators can still download it from
+    /// there (PR #4708 Codex P2).
     pub async fn module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
-        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?;
-        let pin = self.module_pin.lock().await;
-        let Some(pin) = pin.as_ref() else {
-            return Err(InstallError::Unavailable);
-        };
-        if pin.hash().to_string() != expected_hash {
-            return Err(InstallError::InvalidUpload);
+        if let Some(blobs) = self.blobs.as_ref() {
+            let pin = self.module_pin.lock().await;
+            match pin.as_ref() {
+                Some(pin) if pin.hash().to_string() == expected_hash => {
+                    let bytes = blobs
+                        .blobs()
+                        .get_bytes(pin.hash())
+                        .await
+                        .map_err(|_| InstallError::Unavailable)?;
+                    if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash
+                    {
+                        return Err(InstallError::Unavailable);
+                    }
+                    return Ok(bytes.to_vec());
+                }
+                Some(_) => return Err(InstallError::InvalidUpload),
+                None => {}
+            }
         }
-        let bytes = blobs
-            .blobs()
-            .get_bytes(pin.hash())
-            .await
-            .map_err(|_| InstallError::Unavailable)?;
-        if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash {
+        if let Some(modules) = self.module_dir.clone() {
+            let requested = expected_hash.to_owned();
+            let loaded = tokio::task::spawn_blocking(move || modules.load(&requested))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if loaded.len() <= MAX_WORLD_MODULE_BYTES {
+                return Ok(loaded);
+            }
             return Err(InstallError::Unavailable);
         }
-        Ok(bytes.to_vec())
+        if self.blobs.is_none() {
+            return Err(InstallError::Disabled);
+        }
+        Err(InstallError::Unavailable)
     }
 
     /// Read a stored module's bytes by hash, active or not: from the blob
@@ -1728,9 +1758,8 @@ async fn records_ticket_session<I: SessionIo>(
     }
 }
 
-/// Largest page of records returned in one frame, comfortably inside
-/// [`MAX_FRAME_BYTES`] after JSON framing overhead.
-pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+/// Compatibility alias for the provider manifest's shared records-page bound.
+pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = crate::world_caps::MAX_RECORDS_PAGE_BYTES;
 
 async fn records_session<I: SessionIo>(
     meter: &WorldMetrics,
@@ -2087,6 +2116,7 @@ async fn joined<I: SessionIo>(
     screen_patches: bool,
 ) {
     let world = service.world();
+    let session_id = service.next_session_id();
     // Subscribe before taking the snapshot so no event can fall in the gap;
     // events at or below the cursor are skipped when delivered.
     let mut events = world.subscribe();
@@ -2208,6 +2238,7 @@ async fn joined<I: SessionIo>(
                         &text,
                         &mut viewport,
                         cursor,
+                        session_id,
                         &mut view_state,
                         screen_patches,
                         &mut pending_view_deadline,
@@ -2479,6 +2510,7 @@ async fn handle_client_frame<I: SessionIo>(
     text: &str,
     viewport: &mut Option<Viewport>,
     sequence: u64,
+    session_id: SessionId,
     view_state: &mut ViewRevisionState,
     screen_patches: bool,
     pending_view_deadline: &mut Option<tokio::time::Instant>,
@@ -2569,10 +2601,16 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             };
-            world.input(token.clone(), bytes).await
+            world
+                .input_from_session(token.clone(), bytes, session_id)
+                .await
         }
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
-            Some(data) => world.input(token.clone(), data).await,
+            Some(data) => {
+                world
+                    .input_from_session(token.clone(), data, session_id)
+                    .await
+            }
             None => {
                 return send_error(service.frame_meter(), io, "input data must be hexadecimal")
                     .await;
@@ -2822,8 +2860,21 @@ async fn handle_client_frame<I: SessionIo>(
         }
     };
     // Accepted events reach everyone, including the sender, through the
-    // broadcast branch, so only rejections are answered directly.
-    result.is_ok() || send_error(service.frame_meter(), io, "world event rejected").await
+    // broadcast branch, so only rejections are answered directly. A
+    // read-only replica names its mode: the refusal is the replica, not the
+    // spectator's capability.
+    if result.is_ok() {
+        return true;
+    }
+    if service.world().is_read_only() {
+        return send_error(
+            service.frame_meter(),
+            io,
+            "world is read-only (replica); local mutations are refused",
+        )
+        .await;
+    }
+    send_error(service.frame_meter(), io, "world event rejected").await
 }
 
 /// Serialize and send one server frame, metering its bytes into the

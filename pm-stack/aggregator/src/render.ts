@@ -39,6 +39,7 @@ import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCo
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
+import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
@@ -306,6 +307,10 @@ pre { max-width: 100%; overflow-x: auto; }
 .chart-expanded { position: fixed !important; inset: 12px; z-index: 80; background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 14px; overflow: auto; box-shadow: 0 12px 48px rgba(0,0,0,.6); }
 .chart-expanded svg { width: 100% !important; max-width: none !important; height: auto; max-height: calc(100vh - 150px); }
 circle.xpt { cursor: pointer; }
+g.xpt-control { cursor: pointer; }
+g.xpt-control .xpt-hit { fill: transparent; stroke: transparent; stroke-width: 0; pointer-events: all; }
+g.xpt-control:focus-visible .xpt-hit { stroke: #fff; stroke-width: 2; }
+g.xpt-control .xpt { pointer-events: none; }
 .xpl-table td.num, .xpl-table th.num { text-align: right; }
 .xpl-table tr { cursor: pointer; }
 .xpl-table tr:hover td { background: #161b22; }
@@ -406,11 +411,16 @@ body.xp-plan .xpl-costcol { display: none; }
 }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
+  body { overflow-x: clip; }
   main { padding: 12px 10px 60px; }
   nav { padding: 7px 10px; gap: 2px 8px; }
   .navgroup + .navgroup { padding-left: 8px; }
   .navlabel { font-size: 10px; margin-right: 2px; }
   nav a { padding: 5px 7px; }
+  [id] { scroll-margin-top: 192px; }
+  button, select, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), textarea, summary { min-height: 40px; }
+  label:has(input[type="checkbox"]), label:has(input[type="radio"]) { display: inline-flex; align-items: center; min-height: 40px; }
+  a.today-health-link { min-height: 40px; }
   h1 { font-size: 16px; }
   .board { grid-template-columns: 1fr; }
   .pool { grid-template-columns: 1fr; }
@@ -2154,7 +2164,7 @@ function metricRow(m: UsageMetric): string {
 
 function attentionStripHtml(usage: UsageView): string {
   if (!usage.attention.length) {
-    return `<div class="card"><strong>Needs attention</strong> — nothing over threshold. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
+    return `<div class="card"><strong>Needs attention</strong> — no quota or credential alerts. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
   }
   const rows = usage.attention
     .map(
@@ -2249,6 +2259,18 @@ export function renderQuota(
   usage?: UsageView,
   detail?: ProvenanceDetail,
 ): string {
+  const credentialLifecycle = view.credentialLifecycle?.length
+    ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
+        .map((credential) => {
+          const expiry = credential.expiresAt ? ` · expires ${fmtDate(credential.expiresAt)}` : " · expiry unknown";
+          const reason = credential.reason ? ` · ${esc(credential.reason)}` : "";
+          const action = credential.userAction
+            ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
+            : "";
+          return `<div><strong>${esc(credential.providerName)} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
+        })
+        .join("")}</div>`
+    : "";
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -2297,6 +2319,7 @@ export function renderQuota(
     return layout(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+${credentialLifecycle}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
       provenance,
@@ -2338,6 +2361,7 @@ ${burnAndChoices}`,
     "Usage & billing",
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
+${credentialLifecycle}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
@@ -3002,8 +3026,9 @@ export function renderAttention(
   detail?: ProvenanceDetail,
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
+  census?: NeedsDrewCensus | null,
 ): string {
-  const sections = attentionSections(view, coverage, counts, act, briefs);
+  const sections = attentionSections(view, coverage, counts, act, briefs, census);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
@@ -3013,6 +3038,45 @@ ${sections.header}${sections.queues}${sections.sessions}`,
     act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
+}
+
+/**
+ * The Needs-Drew label census section (#1226): open user/review +
+ * user/escalated items across the four repos, straight from GitHub —
+ * the labels are the system of record and this view only reads them.
+ * census === null means the source cannot census: the section says
+ * "unavailable" rather than rendering an empty, confident zero.
+ * census === undefined means the caller predates the census (tests,
+ * fragments) and the section is omitted entirely.
+ */
+export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined): string {
+  if (census === undefined) return "";
+  if (census === null) {
+    return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
+  }
+  const failed = census.sources.filter((x) => !x.ok || x.truncated || x.incomplete);
+  const failureNote = failed.length
+    ? `<div class="banner">Label census incomplete — ${failed
+        .map((x) => {
+          if (!x.ok) return `${esc(x.repo)} ${esc(x.label)}: ${esc(x.error ?? "failed")}`;
+          // Truncation and GitHub's partial-search signal are different
+          // failures: say which one it was instead of blurring them.
+          const why = x.incomplete ? "search returned incomplete results, count is a floor" : "page cap reached, count is a floor";
+          return `${esc(x.repo)} ${esc(x.label)}: ${why}`;
+        })
+        .join("; ")}. The list below may be missing items from those sources.</div>`
+    : "";
+  const rows = census.items.length
+    ? `<ul>${census.items
+        .map(
+          (i) =>
+            `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
+              .map((l) => `<code>${esc(l)}</code>`)
+              .join(" ")} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open items carry user/review or user/escalated right now${census.complete ? "" : " in the sources that answered"}.</p>`;
+  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${census.items.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226). The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
 }
 
 /**
@@ -3028,6 +3092,7 @@ export function attentionSections(
   counts?: Map<string, number | CommentKindCounts>,
   act?: AttentionAct,
   briefs?: Map<RefKey, ItemBrief>,
+  census?: NeedsDrewCensus | null,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -3214,7 +3279,7 @@ ${delegationDefault}`;
     ? `<details class="hiddenstrip"><summary><strong>Dismissed / done by you (${hiddenList.length})</strong> — hidden from the queues; restore any of them to re-review or add a note</summary>${hiddenList.map((e) => stripCardHtml(e, act?.identities)).join("")}</details>`
     : "";
   const queues = `${bulkBarHtml(act)}${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
-${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}`;
+${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}${needsDrewCensusHtml(census)}`;
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children, 0, counts, sessionAct)).join("")
     : `<p class="muted">No current sessions.</p>`;
@@ -5178,7 +5243,9 @@ const AA_EXPLORER_SCRIPT = `<script>
         var py = cy + ((pi % 5) - 2) * 2.5;
         var color = famColor[p.family] || "#8b949e";
         var desc = shortLabel(p) + " — " + axisLabel + " " + valueLabel(v);
-        svg += '<circle class="xpt" data-pick="' + esc(p.key) + '" cx="' + x(v).toFixed(1) + '" cy="' + py.toFixed(1) + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></circle>";
+        const pointX = x(v).toFixed(1);
+        const pointY = py.toFixed(1);
+        svg += '<g class="xpt-control" data-pick="' + esc(p.key) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><circle class="xpt-hit" cx="' + pointX + '" cy="' + pointY + '" r="40"/><circle class="xpt" cx="' + pointX + '" cy="' + pointY + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '"/><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></g>";
       });
     });
     return '<div class="xpl-band-lane-wrap">' + svg + "</svg></div>";
@@ -6304,7 +6371,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
     ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
-<table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
+ <div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table></div>
 <p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
@@ -6886,7 +6953,7 @@ ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") :
 ${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
 ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
-<table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
+ <div class="tblwrap"><table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table></div>`;
   const script = `<script>
 const VAPID = ${JSON.stringify(vapidPublicKey)};
 const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};

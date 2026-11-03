@@ -74,6 +74,18 @@ describe("entryFromResult", () => {
     const balance = entry.windows.find((w) => w.name === "credits_balance");
     expect(balance?.pctOfLimit).toBeNull();
     expect(balance?.valueLabel).toBe("12.50");
+    expect(entry.credentialWatch).toBe(true);
+  });
+  test("maps only authoritative expiry metadata and separates unconfigured credentials", () => {
+    const entry = entryFromResult(
+      { ...OK_RESULT, providerId: "claude", credentialExpiresAt: 1793438427299, credentialSource: "claude-code" },
+      "2026-10-27T05:00:00.000Z",
+    );
+    expect(entry.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
+    expect(entry.credentialSource).toBe("claude-code");
+    const absent = entryFromResult({ ...OK_RESULT, configured: false, ok: false }, "2026-10-27T05:00:00.000Z");
+    expect(absent.state).toBe("unconfigured");
+    expect(absent.credentialWatch).toBe(true);
   });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";

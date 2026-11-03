@@ -31,7 +31,12 @@ import {
   validatePayload,
 } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
-import { handleLaunchFailure, withCreatedSession, type LaunchFailureContext } from "./launch_failure.ts";
+import {
+  compensateOrphanedIssue,
+  handleLaunchFailure,
+  withCreatedSession,
+  type LaunchFailureContext,
+} from "./launch_failure.ts";
 import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient } from "./opencode.ts";
@@ -219,14 +224,21 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   );
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
-    return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
+    // #4917: the tracking issue already exists but no task ever will —
+    // compensate it (note + close as not planned) instead of orphaning it.
+    const err = new Error(`internal packet validation failed: ${payloadErrors.join("; ")}`);
+    await compensateOrphanedIssue(github, body.repo, issue?.number ?? null, "packet validation", err);
+    return json(500, { error: err.message });
   }
   let task: TaskRow;
   try {
     task = await requireQueue().enqueue(packet, body.repo);
   } catch (e) {
+    // #4917: same compensation on the enqueue failure path — this is
+    // the exact shape that produced the 66 orphan tracking issues.
+    const msg = await compensateOrphanedIssue(github, body.repo, issue?.number ?? null, "enqueue", e);
     return json(502, {
-      error: e instanceof Error ? e.message : String(e),
+      error: msg,
       issue_number: issue?.number ?? null,
       ...(warnings.length ? { warnings } : {}),
     });
@@ -463,7 +475,17 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
   const packet = buildPacket(packetInput, dedupeKey);
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
-    return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
+    // #4917: compensate an issue THIS request created; an attach target
+    // (body.issueNumber) is the caller's issue and is never closed here.
+    const err = new Error(`internal packet validation failed: ${payloadErrors.join("; ")}`);
+    await compensateOrphanedIssue(
+      github,
+      body.repo,
+      body.issueNumber === undefined ? (issue?.number ?? null) : null,
+      "packet validation",
+      err,
+    );
+    return json(500, { error: err.message });
   }
   let outcome: EnqueueDispatchOutcome;
   try {
@@ -480,11 +502,16 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       callerSuppliedKey: body.dedupeKey !== undefined,
     });
   } catch (e) {
+    // #4917: compensate an issue THIS request created (never an attach
+    // target) on either enqueue failure shape.
+    const createdIssueNumber = body.issueNumber === undefined ? (issue?.number ?? null) : null;
     if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {
+      await compensateOrphanedIssue(github, body.repo, createdIssueNumber, "packet validation", e);
       return json(500, { error: e.message });
     }
+    const msg = await compensateOrphanedIssue(github, body.repo, createdIssueNumber, "enqueue", e);
     return json(502, {
-      error: e instanceof Error ? e.message : String(e),
+      error: msg,
       issue_number: issue?.number ?? null,
       ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
       ...(warnings.length ? { warnings } : {}),

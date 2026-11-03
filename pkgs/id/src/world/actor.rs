@@ -104,6 +104,7 @@ pub(crate) enum WorldCommand {
     Input {
         token: JoinCapability,
         input: Vec<u8>,
+        session_id: Option<SessionId>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
         /// which refuses participants with a bound author key.
@@ -294,6 +295,10 @@ pub(crate) struct WorldActor {
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
     pub(crate) storage_failed: bool,
+    /// F12.13 replica mode: the world serves spectators from a verified
+    /// journal and refuses every local mutation and side effect. Set only
+    /// by the replica open path; a writer never runs this way.
+    pub(crate) read_only: bool,
     pub(crate) program_healthy: bool,
     /// Times a `view` or `layout` call trapped. Counted for `id world stats`
     /// (F11.17): a trapping view degrades to an error screen, not a poisoned
@@ -321,6 +326,9 @@ pub(crate) struct WorldActor {
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
+    /// The connection whose input is being processed. Ephemeral actor context;
+    /// it is deliberately absent from `WorldEvent` and the journal.
+    pub(crate) acting_session: Option<SessionId>,
 }
 
 impl WorldActor {
@@ -359,6 +367,7 @@ impl WorldActor {
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
+            self.acting_session = None;
         }
     }
 
@@ -373,7 +382,12 @@ impl WorldActor {
 
     /// The earliest moment the loop must wake: the soonest armed tick or
     /// pending schedule. Schedules wait only while the program can take them.
+    /// A read-only replica never wakes for ticks or schedules: it serves
+    /// spectators from its verified journal and fires nothing locally.
     pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
+        if self.read_only {
+            return None;
+        }
         let deliverable = self.program_healthy && !self.storage_failed;
         let clock = self.core.clock();
         self.ticks
@@ -398,6 +412,22 @@ impl WorldActor {
         Ok(())
     }
 
+    /// Refuse a local mutation on a read-only replica (F12.13), or when
+    /// storage failed on a writer. Replicas carry no journal to append to
+    /// and must never originate authoritative events.
+    fn check_not_replica(&self) -> Result<()> {
+        ensure!(
+            !self.read_only,
+            "world is read-only (replica); local mutations are refused"
+        );
+        Ok(())
+    }
+
+    fn check_writable(&self) -> Result<()> {
+        self.check_not_replica()?;
+        self.check_storage()
+    }
+
     fn record_issued(
         &mut self,
         issued: (Participant, JoinCapability),
@@ -412,6 +442,10 @@ impl WorldActor {
 
     /// Durably record `entry`, or turn the world read-only.
     fn persist(&mut self, entry: JournalEntry) -> Result<()> {
+        ensure!(
+            !self.read_only,
+            "world is read-only (replica); local mutations are refused"
+        );
         ensure!(
             !self.storage_failed,
             "world storage failed; the world is read-only"
@@ -465,7 +499,12 @@ impl WorldActor {
     /// impossible (the program must accept it for the journal to be true), so
     /// the order is update, then journal, exactly like participant input.
     /// Returns whether the program accepted the event and it was journaled.
+    /// A read-only replica never delivers: host events are authoritative
+    /// program effects and must not originate from a replica.
     async fn deliver(&mut self, text: String) -> bool {
+        if self.read_only {
+            return false;
+        }
         if !self.program_healthy || self.storage_failed {
             return false;
         }
@@ -510,8 +549,13 @@ impl WorldActor {
     /// Recompute the program's `wants` and serve the delta: new subscriptions
     /// (armed or refused), new requests (executed, result delivered). Passes
     /// repeat while the program reacts to delivered results, so a chain of
-    /// asks settles inside one change.
+    /// asks settles inside one change. A read-only replica never runs this:
+    /// program requests are side effects (chat.say, schedule.at) that must
+    /// not originate from a replica.
     pub(crate) async fn after_change(&mut self) {
+        if self.read_only {
+            return;
+        }
         for _ in 0..64 {
             if !self.program_healthy || self.storage_failed {
                 break;
@@ -630,6 +674,9 @@ impl WorldActor {
 
     /// Deliver one tick event per due interval and re-arm.
     pub(crate) async fn fire_ticks(&mut self) {
+        if self.read_only {
+            return;
+        }
         let now = self.core.clock().now_instant();
         let due: Vec<u64> = self
             .ticks
@@ -656,7 +703,11 @@ impl WorldActor {
     /// fire is delivered as a tick is, and its schedule is consumed only after
     /// that delivery is journaled. A refused fire, or one that could not be
     /// journaled, leaves its schedule pending, so the next run delivers it.
+    /// A read-only replica never fires: schedules are writer authority.
     pub(crate) async fn fire_schedules(&mut self) {
+        if self.read_only {
+            return;
+        }
         let now = self.core.clock().now_ms();
         let mut due: Vec<(u64, String)> = self
             .core
@@ -944,6 +995,7 @@ impl WorldActor {
     }
 
     fn set_isolation(&mut self, authority: &Authority, isolation: Isolation) -> Result<Isolation> {
+        self.check_writable()?;
         self.require_moderation(authority, "changes isolation")?;
         self.persist(JournalEntry::Isolation { isolation })?;
         self.core.isolation = isolation;
@@ -955,6 +1007,7 @@ impl WorldActor {
         authority: &Authority,
         enabled: bool,
     ) -> Result<WorldPolicy> {
+        self.check_writable()?;
         self.require_moderation(authority, "changes cross-world writes")?;
         if !enabled && self.core.cross_world_forced && *authority != Authority::Admin {
             return Err(crate::directory::Refusal::Forbidden(
@@ -972,6 +1025,7 @@ impl WorldActor {
     }
 
     fn force_cross_world_write(&mut self, authority: &Authority) -> Result<WorldPolicy> {
+        self.check_writable()?;
         if *authority != Authority::Admin {
             return Err(crate::directory::Refusal::Forbidden(
                 "only the admin forces cross-world writes".to_owned(),
@@ -997,6 +1051,7 @@ impl WorldActor {
         scope: FileScope,
         write_override: Option<bool>,
     ) -> Result<WorldPolicy> {
+        self.check_writable()?;
         self.require_moderation(authority, "changes the file scope")?;
         if write_override.is_some() && *authority != Authority::Admin {
             return Err(crate::directory::Refusal::Forbidden(
@@ -1017,6 +1072,7 @@ impl WorldActor {
     /// subscriptions the ceiling excludes are refused from here on. Grants are
     /// kept, so lifting the ceiling again restores them.
     fn set_caps_ceiling(&mut self, ceiling: Vec<String>) -> Result<CapsReport> {
+        self.check_writable()?;
         crate::world_caps::validate_ceiling_names(&ceiling)?;
         let ceiling: BTreeSet<String> = ceiling.into_iter().collect();
         self.persist(JournalEntry::CapsCeiling {
@@ -1070,9 +1126,10 @@ impl WorldActor {
                 "deny"
             }
             .to_owned(),
-            catalog: crate::world_caps::CATALOG
-                .iter()
-                .map(|name| (*name).to_owned())
+            catalog: crate::world_caps::PROVIDER_REGISTRY
+                .ordered_names()
+                .into_iter()
+                .map(str::to_owned)
                 .collect(),
             ceiling: self.core.caps_ceiling.iter().cloned().collect(),
             effective,
@@ -1088,7 +1145,7 @@ impl WorldActor {
                 bounds,
                 reply,
             } => {
-                let result = self.check_storage().and_then(|()| {
+                let result = self.check_writable().and_then(|()| {
                     let issued = self.core.issue_capability(&name, scopes, bounds)?;
                     self.record_issued(issued)
                 });
@@ -1101,7 +1158,7 @@ impl WorldActor {
                 bounds,
                 reply,
             } => {
-                let result = self.check_storage().and_then(|()| {
+                let result = self.check_writable().and_then(|()| {
                     let issued = self.core.attenuate(&token, scopes, bounds, &name)?;
                     self.record_issued(issued)
                 });
@@ -1115,7 +1172,7 @@ impl WorldActor {
                 bounds,
                 reply,
             } => {
-                let result = self.check_storage().and_then(|()| {
+                let result = self.check_writable().and_then(|()| {
                     let issued = self
                         .core
                         .delegate_to_friend(&token, &friend, scopes, bounds, &name)?;
@@ -1129,6 +1186,21 @@ impl WorldActor {
                 outbox,
                 reply,
             } => {
+                // Directory facts are replica state: refuse local changes,
+                // but keep the directory's read-only views and artifact
+                // reads available through the same service.
+                if self.read_only
+                    && !matches!(
+                        &action,
+                        crate::directory_view::DirectoryAction::View
+                            | crate::directory_view::DirectoryAction::ReadArtifacts { .. }
+                    )
+                {
+                    let _ = reply.send(Err(anyhow::anyhow!(
+                        "world is read-only (replica); local mutations are refused"
+                    )));
+                    return;
+                }
                 let world = self.core.world_id().to_owned();
                 let now = unix_ms();
                 let (directory, petnames) = self.core.directory_and_petnames_mut();
@@ -1154,15 +1226,26 @@ impl WorldActor {
                 let _ = reply.send(result);
             }
             WorldCommand::ApplyDirectory { entry, reply } => {
-                let _ = reply.send(self.core.directory_mut().apply(&entry));
+                // See `Directory` above: replicas never apply local entries.
+                let result = self
+                    .check_not_replica()
+                    .and_then(|()| self.core.directory_mut().apply(&entry));
+                let _ = reply.send(result);
             }
             WorldCommand::Revoke {
                 participant_id,
                 by,
                 reply,
             } => {
-                // Revocation takes effect in memory even if storage failed:
-                // denying access is always the safe side.
+                // Revocation takes effect in memory even if storage failed on
+                // a writer: denying access is always the safe side. A
+                // read-only replica still refuses: revocations arrive through
+                // the verified journal, never as local commands. Report
+                // nothing revoked, like an unknown participant.
+                if self.read_only {
+                    let _ = reply.send(false);
+                    return;
+                }
                 let revoked = self.core.revoke_tree(participant_id);
                 let was_active = !revoked.is_empty();
                 if was_active {
@@ -1181,7 +1264,12 @@ impl WorldActor {
                 author_key,
                 reply,
             } => {
-                let _ = reply.send(self.core.bind_author_key(&token, author_key));
+                // Author-key bindings change what later inputs the world
+                // accepts; a replica takes no such local state.
+                let result = self
+                    .check_writable()
+                    .and_then(|()| self.core.bind_author_key(&token, author_key));
+                let _ = reply.send(result);
             }
             WorldCommand::Presence {
                 participant,
@@ -1195,11 +1283,13 @@ impl WorldActor {
                         "world storage failed; the world is read-only"
                     ))
                 } else {
-                    self.core.prepare_chat(&token, &text).and_then(|event| {
-                        self.persist(JournalEntry::Committed {
-                            event: event.clone(),
-                        })?;
-                        self.core.commit_prepared(event)
+                    self.check_writable().and_then(|()| {
+                        self.core.prepare_chat(&token, &text).and_then(|event| {
+                            self.persist(JournalEntry::Committed {
+                                event: event.clone(),
+                            })?;
+                            self.core.commit_prepared(event)
+                        })
                     })
                 };
                 if let Ok(event) = &result {
@@ -1210,9 +1300,16 @@ impl WorldActor {
             WorldCommand::Input {
                 token,
                 input,
+                session_id,
                 signed_move,
                 reply,
             } => {
+                // Refuse before touching the program: a replica must not
+                // run participant inputs through its program instance.
+                if let Err(error) = self.check_writable() {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
                 let prepared = match &signed_move {
                     Some(bytes) => self
                         .core
@@ -1229,6 +1326,7 @@ impl WorldActor {
                     )),
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
+                        self.acting_session = session_id;
                         match self
                             .program
                             .update(&candidate)
@@ -1405,6 +1503,12 @@ impl WorldActor {
                 program: mut replacement,
                 reply,
             } => {
+                // Refuse before touching the replacement program: installs
+                // are writer authority.
+                if let Err(error) = self.check_writable() {
+                    let _ = reply.send(Err(error));
+                    return;
+                }
                 // A program whose initial records are invalid is refused
                 // before anything is journaled.
                 let new_records = match program_records(replacement.as_mut()) {
@@ -1472,6 +1576,7 @@ impl WorldActor {
                 reply,
             } => {
                 let result = (|| -> Result<CapsReport> {
+                    self.check_writable()?;
                     crate::world_caps::validate_grant_names(&grant)?;
                     crate::world_caps::validate_grant_names(&revoke)?;
                     let mut granted: BTreeSet<String> =
@@ -1495,7 +1600,8 @@ impl WorldActor {
             }
             WorldCommand::SetExecutionProfile { profile, reply } => {
                 let result = self
-                    .persist(JournalEntry::ExecutionProfile { profile })
+                    .check_writable()
+                    .and_then(|()| self.persist(JournalEntry::ExecutionProfile { profile }))
                     .map(|()| {
                         self.core.execution_profile = profile;
                         ExecutionProfileUpdate {
@@ -1513,6 +1619,7 @@ impl WorldActor {
             }
             WorldCommand::AdminScheduleAt { id, at_ms, reply } => {
                 let result = (|| -> Result<BTreeMap<String, u64>> {
+                    self.check_writable()?;
                     if self.core.schedules.get(&id) == Some(&at_ms) {
                         return Ok(self.core.schedules.clone());
                     }
@@ -1541,6 +1648,7 @@ impl WorldActor {
             }
             WorldCommand::AdminCancelSchedule { id, reply } => {
                 let result = (|| -> Result<BTreeMap<String, u64>> {
+                    self.check_writable()?;
                     crate::world_caps::validate_schedule_id(&id)?;
                     if self.core.schedules.contains_key(&id) {
                         self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
@@ -1637,7 +1745,8 @@ impl WorldActor {
     /// Trim the journal behind a verified snapshot, at most once per run of
     /// commits and never while the program cannot snapshot.
     async fn compact_if_due(&mut self) {
-        if self.compaction_off
+        if self.read_only
+            || self.compaction_off
             || self.storage_failed
             || !self.program_healthy
             || !self.core.checkpoint_due()
@@ -1952,6 +2061,7 @@ impl WorldActor {
             program,
             journal,
             storage_failed: false,
+            read_only: false,
             program_healthy,
             view_failures: 0,
             compaction_off: false,
@@ -1967,6 +2077,7 @@ impl WorldActor {
             ticks: BTreeMap::new(),
             overdue_at_open,
             acting: None,
+            acting_session: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }

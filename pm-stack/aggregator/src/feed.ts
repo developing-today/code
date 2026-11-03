@@ -43,6 +43,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import { isCredentialLifecycleRow, safeProviderReason } from "./credential-lifecycle.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -64,6 +65,7 @@ export interface FleetFeed {
     burn: number;
     poolFreshness: number;
     burnTokensPerMin: number;
+    credentialLifecycle?: number;
   };
   /** Element drops loadFeed's chargesAttention sanitization made
    * (#2439), set only when at least one entry dropped; absent on raw
@@ -331,6 +333,12 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
+// The collector is scheduled every five minutes. No grace is possible if a
+// stop just after a write must be visible by the next interval: slow runs,
+// scheduler jitter and transport delays can therefore cause transient alarms.
+// This is evaluated on request, not pushed to an already-open browser.
+export const FEED_STALE_MS = 5 * 60_000;
+
 /** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
 export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;
 
@@ -589,6 +597,7 @@ export interface QuotaSanitization {
   droppedBurn: number;
   droppedPoolFreshness: number;
   droppedBurnTokensPerMin: number;
+  droppedCredentialLifecycle: number;
 }
 
 /** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921/#4546,
@@ -605,6 +614,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   let droppedActiveSessions = 0;
   let droppedPoolFreshness = 0;
   let droppedBurnTokensPerMin = 0;
+  const lifecycleRows = quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
+  const droppedCredentialLifecycle = lifecycleRows?.dropped ?? (quota.credentialLifecycle === undefined ? 0 : 1);
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
     droppedWindows += windows?.dropped ?? 0;
@@ -656,7 +667,23 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
     doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
   };
-  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  const view: QuotaView = {
+    ...quota,
+    pools: keptPools,
+    burn: burn?.values ?? [],
+    choices,
+    ...(lifecycleRows
+      ? {
+          credentialLifecycle: lifecycleRows.values.map((row) => ({
+            ...row,
+            providerName: safeProviderReason(row.providerName),
+            label: safeProviderReason(row.label),
+            ...(row.reason ? { reason: safeProviderReason(row.reason) } : {}),
+            ...(row.userAction ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } } : {}),
+          })),
+        }
+      : {}),
+  };
   // Surface the loss on the view itself (its consumers project the
   // view, e.g. /api/quota.json), not only on the feed wrapper.
   if (
@@ -666,7 +693,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
       droppedActiveSessions +
       droppedBurn +
       droppedPoolFreshness +
-      droppedBurnTokensPerMin >
+      droppedBurnTokensPerMin +
+      droppedCredentialLifecycle >
     0
   ) {
     view.dropped = {
@@ -677,6 +705,7 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
       burn: droppedBurn,
       poolFreshness: droppedPoolFreshness,
       burnTokensPerMin: droppedBurnTokensPerMin,
+      ...(droppedCredentialLifecycle > 0 ? { credentialLifecycle: droppedCredentialLifecycle } : {}),
     };
   }
   return {
@@ -688,6 +717,7 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     droppedBurn,
     droppedPoolFreshness,
     droppedBurnTokensPerMin,
+    droppedCredentialLifecycle,
   };
 }
 
@@ -865,6 +895,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
         burn: san.droppedBurn,
         poolFreshness: san.droppedPoolFreshness,
         burnTokensPerMin: san.droppedBurnTokensPerMin,
+        ...(san.droppedCredentialLifecycle > 0 ? { credentialLifecycle: san.droppedCredentialLifecycle } : {}),
       },
       ...(charges ? { chargesAttention: charges.values } : {}),
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),

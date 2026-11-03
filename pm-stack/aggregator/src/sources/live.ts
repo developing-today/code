@@ -12,6 +12,7 @@ import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
   feedAgeText,
+  FEED_STALE_MS,
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
@@ -38,6 +39,7 @@ import {
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
+import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
@@ -633,7 +635,6 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  * watchdog threshold): a feed-backed facet older than this renders
  * its freshness chip as stale, however live its last read was.
  */
-const FEED_STALE_MS = 15 * 60_000;
 
 /**
  * The gatherer's Turso entry (#1049) overlaid onto usage() services,
@@ -741,6 +742,20 @@ export function liveSource(
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #1226: the Needs-Drew label census hits the GitHub search API
+  // (8 queries per sweep). The sweeper caches for 5 minutes and shares
+  // one in-flight sweep between concurrent callers, so the three
+  // attention fragments rendering together do not each pay that cost or
+  // burn the search rate limit (#3970).
+  const needsDrewSweep = createNeedsDrewSweeper((url) => {
+    const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(token ? { Authorization: "Bearer " + token } : {}),
+    };
+    return getJson(url, headers);
+  });
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
     const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
@@ -950,6 +965,9 @@ export function liveSource(
     async projectsAvailable(): Promise<boolean> {
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
+    },
+    async needsDrew(): Promise<NeedsDrewCensus | null> {
+      return needsDrewSweep();
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
@@ -1454,7 +1472,7 @@ export function liveSource(
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
         const feedBacked = text.includes("fleet feed");
-        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs > FEED_STALE_MS) {
+        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";
         }
         const out: ProvenanceFacet = { text, state };
@@ -1478,7 +1496,7 @@ export function liveSource(
           }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
-            if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";
+            if (out.state === "live" && feedAgeMs >= FEED_STALE_MS) out.state = "stale";
           }
         }
         return out;

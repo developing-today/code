@@ -53,6 +53,49 @@ const FIXTURE = `{
 }
 `;
 
+const runSnapshot = async (snapshot) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-catalog-sync-'));
+  const sourceDir = path.join(dir, 'sources');
+  fs.mkdirSync(sourceDir);
+  const configPath = path.join(dir, 'config.jsonc');
+  fs.writeFileSync(configPath, JSON.stringify({
+    provider: {
+      'claude-code': { models: { 'model-a': {}, 'model-b': {} } },
+    },
+  }));
+  fs.writeFileSync(path.join(sourceDir, '18749.json'), JSON.stringify(snapshot));
+  try {
+    return await runSync({ configPath, modelsDevSpec: null, sourceDir });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+for (const [name, snapshot] of [
+  ['missing data', { unexpected: [] }],
+  ['non-array data', { data: 'oops' }],
+  ['entry without an id', { data: [{ name: 'no-id' }] }],
+  ['null entry', { data: [null] }],
+]) {
+  test(`runSync marks proxy snapshot with ${name} as not-enumerable`, async () => {
+    const { report } = await runSnapshot(snapshot);
+    const entry = report.providers['claude-code'];
+    assert.equal(entry.status, 'not-enumerable');
+    assert.match(entry.note, /proxy :18749 enumeration failed:/);
+    assert.equal(entry.live_count, undefined);
+    assert.equal(entry.vanishings_basis, undefined);
+  });
+}
+
+test('runSync preserves the valid proxy snapshot report', async () => {
+  const { report } = await runSnapshot({ data: [{ id: 'model-a' }, { id: 'model-b' }] });
+  const entry = report.providers['claude-code'];
+  assert.equal(entry.live_count, 2);
+  assert.deepEqual(entry.additions_validated, []);
+  assert.deepEqual(entry.vanishings, []);
+  assert.equal(entry.vanishings_basis, 'live');
+});
+
 test('parseJsonc strips comments and trailing commas', () => {
   const cfg = parseJsonc(FIXTURE);
   assert.deepEqual(Object.keys(cfg.provider), ['proxy-a', 'name-only-b']);

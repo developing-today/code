@@ -29,8 +29,9 @@ use tokio::{
 
 use crate::abuse::{
     AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, ConnectionId, Counters, Direction,
-    EndpointId as AbuseEndpointId, NodeId,
+    EndpointId as AbuseEndpointId, NodeId, RefusalReason,
 };
+use crate::event_store::BlockList;
 use crate::frames::{read_frame_body, read_frame_len};
 use crate::world_hub::WorldHub;
 use crate::world_session::{
@@ -119,13 +120,37 @@ impl WorldProtocol {
         local_node: NodeId,
         budgets: BudgetPolicy,
     ) -> Self {
+        Self::build(hub, local_node, budgets, None)
+    }
+
+    /// Like [`WorldProtocol::with_local_node`], with the operator block
+    /// list (#2245) attached to the shared evaluator: a connection from
+    /// an endpoint blocked by key is refused at admission, before any
+    /// session starts, with the evaluator's
+    /// [`RefusalReason::BlockedByOperator`] refusal. The list is
+    /// consulted live, so a block lands on the next connection.
+    #[must_use]
+    pub fn with_blocks(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        blocks: Arc<dyn BlockList>,
+    ) -> Self {
+        Self::build(hub, local_node, BudgetPolicy::default(), Some(blocks))
+    }
+
+    fn build(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        budgets: BudgetPolicy,
+        blocks: Option<Arc<dyn BlockList>>,
+    ) -> Self {
+        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        if let Some(blocks) = blocks {
+            evaluator = evaluator.with_block_list(blocks);
+        }
         Self {
             hub: hub.into(),
-            abuse: Arc::new(Mutex::new(AbuseEvaluator::with_budgets(
-                AbusePolicy::default(),
-                local_node,
-                budgets,
-            ))),
+            abuse: Arc::new(Mutex::new(evaluator)),
             connection_cap_refusals: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -201,6 +226,16 @@ impl ProtocolHandler for WorldProtocol {
         let connection_id = match self.abuse.lock() {
             Ok(mut abuse) => match abuse.open_connection(remote_endpoint, abuse_now_ms()) {
                 Ok(connection_id) => connection_id,
+                Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
+                    // #2245: an operator block is not a cap refusal — it
+                    // is not counted as one, and it offers no retry.
+                    tracing::warn!(
+                        remote = %remote,
+                        "world: operator block; refusing connection"
+                    );
+                    conn.close(0_u32.into(), b"blocked by operator");
+                    return Ok(());
+                }
                 Err(refusal) => {
                     let refusal_count = self
                         .connection_cap_refusals

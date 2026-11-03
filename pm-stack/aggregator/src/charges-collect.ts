@@ -64,12 +64,28 @@ function daysBetween(a: string, b: string): number {
 }
 
 /**
+ * Extract a card mask (e.g. "7535" from "Visa •7535", "•7535", or
+ * "Visa ending 7535") when present on a payment-method string.
+ * Returns undefined when no card mask is present (e.g. "card",
+ * "Link", empty/missing).
+ */
+export function extractCardMask(method: string | undefined | null): string | undefined {
+  if (typeof method !== "string" || !method.trim()) return undefined;
+  const m = /(?:[•*×xX#]|ending\s*)?\s*(\d{3,4})\b/i.exec(method);
+  return m ? m[1] : undefined;
+}
+
+/**
  * Does a hand-fed row describe the same charge as an auto-matched
  * row? Same amount, dates within the matcher's dedupe window, and
  * merchant/label token sequences that contain one another at whole-
  * token boundaries ("Meta PAYG spill" still matches the "Meta" alias
  * of a METAPAY charge). Conservative: a hand-fed row is only dropped
  * when an auto row plausibly IS that charge.
+ *
+ * When both rows carry known, conflicting card masks (e.g. Visa
+ * •7535 vs Visa •9545), they describe charges on different cards
+ * and are preserved as distinct evidence (#3123).
  */
 /**
  * Every token spelling a label answers to: its own, plus the
@@ -106,6 +122,9 @@ function containsTokenSequence(tokens: string[], sequence: string[]): boolean {
 function sameCharge(handFed: ChargeRow, auto: ChargeRow): boolean {
   if (handFed.amountUsd !== auto.amountUsd) return false;
   if (daysBetween(handFed.at, auto.at) > DEDUPE_WINDOW_DAYS) return false;
+  const maskA = extractCardMask(handFed.method);
+  const maskB = extractCardMask(auto.method);
+  if (maskA && maskB && maskA !== maskB) return false;
   const aSet = labelTokenSequences(handFed.label);
   const bSet = labelTokenSequences(auto.label);
   if (!aSet.length || !bSet.length) return false;

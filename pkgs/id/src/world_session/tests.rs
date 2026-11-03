@@ -277,6 +277,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cloned_service_allocates_distinct_ids_for_connections() {
+        let service = service(None);
+        let another_connection = service.clone();
+
+        assert!(service.next_session_id() != another_connection.next_session_id());
+    }
+
+    #[tokio::test]
     async fn execution_profile_change_is_admin_only_and_does_not_replace_live_program() {
         struct MarkerProgram;
         impl crate::world::WorldProgram for MarkerProgram {
@@ -642,6 +650,33 @@ mod tests {
         let service = WorldService::new(world, Some("admin".to_owned())).with_module_dir(modules);
         assert_eq!(service.stored_module_bytes(&hash).await.unwrap(), bytes);
         assert!(service.stored_module_bytes(&"0".repeat(64)).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PR #4708 Codex P2: a read-only replica clears its blob store so
+    /// uploads stay refused, which also removed the only source
+    /// `module_bytes` would serve from, so an authorized `DownloadModule`
+    /// always returned "module bytes are unavailable". The restored
+    /// module lives in the module directory; `module_bytes` falls back
+    /// to it while uploads stay refused (no blob store to pin into).
+    #[tokio::test]
+    async fn module_bytes_fall_back_to_the_module_directory_without_blobs() {
+        let dir = std::env::temp_dir().join(format!("id-module-bytes-test-{}", std::process::id()));
+        let modules = crate::world_store::ModuleDir::new(dir.clone());
+        let bytes: &[u8] = b"restored-module-bytes";
+        let hash = modules.save(bytes).unwrap();
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        // No blob store attached, as on a replica; `adopt_module` then
+        // only advertises the hash, exactly like the replica restore path.
+        let service = WorldService::new(world, Some("admin".to_owned())).with_module_dir(modules);
+        service.adopt_module(bytes.to_vec()).await.unwrap();
+        assert_eq!(
+            service.active_module_hash().await.as_deref(),
+            Some(hash.as_str())
+        );
+        assert_eq!(service.module_bytes(&hash).await.unwrap(), bytes);
+        assert!(service.module_bytes(&"0".repeat(64)).await.is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 
