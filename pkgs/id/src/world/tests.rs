@@ -3665,6 +3665,107 @@ mod tests {
         assert_eq!(actor.view_failures, 1, "only the one trap is counted");
     }
 
+    struct OversizedViewOnce {
+        calls: u64,
+        oversized_bytes: usize,
+    }
+
+    impl WorldProgram for OversizedViewOnce {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            self.calls += 1;
+            if self.calls == 1 {
+                Ok(Some("x".repeat(self.oversized_bytes)))
+            } else {
+                Ok(Some("recovered view".to_owned()))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_view_degrades_to_an_error_and_recovers() {
+        let limits = WorldLimits::default();
+        let presentation_bytes = limits.presentation_bytes;
+        let mut core = WorldCore::new("oversized-view", limits).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(OversizedViewOnce {
+                calls: 0,
+                oversized_bytes: presentation_bytes + 1,
+            }),
+            None,
+        );
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::View {
+                token: token.clone(),
+                reply,
+            })
+            .await;
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains(&format!("world presentation exceeds {presentation_bytes} bytes"))),
+            "the oversized view names the presentation limit: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an oversized view must not poison the world"
+        );
+        assert_eq!(actor.view_failures, 1, "the oversized view is counted");
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::View { token, reply })
+            .await;
+        let second = rx.await.unwrap();
+        assert!(
+            matches!(&second, Ok(Some(text)) if text == "recovered view"),
+            "the next view recovers: {second:?}"
+        );
+        assert_eq!(actor.view_failures, 1, "only the oversized view is counted");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_host_view_degrades_to_an_error_and_recovers() {
+        let limits = WorldLimits::default();
+        let presentation_bytes = limits.presentation_bytes;
+        let core = WorldCore::new("oversized-host-view", limits).unwrap();
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(OversizedViewOnce {
+                calls: 0,
+                oversized_bytes: presentation_bytes + 1,
+            }),
+            None,
+        );
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor.handle(WorldCommand::HostView { reply }).await;
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains(&format!("world presentation exceeds {presentation_bytes} bytes"))),
+            "the oversized host view names the presentation limit: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an oversized host view must not poison the world"
+        );
+        assert_eq!(actor.view_failures, 1, "the oversized host view is counted");
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor.handle(WorldCommand::HostView { reply }).await;
+        let second = rx.await.unwrap();
+        assert!(
+            matches!(&second, Ok((_, Some(text))) if text == "recovered view"),
+            "the next host view recovers: {second:?}"
+        );
+        assert_eq!(
+            actor.view_failures, 1,
+            "only the oversized host view is counted"
+        );
+    }
+
     #[derive(Default)]
     struct OversizedLayout;
 
