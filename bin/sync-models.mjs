@@ -51,7 +51,6 @@ const OPENCODE_CONFIG_PATH =
       ? REPO_CONFIG_PATH
       : USER_CONFIG_PATH);
 const POLICY_PATH = path.join(import.meta.dirname, 'sync-models.policy.json');
-const CODEX_CACHE_PATH = path.join(HOME_DIR, '.codex/models_cache.json');
 const GEMINI_CACHE_PATH = path.join(HOME_DIR, '.gemini/antigravity_models_cache.json');
 const LS_LOG_PATH = path.join(HOME_DIR, '.config/Antigravity/logs/language_server.log');
 
@@ -175,32 +174,6 @@ async function discoverAntigravityModels() {
   }
 
   return discovered;
-}
-
-// -----------------------------------------------------------------------------
-// 3. Discover Codex Models (via ~/.codex/models_cache.json)
-// -----------------------------------------------------------------------------
-function discoverCodexModels() {
-  console.log('[sync-models] Discovering Codex models...');
-  if (!fs.existsSync(CODEX_CACHE_PATH)) {
-    console.warn(`[sync-models] Codex cache file not found at ${CODEX_CACHE_PATH}`);
-    return [];
-  }
-  try {
-    const raw = fs.readFileSync(CODEX_CACHE_PATH, 'utf-8');
-    const data = JSON.parse(raw);
-    const models = (data.models || []).map(m => ({
-      slug: m.slug,
-      name: m.display_name || m.name || m.slug,
-      description: m.description || '',
-      defaultEffort: m.default_reasoning_effort || 'medium'
-    }));
-    console.log(`[sync-models] Discovered ${models.length} models from Codex cache`);
-    return models;
-  } catch (err) {
-    console.warn(`[sync-models] Failed to parse Codex cache: ${err.message}`);
-    return [];
-  }
 }
 
 // -----------------------------------------------------------------------------
@@ -463,7 +436,6 @@ function removeJsoncPath(text, keys) {
 async function run() {
   const modelsDev = await fetchModelsDev();
   const agyModels = await discoverAntigravityModels();
-  const codexModels = discoverCodexModels();
   const policy = loadPolicy();
 
   if (!fs.existsSync(OPENCODE_CONFIG_PATH)) {
@@ -598,66 +570,15 @@ async function run() {
     }
   }
 
-  // 2. Sync openai-codex
-  if (codexModels.length > 0 && config.provider['openai-codex']) {
-    const codexProv = config.provider['openai-codex'];
-    codexProv.models = codexProv.models || {};
-    const modelsPath = ['provider', 'openai-codex', 'models'];
+  // 2. openai-codex: retired 2026-11-03 -- the provider definition was
+  // deleted (dead-provider retirement ordered by Drew) after its route
+  // legs were re-seated onto openai-plan, so there is nothing to sync.
 
-    const codexEfforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-    const codexVariants = {};
-    for (const eff of codexEfforts) {
-      codexVariants[eff] = { options: { reasoning_effort: eff } };
-    }
-
-    for (const m of codexModels) {
-      if (m.slug === 'codex-auto-review') continue;
-      const entry = {
-        name: m.name.includes('(') ? m.name : `${m.name} (Codex CLI)`,
-        variants: codexVariants,
-        limit: { context: 1000000, output: 128000 }
-      };
-
-      if (!codexProv.models[m.slug]) {
-        console.log(`[sync-models] + Adding openai-codex/${m.slug}`);
-        defineValue(codexProv.models, m.slug, entry);
-        edits.push({ set: [...modelsPath, m.slug], value: entry });
-        totalAdded++;
-      } else {
-        if (codexProv.models[m.slug].limit?.context !== 1000000) {
-          codexProv.models[m.slug].limit = { context: 1000000, output: 128000 };
-          edits.push({ set: [...modelsPath, m.slug, 'limit'], value: { context: 1000000, output: 128000 } });
-          totalUpdated++;
-        }
-      }
-    }
-  }
-
-  // 3. Sync models.dev for cloud providers (google, openai, cloudflare-workers-ai)
+  // 3. Sync models.dev for cloud providers (openai; the google and
+  // cloudflare-gateway syncs were retired 2026-11-03 with their provider definitions)
   if (modelsDev) {
-    // Sync Google
-    if (config.provider.google && modelsDev.google?.models) {
-      const gProv = config.provider.google;
-      gProv.models = gProv.models || {};
-      for (const [mId, mSpec] of Object.entries(modelsDev.google.models)) {
-        if (!gProv.models[mId]) {
-          const entry = {
-            name: mSpec.name,
-            limit: mSpec.limit || { context: 1048576, output: 65536 }
-          };
-          if (mSpec.reasoning) {
-            entry.variants = {
-              low: { options: { thinkingLevel: 'low' } },
-              high: { options: { thinkingLevel: 'high' } }
-            };
-          }
-          console.log(`[sync-models] + Adding google/${mId}`);
-          defineValue(gProv.models, mId, entry);
-          edits.push({ set: ['provider', 'google', 'models', mId], value: entry });
-          totalAdded++;
-        }
-      }
-    }
+    // google: retired 2026-11-03 -- the provider definition was deleted
+    // (dead-provider retirement ordered by Drew), so there is nothing to sync.
 
     // Sync OpenAI
     if (config.provider.openai && modelsDev.openai?.models) {
@@ -684,30 +605,7 @@ async function run() {
       }
     }
 
-    // Sync Cloudflare Workers AI
-    if (config.provider['cloudflare-gateway'] && modelsDev['cloudflare-workers-ai']?.models) {
-      const cfProv = config.provider['cloudflare-gateway'];
-      cfProv.models = cfProv.models || {};
-      for (const [mId, mSpec] of Object.entries(modelsDev['cloudflare-workers-ai'].models)) {
-        if (!cfProv.models[mId]) {
-          const entry = {
-            name: mSpec.name,
-            limit: mSpec.limit || { context: 131072, output: 8192 }
-          };
-          if (mSpec.reasoning) {
-            entry.variants = {
-              low: { options: { reasoning_effort: 'low' } },
-              medium: { options: { reasoning_effort: 'medium' } },
-              high: { options: { reasoning_effort: 'high' } }
-            };
-          }
-          if (VERBOSE) console.log(`[sync-models] + Adding cloudflare-gateway/${mId}`);
-          defineValue(cfProv.models, mId, entry);
-          edits.push({ set: ['provider', 'cloudflare-gateway', 'models', mId], value: entry });
-          totalAdded++;
-        }
-      }
-    }
+    // cloudflare-gateway: retired 2026-11-03 with its provider definition.
   }
 
   console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ${totalRemoved} models removed.`);

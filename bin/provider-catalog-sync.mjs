@@ -96,11 +96,11 @@ const PROVIDER_SOURCES = {
     kind: 'unverifiable',
     note: 'No catalog block of its own; resolves through the fork built-in catalog (models.dev feed).',
   },
-  'opencode-go.personal': {
+  'opencode-go.drewrypope': {
     kind: 'unverifiable',
     note: 'No catalog block of its own; resolves through the fork built-in catalog (models.dev feed).',
   },
-  'opencode-go.lab': {
+  'opencode-go.popesdrew': {
     kind: 'unverifiable',
     note: 'No catalog block of its own; resolves through the fork built-in catalog (models.dev feed).',
   },

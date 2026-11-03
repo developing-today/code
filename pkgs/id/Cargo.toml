@@ -60,6 +60,11 @@ dht = ["dep:iroh-mainline-address-lookup"]
 id-core = { path = "crates/id-core", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
+# Calendar arithmetic and the IANA time-zone database for the did-it tracker's
+# pure evaluator (#3788). chrono-tz embeds the database, so evaluation needs no
+# system zoneinfo at run time or in the Nix build.
+chrono = "0.4"
+chrono-tz = "0.10"
 clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
 distributed-topic-tracker = "0.3"

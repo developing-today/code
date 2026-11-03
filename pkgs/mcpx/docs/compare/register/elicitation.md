@@ -42,7 +42,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 | ELI-18 | Naming the originating server in a relayed question | `mcpx missing` | spec: client MUST show who asks; mcpx: legacy path only | partial — legacy prefixed "(via mcpx)"; 2026 path raw (#201) | + med | S | med |
 | ELI-19 | Question from a shared upstream instance | `impl deferred` | mcpx only | partial — goes to the broker, never inline | + low | L | low |
 | ELI-20 | Questions raised inside `mcpx_exec` | `impl deferred` `opencode v2 has` `mcpx missing` | mcpx only | partial — always the broker, never the host (#77) | + low | L | low |
-| ELI-21 | Answering an elicitation from inside a script | `opencode v2 has` `mcpx missing` | opencode v2 UI form; mcpx designed, not built | ✗ — no `onElicit`; broker and policy only (#214) | + med | M | low |
+| ELI-21 | Answering an elicitation from inside a script | `opencode v2 has` `mcpx missing` | opencode v2 UI form; mcpx designed, not built | decided — broker-only by design (#1935): no `onElicit`; every answer flows through the broker | + med | M | low |
 | ELI-22 | Client with no elicitation answerer | `opencode v1 has` `lootbox has` | opencode v1 and lootbox: `-32601`; mcpx: `cancel` | ✓ — declares, answers `cancel` when nobody is asked | + low | S | low |
 | ELI-23 | Elicitation attributed to a session or a whole location | `opencode v2 has` | opencode v2: Location-global forms | n/a — mcpx is the server here | + low | S | low |
 
@@ -435,7 +435,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   for a human.
 - **Effort.** M — a long-poll or SSE from the generated client to `/v1/elicit?run=<id>`, plus handler registration.
 - **Risk.** low: without it scripts depend on policy answers or a human at the CLI or TUI.
-- **Detail.** The doc is ahead of the code, so the gap is a doc/code disagreement as well as a missing feature.
+- **Detail.** The doc was ahead of the code, so the gap was a doc/code disagreement as well as a missing feature. Closed 2026-11-03 (#1935) as a deliberate design decision: broker-only. `Route` sends url-mode, credential-field, and confirmation questions to a human on purpose, and an inline script handler would bypass or duplicate that gate; question-to-call correlation for a multi-call script is also unsolved (ELI-20). Scripts answer through the broker instead (exit 75 + `mcpx elicit answer`, `/v1/elicit`, `mcpx_elicit_*`, the ops surface). `docs/elicitation.md` §5.2 carries the full decision and its revisit conditions.
 - **Sources.** `docs/elicitation.md:318-324` "onElicit(async (q) => {"; `internal/daemon/server.go:422-424`;
   `v2:packages/core/src/mcp/client.ts:143`.
 

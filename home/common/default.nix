@@ -54,6 +54,61 @@ let
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  # The cascade's opencode build -- openchamber's nested opencode
+  # input, which is exactly the derivation services.opencode.package
+  # defaults to (the fork's module wrapper mkDefaults the fork
+  # flake's own packages.<system>.opencode). Named once here: the
+  # wrapper below execs it, and the wrapped package joins over it.
+  opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
+  # Drew's opencode wrapper -- formerly a standalone home.packages
+  # entry (writeShellScriptBin "opencode"), logic unchanged:
+  # Cloudflare + Jules env top-ups and the stamp-gated sync-models
+  # kick. The one change is the exec target: the cascade build, not
+  # this repo's root opencode input (a second fork build, so CLI and
+  # service ran different fork commits).
+  opencodeWrapper = pkgs.writeShellScript "opencode" ''
+    if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+      [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+      [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+      export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
+    fi
+    if [ -z "$JULES_API_KEY" ] && [ -r "$HOME/.config/jules/api-key" ]; then
+      export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
+    fi
+
+    # Opportunistic background model sync (max once every 24h, detached)
+    _CACHE_DIR="$HOME/.cache"
+    [ -n "$XDG_CACHE_HOME" ] && _CACHE_DIR="$XDG_CACHE_HOME"
+    _SYNC_STAMP="$_CACHE_DIR/sync-models.last"
+    if [ ! -f "$_SYNC_STAMP" ] || [ -n "$(find "$_SYNC_STAMP" -mtime +1 2>/dev/null)" ]; then
+      mkdir -p "$_CACHE_DIR"
+      touch "$_SYNC_STAMP"
+      (
+        export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+        if command -v sync-models >/dev/null 2>&1; then
+          sync-models >/dev/null 2>&1
+        elif [ -x "$HOME/code/bin/sync-models.mjs" ]; then
+          ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" >/dev/null 2>&1
+        fi
+      ) &
+    fi
+
+    exec ${opencodeCascade}/bin/opencode "$@"
+  '';
+  # The cascade opencode with the wrapper as its bin/opencode.
+  # symlinkJoin over the cascade package: the rest of its tree --
+  # above all bin/mcpx, the cascade mcpx symlink the code#5027
+  # settlement relies on -- rides along untouched. This is what
+  # services.opencode.package points at (below), so the systemd user
+  # service and the home profile share this one derivation.
+  opencodeWrapped = pkgs.symlinkJoin {
+    name = "${opencodeCascade.name}-wrapped";
+    paths = [ opencodeCascade ];
+    postBuild = ''
+      rm $out/bin/opencode
+      install -Dm755 ${opencodeWrapper} $out/bin/opencode
+    '';
+  };
   # The environment the mcpx daemon runs with (services.mcpx.environment
   # below; the module renders it into the unit).
   mcpxEnvironment = {
@@ -913,12 +968,34 @@ in
     # inherits them — the mcpx daemon receives them the same way.)
   };
 
+  services.opencode = {
+    # enable comes from the cascade (mkDefault at each layer).
+    #
+    # package: the cascade build with the wrapper baked in
+    # (opencodeWrapped, in the let above) -- one derivation for the
+    # service unit and the home profile (Drew's ruling, 2026-11-03;
+    # code#5038, option A). As a standalone home.packages entry the
+    # wrapper collided with this package on bin/opencode, and it
+    # exec'd the root input's build besides (CLI/service skew).
+    package = opencodeWrapped;
+  };
+
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
-    # This repo's own mcpx build — the package the hand-rolled unit
-    # ran (pkgs/mcpx) — rather than the fork's re-export default.
-    package = mcpx;
+    # package: deliberately unset. There is one mcpx — the
+    # cascade's (the fork's build, via the module wrapper's
+    # mkDefault) — and this config takes that one (Drew's ruling,
+    # 2026-11-03; code#5027). The former pin to this repo's own
+    # pkgs/mcpx build made two mcpx builds coexist and collided
+    # with the fork package's bin/mcpx in the home profile.
+    #
+    # addPackageToProfile: off. The profile's bin/mcpx comes from
+    # exactly one provider — the opencode package's bundled
+    # symlink. The module also adding cfg.package to home.packages
+    # would put a second mcpx entry in the profile (Drew's ruling,
+    # 2026-11-03; code#5027).
+    addPackageToProfile = false;
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).
     environment = mcpxEnvironment;
@@ -1526,35 +1603,9 @@ in
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
         '')
-        (pkgs.writeShellScriptBin "opencode" ''
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-            [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-          fi
-          if [ -z "$JULES_API_KEY" ] && [ -r "$HOME/.config/jules/api-key" ]; then
-            export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
-          fi
-
-          # Opportunistic background model sync (max once every 24h, detached)
-          _CACHE_DIR="$HOME/.cache"
-          [ -n "$XDG_CACHE_HOME" ] && _CACHE_DIR="$XDG_CACHE_HOME"
-          _SYNC_STAMP="$_CACHE_DIR/sync-models.last"
-          if [ ! -f "$_SYNC_STAMP" ] || [ -n "$(find "$_SYNC_STAMP" -mtime +1 2>/dev/null)" ]; then
-            mkdir -p "$_CACHE_DIR"
-            touch "$_SYNC_STAMP"
-            (
-              export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-              if command -v sync-models >/dev/null 2>&1; then
-                sync-models >/dev/null 2>&1
-              elif [ -x "$HOME/code/bin/sync-models.mjs" ]; then
-                ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" >/dev/null 2>&1
-              fi
-            ) &
-          fi
-
-          exec ${inputs.opencode.packages.${system}.opencode}/bin/opencode "$@"
-        '')
+        # No standalone "opencode" script in this list: the CLI is
+        # services.opencode.package -- the cascade build with the
+        # wrapper baked in (opencodeWrapped, in the let above; code#5038).
         #
         #         dog
         #         felix

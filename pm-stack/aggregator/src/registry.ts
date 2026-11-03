@@ -8,6 +8,7 @@
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
 import { parseRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 function isValidTaskRef(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -170,12 +171,18 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
   // this filter today and throws TypeError once the sort reaches it.
   // Timestamps must be string-or-absent; a poisoned record is rejected,
   // not coerced (the #2347 load-filter precedent).
+  // #5078: a string is not enough — mergeRecords string-compares
+  // lastSeenAt, so a non-ISO stamp ("March 2, 2026" sorts after every
+  // ISO stamp) wins recency forever, and impossible dates (2026-02-30)
+  // roll to other instants in registryActivityMs. Present timestamps
+  // must be real ISO dates via isIsoDate, as isSnapshotRecord and the
+  // charge/subscription row guards already require; absent stays fine.
   return (
     typeof r.id === "string" &&
     typeof r.source === "string" &&
     typeof r.label === "string" &&
-    (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
-    (r.startedAt === undefined || typeof r.startedAt === "string") &&
+    (r.lastSeenAt === undefined || isIsoDate(r.lastSeenAt)) &&
+    (r.startedAt === undefined || isIsoDate(r.startedAt)) &&
     // #2408/#2485/#4284: mergeRecords spreads taskRefs as an array, and
     // querying/rendering dereferences it unconditionally (spread in
     // matchesText, .some in the ?task= filter and the item-page linked-

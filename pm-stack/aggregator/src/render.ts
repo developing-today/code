@@ -33,6 +33,7 @@ import {
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  questionIdForOption,
   type NeedsOrder,
 } from "./tier-items.ts";
 import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
@@ -107,6 +108,7 @@ import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
+import type { SearchResult } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -133,6 +135,11 @@ const CSS = `
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
 [id] { scroll-margin-top: 96px; }
 nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navsearch { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.navsearch input, .search-page-form input { min-width: 12rem; padding: 7px 9px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: inherit; }
+.navsearch button, .search-page-form button { padding: 7px 10px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: inherit; cursor: pointer; }
+.search-page-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.search-page-form input { flex: 1; }
 .navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
 .navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
 .navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
@@ -620,6 +627,7 @@ document.addEventListener("submit", async (ev) => {
   if (standingAuto) payload.standingAuto = standingAuto === "true";
   const answersByQuestion = {};
   for (const el of form.querySelectorAll("[name^='answers:']")) {
+    if (el.disabled) continue;
     const qid = el.name.slice("answers:".length);
     if (el.type === "checkbox") { if (el.checked) (answersByQuestion[qid] = answersByQuestion[qid] || []).push(el.value); }
     else if (el.type === "radio") { if (el.checked) answersByQuestion[qid] = el.value; }
@@ -645,7 +653,21 @@ document.addEventListener("submit", async (ev) => {
   if (form.dataset.supersedes) body.supersedes = form.dataset.supersedes;
   try {
     const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      if (typeof b.duplicateOf === "string") {
+        if (submitBtn) submitBtn.disabled = false;
+        // The rejected attempt is persisted under this form's token; a
+        // corrected resubmit (e.g. dropping the already-answered
+        // question) is a NEW attempt and needs a fresh token, or the
+        // store's client-token dedupe would replay the rejected record
+        // as if it had been sent (Codex P2 on PR #4024).
+        form.dataset.token = "ct-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+        if (err) err.textContent = "Duplicate recorded" + (typeof b.action?.id === "string" ? " as " + b.action.id : "") + "; points to existing answer " + b.duplicateOf + ".";
+        return;
+      }
+      throw new Error(b.error || ("HTTP " + res.status));
+    }
     window.__dashAfter(form, "✓ sent · pending — the fleet applies it on its next pass");
   } catch (e) {
     if (submitBtn) submitBtn.disabled = false;
@@ -740,6 +762,10 @@ export function pageDropdown(active: string): string {
   return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
+function globalSearch(): string {
+  return `<form class="navsearch" action="/search" method="get" role="search"><input type="search" name="q" aria-label="Search board and roadmap work" placeholder="Search work…" required><button type="submit">Search</button></form>`;
+}
+
 function layout(
   title: string,
   body: string,
@@ -759,9 +785,41 @@ function layout(
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
+<body><nav>${links}${dropdown}${globalSearch()}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+}
+
+/** First-slice global search over board/roadmap subjects and linked refs. */
+export function renderSearch(
+  query: string,
+  results: SearchResult[],
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const cards = results
+    .map((result) => {
+      const badges = result.refs
+        .map((ref) => {
+          const item = items.get(ref);
+          return item
+            ? itemBadge(item)
+            : `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`;
+        })
+        .join(" ");
+      return `<div class="card"><a href="/item/${encodeURIComponent(result.id)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+    })
+    .join("");
+  const body = `<h1>Search</h1><p class="muted">Search board items and roadmap rows by subject, title, or linked issue/PR ref. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  return layout(
+    "Search",
+    body,
+    provenance,
+    "/search",
+    "",
+    detail ? freshnessChips(detail, ["board", "roadmap", "items"]) : "",
+  );
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -1257,9 +1315,10 @@ export function whyUserBadge(item: TierItem): string {
   return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
 }
 
-function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[]): string {
+function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[], answerAction?: DashAction): string {
   const name = `answers:${q.id}`;
   const answered = answeredValue !== undefined;
+  const disabled = answered ? " disabled" : "";
   let field: string;
   if (q.type === "single" || q.type === "yesno") {
     const opts = q.options ?? [
@@ -1269,7 +1328,7 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${opts
       .map(
         (o) =>
-          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else if (q.type === "multi") {
@@ -1277,16 +1336,16 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${(q.options ?? [])
       .map(
         (o) =>
-          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else {
-    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}">`;
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}"${disabled}>`;
   }
   // #1451: answered state rides the card — a partial submit records
   // what it covered and the still-open required questions say so.
   const state = answered
-    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}</span>`
+    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}${answerAction ? ` · ${answerAction.state === "new" ? "pending" : "applied"} · action ${esc(answerAction.id)}` : ""}</span>`
     : q.required
       ? ` <span class="qremaining">still needed</span>`
       : "";
@@ -1391,28 +1450,45 @@ export function needsUserFormsHtml(
   cs: CardState = cardState(undefined),
 ): string {
   const forms: string[] = [];
+  // Older option actions predate the canonical question pointer. Resolve
+  // them from the currently published item so already-answered cards
+  // cannot reopen the same question after this deploy.
+  const answered = new Map(cs.answered);
+  const answerActionsByQuestion = new Map(cs.answerActionsByQuestion);
+  for (const [optionId, action] of cs.answeredOptionActionsById) {
+    const questionId = questionIdForOption(item, optionId);
+    if (questionId && !answered.has(questionId)) {
+      answered.set(questionId, optionId);
+      answerActionsByQuestion.set(questionId, action);
+    }
+  }
   for (const opt of item.options ?? []) {
-    const picked = cs.answeredOptionId === opt.id;
+    const questionId = questionIdForOption(item, opt.id);
+    const questionValue = questionId ? answered.get(questionId) : undefined;
+    const answerAction = questionId ? answerActionsByQuestion.get(questionId) : cs.answeredOptionAction;
+    const locked = questionId ? questionValue !== undefined : cs.answeredOptionActionsById.size > 0;
+    const picked = cs.answeredOptionId === opt.id || (questionId !== undefined && questionValue === opt.id);
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${picked ? " disabled" : ""}>${esc(opt.label)}${picked ? " ✓ answered · pending" : ""}</button>${
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${locked ? " disabled" : ""}>${esc(opt.label)}${locked ? ` ✓ answered${answerAction?.state === "new" ? " · pending" : ""}` : ""}</button>${locked && answerAction ? `<span class="muted">Answer action ${esc(answerAction.id)}</span>` : ""}${
           opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
         }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
       }),
     );
   }
   if (item.questions?.length) {
-    const remaining = item.questions.filter((q) => q.required && !cs.answered.has(q.id));
-    const allDone = remaining.length === 0 && item.questions.some((q) => cs.answered.has(q.id));
+    const remaining = item.questions.filter((q) => q.required && !answered.has(q.id));
+    const allDone = remaining.length === 0 && item.questions.some((q) => answered.has(q.id));
+    const hasUnanswered = item.questions.some((q) => !answered.has(q.id));
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `${item.questions.map((q) => questionFieldHtml(q, cs.answered.get(q.id))).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">${
+        inner: `${item.questions.map((q) => questionFieldHtml(q, answered.get(q.id), answerActionsByQuestion.get(q.id))).join("")}<button type="submit" class="primary"${hasUnanswered ? "" : " disabled"}>Submit answers</button><span class="why">${
           allDone
             ? "All required questions are answered — the answers are recorded and pending with the orchestrator."
             : `Answer any subset and submit (#1451): answered questions are recorded, and the card keeps showing what remains${remaining.length ? ` — still needed: ${esc(remaining.map((q) => q.id).join(", "))}` : ""}.`
@@ -2193,7 +2269,7 @@ function attentionStripHtml(usage: UsageView): string {
  * the yuan figure as read, never converted to dollars.
  */
 function paygBalanceHtml(usage: UsageView): string {
-  const recs = (usage.history["deepseek:api"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
+  const recs = (usage.history["deepseek"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
   if (!recs.length) return "";
   const last = recs[recs.length - 1];
   return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
