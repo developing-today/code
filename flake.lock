@@ -1496,15 +1496,15 @@
         "qmd": "qmd"
       },
       "locked": {
-        "lastModified": 1793383524,
-        "narHash": "sha256-arWBoGbFd5AW+RsJ/wmsWiB0DMMM1S9Ji94xNOFOobw=",
-        "owner": "openclaw",
+        "lastModified": 1793728024,
+        "narHash": "sha256-2DupeUDzRqD3JCBGhq80YqzfTgU281RekabvaUXXGoQ=",
+        "owner": "developing-today",
         "repo": "nix-openclaw",
-        "rev": "4b261b08c173467dc41db7b43d8265529c435055",
+        "rev": "da8a7633db52ce92ff28542ffc618e705a0e34e0",
         "type": "github"
       },
       "original": {
-        "owner": "openclaw",
+        "owner": "developing-today",
         "repo": "nix-openclaw",
         "type": "github"
       }
