@@ -957,6 +957,34 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         port,
         &defaults().web_bindings,
     )?;
+    // #2147 (slice 1): restore the persisted publication set at boot.
+    // The registry is the persisted half of dynamic publication: the
+    // set an operator published in an earlier run is read back here,
+    // named line by line so the restored set is inspectable in the
+    // startup log, and the boot shadow warnings the issue requires
+    // are re-issued for any persisted mount that shadows an Explorer
+    // route without an acknowledgement. Applying the set to live
+    // listeners is the next slice; a malformed registry fails startup
+    // loudly (in Registry::load) rather than restoring nothing
+    // silently.
+    let publications =
+        crate::publications::Registry::load(&crate::publications::publications_file())?;
+    if !publications.publications.is_empty() {
+        status!(
+            "publications: restoring {} persisted publication(s)",
+            publications.publications.len()
+        );
+        for publication in &publications.publications {
+            status!(
+                "publications: world {} at {}",
+                publication.world,
+                publication.placement.describe()
+            );
+        }
+        for warning in publications.boot_warnings(crate::publications::KNOWN_EXPLORER_ROUTES) {
+            status!("{warning}");
+        }
+    }
     let apps_root = std::env::var_os("ID_APPS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("apps"));

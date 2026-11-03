@@ -211,6 +211,7 @@ pub mod notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
 pub mod protocol;
+pub mod publications;
 pub mod pull_policy;
 pub mod references;
 pub mod rejection;
