@@ -32,6 +32,7 @@ import {
 } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
 import { handleLaunchFailure, withCreatedSession, type LaunchFailureContext } from "./launch_failure.ts";
+import { handleEnqueueFailure } from "./enqueue_failure.ts";
 import { annotateLaunch } from "./launch_annotations.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient } from "./opencode.ts";
@@ -219,15 +220,38 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   );
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
-    return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
+    const msg = `internal packet validation failed: ${payloadErrors.join("; ")}`;
+    // The tracking issue already exists at this point (#4925): never
+    // leave it dangling for a task that will never be enqueued.
+    if (issue) {
+      const outcome = await handleEnqueueFailure(github, body.repo, issue.number, "packet validation", new Error(msg));
+      warnings.push(
+        outcome.closed
+          ? `tracking issue #${issue.number} was closed as not planned after the packet validation failure`
+          : `tracking issue #${issue.number} could not be closed after the packet validation failure — it needs manual cleanup`,
+      );
+    }
+    return json(500, { error: msg, ...(warnings.length ? { warnings } : {}) });
   }
   let task: TaskRow;
   try {
     task = await requireQueue().enqueue(packet, body.repo);
   } catch (e) {
+    // Same no-orphan rule on the enqueue itself (#4925): comment the
+    // failure on the issue this request created and close it as not
+    // planned; the response names the issue and whether it closed.
+    let issueClosed: boolean | undefined;
+    if (issue) {
+      const outcome = await handleEnqueueFailure(github, body.repo, issue.number, "queue enqueue", e);
+      issueClosed = outcome.closed;
+      if (!outcome.closed) {
+        warnings.push(`tracking issue #${issue.number} could not be closed after the enqueue failure — it needs manual cleanup`);
+      }
+    }
     return json(502, {
       error: e instanceof Error ? e.message : String(e),
       issue_number: issue?.number ?? null,
+      ...(issue ? { issue_closed: issueClosed } : {}),
       ...(warnings.length ? { warnings } : {}),
     });
   }
@@ -408,6 +432,10 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
   // NOT create an issue — the task attaches to that existing issue in
   // body.repo (canonical dedupe key + agent-note comment + labels below).
   let issue: IssueRef | null = null;
+  // Only an issue this request creates may be closed on an enqueue
+  // failure (#4925); an attached issue (issue_number) is the caller's
+  // and is never closed by dispatch.
+  let createdIssue: IssueRef | null = null;
   if (body.issueNumber !== undefined) {
     issue = {
       number: body.issueNumber,
@@ -418,6 +446,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     }
   } else if (body.issue) {
     issue = await maybeCreateIssue(body.repo, body.title, body.prompt, ["queue/queued", "source/dispatch"], warnings);
+    createdIssue = issue;
   }
 
   // Verify the attach target before enqueueing (#3007): a nonexistent
@@ -463,7 +492,18 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
   const packet = buildPacket(packetInput, dedupeKey);
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
-    return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
+    const msg = `internal packet validation failed: ${payloadErrors.join("; ")}`;
+    // No-orphan rule (#4925), create path only: an issue this request
+    // created must not dangle for a task that will never be enqueued.
+    if (createdIssue) {
+      const outcome = await handleEnqueueFailure(github, body.repo, createdIssue.number, "packet validation", new Error(msg));
+      warnings.push(
+        outcome.closed
+          ? `tracking issue #${createdIssue.number} was closed as not planned after the packet validation failure`
+          : `tracking issue #${createdIssue.number} could not be closed after the packet validation failure — it needs manual cleanup`,
+      );
+    }
+    return json(500, { error: msg, ...(warnings.length ? { warnings } : {}) });
   }
   let outcome: EnqueueDispatchOutcome;
   try {
@@ -480,12 +520,29 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       callerSuppliedKey: body.dedupeKey !== undefined,
     });
   } catch (e) {
-    if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {
-      return json(500, { error: e.message });
+    const validationFailure = e instanceof QueueError && e.message.startsWith("internal packet validation failed");
+    // No-orphan rule (#4925), create path only (see createdIssue).
+    let issueClosed: boolean | undefined;
+    if (createdIssue) {
+      const outcome = await handleEnqueueFailure(
+        github,
+        body.repo,
+        createdIssue.number,
+        validationFailure ? "packet validation" : "queue enqueue",
+        e,
+      );
+      issueClosed = outcome.closed;
+      if (!outcome.closed) {
+        warnings.push(`tracking issue #${createdIssue.number} could not be closed after the enqueue failure — it needs manual cleanup`);
+      }
+    }
+    if (validationFailure) {
+      return json(500, { error: (e as Error).message, ...(warnings.length ? { warnings } : {}) });
     }
     return json(502, {
       error: e instanceof Error ? e.message : String(e),
       issue_number: issue?.number ?? null,
+      ...(createdIssue ? { issue_closed: issueClosed } : {}),
       ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
       ...(warnings.length ? { warnings } : {}),
     });

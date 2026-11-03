@@ -135,10 +135,20 @@ export interface SessionRequest {
   wait: boolean;
 }
 
+/** Minimum prompt length (chars, after trim) for a session request that
+ * carries no explicit title (issue #4925). Below this, the request is a
+ * placeholder, not a spec: titleFromPrompt would turn it into a real
+ * repo issue title (the "do the thing" family — 59 open placeholders
+ * accumulated before this gate), and the tracking issue's whole body
+ * would be that prompt. An explicit title exempts the request: the
+ * caller has named the work, so the title is no longer derived from
+ * the placeholder prompt. */
+export const MIN_DERIVED_TITLE_PROMPT_CHARS = 40;
+
 export function parseSessionRequest(body: unknown): SessionRequest {
   if (typeof body !== "object" || body === null) throw new ValidationError("body: must be a JSON object");
   const b = body as Record<string, unknown>;
-  return {
+  const req: SessionRequest = {
     repo: reqString(b, "repo"),
     prompt: reqString(b, "prompt"),
     title: optNonBlankString(b, "title"),
@@ -148,6 +158,14 @@ export function parseSessionRequest(body: unknown): SessionRequest {
     issue: optBool(b, "issue", true),
     wait: optBool(b, "wait", true),
   };
+  // The spec gate runs after every other field validates, so existing
+  // field errors (repo, priority, ...) keep their precedence.
+  if (req.title === undefined && req.prompt.length < MIN_DERIVED_TITLE_PROMPT_CHARS) {
+    throw new ValidationError(
+      `prompt: ${req.prompt.length} chars is too short to derive a tracking-issue title from (minimum ${MIN_DERIVED_TITLE_PROMPT_CHARS}) — provide an explicit title or a fuller prompt`,
+    );
+  }
+  return req;
 }
 
 /** Session-directory scoping for POST /v1/sessions (issues #2903, #2664).
