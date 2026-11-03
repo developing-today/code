@@ -50,7 +50,7 @@ in
           # Service.Environment: home-manager injects its own
           # Service.Environment (session variables) and the two
           # definitions do not merge.
-          environment = cfg.environment;
+          inherit (cfg) environment;
           Service = {
             ExecStart = "${cfg.package}/bin/mcpx daemon --config ${cfg.configFile}";
             Restart = "always";

@@ -676,7 +676,10 @@ describe("pool splits (#1331)", () => {
   });
 
   test("Go per-workspace entries yield personal/lab split rows alongside the combined rows", () => {
-    const entries = [entryFromResult(goResult("Personal", "cred_personal"), TICK), entryFromResult(goResult("Lab", "cred_lab"), TICK)];
+    const entries = [
+      entryFromResult(goResult("Personal", "cred_personal"), TICK),
+      entryFromResult(goResult("Lab", "cred_lab"), TICK),
+    ];
     expect(entries.map((e) => e.serviceId)).toEqual(["opencode-go", "opencode-go"]);
     const split = entriesWithPoolSplits(entries);
     expect(split.map((e) => e.serviceId).sort()).toEqual([
@@ -728,9 +731,7 @@ describe("pool splits (#1331)", () => {
       error: "Not configured",
       usage: null,
     };
-    const split = entriesWithPoolSplits(
-      [entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)],
-    );
+    const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
     expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_PERSONAL_SERVICE_ID]);
     const personal = split.find((e) => e.serviceId === GO_PERSONAL_SERVICE_ID)!;
     expect(personal.state).toBe("error");
@@ -820,7 +821,13 @@ describe("pool splits (#1331)", () => {
 
   test("Antigravity error lapses both pools; unconfigured splits nothing", () => {
     const err = entryFromResult(
-      { providerId: "antigravity", ok: false, configured: true, error: "Failed to refresh Antigravity token", usage: null },
+      {
+        providerId: "antigravity",
+        ok: false,
+        configured: true,
+        error: "Failed to refresh Antigravity token",
+        usage: null,
+      },
       TICK,
     );
     const split = entriesWithPoolSplits([err]);
@@ -834,7 +841,10 @@ describe("pool splits (#1331)", () => {
       expect(row.error).toContain("Failed to refresh");
     }
     const unconfigured = entriesWithPoolSplits([
-      entryFromResult({ providerId: "antigravity", ok: false, configured: false, error: "Not configured", usage: null }, TICK),
+      entryFromResult(
+        { providerId: "antigravity", ok: false, configured: false, error: "Not configured", usage: null },
+        TICK,
+      ),
     ]);
     expect(unconfigured.map((e) => e.serviceId)).toEqual(["antigravity"]);
   });

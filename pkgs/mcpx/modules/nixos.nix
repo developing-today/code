@@ -49,7 +49,7 @@ in
     systemd.user.services.mcpx = {
       description = "mcpx daemon";
       wantedBy = [ "default.target" ];
-      environment = cfg.environment;
+      inherit (cfg) environment;
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/mcpx daemon --config ${cfg.configFile}";
         Restart = "always";
