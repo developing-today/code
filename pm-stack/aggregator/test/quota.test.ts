@@ -372,16 +372,20 @@ describe("disabled_providers enforcement (#1114)", () => {
     const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
     const ids = pools.map((p) => p.id);
     expect(ids).not.toContain("openai:codex");
-    expect(ids).not.toContain("meta:high-usage");
-    expect(filtered).toEqual([
-      ["meta:high-usage", "meta"],
-      ["openai:codex", "openai"],
-    ]);
+    expect(filtered).toEqual([["openai:codex", "openai"]]);
     const choices = computeChoices(pools, NOW.getTime());
     const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
     expect(named).not.toContain("openai:codex");
-    expect(named).not.toContain("meta:high-usage");
-    for (const id of named) expect(disabled.has(poolProviderId(id))).toBe(false);
+    // The one exemption (Drew, 2026-11-03): meta:high-usage is a
+    // standard report member whose quota is gathered by asking
+    // OpenCode; its disabled entry is the direct session door only,
+    // so the pool stays on the board — and in guidance — while
+    // every other named pool still answers to an enabled door.
+    expect(ids).toContain("meta:high-usage");
+    for (const id of named) {
+      if (id === "meta:high-usage") continue;
+      expect(disabled.has(poolProviderId(id))).toBe(false);
+    }
   });
 
   test("the Claude pool's door is claude-code: disabling it filters anthropic:claude-pro", () => {
