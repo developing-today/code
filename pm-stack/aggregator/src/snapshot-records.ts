@@ -308,7 +308,7 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     if (!metricId) return;
     out.push({
       ts,
-      serviceId: "openai",
+      serviceId: "openai.main",
       metricId,
       value: win.used_percent,
       unit: "pct",
