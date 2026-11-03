@@ -192,7 +192,7 @@ describe("events store (#1739)", () => {
 // attribution confidence, separate event/ingest timestamps, source
 // identity, hash-linked integrity, append-only corrections, v1
 // dual-read, and the durable retry outbox.
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { verifyEventChain } from "../src/events.ts";
 
 describe("events audit v2 (#3322 slice A)", () => {
@@ -308,5 +308,72 @@ describe("events audit v2 (#3322 slice A)", () => {
     expect(summaries).toContain("after recovery");
     expect(summaries).toContain("landed");
     expect(existsSync(store.outboxFile)).toBe(false);
+  });
+
+  test("outbox records already in memory are not cleared until a persist succeeds", async () => {
+    // Codex re-review on PR #5137 (P1): record() keeps a failed event
+    // in memory, so the next append's flush saw it as "known", skipped
+    // the persist, and cleared the outbox — a second failure then
+    // re-queued only the newer event and a restart lost the first.
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-outbox-persist-"));
+    const file = join(dir, "events.json");
+    const store = new EventsStore(file);
+    await store.record({ ...base, summary: "landed" });
+    rmSync(file);
+    mkdirSync(file);
+    writeFileSync(join(file, "occupant"), "x");
+    await expect(store.record({ ...base, summary: "first failure" })).rejects.toThrow();
+    await expect(store.record({ ...base, summary: "second failure" })).rejects.toThrow();
+    // Both failures must still be queued: the first was never made
+    // durable, so its outbox entry may not be cleared.
+    expect(await store.health().then((h) => h.pendingRetries)).toBe(2);
+    rmSync(file, { recursive: true });
+    await store.record({ ...base, summary: "after recovery" });
+    const summaries = (await new EventsStore(file).list()).map((e) => e.summary);
+    expect(summaries).toContain("first failure");
+    expect(summaries).toContain("second failure");
+    expect(summaries).toContain("after recovery");
+    expect(summaries).toContain("landed");
+    expect(existsSync(store.outboxFile)).toBe(false);
+  });
+
+  test("a chain that failed verification is not re-stamped by a later append", async () => {
+    // Codex re-review on PR #5137 (P2): persist() re-stamped every
+    // hash, so one ordinary append after a tamper laundered the
+    // altered history into a valid chain and the violation vanished
+    // on restart. Persists must refuse until a human investigates.
+    const { file, store } = tmpStore();
+    await store.record({ ...base });
+    await store.record({ ...base, summary: "second" });
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { events: { summary: string }[] };
+    onDisk.events[0]!.summary = "tampered";
+    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    const reloaded = new EventsStore(file);
+    expect((await reloaded.health()).integrity.ok).toBe(false);
+    await expect(reloaded.record({ ...base, summary: "routine append" })).rejects.toThrow("integrity violation");
+    // The on-disk evidence is untouched and a fresh process still
+    // sees the violation; the refused append waits in the outbox.
+    expect(readFileSync(file, "utf8")).toContain("tampered");
+    const fresh = new EventsStore(file);
+    expect((await fresh.health()).integrity.ok).toBe(false);
+    expect(existsSync(reloaded.outboxFile)).toBe(true);
+  });
+
+  test("a damaged record in a v2 file is quarantined, not migrated as v1", async () => {
+    // Codex re-review on PR #5137 (P2): deleting a v2 record's hash
+    // made it fail the v2 shape but pass the v1 shape, so it was
+    // silently "migrated" with an empty hash and excluded from
+    // verification. Migration is gated on the file version now.
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-damaged-v2-"));
+    const file = join(dir, "events.json");
+    const store = new EventsStore(file);
+    await store.record({ ...base });
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { version: number; events: Record<string, unknown>[] };
+    expect(onDisk.version).toBe(2);
+    delete onDisk.events[0]!.hash;
+    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    const reloaded = new EventsStore(file);
+    expect(await reloaded.list()).toEqual([]);
+    expect(readdirSync(dir).some((name) => name.includes(".corrupt-"))).toBe(true);
   });
 });

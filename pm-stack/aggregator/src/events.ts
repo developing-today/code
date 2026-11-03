@@ -417,6 +417,7 @@ export class EventsStore {
       if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as EventsFile).events)) {
         throw new Error("store file does not have the expected { events: [...] } shape");
       }
+      const fileVersion = (parsed as { version?: unknown }).version;
       const rows = (parsed as { events: unknown[] }).events;
       const normalized: AuditEvent[] = [];
       for (let i = 0; i < rows.length; i++) {
@@ -427,7 +428,14 @@ export class EventsStore {
             attribution: row.attribution ?? { confidence: "unknown", asserted: false },
             source: row.source ?? { identity: "unknown" },
           });
-        } else if (isStreamEvent(row)) {
+        } else if (fileVersion === 1 && isStreamEvent(row)) {
+          // Legacy migration is gated on the FILE version (#3322
+          // Codex re-review, PR #5137): in a v2 file, a row that
+          // fails the v2 shape is a damaged audit record, not a v1
+          // row — migrating it would give it an empty hash, exclude
+          // it from verification, and hide a possible silent edit.
+          // It falls through to the shape error below instead, and
+          // the file is quarantined with its bytes preserved.
           normalized.push(migrateV1Event(row, i));
         } else {
           throw new Error(`event row ${i} does not have the expected StreamEvent/AuditEvent shape`);
@@ -474,6 +482,27 @@ export class EventsStore {
 
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
+      // Never re-stamp a chain that failed verification (#3322
+      // Codex re-review, PR #5137): rechain() recomputes every
+      // hash, so an ordinary append after a tamper would launder
+      // the altered history into a valid chain and health() would
+      // report success after a restart, with nobody having
+      // investigated. Refuse instead — the caller's record is
+      // queued in the retry outbox, the on-disk evidence stays
+      // byte-identical, and the violation stays visible until a
+      // human investigates and repairs the store deliberately.
+      if (this.integrityViolation) {
+        throw new Error(
+          `events store integrity violation: ${this.integrityViolation} — refusing to persist over a chain that failed verification`,
+        );
+      }
+      const verdict = verifyEventChain(this.events.filter((e) => e.hash !== ""));
+      if (!verdict.ok) {
+        this.integrityViolation = verdict.error;
+        throw new Error(
+          `events store integrity violation: ${verdict.error} — refusing to persist over a chain that failed verification`,
+        );
+      }
       this.events = rechain(this.events);
       const data: EventsFile = { version: 2, events: this.events };
       await mkdir(dirname(this.file), { recursive: true });
@@ -531,6 +560,15 @@ export class EventsStore {
     const fresh = pending.filter((e) => !known.has(e.id));
     if (fresh.length > 0) {
       this.events = pruneEvents([...this.events, ...fresh]);
+    }
+    // Clear the outbox only after a successful persist of everything
+    // it held (#3322 Codex re-review, PR #5137): a pending record can
+    // already be in memory — record() keeps the event in this.events
+    // when its persist fails — so "already known" does not mean
+    // durable. Clearing on presence alone dropped the earlier record
+    // when the next append also failed and the process restarted:
+    // only the newer failure was re-queued.
+    if (fresh.length > 0 || pending.length > 0) {
       try {
         await this.persist();
       } catch {
