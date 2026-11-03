@@ -30,6 +30,11 @@ pub struct WorldCore {
     pub(crate) active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    /// The per-world total memory budget ledger (#557): created with
+    /// the default ceiling, and replaced by [`WorldCore::restore`]
+    /// with the ledger measured over the journal (its limit is the
+    /// last persisted profile budget, or the default ceiling).
+    pub(crate) memory_budget: crate::world_limits::WorldMemoryBudget,
     /// This world's own capability ceiling. The ledger allows the intersection
     /// of this and the server's `limits.server_caps`.
     pub(crate) caps_ceiling: BTreeSet<String>,
@@ -96,6 +101,46 @@ fn chat_endpoint(participant_id: u64) -> crate::abuse::EndpointId {
     endpoint
 }
 
+/// Validate the invariants shared by standalone handoff entries and
+/// checkpoint-carried transfer state. `prior_transfers` are the already
+/// admitted records, so callers validate a checkpoint's list in list order.
+fn validate_handoff_transfer(
+    transfer: &HandoffTransferState,
+    prior_transfers: &[HandoffTransferState],
+) -> Result<()> {
+    let name = match transfer.direction {
+        HandoffDirection::Export => "export",
+        HandoffDirection::Import => "import",
+    };
+    ensure!(
+        transfer.event.sequence == 0 && transfer.event.participant_id == 0,
+        "journal {name} event claims a sequence for handoff {:?}",
+        transfer.handoff_id
+    );
+    match transfer.direction {
+        HandoffDirection::Export => ensure!(
+            transfer.new_owner_epoch.is_none(),
+            "journal export for handoff {:?} carries a new owner epoch",
+            transfer.handoff_id
+        ),
+        HandoffDirection::Import => ensure!(
+            transfer.new_owner_epoch.is_some_and(|new_owner_epoch| {
+                transfer.prior_owner_epoch.checked_add(1) == Some(new_owner_epoch)
+            }),
+            "journal import for handoff {:?} does not advance the owner epoch",
+            transfer.handoff_id
+        ),
+    }
+    ensure!(
+        !prior_transfers.iter().any(|prior| {
+            prior.handoff_id == transfer.handoff_id && prior.direction == transfer.direction
+        }),
+        "journal {name}s handoff {:?} twice",
+        transfer.handoff_id
+    );
+    Ok(())
+}
+
 impl WorldCore {
     /// Create an empty in-memory world on the real [`SystemClock`].
     pub fn new(world_id: impl Into<String>, limits: WorldLimits) -> Result<Self> {
@@ -148,6 +193,7 @@ impl WorldCore {
             active_module_provenance: None,
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
+            memory_budget: crate::world_limits::WorldMemoryBudget::default(),
             caps_ceiling: crate::world_caps::catalog_names(),
             schedules: BTreeMap::new(),
             isolation: Isolation::default(),
@@ -201,10 +247,80 @@ impl WorldCore {
         limits: WorldLimits,
         entries: impl IntoIterator<Item = JournalEntry>,
     ) -> Result<RestoredWorld> {
+        Self::restore_with_runtime(
+            world_id,
+            limits,
+            crate::world_limits::RuntimeLimits::default(),
+            entries,
+        )
+    }
+
+    /// Rebuild a world from its journal, resolving the persisted
+    /// per-world total memory budget against the server ceiling the
+    /// process is currently configured with (`runtime`), not the
+    /// ceiling in force when the journal was written.
+    ///
+    /// # Errors
+    ///
+    /// Same refusal contract as [`Self::restore`].
+    pub fn restore_with_runtime(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
         let mut core = Self::new(world_id, limits)?;
         let mut program = None;
         let mut replay = Vec::new();
         let mut present: BTreeMap<u64, u64> = BTreeMap::new();
+        let entries: Vec<JournalEntry> = entries.into_iter().collect();
+        // #557 Phase 2: enforce the per-world total memory budget at
+        // restore. The effective limit resolves the journal's FINAL
+        // persisted profile against the CURRENT server ceiling
+        // (`runtime.total_memory_bytes`): replay replaces the whole
+        // execution profile, so a later profile whose budget is unset
+        // resets an earlier one — an unset budget inherits the current
+        // ceiling, and a set budget is clamped beneath it. The
+        // persisted request cannot be trusted to already be clamped:
+        // `set_execution_profile` journals the unclamped request, so
+        // resolving here is what makes lowering the server ceiling
+        // constrain restore and raising it reopen a budgetless journal
+        // written under a smaller ceiling. Charge the fixed core
+        // charge plus each materialized entry (serialized length +
+        // structural allowance) BEFORE applying any entry: an
+        // over-budget journal is refused whole with a typed
+        // [`crate::world_limits::WorldMemoryBudgetRefusal`], no state
+        // is partially applied, and the durable journal is never
+        // modified by a restore, so the same journal reopens unchanged
+        // once the configured budget allows it. This charges the
+        // restore/materialization seam only; runtime growth, program
+        // reservations, and transient peaks are later #557 phases.
+        let mut persisted_total: Option<u64> = None;
+        for entry in &entries {
+            match entry {
+                JournalEntry::ExecutionProfile { profile } => {
+                    persisted_total = profile.total_memory_bytes;
+                }
+                JournalEntry::Checkpoint {
+                    execution_profile, ..
+                } => {
+                    persisted_total = execution_profile
+                        .as_ref()
+                        .and_then(|profile| profile.total_memory_bytes);
+                }
+                _ => {}
+            }
+        }
+        let limit = persisted_total.map_or(runtime.total_memory_bytes, |total| {
+            total.min(runtime.total_memory_bytes)
+        });
+        let mut memory_budget = crate::world_limits::WorldMemoryBudget::new(limit);
+        memory_budget.try_charge(crate::world_limits::WORLD_MEMORY_BASE_BYTES)?;
+        for entry in &entries {
+            let serialized_len = serde_json::to_vec(entry).map_or(0, |bytes| bytes.len());
+            memory_budget
+                .try_charge(crate::world_limits::journal_entry_charge(serialized_len))?;
+        }
         // A compacted journal writes a revoked parent before its descendants'
         // Issued/Revoked pairs. Remember descendants made unusable by that
         // earlier revocation so their later explicit Revoked entries remain
@@ -225,6 +341,7 @@ impl WorldCore {
             }
             Some(_) => anyhow::bail!("world journal does not start with a header"),
             None => {
+                core.memory_budget = memory_budget;
                 return Ok(RestoredWorld {
                     core,
                     program,
@@ -379,7 +496,7 @@ impl WorldCore {
                 }
                 JournalEntry::ExecutionProfile { profile } => {
                     profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in journal")?;
                     core.execution_profile = profile;
                 }
@@ -436,17 +553,7 @@ impl WorldCore {
                     payload,
                     payload_digest,
                 } => {
-                    ensure!(
-                        source_event.sequence == 0 && source_event.participant_id == 0,
-                        "journal export event claims a sequence"
-                    );
-                    ensure!(
-                        !core.handoff_transfers.iter().any(|t| {
-                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
-                        }),
-                        "journal exports handoff {handoff_id:?} twice"
-                    );
-                    core.handoff_transfers.push(HandoffTransferState {
+                    let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
                         source_region,
@@ -459,7 +566,9 @@ impl WorldCore {
                         payload_digest,
                         payload: Some(payload),
                         event: source_event.clone(),
-                    });
+                    };
+                    validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    core.handoff_transfers.push(transfer);
                     // Replay applies the ownership-changing event from the
                     // same durable fact (design #2818 §3).
                     replay.push(source_event);
@@ -477,21 +586,7 @@ impl WorldCore {
                     payload_digest,
                     destination_event,
                 } => {
-                    ensure!(
-                        destination_event.sequence == 0 && destination_event.participant_id == 0,
-                        "journal import event claims a sequence"
-                    );
-                    ensure!(
-                        prior_owner_epoch.checked_add(1) == Some(new_owner_epoch),
-                        "journal import for handoff {handoff_id:?} does not advance the owner epoch"
-                    );
-                    ensure!(
-                        !core.handoff_transfers.iter().any(|t| {
-                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Import
-                        }),
-                        "journal imports handoff {handoff_id:?} twice"
-                    );
-                    core.handoff_transfers.push(HandoffTransferState {
+                    let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
                         source_region,
@@ -504,7 +599,9 @@ impl WorldCore {
                         payload_digest,
                         payload: None,
                         event: destination_event.clone(),
-                    });
+                    };
+                    validate_handoff_transfer(&transfer, &core.handoff_transfers)?;
+                    core.handoff_transfers.push(transfer);
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
@@ -606,7 +703,7 @@ impl WorldCore {
                     core.active_seed = seed;
                     let execution_profile = execution_profile.unwrap_or_default();
                     execution_profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in checkpoint")?;
                     core.execution_profile = execution_profile;
                     // Absent means the whole catalog: older checkpoints and
@@ -621,7 +718,12 @@ impl WorldCore {
                     };
                     // A checkpoint comes first in its journal, so its
                     // transfer list is the whole active-handoff state.
-                    core.handoff_transfers = transfers.unwrap_or_default();
+                    let mut validated_transfers = Vec::new();
+                    for transfer in transfers.unwrap_or_default() {
+                        validate_handoff_transfer(&transfer, &validated_transfers)?;
+                        validated_transfers.push(transfer);
+                    }
+                    core.handoff_transfers = validated_transfers;
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
@@ -653,6 +755,7 @@ impl WorldCore {
                 },
             });
         }
+        core.memory_budget = memory_budget;
         core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
@@ -900,6 +1003,13 @@ impl WorldCore {
     }
 
     /// The per-world resource requests, independent of current server ceilings.
+    /// The world's total-memory budget ledger (#557): the effective
+    /// limit, the logical charge measured at restore, its high-water
+    /// mark, and the refusal count. Logical accounting, not RSS.
+    pub const fn memory_budget(&self) -> &crate::world_limits::WorldMemoryBudget {
+        &self.memory_budget
+    }
+
     pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
         self.execution_profile
     }

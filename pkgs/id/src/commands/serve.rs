@@ -791,6 +791,14 @@ impl ServeWorlds {
     }
 }
 
+/// The group log the serve warning watcher reads: the global
+/// `--groups-log` option when given, else the default file name —
+/// resolved with the group commands' semantics (#2778; serve used
+/// to hardcode the default and ignore the option).
+fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
+    crate::commands::group::log_path(path)
+}
+
 /// Starts the serve process.
 ///
 /// Initializes the Iroh endpoint, blob store, protocol handlers, and
@@ -830,14 +838,6 @@ impl ServeWorlds {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
-/// The group log the serve warning watcher reads: the global
-/// `--groups-log` option when given, else the default file name —
-/// resolved with the group commands' semantics (#2778; serve used
-/// to hardcode the default and ignore the option).
-fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
-    crate::commands::group::log_path(path)
-}
-
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,

@@ -64,6 +64,12 @@ const publishEndpoint = () => {
 // row, never `openai.alternate`), and both outcomes are logged: a failed sync
 // must never again be indistinguishable from a successful one.
 const syncCodexTokensToOpenCode = () => {
+  // Cutover switch for opencode#1154: the fork's in-server credential sync
+  // (credential/codex-sync) replaces this sync as the credential store's
+  // writer. CODEX_PROXY_TOKEN_SYNC=0 turns this door's sync off so the two
+  // never write the openai credential row in alternation; the listen callback
+  // logs the disabled state once at startup.
+  if (process.env.CODEX_PROXY_TOKEN_SYNC === '0') return;
   let db = null;
   try {
     const codexAuthPath = `${process.env.HOME}/.codex/auth.json`;
@@ -1326,6 +1332,10 @@ server.listen(PORT, HOST, () => {
   publishEndpoint();
   console.log(`[codex-proxy] OpenAI-compatible bridge listening on http://${HOST}:${PORT}`);
   console.log(`[codex-proxy] Resolved codex binary: ${CODEX_BIN}`);
-  syncCodexTokensToOpenCode();
+  if (process.env.CODEX_PROXY_TOKEN_SYNC === '0') {
+    console.log('[codex-proxy] codex-token-sync: disabled by CODEX_PROXY_TOKEN_SYNC=0 (in-fork sync owns the credential store)');
+  } else {
+    syncCodexTokensToOpenCode();
+  }
   setInterval(syncCodexTokensToOpenCode, 5 * 60 * 1000);
 });
