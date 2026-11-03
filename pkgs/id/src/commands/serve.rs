@@ -978,6 +978,27 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     }
     let endpoint = builder.bind().await?;
 
+    // Do not announce readiness before the endpoint is reachable through
+    // its home relay (#3028). The wait is bounded and non-fatal: a dead
+    // relay entry must not hold startup, so on timeout we warn and carry on.
+    // With `--no-relay` no relay ever connects, so the wait is skipped.
+    if no_relay {
+        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    } else {
+        match crate::connectivity::await_home_relay(
+            &endpoint,
+            crate::connectivity::HOME_RELAY_DEADLINE,
+        )
+        .await
+        {
+            Ok(()) => info!("serve startup: home relay connected"),
+            Err(e) => warn!(
+                "serve startup: proceeding without a home relay after {:?}: {e:#}",
+                crate::connectivity::HOME_RELAY_DEADLINE,
+            ),
+        }
+    }
+
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
     let chat_presence = PresenceTable::new();
