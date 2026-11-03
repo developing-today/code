@@ -49,10 +49,10 @@ pub use crate::frames::MAX_FRAME_BYTES;
 
 #[cfg(test)]
 mod contract_tests;
-/// Largest Wasm world module that may be installed (16 MiB).
 mod resume;
 #[cfg(test)]
 mod tests;
+/// Largest Wasm world module that may be installed (16 MiB).
 mod types;
 
 pub(crate) use types::{
@@ -2252,8 +2252,16 @@ async fn joined<I: SessionIo>(
             } => {
                 pending_view_deadline = None;
                 if !send_view(
-                        service,
-                        io, &token, pending_view_sequence, viewport, &mut view_state, screen_patches).await {
+                    service,
+                    io,
+                    &token,
+                    pending_view_sequence,
+                    viewport,
+                    &mut view_state,
+                    screen_patches,
+                )
+                .await
+                {
                     break;
                 }
             },
@@ -2301,8 +2309,16 @@ async fn joined<I: SessionIo>(
                             }
                             view_state.reset();
                             if !send_view(
-                        service,
-                        io, &token, cursor, viewport, &mut view_state, screen_patches).await {
+                                service,
+                                io,
+                                &token,
+                                cursor,
+                                viewport,
+                                &mut view_state,
+                                screen_patches,
+                            )
+                            .await
+                            {
                                 break;
                             }
                         }
@@ -2339,7 +2355,15 @@ async fn joined<I: SessionIo>(
                     view_state.reset();
                     if !send_view(
                         service,
-                        io, &token, cursor, viewport, &mut view_state, screen_patches).await {
+                        io,
+                        &token,
+                        cursor,
+                        viewport,
+                        &mut view_state,
+                        screen_patches,
+                    )
+                    .await
+                    {
                         break;
                     }
                 }

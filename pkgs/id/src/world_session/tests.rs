@@ -813,10 +813,8 @@ mod tests {
             Box::new(FixedScreen),
         );
         let svc = WorldService::new(world.clone(), None);
-        let (_, capability) = world
-            .issue("player".to_owned(), WorldScopes::GUEST)
-            .await
-            .unwrap();
+        let scopes = WorldScopes::from_names(["join", "input"]).unwrap();
+        let (_, capability) = world.issue("player".to_owned(), scopes).await.unwrap();
         let mut peer = Peer::connect(svc, SessionConfig::default());
         peer.say(serde_json::json!({"type":"join","capability":capability.expose()}))
             .await;
