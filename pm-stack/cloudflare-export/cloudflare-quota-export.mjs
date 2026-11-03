@@ -76,14 +76,15 @@ export const AI_NEURONS_DAY_GROUP_LIMIT = 10000;
 export const AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT = 50000;
 
 /** Threshold from the environment: CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD,
- * retunable without a code change. Unset, empty, non-numeric, or
- * negative values fall back to the default — a typo must never
- * silently disable (or zero) the alert. */
+ * retunable without a code change. Positive finite Number() values are
+ * accepted, including fractions and hexadecimal spellings. Unset, empty,
+ * non-numeric, zero, or negative values fall back to the default — a typo
+ * must never silently disable (or zero) the alert. */
 export function aiNeuronsDayAlertThreshold(env = process.env) {
   const raw = env?.CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD;
   if (raw == null || String(raw).trim() === "") return AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT;
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT;
+  return Number.isFinite(n) && n > 0 ? n : AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT;
 }
 /** The analytics scopes the day-to-day token needs for this collector. */
 export const ANALYTICS_SCOPES = [
