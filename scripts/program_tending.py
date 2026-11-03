@@ -50,7 +50,9 @@ def _gh_api(path: str) -> list:
     items: list = []
     url = f"https://api.github.com{path}"
     while url:
-        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        req = urllib.request.Request(
+            url, headers={"Accept": "application/vnd.github+json"}
+        )
         with urllib.request.urlopen(req, timeout=30) as resp:
             items.extend(json.loads(resp.read().decode("utf-8")))
             nxt = resp.headers.get("Link", "")
@@ -92,7 +94,9 @@ def stub_projects(repos: list[str]) -> dict:
         "section": "projects",
         "status": "no-action",
         "detail": "scaffold only: board-vs-reality correction checks land in slice 3",
-        "checked": [{"repo": repo, "board_state": "unverified (slice 3)"} for repo in repos],
+        "checked": [
+            {"repo": repo, "board_state": "unverified (slice 3)"} for repo in repos
+        ],
     }
 
 
@@ -102,7 +106,13 @@ def stub_stalled_prs(repos: list[str]) -> dict:
     for repo in repos:
         try:
             prs = _gh_api(f"/repos/{repo}/pulls?state=open&per_page=100")
-            counts.append({"repo": repo, "open_prs": len(prs), "note": "48h-rule evaluation lands in slice 3"})
+            counts.append(
+                {
+                    "repo": repo,
+                    "open_prs": len(prs),
+                    "note": "48h-rule evaluation lands in slice 3",
+                }
+            )
         except Exception as exc:  # noqa: BLE001 - scaffold reports, never fails
             counts.append({"repo": repo, "open_prs": "unverified", "error": str(exc)})
     return {
@@ -119,7 +129,9 @@ def stub_loose_ends(repos: list[str]) -> dict:
         "section": "loose-ends",
         "status": "no-action",
         "detail": "scaffold only: notifications, duplicate cross-links, user/review surfacing land in slice 3",
-        "checked": [{"repo": repo, "loose_ends": "unverified (slice 3)"} for repo in repos],
+        "checked": [
+            {"repo": repo, "loose_ends": "unverified (slice 3)"} for repo in repos
+        ],
     }
 
 
@@ -145,9 +157,15 @@ def run(repos: list[str]) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="program-tending scaffold runner (slice 1/3)")
-    parser.add_argument("--run", action="store_true", help="execute one scaffold run and print the log")
-    parser.add_argument("--repo", action="append", default=[], help="limit to owner/name (repeatable)")
+    parser = argparse.ArgumentParser(
+        description="program-tending scaffold runner (slice 1/3)"
+    )
+    parser.add_argument(
+        "--run", action="store_true", help="execute one scaffold run and print the log"
+    )
+    parser.add_argument(
+        "--repo", action="append", default=[], help="limit to owner/name (repeatable)"
+    )
     args = parser.parse_args(argv)
     if not args.run:
         parser.print_help()

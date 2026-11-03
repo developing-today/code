@@ -23,8 +23,10 @@ import program_tending as pt
 class ProgramTendingScaffoldTest(unittest.TestCase):
     def test_run_log_covers_all_five_sections(self):
         log = pt.run(["developing-today/code"])
-        self.assertEqual([s["section"] for s in log["sections"]],
-                         ["epics", "roadmaps", "projects", "stalled-prs", "loose-ends"])
+        self.assertEqual(
+            [s["section"] for s in log["sections"]],
+            ["epics", "roadmaps", "projects", "stalled-prs", "loose-ends"],
+        )
 
     def test_scaffold_is_read_only(self):
         with mock.patch.object(pt, "_gh_api", return_value=[{"labels": []}]):
@@ -55,7 +57,10 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
         self.assertEqual(pt.main([]), 2)
 
     def test_workflow_file_exists_and_is_scheduled(self):
-        wf = Path(__file__).resolve().parents[2] / ".github/workflows/program-tending.yml"
+        wf = (
+            Path(__file__).resolve().parents[2]
+            / ".github/workflows/program-tending.yml"
+        )
         text = wf.read_text()
         self.assertIn("cron:", text)
         self.assertIn("workflow_dispatch", text)
@@ -63,9 +68,18 @@ class ProgramTendingScaffoldTest(unittest.TestCase):
 
     def test_script_runs_isolated(self):
         proc = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT_DIR / "program_tending.py"),
-             "--run", "--repo", "developing-today/code"],
-            capture_output=True, text=True, timeout=120, cwd=str(SCRIPT_DIR.parent),
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT_DIR / "program_tending.py"),
+                "--run",
+                "--repo",
+                "developing-today/code",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(SCRIPT_DIR.parent),
         )
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         log = json.loads(proc.stdout)
