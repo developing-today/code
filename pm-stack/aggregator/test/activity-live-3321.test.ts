@@ -264,4 +264,69 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
       restore();
     }
   });
+
+  test("a gap noted behind a queued complete poll is not resolved by that poll (PR #5141 codex round 4)", async () => {
+    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const restore = installFetch(state);
+    // Counting wrapper: the queued complete poll (b1) has finished
+    // fetching once 6 task reads have been served (baseline 2 +
+    // blocked poll 2 + b1 2), so the failure flag can flip without
+    // failing b1's own reads.
+    let taskFetches = 0;
+    let resolveQueuedFetched: (() => void) | null = null;
+    const queuedFetched = new Promise<void>((r) => { resolveQueuedFetched = r; });
+    const mockFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown, init?: unknown) => {
+      const res = await (mockFetch as (i: unknown, i2?: unknown) => Promise<Response>)(input, init);
+      if (String(input).includes("/api/task/tasks/")) {
+        taskFetches++;
+        if (taskFetches === 6) resolveQueuedFetched!();
+      }
+      return res;
+    }) as typeof fetch;
+    const gaps: { source: string; from: string; to: string | null }[] = [];
+    let releaseFirst: (() => void) | null = null;
+    let firstCallSeen: (() => void) | null = null;
+    const firstCall = new Promise<void>((r) => { firstCallSeen = r; });
+    let calls = 0;
+    try {
+      const src = await makeSource(state, {
+        onActivity: async () => {
+          calls++;
+          if (calls === 1) {
+            firstCallSeen!();
+            await new Promise<void>((r) => { releaseFirst = r; });
+          }
+          return true;
+        },
+        onSourceGap: (source, from, to) => {
+          gaps.push({ source, from, to });
+        },
+      });
+      await src.board(); // baseline: startup reconciliation only
+      expect(gaps).toHaveLength(1);
+      state.cardStatus.p1 = "in-review";
+      const b0 = src.board(); // diffs, then blocks in onActivity
+      await firstCall;
+      const b1 = src.board(); // complete poll: queues behind b0's ingestion
+      await queuedFetched; // b1 has fetched; its ingestion is queued
+      state.failAll = true;
+      const b2 = src.board(); // failing poll: its gap must queue behind b1
+      await new Promise((r) => setTimeout(r, 25)); // let b2 reach its gap transition
+      releaseFirst!();
+      await Promise.all([b0, b1, b2]);
+      // Serialized: b1's recovery ran BEFORE b2's gap existed, so the
+      // gap is still open — no recovery entry follows it. Unserialized
+      // (gap noted immediately), b1 would emit a recovery (to=null)
+      // after the gap and close an outage no poll has recovered from.
+      expect(gaps).toHaveLength(2);
+      expect(gaps[1]!.to).not.toBeNull();
+      state.failAll = false;
+      await src.board(); // a genuinely later complete poll recovers it
+      expect(gaps).toHaveLength(3);
+      expect(gaps[2]!.to).toBeNull();
+    } finally {
+      restore();
+    }
+  });
 });

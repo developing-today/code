@@ -833,6 +833,17 @@ export function liveSource(
     );
     return run;
   }
+  // #3321: gap transitions take the SAME chain (Codex P2, PR #5141
+  // round 4). A failed or partial poll that notes its gap immediately
+  // can interleave with a complete poll already queued behind a
+  // blocked ingestion: the queued poll's recovery then resolves a
+  // gap that opened AFTER its successful observation, marking an
+  // ongoing outage backfilled with no successful poll since the
+  // failure. Queuing the gap behind the ingestion orders every
+  // gap/recovery transition by the poll that produced it.
+  function enqueueKaneoGap(at: Date): Promise<void> {
+    return enqueueKaneoIngestion(() => noteKaneoGap(at));
+  }
   // #1739: the last orchestration run whose publish was recorded in
   // the event log, plus its tier membership — a new runId is a publish
   // step, and the tier diff between successive publishes is the
@@ -997,7 +1008,7 @@ export function liveSource(
           cookie = await kaneoCookie();
           kaneoResult = await kaneoBoard(cfg, cookie);
         } catch (err) {
-          await noteKaneoGap(new Date());
+          await enqueueKaneoGap(new Date());
           throw err;
         }
         const board = kaneoResult.items;
@@ -1018,7 +1029,7 @@ export function liveSource(
           console.error(
             "[activity] WARNING: kaneo board poll was partial; activity diff skipped and baseline preserved",
           );
-          await noteKaneoGap(new Date());
+          await enqueueKaneoGap(new Date());
         } else {
           await enqueueKaneoIngestion(async () => {
           await seedKaneoSeqFromPersisted();
