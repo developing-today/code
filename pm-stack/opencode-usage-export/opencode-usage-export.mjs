@@ -51,6 +51,8 @@
  *
  * Failure documents carry status + attemptedAt + detail and NO
  * sessions — a failed tick can never be mistaken for a reading:
+ *   invalid-argument  a CLI value flag is missing, flag-shaped, NaN,
+ *                  infinite, zero, or negative. Exit 2.
  *   store-missing  no candidate DB file exists. Exit 3.
  *   store-stale    candidates exist but none has fresh session_v2
  *                  activity (the store moved somewhere unknown, or
@@ -308,17 +310,47 @@ async function readState(outDir) {
   }
 }
 
+/** Extract --out-dir without validating anything else, so even a
+ * usage failure can record its document where the caller asked. A
+ * missing or flag-shaped --out-dir falls back to the default. */
+function peekOutDir(argv, home) {
+  for (let i = 0; i < argv.length - 1; i += 1) {
+    if (argv[i] === "--out-dir") {
+      const v = argv[i + 1];
+      if (v != null && !v.startsWith("--")) return v;
+    }
+  }
+  return join(home, "atlas/opencode-usage-export");
+}
+
 function parseArgs(argv) {
   const args = { db: null, outDir: null, windowHours: DEFAULT_WINDOW_HOURS, freshHours: DEFAULT_FRESH_HOURS };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--db") args.db = argv[++i];
     else if (a === "--out-dir") args.outDir = argv[++i];
-    else if (a === "--window-hours") args.windowHours = Number(argv[++i]);
-    else if (a === "--fresh-hours") args.freshHours = Number(argv[++i]);
+    else if (a === "--window-hours") args.windowHours = parseHoursFlag(a, argv[++i]);
+    else if (a === "--fresh-hours") args.freshHours = parseHoursFlag(a, argv[++i]);
     else throw new Error(`unknown argument: ${a}`);
   }
   return args;
+}
+
+/** Validate a value-taking hours flag. A missing token, a flag-shaped
+ * token, NaN, an infinite value, zero, or a negative value is a usage
+ * error (exit 2) that names the flag — raised before any store is
+ * opened or read, so junk can never produce a zero-filled success or
+ * a misleading store-stale diagnosis. */
+function parseHoursFlag(flag, raw) {
+  const value = Number(raw);
+  if (raw == null || !Number.isFinite(value) || value <= 0) {
+    throw new ExportError(
+      "invalid-argument",
+      2,
+      `${flag} requires a positive finite number of hours, got ${raw == null ? "(missing)" : JSON.stringify(String(raw))}`,
+    );
+  }
+  return value;
 }
 
 /** One exporter tick. Injectable `now`/`home` keep the tests offline
@@ -329,10 +361,10 @@ export async function run({
   now = Date.now(),
   home = homedir(),
 } = {}) {
-  const args = parseArgs(argv);
-  const outDir = args.outDir ?? join(home, "atlas/opencode-usage-export");
   const attemptedAt = new Date(now).toISOString();
+  const outDir = peekOutDir(argv, home);
   try {
+    const args = parseArgs(argv);
     const explicit = args.db ?? env.OPENCODE_USAGE_DB ?? null;
     const candidates = explicit ? [explicit] : defaultCandidatePaths(home);
     const state = await readState(outDir);
