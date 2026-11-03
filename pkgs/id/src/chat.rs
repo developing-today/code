@@ -166,7 +166,10 @@ impl ChatMessage {
     /// # Errors
     ///
     /// Returns [`ChatError::Text`] for empty, oversize, or unsanitized text,
-    /// [`ChatError::Links`] for too many links, and the failing link's error otherwise.
+    /// [`ChatError::Links`] for too many links or a link repeated in full (kind, hash,
+    /// author, and hint), and the failing link's error otherwise. Two links that agree on
+    /// kind, hash, and author but differ in hint name different retrieval places, so they
+    /// are not repeats.
     pub fn check(&self) -> Result<(), ChatError> {
         if self.text.is_empty() {
             return Err(ChatError::Text("the text is empty".to_owned()));
@@ -188,6 +191,13 @@ impl ChatMessage {
                 self.links.len()
             )));
         }
+        for (index, link) in self.links.iter().enumerate() {
+            if self.links[..index].contains(link) {
+                return Err(ChatError::Links(format!(
+                    "link {index} repeats an earlier link, a message names each link once"
+                )));
+            }
+        }
         for link in &self.links {
             link.check()?;
         }
@@ -201,7 +211,7 @@ pub enum ChatError {
     /// The text is empty, longer than [`MAX_TEXT_BYTES`], or not sanitized.
     #[error("{0}")]
     Text(String),
-    /// The message carries more than [`MAX_LINKS`] links.
+    /// The message carries more than [`MAX_LINKS`] links or repeats a link.
     #[error("{0}")]
     Links(String),
     /// A link hint is longer than [`MAX_HINT_BYTES`].
@@ -340,6 +350,32 @@ mod tests {
             ChatMessage::new("   ", Vec::new()),
             Err(ChatError::Text(_))
         ));
+    }
+
+    #[test]
+    fn test_message_refuses_a_repeated_link() {
+        let link = ChatLink {
+            kind: ChatLinkKind::Blob,
+            hash: Hash::digest(b"attachment"),
+            author: author(1),
+            hint: None,
+        };
+        assert!(matches!(
+            ChatMessage::new("hello", vec![link.clone(), link.clone()]),
+            Err(ChatError::Links(_))
+        ));
+
+        let raw = ChatMessage {
+            text: "hello".to_owned(),
+            links: vec![link.clone(), link.clone()],
+        };
+        assert!(matches!(raw.check(), Err(ChatError::Links(_))));
+
+        let hinted = ChatLink {
+            hint: Some("relay".to_owned()),
+            ..link.clone()
+        };
+        ChatMessage::new("hello", vec![link, hinted]).unwrap();
     }
 
     #[test]
