@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
   ANTIGRAVITY_GEMINI_SERVICE_ID,
-  GO_LAB_SERVICE_ID,
-  GO_PERSONAL_SERVICE_ID,
+  GO_POPESDREW_SERVICE_ID,
+  GO_DREWRYPOPE_SERVICE_ID,
   entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
@@ -689,41 +689,41 @@ describe("pool splits (#1331)", () => {
     },
   });
 
-  test("Go per-workspace entries yield personal/lab split rows alongside the combined rows", () => {
+  test("Go per-workspace entries yield drewrypope/popesdrew split rows alongside the combined rows", () => {
     const entries = [
-      entryFromResult(goResult("Personal", "cred_personal"), TICK),
-      entryFromResult(goResult("Lab", "cred_lab"), TICK),
+      entryFromResult(goResult("drewrypope", "cred_drewrypope"), TICK),
+      entryFromResult(goResult("popesdrew", "cred_popesdrew"), TICK),
     ];
     expect(entries.map((e) => e.serviceId)).toEqual(["opencode-go", "opencode-go"]);
     const split = entriesWithPoolSplits(entries);
     expect(split.map((e) => e.serviceId).sort()).toEqual([
       "opencode-go",
       "opencode-go",
-      GO_LAB_SERVICE_ID,
-      GO_PERSONAL_SERVICE_ID,
+      GO_DREWRYPOPE_SERVICE_ID,
+      GO_POPESDREW_SERVICE_ID,
     ]);
-    const personal = split.find((e) => e.serviceId === GO_PERSONAL_SERVICE_ID)!;
+    const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
     expect(personal.providerId).toBe("opencode-go");
-    expect(personal.credentialId).toBe("cred_personal");
-    expect(personal.credentialLabel).toBe("Personal");
+    expect(personal.credentialId).toBe("cred_drewrypope");
+    expect(personal.credentialLabel).toBe("drewrypope");
     expect(personal.state).toBe("ok");
     expect(personal.measuredAt).toBe(entries[0].measuredAt);
     expect(personal.windows).toEqual(entries[0].windows);
-    const lab = split.find((e) => e.serviceId === GO_LAB_SERVICE_ID)!;
-    expect(lab.credentialId).toBe("cred_lab");
+    const lab = split.find((e) => e.serviceId === GO_POPESDREW_SERVICE_ID)!;
+    expect(lab.credentialId).toBe("cred_popesdrew");
     // ...and the pool-level series continue in the snapshot records.
     const { records } = recordsFromEntries(split, new Map(), "quota-gatherer");
     expect(records.map((r) => `${r.serviceId}|${r.metricId}`).sort()).toEqual([
-      "opencode-go:lab|5h",
-      "opencode-go:lab|monthly",
-      "opencode-go:personal|5h",
-      "opencode-go:personal|monthly",
+      "opencode-go:drewrypope|5h",
+      "opencode-go:drewrypope|monthly",
+      "opencode-go:popesdrew|5h",
+      "opencode-go:popesdrew|monthly",
       "opencode-go|5h",
       "opencode-go|monthly",
     ]);
   });
 
-  test("Go lapse: an errored Personal row splits as a pool error; unconfigured rows never split", () => {
+  test("Go lapse: an errored drewrypope row splits as a pool error; unconfigured rows never split", () => {
     const lapsed: QuotaProviderResult = {
       providerId: "opencode-go",
       providerName: "OpenCode Go",
@@ -731,7 +731,7 @@ describe("pool splits (#1331)", () => {
       configured: true,
       fetchedAt: Date.parse(TICK),
       credentialId: "cred_personal",
-      credentialLabel: "Personal",
+      credentialLabel: "drewrypope",
       error: "No active OpenCode Go subscription on the selected Console account",
       usage: null,
     };
@@ -741,13 +741,13 @@ describe("pool splits (#1331)", () => {
       ok: false,
       configured: false,
       credentialId: "cred_lab",
-      credentialLabel: "Lab",
+      credentialLabel: "popesdrew",
       error: "Not configured",
       usage: null,
     };
     const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
-    expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_PERSONAL_SERVICE_ID]);
-    const personal = split.find((e) => e.serviceId === GO_PERSONAL_SERVICE_ID)!;
+    expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_DREWRYPOPE_SERVICE_ID]);
+    const personal = split.find((e) => e.serviceId === GO_DREWRYPOPE_SERVICE_ID)!;
     expect(personal.state).toBe("error");
     expect(personal.error).toContain("No active OpenCode Go subscription");
   });
@@ -755,8 +755,8 @@ describe("pool splits (#1331)", () => {
   test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {
     expect(goPoolServiceId(entryFromResult(goResult("Home", "cred_home"), TICK))).toBeNull();
     expect(goPoolServiceId(entryFromResult(goResult(undefined, "cred_x"), TICK))).toBeNull();
-    expect(goPoolServiceId(entryFromResult(goResult("  PERSONAL ", "cred_p"), TICK))).toBe(GO_PERSONAL_SERVICE_ID);
-    expect(goPoolServiceId(entryFromResult(goResult("lab", "cred_l"), TICK))).toBe(GO_LAB_SERVICE_ID);
+    expect(goPoolServiceId(entryFromResult(goResult("  DREWRYPOPE ", "cred_p"), TICK))).toBe(GO_DREWRYPOPE_SERVICE_ID);
+    expect(goPoolServiceId(entryFromResult(goResult("popesdrew", "cred_l"), TICK))).toBe(GO_POPESDREW_SERVICE_ID);
     const split = entriesWithPoolSplits([entryFromResult(goResult("Home", "cred_home"), TICK)]);
     expect(split.map((e) => e.serviceId)).toEqual(["opencode-go"]);
   });

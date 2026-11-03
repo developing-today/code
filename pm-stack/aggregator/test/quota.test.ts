@@ -19,7 +19,7 @@ const VIEW = `
 - **Usage / dates:** unknown. **Newer dated read, Antigravity pools specifically: Gemini weekly 99.1% remaining; Claude+GPT pools 100% remaining.**
 
 ### OpenCode Go ×2 workspaces
-- **Usage / dates:** **Personal — monthly 60% used**, hit a funds wall today; monthly reset Nov 3, 03:02 UTC. **Lab — monthly 50% used, weekly 0%**; monthly reset Nov 7, 05:55 UTC.
+- **Usage / dates:** **drewrypope — monthly 60% used**, hit a funds wall today; monthly reset Nov 3, 03:02 UTC. **popesdrew — monthly 50% used, weekly 0%**; monthly reset Nov 7, 05:55 UTC.
 
 ### ClinePass
 - **Usage / dates:** **Measured 2026-10-25 ~04:48 CDT** (Dashboard > Subscription, USAGE LIMITS): 5-hour **0%** used; weekly **26%** used (resets in 5d 23h); monthly **69%** used (resets in 11d 15h).
@@ -87,9 +87,9 @@ describe("quota extractors", () => {
         extraWindows: 0,
       },
       {
-        id: "opencode-go:personal",
+        id: "opencode-go:drewrypope",
         view: (reset: string) =>
-          `\n### OpenCode Go ×2 workspaces\n- **Personal — monthly 60% used**; monthly reset ${reset}, 18:01 UTC.\n`,
+          `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${reset}, 18:01 UTC.\n`,
         window: { name: "monthly", unit: "usd", limit: 60, used: 36, percent: 60 },
         extraWindows: 0,
       },
@@ -130,8 +130,8 @@ describe("quota extractors", () => {
         view: `\n### ChatGPT — main account plans\n7-day 42% used; resets ${pastDate}, 18:01 UTC.\n`,
       },
       {
-        id: "opencode-go:personal",
-        view: `\n### OpenCode Go ×2 workspaces\n- **Personal — monthly 60% used**; monthly reset ${pastDate}, 18:01 UTC.\n`,
+        id: "opencode-go:drewrypope",
+        view: `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${pastDate}, 18:01 UTC.\n`,
       },
       {
         id: "commandcode:go",
@@ -179,25 +179,25 @@ describe("quota extractors", () => {
     const goView = (section: string) => "\n### OpenCode Go \u00d72 workspaces\n" + section + "\n";
     const go = (view: string) => {
       const m = new Map(extractQuotaPools(view, NOW).map((p) => [p.id, p]));
-      return { personal: m.get("opencode-go:personal")!, lab: m.get("opencode-go:lab")! };
+      return { personal: m.get("opencode-go:drewrypope")!, lab: m.get("opencode-go:popesdrew")! };
     };
 
     // Control: both paragraphs carry their own reset.
     const both = go(
       goView(
-        "- **Personal \u2014 monthly 60% used**; monthly reset Nov 3, 03:02 UTC.\n\n" +
-          "- **Lab \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
+        "- **drewrypope \u2014 monthly 60% used**; monthly reset Nov 3, 03:02 UTC.\n\n" +
+          "- **popesdrew \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
       ),
     );
     expect(both.personal.windows[0].resetsAt).toBe("2026-11-03T03:02:00.000Z");
     expect(both.lab.windows[0].resetsAt).toBe("2026-11-09T05:55:00.000Z");
 
-    // Personal's paragraph has no reset: Personal gets null — never Lab's —
-    // and Lab still gets its own.
+    // drewrypope's paragraph has no reset: drewrypope gets null — never popesdrew's —
+    // and popesdrew still gets its own.
     const missing = go(
       goView(
-        "- **Personal \u2014 monthly 60% used**, no reset read this time.\n\n" +
-          "- **Lab \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
+        "- **drewrypope \u2014 monthly 60% used**, no reset read this time.\n\n" +
+          "- **popesdrew \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
       ),
     );
     expect(missing.personal.windows[0].resetsAt).toBeNull();
@@ -207,8 +207,8 @@ describe("quota extractors", () => {
     const stray = go(
       goView(
         "- Earlier note: a monthly reset Oct 5, 01:00 UTC was observed last cycle.\n\n" +
-          "- **Personal \u2014 monthly 60% used**; monthly reset Nov 3, 03:02 UTC.\n\n" +
-          "- **Lab \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
+          "- **drewrypope \u2014 monthly 60% used**; monthly reset Nov 3, 03:02 UTC.\n\n" +
+          "- **popesdrew \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
       ),
     );
     expect(stray.personal.windows[0].resetsAt).toBe("2026-11-03T03:02:00.000Z");
@@ -216,10 +216,10 @@ describe("quota extractors", () => {
   });
 
   test("opencode go workspaces are separate pools in USD", () => {
-    const personal = byId.get("opencode-go:personal")!;
+    const personal = byId.get("opencode-go:drewrypope")!;
     expect(personal.windows[0]).toMatchObject({ unit: "usd", limit: 60, used: 36 });
     expect(personal.windows[0].resetsAt).toBe("2026-11-03T03:02:00.000Z");
-    const lab = byId.get("opencode-go:lab")!;
+    const lab = byId.get("opencode-go:popesdrew")!;
     expect(lab.windows[0].used).toBe(30);
     expect(lab.windows[1]).toMatchObject({ name: "weekly", used: 0 });
   });
@@ -459,7 +459,7 @@ describe("disabled_providers enforcement (#1114)", () => {
     const ids = extractQuotaPools(VIEW, NOW, disabled).map((p) => p.id);
     expect(ids).toContain("openai:codex");
     expect(ids).toContain("opendesign:go");
-    expect(ids).toContain("opencode-go:personal");
-    expect(ids).toContain("opencode-go:lab");
+    expect(ids).toContain("opencode-go:drewrypope");
+    expect(ids).toContain("opencode-go:popesdrew");
   });
 });

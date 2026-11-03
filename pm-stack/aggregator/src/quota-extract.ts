@@ -298,7 +298,7 @@ const extractMeta: Extractor = (s, now) => {
   return { windows: [pctWindow("weekly", Number(pct[1]), resetIso)] };
 };
 
-function goWorkspace(name: "Personal" | "Lab"): Extractor {
+function goWorkspace(name: "drewrypope" | "popesdrew"): Extractor {
   return (s, now) => {
     const m = first(
       s,
@@ -321,9 +321,9 @@ function goWorkspace(name: "Personal" | "Lab"): Extractor {
     return {
       windows,
       note:
-        name === "Personal"
-          ? "Personal workspace (monthly read). Cancelled, paid through Nov 2 — burn before Lab per rotation order."
-          : "Lab workspace (monthly read); the active workspace on the laptop.",
+        name === "drewrypope"
+          ? "drewrypope workspace (monthly read). Renamed from Personal 2026-11-03."
+          : "popesdrew workspace (monthly read). New Go account registered 2026-11-03, replacing Lab.",
     };
   };
 }
@@ -502,19 +502,19 @@ export const POOL_SPECS: PoolSpec[] = [
       "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai:codex); the two are never combined.",
   },
   {
-    id: "opencode-go:personal",
+    id: "opencode-go:drewrypope",
     provider: "OpenCode Go",
-    plan: "Personal workspace",
+    plan: "drewrypope account",
     heading: /^### OpenCode Go/,
-    extract: goWorkspace("Personal"),
+    extract: goWorkspace("drewrypope"),
     shellNote: "No current read.",
   },
   {
-    id: "opencode-go:lab",
+    id: "opencode-go:popesdrew",
     provider: "OpenCode Go",
-    plan: "Lab workspace",
+    plan: "popesdrew account",
     heading: /^### OpenCode Go/,
-    extract: goWorkspace("Lab"),
+    extract: goWorkspace("popesdrew"),
     shellNote: "No current read.",
   },
   {

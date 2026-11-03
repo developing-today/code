@@ -724,8 +724,8 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
   test("Go per-workspace + Antigravity per-pool rows map with freshness and values", () => {
     const view = baseView();
     view.pools.push(
-      pool("opencode-go:personal", []),
-      pool("opencode-go:lab", []),
+      pool("opencode-go:drewrypope", []),
+      pool("opencode-go:popesdrew", []),
       pool("antigravity:gemini", []),
       pool("antigravity:claude-gpt", []),
     );
@@ -734,16 +734,16 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
       file([
         entry({
           providerId: "opencode-go",
-          serviceId: "opencode-go:personal",
+          serviceId: "opencode-go:drewrypope",
           credentialId: "cred_personal",
-          credentialLabel: "Personal",
+          credentialLabel: "drewrypope",
           windows: [win("monthly", 62.5, iso(5 * 60_000))],
         }),
         entry({
           providerId: "opencode-go",
-          serviceId: "opencode-go:lab",
+          serviceId: "opencode-go:popesdrew",
           credentialId: "cred_lab",
-          credentialLabel: "Lab",
+          credentialLabel: "popesdrew",
           windows: [win("monthly", 50, iso(5 * 60_000))],
         }),
         entry({
@@ -760,11 +760,11 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
       NOW,
     );
     const byId = new Map(out.pools.map((p) => [p.id, p]));
-    expect(byId.get("opencode-go:personal")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
-    expect(byId.get("opencode-go:lab")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
+    expect(byId.get("opencode-go:drewrypope")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
+    expect(byId.get("opencode-go:popesdrew")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
     expect(byId.get("antigravity:gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
     expect(byId.get("antigravity:claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
-    for (const id of ["opencode-go:personal", "opencode-go:lab", "antigravity:gemini", "antigravity:claude-gpt"]) {
+    for (const id of ["opencode-go:drewrypope", "opencode-go:popesdrew", "antigravity:gemini", "antigravity:claude-gpt"]) {
       expect(byId.get(id)!.freshness).toEqual({
         measuredAt: iso(5 * 60_000),
         source: "openchamber-quota",
