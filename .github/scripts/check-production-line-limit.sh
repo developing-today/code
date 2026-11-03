@@ -53,6 +53,8 @@ declare -A GRANDFATHERED=(
 # strings, raw strings, and char literals: a test that builds a
 # malformed-JSON string containing "{" must not stretch the skipped
 # region over the production code that follows the test module.
+# Item termination is judged on that lexical content too, so a
+# trailing comment (mod tests; // note) still terminates the item.
 production_lines() {
   awk '
     BEGIN {
@@ -68,7 +70,7 @@ production_lines() {
     # comments, strings, raw strings, and char literals. Lexer state
     # persists across the lines of one file (one awk run per file).
     function scan_braces(s,   i, c, n, h, rest) {
-      n = 0
+      n = 0; lastcode = ""; sawbrace = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
         if (rawhash >= 0) {
@@ -103,8 +105,9 @@ production_lines() {
           }
           continue
         }
-        if (c == "{") n++
-        else if (c == "}") n--
+        if (c != " " && c != "\t") lastcode = c
+        if (c == "{") { n++; sawbrace = 1 }
+        else if (c == "}") { n--; sawbrace = 1 }
       }
       return n
     }
@@ -156,15 +159,15 @@ production_lines() {
       if (pending) {
         if (d > 0) { pending = 0; skipdepth = d; next }
         if (d < 0) { pending = 0; next }
-        if ($0 ~ /;[[:space:]]*$/) { pending = 0; next }
-        if ($0 ~ /\{/) { pending = 0; next }
+        if (lastcode == ";") { pending = 0; next }
+        if (sawbrace) { pending = 0; next }
         next   # multi-line item header: keep waiting for { or ;
       }
       if (is_test_attr($0)) {
         if (d > 0) skipdepth = d
         else if (d < 0) { }
-        else if ($0 ~ /;[[:space:]]*$/) { }
-        else if ($0 ~ /\{/) { }
+        else if (lastcode == ";") { }
+        else if (sawbrace) { }
         else pending = 1
         next
       }

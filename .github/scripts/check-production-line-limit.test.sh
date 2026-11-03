@@ -123,6 +123,22 @@ fi
 grep -q "OVER LIMIT pkgs/id/src/litbrace.rs: 2501 production lines" "$TMP/litbrace.out"
 echo "pass: braces in literals/comments do not move the skip region"
 
+# A test declaration with a trailing comment still terminates the
+# item (Codex finding on PR #4709): mod tests; // rationale excludes
+# only its own line, in both the stacked and the same-line attribute
+# forms; the production after it counts in full.
+mkdir -p "$TMP/commented/pkgs/id/src"
+{ echo "#[cfg(test)] mod same_line_tests; // declared inline"
+  echo "#[cfg(test)]"
+  echo "mod tests; // rationale"
+  for i in $(seq 1 2501); do echo "fn p$i() {}"; done
+} > "$TMP/commented/pkgs/id/src/commented.rs"
+if bash "$SCRIPT" "$TMP/commented" > "$TMP/commented.out" 2>&1; then
+  echo "FAIL: guard kept skipping after a commented test declaration" >&2; exit 1
+fi
+grep -q "OVER LIMIT pkgs/id/src/commented.rs: 2501 production lines" "$TMP/commented.out"
+echo "pass: commented test declarations terminate the item"
+
 # Test code is out of scope: tests/ trees and tests.rs modules.
 mkdir -p "$TMP/tests/pkgs/id/tests" "$TMP/tests/pkgs/id/src/encryption"
 gen "$TMP/tests/pkgs/id/tests/cli_integration.rs" 4000
