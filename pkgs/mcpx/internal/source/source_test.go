@@ -340,3 +340,56 @@ func TestResolveFileWithTildeNameReadsLiteralDirUnderDir(t *testing.T) {
 		t.Errorf("Resolve(@file:~alice/note.txt) files = %v, want [%s]", got.Files, filepath.Join(literal, "note.txt"))
 	}
 }
+
+func TestADirectoryIsConcatenatedInNaturalOrderPastInt64(t *testing.T) {
+	// Digit runs that overflow int64 must still decide the order
+	// numerically (#3775). Before the fix, naturalLess gave up on such
+	// runs and the fragments concatenated in arbitrary or inverted order.
+	cases := []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{
+			name:  "both overflow, differing suffixes",
+			files: []string{"f100000000000000000000000a.ts", "f99999999999999999999999z.ts"},
+			want:  "f99999999999999999999999z.ts,f100000000000000000000000a.ts",
+		},
+		{
+			name:  "both overflow, no suffix",
+			files: []string{"100000000000000000000000.ts", "99999999999999999999999.ts"},
+			want:  "99999999999999999999999.ts,100000000000000000000000.ts",
+		},
+		{
+			name:  "one side overflows int64",
+			files: []string{"f9999999999999999999.ts", "f8999999999999999999.ts"},
+			want:  "f8999999999999999999.ts,f9999999999999999999.ts",
+		},
+		{
+			name:  "equal length overflow runs compare lexically",
+			files: []string{"f20000000000000000000000.ts", "f10000000000000000000000.ts"},
+			want:  "f10000000000000000000000.ts,f20000000000000000000000.ts",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for _, n := range tc.files {
+				if err := os.WriteFile(filepath.Join(dir, n), []byte("// "+n), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := source.Resolve(dir, opts(dir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var order []string
+			for _, f := range got.Files {
+				order = append(order, filepath.Base(f))
+			}
+			if strings.Join(order, ",") != tc.want {
+				t.Errorf("natural order past int64: got %v, want %s", order, tc.want)
+			}
+		})
+	}
+}
