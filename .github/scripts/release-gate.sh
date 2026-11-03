@@ -15,9 +15,17 @@
 #   1. The release SHA must be the current head of main. Tag pushes that
 #      point anywhere else are refused — a tag on a stale or detached SHA
 #      has no main-tier runs to judge it by.
-#   2. Every watched workflow must have a completed push-to-main run on
-#      that exact SHA whose conclusion is `success`. Missing, in-progress,
-#      or non-success runs refuse the release.
+#   2. Every watched workflow must report a completed `success` verdict:
+#      its latest push-to-main run on that exact SHA when one exists, else
+#      its latest push-to-main run on main. Path-filtered workflows (id,
+#      id bench, mcpx, mcpx conformance) legitimately have no run on SHAs
+#      outside their paths — requiring an exact-SHA run from every workflow
+#      would refuse every ordinary component release — so the fallback
+#      judges main health for exactly those workflows. Missing (no runs at
+#      all), in-progress, or non-success verdicts refuse the release.
+#      Residual risk: a path-filter gap (a commit that should have triggered
+#      a watched workflow but did not) is judged on an older run. Keep the
+#      path filters in the watched workflows accurate.
 #
 # There is deliberately NO bypass flag on the tag path. The override path
 # is procedural (fix forward on main, wait for green, re-tag; a genuine
@@ -91,9 +99,11 @@ self_test() {
   check "success/in_progress is red" 1 -- verdict_for_conclusion success in_progress
   check "empty conclusion is red" 1 -- verdict_for_conclusion "" completed
 
-  # Exercise the full script against a tiny fake gh API. This proves both
-  # that failed/missing/pending runs refuse the SHA and that an all-green
-  # current-main SHA passes, without network access or publishing anything.
+  # Exercise the full script against a tiny fake gh API. This proves that
+  # failed/missing/pending runs refuse the SHA, that an all-green
+  # current-main SHA passes, and that a workflow with no run on the SHA
+  # falls back to its latest main run (green passes, red refuses) —
+  # all without network access or publishing anything.
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -115,12 +125,19 @@ JSON
     id="${endpoint#*/actions/workflows/}"
     id="${id%%/*}"
     case "${GH_FIXTURE:-success}:$id" in
-      failed:1) conclusion=failure; status=completed ;;
-      pending:1) conclusion=null; status=in_progress ;;
-      missing:1) printf '{"workflow_runs":[]}\n'; exit 0 ;;
-      *) conclusion=success; status=completed ;;
+      failed:1)
+        printf '{"workflow_runs":[{"head_sha":"success-sha","conclusion":"failure","status":"completed","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/1"}]}\n' ;;
+      pending:1)
+        printf '{"workflow_runs":[{"head_sha":"success-sha","conclusion":null,"status":"in_progress","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/1"}]}\n' ;;
+      missing:1)
+        printf '{"workflow_runs":[]}\n' ;;
+      fallback:2)
+        printf '{"workflow_runs":[{"head_sha":"older-sha","conclusion":"success","status":"completed","created_at":"2026-11-01T00:00:00Z","html_url":"https://example.invalid/run/2"}]}\n' ;;
+      fallback-red:2)
+        printf '{"workflow_runs":[{"head_sha":"older-sha","conclusion":"success","status":"completed","created_at":"2026-11-01T00:00:00Z","html_url":"https://example.invalid/run/2a"},{"head_sha":"older-sha-2","conclusion":"failure","status":"completed","created_at":"2026-11-01T12:00:00Z","html_url":"https://example.invalid/run/2b"}]}\n' ;;
+      *) printf '{"workflow_runs":[{"head_sha":"success-sha","conclusion":"success","status":"completed","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/%s"}]}\n' "$id" ;;
     esac
-    printf '{"workflow_runs":[{"head_sha":"success-sha","conclusion":"%s","status":"%s","created_at":"2026-11-02T00:00:00Z","html_url":"https://example.invalid/run/%s"}]}\n' "$conclusion" "$status" "$id"
+    exit 0
     ;;
   *) echo "unexpected fake gh endpoint: $endpoint" >&2; exit 9 ;;
 esac
@@ -143,6 +160,8 @@ FAKE_GH
   run_gate_case failed 1
   run_gate_case missing 1
   run_gate_case pending 1
+  run_gate_case fallback 0
+  run_gate_case fallback-red 1
   run_gate_case success 1 stale-sha
 
   # Argument handling (no network): unknown flags fail fast.
@@ -220,20 +239,31 @@ for wf in "${WATCHED_WORKFLOWS[@]}"; do
     failures=$((failures + 1))
     continue
   fi
-  run_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&event=push&head_sha=$SHA&per_page=100" \
-    | jq -c --arg sha "$SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last // empty')"
+  runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&event=push&per_page=100")" \
+    || die "could not list runs for $wf"
+  run_json="$(jq -c --arg sha "$SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last // empty' <<<"$runs_json")"
+  basis="exact-SHA run"
   if [ -z "$run_json" ]; then
-    verdict_fail "$wf: no push-to-main run for $SHA (missing main-gate signal)"
+    # No push run on this SHA: normal for a path-filtered workflow when the
+    # release commit is outside its paths. Fall back to that workflow's
+    # latest push-to-main run — its current verdict on main. The SHA is
+    # already pinned to the main head above, so this judges main health.
+    run_json="$(jq -c '[.workflow_runs[]] | sort_by(.created_at) | last // empty' <<<"$runs_json")"
+    basis="latest-main fallback (no push run on $SHA)"
+  fi
+  if [ -z "$run_json" ]; then
+    verdict_fail "$wf: no push-to-main runs at all (missing main-gate signal)"
     failures=$((failures + 1))
     continue
   fi
   conclusion="$(jq -r '.conclusion // empty' <<<"$run_json")"
   status="$(jq -r '.status // empty' <<<"$run_json")"
   url="$(jq -r '.html_url // empty' <<<"$run_json")"
+  run_sha="$(jq -r '.head_sha // empty' <<<"$run_json")"
   if verdict_for_conclusion "$conclusion" "$status"; then
-    echo "release-gate: green: $wf ($url)"
+    echo "release-gate: green ($basis): $wf ($url)"
   else
-    verdict_fail "$wf: conclusion=${conclusion:-none} status=${status:-none} ($url)"
+    verdict_fail "$wf: conclusion=${conclusion:-none} status=${status:-none} run-sha=${run_sha:-none} [$basis] ($url)"
     failures=$((failures + 1))
   fi
 done

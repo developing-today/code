@@ -125,13 +125,19 @@ to main.
 Tag-based publishing is fail-closed. Before GoReleaser or the mcpx release
 workflow can build/publish, `.github/scripts/release-gate.sh` requires the
 tag's commit to be the current `main` head and requires a completed
-`success` run, for that exact SHA, of every main-tier workflow listed in
-`.github/workflows/main-broken.yml`'s `workflow_run.workflows` trigger. The
+`success` verdict from every main-tier workflow listed in
+`.github/workflows/main-broken.yml`'s `workflow_run.workflows` trigger:
+its latest push-to-main run on that exact SHA when one exists, else its
+latest push-to-main run on main (path-filtered workflows legitimately have
+no run on commits outside their paths — Codex P1 on #4636). The
 script keeps that watched-workflow list in sync explicitly; if a watched
 workflow is renamed, update both files in the same change. A failed,
-cancelled, skipped, in-progress, or missing run refuses the release. This
-also means a tag on a stale commit is refused even if its older runs were
-green. The checks use the Actions API and require `actions: read` permission.
+cancelled, skipped, or in-progress verdict — or a workflow with no runs at
+all — refuses the release. This also means a tag on a stale commit is
+refused even if its older runs were green. The checks use the Actions API
+and require `actions: read` permission. Residual risk: a path-filter gap
+(a commit that should have triggered a watched workflow but did not) is
+judged on that workflow's older run — keep path filters accurate.
 
 `workflow_dispatch` remains a non-publishing snapshot path and does not
 weaken the tag gate. There is no routine bypass input or secret switch.
