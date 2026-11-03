@@ -150,10 +150,16 @@ in
     firefox_server.wait_for_open_port(4176)
 
     # ── Verify all servers reachable from client VMs ───────────────────────
-    chromium_client.succeed("curl -sf http://chromium_server:4173/")
-    chromium_client.succeed("curl -sf http://chromium_server:4175/")
-    firefox_client.succeed("curl -sf http://firefox_server:4174/")
-    firefox_client.succeed("curl -sf http://firefox_server:4176/")
+    # wait_for_open_port above runs on the SERVER VMs (local check); the first
+    # probe runs on the CLIENT VM across the virtual network, so retry the
+    # cross-VM hop here instead of failing on the first connection-refused
+    # (nightly 40457980141: curl exit code 7 ~53s after VM start).
+    # wait_until_succeeds retries until success or its timeout, covering
+    # virtual-network/firewall bring-up skew.
+    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4173/")
+    chromium_client.wait_until_succeeds("curl -sf http://chromium_server:4175/")
+    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4174/")
+    firefox_client.wait_until_succeeds("curl -sf http://firefox_server:4176/")
 
     # ── Helper: copy test runner to writable dir and run Playwright ────────
     # The e2eTestRunner is a read-only nix store path; Playwright needs to
