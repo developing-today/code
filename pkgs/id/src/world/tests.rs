@@ -579,6 +579,235 @@ mod tests {
         assert_eq!(restored.core.execution_profile(), profile);
     }
 
+    /// The total logical charge `WorldCore::restore` accounts for a
+    /// journal: the fixed core charge plus each entry's serialized
+    /// length and structural allowance (#557 Phase 2).
+    fn journal_charge(entries: &[JournalEntry]) -> u64 {
+        let mut total = crate::world_limits::WORLD_MEMORY_BASE_BYTES;
+        for entry in entries {
+            let len = serde_json::to_vec(entry).unwrap().len();
+            total += crate::world_limits::journal_entry_charge(len);
+        }
+        total
+    }
+
+    #[test]
+    fn restore_charges_the_journal_against_the_default_budget() {
+        // #557 Phase 2: a budgetless journal restores under the default
+        // ceiling, and the restored core reports the measured charge.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let expected_charge = journal_charge(&entries);
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        let budget = restored.core.memory_budget();
+        assert_eq!(
+            budget.limit_bytes(),
+            crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES
+        );
+        assert_eq!(budget.charged_bytes(), expected_charge);
+        assert_eq!(budget.high_water_bytes(), expected_charge);
+        assert_eq!(budget.refusal_count(), 0);
+    }
+
+    #[test]
+    fn restore_refuses_a_journal_over_its_persisted_budget_and_retries() {
+        // #557 Phase 2: the persisted profile budget is enforced at
+        // restore with a typed refusal; refusal applies nothing, and
+        // the same journal restores once its budget is raised.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(1),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let mut entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let error = WorldCore::restore("test-world", WorldLimits::default(), entries.clone())
+            .unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::world_limits::WorldMemoryBudgetRefusal>()
+            .expect("an over-budget restore must fail with the typed budget refusal");
+        assert_eq!(refusal.limit_bytes, 1);
+        // Raise the persisted budget past the measured charge (with
+        // headroom for the larger number's own serialized width): the
+        // same entries now restore, charged exactly as accounted.
+        let raised = journal_charge(&entries) + 1024;
+        for entry in &mut entries {
+            if let JournalEntry::Checkpoint {
+                execution_profile, ..
+            } = entry
+            {
+                execution_profile.as_mut().unwrap().total_memory_bytes = Some(raised);
+            }
+        }
+        let expected = journal_charge(&entries);
+        assert!(expected <= raised);
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.memory_budget().limit_bytes(), raised);
+        assert_eq!(restored.core.memory_budget().charged_bytes(), expected);
+    }
+
+    #[test]
+    fn restore_resolves_the_persisted_budget_against_the_current_server_ceiling() {
+        // Codex P1 on PR #4628: restore must enforce the CURRENT server
+        // ceiling, not the persisted request or the default. A journal
+        // persisting an unclamped (over-ceiling) request is charged
+        // against the lowered ceiling and refused with that limit.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(u64::MAX),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let lowered = journal_charge(&entries) - 1;
+        let runtime = crate::world_limits::RuntimeLimits {
+            total_memory_bytes: lowered,
+            ..Default::default()
+        };
+        let error = WorldCore::restore_with_runtime(
+            "test-world",
+            WorldLimits::default(),
+            runtime,
+            entries.clone(),
+        )
+        .unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::world_limits::WorldMemoryBudgetRefusal>()
+            .expect("restore over the current ceiling must fail with the typed refusal");
+        assert_eq!(refusal.limit_bytes, lowered);
+        // A budgetless journal inherits the CURRENT ceiling: raising it
+        // reopens a journal the default ceiling would refuse, and the
+        // restored budget reports the raised limit.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let raised = journal_charge(&entries) + 1024;
+        let runtime = crate::world_limits::RuntimeLimits {
+            total_memory_bytes: raised,
+            ..Default::default()
+        };
+        let restored =
+            WorldCore::restore_with_runtime("test-world", WorldLimits::default(), runtime, entries)
+                .unwrap();
+        assert_eq!(restored.core.memory_budget().limit_bytes(), raised);
+    }
+
+    #[test]
+    fn restore_tracks_the_final_profile_including_a_budget_reset() {
+        // Codex P2 on PR #4628: replay replaces the whole execution
+        // profile, so a later profile with an unset budget resets an
+        // earlier persisted budget instead of leaving it enforced.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(1),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let mut entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // Sanity: the persisted Some(1) budget alone refuses restore.
+        assert!(WorldCore::restore("test-world", WorldLimits::default(), entries.clone()).is_err());
+        entries.push(JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile::default(),
+        });
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.memory_budget().limit_bytes(),
+            crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES
+        );
+        assert_eq!(restored.core.execution_profile().total_memory_bytes, None);
+    }
+
+    #[test]
+    fn budget_entries_require_journal_version_4_while_budgetless_ones_do_not() {
+        // #557 Phase 1: a persisted total budget is the first fact a
+        // version-3 binary would parse yet silently ignore, so it pins the
+        // header to version 4. Profiles without a budget keep version 2.
+        let plain_profile = JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile {
+                wasm_fuel: Some(1234),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_profile),
+            JOURNAL_VERSION_EXECUTION_PROFILE
+        );
+        let budget_profile = JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile {
+                total_memory_bytes: Some(32 * 1024 * 1024),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&budget_profile),
+            JOURNAL_VERSION_WORLD_BUDGET
+        );
+        // A budget checkpoint requires version 4 even with no handoff
+        // content; the handoff version never outranks the budget version.
+        let budget_checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: Some(crate::world_limits::WorldExecutionProfile {
+                total_memory_bytes: Some(32 * 1024 * 1024),
+                ..Default::default()
+            }),
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![],
+        };
+        assert_eq!(
+            journal_version_required_by(&budget_checkpoint),
+            JOURNAL_VERSION_WORLD_BUDGET
+        );
+        let plain_checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![],
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_checkpoint),
+            JOURNAL_VERSION
+        );
+    }
+
+    #[test]
+    fn budget_checkpoint_compacts_to_version_4_and_restores() {
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(32 * 1024 * 1024),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // The compacted journal carries the budget, so its header must
+        // refuse binaries that predate the budget version (#227).
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_WORLD_BUDGET,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.execution_profile(), profile);
+    }
+
     #[test]
     fn recorded_provenance_survives_checkpoint_compaction_and_restore() {
         let provenance = sample_source_provenance();
@@ -743,6 +972,107 @@ mod tests {
         assert_eq!(all[0]["text"], "first");
         assert_eq!(all[2]["text"], "third");
         assert!(chat_history(&core.events, 0).is_empty());
+    }
+
+    /// Asks the bounded-read questions of #796 item 9-5 once each and
+    /// captures every result event into its records for the test to read.
+    #[derive(Debug, Default)]
+    struct BoundsProbe {
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+    }
+
+    impl WorldProgram for BoundsProbe {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                let value: serde_json::Value =
+                    serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                if value["cap"] == "result"
+                    && let Some(id) = value["id"].as_str()
+                {
+                    self.answered.insert(id.to_owned());
+                    self.results.insert(id.to_owned(), value);
+                }
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let requests: Vec<serde_json::Value> = [
+                ("records-oversized", "records.read", serde_json::json!({})),
+                ("hist-default", "chat.history", serde_json::json!({})),
+                (
+                    "hist-clamped",
+                    "chat.history",
+                    serde_json::json!({"count": 100_000}),
+                ),
+            ]
+            .into_iter()
+            .filter(|(id, _, _)| !self.answered.contains(*id))
+            .map(|(id, cap, args)| serde_json::json!({"id": id, "cap": cap, "args": args}))
+            .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": requests}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"results": self.results}).to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_defaults_and_clamps_and_records_read_rejects_an_oversized_first_record() {
+        let mut core = world(128);
+        core.ledger.set_granted(BTreeSet::from([
+            "chat.history".to_owned(),
+            "records.read".to_owned(),
+        ]));
+        for sequence in 1..=70_u64 {
+            core.events.push_back(WorldEvent {
+                sequence,
+                participant_id: 1,
+                kind: WorldEventKind::Chat(format!("line-{sequence}")),
+            });
+        }
+        let mut actor = WorldActor::for_test(core, Box::new(BoundsProbe::default()), None);
+        // A single record larger than one records page can only reach the
+        // actor from a store that never passed parse_records; inject it
+        // straight into the published-records channel to prove the read
+        // fails closed instead of serving a truncated page.
+        let mut oversized = Records::new();
+        oversized.insert(
+            "big".to_owned(),
+            serde_json::Value::String("x".repeat(crate::world_session::MAX_RECORDS_PAGE_BYTES + 1)),
+        );
+        actor.records_sender.send_replace((0, Arc::new(oversized)));
+
+        actor.after_change().await;
+
+        let records = actor.records_sender.borrow().1.clone();
+        let results = &records["results"];
+        // chat.history with no count serves the default 16 newest lines,
+        // oldest first.
+        let default = &results["hist-default"];
+        assert_eq!(default["ok"], true, "{default}");
+        let lines = default["value"]["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 16);
+        assert_eq!(lines[0]["text"], "line-55");
+        assert_eq!(lines[15]["text"], "line-70");
+        // An over-large count clamps to MAX_CHAT_HISTORY_LINES.
+        let clamped = &results["hist-clamped"];
+        assert_eq!(clamped["ok"], true, "{clamped}");
+        let lines = clamped["value"]["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), crate::world_caps::MAX_CHAT_HISTORY_LINES);
+        assert_eq!(lines[0]["text"], "line-7");
+        assert_eq!(lines[63]["text"], "line-70");
+        // records.read whose first record cannot fit one page is BadArgs,
+        // never an empty page that looks complete.
+        let oversized_result = &results["records-oversized"];
+        assert_eq!(oversized_result["ok"], false, "{oversized_result}");
+        assert_eq!(oversized_result["error"], "bad_args");
     }
 
     #[tokio::test]

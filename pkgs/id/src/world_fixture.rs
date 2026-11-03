@@ -1359,6 +1359,22 @@ mod tests {
         }
 
         #[test]
+        fn verify_agrees_but_mismatches_a_tampered_header() {
+            // #1539: the two replays agree with each other at every step,
+            // yet both mismatch the fixture header — the case verify used
+            // to report as a plain success.
+            let (runner, mut fixture) = checked_in_game();
+            fixture.header.records =
+                Some(parse_records(r#"{"board":"XXXXXXXXX","plays":9,"winner":"X"}"#).unwrap());
+            let verification = verify(&runner, 7, &fixture, false).unwrap();
+            assert!(verification.is_deterministic());
+            assert_eq!(verification.divergence, None);
+            assert_eq!(verification.first.verdict, Verdict::Mismatch);
+            assert_eq!(verification.second.verdict, Verdict::Mismatch);
+            assert_eq!(verification.first.records, verification.second.records);
+        }
+
+        #[test]
         fn tampered_header_records_are_a_mismatch() {
             let (runner, mut fixture) = checked_in_game();
             fixture.header.records =

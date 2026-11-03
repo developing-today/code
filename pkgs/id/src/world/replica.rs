@@ -76,8 +76,28 @@ pub fn restore_replica_journal(
     directory: &crate::directory::Directory,
     subjects: &BTreeSet<String>,
 ) -> Result<ReplicaRestore> {
+    restore_replica_journal_with_runtime(
+        world_id,
+        limits,
+        crate::world_limits::RuntimeLimits::default(),
+        journal_bytes,
+        directory,
+        subjects,
+    )
+}
+
+/// As [`restore_replica_journal`], resolving the journal's per-world memory
+/// request against the current server runtime ceilings.
+pub fn restore_replica_journal_with_runtime(
+    world_id: &str,
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    journal_bytes: &[u8],
+    directory: &crate::directory::Directory,
+    subjects: &BTreeSet<String>,
+) -> Result<ReplicaRestore> {
     let entries = parse_replica_journal(journal_bytes, world_id)?;
-    restore_replica_entries(world_id, limits, entries, directory, subjects)
+    restore_replica_entries_with_runtime(world_id, limits, runtime, entries, directory, subjects)
 }
 
 /// Parse and validate verified replica journal bytes: complete entry lines
@@ -131,6 +151,26 @@ pub fn restore_replica_entries(
     directory: &crate::directory::Directory,
     subjects: &BTreeSet<String>,
 ) -> Result<ReplicaRestore> {
+    restore_replica_entries_with_runtime(
+        world_id,
+        limits,
+        crate::world_limits::RuntimeLimits::default(),
+        entries,
+        directory,
+        subjects,
+    )
+}
+
+/// As [`restore_replica_entries`], resolving persisted resource requests
+/// against the current server runtime ceilings.
+pub fn restore_replica_entries_with_runtime(
+    world_id: &str,
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    entries: Vec<JournalEntry>,
+    directory: &crate::directory::Directory,
+    subjects: &BTreeSet<String>,
+) -> Result<ReplicaRestore> {
     let header_version = match entries.first() {
         Some(JournalEntry::Created { version, .. }) => *version,
         _ => anyhow::bail!("replica journal is corrupt: missing Created header"),
@@ -138,7 +178,7 @@ pub fn restore_replica_entries(
     // Presence-preserving: the verified journal replays exactly; no
     // synthetic presence-off events are fed into the program.
     let entry_count = entries.len();
-    let mut restored = WorldCore::restore_replica(world_id, limits, entries)?;
+    let mut restored = WorldCore::restore_replica_with_runtime(world_id, limits, runtime, entries)?;
     let facts = directory.replica_facts_for(subjects)?;
     for fact in facts {
         restored

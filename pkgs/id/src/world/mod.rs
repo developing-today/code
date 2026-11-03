@@ -51,7 +51,8 @@ pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
-    restore_replica_journal, serve_replica,
+    restore_replica_entries_with_runtime, restore_replica_journal,
+    restore_replica_journal_with_runtime, serve_replica,
 };
 pub use replication::{
     AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
@@ -923,15 +924,16 @@ pub enum JournalEntry {
 ///
 /// Journal upgrade/rollback contract (issue #227): a journal is created at
 /// version 1 and stays at version 1 until it contains an entry kind a
-/// version-1 binary cannot read. The first such entry — today only
-/// [`JournalEntry::ExecutionProfile`] — bumps the header to
-/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] *before* the entry is appended, by
+/// version-1 binary cannot read. The first such entry — an
+/// [`JournalEntry::ExecutionProfile`], a region-handoff entry, or an entry
+/// carrying a per-world total memory budget — bumps the header to the
+/// version that entry requires *before* the entry is appended, by
 /// atomically rewriting the journal (sibling temp file, fsync, rename), so
 /// a failed bump leaves the old journal untouched. A binary refuses any
 /// journal newer than [`MAX_JOURNAL_VERSION`] at the header check in
-/// [`WorldCore::restore`], never mid-read: a version-1 binary opening a
-/// version-2 journal therefore fails early and clearly instead of dying on
-/// the profile entry it cannot deserialize. New binaries accept versions
+/// [`WorldCore::restore`], never mid-read: an older binary opening a newer
+/// journal therefore fails early and clearly instead of dying on the entry
+/// it cannot deserialize. New binaries accept versions
 /// 1..=[`MAX_JOURNAL_VERSION`], so existing journals stay readable
 /// (forward compatibility), and a journal that never writes a profile
 /// entry is never migrated at all.
@@ -950,16 +952,38 @@ pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 /// [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_REGION_HANDOFF: u32 = 3;
 
+/// Header version of a journal that persists a per-world total memory
+/// budget (#557 Phase 1, design `doc/2026-11-01_design_id557.md`): an
+/// [`JournalEntry::ExecutionProfile`] or [`JournalEntry::Checkpoint`]
+/// whose profile sets `total_memory_bytes`. An older binary would parse
+/// the entry yet silently ignore the budget it cannot account for, so the
+/// budget requires a version the old binary refuses at the header check.
+/// Profiles and checkpoints without a budget keep their existing version.
+pub const JOURNAL_VERSION_WORLD_BUDGET: u32 = 4;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_REGION_HANDOFF;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_WORLD_BUDGET;
 
 /// The header version a journal must carry once it contains `entry`:
-/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] for the entry kinds a version-1
-/// binary cannot read, [`JOURNAL_VERSION`] for everything else.
+/// [`JOURNAL_VERSION_WORLD_BUDGET`] for entries that persist a per-world
+/// total memory budget (an older binary would silently ignore the budget),
+/// [`JOURNAL_VERSION_REGION_HANDOFF`] for the handoff entry kinds a
+/// version-2 binary cannot read, [`JOURNAL_VERSION_EXECUTION_PROFILE`]
+/// for the entry kinds a version-1 binary cannot read,
+/// [`JOURNAL_VERSION`] for everything else.
 #[must_use]
 pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+    // A persisted budget always requires the budget version, on top of any
+    // version the entry kind itself already requires.
+    let budget_version = |profile: Option<&crate::world_limits::WorldExecutionProfile>| {
+        if profile.is_some_and(|p| p.total_memory_bytes.is_some()) {
+            JOURNAL_VERSION_WORLD_BUDGET
+        } else {
+            JOURNAL_VERSION
+        }
+    };
     match entry {
         JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
             JOURNAL_VERSION_REGION_HANDOFF
@@ -974,9 +998,12 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         // version-3 kind even when no handoff is active (Codex review on
         // PR #3922).
         JournalEntry::Checkpoint {
-            transfers, events, ..
+            transfers,
+            events,
+            execution_profile,
+            ..
         } => {
-            if transfers.is_some()
+            let base = if transfers.is_some()
                 || events
                     .iter()
                     .any(|event| matches!(event.kind, WorldEventKind::EntityInput { .. }))
@@ -984,9 +1011,12 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
                 JOURNAL_VERSION_REGION_HANDOFF
             } else {
                 JOURNAL_VERSION
-            }
+            };
+            base.max(budget_version(execution_profile.as_ref()))
         }
-        JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        JournalEntry::ExecutionProfile { profile } => {
+            JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
+        }
         _ => JOURNAL_VERSION,
     }
 }

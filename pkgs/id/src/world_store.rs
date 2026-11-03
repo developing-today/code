@@ -401,7 +401,7 @@ pub async fn open_world(
             .await
             .context("journal open task")??;
     let journal_entries = entries.len();
-    let mut restored = WorldCore::restore(world_id, limits, entries)?;
+    let mut restored = WorldCore::restore_with_runtime(world_id, limits, runtime, entries)?;
     let directory_path = dir.join("directory.jsonl");
     let directory =
         tokio::task::spawn_blocking(move || crate::directory::Directory::open(&directory_path))
@@ -494,7 +494,7 @@ pub async fn open_replica(
     runtime: crate::world_limits::RuntimeLimits,
     service: impl FnOnce(WorldHandle) -> WorldService,
 ) -> Result<(WorldService, OpenReport, crate::world::ReplicaCursor)> {
-    use crate::world::{DurableReceiver, restore_replica_entries};
+    use crate::world::{DurableReceiver, restore_replica_entries_with_runtime};
 
     let dir_owned = dir.to_owned();
     let id = world_id.to_owned();
@@ -522,7 +522,9 @@ pub async fn open_replica(
             // rewrite the directory sidecar.
             let directory = crate::directory::Directory::replay_read_only(&directory_path)
                 .context("directory open")?;
-            let restored = restore_replica_entries(&id, limits, entries, &directory, &subjects)?;
+            let restored = restore_replica_entries_with_runtime(
+                &id, limits, runtime, entries, &directory, &subjects,
+            )?;
             Ok::<_, anyhow::Error>(restored)
         }
     })
