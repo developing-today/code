@@ -369,12 +369,16 @@ pub fn check_module(header: &FixtureHeader, wasm: &[u8]) -> Result<()> {
 /// fixture supplies only inputs and the records they must reproduce.
 ///
 /// A window that does not start at sequence one is refused unless
-/// `allow_partial` is set, and its result is never compared.
+/// `allow_partial` is set; its records are compared only when the retained
+/// window still covers the final program epoch (it contains the last
+/// install). A recording that spans an install replays segmented at the
+/// install boundaries, one fresh instance per epoch, mirroring the journal
+/// restore, which clears its replay at every install.
 ///
 /// # Errors
 ///
-/// A partial window without `allow_partial`; a recording that spans an
-/// install; an event kind that cannot be replayed; or a guest failure.
+/// A partial window without `allow_partial`; an event kind that cannot be
+/// replayed; or a guest failure in any segment.
 #[cfg(feature = "sandbox")]
 pub fn replay(
     runner: &Sandbox,
@@ -385,23 +389,32 @@ pub fn replay(
     let header = &fixture.header;
     ensure!(
         header.complete || allow_partial,
-        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window, whose records are then not compared"
+        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window; its records are compared only when the window still covers the final program epoch"
     );
     ensure!(
         header.module_hash.is_some(),
         "the fixture records no active module, so there is nothing to replay"
     );
-    let start = replay_start(&fixture.events)?;
+    let segments = segments(&fixture.events)?;
     let mut world = runner.instantiate(seed)?;
-    for event in &fixture.events[start..] {
-        if let Some(world_event) = replay_event(event) {
-            WorldProgram::update(&mut world, &world_event)
-                .with_context(|| format!("replay sequence {}", world_event.sequence))?;
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            world = runner.instantiate(seed)?;
+        }
+        for event in *segment {
+            if let Some(world_event) = replay_event(event) {
+                WorldProgram::update(&mut world, &world_event)
+                    .with_context(|| format!("replay sequence {}", world_event.sequence))?;
+            }
         }
     }
     let records = WorldProgram::records(&mut world).context("replay records")?;
     let view = String::from_utf8(world.view()?).context("the replayed view is not UTF-8")?;
-    let verdict = verdict(header, records.as_deref())?;
+    let verdict = verdict(
+        header,
+        records.as_deref(),
+        final_epoch_covered(&fixture.events),
+    )?;
     Ok(Replayed {
         records,
         view: Some(view),
@@ -461,28 +474,37 @@ fn replay_collecting(
     let header = &fixture.header;
     ensure!(
         header.complete || allow_partial,
-        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window, whose records are then not compared"
+        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window; its records are compared only when the window still covers the final program epoch"
     );
     ensure!(
         header.module_hash.is_some(),
         "the fixture records no active module, so there is nothing to replay"
     );
-    let start = replay_start(&fixture.events)?;
+    let segments = segments(&fixture.events)?;
     let mut world = runner.instantiate(seed)?;
     let mut snapshots = Vec::new();
-    for event in &fixture.events[start..] {
-        if let Some(world_event) = replay_event(event) {
-            WorldProgram::update(&mut world, &world_event)
-                .with_context(|| format!("replay sequence {}", world_event.sequence))?;
-            snapshots.push(RecordSnapshot {
-                sequence: world_event.sequence,
-                records: snapshot_records(&mut world)?,
-            });
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            world = runner.instantiate(seed)?;
+        }
+        for event in *segment {
+            if let Some(world_event) = replay_event(event) {
+                WorldProgram::update(&mut world, &world_event)
+                    .with_context(|| format!("replay sequence {}", world_event.sequence))?;
+                snapshots.push(RecordSnapshot {
+                    sequence: world_event.sequence,
+                    records: snapshot_records(&mut world)?,
+                });
+            }
         }
     }
     let records = WorldProgram::records(&mut world).context("replay records")?;
     let view = String::from_utf8(world.view()?).context("the replayed view is not UTF-8")?;
-    let verdict = verdict(header, records.as_deref())?;
+    let verdict = verdict(
+        header,
+        records.as_deref(),
+        final_epoch_covered(&fixture.events),
+    )?;
     let final_records = match records.as_deref() {
         Some(text) => parse_records(text).context("the replayed records")?,
         None => Records::new(),
@@ -803,12 +825,15 @@ fn is_install(event: &FixtureEvent) -> bool {
     matches!(event, FixtureEvent::Other { name, .. } if name == INSTALL_NAME)
 }
 
-/// Where a replay begins: the last install, which stands in for the fresh
-/// instance that the seed creates. Chat and earlier installs may precede it,
-/// because no program saw them. An input or a host event may not, because a
-/// different module ran it.
+/// The segments a replay feeds, one per program epoch: an install opens a
+/// new segment. This mirrors the journal restore, which clears its replay
+/// at every install (world/core.rs): state never carries across an install,
+/// so each segment replays in a fresh instance under the fixture's one
+/// recorded module, and only the final segment's records and view are the
+/// replay's result. A segment the program rejects fails the replay, so a
+/// fixture with an unreplayable segment is still refused.
 #[cfg(feature = "sandbox")]
-fn replay_start(events: &[FixtureEvent]) -> Result<usize> {
+fn segments(events: &[FixtureEvent]) -> Result<Vec<&[FixtureEvent]>> {
     for event in events {
         if let FixtureEvent::Other { sequence, name } = event {
             ensure!(
@@ -817,25 +842,26 @@ fn replay_start(events: &[FixtureEvent]) -> Result<usize> {
             );
         }
     }
-    let Some(last) = events.iter().rposition(is_install) else {
-        return Ok(0);
-    };
-    let installed = events[last].sequence();
-    for event in &events[..last] {
-        let ran_before = match event {
-            FixtureEvent::Chat { .. } | FixtureEvent::Other { .. } => None,
-            FixtureEvent::Input { sequence, .. } => {
-                Some(format!("the input at sequence {sequence}"))
-            }
-            FixtureEvent::System { .. } => Some("a host event".to_owned()),
-        };
-        if let Some(what) = ran_before {
-            bail!(
-                "the recording spans a module install at sequence {installed}: {what} ran under an earlier module, and a fixture replays under one module; record after the last install"
-            );
+    let mut starts = vec![0];
+    for (index, event) in events.iter().enumerate() {
+        if index > 0 && is_install(event) {
+            starts.push(index);
         }
     }
-    Ok(last)
+    let mut out = Vec::with_capacity(starts.len());
+    for (position, &start) in starts.iter().enumerate() {
+        let end = starts.get(position + 1).copied().unwrap_or(events.len());
+        out.push(&events[start..end]);
+    }
+    Ok(out)
+}
+
+/// Whether the retained events still cover the final program epoch from
+/// its install, so replaying the final segment is a complete replay of
+/// that epoch and its records can be compared with the header's.
+#[cfg(feature = "sandbox")]
+fn final_epoch_covered(events: &[FixtureEvent]) -> bool {
+    events.iter().any(is_install)
 }
 
 /// The event a replay feeds the program, or `None` for events it never sees.
@@ -863,11 +889,17 @@ fn replay_event(event: &FixtureEvent) -> Option<WorldEvent> {
     }
 }
 
-/// Compare the replayed records with the header's. A partial window is never
-/// compared; a program that keeps no records replays to an empty map.
+/// Compare the replayed records with the header's. A partial window is
+/// compared only when it still covers the final program epoch (see
+/// [`final_epoch_covered`]); a program that keeps no records replays to an
+/// empty map.
 #[cfg(feature = "sandbox")]
-fn verdict(header: &FixtureHeader, records: Option<&str>) -> Result<Verdict> {
-    if !header.complete {
+fn verdict(
+    header: &FixtureHeader,
+    records: Option<&str>,
+    final_epoch_covered: bool,
+) -> Result<Verdict> {
+    if !header.complete && !final_epoch_covered {
         return Ok(Verdict::NotCompared("partial history"));
     }
     let Some(expected) = &header.records else {
@@ -1216,33 +1248,38 @@ mod tests {
             let fixture = decode(fixture_text).unwrap();
             check_module(&fixture.header, TIC_TAC_TOE).unwrap();
             let runner = Sandbox::compile(TIC_TAC_TOE, SandboxLimits::default()).unwrap();
-            let start = replay_start(&fixture.events).unwrap();
+            let segments = segments(&fixture.events).unwrap();
             let mut world = runner.instantiate(7).unwrap();
 
             let mut snapshots = 0;
-            for event in &fixture.events[start..] {
-                let Some(world_event) = replay_event(event) else {
-                    continue;
-                };
-                WorldProgram::update(&mut world, &world_event).unwrap();
-                let snapshot = world.snapshot().unwrap().unwrap();
-                let actual = blake3::hash(&snapshot).to_hex().to_string();
-                let Some(expected) = EXPECTED_SNAPSHOTS.get(snapshots) else {
-                    panic!(
-                        "snapshot digest mismatch at sequence {}: expected no further snapshot, actual {}",
-                        world_event.sequence, actual
+            for (index, segment) in segments.iter().enumerate() {
+                if index > 0 {
+                    world = runner.instantiate(7).unwrap();
+                }
+                for event in *segment {
+                    let Some(world_event) = replay_event(event) else {
+                        continue;
+                    };
+                    WorldProgram::update(&mut world, &world_event).unwrap();
+                    let snapshot = world.snapshot().unwrap().unwrap();
+                    let actual = blake3::hash(&snapshot).to_hex().to_string();
+                    let Some(expected) = EXPECTED_SNAPSHOTS.get(snapshots) else {
+                        panic!(
+                            "snapshot digest mismatch at sequence {}: expected no further snapshot, actual {}",
+                            world_event.sequence, actual
+                        );
+                    };
+                    assert_eq!(
+                        world_event.sequence, expected.0,
+                        "snapshot sequence differs from the checked-in session"
                     );
-                };
-                assert_eq!(
-                    world_event.sequence, expected.0,
-                    "snapshot sequence differs from the checked-in session"
-                );
-                assert_eq!(
-                    actual, expected.1,
-                    "snapshot digest mismatch at sequence {}: expected {}, actual {}",
-                    world_event.sequence, expected.1, actual
-                );
-                snapshots += 1;
+                    assert_eq!(
+                        actual, expected.1,
+                        "snapshot digest mismatch at sequence {}: expected {}, actual {}",
+                        world_event.sequence, expected.1, actual
+                    );
+                    snapshots += 1;
+                }
             }
             if let Some((sequence, expected)) = EXPECTED_SNAPSHOTS.get(snapshots) {
                 panic!(
@@ -1295,21 +1332,86 @@ mod tests {
 
         #[test]
         fn fixture_spanning_a_reinstall_is_refused() {
+            // The refusal stays for a fixture one of whose segments cannot
+            // be replayed: here the first segment's input is not valid
+            // UTF-8, which the program rejects outright, so that segment
+            // cannot be replayed and the recording is refused as before.
             let (runner, base) = checked_in_game();
-            let reinstalled = Fixture {
+            let unreplayable = Fixture {
                 header: base.header.clone(),
+                events: vec![
+                    install(1),
+                    FixtureEvent::Input {
+                        sequence: 2,
+                        participant_id: 1,
+                        bytes: vec![0xff],
+                    },
+                    install(3),
+                    input(4, 2, "3"),
+                ],
+            };
+            assert!(replay(&runner, 7, &unreplayable, false).is_err());
+
+            // A fixture that records no module at all is likewise refused.
+            let mut no_module = base;
+            no_module.header.module_hash = None;
+            assert!(replay(&runner, 7, &no_module, false).is_err());
+        }
+
+        #[test]
+        fn fixture_spanning_a_reinstall_replays_segmented_at_installs() {
+            let (runner, base) = checked_in_game();
+            // The final segment alone determines the records: the install at
+            // sequence 3 opens a fresh epoch, so the move at sequence 2 ran
+            // under the earlier epoch and is cleared, exactly as the journal
+            // restore clears its replay at an install.
+            let mut live = runner.instantiate(7).unwrap();
+            live.update(2, b"3").unwrap();
+            let records =
+                parse_records(&String::from_utf8(live.records().unwrap().unwrap()).unwrap())
+                    .unwrap();
+            let spanning = Fixture {
+                header: FixtureHeader {
+                    current_sequence: 4,
+                    records: Some(records),
+                    ..base.header.clone()
+                },
                 events: vec![install(1), input(2, 1, "0"), install(3), input(4, 2, "3")],
             };
-            let error = replay(&runner, 7, &reinstalled, false)
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("record after the last install"), "{error}");
+            let replayed = replay(&runner, 7, &spanning, false).unwrap();
+            assert_eq!(replayed.verdict, Verdict::Match);
+        }
 
-            let input_first = Fixture {
-                header: base.header,
-                events: vec![input(1, 1, "0"), install(2), input(3, 2, "3")],
+        #[test]
+        fn partial_fixture_covering_the_final_epoch_is_compared() {
+            let (runner, base) = checked_in_game();
+            // A partial window that still contains the last install covers
+            // the final epoch in full, so its records compare with the
+            // header's instead of reporting NotCompared.
+            let mut live = runner.instantiate(7).unwrap();
+            live.update(2, b"3").unwrap();
+            live.update(1, b"4").unwrap();
+            let records =
+                parse_records(&String::from_utf8(live.records().unwrap().unwrap()).unwrap())
+                    .unwrap();
+            let partial = Fixture {
+                header: FixtureHeader {
+                    current_sequence: 5,
+                    complete: false,
+                    records: Some(records),
+                    ..base.header
+                },
+                events: vec![
+                    install(1),
+                    input(2, 1, "0"),
+                    install(3),
+                    input(4, 2, "3"),
+                    input(5, 1, "4"),
+                ],
             };
-            assert!(replay(&runner, 7, &input_first, false).is_err());
+            assert!(replay(&runner, 7, &partial, false).is_err());
+            let replayed = replay(&runner, 7, &partial, true).unwrap();
+            assert_eq!(replayed.verdict, Verdict::Match);
         }
 
         #[test]
