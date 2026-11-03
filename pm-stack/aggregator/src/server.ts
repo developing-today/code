@@ -1729,6 +1729,10 @@ async function handler(req: Request): Promise<Response> {
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
+    // #1203: the ready-for-agent harness facet — backend readiness,
+    // repository settings, work-item counts and GraphQL errors reach the
+    // machine surface too, not only the rendered page.
+    body.rfa = view.rfa;
     body.degraded = view.degraded;
     return json(body);
   }

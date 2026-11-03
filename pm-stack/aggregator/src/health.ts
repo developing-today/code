@@ -30,6 +30,7 @@ import {
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
+import { fetchRfaState, rfaHealthDown, rfaHealthFacet, type RfaHealthFacet, type RfaState } from "./sources/ready-for-agent.ts";
 
 /** Orchestration cadence: hourly; next run is an expectation, not a promise. */
 const ORCHESTRATION_CADENCE_MS = 3_600_000;
@@ -192,6 +193,12 @@ export interface HealthView {
   /** Dashboard comment loops (#1145): pending triage/posting counts,
    *  so an unworked comment queue is visible on /health. */
   comments: PendingCommentCounts;
+  /** ready-for-agent harness facet (#1203): live GraphQL state —
+   *  registered repositories, backend readiness, work-item counts —
+   *  from src/sources/ready-for-agent.ts, not just the topology
+   *  probe's HTTP 200. "down" with the error when the harness cannot
+   *  be read; never an invented state. */
+  rfa: RfaHealthFacet;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -313,6 +320,8 @@ export interface HealthDeps {
   fetcher?: ProbeFetch;
   cache?: ProbeCache;
   now?: number;
+  /** #1203 test seam: replace the live harness read. */
+  rfaState?: () => Promise<RfaState>;
 }
 
 export function resolveBuildVersion(env: Record<string, string | undefined> = process.env): string {
@@ -408,6 +417,21 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     });
   }
 
+  // #1203: the harness facet — a real GraphQL read of the dispatch
+  // layer (cached 60 s inside fetchRfaState), reported down with its
+  // error rather than hidden when the harness cannot be read.
+  let rfa: RfaHealthFacet;
+  if (inputs.mode === "fixtures") {
+    rfa = { state: "fixtures", detail: "fixtures mode — no live harness read", repositories: [], backends: [] };
+  } else {
+    try {
+      const state = deps.rfaState ? await deps.rfaState() : await fetchRfaState(cfg.readyForAgent.baseUrl);
+      rfa = rfaHealthFacet(state);
+    } catch (err) {
+      rfa = rfaHealthDown(`harness read failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   const checkout = feed?.checkout ?? unreportedCheckoutDrift();
   const sectionHealth = feedSections(feed, now);
   const degraded =
@@ -415,6 +439,9 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     (services.some((s) => s.ok === false) ||
       (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
       checkout.state === "behind" ||
+      // #1203: a harness whose GraphQL cannot be read (or whose backend
+      // is not READY) is a degraded dependency, not an invisible one.
+      rfa.state === "down" ||
       sectionHealth.some((section) => section.status === "error"));
 
   return {
@@ -450,6 +477,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       },
     },
     pages: pageHealth(now),
+    rfa,
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
