@@ -12,7 +12,8 @@
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
 use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
-    Account, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer, TransferError,
+    Account, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer,
+    TransferError,
 };
 use super::recovery::{ReconcileOutcome, RecoveryPolicy, reconcile};
 
@@ -1451,6 +1452,103 @@ fn live_atomic_failure_moves_nothing() {
         "no leg of a failed linked batch may be stored"
     );
     assert_eq!(record.state, IntentState::Submitted);
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_failed_conversion_recovery_reports_resubmission_rejected() {
+    let (_cluster, mut executor) = live_executor(30025);
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+
+    // Same insufficient-liquidity failure as
+    // live_atomic_failure_moves_nothing: the linked batch fails, no
+    // leg is stored, and the intent stays Submitted.
+    let drain = funding_transfer(900, LP_DST, USER_DST, 49_000, DST);
+    assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
+    assert!(executor.submit(&mut record).is_err());
+    assert_eq!(record.state, IntentState::Submitted);
+
+    // TigerBeetle remembers the failed transfer IDs, so the
+    // recovery resubmission is refused (id_already_failed). That
+    // must surface as ResubmissionRejected for this record — not a
+    // panic in the binding — and the record stays unresolved.
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(
+        outcomes,
+        vec![(777, ReconcileOutcome::ResubmissionRejected)]
+    );
+    let stored = executor
+        .store
+        .get(777)
+        .expect("read intent")
+        .expect("intent still stored");
+    assert_eq!(stored.state, IntentState::Submitted);
+    assert!(executor.backend.transfers_with_user_data_128(777).is_empty());
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        49_000,
+        "only the drain posted; the failed conversion moved nothing"
+    );
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_zero_user_data_128_query_matches_exactly() {
+    let (_cluster, mut executor) = live_executor(30026);
+    let record = executor.execute(&request()).expect("conversion posts");
+    assert_eq!(record.state, IntentState::Posted);
+
+    // Funding transfers are stamped user_data_128 = 0. TigerBeetle
+    // treats a zero query filter as "no filter", so the binding
+    // must post-filter exactly: only the two funding transfers
+    // match, never the conversion legs stamped 777.
+    let zero = executor.backend.transfers_with_user_data_128(0);
+    assert_eq!(zero.len(), 2);
+    assert!(zero.iter().all(|transfer| transfer.user_data_128 == 0));
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_codes_zero_and_one_stay_distinct() {
+    let (_cluster, mut executor) = live_executor(30027);
+    let backend = &mut executor.backend;
+
+    // Accounts: code 0 is created; the same ID retried with code 1
+    // is a different record, not an idempotent Exists.
+    let account_zero = account(424_242, SRC, false);
+    assert_eq!(account_zero.code, 0);
+    assert!(backend.create_accounts(&[account_zero.clone()])[0].is_ok());
+    let mut account_one = account_zero.clone();
+    account_one.code = 1;
+    assert_eq!(
+        backend.create_accounts(&[account_one])[0],
+        Err(AccountError::ExistsWithDifferentFields)
+    );
+    // The rejected retry must not rewrite what lookups report.
+    assert_eq!(backend.lookup_account(424_242).unwrap().code, 0);
+
+    // Transfers: the same rule on a funded pair.
+    let transfer_zero = funding_transfer(910, ISSUER_SRC, USER_SRC, 10, SRC);
+    assert!(backend.create_transfers(&[transfer_zero.clone()])[0].is_ok());
+    let mut transfer_one = transfer_zero;
+    transfer_one.code = 1;
+    assert_eq!(
+        backend.create_transfers(&[transfer_one])[0],
+        Err(TransferError::ExistsWithDifferentFields)
+    );
+    assert_eq!(backend.lookup_transfer(910).unwrap().code, 0);
 }
 
 #[cfg(feature = "currency-poc-tb")]
