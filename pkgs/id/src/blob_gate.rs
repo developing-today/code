@@ -176,6 +176,21 @@ pub fn fold_group_events(
         };
         by_world.entry(key).or_default().push(event.clone());
     }
+    // Causality spans the whole log: `GroupLog::record` names the log's global heads as
+    // `after`, so an event's dependencies routinely live in another world's partition, and
+    // `fold` rejects a partition that names an absent dependency. Keep only the
+    // intra-partition edges: ordering inside a world is preserved, and the gate reads each
+    // world's own projection for membership, so a cross-world `after` edge carries no
+    // authority the fold would lose. Without this, any second group fails the whole gate
+    // closed and denies even authorized members every fetch.
+    for partition in by_world.values_mut() {
+        let present: BTreeSet<_> = partition.iter().map(|event| event.id).collect();
+        for event in partition.iter_mut() {
+            event
+                .after
+                .retain(|dependency| present.contains(dependency));
+        }
+    }
     Worlds::fold(&by_world, BTreeMap::new())
 }
 
@@ -582,6 +597,70 @@ mod tests {
             &blob(9),
             Request::Fetch
         ));
+    }
+
+    /// `GroupLog::record` names the log's global heads as `after`, so a group created after
+    /// another names the first group's events — which land in another partition. The fold
+    /// must tolerate that cross-world causality instead of failing the whole gate closed.
+    #[test]
+    fn fold_group_events_tolerates_cross_world_causality() {
+        fn create() -> Body {
+            Body::Create(Create {
+                template: Template::Custom,
+                policy: Policy::default(),
+                members: Vec::new(),
+                admins_on_create: false,
+            })
+        }
+        let founder = *id(1).as_bytes();
+        let member_a = *id(2).as_bytes();
+        let member_b = *id(3).as_bytes();
+        let create_a = p2panda_core::Hash::digest(b"create-a");
+        let add_a = p2panda_core::Hash::digest(b"add-a");
+        let create_b = p2panda_core::Hash::digest(b"create-b");
+        let add_b = p2panda_core::Hash::digest(b"add-b");
+        let events = vec![
+            Event {
+                id: create_a,
+                author: founder,
+                after: Vec::new(),
+                group: None,
+                body: create(),
+            },
+            Event {
+                id: add_a,
+                author: founder,
+                after: vec![create_a],
+                group: Some(create_a),
+                body: Body::Member(MemberOp::Add {
+                    member: member_a,
+                    role: Role::Read,
+                }),
+            },
+            Event {
+                id: create_b,
+                author: founder,
+                after: vec![create_a, add_a],
+                group: None,
+                body: create(),
+            },
+            Event {
+                id: add_b,
+                author: founder,
+                after: vec![create_b, add_a],
+                group: Some(create_b),
+                body: Body::Member(MemberOp::Add {
+                    member: member_b,
+                    role: Role::Read,
+                }),
+            },
+        ];
+        let worlds = fold_group_events(&events).expect("cross-world causality must fold");
+        let (key_a, key_b) = (world_key(&create_a), world_key(&create_b));
+        assert!(worlds.holds_here(&key_a, member_a, Role::Pull));
+        assert!(!worlds.holds_here(&key_a, member_b, Role::Pull));
+        assert!(worlds.holds_here(&key_b, member_b, Role::Pull));
+        assert!(!worlds.holds_here(&key_b, member_a, Role::Pull));
     }
 
     #[test]
