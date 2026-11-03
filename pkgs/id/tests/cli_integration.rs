@@ -425,16 +425,16 @@ mod cli_tests {
         let tmp = TempDir::new().unwrap();
         let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
         let module = module.to_str().unwrap();
-        let fixture_text = std::fs::read_to_string(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/tic-tac-toe-determinism.jsonl"),
-        )
-        .unwrap();
+        // Embedded at build time: the NixOS VM integration suite runs
+        // the compiled test binary without the source tree, so a
+        // CARGO_MANIFEST_DIR runtime read would panic there (Codex P2
+        // finding on PR #4619).
+        let fixture_text = include_str!("fixtures/tic-tac-toe-determinism.jsonl");
 
         // The checked-in fixture verifies clean: the header verdict is a
         // match and the command succeeds.
         let good = tmp.path().join("good.jsonl");
-        std::fs::write(&good, &fixture_text).unwrap();
+        std::fs::write(&good, fixture_text).unwrap();
         let good = good.to_str().unwrap();
         let verified = run_cmd_success_stdout(
             &[
