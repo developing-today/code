@@ -2990,6 +2990,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
+ "tigerbeetle",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -6921,6 +6922,12 @@ checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
 ]
+
+[[package]]
+name = "tigerbeetle"
+version = "0.17.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b552c5f9966fd12c9e6f0ab6cad178c2430b0a5e3909e1f5953fe8d0d457f90d"
 
 [[package]]
 name = "time"
