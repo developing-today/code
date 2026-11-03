@@ -121,6 +121,9 @@ jobs:
     # `publish` waits for it, so a release cannot ship an installer that no
     # longer works against the tarballs it just built.
     needs: artifacts
+    # A skipped release-gate (push-only) skips the whole downstream chain
+    # unless each job opts back in: preserve dispatch snapshots here too.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.artifacts.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -243,6 +246,9 @@ jobs:
     # a snapshot builds it and reads `mcpx --version` back, proving the
     # build-arg path without publishing anything.
     needs: artifacts
+    # Same always() opt-in as installer above: a skipped release-gate must
+    # not silently drop the snapshot container build on manual runs.
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.artifacts.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
