@@ -4577,6 +4577,112 @@ mod tests {
         );
     }
 
+    struct OversizedFallbackText;
+
+    impl WorldProgram for OversizedFallbackText {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            // A non-screen fallback text far beyond the presentation limit.
+            Ok(Some("y".repeat(9000)))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            _width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            let pad = "x".repeat(9000);
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_over_limit_fallback_text_is_bounded_by_presentation_bytes() {
+        let mut core = WorldCore::new("oversized-fallback-text", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedFallbackText), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token,
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains("world presentation exceeds 8192 bytes")),
+            "an over-limit fallback text is refused, not delivered: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an over-limit fallback must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 2,
+            "the oversized layout and the over-limit fallback are both counted"
+        );
+    }
+
+    struct OversizedFallbackScreen;
+
+    impl WorldProgram for OversizedFallbackScreen {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            // A full 120x50 screen whose cropped serialization is far beyond
+            // the presentation limit (6000 populated cells).
+            let cell = serde_json::json!({"symbol": "x", "fg": 1, "bg": 2, "bold": true, "columns": 1});
+            let cells: Vec<_> = std::iter::repeat_n(cell, 120 * 50).collect();
+            Ok(Some(
+                serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": cells})
+                    .to_string(),
+            ))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            _width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            let pad = "x".repeat(9000);
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_over_limit_cropped_fallback_screen_is_bounded_by_presentation_bytes() {
+        let mut core = WorldCore::new("oversized-fallback-screen", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedFallbackScreen), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token,
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains("world presentation exceeds 8192 bytes")),
+            "an over-limit cropped fallback screen is refused, not delivered: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an over-limit cropped fallback must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 2,
+            "the oversized layout and the over-limit cropped fallback are both counted"
+        );
+    }
+
     #[test]
     fn signed_moves_chain_verify_and_replay_the_journal_order() {
         use p2panda_core::{Hash, SigningKey};
