@@ -35,6 +35,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
@@ -468,6 +469,11 @@ type Source interface {
 	Globals(ctx context.Context, ns []string) (string, error)
 	// Namespaces are the names to bind as bare identifiers in a snippet.
 	Namespaces(ctx context.Context, ns []string) ([]string, error)
+	// ClientModuleFor is ClientModule and Globals for one named script
+	// language (#1917 Phase 2): the module the runner installs beside a
+	// script of that language and the ambient declarations written with it.
+	// The default target keeps its own two methods, unchanged.
+	ClientModuleFor(ctx context.Context, language string, ns []string) (module, globals string, err error)
 }
 
 // Limits are the resolved settings one service runs under.
@@ -631,6 +637,16 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		return nil, err
 	}
 	globals, _ := s.Src.Globals(ctx, opts.NS)
+	// A run in another language gets that language's client instead
+	// (#1917 Phase 2). The language rule is the runner's, so a request the
+	// runner will treat as Python is exactly the request that fetches the
+	// Python client.
+	clients := map[string]runner.Client{}
+	if runner.ScriptLanguage(req.File, req.Source) == codegen.Python.Name {
+		if module, pyGlobals, cerr := s.Src.ClientModuleFor(ctx, codegen.Python.Name, opts.NS); cerr == nil {
+			clients[codegen.Python.Name] = runner.Client{Module: module, Globals: pyGlobals}
+		}
+	}
 
 	capture := s.Limits.CaptureConsole
 	if opts.CaptureConsole != nil {
@@ -641,6 +657,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		File:             req.File,
 		ClientSource:     clientSrc,
 		GlobalsSource:    globals,
+		Clients:          clients,
 		WorkDir:          s.WorkDir,
 		WorkRoot:         s.WorkRoot,
 		Runtime:          firstNonEmpty(opts.Runtime, s.Limits.Runtime),
