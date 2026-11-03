@@ -22,6 +22,7 @@ rec {
       lib.make-root-apps
       lib.make-id
       lib.make-mcpx-overlay
+      lib.make-mcpx-modules
       lib.make-laptop-backups-checks
     ];
   inputs = {
@@ -95,7 +96,16 @@ rec {
     nixpkgs.follows = "nixpkgs-unstable";
     nixpkgs-25.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
     nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable"; # channel branch: fully cached on cache.nixos.org (master is not)
+    # 2026-11-02: nixpkgs-unstable now follows the fleet-wide pin in
+    # dezren39/fleet, so code, opencode and openchamber all build
+    # against the SAME nixpkgs revision and share one store closure.
+    # The pin is always a nixpkgs-unstable channel TIP revision, which
+    # keeps the property the old branch URL was chosen for ("channel
+    # branch: fully cached on cache.nixos.org (master is not)") while
+    # freezing it at a known, shared rev. To move the fleet's pin,
+    # update dezren39/fleet's flake, then re-lock here.
+    fleet.url = "github:dezren39/fleet";
+    nixpkgs-unstable.follows = "fleet/nixpkgs";
     nixpkgs-master.url = "github:NixOS/nixpkgs"; # ?shallow=1";
 
     sops-nix = {
@@ -107,16 +117,6 @@ rec {
     };
     home-manager = {
       url = "github:nix-community/home-manager"; # ?shallow=1";
-    };
-    # Drew's personal flake (Darwin). Retained as an input only as
-    # a pin source: other inputs follow its nixpkgs-hoisted. Its
-    # laptop home-manager modules (laptop-backups,
-    # codex-remote-control) moved into this flake on 2026-10-28
-    # (nixos/home/; code#1723) — nothing here consumes its
-    # homeModules output anymore. Its package set targets darwin
-    # and nothing here builds from it.
-    dezren39-nix = {
-      url = "github:dezren39/nix";
     };
     systems = {
       # TODO: use this?

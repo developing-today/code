@@ -14,31 +14,42 @@ executables on PATH that log every invocation:
                                 combination, NO wrangler (and no bws)
                                 invocation at all
   --deploy-version alone     -> exit 0, wrangler versions deploy
-                                <id>@100% invoked (rollback path intact)
+                                <id>@100% invoked (rollback path intact;
+                                the stub answers versions view with a
+                                configured version, per #3475's
+                                verify-before-deploy contract)
   --dry-run alone            -> exit 0, wrangler deploy --dry-run
                                 invoked, no versions deploy
 
 Run: python3 infra/github-backup/tests/test_deploy_dry_run.py
 """
+
 import os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEPLOY = os.path.abspath(os.path.join(HERE, "..", "worker", "deploy.mjs"))
 
 PASS = []
+
+
 def check(name, ok):
     PASS.append((name, ok))
     print(("PASS " if ok else "FAIL ") + name)
+
 
 STUB = """#!/bin/sh
 echo "$(basename "$0") $@" >> "$STUB_LOG"
 case "$(basename "$0")" in
   bws) echo '[{"key":"cloudflare.api-token-day-to-day","value":"stub-token"}]';;
-  wrangler) echo '[]';;
+  wrangler) case "$1 $2" in
+              "versions view") echo '{"resources":{"bindings":[{"name":"DRAIN_BEARER","type":"secret_text"},{"name":"GITHUB_WEBHOOK_SECRET","type":"secret_text"}]}}';;
+              *) echo '[]';;
+            esac;;
   git) echo '0123456789abcdef0123456789abcdef01234567';;
 esac
 exit 0
 """
+
 
 def run_deploy(args):
     root = tempfile.mkdtemp(prefix="ghb-deploy-test-")
@@ -50,23 +61,29 @@ def run_deploy(args):
             f.write(STUB)
         os.chmod(path, 0o755)
     log = os.path.join(root, "stub.log")
-    env = {**os.environ,
-           "PATH": stub_bin + os.pathsep + os.environ["PATH"],
-           "CLOUDFLARE_ACCOUNT_ID": "stub-account",
-           "STUB_LOG": log}
-    proc = subprocess.run(["node", DEPLOY, *args], env=env,
-                          capture_output=True, text=True, timeout=60)
+    env = {
+        **os.environ,
+        "PATH": stub_bin + os.pathsep + os.environ["PATH"],
+        "CLOUDFLARE_ACCOUNT_ID": "stub-account",
+        "STUB_LOG": log,
+    }
+    proc = subprocess.run(
+        ["node", DEPLOY, *args], env=env, capture_output=True, text=True, timeout=60
+    )
     calls = ""
     if os.path.exists(log):
         with open(log) as f:
             calls = f.read()
     return proc, calls
 
+
 # 1. the dangerous combination is rejected before anything runs
 proc, calls = run_deploy(["--dry-run", "--deploy-version", "version-stub"])
 check("combo: non-zero exit", proc.returncode != 0)
-check("combo: error names --dry-run and --deploy-version",
-      "--dry-run" in proc.stderr and "--deploy-version" in proc.stderr)
+check(
+    "combo: error names --dry-run and --deploy-version",
+    "--dry-run" in proc.stderr and "--deploy-version" in proc.stderr,
+)
 check("combo: no wrangler invocation", "wrangler" not in calls)
 check("combo: no bws invocation", "bws" not in calls)
 
@@ -78,14 +95,17 @@ check("combo-reversed: no wrangler invocation", "wrangler" not in calls)
 # 3. the ordinary rollback path is unchanged
 proc, calls = run_deploy(["--deploy-version", "version-stub"])
 check("rollback: exit 0", proc.returncode == 0)
-check("rollback: versions deploy at 100%",
-      "wrangler versions deploy version-stub@100%" in calls)
+check(
+    "rollback: versions deploy at 100%",
+    "wrangler versions deploy version-stub@100%" in calls,
+)
 
 # 4. plain --dry-run still validates without deploying
 proc, calls = run_deploy(["--dry-run"])
 check("dry-run: exit 0", proc.returncode == 0)
-check("dry-run: wrangler deploy --dry-run invoked",
-      "wrangler deploy --dry-run" in calls)
+check(
+    "dry-run: wrangler deploy --dry-run invoked", "wrangler deploy --dry-run" in calls
+)
 check("dry-run: no versions deploy", "versions deploy" not in calls)
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")

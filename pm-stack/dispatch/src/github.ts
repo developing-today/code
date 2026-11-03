@@ -148,7 +148,18 @@ export class GitHubClient {
       // gh fallback for label creation is best-effort: `gh issue create
       // --label` fails on a missing label, so create it there too.
       try {
-        await this.gh(["label", "create", label, "--repo", repo, "--color", def.color, "--description", def.description, "--force"]);
+        await this.gh([
+          "label",
+          "create",
+          label,
+          "--repo",
+          repo,
+          "--color",
+          def.color,
+          "--description",
+          def.description,
+          "--force",
+        ]);
       } catch {
         /* label may already exist — the create call below will say so */
       }

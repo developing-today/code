@@ -56,7 +56,7 @@ export function validateCredentialRef(ref: unknown): CredentialRef {
   }
   const record = ref as Record<string, unknown>;
   for (const key of VALUE_BEARING_KEYS) {
-    if (key in record) {
+    if (Object.hasOwn(record, key)) {
       throw new AdapterError(
         "fetch-failed",
         `credential ref: carries a credential value under "${key}" — references only, never values`,
@@ -274,15 +274,14 @@ export function collectFileExportAdapter(opts: {
   }
   for (const w of doc.windows) {
     if (!isRecord(w)) {
-      return retainedOutcome(
-        "unparseable",
-        previous,
-        now,
-        "ok",
-        "file-export drift: window element is not an object",
-      );
+      return retainedOutcome("unparseable", previous, now, "ok", "file-export drift: window element is not an object");
     }
-    if (typeof w.name !== "string" || w.name.length === 0 || typeof w.usedPct !== "number" || !Number.isFinite(w.usedPct)) {
+    if (
+      typeof w.name !== "string" ||
+      w.name.length === 0 ||
+      typeof w.usedPct !== "number" ||
+      !Number.isFinite(w.usedPct)
+    ) {
       return retainedOutcome(
         "unparseable",
         previous,

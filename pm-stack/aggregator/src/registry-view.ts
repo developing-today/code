@@ -67,7 +67,12 @@ export function registryActivityMs(r: SessionRecord): number | null {
 }
 
 function parsePositiveInt(raw: string | null, fallback: number): number {
-  if (raw === null) return fallback;
+  // Strict decimal grammar — the same strict-decimal rule the window parameter
+  // uses (#3717). Number.parseInt prefix-parses: "1e2" -> 1, "5.9" -> 5,
+  // "10junk" -> 10, so a misspelled limit/offset silently selected a
+  // different page than the URL spelled out. Anything that is not a
+  // plain unsigned decimal falls back to the parameter default.
+  if (raw === null || !/^\d+$/.test(raw)) return fallback;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }

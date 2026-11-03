@@ -17,6 +17,10 @@ function rec(partial: Partial<SessionRecord> & { id: string }): SessionRecord {
     agentLabel: "Muse",
     parentId: null,
     status: "succeeded",
+    // #4284: SessionRecord.taskRefs is required, so the shared minimal
+    // fixture carries it (coordinated with the #3525 validator work, which
+    // owns the remaining required fields).
+    taskRefs: [],
     ...partial,
   } as SessionRecord;
 }
@@ -37,7 +41,7 @@ const older = rec({
 describe("isSessionRecord timestamp hygiene (#2376)", () => {
   test("accepts string or absent timestamps", () => {
     expect(isSessionRecord(valid)).toBe(true);
-    expect(isSessionRecord({ id: "a", source: "s", label: "l" })).toBe(true);
+    expect(isSessionRecord({ id: "a", source: "s", label: "l", taskRefs: [] })).toBe(true);
     expect(isSessionRecord(older)).toBe(true);
   });
 
@@ -63,7 +67,7 @@ describe("poisoned records cannot reach the mergeRecords sort (#2376)", () => {
       { id: "ses_poison_num", source: "claude-code", label: "Poison", lastSeenAt: 1730000000 },
       { id: "ses_poison_bool", source: "claude-code", label: "Poison", lastSeenAt: true },
       older,
-      { id: "ses_no_ts", source: "claude-code", label: "No timestamps" },
+      { id: "ses_no_ts", source: "claude-code", label: "No timestamps", taskRefs: [] },
     ];
     const admitted = raw.filter(isSessionRecord);
     expect(admitted.map((r) => r.id)).toEqual(["ses_valid", "ses_older", "ses_no_ts"]);
@@ -78,7 +82,12 @@ describe("poisoned records cannot reach the mergeRecords sort (#2376)", () => {
 
   test("launch path: parseLaunchRecords drops records with non-string timestamps", () => {
     const jsonl = [
-      JSON.stringify({ id: "ses_launch_ok", label: "OK", startedAt: "2026-10-31T00:00:00Z", lastSeenAt: "2026-11-01T00:00:00Z" }),
+      JSON.stringify({
+        id: "ses_launch_ok",
+        label: "OK",
+        startedAt: "2026-10-31T00:00:00Z",
+        lastSeenAt: "2026-11-01T00:00:00Z",
+      }),
       JSON.stringify({ id: "ses_launch_num", label: "Num", lastSeenAt: 1730000000 }),
       JSON.stringify({ id: "ses_launch_bool", label: "Bool", lastSeenAt: true }),
       JSON.stringify({ id: "ses_launch_bad_start", label: "BadStart", startedAt: 1730000000 }),

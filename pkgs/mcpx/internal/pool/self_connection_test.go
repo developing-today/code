@@ -94,7 +94,7 @@ func TestPoolRefusesSelfConnectionByIdentity(t *testing.T) {
 	u := newSelfUpstream(t)
 	p := upstreamPool(t, u.URL)
 	for attempt := 0; attempt < 3; attempt++ {
-		_, err := p.Acquire(context.Background(), "global")
+		_, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 		if err == nil {
 			t.Fatalf("attempt %d: self-connection was admitted", attempt)
 		}
@@ -160,7 +160,7 @@ func (u *modernSelfUpstream) serve(w http.ResponseWriter, r *http.Request) {
 func TestPoolRefusesModernSelfConnection(t *testing.T) {
 	u := newModernSelfUpstream(t)
 	p := upstreamPool(t, u.URL)
-	_, err := p.Acquire(context.Background(), "global")
+	_, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err == nil || !strings.Contains(err.Error(), "self-connection") {
 		t.Fatalf("modern self-connection: err=%v, want a self-connection refusal", err)
 	}
@@ -227,7 +227,7 @@ func TestPoolRefusalDropsCachedSchemas(t *testing.T) {
 	if cached, _, _ := p.CachedSchemas(); len(cached) != 2 {
 		t.Fatalf("seeded cache not in place: %d tools", len(cached))
 	}
-	if _, err := p.Acquire(context.Background(), "global"); err == nil {
+	if _, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"}); err == nil {
 		t.Fatal("self-connection was admitted over a seeded cache")
 	}
 	if cached, _, _ := p.CachedSchemas(); len(cached) != 0 {
@@ -281,7 +281,7 @@ func newReactiveSelfUpstream(t *testing.T) *reactiveSelfUpstream {
 func TestPoolRefusesReactiveSelfConnection(t *testing.T) {
 	u := newReactiveSelfUpstream(t)
 	p := upstreamPool(t, u.URL)
-	_, err := p.Acquire(context.Background(), "global")
+	_, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err == nil || !strings.Contains(err.Error(), "self-connection") {
 		t.Fatalf("reactive self-connection: err=%v, want a self-connection refusal", err)
 	}
@@ -310,7 +310,7 @@ func TestPoolRefusesAdoptedSelfSession(t *testing.T) {
 	if cached, _, _ := p.CachedSchemas(); len(cached) != 0 {
 		t.Fatalf("adopted self session left %d cached tools advertised", len(cached))
 	}
-	if _, err := p.Acquire(context.Background(), "global"); err == nil ||
+	if _, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"}); err == nil ||
 		!strings.Contains(err.Error(), "self-connection") {
 		t.Fatalf("adopted self session was published: err=%v, want a self-connection refusal", err)
 	}
@@ -326,7 +326,7 @@ func TestPoolAdmitsDistinctMcpxPeerByInstance(t *testing.T) {
 	pool.OwnInstanceID = "own-instance"
 	defer func() { pool.OwnInstanceID = "" }()
 	p := upstreamPool(t, u.URL)
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatalf("distinct mcpx peer was refused: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestPoolRefusesOwnInstanceByIdentity(t *testing.T) {
 	pool.OwnInstanceID = "own-instance"
 	defer func() { pool.OwnInstanceID = "" }()
 	p := upstreamPool(t, u.URL)
-	_, err := p.Acquire(context.Background(), "global")
+	_, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err == nil || !strings.Contains(err.Error(), "self-connection") {
 		t.Fatalf("own instance admitted or wrong error: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestPoolStdioShimBackingIdentity(t *testing.T) {
 	sameDaemon := newFakeDaemon(t, "daemon-alpha")
 	sameCfg := writeShimConfig(t, sameDaemon.URL)
 	samePool := stdioPool(t, mcpx, sameDaemon.URL, "--config", sameCfg, "serve")
-	_, err := samePool.Acquire(context.Background(), "global")
+	_, err := samePool.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err == nil || !strings.Contains(err.Error(), "self-connection") {
 		t.Fatalf("stdio shim backed by same daemon was admitted: err=%v, want self-connection refusal", err)
 	}
@@ -432,7 +432,7 @@ func TestPoolStdioShimBackingIdentity(t *testing.T) {
 	diffDaemon := newFakeDaemon(t, "daemon-beta")
 	diffCfg := writeShimConfig(t, diffDaemon.URL)
 	diffPool := stdioPool(t, mcpx, diffDaemon.URL, "--config", diffCfg, "serve")
-	lease, err := diffPool.Acquire(context.Background(), "global")
+	lease, err := diffPool.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatalf("stdio shim backed by distinct daemon was refused: %v", err)
 	}
