@@ -82,11 +82,11 @@
   // routes seat muse/* leaves where the meta/* leaves sat, at the
   // same weights and positions.
   //
-  // KNOWN EXCEPTION: the design-code / code-design / open-design proxy
-  // blocks further down stay commented out (preserved legacy: four blocks,
-  // three ids, two keyed "design-code"). They are off via this list too,
-  // but re-enabling one needs a dedupe decision first. Their live door is
-  // "opendesign" (on).
+  // KNOWN EXCEPTION -- RESOLVED 2026-11-03 (Drew, direct order): the
+  // design-code / code-design / open-design proxy blocks that stayed
+  // commented out here as preserved legacy were DELETED, together with
+  // the design-code door's persona routes. The only design provider in
+  // this config is "opendesign" (on).
   // ==========================================================================
   // 2026-10-30 (route audit): "deepseek" joins the list below. Its
   // definition is the DeepSeek OFFICIAL API — a pay-as-you-go funds
@@ -145,7 +145,6 @@
     "github-copilot",
     "openrouter",
     "cloudflare-workers-ai",
-    "open-design",
     "deepseek",
     "claude-code",
     "meta",
@@ -164,6 +163,10 @@
   // onto openai-plan (the ChatGPT provider route) and the definition was
   // deleted with the rest. It is a custom id with no catalog entry, so --
   // unlike the five tombstones above -- no entry stays for it here.
+  // "open-design" (the design-code door shell) followed on 2026-11-03 too:
+  // its commented-out definition and the door's 11 persona routes were
+  // deleted on Drew's direct order, and -- a custom id like openai-codex,
+  // not a catalog id -- no entry stays for it here either.
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
   // what agent configs already default to; restoring the Haiku default
@@ -367,94 +370,10 @@
     // route legs were re-seated onto openai-plan (see the note at
     // disabled_providers). The codex door program (:18744) is untouched;
     // its own retirement stays with the #1154 cutover.
-    // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
-//    "open-design": {
-//      "npm": "@ai-sdk/openai-compatible",
-//      "name": "Open Design",
-//      "options": {
-//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-//        "apiKey": "design-local"
-//      },
-//      "models": {
-//        "claude-haiku-5.5": {
-//          "name": "Claude Haiku 5.5 (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "gpt-6-luna": {
-//          "name": "GPT-6 Luna (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "gpt-6.1-sol": {
-//          "name": "GPT-6.1 Sol (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        },
-//        "deepseek-v4.1-flash": {
-//          "name": "DeepSeek V4.1 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flash": {
-//          "name": "GLM 5.3 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "glm-5.3-flashx": {
-//          "name": "GLM 5.3 FlashX (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-flash": {
-//          "name": "MIMO v2.6 Flash (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "mimo-v2.6-pro": {
-//          "name": "MIMO v2.6 Pro (Design Code)",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-pro": {
-//          "name": "Design Code Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "design-code-flash": {
-//          "name": "Design Code Flash",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 64000
-//          }
-//        },
-//        "open-design-pro": {
-//          "name": "Open Design Pro",
-//          "limit": {
-//            "context": 1000000,
-//            "output": 128000
-//          }
-//        }
-//      }
-//    },
+    // "open-design" (the design-code door shell, :18746): the commented-out
+    // proxy block preserved here since 2026-10-25 was DELETED 2026-11-03
+    // (Drew, direct order) together with the door's persona routes below.
+    // The only design provider in this config is "opendesign" (further down).
     "openai.alternate": {
       "instanceOf": "openai",
       "name": "OpenAI Alternate (Student - popesdrew)"
@@ -1731,130 +1650,11 @@
       // Per-model pools join every plan provider serving a model; tier pools nest them.
       // Plan routes only. (The DeepSeek PAYG reserve that used to tail the
       // deepseek-flash route was removed 2026-10-27 — see that route.)
-      // Design-code personas (2026-11-02, opencode#1413): the 11 virtual
-      // personas of bin/design-code-proxy.mjs (:18746) carried as routes —
-      // each persona id is the route name, its recipe (primary then
-      // fallback, ordered) is the target list, and the door's injected
-      // design system prompt is the route's `system` (fork support:
-      // opencode#1413 persona-routes PR; the prompt leads any caller
-      // system text, exactly as the door composed it). Antigravity legs
-      // sit on antigravity-direct (:18751) per the #1409 repoint
-      // (code#4626); gpt legs on openai-plan (re-seated from the
-      // codex door, 2026-11-03). The door's
-      // keyword fallback for unknown gpt/codex-shaped ids has no route
-      // equivalent and is not carried: unknown ids fail selection
-      // cleanly, as they did at the door (400) via the façade envelope.
+      // Design-code personas REMOVED 2026-11-03 (Drew, direct order): the
+      // 11 persona routes carried here from the retired design-code door
+      // (opencode#1413) are deleted. Drew does not run design personas --
+      // the only design provider in this config is "opendesign".
 
-      "claude-haiku-5.5": {
-        "name": "Claude Haiku 5.5 (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/claude-sonnet-5-5",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "gpt-6-luna": {
-        "name": "GPT-6 Luna (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "openai-plan/gpt-6-luna",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "gpt-6.1-sol": {
-        "name": "GPT-6.1 Sol (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "openai-plan/gpt-6.1-sol",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "deepseek-v4.1-flash": {
-        "name": "DeepSeek V4.1 Flash (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-plan/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "glm-5.3-flash": {
-        "name": "GLM 5.3 Flash (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-plan/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "glm-5.3-flashx": {
-        "name": "GLM 5.3 FlashX (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-plan/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "mimo-v2.6-flash": {
-        "name": "MIMO v2.6 Flash (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-plan/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "mimo-v2.6-pro": {
-        "name": "MIMO v2.6 Pro (Design Code)",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-plan/gpt-6.1-sol"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "design-code-pro": {
-        "name": "Design Code Pro",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-plan/gpt-6.1-sol"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "design-code-flash": {
-        "name": "Design Code Flash",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "antigravity-direct/gemini-3.8-flash",
-          "openai-plan/gpt-5.6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "open-design-pro": {
-        "name": "Open Design Pro",
-        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
-        "targets": [
-          "openai-plan/gpt-6.1-sol",
-          "antigravity-direct/gemini-3.8-flash"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
       "deepseek-flash-plan": {
         "name": "DeepSeek Flash - plan providers",
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
