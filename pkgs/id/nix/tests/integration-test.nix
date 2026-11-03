@@ -170,24 +170,20 @@
         )
 
         group_started = time.monotonic()
-        rc, output = server.execute(
-            f"{env} timeout --signal=TERM --kill-after=15 {deadline} "
-            f"{TEST_BIN} {filter_args} "
-            f"--test-threads=2 --nocapture --format=pretty 2>&1",
-            check_return=False,
-        )
-        if rc != 0:
-            # The driver logs captured output for failed commands, but print the
-            # tail explicitly so the last started test and the deadline that
-            # fired survive in the test log even if the driver output is cut.
-            print(
-                "\n".join(output.splitlines()[-150:]),
-                flush=True,
+        try:
+            server.succeed(
+                f"{env} timeout --signal=TERM --kill-after=15 {deadline} "
+                f"{TEST_BIN} {filter_args} "
+                f"--test-threads=2 --nocapture --format=pretty 2>&1"
             )
+        except Exception as exc:
+            # The driver logs the captured output (including the last started
+            # test and libtest's "has been running" warnings) before raising;
+            # re-raise with the group and its deadline so the failure is named.
             raise AssertionError(
                 f"[id-integration] group '{name}' failed or exceeded its "
-                f"{deadline}s deadline (rc={rc}); filters: {filter_args}"
-            )
+                f"{deadline}s deadline; filters: {filter_args}"
+            ) from exc
 
         print(
             f"[id-integration] group '{name}' finished in "
