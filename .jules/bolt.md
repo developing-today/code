@@ -17,3 +17,8 @@
 
 **Learning:** `search_store_terms` eager-loaded `store.event_by_id` for every unique subject in live claims up front even when no `Term::SubjectKind` query term was present. In addition to O(subjects) redundant database reads per search, unrelated unreadable or unindexed events aborted pure name/author searches with errors.
 **Action:** Always check whether query terms actually require subject kind resolution before opening store transactions, and lazily resolve and memoize kinds on demand within kind-filtering closures.
+
+## 2026-11-03 - [Memoize Group Nesting Traversal in Directory Permissions and Reachability]
+
+**Learning:** Group nesting DAGs allow multiple distinct paths between parent and child groups. Functions like `Directory::level_in` and `Directory::reaches` that recurse without memoization or visited tracking exhibit exponential $O(2^L)$ path explosion in diamond-structured hierarchies, causing views, cycle checks, and admin consistency checks to hang even with modest nesting depth (e.g. 25-30 layers).
+**Action:** Track visited nodes in reachability/cycle checks (`reaches`) and memoize resolved evaluation results per top-level query pass (`level_in`) so each node in the DAG is evaluated at most once ($O(V + E)$).

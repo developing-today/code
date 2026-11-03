@@ -6,11 +6,11 @@
 //! refused rather than partly applied. Account secrets never enter an entry,
 //! only their SHA-256 digest does.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Result};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ use crate::artifact::{
     self, ArtifactLog, Document, FriendRemove, HomeDeclared, HomeServer, Kind, SignedArtifact,
     Stored, Tag,
 };
-use crate::world::{WorldScopes, hex_encode};
+use crate::world::{hex_encode, WorldScopes};
 
 const KEY_DOMAIN: &[u8] = b"id-account-v1";
 const MAX_NAME_CHARS: usize = 64;
@@ -973,6 +973,28 @@ impl Directory {
     /// groups. A nested group passes on at most the level it is held at.
     #[must_use]
     pub fn level_in(&self, account: &str, group: u64) -> Option<Level> {
+        let mut memo = HashMap::new();
+        let mut visiting = HashSet::new();
+        self.level_in_memo(account, group, &mut memo, &mut visiting)
+    }
+
+    /// ⚡ Bolt optimization: memoize (account, group) pair evaluations per top-level call
+    /// and track active recursion to avoid exponential traversal over diamond nesting DAGs (#4699).
+    fn level_in_memo(
+        &self,
+        account: &str,
+        group: u64,
+        memo: &mut HashMap<u64, Option<Level>>,
+        visiting: &mut HashSet<u64>,
+    ) -> Option<Level> {
+        if let Some(&cached) = memo.get(&group) {
+            return cached;
+        }
+        if !visiting.insert(group) {
+            // Cycle guard: if a cycle exists (e.g. malformed or in-progress graph), don't loop infinitely
+            return None;
+        }
+
         let direct = self
             .members
             .get(&(
@@ -982,15 +1004,20 @@ impl Directory {
                 },
             ))
             .copied();
-        self.members
+        let result = self
+            .members
             .range((group, Member::Group { id: 0 })..=(group, Member::Group { id: u64::MAX }))
             .fold(direct, |best, ((_, member), held_at)| match member {
-                Member::Group { id } => match self.level_in(account, *id) {
+                Member::Group { id } => match self.level_in_memo(account, *id, memo, visiting) {
                     Some(inner) => best.max(Some(inner.min(*held_at))),
                     None => best,
                 },
                 Member::Account { .. } => best,
-            })
+            });
+
+        visiting.remove(&group);
+        memo.insert(group, result);
+        result
     }
 
     /// Every permission an account may use: its tier's set, plus the set of
@@ -1747,13 +1774,23 @@ impl Directory {
 
     /// Whether `target` is `from` or is nested, at any depth, inside it.
     fn reaches(&self, from: u64, target: u64) -> bool {
+        let mut visited = HashSet::new();
+        self.reaches_visited(from, target, &mut visited)
+    }
+
+    /// ⚡ Bolt optimization: visit each group in the nesting DAG at most once per call
+    /// using a visited set, avoiding $O(2^L)$ path explosion on diamond-nested groups (#4699).
+    fn reaches_visited(&self, from: u64, target: u64, visited: &mut HashSet<u64>) -> bool {
         if from == target {
             return true;
+        }
+        if !visited.insert(from) {
+            return false;
         }
         self.members
             .range((from, Member::Group { id: 0 })..=(from, Member::Group { id: u64::MAX }))
             .any(|((_, member), _)| match member {
-                Member::Group { id } => self.reaches(*id, target),
+                Member::Group { id } => self.reaches_visited(*id, target, visited),
                 Member::Account { .. } => false,
             })
     }
@@ -1920,7 +1957,7 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+    use crate::test_forgeries::{identity_forgery, with_non_canonical_s, IDENTITY_KEY};
 
     fn all() -> WorldScopes {
         WorldScopes::GUEST.union(WorldScopes::DELEGATE)
@@ -2325,16 +2362,12 @@ mod tests {
         directory
             .update_group(Actor::Account(&bo), group, "Crew", "We meet Fridays", all())
             .unwrap();
-        assert!(
-            directory
-                .update_group(Actor::Account(&bo), group, "Renamed", "", all())
-                .is_err()
-        );
-        assert!(
-            directory
-                .update_group(Actor::Account(&bo), group, "Crew", "", WorldScopes::GUEST)
-                .is_err()
-        );
+        assert!(directory
+            .update_group(Actor::Account(&bo), group, "Renamed", "", all())
+            .is_err());
+        assert!(directory
+            .update_group(Actor::Account(&bo), group, "Crew", "", WorldScopes::GUEST)
+            .is_err());
         assert!(directory.delete_group(Actor::Account(&bo), group).is_err());
     }
 
@@ -2420,6 +2453,107 @@ mod tests {
     }
 
     #[test]
+    fn diamond_nested_groups_do_not_explode_exponentially() {
+        // Regression test for #4699: diamond-shaped group nesting DAG
+        // Each layer i has two groups (A_i, B_i), both containing both groups of layer i+1.
+        // With 25 layers, there are 2^25 = 33,554,432 paths from layer 0 to layer 24.
+        // Without memoization/visited sets, level_in and reaches would take minutes/hours.
+        let mut directory = Directory::new();
+        let (admin, _) = account(&mut directory, "Admin");
+        let (alice, _) = account(&mut directory, "Alice");
+
+        let layers = 25;
+        let mut prev_groups: Option<(u64, u64)> = None;
+        let mut top_groups: Option<(u64, u64)> = None;
+
+        for layer in 0..layers {
+            let (g1, _) = directory
+                .create_group(&admin, &format!("L{layer}A"), "", all())
+                .unwrap();
+            let (g2, _) = directory
+                .create_group(&admin, &format!("L{layer}B"), "", all())
+                .unwrap();
+
+            if let Some((p1, p2)) = prev_groups {
+                directory
+                    .set_member(
+                        Actor::Server,
+                        p1,
+                        Member::Group { id: g1 },
+                        Some(Level::Manage),
+                    )
+                    .unwrap();
+                directory
+                    .set_member(
+                        Actor::Server,
+                        p1,
+                        Member::Group { id: g2 },
+                        Some(Level::Manage),
+                    )
+                    .unwrap();
+                directory
+                    .set_member(
+                        Actor::Server,
+                        p2,
+                        Member::Group { id: g1 },
+                        Some(Level::Manage),
+                    )
+                    .unwrap();
+                directory
+                    .set_member(
+                        Actor::Server,
+                        p2,
+                        Member::Group { id: g2 },
+                        Some(Level::Manage),
+                    )
+                    .unwrap();
+            } else {
+                top_groups = Some((g1, g2));
+            }
+            prev_groups = Some((g1, g2));
+        }
+
+        // Alice is a direct member of the bottom layer groups
+        let (bottom1, bottom2) = prev_groups.unwrap();
+        directory
+            .set_member(
+                Actor::Server,
+                bottom1,
+                Member::Account { id: alice.clone() },
+                Some(Level::Read),
+            )
+            .unwrap();
+        directory
+            .set_member(
+                Actor::Server,
+                bottom2,
+                Member::Account { id: alice.clone() },
+                Some(Level::Read),
+            )
+            .unwrap();
+
+        let (top1, _) = top_groups.unwrap();
+        let start = std::time::Instant::now();
+        let level = directory.level_in(&alice, top1);
+        let elapsed = start.elapsed();
+        assert_eq!(level, Some(Level::Read));
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "level_in took {elapsed:?}, expected < 500ms"
+        );
+
+        // reaches check for cycle detection or target reachability
+        let start_reaches = std::time::Instant::now();
+        assert!(directory.reaches(top1, bottom1));
+        assert!(!directory.reaches(bottom1, top1));
+        let elapsed_reaches = start_reaches.elapsed();
+        assert!(
+            elapsed_reaches < std::time::Duration::from_millis(500),
+            "reaches took {elapsed_reaches:?}, expected < 500ms"
+        );
+    }
+
+    #[test]
     fn an_account_may_belong_to_several_groups_and_ceilings_union() {
         let mut directory = Directory::new();
         let (ann, _) = account(&mut directory, "Ann");
@@ -2473,11 +2607,9 @@ mod tests {
         let mut directory = Directory::new();
         let (ann, _) = account(&mut directory, "Ann");
         assert_eq!(directory.ceiling(&ann), WorldScopes::GUEST);
-        assert!(
-            directory
-                .set_tier(Actor::Account(&ann), Tier::Verified, all())
-                .is_err()
-        );
+        assert!(directory
+            .set_tier(Actor::Account(&ann), Tier::Verified, all())
+            .is_err());
         directory.verify_account(Actor::Server, &ann).unwrap();
         assert_eq!(
             directory.ceiling(&ann),
@@ -2628,14 +2760,12 @@ mod tests {
             .request_friend(&ann_credential, &bo, "away", at)
             .unwrap();
         assert!(away.receive(&request, "elsewhere", at).is_err());
-        assert!(
-            away.receive(&request, "away", at + ENVELOPE_TTL_MS + 1)
-                .is_err()
-        );
-        assert!(
-            away.receive(&request, "away", at - ENVELOPE_SKEW_MS - 1)
-                .is_err()
-        );
+        assert!(away
+            .receive(&request, "away", at + ENVELOPE_TTL_MS + 1)
+            .is_err());
+        assert!(away
+            .receive(&request, "away", at - ENVELOPE_SKEW_MS - 1)
+            .is_err());
         assert!(away.receive(&request, "away", at).is_ok());
     }
 
@@ -2875,16 +3005,14 @@ mod tests {
         let (group, _) = directory.create_group(&ann, "Crew", "", all()).unwrap();
         let lines = std::fs::read_to_string(&path).unwrap().lines().count();
         assert_eq!(lines, 2);
-        assert!(
-            directory
-                .set_member(
-                    Actor::Server,
-                    group,
-                    Member::Account { id: ann.clone() },
-                    None
-                )
-                .is_err()
-        );
+        assert!(directory
+            .set_member(
+                Actor::Server,
+                group,
+                Member::Account { id: ann.clone() },
+                None
+            )
+            .is_err());
         assert_eq!(
             std::fs::read_to_string(&path).unwrap().lines().count(),
             lines
