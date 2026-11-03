@@ -157,7 +157,7 @@ function pickSource(): Source {
   // the actions store's preference records when it stamps the
   // needs-user fallbacks onto tier items.
   return cfg.source === "live"
-      ? liveSource(cfg, {
+    ? liveSource(cfg, {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
         onEvent: recordStreamEvent,
         hasEvent: hasStreamEvent,
@@ -942,7 +942,7 @@ async function handler(req: Request): Promise<Response> {
           ref: updated.objectRef,
           summary: (
             `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
-            (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+            (typeof body.note === "string" && body.note ? ` — ${body.note}` : "")
           ).slice(0, 500),
         });
       }
@@ -1585,7 +1585,8 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/push/subscriptions") {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
-    if (req.method === "GET") return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
+    if (req.method === "GET")
+      return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));

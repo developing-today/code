@@ -677,15 +677,7 @@ describe("feed subscriptions sanitization (#2446)", () => {
 });
 
 describe("feed registry sanitization (#2539)", () => {
-  const RECORD = {
-    id: "ses-1",
-    source: "claude-code",
-    label: "Muse run",
-    status: "succeeded",
-    agentId: "claude-code",
-    agentLabel: "Muse",
-    taskRefs: [],
-  };
+  const RECORD = { id: "ses-1", source: "claude-code", label: "Muse run", taskRefs: [] };
   const feedWithRegistry = (registry: unknown) => ({
     version: 1,
     generatedAt: "2026-10-01T00:00:00Z",

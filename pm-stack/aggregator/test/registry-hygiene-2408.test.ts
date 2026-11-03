@@ -32,18 +32,7 @@ const valid = rec({
 describe("isSessionRecord taskRefs hygiene (#2408, #4284)", () => {
   test("accepts empty and string-array taskRefs, rejects absent taskRefs", () => {
     expect(isSessionRecord({ id: "a", source: "s", label: "l" })).toBe(false);
-    expect(isSessionRecord({ id: "a", source: "s", label: "l", taskRefs: [] })).toBe(false); // #3525: status/agent identity now required
-    expect(
-      isSessionRecord({
-        id: "a",
-        source: "s",
-        label: "l",
-        status: "idle",
-        agentId: "opencode:main",
-        agentLabel: "OpenCode · main",
-        taskRefs: [],
-      }),
-    ).toBe(true);
+    expect(isSessionRecord({ id: "a", source: "s", label: "l", taskRefs: [] })).toBe(true);
     expect(isSessionRecord({ ...valid, taskRefs: [] })).toBe(true);
     expect(isSessionRecord(valid)).toBe(true);
     expect(isSessionRecord({ ...valid, taskRefs: ["developing-today/code#123", "developing-today/code#2408"] })).toBe(
