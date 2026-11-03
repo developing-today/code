@@ -124,4 +124,34 @@ describe("fetchRfaState", () => {
     expect(queries).toHaveLength(4);
     resetRfaCache();
   });
+
+  test("a failed read is cached for the window, then retried (no per-hit retry storm)", async () => {
+    resetRfaCache();
+    let calls = 0;
+    const fetcher: RfaFetch = async () => {
+      calls++;
+      throw new Error("harness stalled");
+    };
+    // First failure hits the network once.
+    await expect(fetchRfaState("http://127.0.0.1:6056", fetcher, 1_000)).rejects.toThrow("harness stalled");
+    expect(calls).toBe(1);
+    // Inside the window the cached failure is re-thrown without a new read.
+    await expect(fetchRfaState("http://127.0.0.1:6056", fetcher, 2_000)).rejects.toThrow("harness stalled");
+    expect(calls).toBe(1);
+    // Past the window the source retries — and a success clears the failure.
+    const ok: RfaFetch = async (_url, init) => {
+      calls++;
+      const { query } = JSON.parse(init.body) as { query: string };
+      const payload = query.includes("agentBackendStatuses")
+        ? backendsPayload
+        : query.includes("workItems")
+          ? workItemsPayload
+          : repositoriesPayload;
+      return { json: async () => payload };
+    };
+    const s = await fetchRfaState("http://127.0.0.1:6056", ok, 1_000 + 60_000);
+    expect(s.repositories).toHaveLength(2);
+    expect(calls).toBe(5);
+    resetRfaCache();
+  });
 });

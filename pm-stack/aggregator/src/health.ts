@@ -439,6 +439,9 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     (services.some((s) => s.ok === false) ||
       (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
       checkout.state === "behind" ||
+      // #1203: a harness whose GraphQL cannot be read (or whose backend
+      // is not READY) is a degraded dependency, not an invisible one.
+      rfa.state === "down" ||
       sectionHealth.some((section) => section.status === "error"));
 
   return {

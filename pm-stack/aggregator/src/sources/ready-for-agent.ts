@@ -181,32 +181,48 @@ async function gql<T>(fetcher: RfaFetch, graphqlUrl: string, query: string): Pro
 }
 
 export const RFA_CACHE_MS = 60_000;
+/** Failures are cached too, for the same bounded window: a stalled
+ *  harness must not add its timeout to every dashboard request that
+ *  reads this facet (Codex P2 on PR #3311). The caller still receives
+ *  the error and reports the facet down. */
+export const RFA_FAILURE_CACHE_MS = 60_000;
 let cached: { at: number; state: RfaState } | null = null;
+let cachedFailure: { at: number; error: Error } | null = null;
 
-/** Fetch the harness state live, cached 60 s across callers. */
+/** Fetch the harness state live, cached 60 s across callers — failures
+ *  included, so an outage costs one read per window, not one per hit. */
 export async function fetchRfaState(
   baseUrl: string,
   fetcher: RfaFetch = defaultFetch,
   now: number = Date.now(),
 ): Promise<RfaState> {
   if (cached && now - cached.at < RFA_CACHE_MS) return cached.state;
-  const graphqlUrl = `${baseUrl.replace(/\/$/, "")}/graphql`;
-  const repositoriesPayload = await gql<{ repositories: Record<string, unknown>[] }>(fetcher, graphqlUrl, REPOSITORIES_QUERY);
-  const repositories = parseRfaRepositories(repositoriesPayload);
-  const backendsPayload = await gql<{ agentBackendStatuses: Record<string, unknown>[] }>(fetcher, graphqlUrl, BACKENDS_QUERY);
-  const workItemPayloads = [];
-  for (const repo of repositories) {
-    workItemPayloads.push({
-      repositoryId: repo.id,
-      payload: await gql<{ workItems: Record<string, unknown>[] }>(fetcher, graphqlUrl, workItemsQuery(repo.id)),
-    });
+  if (cachedFailure && now - cachedFailure.at < RFA_FAILURE_CACHE_MS) throw cachedFailure.error;
+  try {
+    const graphqlUrl = `${baseUrl.replace(/\/$/, "")}/graphql`;
+    const repositoriesPayload = await gql<{ repositories: Record<string, unknown>[] }>(fetcher, graphqlUrl, REPOSITORIES_QUERY);
+    const repositories = parseRfaRepositories(repositoriesPayload);
+    const backendsPayload = await gql<{ agentBackendStatuses: Record<string, unknown>[] }>(fetcher, graphqlUrl, BACKENDS_QUERY);
+    const workItemPayloads = [];
+    for (const repo of repositories) {
+      workItemPayloads.push({
+        repositoryId: repo.id,
+        payload: await gql<{ workItems: Record<string, unknown>[] }>(fetcher, graphqlUrl, workItemsQuery(repo.id)),
+      });
+    }
+    const state = parseRfaState(repositoriesPayload, backendsPayload, workItemPayloads);
+    cached = { at: now, state };
+    cachedFailure = null;
+    return state;
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    cachedFailure = { at: now, error };
+    throw error;
   }
-  const state = parseRfaState(repositoriesPayload, backendsPayload, workItemPayloads);
-  cached = { at: now, state };
-  return state;
 }
 
-/** Test seam: drop the shared cache. */
+/** Test seam: drop the shared cache (success and failure). */
 export function resetRfaCache(): void {
   cached = null;
+  cachedFailure = null;
 }

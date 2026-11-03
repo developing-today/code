@@ -6236,6 +6236,32 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
     })
     .join("");
+  // #1203: the ready-for-agent facet — the harness's real dispatch-layer
+  // state, not just whether its UI answers 200. "down" means the GraphQL
+  // read failed (detail names the error) or a backend is not READY; the
+  // repositories table still shows what the harness reports when it can
+  // be read at all.
+  const rfa = view.rfa;
+  const rfaState =
+    rfa.state === "up"
+      ? '<span class="dot up"></span><strong>up</strong>'
+      : rfa.state === "fixtures"
+        ? '<span class="dot fixtures"></span><strong>fixtures</strong>'
+        : '<span class="dot down"></span><strong>down</strong>';
+  const rfaRepoRows = rfa.repositories.length
+    ? rfa.repositories
+        .map(
+          (r) =>
+            `<tr><td><code>${esc(r.projectPath)}</code></td><td>${r.paused ? "paused" : "running"}</td><td><code>${esc(r.mergePolicy ?? "—")}</code></td><td>${r.workItems}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4" class="muted">No harness repositories reported — the harness could not be read, or none are registered.</td></tr>`;
+  const rfaBackendLine = rfa.backends.length
+    ? `Backends: ${rfa.backends.map((b) => `<code>${esc(b.id)}</code> ${esc(b.kind)}${b.reason ? ` — ${esc(b.reason)}` : ""}`).join(" · ")}`
+    : "Backends: none reported.";
+  const rfaSection = `<h2 id="ready-for-agent">ready-for-agent harness</h2>
+<div class="card">${rfaState} — ${esc(rfa.detail)}<br>${rfaBackendLine}</div>
+<div class="tblwrap"><table><caption>ready-for-agent repositories — settings and dispatch work items</caption><tr><th scope="col">Repository</th><th scope="col">Paused</th><th scope="col">Merge policy</th><th scope="col">Work items</th></tr>${rfaRepoRows}</table></div>`;
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6269,6 +6295,7 @@ ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
+${rfaSection}
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Jobs</h2>
