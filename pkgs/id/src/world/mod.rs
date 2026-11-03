@@ -36,6 +36,7 @@ mod core;
 mod handle;
 mod metrics;
 mod replication;
+mod replication_receiver;
 pub mod signed;
 mod util;
 
@@ -53,6 +54,10 @@ pub use replication::{
     ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
     SignedReplicationEnvelope, advance_cursor, chain_base_cursor, chain_payload, frame_digest,
     journal_entry_line, payload_digest, split_entry_payload,
+};
+pub use replication_receiver::{
+    DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
+    ReceiverProgress,
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{

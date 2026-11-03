@@ -2066,6 +2066,80 @@ mod tests {
     }
 
     #[test]
+    fn restore_does_not_resurrect_a_delegate_issued_after_parent_revocation() {
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability(
+                "Ada",
+                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (child, child_token) = source
+            .attenuate(
+                &owner_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo",
+            )
+            .unwrap();
+        let created = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        let owner_issued = source.issued_entry(owner.id).unwrap();
+        let parent_revoked = JournalEntry::Revoked {
+            participant_id: owner.id,
+            by: None,
+        };
+        let child_issued = source.issued_entry(child.id).unwrap();
+
+        // A hand-written journal can omit the child's redundant Revoked entry.
+        // The earlier parent revocation must still keep the child unusable.
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![
+                created.clone(),
+                owner_issued.clone(),
+                parent_revoked.clone(),
+                child_issued.clone(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            restored
+                .core
+                .authorize(&child_token, WorldScopes::JOIN)
+                .is_err()
+        );
+
+        // Compaction emits the descendant's own Issued/Revoked pair after its
+        // already-revoked parent; that legitimate order must also restore.
+        let compacted = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![
+                created,
+                owner_issued,
+                parent_revoked,
+                child_issued,
+                JournalEntry::Revoked {
+                    participant_id: child.id,
+                    by: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert!(
+            compacted
+                .core
+                .authorize(&child_token, WorldScopes::JOIN)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn restore_refuses_an_issued_participant_zero() {
         // #2972: participant 0 is the reserved host/system identity —
         // mint can never issue it, so a journal issuing it to itself
