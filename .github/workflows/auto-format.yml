@@ -112,6 +112,7 @@ jobs:
           fi
           if ((${#format_files[@]} == 0)); then
             echo "Only workflow files changed; nothing for the auto-format bot to push."
+            record_success
             exit 0
           fi
           printf 'Formatting %s file(s):\n' "${#format_files[@]}"
