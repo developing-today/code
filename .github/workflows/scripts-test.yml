@@ -9,6 +9,8 @@ on:
       - "pkgs/id/scripts/update-nixpkgs-inputs.py"
       - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
       - "scripts/tests/test_update_nixpkgs_inputs.py"
+      - "scripts/worker-preflight.sh"
+      - "scripts/tests/test_worker_preflight.py"
       - ".github/workflows/scripts-test.yml"
   workflow_dispatch:
 
@@ -38,3 +40,5 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run update-nixpkgs-inputs contract tests (#603)
         run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_inputs.py' -v
+      - name: Run worker preflight contract tests (#4862)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
