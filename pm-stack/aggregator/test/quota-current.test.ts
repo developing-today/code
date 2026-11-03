@@ -906,7 +906,7 @@ describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
         ),
       );
       const parsed = parseQuotaCurrent(doc);
-      expect(parsed?.sanitized.droppedProviders).toBe(1);
+      expect(parsed?.sanitized?.droppedProviders).toBe(1);
       expect(parsed?.providers.map((p) => p.serviceId)).toEqual(["openai:codex"]);
     }
   });
@@ -924,7 +924,7 @@ describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
         ),
       );
       const parsed = parseQuotaCurrent(doc);
-      expect(parsed?.sanitized.droppedWindows).toBe(1);
+      expect(parsed?.sanitized?.droppedWindows).toBe(1);
       expect(parsed?.providers[0].windows.map((w) => w.name)).toEqual(["7-day"]);
     }
   });
