@@ -868,10 +868,19 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		Prelude:       prelude(nss),
 		ClientSource:  codegen.Module(nss, s.endpoint, session),
 		GlobalsSource: codegen.GlobalDeclarations(nss),
-		Timeout:       timeout,
-		Stdout:        &out,
-		Stderr:        &errOut,
-		Env:           env,
+		// A Python one-shot lands here with a Python prelude when the
+		// source chose it (#1917 Phase 2); the same options the runner
+		// itself would derive reach one from daemon callers.
+		Clients: map[string]runner.Client{
+			codegen.Python.Name: {
+				Module:  codegen.PythonModule(nss, s.endpoint, session),
+				Globals: codegen.PythonGlobals(nss),
+			},
+		},
+		Timeout: timeout,
+		Stdout:  &out,
+		Stderr:  &errOut,
+		Env:     env,
 	})
 	result := &ExecResult{Stdout: out.String(), Stderr: errOut.String()}
 	if rerr != nil {

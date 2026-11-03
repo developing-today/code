@@ -893,3 +893,52 @@ describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
     });
   });
 });
+
+describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
+  test("an entry whose measuredAt is impossible or non-ISO is dropped; valid siblings survive", () => {
+    for (const bad of ["2026-02-30T07:00:00.000Z", "2026-04-31T07:00:00.000Z", "March 2, 2026"]) {
+      const doc = JSON.parse(
+        JSON.stringify(
+          file([
+            entry({ serviceId: "meta:high-usage", measuredAt: bad, windows: [win("weekly", 42, iso(5 * 60_000))] }),
+            entry({ serviceId: "openai:codex", windows: [win("7-day", 17, iso(5 * 60_000))] }),
+          ]),
+        ),
+      );
+      const parsed = parseQuotaCurrent(doc);
+      expect(parsed?.sanitized.droppedProviders).toBe(1);
+      expect(parsed?.providers.map((p) => p.serviceId)).toEqual(["openai:codex"]);
+    }
+  });
+
+  test("a window whose measuredAt is impossible or non-ISO is dropped without dropping valid sibling windows", () => {
+    for (const bad of ["2026-02-30T07:00:00.000Z", "2026-04-31T07:00:00.000Z", "March 2, 2026"]) {
+      const doc = JSON.parse(
+        JSON.stringify(
+          file([
+            entry({
+              serviceId: "openai:codex",
+              windows: [win("7-day", 17, iso(5 * 60_000)), win("weekly", 42, bad)],
+            }),
+          ]),
+        ),
+      );
+      const parsed = parseQuotaCurrent(doc);
+      expect(parsed?.sanitized.droppedWindows).toBe(1);
+      expect(parsed?.providers[0].windows.map((w) => w.name)).toEqual(["7-day"]);
+    }
+  });
+
+  test("leap-date and normal measuredAt stamps still validate", () => {
+    const leap = "2024-02-29T07:00:00.000Z";
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([entry({ serviceId: "openai:codex", measuredAt: leap, windows: [win("7-day", 17, leap)] })]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.sanitized).toEqual({ droppedProviders: 0, droppedWindows: 0 });
+    expect(parsed?.providers).toHaveLength(1);
+    expect(parsed?.providers[0].windows).toHaveLength(1);
+  });
+});

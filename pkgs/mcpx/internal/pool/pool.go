@@ -639,7 +639,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	case pref == mcpclient.PreferFollow:
 		pref = mcpclient.PreferModern
 	}
-	opts := mcpclient.Options{ClientName: "mcpx", ClientVersion: Version, Preference: pref}
+	opts := mcpclient.Options{ClientName: "mcpx", ClientVersion: Version, Preference: pref, Root: rs.Root}
 	ref := &instanceRef{p: p}
 	p.installServerHooks(&opts, ref)
 	eraKey := Identity(p.cfg)
