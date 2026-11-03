@@ -121,6 +121,36 @@ check 'current case: snapshot committed on up-to-date base' '3' "$(git -C "$R4" 
 check 'current case: snapshot pushed to origin' \
   "$(git -C "$R4" rev-parse HEAD)" "$(git --git-dir="$ORIGIN_BARE" rev-parse main)"
 
+# A local-only repo has no upstream default to align to. In detached
+# HEAD, skip it rather than falling back to main (which can move a clean
+# checkout or produce an empty-branch warning for a dirty one).
+H5="$TMP_ROOT/detached-clean-home"
+R5="$H5/code"
+new_repo "$R5"
+git -C "$R5" checkout -q --detach HEAD
+run_keeper "$H5" "$TMP_ROOT/detached-clean.log"
+check 'detached clean case: remains detached' '' \
+  "$(git -C "$R5" symbolic-ref --short -q HEAD || true)"
+grep -Fq -- 'detached HEAD without origin — skipped' "$TMP_ROOT/detached-clean.log" ||
+  fail 'detached clean case: report missing skip reason'
+! grep -Fq -- 'primary was on  (clean)' "$TMP_ROOT/detached-clean.log" ||
+  fail 'detached clean case: keeper attempted to move detached checkout'
+
+H6="$TMP_ROOT/detached-dirty-home"
+R6="$H6/code"
+new_repo "$R6"
+git -C "$R6" checkout -q --detach HEAD
+printf 'preserve this edit\n' >>"$R6/tracked.txt"
+run_keeper "$H6" "$TMP_ROOT/detached-dirty.log"
+check 'detached dirty case: remains detached' '' \
+  "$(git -C "$R6" symbolic-ref --short -q HEAD || true)"
+check 'detached dirty case: tracked edit preserved' '1' \
+  "$(git -C "$R6" diff --numstat | wc -l | tr -d ' ')"
+grep -Fq -- 'detached HEAD without origin — skipped' "$TMP_ROOT/detached-dirty.log" ||
+  fail 'detached dirty case: report missing skip reason'
+! grep -Fq -- 'PRIMARY ON  ' "$TMP_ROOT/detached-dirty.log" ||
+  fail 'detached dirty case: report contains an empty branch name'
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2
   exit 1
