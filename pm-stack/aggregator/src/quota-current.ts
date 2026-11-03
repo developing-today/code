@@ -59,7 +59,7 @@ function isQuotaCurrentWindow(value: unknown): value is QuotaCurrentFile["provid
     (value.valueLabel === null || typeof value.valueLabel === "string") &&
     finiteOrNull(value.windowSeconds) &&
     (value.resetsAt === null || isIsoDate(value.resetsAt)) &&
-    typeof value.measuredAt === "string" &&
+    isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
     (value.state === "ok" || value.state === "error")
   );
@@ -72,7 +72,7 @@ function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
     typeof value.providerName === "string" &&
     typeof value.serviceId === "string" &&
     (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
-    typeof value.measuredAt === "string" &&
+    isIsoDate(value.measuredAt) &&
     typeof value.source === "string" &&
     (value.credentialWatch === undefined || typeof value.credentialWatch === "boolean") &&
     (value.error === undefined || typeof value.error === "string") &&
