@@ -379,6 +379,36 @@ test('cascade polling stops at the elapsed deadline, not an iteration count (#21
   } finally { rig.close(); }
 });
 
+test('a cascade poll that lands after the deadline is not accepted (#2102)', async () => {
+  // Codex repro on PR #4080: with a 100ms cascade deadline and a 1000ms
+  // trajectory delay, the old loop accepted the late completion and
+  // answered 200 after ~1.3s. The poll must be bounded by the remaining
+  // deadline budget and the late response discarded.
+  const rig = await startTimeoutRig({
+    cascadeDeadlineMs: 100,
+    delayMs: { GetCascadeTrajectorySteps: 1000 },
+    cascadeSteps: [{
+      type: 'CORTEX_STEP_TYPE_PLANNER_RESPONSE',
+      status: 'CORTEX_STEP_STATUS_DONE',
+      plannerResponse: { response: 'late answer' },
+      metadata: {}
+    }]
+  });
+  try {
+    const t0 = Date.now();
+    const res = await fetch(`http://127.0.0.1:${rig.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemini-3.8-flash', mode: 'cascade', messages: [{ role: 'user', content: 'hello' }] })
+    });
+    const elapsed = Date.now() - t0;
+    assert.notEqual(res.status, 200);
+    const body = await res.json();
+    assert.match(JSON.stringify(body), /Cascade execution timed out after 100ms/);
+    assert.ok(elapsed < 800, `cascade took ${elapsed}ms; a late poll must not stretch past the deadline`);
+  } finally { rig.close(); }
+});
+
 test('a healthy cascade still completes (#2102)', async () => {
   const rig = await startTimeoutRig({
     cascadeSteps: [{

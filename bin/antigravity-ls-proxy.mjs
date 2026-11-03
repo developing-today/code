@@ -414,10 +414,14 @@ class LanguageServerManager {
     throw new Error('Timed out waiting for managed Antigravity Language Server to initialize');
   }
 
-  async callRpc(method, payload) {
+  async callRpc(method, payload, timeoutCapMs) {
     const { port, token } = await this.ensureActive();
     const url = `http://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/${method}`;
-    const timeoutMs = rpcTimeoutMs(method);
+    // A caller with its own deadline (the cascade poll loop) may cap the
+    // per-method budget at the time it has left; the cap can only shrink it.
+    const timeoutMs = timeoutCapMs === undefined
+      ? rpcTimeoutMs(method)
+      : Math.min(rpcTimeoutMs(method), Math.max(1, timeoutCapMs));
     // One signal for the whole RPC: it bounds the fetch AND the body read.
     const signal = AbortSignal.timeout(timeoutMs);
     const isTimeout = (err) => err?.name === 'TimeoutError' || err?.name === 'AbortError';
@@ -891,8 +895,23 @@ const server = http.createServer(async (req, res) => {
           const cascadeDeadline = Date.now() + CASCADE_DEADLINE_MS;
 
           while (completedResponse === null && Date.now() < cascadeDeadline) {
-            await new Promise(r => setTimeout(r, 250));
-            const trajectory = await lsManager.callRpc('GetCascadeTrajectorySteps', { cascadeId });
+            // Every step of the poll is bounded by the time left to the
+            // deadline (Codex review on PR #4080): the sleep is capped,
+            // the poll RPC is capped, and a response that lands after
+            // the deadline is not accepted.
+            await new Promise(r => setTimeout(r, Math.min(250, cascadeDeadline - Date.now())));
+            const pollBudgetMs = cascadeDeadline - Date.now();
+            if (pollBudgetMs <= 0) break;
+            let trajectory;
+            try {
+              trajectory = await lsManager.callRpc('GetCascadeTrajectorySteps', { cascadeId }, pollBudgetMs);
+            } catch (err) {
+              // The poll hit the remaining-budget cap: that is the
+              // cascade deadline expiring, not an RPC failure.
+              if (Date.now() >= cascadeDeadline) break;
+              throw err;
+            }
+            if (Date.now() >= cascadeDeadline) break;
             const steps = trajectory?.steps || [];
             const lastStep = steps[steps.length - 1];
 
