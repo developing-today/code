@@ -19,6 +19,7 @@
 //   fresh ok entry wins over an error entry; otherwise the newest
 //   entry decides the surfaced state.
 import { poolState } from "./derive.ts";
+import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
 import { computeChoices } from "./quota-guidance.ts";
 import type {
   GathererSummary,
@@ -73,6 +74,14 @@ function isQuotaCurrentEntry(value: unknown): value is QuotaCurrentEntry {
     (value.state === "ok" || value.state === "error" || value.state === "unconfigured") &&
     typeof value.measuredAt === "string" &&
     typeof value.source === "string" &&
+    (value.credentialWatch === undefined || typeof value.credentialWatch === "boolean") &&
+    (value.error === undefined || typeof value.error === "string") &&
+    (value.credentialExpiresAt === undefined ||
+      (typeof value.credentialExpiresAt === "string" && isIsoDate(value.credentialExpiresAt))) &&
+    (value.credentialSource === undefined ||
+      value.credentialSource === "claude-code" ||
+      value.credentialSource === "opencode" ||
+      value.credentialSource === "environment") &&
     Array.isArray(value.windows)
   );
 }
@@ -104,7 +113,11 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
         windows: windows.values,
       };
     }
-    return { ...provider, windows: windows.values };
+    return {
+      ...provider,
+      ...(typeof provider.error === "string" ? { error: safeProviderReason(provider.error) } : {}),
+      windows: windows.values,
+    };
   });
   return {
     ...doc,
@@ -332,6 +345,10 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
   });
 
   const out: QuotaView = { ...view, pools, gatherer: summarize(file, nowMs) };
+  const credentialLifecycle = file.providers
+    .filter((entry) => entry.credentialWatch === true)
+    .map((entry) => lifecycleForEntry(entry, now));
+  if (credentialLifecycle.length) out.credentialLifecycle = credentialLifecycle;
   if (anyFreshWindows) out.choices = computeChoices(pools, nowMs);
   return out;
 }

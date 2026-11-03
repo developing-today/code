@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -268,7 +267,7 @@ var processInstance struct {
 func (a *App) InstanceID() string {
 	processInstance.once.Do(func() {
 		b := make([]byte, 16)
-		if _, err := rand.Read(b); err == nil {
+		if _, err := RandSource.Read(b); err == nil {
 			processInstance.id = hex.EncodeToString(b)
 		} else {
 			processInstance.id = fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())

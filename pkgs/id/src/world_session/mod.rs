@@ -15,6 +15,7 @@
 //! is (an Iroh node ID); that never grants world authority.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -30,8 +31,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
-    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldHandle,
-    WorldMetrics, WorldPolicy, WorldScopes,
+    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, SessionId,
+    WorldHandle, WorldMetrics, WorldPolicy, WorldScopes,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
@@ -64,6 +65,11 @@ pub use types::{
 };
 
 impl WorldService {
+    /// Allocate an ephemeral identity for one accepted connection.
+    pub(crate) fn next_session_id(&self) -> SessionId {
+        SessionId::new(self.next_session_id.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Require module artifacts to carry a valid signature from one of these
     /// Ed25519 public keys. An empty list preserves the legacy unsigned path.
     #[must_use]
@@ -193,6 +199,7 @@ impl WorldService {
             mail: None,
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
+            next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -2109,6 +2116,7 @@ async fn joined<I: SessionIo>(
     screen_patches: bool,
 ) {
     let world = service.world();
+    let session_id = service.next_session_id();
     // Subscribe before taking the snapshot so no event can fall in the gap;
     // events at or below the cursor are skipped when delivered.
     let mut events = world.subscribe();
@@ -2230,6 +2238,7 @@ async fn joined<I: SessionIo>(
                         &text,
                         &mut viewport,
                         cursor,
+                        session_id,
                         &mut view_state,
                         screen_patches,
                         &mut pending_view_deadline,
@@ -2501,6 +2510,7 @@ async fn handle_client_frame<I: SessionIo>(
     text: &str,
     viewport: &mut Option<Viewport>,
     sequence: u64,
+    session_id: SessionId,
     view_state: &mut ViewRevisionState,
     screen_patches: bool,
     pending_view_deadline: &mut Option<tokio::time::Instant>,
@@ -2591,10 +2601,16 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             };
-            world.input(token.clone(), bytes).await
+            world
+                .input_from_session(token.clone(), bytes, session_id)
+                .await
         }
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
-            Some(data) => world.input(token.clone(), data).await,
+            Some(data) => {
+                world
+                    .input_from_session(token.clone(), data, session_id)
+                    .await
+            }
             None => {
                 return send_error(service.frame_meter(), io, "input data must be hexadecimal")
                     .await;
