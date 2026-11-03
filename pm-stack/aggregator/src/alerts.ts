@@ -115,12 +115,23 @@ export function mergeClasses(input: unknown): Record<string, boolean> {
   return out;
 }
 
+/** #3686: clock-shape plus numeric range — hours 00–23, minutes 00–59.
+ * Shape-only checks accept impossible values (99:99, 24:60) that
+ * inQuietHours then reinterprets as a different window. */
+function isClockTime(s: string): boolean {
+  const m = /^(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return false;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
+}
+
 export function mergeQuiet(input: unknown): QuietPrefs {
   const out = { ...DEFAULT_QUIET };
   if (input && typeof input === "object") {
     const q = input as Record<string, unknown>;
-    if (typeof q.start === "string" && /^\d{2}:\d{2}$/.test(q.start)) out.start = q.start;
-    if (typeof q.end === "string" && /^\d{2}:\d{2}$/.test(q.end)) out.end = q.end;
+    if (typeof q.start === "string" && isClockTime(q.start)) out.start = q.start;
+    if (typeof q.end === "string" && isClockTime(q.end)) out.end = q.end;
     if (typeof q.tz === "string" && q.tz.trim()) {
       const tz = q.tz.trim();
       try {

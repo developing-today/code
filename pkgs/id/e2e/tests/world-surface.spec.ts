@@ -60,10 +60,7 @@ test.describe("World surface", () => {
     // a role=img grid with a "columns by rows" label, not guest HTML text.
     const screen = view.locator(".id-world-screen");
     await expect(screen).toBeVisible({ timeout: 15_000 });
-    await expect(view.locator('[role="img"]')).toHaveAttribute(
-      "aria-label",
-      /World screen, \d+ columns by \d+ rows/,
-    );
+    await expect(view.locator('[role="img"]')).toHaveAttribute("aria-label", /World screen, \d+ columns by \d+ rows/);
     await expect(view).not.toContainText("Waiting for a world view");
     // The roc-screen fixture renders its counter through Screen cells.
     await expect(view).toContainText(/count=\d+/);

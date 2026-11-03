@@ -642,7 +642,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
         }
         WorldCommand::Record {
             node,
-            capability,
+            admin_token,
             out,
             world,
             addrs,
@@ -652,7 +652,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             // grow by the recording's futures.
             Box::pin(record_command(
                 &node,
-                &capability,
+                &admin_token,
                 out.as_deref(),
                 world.as_deref(),
                 &addrs,
@@ -1064,10 +1064,11 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; an unrestricted
-    // ceiling is the whole catalog, which we fold back to "no ceiling".
+    // The report carries the world's own ceiling as a list; a ceiling equal
+    // to the default ceiling folds back to "no ceiling" (an apply then
+    // restores the default ceiling, #838).
     let ceiling = if caps.ceiling
-        == crate::world_caps::catalog_names()
+        == crate::world_caps::default_ceiling_names()
             .into_iter()
             .collect::<Vec<_>>()
     {
@@ -1187,9 +1188,11 @@ async fn apply_steps(
                 }
             }
             ApplyStep::SetCeiling { ceiling } => {
-                // `None` means "no ceiling": restore the whole catalog.
+                // `None` means "no ceiling": restore the default ceiling —
+                // providers with an `Excluded` manifest default stay out
+                // until a ceiling names them (#838).
                 let names = ceiling.clone().unwrap_or_else(|| {
-                    crate::world_caps::catalog_names()
+                    crate::world_caps::default_ceiling_names()
                         .into_iter()
                         .collect::<Vec<_>>()
                 });
@@ -1309,14 +1312,14 @@ fn read_compile_sources(source: &std::path::Path) -> Result<Vec<(String, String)
 /// be written.
 async fn record_command(
     node: &str,
-    capability: &str,
+    admin_token: &str,
     out: Option<&std::path::Path>,
     world: Option<&str>,
     addrs: &[SocketAddr],
     no_relay: bool,
 ) -> Result<()> {
     let (endpoint, mut client) = connect(node, addrs, no_relay, world).await?;
-    let result = crate::world_fixture::record(&mut client, capability).await;
+    let result = crate::world_fixture::record(&mut client, admin_token).await;
     client.close();
     endpoint.close().await;
     let fixture = result?;
@@ -1810,10 +1813,9 @@ where
         anyhow::Ok(())
     });
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut stdin_open = true;
     let result = loop {
         tokio::select! {
-            line = lines.next_line(), if stdin_open => match line? {
+            line = lines.next_line() => match line? {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
@@ -1840,7 +1842,11 @@ where
                         break Err(e);
                     }
                 }
-                None => stdin_open = false,
+                // Stdin EOF ends the session: a scripted client leaves by
+                // closing stdin (interactive users have Ctrl-C). Keeping
+                // the pump alive past EOF hung every scripted join until
+                // the server happened to close the connection first.
+                None => break Ok(()),
             },
             ended = &mut reader => {
                 break ended.context("reader task")?;

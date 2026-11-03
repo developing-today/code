@@ -229,7 +229,16 @@ export function attentionSorted(feed: SessionFeedEntry[], now = Date.now()): Att
 // ORCHESTRATOR tiering, session hierarchy, roadmap grains, today view.
 // ---------------------------------------------------------------------------
 
-import type { AttentionTier, BoardItem, OrchestrationSection, SessionSource, TierItem, TieredEntry } from "./model.ts";
+import type {
+  AttentionTier,
+  BoardItem,
+  DependencyRef,
+  OrchestrationSection,
+  SessionSource,
+  TierItem,
+  TieredEntry,
+} from "./model.ts";
+import { assembleWorkItems, formatBlockers } from "./work-items.ts";
 
 export function sourceOf(e: SessionFeedEntry): SessionSource {
   if (e.source) return e.source;
@@ -537,7 +546,7 @@ export function ymdLabel(ymd: string): string {
   // Defensive: an impossible date is echoed verbatim instead of
   // throwing on MONTH_NAMES[NaN] or rolling over into the next month.
   if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return ymd;
-  const d = new Date(`${ymd}T12:00:00Z`);
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00Z`);
   return `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()}`;
 }
 
@@ -633,10 +642,7 @@ export function monthTimeline(rows: RoadmapRow[]): Timeline {
       // after its start month (+0.5), so lanes interleave chronologically.
       // laneFor/quarterLane stay untouched for timeline() (#3952).
       const q = /^(\d{4})-Q([1-4])$/.exec(lane.key);
-      put(
-        row,
-        q ? { ...lane, order: Number(q[1]) * 12 + 3 * (Number(q[2]) - 1) + 1 + 0.5 } : lane,
-      );
+      put(row, q ? { ...lane, order: Number(q[1]) * 12 + 3 * (Number(q[2]) - 1) + 1 + 0.5 } : lane);
     }
   }
   return {
@@ -650,6 +656,8 @@ export function monthTimeline(rows: RoadmapRow[]): Timeline {
 
 export interface TodayObjective {
   title: string;
+  /** Canonical work-item id (#1206), when the objective is one. */
+  id?: string;
   detail?: string;
   /** Where the objective came from, e.g. "orchestrator · today". */
   chip: string;
@@ -693,35 +701,39 @@ export function asStringList(v: unknown): string[] {
   return [];
 }
 
-/** Map the #899 section's goal measurements into the today view. */
+/** Map the #899 section's goal measurements into the today view.
+ *  Objectives and per-goal blockers come from the canonical work-item
+ *  projection (#1206): the same item carries the same id, status, and
+ *  blockers here as on the Board, Needs-you, Projects, and Program. */
 export function todayFromSection(section: OrchestrationSection): TodayView {
-  const blockedText = (deps?: { task: string; status: string; workerLabel?: string }[]): string | undefined =>
-    deps?.length
-      ? deps.map((d) => `${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`).join("; ")
-      : undefined;
+  const workItems = assembleWorkItems(section);
+  const blockedText = (blockers: DependencyRef[]): string | undefined =>
+    blockers.length ? formatBlockers(blockers, true) : undefined;
   const objectives: TodayObjective[] = [];
-  for (const g of section.goals) {
-    for (const task of g.linedUp.filter((t) => t.horizon === "today")) {
-      objectives.push({
-        title: task.title,
-        detail:
-          [task.status, task.horizonWhy, blockedText(task.blockedBy) && `blocked by ${blockedText(task.blockedBy)}`]
-            .filter(Boolean)
-            .join(" — ") || undefined,
-        chip: `orchestrator · today · ${g.goal}`,
-        ref: task.ref,
-      });
-    }
+  for (const item of workItems) {
+    if (item.horizon !== "today" || item.goal === undefined) continue;
+    const blocked = blockedText(item.blockers);
+    objectives.push({
+      id: item.id,
+      title: item.title,
+      detail:
+        [item.linedUpStatus, item.horizonWhy, blocked && `blocked by ${blocked}`].filter(Boolean).join(" \u2014 ") ||
+        undefined,
+      chip: `orchestrator \u00b7 today \u00b7 ${item.goal}`,
+      ref: item.ref,
+    });
   }
   if (objectives.length === 0) {
     for (const g of section.goals) {
-      objectives.push({ title: g.goal, detail: g.summary, chip: "orchestrator · goal" });
+      objectives.push({ title: g.goal, detail: g.summary, chip: "orchestrator \u00b7 goal" });
     }
   }
   const momentum: ProjectMomentum[] = section.goals.map((g) => {
     const blockers = [
       ...g.stalled.filter((s) => s.blocker).map((s) => `${s.title}: ${s.blocker}`),
-      ...g.linedUp.flatMap((t) => (t.blockedBy?.length ? [`${t.title} — blocked by ${blockedText(t.blockedBy)}`] : [])),
+      ...workItems
+        .filter((item) => item.goal === g.goal && item.blockers.length)
+        .map((item) => `${item.title} \u2014 blocked by ${blockedText(item.blockers)}`),
     ];
     return {
       project: g.goal,

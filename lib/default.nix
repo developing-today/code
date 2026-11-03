@@ -1163,6 +1163,27 @@ let
     };
   };
 
+  # The mcpx daemon modules (code#4801): the canonical module files
+  # live in pkgs/mcpx/modules; these outputs wrap them with this
+  # flake's own mcpx build as the package default. The opencode fork
+  # re-exports the same files defaulted to its build, and
+  # openchamber passes them through — the option set never forks.
+  make-mcpx-modules =
+    let
+      wrap =
+        module:
+        { lib, pkgs, ... }:
+        {
+          imports = [ module ];
+          services.mcpx.package = lib.mkDefault (pkgs.callPackage ../pkgs/mcpx/package.nix { });
+        };
+    in
+    {
+      nixosModules.mcpx = wrap ../pkgs/mcpx/modules/nixos.nix;
+      homeManagerModules.mcpx = wrap ../pkgs/mcpx/modules/home-manager.nix;
+      darwinModules.mcpx = wrap ../pkgs/mcpx/modules/darwin.nix;
+    };
+
   _self = merge [
     lib
     {
@@ -1207,6 +1228,7 @@ let
         make-root-apps
         make-id
         make-mcpx-overlay
+        make-mcpx-modules
         make-laptop-backups-checks
         ;
     }

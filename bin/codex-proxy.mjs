@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { listenTarget } from './socket-activation.mjs';
 import { createRequestBodyCollector } from './request-body.mjs';
 import { createStreamDecoder } from './stream-decode.mjs';
 
@@ -1328,7 +1329,9 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: { message: `Route not found: ${req.method} ${pathname}` } }));
 });
 
-server.listen(PORT, HOST, () => {
+// Socket activation (#1821): under systemd the listener arrives as fd 3
+// and systemd owns the bind; a manual launch binds PORT/HOST directly.
+server.listen(listenTarget({ port: PORT, host: HOST }), () => {
   publishEndpoint();
   console.log(`[codex-proxy] OpenAI-compatible bridge listening on http://${HOST}:${PORT}`);
   console.log(`[codex-proxy] Resolved codex binary: ${CODEX_BIN}`);

@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
-    WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
+    WorldHandle, WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -215,6 +215,23 @@ impl WorldJournal for FileJournal {
             header_version: self.version,
             bytes,
         })
+    }
+
+    fn replication_snapshot_source(&mut self) -> Result<crate::world::JournalSnapshotSource> {
+        // Open a separate descriptor while the actor still owns the journal.
+        // It pins the current inode across compaction, and the captured length
+        // excludes appends that happen after the actor returns to its loop.
+        let file = File::open(&self.path)
+            .with_context(|| format!("open world journal snapshot {}", self.path.display()))?;
+        let byte_len = file
+            .metadata()
+            .with_context(|| format!("stat world journal snapshot {}", self.path.display()))?
+            .len();
+        Ok(crate::world::JournalSnapshotSource::from_reader(
+            self.version,
+            byte_len,
+            file,
+        ))
     }
 
     fn replication_header_version(&self) -> Option<u32> {
@@ -831,19 +848,26 @@ mod tests {
         .await
         .unwrap();
         let world = service.world();
-        let (world_id, first, mut first_updates) = world.replication_feed().await.unwrap();
-        let (second_world_id, second, mut second_updates) = world.replication_feed().await.unwrap();
+        let (world_id, first_source, mut first_updates) = world.replication_feed().await.unwrap();
+        let (second_world_id, second_source, mut second_updates) =
+            world.replication_feed().await.unwrap();
         let durable_bytes = std::fs::read(dir.path().join("journal.jsonl")).unwrap();
         assert_eq!(world_id, "lobby");
         assert_eq!(second_world_id, world_id);
-        assert_eq!(first, second);
-        assert_eq!(first.bytes, durable_bytes);
-        assert!(first.bytes.ends_with(b"\n"));
+        assert_eq!(first_source.header_version, second_source.header_version);
+        assert_eq!(first_source.byte_len, durable_bytes.len() as u64);
 
+        // The actor is free to append before the network materializes either
+        // source. The captured length still bounds both snapshots to this cut.
         world
             .set_isolation(Authority::Admin, Isolation::Unisolated)
             .await
             .unwrap();
+        let first = first_source.read().unwrap();
+        let second = second_source.read().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.bytes, durable_bytes);
+        assert!(first.bytes.ends_with(b"\n"));
         for update in [
             first_updates.recv().await.unwrap(),
             second_updates.recv().await.unwrap(),
@@ -1187,6 +1211,29 @@ mod tests {
         let snapshot = journal.replication_snapshot().unwrap();
         assert_eq!(snapshot.bytes, expected);
         assert_eq!(std::fs::read(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn replication_snapshot_source_is_pinned_and_reads_only_its_captured_length() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, entries) = FileJournal::open(&path, "lobby").unwrap();
+        journal
+            .append(&JournalEntry::Isolation {
+                isolation: Isolation::Unisolated,
+            })
+            .unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        let source = journal.replication_snapshot_source().unwrap();
+        assert_eq!(source.byte_len, expected.len() as u64);
+
+        // Replacing the path after capture must not redirect the reader to a
+        // compacted image; the source owns the old inode and captured length.
+        journal.compact(&entries).unwrap();
+        let snapshot = source.read().unwrap();
+        assert_eq!(snapshot.bytes, expected);
+        assert!(snapshot.bytes.ends_with(b"\n"));
+        assert_ne!(std::fs::read(&path).unwrap(), snapshot.bytes);
     }
 
     #[tokio::test]
@@ -2042,6 +2089,8 @@ mod tests {
             transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
         });
         let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
         assert!(error.to_string().contains("checkpoint"), "{error:#}");

@@ -81,7 +81,7 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 
-	res, err := p.Call(withRequestedCallTimeout(ctx), rs, effTool, effArgs)
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "reporting")
 
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)

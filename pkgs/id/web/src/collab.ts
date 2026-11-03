@@ -288,14 +288,7 @@ export function initCollab(
         );
         return;
       }
-      console.log(
-        "[collab] Sending",
-        batch.length,
-        "of",
-        sendable.steps.length,
-        "steps, version:",
-        sendable.version,
-      );
+      console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
       send(MSG.STEPS, sendable.version, batch, sendable.clientID);
     }
   };
@@ -326,9 +319,7 @@ export function initCollab(
         const version = msg[1];
         const doc = msg[2];
         const docRecord =
-          doc !== null && typeof doc === "object" && !Array.isArray(doc)
-            ? (doc as Record<string, unknown>)
-            : null;
+          doc !== null && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>) : null;
         if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
           console.error("[collab] Dropping malformed Init message: invalid version");
           return;

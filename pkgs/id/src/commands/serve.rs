@@ -51,7 +51,7 @@
 //! ```
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -71,7 +71,9 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
-use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
+use crate::chat_presence::{
+    HEARTBEAT_INTERVAL, PresenceHeartbeat, PresenceTable, decode_frame, encode_frame,
+};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     defaults, resolve_config,
@@ -83,6 +85,7 @@ use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
+use crate::waiting::AuthorKey;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
 /// Print a status line to stdout **without panicking** if stdout is gone.
@@ -598,12 +601,15 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
-/// The server's capability ceiling: the named capabilities, or the whole catalog
-/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+/// The server's capability ceiling: the named capabilities, or the default
+/// ceiling ([`crate::world_caps::default_ceiling_names`]) when no list is
+/// given — providers whose manifest default is `Excluded` do not join a
+/// server by registration alone (#838). Like a world ceiling, it names
+/// capabilities; `*` is refused.
 #[cfg(feature = "world")]
 fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
     match names {
-        None => Ok(crate::world_caps::catalog_names()),
+        None => Ok(crate::world_caps::default_ceiling_names()),
         Some(names) => {
             crate::world_caps::validate_ceiling_names(names)?;
             Ok(names.iter().cloned().collect())
@@ -887,6 +893,24 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
+    // Resolved early (not at the group-warning block below) so the gossip
+    // receive task can fold the same log for receipt-side membership scoping
+    // (#4363): a channel the receiver holds no fold for scopes to empty.
+    let groups_log = serve_groups_log_path(groups_log);
+    // A web request on a binary built without the `web` feature must
+    // fail loudly: the web startup block is compiled out in that build,
+    // so without this guard --web was accepted and silently served
+    // nothing (no listener bound, no `web:` status line) - the failure
+    // mode that left web-waiting integration tests to die on a startup
+    // timeout instead of hearing the real reason.
+    #[cfg(not(feature = "web"))]
+    if web || !web_listen.is_empty() || port_explicit || bind_explicit {
+        anyhow::bail!(
+            "the web interface was requested (--web/--web-listen/--port/--bind), \
+             but this id binary was built without the `web` feature; \
+             rebuild with `--features web` to serve it"
+        );
+    }
     validate_world_options(
         world,
         world_admin_token.as_deref(),
@@ -953,6 +977,27 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         ))?;
     }
     let endpoint = builder.bind().await?;
+
+    // Do not announce readiness before the endpoint is reachable through
+    // its home relay (#3028). The wait is bounded and non-fatal: a dead
+    // relay entry must not hold startup, so on timeout we warn and carry on.
+    // With `--no-relay` no relay ever connects, so the wait is skipped.
+    if no_relay {
+        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    } else {
+        match crate::connectivity::await_home_relay(
+            &endpoint,
+            crate::connectivity::HOME_RELAY_DEADLINE,
+        )
+        .await
+        {
+            Ok(()) => info!("serve startup: home relay connected"),
+            Err(e) => warn!(
+                "serve startup: proceeding without a home relay after {:?}: {e:#}",
+                crate::connectivity::HOME_RELAY_DEADLINE,
+            ),
+        }
+    }
 
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
@@ -1257,6 +1302,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
         let gossip_chat_presence = chat_presence.clone();
+        let gossip_groups_log = groups_log.clone();
         let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
@@ -1268,6 +1314,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 receiver,
                 gossip_peer_discovery,
                 gossip_chat_presence,
+                gossip_groups_log,
                 gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
@@ -1511,7 +1558,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // the CLI status output at startup; the spawned task then re-evaluates
     // as membership changes and writes fired warnings to the server log.
     let mut group_watcher = GroupWarningWatcher::new();
-    let groups_log = serve_groups_log_path(groups_log);
     for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
         status!("group warning: {}", warning.message());
     }
@@ -1831,10 +1877,70 @@ fn unix_now() -> u64 {
 
 const MAX_STALE_PROBES_PER_PASS: usize = 4;
 
+/// Verifies an incoming presence heartbeat and stores only the channels whose
+/// folded group membership contains the sender (#4363). Membership comes from
+/// the receiver's own group fold for the channel (the `GroupView` member
+/// set); a channel the receiver holds no fold for scopes to empty, because
+/// membership the receiver cannot see cannot be confirmed. If the local group
+/// log cannot be read or folded, the heartbeat is refused rather than
+/// accepted without its scope check. Signature verification is unchanged: a
+/// heartbeat whose signature by its claimed node does not verify is dropped.
+fn receive_presence_heartbeat(
+    table: &PresenceTable,
+    heartbeat: PresenceHeartbeat,
+    groups_log: &Path,
+) -> bool {
+    if !heartbeat.verify() {
+        debug!("presence heartbeat failed signature verification, dropped");
+        return false;
+    }
+
+    let log = match GroupLog::open(groups_log) {
+        Ok(log) => log,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot open groups log: {error}");
+            return false;
+        }
+    };
+    let projection = match log.projection() {
+        Ok(projection) => projection,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot fold groups log: {error}");
+            return false;
+        }
+    };
+
+    let node = heartbeat.node;
+    let channels = heartbeat.channels.len();
+    let accepted = table.update_scoped(heartbeat, &|sender: &AuthorKey, group: &Hash| {
+        projection
+            .group(group)
+            .is_some_and(|view| view.members.contains_key(sender))
+    });
+    if accepted {
+        debug!(
+            "presence heartbeat from {}: {channels} claimed channel(s)",
+            node.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
+    accepted
+}
+
+/// The presence-heartbeat period for the gossip loop: [`HEARTBEAT_INTERVAL`],
+/// the cadence `chat_presence` documents, as the single source (#4777).
+/// A function (not an inline constant at the call site) so a test can pin
+/// the wiring and the constant cannot silently go dead again.
+fn presence_heartbeat_period() -> std::time::Duration {
+    HEARTBEAT_INTERVAL
+}
+
 /// Background loop for gossip-based peer discovery.
 ///
 /// Runs three concurrent tasks:
-/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`]
+/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`],
+///    and a presence heartbeat every [`HEARTBEAT_INTERVAL`] on its own timer
 /// 2. **Receive**: Listens for incoming gossip events and updates the peer table
 /// 3. **Cleanup**: Periodically probes stale peers via `ListPeers` RPC — refreshes
 ///    their `last_seen` if reachable, removes them if not
@@ -1846,6 +1952,7 @@ async fn run_gossip_loop(
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
     chat_presence: PresenceTable,
+    groups_log: PathBuf,
     signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
@@ -1856,66 +1963,76 @@ async fn run_gossip_loop(
     let announce_store = store;
     let announce_node_id = node_id;
 
-    // Spawn announce task
+    // Spawn announce task: peer announcements and presence heartbeats run
+    // on independent timers in this one task. They used to share the
+    // announcement timer, so heartbeats actually went out every 30 s and
+    // the documented 25 s HEARTBEAT_INTERVAL cadence (and the TTL
+    // drop-resilience it promises) never happened (#4777).
     let announce_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut announce_interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut heartbeat_interval = tokio::time::interval(presence_heartbeat_period());
         loop {
-            interval.tick().await;
-            // Get blob count from tags
-            let blob_count = match announce_store.tags().list().await {
-                Ok(mut stream) => {
-                    let mut count = 0u64;
-                    while stream.next().await.is_some() {
-                        count += 1;
-                    }
-                    count
-                }
-                Err(_) => 0,
-            };
+            tokio::select! {
+                _ = announce_interval.tick() => {
+                    // Get blob count from tags
+                    let blob_count = match announce_store.tags().list().await {
+                        Ok(mut stream) => {
+                            let mut count = 0u64;
+                            while stream.next().await.is_some() {
+                                count += 1;
+                            }
+                            count
+                        }
+                        Err(_) => 0,
+                    };
 
-            let announcement = PeerAnnouncement {
-                node_id: announce_node_id,
-                name: None,
-                blob_count,
-                timestamp_secs: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            };
+                    let announcement = PeerAnnouncement {
+                        node_id: announce_node_id,
+                        name: None,
+                        blob_count,
+                        timestamp_secs: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    };
 
-            match SignedPeerAnnouncement::sign(announcement, &signing_key) {
-                Some(signed) => match signed.encode_frame() {
-                    Ok(bytes) => {
-                        if let Err(e) = sender.broadcast(bytes).await {
-                            debug!("gossip broadcast error: {}", e);
+                    match SignedPeerAnnouncement::sign(announcement, &signing_key) {
+                        Some(signed) => match signed.encode_frame() {
+                            Ok(bytes) => {
+                                if let Err(e) = sender.broadcast(bytes).await {
+                                    debug!("gossip broadcast error: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                debug!("gossip announcement serialization error: {}", e);
+                            }
+                        },
+                        None => {
+                            warn!(
+                                "could not sign peer announcement for endpoint {}",
+                                announce_node_id
+                            );
                         }
                     }
-                    Err(e) => {
-                        debug!("gossip announcement serialization error: {}", e);
-                    }
-                },
-                None => {
-                    warn!(
-                        "could not sign peer announcement for endpoint {}",
-                        announce_node_id
-                    );
-                }
-            }
 
-            // Presence rides the same gossip plane (#2809): an ephemeral
-            // heartbeat naming this node. Channel membership lives in the
-            // chat layer above serve, so this heartbeat names no channels;
-            // receivers scope and read it through PresenceTable.
-            let mut presence = PresenceHeartbeat::new(
-                *announce_node_id.as_bytes(),
-                Vec::new(),
-                Vec::new(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            );
-            presence.sign(&signing_key);
-            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
-                debug!("gossip presence broadcast error: {}", e);
+                }
+                _ = heartbeat_interval.tick() => {
+                    // Presence rides the same gossip plane (#2809): an ephemeral
+                    // heartbeat naming this node. Channel membership lives in the
+                    // chat layer above serve, so this heartbeat names no channels;
+                    // receivers scope and read it through PresenceTable.
+                    let mut presence = PresenceHeartbeat::new(
+                        *announce_node_id.as_bytes(),
+                        Vec::new(),
+                        Vec::new(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    );
+                    presence.sign(&signing_key);
+                    if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                        debug!("gossip presence broadcast error: {}", e);
+                    }
+                }
             }
         }
     });
@@ -1923,6 +2040,7 @@ async fn run_gossip_loop(
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
     let recv_presence = chat_presence.clone();
+    let recv_groups_log = groups_log;
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
@@ -1935,16 +2053,10 @@ async fn run_gossip_loop(
                             // heartbeat's signature by its claimed node
                             // verifies, so nobody can forge or suppress
                             // another node's presence (#2809 Codex review).
-                            if heartbeat.verify() {
-                                debug!(
-                                    "presence heartbeat from {}: {} channel(s)",
-                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                                    heartbeat.channels.len()
-                                );
-                                recv_presence.update(heartbeat);
-                            } else {
-                                debug!("presence heartbeat failed signature verification, dropped");
-                            }
+                            // The accepted heartbeat is then scoped to the
+                            // sender's membership in the receiver's group
+                            // fold (#4363).
+                            receive_presence_heartbeat(&recv_presence, heartbeat, &recv_groups_log);
                         } else if let Some(announcement) =
                             SignedPeerAnnouncement::decode_frame(&msg.content)
                         {
@@ -2098,6 +2210,23 @@ mod tests {
     }
 
     #[test]
+    fn presence_heartbeat_period_is_the_documented_interval() {
+        // #4777: HEARTBEAT_INTERVAL was defined and documented in
+        // chat_presence but never used; serve broadcast presence on the
+        // 30 s announcement timer instead. Pin the gossip loop period to
+        // the constant so it cannot silently go dead again.
+        assert_eq!(presence_heartbeat_period(), HEARTBEAT_INTERVAL);
+        assert_ne!(presence_heartbeat_period(), ANNOUNCE_INTERVAL);
+        // The documented TTL resilience: at least two heartbeats land
+        // inside one PRESENCE_TTL_SECS window, so a single dropped
+        // broadcast never flickers a live node stale.
+        assert!(
+            HEARTBEAT_INTERVAL.as_secs() * 2 < crate::chat_presence::PRESENCE_TTL_SECS,
+            "two heartbeats must land inside one TTL window"
+        );
+    }
+
+    #[test]
     fn stale_probe_batches_are_bounded_sorted_and_round_robin() {
         let mut peers: Vec<_> = (1..=5).map(stale_test_peer).collect();
         peers.reverse();
@@ -2168,6 +2297,53 @@ mod tests {
     }
 
     #[test]
+    fn received_presence_keeps_only_channels_the_sender_belongs_to() {
+        // #4363: the serve receipt path must scope an incoming heartbeat to
+        // the sender's membership in the receiver's group fold, not store the
+        // claimed channels unscoped.
+        use ed25519_dalek::SigningKey;
+
+        use crate::chat_presence::Liveness;
+        use crate::groups::Role;
+
+        let dir = serve_test_dir("presence-membership");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let member_channel = group_log_with_members_at(&path, 1);
+        let outsider_channel = Hash::digest(b"not-a-member");
+        let signing_key = SigningKey::from_bytes(&[2; 32]);
+        let node = signing_key.verifying_key().to_bytes();
+        // The sender genuinely belongs to `member_channel`: enrol the
+        // heartbeat key in the receiver's group fold. Nothing enrols it in
+        // `outsider_channel`, which the receiver holds no fold for.
+        {
+            let mut log = GroupLog::open(&path).unwrap();
+            log.add([1; 32], member_channel, node, Role::Read).unwrap();
+        }
+        let mut heartbeat = PresenceHeartbeat::new(
+            node,
+            vec![member_channel, outsider_channel],
+            vec![member_channel, outsider_channel],
+            unix_now(),
+        );
+        heartbeat.sign(&signing_key);
+        assert!(
+            heartbeat.verify(),
+            "fixture heartbeat must be authenticated"
+        );
+
+        let table = PresenceTable::new();
+        assert!(receive_presence_heartbeat(&table, heartbeat, &path));
+        assert_eq!(table.liveness(&node, &member_channel), Liveness::Live);
+        assert_eq!(table.liveness(&node, &outsider_channel), Liveness::Offline);
+        let now = unix_now();
+        let member_rows = table.roster_at(&member_channel, &[node], now);
+        assert!(member_rows.iter().any(|row| row.node == node && row.typing));
+        let outsider_rows = table.roster_at(&outsider_channel, &[node], now);
+        assert!(outsider_rows.iter().all(|row| !row.typing));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn serve_groups_log_path_honours_override_and_default() {
         // #2778: the group-warning watcher's log path must come
         // from the global --groups-log option (threaded through
@@ -2176,10 +2352,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -2381,7 +2554,8 @@ mod tests {
         // Removing the other account leaves the device authorized
         // through the author alone; the evaluation reconciles the
         // tracked grant owners with the fold. Not itself a re-add.
-        log.remove(author, group, other, None).unwrap();
+        log.remove(author, group, other, crate::groups::RemoveMode::Revoke)
+            .unwrap();
         assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
 
         // Four genuine revoke + re-add cycles by the remaining account,
@@ -2399,10 +2573,10 @@ mod tests {
 
     #[cfg(feature = "world")]
     #[test]
-    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+    fn test_the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
         assert_eq!(
             allowed_caps(None).unwrap(),
-            crate::world_caps::catalog_names()
+            crate::world_caps::default_ceiling_names()
         );
         let named = ["time.now".to_owned(), "chat.say".to_owned()];
         assert_eq!(
@@ -2554,7 +2728,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
@@ -2740,20 +2917,28 @@ mod tests {
     #[test]
     fn test_resolve_web_bindings_conflict_names_the_flag() {
         let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap()];
-        let err = resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--bind"), "{err}");
-        let err = resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--port"), "{err}");
     }
 
     #[test]
     fn test_resolve_web_bindings_malformed_config_line_is_named() {
         let config = vec!["127.0.0.1:3000".to_owned(), "not-an-addr".to_owned()];
-        let err =
-            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
-                .unwrap_err();
+        let err = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
         assert!(err.to_string().contains("[web_bindings]"), "{err}");
     }

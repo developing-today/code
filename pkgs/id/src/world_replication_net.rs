@@ -32,6 +32,12 @@ pub const REPLICATION_ALPN: &[u8] = b"/id-world-replication/1";
 /// Bound long-lived replication streams one peer can hold on a connection.
 const MAX_STREAMS_PER_CONNECTION: usize = 8;
 
+/// Bound for a single replication frame write (#4726), matching the 30 s
+/// bound the request read already has. A peer that stops reading cannot
+/// be allowed to pin the stream — and with it the world lease and the
+/// hub session permit the stream holds — forever.
+const FRAME_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// One request per QUIC stream. `world` defaults to the hub's default world.
 #[derive(Clone, Debug, Deserialize)]
 pub struct ReplicationRequest {
@@ -111,18 +117,28 @@ async fn serve_stream(
         .lease(request.world.as_deref(), None)
         .await
         .map_err(|error| anyhow::anyhow!("open replication world: {}", error.message()))?;
-    let (world_id, snapshot, mut updates) = lease.service().world().replication_feed().await?;
+    let (world_id, snapshot_source, mut updates) =
+        lease.service().world().replication_feed().await?;
     let source = *signing_key.verifying_key().as_bytes();
-    let (mut cursor, mut header_version, mut prev_frame_digest) = send_snapshot(
-        &mut send,
-        signing_key,
-        &world_id,
-        source,
-        request.session_nonce,
-        &snapshot,
-        [0; 32],
-    )
-    .await?;
+    // Only the pinned file handle and captured length crossed the actor
+    // boundary. Read the initial image on the blocking pool, then confine its
+    // owned bytes to this transfer so they are dropped before following
+    // updates for the lifetime of the stream.
+    let (mut cursor, mut header_version, mut prev_frame_digest) = {
+        let snapshot = tokio::task::spawn_blocking(move || snapshot_source.read())
+            .await
+            .context("initial replication snapshot read task")??;
+        send_snapshot(
+            &mut send,
+            signing_key,
+            &world_id,
+            source,
+            request.session_nonce,
+            snapshot,
+            [0; 32],
+        )
+        .await?
+    };
 
     loop {
         match updates.recv().await {
@@ -155,7 +171,7 @@ async fn serve_stream(
                     &world_id,
                     source,
                     request.session_nonce,
-                    &reset,
+                    reset,
                     prev_frame_digest,
                 )
                 .await?;
@@ -185,13 +201,15 @@ fn ensure_nonce(nonce: &[u8; 16]) -> Result<()> {
     Ok(())
 }
 
+// Take ownership of each snapshot so its journal buffer cannot escape into
+// the long-lived update loop after the transfer has been sent.
 async fn send_snapshot(
     send: &mut SendStream,
     signing_key: &SigningKey,
     world_id: &str,
     source: [u8; 32],
     nonce: [u8; 16],
-    snapshot: &JournalSnapshot,
+    snapshot: JournalSnapshot,
     mut prev_frame_digest: [u8; 32],
 ) -> Result<(ReplicationCursor, u32, [u8; 32])> {
     let chunks = split_entry_payload(&snapshot.bytes).context("split journal snapshot")?;
@@ -302,10 +320,25 @@ async fn write_envelope(
     let signed = SignedReplicationEnvelope::sign(envelope, signing_key)
         .context("replication signing key does not match source")?;
     let bytes = signed.encode_frame().context("encode replication frame")?;
-    write_frame(send, &bytes)
-        .await
-        .context("write replication frame")?;
+    write_frame_bounded(write_frame(send, &bytes), FRAME_WRITE_TIMEOUT).await?;
     Ok(frame_digest(&bytes))
+}
+
+/// Run one frame write under a deadline (#4726). On expiry the returned
+/// error says the write *timed out* — distinguishable from an ordinary
+/// write failure, which propagates unchanged — and the caller tears the
+/// stream down, releasing the world lease and hub session permit it held.
+async fn write_frame_bounded<F, T>(write: F, timeout: std::time::Duration) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    match tokio::time::timeout(timeout, write).await {
+        Ok(result) => result,
+        Err(_elapsed) => bail!(
+            "replication frame write timed out after {}s (peer not reading)",
+            timeout.as_secs()
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -317,6 +350,39 @@ mod tests {
     fn request_requires_nonzero_session_nonce() {
         assert!(ensure_nonce(&[0; 16]).is_err());
         assert!(ensure_nonce(&[1; 16]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_frame_write_is_cut_off_by_the_timeout() {
+        // A non-reading peer: the write never completes, so only the
+        // deadline can end it (#4726 regression test).
+        let stalled = write_frame_bounded(
+            std::future::pending::<Result<()>>(),
+            std::time::Duration::from_millis(10),
+        )
+        .await;
+        let error = stalled.expect_err("a stalled write must be cut off");
+        assert!(
+            error.to_string().contains("timed out"),
+            "timeout error must be distinguishable, got: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_frame_write_passes_through_untouched() {
+        let written = write_frame_bounded(async { Ok(7_u32) }, std::time::Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert_eq!(written, 7);
+        // An ordinary write failure is NOT re-labelled as a timeout.
+        let failed = write_frame_bounded::<_, ()>(
+            async { anyhow::bail!("stream reset by peer") },
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect_err("write failures propagate");
+        assert!(failed.to_string().contains("stream reset by peer"));
+        assert!(!failed.to_string().contains("timed out"));
     }
 
     #[test]

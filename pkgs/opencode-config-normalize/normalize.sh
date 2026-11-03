@@ -39,12 +39,20 @@
 set -euo pipefail
 
 CONFIG="${OPENCODE_CONFIG:-$HOME/.config/opencode/opencode.jsonc}"
+if [ -L "$CONFIG" ]; then
+  printf 'opencode-config-normalize: refusing symlinked config %s\n' "$CONFIG" >&2
+  exit 1
+fi
 [ -r "$CONFIG" ] || exit 0
 
 python3 - "$CONFIG" <<'PY'
-import json, re, sys, pathlib
+import json, os, pathlib, re, stat, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
+if path.is_symlink():
+    print(f'opencode-config-normalize: refusing symlinked config {path}', file=sys.stderr)
+    sys.exit(1)
+original_mode = stat.S_IMODE(path.stat().st_mode)
 raw = path.read_text()
 
 
@@ -273,6 +281,61 @@ def _line_comment_start(text, start, end):
     return -1
 
 
+def _block_comment_start_ending_at(text, k):
+    # Index of the '/*' opening the block comment whose closing '*/'
+    # ends exactly at k (text[k-2:k] == '*/'), found by a forward
+    # lexical scan so a literal /* inside the comment body is never
+    # mistaken for the opener (#4770): a plain backward rfind('/*')
+    # selects the inner literal in e.g. /* example syntax: /* text */
+    # and the separator scan then fails closed on a previously
+    # supported layout. String contents and // line comments never
+    # open a block comment. Returns -1 when no comment closes
+    # exactly at k.
+    opener = -1
+    cur_open = -1
+    in_str = False
+    in_line = False
+    i, n = 0, len(text)
+    while i < k:
+        c = text[i]
+        if in_line:
+            if c == '\n':
+                in_line = False
+            i += 1
+            continue
+        if cur_open >= 0:
+            if c == '*' and text[i + 1:i + 2] == '/':
+                if i + 2 == k:
+                    opener = cur_open
+                cur_open = -1
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+            i += 1
+            continue
+        if c == '/' and text[i + 1:i + 2] == '/':
+            in_line = True
+            i += 2
+            continue
+        if c == '/' and text[i + 1:i + 2] == '*':
+            cur_open = i
+            i += 2
+            continue
+        i += 1
+    return opener
+
+
 def delete_top_level_entry(text, key):
     # Remove the live top-level "key": value entry, with its comma.
     # Returns the new text, or None when the entry cannot be located.
@@ -310,7 +373,7 @@ def delete_top_level_entry(text, key):
         if k > 0 and text[k - 1] == ',':
             return text[:k - 1] + text[k:at] + text[ve:]
         if k >= 2 and text[k - 2:k] == '*/':
-            start = text.rfind('/*', 0, k - 2)
+            start = _block_comment_start_ending_at(text, k)
             if start < 0:
                 return None
             k = start
@@ -619,8 +682,22 @@ if 'agent' in expected:
 if parsed != expected:
     sys.exit(1)
 
-tmp = path.with_suffix(path.suffix + '.normalize-tmp')
-tmp.write_text(out)
-tmp.replace(path)
+fd, tmp_name = tempfile.mkstemp(prefix=f'.{path.name}.normalize-', dir=path.parent)
+tmp = pathlib.Path(tmp_name)
+try:
+    with os.fdopen(fd, 'w') as f:
+        fd = -1  # ownership transferred to the file object
+        f.write(out)
+        f.flush()
+        os.fchmod(f.fileno(), original_mode)
+        os.fsync(f.fileno())
+    tmp.replace(path)
+finally:
+    if fd >= 0:
+        os.close(fd)
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
 print(f"opencode-config-normalize: repaired {path}", file=sys.stderr)
 PY

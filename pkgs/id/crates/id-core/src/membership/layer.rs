@@ -242,6 +242,7 @@ impl Membership {
                     group,
                     after,
                     Refusal::Gate(rejection),
+                    false,
                 )?));
             }
             Admission::Displace(_) => {
@@ -253,6 +254,7 @@ impl Membership {
                         group,
                         after,
                         Refusal::Gate(Rejection::GroupExists),
+                        false,
                     )?));
                 }
                 return Ok(Decided::Displace);
@@ -268,6 +270,7 @@ impl Membership {
                 group,
                 after,
                 Refusal::Invalid(message),
+                true,
             )?)),
         }
     }
@@ -295,18 +298,26 @@ impl Membership {
         Ok(latest)
     }
 
-    /// Records a refusal. A placeholder stands in the graph when a manager is in the group at the
-    /// operation's dependencies. Otherwise the event is walked through.
+    /// Records a refusal. When `stand_in` is set, a placeholder stands in the graph when a
+    /// manager is in the group at the operation's dependencies. Otherwise the event is walked
+    /// through. Gate refusals pass `stand_in: false`: the gate turned the operation away
+    /// before it held a position in the graph (its rejections are exactly the cases the crate
+    /// cannot be asked to decide), so there is nothing for a placeholder to stand in for.
     fn refuse(
         &mut self,
         op: AuthOperation,
         group: Hash,
         after: Vec<Hash>,
         reason: Refusal,
+        stand_in: bool,
     ) -> Result<Outcome, MembershipError> {
         let id = op.id;
         self.refused.insert(id);
-        let placeholder = match self.manager_at(group, &op.dependencies) {
+        let placeholder = match if stand_in {
+            self.manager_at(group, &op.dependencies)
+        } else {
+            None
+        } {
             Some(target) => {
                 // Promoting a member who already manages changes nothing, and the crate does not
                 // check the promoter for that case. So this operation is valid whoever wrote it.

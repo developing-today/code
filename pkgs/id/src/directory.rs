@@ -470,8 +470,8 @@ impl Directory {
             })
             .collect();
         for (a, b, requests) in removals {
-            let formed_by = directory.friend_requests.get(&pair(&a, &b));
-            if directory.are_friends(&a, &b) && formed_by.is_some_and(|id| requests.contains(id)) {
+            let requests = directory.pair_bound_requests(&a, &b, &requests);
+            if directory.are_friends(&a, &b) || !requests.is_empty() {
                 directory.apply(&DirectoryEntry::FriendRemoved { a, b, requests })?;
             }
         }
@@ -1651,14 +1651,17 @@ impl Directory {
     /// the chain wrongly, or breaks a directory rule.
     pub fn receive_artifact(&mut self, artifact: &SignedArtifact) -> Result<Stored> {
         let effect = match artifact.parsed()? {
-            Some(Kind::FriendRemove(removal))
-                if self.are_friends(&removal.a, &removal.b) || !removal.requests.is_empty() =>
-            {
-                Some(DirectoryEntry::FriendRemoved {
-                    a: removal.a,
-                    b: removal.b,
-                    requests: removal.requests,
-                })
+            Some(Kind::FriendRemove(removal)) => {
+                let requests = self.pair_bound_requests(&removal.a, &removal.b, &removal.requests);
+                if self.are_friends(&removal.a, &removal.b) || !requests.is_empty() {
+                    Some(DirectoryEntry::FriendRemoved {
+                        a: removal.a,
+                        b: removal.b,
+                        requests,
+                    })
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -1984,6 +1987,7 @@ impl Directory {
                 }
             }
             DirectoryEntry::FriendRemoved { a, b, requests } => {
+                let requests = self.pair_bound_requests(a, b, requests);
                 let was_friends = self.friends.remove(&pair(a, b));
                 ensure!(was_friends || !requests.is_empty(), "not friends");
                 self.friend_requests.remove(&pair(a, b));
@@ -2008,6 +2012,34 @@ impl Directory {
         ids.dedup();
         debug_assert!(ids.len() <= artifact::MAX_FRIEND_REMOVE_REQUESTS);
         ids
+    }
+
+    /// Bind a removal's request IDs to the named pair (#4849): drop any ID
+    /// this server already knows belongs to another pair's pending or
+    /// formed-by request. Unknown IDs are kept so a legitimate
+    /// never-delivered removal still voids its own future delivery; a pair
+    /// with no friendship and no surviving IDs of its own is stored alone.
+    fn pair_bound_requests(&self, a: &str, b: &str, requests: &[String]) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let target = pair(a, b);
+        let mut foreign: BTreeSet<&str> = BTreeSet::new();
+        for ((from, to), id) in &self.requests {
+            if pair(from, to) != target {
+                if let Some(id) = id {
+                    foreign.insert(id.as_str());
+                }
+            }
+        }
+        for (known_pair, id) in &self.friend_requests {
+            if *known_pair != target {
+                foreign.insert(id.as_str());
+            }
+        }
+        requests
+            .iter()
+            .filter(|id| !foreign.contains(id.as_str()))
+            .cloned()
+            .collect()
     }
 
     /// Whether two accounts are friends on this server.
@@ -2496,6 +2528,45 @@ mod tests {
             matches!(stale.downcast_ref::<Refusal>(), Some(Refusal::Conflict(_))),
             "{stale:#}"
         );
+    }
+
+    #[test]
+    fn a_friend_removal_cannot_void_another_pairs_pending_request() {
+        let mut receiver = Directory::new();
+        let (ann, ann_credential) = account(&mut receiver, "Ann");
+        let (bo, _) = account(&mut receiver, "Bo");
+        let (cy, cy_credential) = account(&mut receiver, "Cy");
+        let (di, di_credential) = account(&mut receiver, "Di");
+        // The receiver already holds Cy/Di's pending request, so its ID is
+        // known to belong to another pair.
+        let (genuine, _) = receiver
+            .request_friend(&cy_credential, &di, "receiver", 1)
+            .unwrap();
+
+        // Ann signs a well-formed removal for Ann/Bo but names Cy/Di's
+        // pending envelope. The receiver stores the artifact but must not
+        // void the foreign ID.
+        let removal = SignedArtifact::sign(
+            &key_of(&ann_credential),
+            1,
+            "",
+            artifact::FRIEND_REMOVE,
+            json!({
+                "a": ann,
+                "b": bo,
+                "requests": [genuine.id.clone()]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(receiver.receive_artifact(&removal).unwrap(), Stored::New);
+        assert!(!receiver.removed_requests.contains(&genuine.id));
+        assert!(!receiver.are_friends(&ann, &bo));
+        // The genuine pending request survives: Di can still accept it.
+        receiver
+            .accept_friend(&di_credential, &cy, "receiver", 2)
+            .unwrap();
+        assert!(receiver.are_friends(&cy, &di));
     }
 
     #[test]
