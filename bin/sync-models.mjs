@@ -3,6 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 
+// #2953 (define, don't assign): store an externally-spelled key with
+// define semantics, so "__proto__" becomes an own property instead of
+// invoking the Object.prototype setter and "constructor"/"toString"
+// shadow like any other key.
+const defineValue = (obj, key, value) => {
+  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+};
+
+
 const KNOWN_ARGS = new Set(['--dry-run', '--verbose', '-v']);
 const unknownArgs = process.argv.slice(2).filter(arg => !KNOWN_ARGS.has(arg));
 if (unknownArgs.length > 0) {
@@ -507,12 +517,12 @@ async function run() {
         }
       }
       if (!grouped[baseId]) {
-        grouped[baseId] = {
+        defineValue(grouped, baseId, {
           baseId,
           name: m.name.replace(/\s*\((Low|Medium|High|Extra-Low)\)$/i, ''),
           efforts: new Set(),
           variants: {}
-        };
+        });
       }
       if (effort) {
         grouped[baseId].efforts.add(effort);
@@ -564,7 +574,7 @@ async function run() {
 
         if (!prov.models[baseId]) {
           console.log(`[sync-models] + Adding ${targetProvider}/${baseId}`);
-          prov.models[baseId] = modelEntry;
+          defineValue(prov.models, baseId, modelEntry);
           edits.push({ set: [...modelsPath, baseId], value: modelEntry });
           totalAdded++;
         } else {
@@ -610,7 +620,7 @@ async function run() {
 
       if (!codexProv.models[m.slug]) {
         console.log(`[sync-models] + Adding openai-codex/${m.slug}`);
-        codexProv.models[m.slug] = entry;
+        defineValue(codexProv.models, m.slug, entry);
         edits.push({ set: [...modelsPath, m.slug], value: entry });
         totalAdded++;
       } else {
@@ -642,7 +652,7 @@ async function run() {
             };
           }
           console.log(`[sync-models] + Adding google/${mId}`);
-          gProv.models[mId] = entry;
+          defineValue(gProv.models, mId, entry);
           edits.push({ set: ['provider', 'google', 'models', mId], value: entry });
           totalAdded++;
         }
@@ -667,7 +677,7 @@ async function run() {
             };
           }
           if (VERBOSE) console.log(`[sync-models] + Adding openai/${mId}`);
-          oProv.models[mId] = entry;
+          defineValue(oProv.models, mId, entry);
           edits.push({ set: ['provider', 'openai', 'models', mId], value: entry });
           totalAdded++;
         }
@@ -692,7 +702,7 @@ async function run() {
             };
           }
           if (VERBOSE) console.log(`[sync-models] + Adding cloudflare-gateway/${mId}`);
-          cfProv.models[mId] = entry;
+          defineValue(cfProv.models, mId, entry);
           edits.push({ set: ['provider', 'cloudflare-gateway', 'models', mId], value: entry });
           totalAdded++;
         }
