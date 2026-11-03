@@ -172,6 +172,7 @@ pub(super) fn render_home(
     worlds: &[crate::world_hub::WorldInfo],
     default_world: &str,
     world_enabled: bool,
+    world_route: &str,
 ) -> String {
     let world_name = html_escape(default_world);
     let world_href = urlencoding::encode(default_world);
@@ -183,24 +184,36 @@ pub(super) fn render_home(
         let _ = std::fmt::Write::write_fmt(
             &mut html,
             format_args!(
-                "<li><a href=\"/world?world={world_href}\">{world_name}</a> (default world)</li>"
+                "<li><a href=\"{world_route}?world={world_href}\">{world_name}</a> (default world)</li>"
             ),
         );
     } else {
-        for world in worlds {
-            let name = html_escape(&world.name);
-            let href = urlencoding::encode(&world.name);
-            let state = if world.open {
-                "open"
-            } else {
-                "stored; opens on selection"
-            };
-            let _ = std::fmt::Write::write_fmt(
-                &mut html,
-                format_args!(
-                    "<li><a href=\"/world?world={href}\">{name}</a> <span>{state}</span></li>"
-                ),
-            );
+        // The explorer renders from the shared directory serializer
+        // (#812): the same shape the CLI's `id world list --json` prints.
+        let directory = crate::world_hub::directory_json(worlds, default_world);
+        if let Some(entries) = directory["worlds"].as_array() {
+            for entry in entries {
+                let raw_name = entry["name"].as_str().unwrap_or_default();
+                let name = html_escape(raw_name);
+                let href = urlencoding::encode(raw_name);
+                let state = if entry["loaded"].as_bool().unwrap_or(false) {
+                    "open"
+                } else {
+                    "stored; opens on selection"
+                };
+                let presence = entry["presence"].as_u64().unwrap_or(0);
+                let presence_note = if presence > 0 {
+                    format!(" <span>{presence} active</span>")
+                } else {
+                    String::new()
+                };
+                let _ = std::fmt::Write::write_fmt(
+                    &mut html,
+                    format_args!(
+                        "<li><a href=\"{world_route}?world={href}\">{name}</a> <span>{state}</span>{presence_note}</li>"
+                    ),
+                );
+            }
         }
     }
     html.push_str("</ul><p>Unavailable worlds are not listed; selecting a listed world reports if it cannot be opened.</p></section>");
@@ -208,7 +221,7 @@ pub(super) fn render_home(
         let _ = std::fmt::Write::write_fmt(
             &mut html,
             format_args!(
-                "<section class=\"card bg-base-200 border border-base-300 p-4\"><h2>Global chat</h2><p>This is the authenticated default world ({world_name}). Join with a guest capability to participate. Messages use the existing bounded world chat and are live only within this server.</p><iframe title=\"Live global chat in {world_name}\" src=\"/world?world={world_href}\" loading=\"lazy\" class=\"w-full min-h-[36rem] border border-base-300\"></iframe></section>"
+                "<section class=\"card bg-base-200 border border-base-300 p-4\"><h2>Global chat</h2><p>This is the authenticated default world ({world_name}). Join with a guest capability to participate. Messages use the existing bounded world chat and are live only within this server.</p><iframe title=\"Live global chat in {world_name}\" src=\"{world_route}?world={world_href}\" loading=\"lazy\" class=\"w-full min-h-[36rem] border border-base-300\"></iframe></section>"
             ),
         );
     } else {
@@ -317,7 +330,7 @@ mod tests {
 
     #[test]
     fn homepage_has_world_explorer_live_chat_and_discovery_feed() {
-        let html = render_home(&[], "lobby", true);
+        let html = render_home(&[], "lobby", true, "/world");
         assert!(html.contains("World explorer"));
         assert!(html.contains("Global chat"));
         assert!(html.contains("Recent documents"));
@@ -326,6 +339,9 @@ mod tests {
         assert!(!html.contains("<main"));
         assert!(html.contains("Popular documents"));
         assert!(html.contains("/world?world=lobby"));
+        let custom = render_home(&[], "lobby", true, "/arena");
+        assert!(custom.contains("/arena?world=lobby"));
+        assert!(!custom.contains("/world?world=lobby"));
         assert!(html.contains("this server"));
         assert!(html.contains("/files"));
     }
@@ -494,7 +510,7 @@ mod tests {
 
     #[test]
     fn global_chat_embeds_existing_authenticated_world_chat() {
-        let html = render_home(&[], "lobby", true);
+        let html = render_home(&[], "lobby", true, "/world");
         assert!(html.contains("/world?world=lobby"));
         assert!(html.contains("authenticated default world"));
         assert!(html.contains("guest capability"));

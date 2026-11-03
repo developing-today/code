@@ -39,6 +39,13 @@ type Options struct {
 	// Roots are the directories servers may work within, served from the
 	// first request rather than from whenever they happen to be set.
 	Roots []Root
+	// Root is the scope-resolved workspace root this instance serves. When
+	// non-empty, initialize names it as rootUri and workspaceFolders and
+	// declares workspace.workspaceFolders, so workspace servers (gopls)
+	// open a real workspace instead of loading files ad hoc (decision
+	// 0004 §5). Empty leaves initialize byte-for-byte as it was: a
+	// global-scoped instance must not fabricate a daemon-cwd root.
+	Root string
 	// Cached is the era this server configuration was last found to speak,
 	// tried first in place of the preference's order. Ignored when the
 	// preference forces an era.
@@ -102,6 +109,13 @@ func (c *Client) capabilities(modern bool) map[string]any {
 	caps := map[string]any{
 		"elicitation": elicitation,
 		"roots":       map[string]any{"listChanged": false},
+	}
+	// A scope-resolved instance serves a workspace, so it declares the
+	// capability that says so (decision 0004 §5). Instances without a root
+	// declare nothing extra: the capability would promise a workspace that
+	// initialize never names.
+	if c.root != "" {
+		caps["workspace"] = map[string]any{"workspaceFolders": true}
 	}
 	if modern {
 		caps["roots"] = map[string]any{}

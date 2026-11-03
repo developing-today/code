@@ -11,6 +11,7 @@ import {
   collectFileExportAdapter,
   credentialRefLabel,
   validateCredentialRef,
+  type CredentialRef,
   type PreviousValue,
 } from "../src/token-adapter.ts";
 
@@ -31,6 +32,21 @@ describe("credential contract", () => {
     expect(() => validateCredentialRef({ kind: "file", path: "/tmp/t", mode: 0o600, cookie: "a=b" })).toThrow(
       /references only/,
     );
+  });
+
+  test("credential value keys are checked as own properties for both reference kinds", () => {
+    const keys = ["token", "cookie", "value", "secret", "password", "apiKey", "api_key", "authorization"];
+    const refs: CredentialRef[] = [
+      { kind: "bitwarden", name: "x" },
+      { kind: "file", path: "/tmp/t", mode: 0o600 },
+    ];
+    for (const ref of refs) {
+      for (const key of keys) {
+        const inherited = Object.assign(Object.create({ [key]: "sensitive" }), ref);
+        expect(validateCredentialRef(inherited)).toEqual(ref);
+        expect(() => validateCredentialRef({ ...ref, [key]: undefined })).toThrow(/references only/);
+      }
+    }
   });
 
   test("a file reference without the 0600 contract is rejected", () => {

@@ -39,8 +39,10 @@ use std::{
 use futures_lite::StreamExt;
 use russh::{
     Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
-    keys::{Algorithm, PrivateKey, PublicKey, ssh_key::HashAlg, ssh_key::LineEnding},
-    server::{Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session},
+    keys::{Algorithm, PrivateKey, ssh_key::HashAlg, ssh_key::LineEnding},
+    server::{
+        Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session, VerifiedPublicKey,
+    },
 };
 use serde_json::json;
 use tokio::{
@@ -305,12 +307,12 @@ impl Handler for SshClient {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, russh::Error> {
         let Some(world) = user.strip_prefix(EXPLORE_PREFIX) else {
             return Ok(Auth::reject());
         };
-        let Some(ed25519) = public_key.key_data().ed25519() else {
+        let Some(ed25519) = public_key.public_key.key_data().ed25519() else {
             return Ok(Auth::reject());
         };
         if self.permit.is_none() {
@@ -1040,9 +1042,15 @@ impl std::str::FromStr for SshTarget {
     fn from_str(text: &str) -> anyhow::Result<Self> {
         let (user, rest) = text.rsplit_once('@').unwrap_or(("id", text));
         let port = |digits: &str| {
-            digits
+            anyhow::ensure!(
+                digits.bytes().all(|byte| byte.is_ascii_digit()),
+                "`{digits}` is not a port"
+            );
+            let port = digits
                 .parse::<u16>()
-                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))
+                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))?;
+            anyhow::ensure!(port != 0, "`{digits}` is not a port");
+            Ok(port)
         };
         let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
             let Some((host, tail)) = inner.split_once(']') else {
@@ -1060,6 +1068,21 @@ impl std::str::FromStr for SshTarget {
                 None => (rest, 22),
             }
         };
+        // #3267: whitespace, control characters, and `/` in the user or
+        // host are never legitimate — without this check they parse and
+        // fail later inside russh as opaque DNS/auth errors, and a
+        // newline-bearing host lands verbatim in error messages and the
+        // known-hosts lookup key. The bracketed-IPv6 host is held to the
+        // same rule: valid IPv6 literals contain none of these.
+        let has_bad_chars = |part: &str| {
+            part.chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == '/')
+        };
+        anyhow::ensure!(
+            !has_bad_chars(user) && !has_bad_chars(host),
+            "`{text}` is not [user@]host[:port]: user and host must not \
+             contain whitespace, control characters, or `/`"
+        );
         anyhow::ensure!(
             !host.is_empty() && !user.is_empty(),
             "`{text}` is not [user@]host[:port]"
@@ -1771,10 +1794,15 @@ impl Typing {
 }
 
 /// Terminal text from the world: control characters are dropped, so text from
-/// one participant cannot drive another participant's terminal.
+/// one participant cannot drive another participant's terminal. Unicode
+/// format characters (Cf, per the shared `crate::is_format_char` set) are
+/// dropped for the same reason: a bidi override or zero-width character in
+/// one participant's text could otherwise reorder or falsify the terminal
+/// output around it (design #3455). The accepted cost is that `ZWJ`-joined
+/// emoji render as separate glyphs here; the stored text is untouched.
 fn terminal_text(data: &str) -> String {
     data.chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
         .collect::<String>()
         .replace('\n', "\r\n")
 }
@@ -2443,7 +2471,43 @@ mod tests {
         );
         assert_eq!(parse("[::1]:2022").unwrap(), target("id", "::1", 2022));
         assert_eq!(parse("me@[::1]").unwrap(), target("me", "::1", 22));
-        for bad in ["", "host:", "host:99999", "::1", "[::1", "@host", "[::1]x"] {
+        assert_eq!(
+            parse("me@[2001:db8::1]:2222").unwrap(),
+            target("me", "2001:db8::1", 2222)
+        );
+        for bad in [
+            "",
+            "host:",
+            "host:0",
+            "[::1]:0",
+            "host:+22",
+            "host:-22",
+            "host:٢٢",
+            "host:99999",
+            "::1",
+            "[::1",
+            "@host",
+            "[::1]x",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        // #3267: whitespace, control characters, and `/` in the user or
+        // the host (the bracketed-IPv6 host included) refuse at parse
+        // time instead of failing later inside russh.
+        for bad in [
+            "exam ple.org",
+            "ada@exam ple.org",
+            " @host",
+            "ada @host",
+            "ada@host ",
+            "ada@ho/st",
+            "a/b@example.org",
+            "[:: 1]",
+            "ada@[:: 1]",
+            "ada@example.org\n.evil",
+            "us\ter@host",
+            "ada@ho\rst",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }
@@ -2899,6 +2963,21 @@ mod tests {
     }
 
     #[test]
+    fn terminal_text_drops_format_characters_but_keeps_layout() {
+        // Bidi overrides and zero-width characters never reach the terminal,
+        // even without any control character present (#3455 Phase 3b).
+        assert_eq!(terminal_text("a\u{202e}b"), "ab");
+        assert_eq!(terminal_text("a\u{200b}b"), "ab");
+        assert_eq!(terminal_text("a\u{feff}b"), "ab");
+        // The shared Cf set is the gate, not a bidi-only subset.
+        assert!(!terminal_text("\u{00ad}").chars().any(|c| c == '\u{00ad}'));
+        // Layout survivors are unchanged: LF/TAB are kept (as CRLF/TAB).
+        assert_eq!(terminal_text("a\nb\tc"), "a\r\nb\tc");
+        // Ordinary text, including non-joiner emoji bases, is byte-identical.
+        assert_eq!(terminal_text("naïve-✦サーバー"), "naïve-✦サーバー");
+    }
+
+    #[test]
     fn world_line_buffer_handles_fragmented_packets_and_crlf_once() {
         let mut input = WorldLineBuffer::default();
         assert!(input.push(b"hel").is_empty());
@@ -3173,6 +3252,71 @@ mod tests {
             update.len(),
             initial.len()
         );
+        server.abort();
+    }
+
+    /// Proving test for tracker #796 item 9-6: an SSH `window-change`
+    /// request must reach the session as a resize and refit the shell view
+    /// to the new viewport size (drafted on #796 from task 6509; landed once
+    /// the ssh feature compiled again after #3962).
+    /// A program whose view is one fixed 4x2 ASCII screen.
+    struct FixedScreenSsh;
+
+    impl crate::world::WorldProgram for FixedScreenSsh {
+        fn view(
+            &mut self,
+            _viewer: &crate::world::Participant,
+        ) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["abcd","wxyz"]}"#
+                    .to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_change_refits_the_shell_view_to_the_new_size() {
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(FixedScreenSsh),
+        );
+        let (_, capability) = world
+            .issue(
+                "player".to_owned(),
+                crate::world::WorldScopes::from_names(["join", "input"]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world, Some("admin".to_owned())));
+        let (port, server) = start(hub).await;
+        let session = connect(port, capability.expose()).await;
+        let mut channel = shell(&session).await;
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        // The pty opens at 80x24, so the whole 4x2 screen is shown first.
+        read_until(&mut channel, &mut terminal, "wxyz").await;
+        assert!(terminal.screen().contents().contains("abcd"));
+
+        // A terminal window change must reach the session as a resize and
+        // refit the view: 2x1 keeps only the first two cells of row one.
+        channel.window_change(2, 1, 0, 0).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let contents = terminal.screen().contents();
+                if contents.contains("ab") && !contents.contains("wxyz") {
+                    break;
+                }
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => terminal.process(&data),
+                    Some(_) => {}
+                    None => panic!("shell closed before the refitted view"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the refitted view");
+        let contents = terminal.screen().contents();
+        assert!(contents.contains("ab"), "{contents:?}");
+        assert!(!contents.contains("cd"), "{contents:?}");
         server.abort();
     }
 

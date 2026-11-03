@@ -18,6 +18,7 @@ interface HealthBody {
 
 let proc: Subprocess | undefined;
 let health: HealthBody | undefined;
+let apiBaseUrl = "";
 
 const comment = (over: Record<string, unknown>) => ({
   id: "dc-test-1",
@@ -76,6 +77,7 @@ beforeAll(async () => {
     }),
   );
   const port = 5900 + Math.floor(Math.random() * 800);
+  apiBaseUrl = `http://127.0.0.1:${port}`;
   proc = spawn({
     cmd: ["bun", "run", "src/server.ts"],
     cwd: join(import.meta.dir, ".."),
@@ -102,7 +104,7 @@ beforeAll(async () => {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline && !health) {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      const res = await fetch(`${apiBaseUrl}/api/health`);
       if (res.ok) health = (await res.json()) as HealthBody;
     } catch {
       /* not up yet */
@@ -126,5 +128,19 @@ describe("/api/health comment counts (#1145)", () => {
   test("the API body carries pending message/github counts from the store", () => {
     expect(health?.status).toBe("ok");
     expect(health?.comments).toEqual({ pendingMessages: 1, pendingGithub: 1, total: 4 });
+  });
+});
+
+describe("JSON request body cap", () => {
+  test("oversized comment POST keeps the existing 400 error response", async () => {
+    const text = `{"body":"${"x".repeat(100_001)}"}`;
+    const res = await fetch(`${apiBaseUrl}/api/comments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: text,
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid comment: body too large" });
   });
 });

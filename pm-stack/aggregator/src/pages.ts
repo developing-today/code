@@ -138,6 +138,15 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "events",
+    title: "Events",
+    route: "/events",
+    api: "/api/events.json",
+    blurb: "The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "comments-queue",
     title: "Comments queue",
     route: "/comments",
@@ -154,6 +163,15 @@ export const PAGES: PageDef[] = [
     api: "/api/program.json",
     blurb:
       "The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.",
+    group: "work",
+    nav: "primary",
+  },
+  {
+    id: "queue",
+    title: "Queue",
+    route: "/queue",
+    api: "/api/queue.json",
+    blurb: "In progress, blocked, recently completed, and next-up work across projects.",
     group: "work",
     nav: "primary",
   },

@@ -9,6 +9,17 @@
 // immediately, quiet hours or not, because the sentinels are
 // external to the thing that might be down. Warnings never push in
 // v1 (page + ledger only).
+//
+// The throat's truth contract (#3702 Phase 3, 2026-11-03): the alert
+// throat's records and responses tell the truth and keep its secrets.
+// A state transition is recorded only when the event it names happened
+// (delivered / escalated require at least one accepted send; `gone` is
+// not a send). Subscription key material (`p256dh`, `auth`) never
+// leaves the server: store rows are internal, any HTTP surface
+// projects — the page's projection is the only read shape. Subscription
+// preferences are validated as values, not shapes, and an invalid value
+// falls back per-field to the default — never stored, never
+// reinterpreted.
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
@@ -68,6 +79,36 @@ export interface QuietPrefs {
   enabled?: boolean;
 }
 
+/** #3693: the public shape of a push subscription — everything the
+ * /alerts page already renders, minus the Web Push key material.
+ * p256dh + auth (RFC 8291 push-encryption secrets) never leave the
+ * server; delivery reads the full rows via the store instead. */
+export interface PublicPushSubscription {
+  id: string;
+  endpoint: string;
+  classes: Record<string, boolean>;
+  quiet: QuietPrefs;
+  user_agent: string | null;
+  created_at: string;
+  last_seen_at: string;
+  gone_count: number;
+}
+
+/** #3693: strip the push-encryption secrets before serializing a
+ * subscription to an HTTP response. */
+export function toPublicSubscription(sub: PushSubscriptionRow): PublicPushSubscription {
+  return {
+    id: sub.id,
+    endpoint: sub.endpoint,
+    classes: sub.classes,
+    quiet: sub.quiet,
+    user_agent: sub.user_agent,
+    created_at: sub.created_at,
+    last_seen_at: sub.last_seen_at,
+    gone_count: sub.gone_count,
+  };
+}
+
 // --- Pure helpers (unit-tested) ---------------------------------------------
 
 /** Design §1: the incident class defaults ON for new subscriptions. */
@@ -85,13 +126,32 @@ export function mergeClasses(input: unknown): Record<string, boolean> {
   return out;
 }
 
+/** #3686: clock-shape plus numeric range — hours 00–23, minutes 00–59.
+ * Shape-only checks accept impossible values (99:99, 24:60) that
+ * inQuietHours then reinterprets as a different window. */
+function isClockTime(s: string): boolean {
+  const m = /^(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return false;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
+}
+
 export function mergeQuiet(input: unknown): QuietPrefs {
   const out = { ...DEFAULT_QUIET };
   if (input && typeof input === "object") {
     const q = input as Record<string, unknown>;
-    if (typeof q.start === "string" && /^\d{2}:\d{2}$/.test(q.start)) out.start = q.start;
-    if (typeof q.end === "string" && /^\d{2}:\d{2}$/.test(q.end)) out.end = q.end;
-    if (typeof q.tz === "string" && q.tz.trim()) out.tz = q.tz.trim();
+    if (typeof q.start === "string" && isClockTime(q.start)) out.start = q.start;
+    if (typeof q.end === "string" && isClockTime(q.end)) out.end = q.end;
+    if (typeof q.tz === "string" && q.tz.trim()) {
+      const tz = q.tz.trim();
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: tz });
+        out.tz = tz;
+      } catch {
+        // Keep the default timezone for an invalid stored preference.
+      }
+    }
     if (typeof q.enabled === "boolean") out.enabled = q.enabled;
   }
   return out;

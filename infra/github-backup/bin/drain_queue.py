@@ -122,7 +122,8 @@ def event_owner(ev):
     """
     rep = ev.get("repository")
     if isinstance(rep, dict):
-        login = (rep.get("owner") or {}).get("login")
+        owner = rep.get("owner")
+        login = owner.get("login") if isinstance(owner, dict) else None
         if isinstance(login, str) and login:
             return login
     repo = event_repo(ev)
@@ -130,7 +131,8 @@ def event_owner(ev):
         return repo.split("/", 1)[0]
     inst = ev.get("installation")
     if isinstance(inst, dict):
-        login = (inst.get("account") or {}).get("login")
+        account = inst.get("account")
+        login = account.get("login") if isinstance(account, dict) else None
         if isinstance(login, str) and login:
             return login
     return None

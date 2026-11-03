@@ -2,9 +2,11 @@
 //!
 //! A program stays a pure function. What it needs from the server is **data
 //! it returns** (`wants`, a pure projection of its model) and **events it
-//! receives** (delivered through `update` with participant id `0`, every one
-//! journaled once the program accepts it, so replay feeds the program exactly
-//! what it saw the first time).
+//! receives** (delivered through `update` with participant id `0`; accepted
+//! live events are journaled so replay feeds the program what it saw). Restore
+//! may also synthesize presence-cleanup `left` events for legacy checkpoints
+//! whose open-presence set cannot be recovered; those cleanup events can be
+//! redundant and are not evidence that a participant was online.
 //!
 //! ```json
 //! {"v":1,
@@ -18,6 +20,10 @@
 //! `"error"`), and each subscription with its own events
 //! (`{"cap":"time.tick","interval":5000,"now":<unix ms>}`,
 //! `{"cap":"players","event":"joined"|"left","participant":{"id":1,"name":"ann"}}`).
+//! A `players.left` event removes that participant from the program's online
+//! set if present. Legacy checkpoint migration may send it for every known
+//! capability because the original online set is unknowable; programs should
+//! therefore make this removal idempotent.
 //!
 //! This module holds the pure parts: the schema and its bounds, the catalog of
 //! capability names, and the grant policy with its usage accounting. The
@@ -66,28 +72,452 @@ pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// Most distinct tick intervals one program may subscribe to.
 pub const MAX_TICK_INTERVALS: usize = 4;
 
-/// Capabilities the server knows how to provide. New providers add names;
-/// existing names never change meaning. Platform modules are gated when source
-/// that imports them is compiled, not at run time.
-pub const CATALOG: &[&str] = &[
-    "time.now",
-    "time.tick",
-    "random.u64",
-    "players",
-    "players.list",
-    "chat.say",
-    "chat.history",
-    "records.read",
-    "schedule.at",
-    "schedule.cancel",
-    "world.info",
-    "Key",
-    "Screen",
-    "RocJson",
-    "RocGrid",
-    "RocCap",
-    "RocText",
+/// Usage key that aggregates every unknown capability name.
+///
+/// A guest program controls requested capability names, so recording each
+/// distinct unknown name would let it mint one [`CapUsage`] entry (and one
+/// [`CapsReport`] entry) per name, forever.
+/// Unknown names — including unknown subscription specs, which reach the
+/// ledger as their full spec — aggregate here instead, so `usage` holds at
+/// most the catalog names plus this one bucket. [`is_known`] decides the
+/// split: anything outside [`CATALOG`] lands in this bucket, even a literal
+/// request for this key.
+pub const UNKNOWN_CAP_USAGE_KEY: &str = "<unknown>";
+
+/// Whether a provider joins the default ceiling — the ceiling a world or a
+/// server starts with before anyone narrows or widens it (#838).
+///
+/// This is the per-provider manifest default the F12.4 registry (#534)
+/// carries: registering a provider is not enough to widen any world's
+/// authority. A provider joins default ceilings only when its entry says
+/// [`DefaultCeiling::Included`] explicitly; a sensitive provider registers
+/// as [`DefaultCeiling::Excluded`] and reaches a world only through an
+/// explicit ceiling that names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultCeiling {
+    /// The provider is in every default ceiling.
+    Included,
+    /// The provider is in no default ceiling; an explicit ceiling must
+    /// name it before any world may use it.
+    Excluded,
+}
+
+/// The kind of provider registered in the catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderKind {
+    /// A host request in the world's `wants` document.
+    Request,
+    /// A server event subscription.
+    Subscription,
+    /// A Roc platform module, checked by the compile gate rather than called
+    /// as a host request.
+    PlatformModule,
+}
+
+/// A JSON value kind accepted by a request field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgumentType {
+    /// UTF-8 JSON string.
+    String,
+    /// Non-negative JSON integer.
+    UnsignedInteger,
+}
+
+/// A recognized field in a provider's request arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProviderArgument {
+    /// Field name.
+    pub name: &'static str,
+    /// JSON value kind.
+    pub value_type: ArgumentType,
+    /// Whether the provider requires this field.
+    pub required: bool,
+}
+
+/// Static description of a provider's arguments or subscription syntax.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgumentSchema {
+    /// A request's recognized JSON object fields. Generic `wants` bounds and
+    /// provider validation remain at their existing boundaries in this slice.
+    JsonObject(&'static [ProviderArgument]),
+    /// A subscription spec, such as `players` or `time.tick:<positive-ms>`.
+    Subscription(&'static str),
+    /// Platform modules have no host request argument schema.
+    NotApplicable,
+}
+
+/// A bound already enforced by the current host or protocol implementation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderBound {
+    /// Maximum serialized request argument size.
+    ArgsBytes(usize),
+    /// Maximum count or number of entries.
+    Items(usize),
+    /// Maximum identifier length in bytes.
+    IdentifierBytes(usize),
+    /// Maximum response page size in bytes.
+    ResponseBytes(usize),
+    /// Maximum distance into the future in milliseconds.
+    HorizonMillis(u64),
+    /// A per-world limit whose value is supplied by `WorldLimits`.
+    WorldLimit(&'static str),
+}
+
+/// Participant scope required for a provider effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequiredScope {
+    /// A joined participant; also the existing fallback for capabilities
+    /// without a more specific scope rule.
+    Join,
+    /// A participant with chat-write authority.
+    Chat,
+    /// A participant allowed to read chat (`CHAT` or `HISTORY`).
+    ChatRead,
+}
+
+/// One provider and its versioned manifest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProviderManifest {
+    /// The capability or platform-module name.
+    pub name: &'static str,
+    /// Provider contract version. Existing providers use version 1.
+    pub version: u32,
+    /// Provider kind (host request, subscription, or platform module).
+    pub kind: ProviderKind,
+    /// Static argument schema or subscription syntax.
+    pub argument_schema: ArgumentSchema,
+    /// Provider-specific bounds already enforced by the current implementation.
+    pub bounds: &'static [ProviderBound],
+    /// Participant scope required for the provider's effect.
+    pub required_scope: RequiredScope,
+    /// Whether the provider joins default ceilings.
+    pub default_ceiling: DefaultCeiling,
+}
+
+/// Existing catalog entries as full manifests. The macro generates the
+/// compatibility [`CATALOG`] view from this one source of truth.
+macro_rules! define_provider_registry {
+    ($(
+        $name:literal => {
+            version: $version:expr,
+            kind: $kind:expr,
+            argument_schema: $argument_schema:expr,
+            bounds: $bounds:expr,
+            required_scope: $required_scope:expr,
+            default_ceiling: $default_ceiling:expr,
+        },
+    )+) => {
+        /// All statically registered providers, in stable catalog order.
+        pub const CATALOG_ENTRIES: &[ProviderManifest] = &[
+            $(ProviderManifest {
+                name: $name,
+                version: $version,
+                kind: $kind,
+                argument_schema: $argument_schema,
+                bounds: $bounds,
+                required_scope: $required_scope,
+                default_ceiling: $default_ceiling,
+            }),+
+        ];
+
+        /// Compatibility view of the provider registry's ordered names.
+        pub const CATALOG: &[&str] = &[$($name),+];
+    };
+}
+
+/// Argument schema for providers that take no arguments.
+const NO_ARGUMENTS: &[ProviderArgument] = &[];
+/// Argument schema for `chat.say`: one required `text` string.
+const CHAT_SAY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "text",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+/// Argument schema for `chat.history`: an optional `count`.
+const CHAT_HISTORY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "count",
+    value_type: ArgumentType::UnsignedInteger,
+    required: false,
+}];
+/// Argument schema for `records.read`: optional `prefix` and `after`.
+const RECORDS_READ_ARGUMENTS: &[ProviderArgument] = &[
+    ProviderArgument {
+        name: "prefix",
+        value_type: ArgumentType::String,
+        required: false,
+    },
+    ProviderArgument {
+        name: "after",
+        value_type: ArgumentType::String,
+        required: false,
+    },
 ];
+/// Argument schema for `schedule.at`: a required `id` and `at`.
+const SCHEDULE_AT_ARGUMENTS: &[ProviderArgument] = &[
+    ProviderArgument {
+        name: "id",
+        value_type: ArgumentType::String,
+        required: true,
+    },
+    ProviderArgument {
+        name: "at",
+        value_type: ArgumentType::UnsignedInteger,
+        required: true,
+    },
+];
+/// Argument schema for `schedule.cancel`: one required `id` string.
+const SCHEDULE_CANCEL_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "id",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+
+/// Bounds shared by simple request providers: the argument byte cap.
+const COMMON_REQUEST_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARGS_BYTES)];
+/// Bounds for `chat.say`: argument bytes plus the world chat byte limit.
+const CHAT_SAY_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::WorldLimit("chat_bytes"),
+];
+/// Bounds for `chat.history`: argument bytes plus the history line cap.
+const CHAT_HISTORY_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::Items(MAX_CHAT_HISTORY_LINES),
+];
+/// Bounds for `records.read`: argument bytes plus the page byte cap.
+const RECORDS_READ_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES),
+];
+/// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
+const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_SCHEDULE_ID_BYTES),
+    ProviderBound::Items(MAX_PENDING_SCHEDULES),
+    ProviderBound::HorizonMillis(MAX_SCHEDULE_HORIZON_MS),
+];
+/// Bounds for `schedule.cancel`: argument bytes plus the id byte cap.
+const SCHEDULE_CANCEL_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::IdentifierBytes(MAX_SCHEDULE_ID_BYTES),
+];
+/// Bounds for tick providers: the interval cap plus the world tick floor.
+const TICK_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::Items(MAX_TICK_INTERVALS),
+    ProviderBound::WorldLimit("min_tick_ms"),
+];
+
+define_provider_registry! {
+    "time.now" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "time.tick" => {
+        version: 1,
+        kind: ProviderKind::Subscription,
+        argument_schema: ArgumentSchema::Subscription("time.tick:<positive-milliseconds>"),
+        bounds: TICK_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "random.u64" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "players" => {
+        version: 1,
+        kind: ProviderKind::Subscription,
+        argument_schema: ArgumentSchema::Subscription("players"),
+        bounds: &[],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "players.list" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "chat.say" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(CHAT_SAY_ARGUMENTS),
+        bounds: CHAT_SAY_BOUNDS,
+        required_scope: RequiredScope::Chat,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "chat.history" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(CHAT_HISTORY_ARGUMENTS),
+        bounds: CHAT_HISTORY_BOUNDS,
+        required_scope: RequiredScope::ChatRead,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "records.read" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(RECORDS_READ_ARGUMENTS),
+        bounds: RECORDS_READ_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "schedule.at" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(SCHEDULE_AT_ARGUMENTS),
+        bounds: SCHEDULE_AT_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "schedule.cancel" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(SCHEDULE_CANCEL_ARGUMENTS),
+        bounds: SCHEDULE_CANCEL_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "world.info" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "Key" => {
+        version: 1,
+        kind: ProviderKind::PlatformModule,
+        argument_schema: ArgumentSchema::NotApplicable,
+        bounds: &[],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "Screen" => {
+        version: 1,
+        kind: ProviderKind::PlatformModule,
+        argument_schema: ArgumentSchema::NotApplicable,
+        bounds: &[],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "RocJson" => {
+        version: 1,
+        kind: ProviderKind::PlatformModule,
+        argument_schema: ArgumentSchema::NotApplicable,
+        bounds: &[],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "RocGrid" => {
+        version: 1,
+        kind: ProviderKind::PlatformModule,
+        argument_schema: ArgumentSchema::NotApplicable,
+        bounds: &[],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "RocCap" => {
+        version: 1,
+        kind: ProviderKind::PlatformModule,
+        argument_schema: ArgumentSchema::NotApplicable,
+        bounds: &[],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+    "RocText" => {
+        version: 1,
+        kind: ProviderKind::PlatformModule,
+        argument_schema: ArgumentSchema::NotApplicable,
+        bounds: &[],
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
+    },
+}
+
+/// A registry view over the statically registered provider manifests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProviderRegistry {
+    entries: &'static [ProviderManifest],
+}
+
+impl ProviderRegistry {
+    /// Construct a registry over static provider manifests.
+    #[must_use]
+    pub const fn new(entries: &'static [ProviderManifest]) -> Self {
+        Self { entries }
+    }
+
+    /// Every provider in registration order.
+    #[must_use]
+    pub const fn entries(&self) -> &'static [ProviderManifest] {
+        self.entries
+    }
+
+    /// Look up a provider by its stable name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&'static ProviderManifest> {
+        self.entries.iter().find(|entry| entry.name == name)
+    }
+
+    /// Provider names in stable registration order.
+    #[must_use]
+    pub fn ordered_names(&self) -> Vec<&'static str> {
+        self.entries.iter().map(|entry| entry.name).collect()
+    }
+
+    /// Every provider name, as a set.
+    #[must_use]
+    pub fn catalog_names(&self) -> BTreeSet<String> {
+        self.entries
+            .iter()
+            .map(|entry| entry.name.to_owned())
+            .collect()
+    }
+
+    /// Names whose manifest opts into the default ceiling.
+    #[must_use]
+    pub fn default_ceiling_names(&self) -> BTreeSet<String> {
+        default_ceiling_from(self.entries)
+    }
+}
+
+/// The process-wide provider registry.
+pub const PROVIDER_REGISTRY: ProviderRegistry = ProviderRegistry::new(CATALOG_ENTRIES);
+
+/// Compatibility name for the former catalog entries.
+pub type CatalogEntry = ProviderManifest;
+
+/// The default ceiling a set of catalog entries produces: exactly the
+/// entries whose manifest default is [`DefaultCeiling::Included`].
+#[must_use]
+pub fn default_ceiling_from(entries: &[ProviderManifest]) -> BTreeSet<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.default_ceiling == DefaultCeiling::Included)
+        .map(|entry| entry.name.to_owned())
+        .collect()
+}
+
+/// The default ceiling for worlds and servers: the providers whose
+/// manifest default includes them. A provider registered later joins this
+/// set only by an explicit `Included` default — never by registration
+/// alone (#838).
+#[must_use]
+pub fn default_ceiling_names() -> BTreeSet<String> {
+    PROVIDER_REGISTRY.default_ceiling_names()
+}
 
 /// Most chat lines one `chat.history` request may return.
 pub const MAX_CHAT_HISTORY_LINES: usize = 64;
@@ -102,6 +532,8 @@ pub const MAX_SCHEDULE_HORIZON_DAYS: u64 = 30;
 pub const MAX_SCHEDULE_HORIZON_MS: u64 = MAX_SCHEDULE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 /// Most schedules delivered in one wakeup. Any left due fire on the next.
 pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
+/// Largest page of records returned by `records.read`, in bytes.
+pub const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
 
 /// Check a schedule id: 1 to [`MAX_SCHEDULE_ID_BYTES`] bytes, all printable
 /// ASCII (space through `~`), so no control characters reach the journal.
@@ -124,13 +556,15 @@ pub fn validate_schedule_id(id: &str) -> Result<()> {
 /// Whether `name` is a capability the server can provide.
 #[must_use]
 pub fn is_known(name: &str) -> bool {
-    CATALOG.contains(&name)
+    PROVIDER_REGISTRY.get(name).is_some()
 }
 
-/// Every catalog capability, as a set: the default server and world ceiling.
+/// Every catalog capability, as a set. This is the widest ceiling a
+/// world or server can be given explicitly; the *default* ceiling is the
+/// narrower [`default_ceiling_names`].
 #[must_use]
 pub fn catalog_names() -> BTreeSet<String> {
-    CATALOG.iter().map(|name| (*name).to_owned()).collect()
+    PROVIDER_REGISTRY.catalog_names()
 }
 
 /// One thing a program asked for.
@@ -504,13 +938,15 @@ pub enum Decision {
 }
 
 impl CapLedger {
-    /// A ledger with `granted` capabilities and the given policy. Every catalog
-    /// capability is allowed until a ceiling narrows the set.
+    /// A ledger with `granted` capabilities and the given policy. The
+    /// default ceiling ([`default_ceiling_names`]) is allowed until a
+    /// ceiling narrows the set: providers whose manifest default is
+    /// `Excluded` are not allowed until a ceiling names them (#838).
     #[must_use]
     pub fn new(granted: BTreeSet<String>, grant_on_use: bool) -> Self {
         Self {
             granted,
-            allowed: catalog_names(),
+            allowed: default_ceiling_names(),
             usage: BTreeMap::new(),
             grant_on_use,
         }
@@ -542,11 +978,17 @@ impl CapLedger {
     /// whether the participant that caused the use may cause `cap`. A refused
     /// actor is counted as a denial and never triggers a grant.
     pub fn decide_for(&mut self, cap: &str, actor_permits: bool) -> Decision {
-        let entry = self.usage.entry(cap.to_owned()).or_default();
+        // Unknown names aggregate into one shared bucket: a guest program
+        // controls requested names, so one map entry per distinct unknown
+        // name would be unbounded host memory (and CapsReport size).
         if !is_known(cap) {
-            entry.denied += 1;
+            self.usage
+                .entry(UNKNOWN_CAP_USAGE_KEY.to_owned())
+                .or_default()
+                .denied += 1;
             return Decision::Deny(CapError::unknown());
         }
+        let entry = self.usage.entry(cap.to_owned()).or_default();
         // A ceiling is checked before anything else, so grant-on-use can
         // never add a name the server or the world excludes.
         if !self.allowed.contains(cap) {
@@ -615,7 +1057,7 @@ pub fn validate_grant_names(names: &[String]) -> Result<()> {
         if name != "*" && !is_known(name) {
             bail!(
                 "unknown capability {name:?} (known: {})",
-                CATALOG.join(", ")
+                PROVIDER_REGISTRY.ordered_names().join(", ")
             );
         }
     }
@@ -883,10 +1325,129 @@ mod tests {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
 
+    fn manifest(name: &'static str, default_ceiling: DefaultCeiling) -> ProviderManifest {
+        ProviderManifest {
+            name,
+            version: 1,
+            kind: ProviderKind::PlatformModule,
+            argument_schema: ArgumentSchema::NotApplicable,
+            bounds: &[],
+            required_scope: RequiredScope::Join,
+            default_ceiling,
+        }
+    }
+
+    #[test]
+    fn test_provider_registry_matches_the_legacy_catalog_and_carries_manifests() {
+        let entry_names = PROVIDER_REGISTRY.ordered_names();
+        assert_eq!(
+            entry_names, CATALOG,
+            "legacy catalog derives from manifests"
+        );
+        assert_eq!(
+            entry_names,
+            vec![
+                "time.now",
+                "time.tick",
+                "random.u64",
+                "players",
+                "players.list",
+                "chat.say",
+                "chat.history",
+                "records.read",
+                "schedule.at",
+                "schedule.cancel",
+                "world.info",
+                "Key",
+                "Screen",
+                "RocJson",
+                "RocGrid",
+                "RocCap",
+                "RocText",
+            ],
+            "registry retains the exact pre-change 17-name catalog and order"
+        );
+        assert_eq!(PROVIDER_REGISTRY.entries().len(), 17);
+        assert!(
+            PROVIDER_REGISTRY
+                .entries()
+                .iter()
+                .all(|entry| entry.version > 0)
+        );
+        assert!(PROVIDER_REGISTRY.entries().iter().all(|entry| {
+            matches!(
+                (entry.kind, entry.argument_schema),
+                (ProviderKind::Request, ArgumentSchema::JsonObject(_))
+                    | (ProviderKind::Subscription, ArgumentSchema::Subscription(_))
+                    | (ProviderKind::PlatformModule, ArgumentSchema::NotApplicable)
+            )
+        }));
+        assert_eq!(
+            PROVIDER_REGISTRY.get("chat.say").unwrap().required_scope,
+            RequiredScope::Chat
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY
+                .get("chat.history")
+                .unwrap()
+                .required_scope,
+            RequiredScope::ChatRead
+        );
+        assert!(matches!(
+            PROVIDER_REGISTRY.get("RocText").unwrap().kind,
+            ProviderKind::PlatformModule
+        ));
+        assert!(
+            PROVIDER_REGISTRY
+                .get("records.read")
+                .unwrap()
+                .bounds
+                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES))
+        );
+        // Every provider registered today opted in explicitly, so the
+        // default ceiling is still the whole catalog — naming the choice
+        // changed no world's effective ceiling.
+        assert_eq!(default_ceiling_names(), catalog_names());
+    }
+
+    #[test]
+    fn test_a_newly_registered_excluded_provider_does_not_join_existing_ceilings() {
+        // An existing world's ceiling, snapshotted before the upgrade.
+        let existing_world_ceiling = default_ceiling_names();
+        // The upgrade registers two new providers: a sensitive one whose
+        // manifest default is Excluded, and one that explicitly opts in.
+        let mut upgraded: Vec<ProviderManifest> = CATALOG_ENTRIES.to_vec();
+        upgraded.push(manifest("http.fetch", DefaultCeiling::Excluded));
+        upgraded.push(manifest("time.rfc3339", DefaultCeiling::Included));
+        let new_default = default_ceiling_from(&upgraded);
+        assert!(
+            !new_default.contains("http.fetch"),
+            "an excluded provider joins no default ceiling by registration alone"
+        );
+        assert!(
+            new_default.contains("time.rfc3339"),
+            "an explicit Included default is the one way in"
+        );
+        assert!(
+            existing_world_ceiling.is_subset(&new_default)
+                && new_default.difference(&existing_world_ceiling).count() == 1,
+            "existing worlds gain nothing but the opted-in provider: {new_default:?}"
+        );
+        // And a fresh ledger starts from the default ceiling, so an
+        // excluded provider is outside it until a ceiling names it.
+        let ledger = CapLedger::new(BTreeSet::new(), false);
+        assert_eq!(ledger.allowed(), &default_ceiling_names());
+        for entry in CATALOG_ENTRIES {
+            if entry.default_ceiling == DefaultCeiling::Excluded {
+                assert!(!ledger.allowed().contains(entry.name));
+            }
+        }
+    }
+
     #[test]
     fn the_default_ceiling_is_the_whole_catalog() {
         let mut ledger = CapLedger::new(names(&["time.now"]), false);
-        assert_eq!(ledger.allowed(), &catalog_names());
+        assert_eq!(ledger.allowed(), &default_ceiling_names());
         assert!(ledger.is_granted("time.now"));
         assert_eq!(ledger.decide("time.now"), Decision::Allow);
         assert_eq!(
@@ -955,6 +1516,57 @@ mod tests {
             "a name the catalog lacks is never allowed, even if a ceiling lists it"
         );
         assert_eq!(ledger.allowed(), &names(&["time.now"]));
+    }
+
+    #[test]
+    fn unknown_names_and_specs_share_one_bounded_usage_bucket() {
+        let mut ledger = CapLedger::new(BTreeSet::new(), false);
+        for i in 0..10_000 {
+            let name = format!("evil.cap.{i}");
+            assert_eq!(ledger.decide(&name), Decision::Deny(CapError::unknown()));
+            // Unknown subscription specs reach the ledger as their full spec.
+            let spec = format!("evil.spec:{i}");
+            let cap = Subscription::parse(&spec).cap().to_owned();
+            assert_eq!(ledger.decide(&cap), Decision::Deny(CapError::unknown()));
+        }
+        assert_eq!(
+            ledger.usage().len(),
+            1,
+            "20,000 distinct unknown names must not mint 20,000 entries"
+        );
+        assert_eq!(
+            ledger.usage()[UNKNOWN_CAP_USAGE_KEY],
+            CapUsage {
+                allowed: 0,
+                denied: 20_000
+            }
+        );
+
+        // Known capabilities keep per-name accounting beside the bucket.
+        ledger.set_granted(BTreeSet::from(["time.now".to_owned()]));
+        assert_eq!(ledger.decide("time.now"), Decision::Allow);
+        assert_eq!(
+            ledger.decide("chat.say"),
+            Decision::Deny(CapError::denied())
+        );
+        assert_eq!(
+            ledger.usage()["time.now"],
+            CapUsage {
+                allowed: 1,
+                denied: 0
+            }
+        );
+        assert_eq!(
+            ledger.usage()["chat.say"],
+            CapUsage {
+                allowed: 0,
+                denied: 1
+            }
+        );
+        assert!(
+            ledger.usage().len() <= CATALOG.len() + 1,
+            "usage stays bounded by the catalog plus the unknown bucket"
+        );
     }
 
     #[test]

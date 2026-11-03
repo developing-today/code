@@ -39,6 +39,9 @@ func (s *Set) Clamp(path, requested string) (Clamp, error) {
 	}
 	ceil, _ := s.Value(decl.ClampedBy)
 	cdecl, _ := s.schema.Lookup(decl.ClampedBy)
+	if _, ok := decl.Rank(requested); !ok {
+		return Clamp{}, fmt.Errorf("%s: %q is not one of %v", path, requested, decl.Enum)
+	}
 	want, ok := cdecl.Rank(requested)
 	if !ok {
 		return Clamp{}, fmt.Errorf("%s: %q is not one of %v", path, requested, cdecl.Enum)

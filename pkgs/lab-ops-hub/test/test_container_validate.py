@@ -5,6 +5,7 @@
 # from pkgs/lab-ops-hub (stdlib only).
 import importlib.util
 import pathlib
+import time
 import unittest
 
 _APP_PATH = pathlib.Path(__file__).resolve().parent.parent / "container" / "app.py"
@@ -982,15 +983,31 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # round-trip alone certifies all of these.
         # Mapped-form class (the issue's headline hosts):
         self.assertRefused("http://xn--example-yoa.com/")  # ex\u00c0ample (uppercase)
-        self.assertRefused("http://xn--example-rla.com/")  # ex\u00b2ample (compatibility digit)
-        self.assertRefused("http://xn--ab-cja0631x.com/")  # a\uff0fb\u00e9 (fullwidth solidus)
-        self.assertRefused("http://xn--mnchen-3ya5364d.com/")  # m\u00fcn\u2000chen (space class)
+        self.assertRefused(
+            "http://xn--example-rla.com/"
+        )  # ex\u00b2ample (compatibility digit)
+        self.assertRefused(
+            "http://xn--ab-cja0631x.com/"
+        )  # a\uff0fb\u00e9 (fullwidth solidus)
+        self.assertRefused(
+            "http://xn--mnchen-3ya5364d.com/"
+        )  # m\u00fcn\u2000chen (space class)
         # DISALLOWED class (survive NFKC, assigned, not format chars):
-        self.assertRefused("http://xn--example-hja.com/")  # ex\u00a8ample (diaeresis, Sk)
-        self.assertRefused("http://xn--example-7la.com/")  # ex\u00b4ample (acute accent, Sk)
-        self.assertRefused("http://xn--example-f9e.com/")  # ex\u037eample (Greek question mark, Po)
-        self.assertRefused("http://xn--example-3ha.com/")  # ex\u00a2ample (cent sign, Sc)
-        self.assertRefused("http://xn--example-u17c.com/")  # ex\u20acample (euro sign, Sc)
+        self.assertRefused(
+            "http://xn--example-hja.com/"
+        )  # ex\u00a8ample (diaeresis, Sk)
+        self.assertRefused(
+            "http://xn--example-7la.com/"
+        )  # ex\u00b4ample (acute accent, Sk)
+        self.assertRefused(
+            "http://xn--example-f9e.com/"
+        )  # ex\u037eample (Greek question mark, Po)
+        self.assertRefused(
+            "http://xn--example-3ha.com/"
+        )  # ex\u00a2ample (cent sign, Sc)
+        self.assertRefused(
+            "http://xn--example-u17c.com/"
+        )  # ex\u20acample (euro sign, Sc)
         # The raw spellings of the DISALLOWED class are refused too
         # (the check sits in the shared label judge):
         self.assertRefused("http://ex\u00a8ample.com/")
@@ -1790,6 +1807,18 @@ class TestFetchCrawl(unittest.TestCase):
 
             def do_GET(self):
                 seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/drip":
+                    self.send_response(200)
+                    self.send_header("content-length", "8")
+                    self.end_headers()
+                    for _ in range(8):
+                        time.sleep(0.1)
+                        try:
+                            self.wfile.write(b"x")
+                            self.wfile.flush()
+                        except OSError:
+                            break
+                    return
                 if self.path == "/to-userinfo":
                     port = self.server.server_address[1]
                     self.send_response(302)
@@ -1858,6 +1887,15 @@ class TestFetchCrawl(unittest.TestCase):
         status, raw = self.fetch("/ok")
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
+
+    def test_slow_drip_body_obeys_total_deadline(self):
+        from unittest import mock
+
+        # Patch to a short deadline; a per-read timeout would allow these
+        # regularly spaced bytes to complete the entire response.
+        with mock.patch.object(app, "_CRAWL_TIMEOUT_SECONDS", 0.25, create=True):
+            with self.assertRaises(TimeoutError):
+                self.fetch("/drip")
 
     def test_redirect_failures_raise_not_a_302_result(self):
         # #576: urllib raises HTTPError carrying the 3xx code for
