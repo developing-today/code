@@ -465,6 +465,41 @@ grep -qF '/* keep trailing block */' "$tmp/plugins-merge-trailing-block-comment.
   failures=$((failures + 1))
 }
 
+# Case 22 (Codex P2 on PR #4644): legacy array holds only a comment,
+# e.g. [/* disabled */] — no joining comma is emitted, so the merge
+# succeeds and the comment survives instead of failing closed.
+cat >"$tmp/plugins-merge-comment-only-legacy.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [/* disabled */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-comment-only-legacy "$tmp/plugins-merge-comment-only-legacy.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-b"]}' 0
+grep -qF '/* disabled */' "$tmp/plugins-merge-comment-only-legacy.jsonc" || {
+  echo "FAIL plugins-merge-comment-only-legacy: lost legacy comment"
+  failures=$((failures + 1))
+}
+
+# Case 23 (Codex P2 on PR #4644): multiline block comment with a URL on
+# its final line inside the legacy array — the // in the URL is inside
+# /* */, not a live line comment, so the merge succeeds.
+cat >"$tmp/plugins-merge-url-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-a" /* note
+https://example.com/docs */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-url-comment "$tmp/plugins-merge-url-comment.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+grep -qF 'https://example.com/docs */' "$tmp/plugins-merge-url-comment.jsonc" || {
+  echo "FAIL plugins-merge-url-comment: lost block comment"
+  failures=$((failures + 1))
+}
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1

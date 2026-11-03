@@ -323,17 +323,34 @@ def delete_top_level_entry(text, key):
 
 
 def line_comment_at_end(fragment):
-    # True when fragment's last line ends inside a // line comment: a
-    # joining comma appended after it would be swallowed by the comment.
+    # True when fragment ends inside a // line comment: a joining
+    # comma appended after it would be swallowed by the comment.
     # String- and block-comment-aware so // inside a string value or a
-    # /* */ comment does not misfire (#3179).
-    line = fragment.split('\n')[-1]
+    # /* */ comment does not misfire (#3179). The whole fragment is
+    # scanned while tracking block-comment state (Codex P2 on PR
+    # #4644): a multiline block comment whose final line holds a URL
+    # (e.g. "a" /* note\nhttps://example.com */) must not have its
+    # // mistaken for a live line comment.
     in_str = False
-    i = 0
-    while i < len(line):
-        c = line[i]
+    in_block = False
+    in_line = False
+    i, n = 0, len(fragment)
+    while i < n:
+        c = fragment[i]
+        if in_line:
+            if c == '\n':
+                in_line = False
+            i += 1
+            continue
+        if in_block:
+            if c == '*' and fragment[i + 1:i + 2] == '/':
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
         if in_str:
-            if c == '\\' and i + 1 < len(line):
+            if c == '\\' and i + 1 < n:
                 i += 2
                 continue
             if c == '"':
@@ -342,18 +359,18 @@ def line_comment_at_end(fragment):
             continue
         if c == '"':
             in_str = True
-            i += 1
+        elif c == '/' and fragment[i + 1:i + 2] == '/':
+            in_line = True
+            i += 2
             continue
-        if c == '/' and line[i + 1:i + 2] == '/':
-            return True
-        if c == '/' and line[i + 1:i + 2] == '*':
-            end = line.find('*/', i + 2)
-            if end < 0:
-                return True  # runs past EOL: fail closed
-            i = end + 2
+        elif c == '/' and fragment[i + 1:i + 2] == '*':
+            in_block = True
+            i += 2
             continue
         i += 1
-    return False
+    if in_block:
+        return True  # unterminated block comment: fail closed
+    return in_line
 
 
 def strip_trailing_element_comma(fragment):
@@ -435,7 +452,7 @@ def strip_trailing_element_comma(fragment):
     return fragment[:last_comma] + tail
 
 
-def splice_plugin_merge(text):
+def splice_plugin_merge(text, legacy_has_elements=True):
     # Both-present plugin+plugins merge (#4639) as a textual element
     # splice: the legacy elements move into the `plugins` array (legacy
     # first, native appended — the fork's encoded.plugins order) and the
@@ -445,7 +462,11 @@ def splice_plugin_merge(text):
     # // line comment trailing the last legacy element would swallow the
     # joining comma); the caller then exits 1 with the file
     # byte-identical — a repair tool must never be a data-loss path
-    # (#2364).
+    # (#2364). legacy_has_elements reports whether the legacy array
+    # holds actual elements (vs comments only): a comment-only legacy
+    # array needs no joining comma, and emitting one would be a leading
+    # syntax error (Codex P2 on PR #4644: [/* disabled */] + ["b"]
+    # wrongly failed closed on input the old code repaired).
     legacy_span = find_value_span(text, 'plugin')
     native_span = find_value_span(text, 'plugins')
     if legacy_span is None or native_span is None:
@@ -461,10 +482,13 @@ def splice_plugin_merge(text):
     legacy_inner = legacy_text[1:-1].strip()
     native_inner = native_text[1:-1].strip()
     if legacy_inner and native_inner:
-        core = strip_trailing_element_comma(legacy_inner).rstrip()
-        if line_comment_at_end(core):
-            return None
-        inner = core + ',\n' + native_inner
+        if legacy_has_elements:
+            core = strip_trailing_element_comma(legacy_inner).rstrip()
+            if line_comment_at_end(core):
+                return None
+            inner = core + ',\n' + native_inner
+        else:
+            inner = legacy_inner + '\n' + native_inner
     elif legacy_inner:
         inner = legacy_inner
     else:
@@ -507,7 +531,7 @@ if 'plugin' in doc:
         native = doc.get('plugins')
         if not isinstance(legacy, list) or not isinstance(native, list):
             sys.exit(1)  # unmergeable shapes: leave the file untouched
-        out = splice_plugin_merge(out)
+        out = splice_plugin_merge(out, bool(legacy))
         if out is None:
             sys.exit(1)  # not spliceable comment-safely: fail closed
         changed = True
