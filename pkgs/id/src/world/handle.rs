@@ -146,7 +146,7 @@ impl WorldHandle {
         &self,
     ) -> Result<(
         String,
-        JournalSnapshot,
+        JournalSnapshotSource,
         broadcast::Receiver<ReplicationUpdate>,
     )> {
         let (reply, response) = oneshot::channel();

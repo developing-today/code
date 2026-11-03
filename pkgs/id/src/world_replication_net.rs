@@ -117,18 +117,28 @@ async fn serve_stream(
         .lease(request.world.as_deref(), None)
         .await
         .map_err(|error| anyhow::anyhow!("open replication world: {}", error.message()))?;
-    let (world_id, snapshot, mut updates) = lease.service().world().replication_feed().await?;
+    let (world_id, snapshot_source, mut updates) =
+        lease.service().world().replication_feed().await?;
     let source = *signing_key.verifying_key().as_bytes();
-    let (mut cursor, mut header_version, mut prev_frame_digest) = send_snapshot(
-        &mut send,
-        signing_key,
-        &world_id,
-        source,
-        request.session_nonce,
-        &snapshot,
-        [0; 32],
-    )
-    .await?;
+    // Only the pinned file handle and captured length crossed the actor
+    // boundary. Read the initial image on the blocking pool, then confine its
+    // owned bytes to this transfer so they are dropped before following
+    // updates for the lifetime of the stream.
+    let (mut cursor, mut header_version, mut prev_frame_digest) = {
+        let snapshot = tokio::task::spawn_blocking(move || snapshot_source.read())
+            .await
+            .context("initial replication snapshot read task")??;
+        send_snapshot(
+            &mut send,
+            signing_key,
+            &world_id,
+            source,
+            request.session_nonce,
+            snapshot,
+            [0; 32],
+        )
+        .await?
+    };
 
     loop {
         match updates.recv().await {
@@ -161,7 +171,7 @@ async fn serve_stream(
                     &world_id,
                     source,
                     request.session_nonce,
-                    &reset,
+                    reset,
                     prev_frame_digest,
                 )
                 .await?;
@@ -191,13 +201,15 @@ fn ensure_nonce(nonce: &[u8; 16]) -> Result<()> {
     Ok(())
 }
 
+// Take ownership of each snapshot so its journal buffer cannot escape into
+// the long-lived update loop after the transfer has been sent.
 async fn send_snapshot(
     send: &mut SendStream,
     signing_key: &SigningKey,
     world_id: &str,
     source: [u8; 32],
     nonce: [u8; 16],
-    snapshot: &JournalSnapshot,
+    snapshot: JournalSnapshot,
     mut prev_frame_digest: [u8; 32],
 ) -> Result<(ReplicationCursor, u32, [u8; 32])> {
     let chunks = split_entry_payload(&snapshot.bytes).context("split journal snapshot")?;

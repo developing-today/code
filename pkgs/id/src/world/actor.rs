@@ -251,7 +251,7 @@ pub(crate) enum WorldCommand {
         reply: oneshot::Sender<
             Result<(
                 String,
-                JournalSnapshot,
+                JournalSnapshotSource,
                 broadcast::Receiver<ReplicationUpdate>,
             )>,
         >,
@@ -1622,8 +1622,8 @@ impl WorldActor {
                     self.journal
                         .as_mut()
                         .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
-                        .and_then(|journal| journal.replication_snapshot())
-                        .map(|snapshot| (world_id, snapshot, updates))
+                        .and_then(|journal| journal.replication_snapshot_source())
+                        .map(|snapshot_source| (world_id, snapshot_source, updates))
                 };
                 let _ = reply.send(result);
             }
