@@ -1077,9 +1077,27 @@ impl TagStore {
     ///
     /// Returns the number of tags copied.
     pub async fn copy_all_tags(&self, ns: &NamespacePair, from: &[u8], to: &[u8]) -> Result<usize> {
+        self.copy_all_tags_except(ns, from, to, &[]).await
+    }
+
+    /// Copy tags from one subject to another without deleting the originals,
+    /// dropping tags whose keys are excluded.
+    ///
+    /// Each non-excluded tag is copied to `to` by content hash, so its entry
+    /// payload is preserved exactly. Returns the number of tags copied.
+    pub async fn copy_all_tags_except(
+        &self,
+        ns: &NamespacePair,
+        from: &[u8],
+        to: &[u8],
+        excluded_keys: &[&[u8]],
+    ) -> Result<usize> {
         let tags = self.get_tags(ns, from).await?;
-        let count = tags.len();
+        let mut count = 0;
         for tag in &tags {
+            if excluded_keys.iter().any(|key| *key == tag.key.as_bytes()) {
+                continue;
+            }
             self.set_tag_hash(
                 ns,
                 to,
@@ -1089,6 +1107,7 @@ impl TagStore {
                 tag.len,
             )
             .await?;
+            count += 1;
         }
         Ok(count)
     }
