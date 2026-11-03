@@ -19,6 +19,7 @@ Secrets: client_id / client_secret / refresh_token live in credentials.json
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import http.client
@@ -786,6 +787,39 @@ class ColdStore:
                 f"zstd failed for {src}: {proc.stderr.decode(errors='replace')[:200]}"
             )
 
+    def _decompress_and_hash_frame(self, frame_path: Path) -> tuple[str, int]:
+        """SHA-256 and plain size of a compressed frame, streamed.
+
+        Used by pack() to verify the frame decodes to the recorded
+        object hash before anything is sealed (#2269). Streaming keeps
+        large objects out of memory; the fetch path's in-memory
+        decompress_frame is fine for restores but pack must not hold
+        every member whole while also writing the bundle.
+        """
+        try:
+            proc = subprocess.Popen(
+                [self.zstd, "-q", "-d", "-c", str(frame_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            raise ColdStoreError(f"zstd binary not found (looked for {self.zstd!r})")
+        h = hashlib.sha256()
+        size = 0
+        try:
+            assert proc.stdout is not None
+            for block in iter(lambda: proc.stdout.read(1024 * 1024), b""):
+                h.update(block)
+                size += len(block)
+        finally:
+            _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise ColdStoreError(
+                f"zstd decompression failed for {frame_path}:"
+                f" {stderr.decode(errors='replace')[:200]}"
+            )
+        return h.hexdigest(), size
+
     def decompress_frame(self, frame: bytes) -> bytes:
         proc = self._run_zstd(["-q", "-d", "-c"], input=frame, capture_output=True)
         if proc.returncode != 0:
@@ -801,38 +835,70 @@ class ColdStore:
         members = []
         offset = 0
         seen_hashes = set()
-        with open(tmp_bundle, "wb") as bundle_out:
-            for name in files:
-                src = Path(name)
-                if not src.is_file():
-                    raise ColdStoreError(f"not a file: {src}")
-                obj_hash = sha256_file(src)
-                # Members are keyed (bundle_id, object_hash): duplicate
-                # content in one pack call would write a second frame no
-                # member row can ever point at (INSERT OR IGNORE drops
-                # it) while member_count/live_bytes counted it (#963).
-                # Store each distinct object exactly once.
-                if obj_hash in seen_hashes:
-                    continue
-                seen_hashes.add(obj_hash)
-                frame_path = self.bundles_dir / "frame.tmp"
-                self._compress_to_frame(src, frame_path)
-                frame_len = frame_path.stat().st_size
-                with open(frame_path, "rb") as fin:
-                    for block in iter(lambda: fin.read(1024 * 1024), b""):
-                        bundle_hash.update(block)
-                        bundle_out.write(block)
+        frame_path = self.bundles_dir / "frame.tmp"
+        try:
+            with open(tmp_bundle, "wb") as bundle_out:
+                for name in files:
+                    src = Path(name)
+                    if not src.is_file():
+                        raise ColdStoreError(f"not a file: {src}")
+                    obj_hash = sha256_file(src)
+                    # Members are keyed (bundle_id, object_hash): duplicate
+                    # content in one pack call would write a second frame no
+                    # member row can ever point at (INSERT OR IGNORE drops
+                    # it) while member_count/live_bytes counted it (#963).
+                    # Store each distinct object exactly once.
+                    if obj_hash in seen_hashes:
+                        continue
+                    seen_hashes.add(obj_hash)
+                    self._compress_to_frame(src, frame_path)
+                    # #2269: the hash above and the compression just below
+                    # are two separate reads of a mutable source. If the
+                    # file changes between the passes, the manifest would
+                    # record the old hash while the bundle holds the new
+                    # bytes — upload verification (bundle md5/size) cannot
+                    # see it, the object is sealed as cold, and every
+                    # future fetch rejects the restored bytes with a
+                    # SHA-256 mismatch: a silently unrestorable backup.
+                    # Verify before sealing that the frame decodes to the
+                    # recorded hash, and refuse instead of sealing a
+                    # mismatch. The sealed size is the decoded size, not a
+                    # third racy stat() of the live source.
+                    frame_hash, plain_size = self._decompress_and_hash_frame(
+                        frame_path
+                    )
+                    if frame_hash != obj_hash:
+                        raise ColdStoreError(
+                            f"source {src} changed during pack: compressed"
+                            f" bytes decode to sha256 {frame_hash} but the"
+                            f" manifest records {obj_hash} — object NOT sealed"
+                        )
+                    frame_len = frame_path.stat().st_size
+                    with open(frame_path, "rb") as fin:
+                        for block in iter(lambda: fin.read(1024 * 1024), b""):
+                            bundle_hash.update(block)
+                            bundle_out.write(block)
+                    frame_path.unlink()
+                    members.append(
+                        {
+                            "hash": obj_hash,
+                            "size": plain_size,
+                            "content_type": mimetypes.guess_type(src.name)[0],
+                            "offset": offset,
+                            "length": frame_len,
+                        }
+                    )
+                    offset += frame_len
+        except BaseException:
+            # Never leave a half-written bundle or a stray frame behind:
+            # nothing is sealed until the DB commit below, so a pack that
+            # raises (including the #2269 race refusal) must not leave
+            # artifacts a later pack could mistake for a sealed bundle.
+            with contextlib.suppress(OSError):
                 frame_path.unlink()
-                members.append(
-                    {
-                        "hash": obj_hash,
-                        "size": src.stat().st_size,
-                        "content_type": mimetypes.guess_type(src.name)[0],
-                        "offset": offset,
-                        "length": frame_len,
-                    }
-                )
-                offset += frame_len
+            with contextlib.suppress(OSError):
+                tmp_bundle.unlink()
+            raise
         bundle_sha = bundle_hash.hexdigest()
         bundle_id = "b_" + bundle_sha[:16]
         final_path = self.bundles_dir / f"{bundle_id}.csb"
