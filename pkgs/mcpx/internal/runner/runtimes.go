@@ -3,10 +3,12 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
@@ -383,6 +385,9 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 	var tried []string
 	for _, name := range names {
 		c, lerr := s.lookup(name)
+		if lerr == nil && c.kind == KindNode {
+			lerr = checkNodeTransformTypes(c.bin)
+		}
 		if lerr != nil {
 			if explicit {
 				return nil, lerr
@@ -405,6 +410,44 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 	}
 	return nil, fmt.Errorf("no usable JavaScript runtime (tried %s):\n  %s",
 		strings.Join(names, ", "), strings.Join(tried, "\n  "))
+}
+
+type nodeTransformProbe struct {
+	err error
+}
+
+var nodeTransformProbes sync.Map // resolved binary path -> nodeTransformProbe
+
+// checkNodeTransformTypes verifies the exact Node mode mcpx needs before it
+// returns a runtime. Some minimal distributions ship Node without the
+// TypeScript transform support behind this flag; passing the flag later then
+// produces a raw ERR_NO_TYPESCRIPT stack. Cache by resolved binary path since
+// runtimes are resolved repeatedly during one process.
+func checkNodeTransformTypes(bin string) error {
+	if cached, ok := nodeTransformProbes.Load(bin); ok {
+		return cached.(nodeTransformProbe).err
+	}
+	probe, err := os.CreateTemp("", "mcpx-node-transform-probe-*.ts")
+	if err != nil {
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: create temporary TypeScript script: %w", bin, err)
+	}
+	probePath := probe.Name()
+	defer os.Remove(probePath)
+	if _, err := probe.WriteString("enum McpxTransformTypesProbe { Supported }; void McpxTransformTypesProbe.Supported;\n"); err != nil {
+		_ = probe.Close()
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: write temporary TypeScript script: %w", bin, err)
+	}
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: close temporary TypeScript script: %w", bin, err)
+	}
+	output, err := exec.Command(bin, "--no-warnings", "--experimental-transform-types", probePath).CombinedOutput()
+	var probeErr error
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		probeErr = fmt.Errorf("node runtime %s does not support --experimental-transform-types required by mcpx for TypeScript scripts; use a Node build with transform-types support, or choose bun (musl) or deno: %s", bin, detail)
+	}
+	actual, _ := nodeTransformProbes.LoadOrStore(bin, nodeTransformProbe{err: probeErr})
+	return actual.(nodeTransformProbe).err
 }
 
 // ResolveDeferred is Resolve for a runtime the caller will look up
