@@ -319,13 +319,26 @@ func TestCheckFragmentUnknownID(t *testing.T) {
 }
 
 func TestMdBookRoundTrip(t *testing.T) {
-	book := `[{"name":"ctx"}, {"sections":[{"Chapter":{"name":"C","content":"# T\n\n## S\n\n<!-- id: s since: 0.1.0 -->\n\nprose\n","sub_items":[],"number":[1],"path":"c.md"}}]}]`
+	book := `[{"name":"ctx"}, {"items":[{"Chapter":{"name":"C","content":"# T\n\n## S\n\n<!-- id: s since: 0.1.0 -->\n<!-- changed: 0.2.0 (2026-11-02): rendered history -->\n\nprose\n","sub_items":[],"number":[1],"path":"c.md"}}]}]`
 	out, err := renderMdBook([]byte(book), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "Since: 0.1.0") || !strings.Contains(string(out), "\"number\":[1]") {
+	if !strings.Contains(string(out), "Since: 0.1.0") ||
+		!strings.Contains(string(out), `\u003cdetails\u003e\u003csummary\u003eHistory -- 1 changes`) ||
+		!strings.Contains(string(out), "\"number\":[1]") {
 		t.Errorf("mdBook render lost content or fields: %s", out)
+	}
+}
+
+func TestMdBookRoundTripLegacySections(t *testing.T) {
+	book := `[{"name":"ctx"}, {"sections":[{"Chapter":{"name":"C","content":"# T\n\n## S\n\n<!-- id: s since: 0.1.0 -->\n\nprose\n","sub_items":[]}}]}]`
+	out, err := renderMdBook([]byte(book), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "Since: 0.1.0") {
+		t.Errorf("legacy mdBook sections were not rendered: %s", out)
 	}
 }
 
