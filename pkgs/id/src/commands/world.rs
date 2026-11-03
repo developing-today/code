@@ -1405,12 +1405,17 @@ fn replay_fixture(
 ///
 /// The verdict line comes first. When the two replays diverge, the first
 /// diverging record is printed and the command fails, after the first
-/// replay's records and view are printed.
+/// replay's records and view are printed. The first replay's verdict
+/// against the fixture header is printed too (#1539), rendered as
+/// `replay_fixture` renders it; when the two replays agree with each
+/// other but mismatch the header, that case is named explicitly and the
+/// command fails, exactly as `replay` fails on a header mismatch.
 ///
 /// # Errors
 ///
 /// An unreadable or oversized file, a module the fixture was not recorded
-/// under, a refused replay, or two replays that diverge.
+/// under, a refused replay, two replays that diverge, or replays that
+/// mismatch the fixture header.
 #[cfg(feature = "sandbox")]
 fn verify_fixture(
     module: &std::path::Path,
@@ -1440,6 +1445,15 @@ fn verify_fixture(
         ),
         Some(divergence) => println!("records diverge ({divergence})"),
     }
+    println!(
+        "header verdict: {}",
+        header_verdict_line(&verification.first.verdict)
+    );
+    if verification.divergence.is_none()
+        && verification.first.verdict == crate::world_fixture::Verdict::Mismatch
+    {
+        println!("the two replays agree with each other but mismatch the fixture header");
+    }
     if let Some(records) = &verification.first.records {
         let value: serde_json::Value =
             serde_json::from_str(records).context("the replayed records")?;
@@ -1451,7 +1465,22 @@ fn verify_fixture(
     if let Some(divergence) = &verification.divergence {
         bail!("the two replays diverge: {divergence}");
     }
+    if verification.first.verdict == crate::world_fixture::Verdict::Mismatch {
+        bail!("the replayed records differ from the fixture's");
+    }
     Ok(())
+}
+
+/// Render a replay's verdict against the fixture header exactly as
+/// `replay_fixture` renders it (#1539).
+#[cfg(feature = "sandbox")]
+fn header_verdict_line(verdict: &crate::world_fixture::Verdict) -> String {
+    use crate::world_fixture::Verdict;
+    match verdict {
+        Verdict::Match => "records match".to_owned(),
+        Verdict::Mismatch => "records differ".to_owned(),
+        Verdict::NotCompared(reason) => format!("records not compared ({reason})"),
+    }
 }
 
 /// Read a file no larger than `limit` bytes.

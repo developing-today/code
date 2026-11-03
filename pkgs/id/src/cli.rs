@@ -2128,7 +2128,10 @@ pub enum WorldCommand {
     },
     /// Verify a recorded fixture's determinism: replay it twice offline
     /// through a module and compare the records after every event. Prints a
-    /// verdict line first; exits nonzero at the first divergence.
+    /// verdict line first; exits nonzero at the first divergence, or when
+    /// the two replays agree with each other but mismatch the fixture's
+    /// header records (the header verdict is printed, as `replay` prints
+    /// it).
     ///
     /// Verification covers the fixture's recorded events only. Host-originated
     /// events are not retained in the event stream (#242), so a live recording
