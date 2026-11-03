@@ -213,6 +213,51 @@ describe("recordsFromProviderUsage", () => {
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
   });
 
+  test("rejects impossible and non-ISO generated_at stamps", () => {
+    for (const generated_at of [
+      "2026-02-30T10:59:33Z",
+      "2026-04-31T10:59:33Z",
+      "March 2, 2026",
+      "not-a-date",
+    ]) {
+      expect(
+        recordsFromProviderUsage(
+          {
+            generated_at,
+            sessions: [1],
+            codex_usage: {
+              usage: {
+                rate_limit: {
+                  primary_window: { used_percent: 12, limit_window_seconds: 604800 },
+                  secondary_window: { used_percent: 3, limit_window_seconds: 18000 },
+                },
+              },
+            },
+          },
+          "check-usage",
+        ),
+      ).toEqual([]);
+    }
+
+    const valid = recordsFromProviderUsage(
+      {
+        generated_at: "2026-10-26T10:59:33Z",
+        sessions: [1],
+        codex_usage: {
+          usage: {
+            rate_limit: {
+              primary_window: { used_percent: 12, limit_window_seconds: 604800 },
+              secondary_window: { used_percent: 3, limit_window_seconds: 18000 },
+            },
+          },
+        },
+      },
+      "check-usage",
+    );
+    expect(valid).toHaveLength(3);
+    expect(valid.every(isSnapshotRecord)).toBe(true);
+  });
+
   test("skips an invalid window without suppressing sessions or a valid companion", () => {
     const snapshot = {
       generated_at: "2026-10-26T10:59:33Z",

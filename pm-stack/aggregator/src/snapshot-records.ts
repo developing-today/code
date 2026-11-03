@@ -279,7 +279,7 @@ export function recordsFromProviderUsage(snap: unknown, observedBy: string): Sna
     codex_usage?: { usage?: { rate_limit?: { primary_window?: unknown; secondary_window?: unknown } } };
   };
   const ts = typeof s.generated_at === "string" ? s.generated_at : null;
-  if (!ts || Number.isNaN(Date.parse(ts))) return [];
+  if (!ts || parseIsoDate(ts) === null) return [];
   const out: SnapshotRecord[] = [];
   if (Array.isArray(s.sessions)) {
     out.push({
