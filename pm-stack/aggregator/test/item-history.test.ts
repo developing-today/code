@@ -96,6 +96,34 @@ describe("captureItemHistory", () => {
   });
 });
 
+describe("isItemHistoryCutoff date gates (#5172)", () => {
+  const valid = () => cutoff(W1, [poolItem(7)]);
+
+  test("valid ISO cutoff and coverage stamps pass (control)", () => {
+    expect(isItemHistoryCutoff(valid())).toBe(true);
+  });
+
+  test("impossible and non-ISO cutoffAt stamps are refused", () => {
+    for (const stamp of [
+      "2026-02-30T00:00:00Z",
+      "2026-04-31T00:00:00Z",
+      "March 2, 2026",
+      "03/02/2026",
+    ]) {
+      expect(isItemHistoryCutoff({ ...valid(), cutoffAt: stamp })).toBe(false);
+    }
+  });
+
+  test("impossible and non-ISO coverage.fetchedAt stamps are refused", () => {
+    for (const stamp of ["not-a-date", "2026-02-30T00:00:00Z"]) {
+      const c = valid();
+      expect(
+        isItemHistoryCutoff({ ...c, coverage: { ...c.coverage, fetchedAt: stamp } }),
+      ).toBe(false);
+    }
+  });
+});
+
 describe("weeklyTransitions / weeklyCompletions", () => {
   test("close counts once; a reopen leaves the completed count until re-closed", () => {
     const cutoffs = [
