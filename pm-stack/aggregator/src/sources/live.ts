@@ -39,6 +39,7 @@ import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
+import { assembleWorkItems } from "../work-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
@@ -586,38 +587,40 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
   const existingTitles = new Set(existing.map((b) => normTitle(b.title)));
   const emitted = new Set<string>();
   const out: BoardItem[] = [];
-  for (const goal of section.goals) {
-    for (const task of goal.linedUp) {
-      if (task.status !== "in-progress" && task.status !== "queued" && task.status !== "blocked") continue;
-      const refs: RefKey[] = [];
-      const add = (ref: RefKey) => {
-        if (!refs.includes(ref)) refs.push(ref);
-      };
-      if (task.ref) add(task.ref);
-      for (const ref of titleRefs(task.title)) add(ref);
-      const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
-      if (refs.length > 0 && remainingRefs.length === 0) continue;
-      const titleKey = normTitle(task.title);
-      if (refs.length === 0 && existingTitles.has(titleKey)) continue;
-      const key = remainingRefs[0] ?? titleKey;
-      if (emitted.has(key) || emitted.has(titleKey)) continue;
-      emitted.add(key);
-      emitted.add(titleKey);
-      out.push({
-        id: `orch:${slugify(goal.goal)}/${slugify(task.title)}`,
-        title: task.title,
-        repo: remainingRefs.length ? parseRef(remainingRefs[0]).repo : "",
-        source: "orchestrator",
-        status: "in-flight",
-        orchStatus: task.status,
-        goal: goal.goal,
-        blockedBy: task.blockedBy?.map((d) => `${d.task} (${d.status})`),
-        // The lane header dates the lane by the section that produced
-        // it; every synthetic entry carries that stamp.
-        updatedAt: section.generatedAt,
-        links: remainingRefs.map((ref) => ({ ref, relation: "tracks" as const })),
-      });
-    }
+  // #1206: identity, status, goal, and blockers come from the canonical
+  // work-item projection; this function only re-shapes them into
+  // BoardItems and dedupes against the Kaneo board they merge into.
+  for (const item of assembleWorkItems(section)) {
+    if (item.goal === undefined || !item.linedUpStatus) continue;
+    if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked") continue;
+    const refs: RefKey[] = [];
+    const add = (ref: RefKey) => {
+      if (!refs.includes(ref)) refs.push(ref);
+    };
+    if (item.ref) add(item.ref);
+    for (const ref of titleRefs(item.title)) add(ref);
+    const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
+    if (refs.length > 0 && remainingRefs.length === 0) continue;
+    const titleKey = normTitle(item.title);
+    if (refs.length === 0 && existingTitles.has(titleKey)) continue;
+    const key = remainingRefs[0] ?? titleKey;
+    if (emitted.has(key) || emitted.has(titleKey)) continue;
+    emitted.add(key);
+    emitted.add(titleKey);
+    out.push({
+      id: item.id,
+      title: item.title,
+      repo: remainingRefs.length ? parseRef(remainingRefs[0]).repo : "",
+      source: "orchestrator",
+      status: "in-flight",
+      orchStatus: item.linedUpStatus,
+      goal: item.goal,
+      blockedBy: item.blockers.length ? item.blockers.map((d) => `${d.task} (${d.status})`) : undefined,
+      // The lane header dates the lane by the section that produced
+      // it; every synthetic entry carries that stamp.
+      updatedAt: section.generatedAt,
+      links: remainingRefs.map((ref) => ({ ref, relation: "tracks" as const })),
+    });
   }
   return out;
 }
