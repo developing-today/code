@@ -72,7 +72,7 @@ export function serviceIdFor(providerId: string): string {
     case "claude":
       return "anthropic:claude-pro";
     case "codex":
-      return "openai";
+      return "openai.main";
     case "cline-pass":
       return "cline-pass";
     case "command-code":

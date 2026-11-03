@@ -12,7 +12,7 @@
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
 // exactly TWO ChatGPT pools — the main account (drewrypope) reached
-// through the `codex` gatherer door (pool openai) and the
+// through the `codex` gatherer door (pool openai.main) and the
 // alternate account (popesdrew) through the `openai.alternate` door
 // (pool openai.alternate). Separate accounts, separate allowances:
 // never collapse them into one pool.
@@ -462,7 +462,7 @@ interface PoolSpec {
 }
 
 // POOL NAMING (2026-11-03, Drew): a pool's id is its OpenCode config
-// provider id whenever the config defines one — meta, openai,
+// provider id whenever the config defines one — meta, openai.main,
 // openai.alternate, opencode-go.drewrypope, opencode-go.popesdrew, cline-pass,
 // opendesign, deepseek, commandcode. The colon-suffixed spellings these
 // replaced (meta:high-usage, openai:codex, opencode-go:drewrypope, ...)
@@ -502,9 +502,9 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (console-only usage).",
   },
   {
-    id: "openai",
+    id: "openai.main",
     provider: "OpenAI",
-    plan: "ChatGPT (Codex pool)",
+    plan: "ChatGPT (Main — drewrypope)",
     heading: /^### ChatGPT/,
     extract: extractCodex,
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
@@ -516,7 +516,7 @@ export const POOL_SPECS: PoolSpec[] = [
     heading: /^### ChatGPT \(Alternate\)/,
     extract: extractChatGptAlternate,
     shellNote:
-      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai); the two are never combined.",
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai.main); the two are never combined.",
   },
   {
     id: "opencode-go.drewrypope",
