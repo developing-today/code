@@ -193,6 +193,42 @@ describe("canonical work-item projection (#1206)", () => {
     expect(sameTitle.map((item) => item.id)).toEqual(["session-a", "session-b"]);
   });
 
+  test("a later active observation supersedes an earlier done-recently one for the same ref", () => {
+    const section = fixtureSection();
+    // REF first appears as done-recently under Goal A, then as queued
+    // under Goal B (fixture order is the reverse; rebuild explicitly).
+    section.goals = [
+      {
+        goalId: "goal-a", goal: "Goal A", momentum: "moving", summary: "one goal",
+        linedUp: [{ title: "Ship the thing", ref: REF, status: "done-recently", horizon: "today", horizonWhy: "shipped?" }],
+        progressedSinceLastRun: [], stalled: [], gaps: [],
+      },
+      {
+        goalId: "goal-b", goal: "Goal B", momentum: "moving", summary: "another goal",
+        linedUp: [{ title: "Ship the thing", ref: REF, status: "queued", horizon: "today", horizonWhy: "reopened" }],
+        progressedSinceLastRun: [], stalled: [], gaps: [],
+      },
+    ];
+    section.tiers = { needsDrew: [], needsOrchestrator: [] };
+
+    const items = assembleWorkItems(section).filter((i) => i.ref === REF);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.linedUpStatus).toBe("queued");
+    expect(items[0]!.status).toBe("queued");
+    // The Board must show the revived work, not drop it as completed.
+    const board = inFlightBoardItems(section, []);
+    expect(board.some((b) => b.links.some((l) => l.ref === REF))).toBe(true);
+  });
+
+  test("does not throw on a tier item with a non-string title", () => {
+    const section = fixtureSection();
+    const bad = section.tiers!.needsOrchestrator![0]! as unknown as { title: unknown; ref?: unknown };
+    bad.title = 42;
+    delete bad.ref;
+
+    expect(() => assembleWorkItems(section)).not.toThrow();
+  });
+
   test("ignores malformed optional blockers rather than throwing", () => {
     const section = fixtureSection();
     const drew = section.tiers!.needsDrew![0]! as unknown as { blockedBy: unknown };

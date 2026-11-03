@@ -83,14 +83,14 @@ export interface WorkItem {
 }
 
 const slugify = (s: string | undefined): string =>
-  (s ?? "")
+  (typeof s === "string" ? s : "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60) || "task";
 
 const normTitle = (s: string | undefined): string =>
-  (s ?? "")
+  (typeof s === "string" ? s : "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
@@ -160,6 +160,20 @@ export function assembleWorkItems(section: OrchestrationSection): WorkItem[] {
         // The same task lined up under a second goal (or twice under
         // one) is one item: first goal wins, blockers union.
         existing.blockers = unionBlockers(existing.blockers, asBlockers(task.blockedBy));
+        // A later ACTIVE observation supersedes an earlier completed
+        // one: the same ref listed done-recently under one goal and
+        // queued/blocked/in-progress under another is live work, and
+        // consumers that filter on linedUpStatus (the Board) must not
+        // lose it. (Codex P2 on PR #4674.)
+        if (existing.linedUpStatus === "done-recently" && task.status !== "done-recently") {
+          existing.linedUpStatus = task.status;
+          if (!existing.tier) {
+            existing.status = task.status;
+            existing.rank = linedUpRank(task);
+          }
+          existing.horizon = task.horizon;
+          existing.horizonWhy = task.horizonWhy;
+        }
         continue;
       }
       const item: WorkItem = {
