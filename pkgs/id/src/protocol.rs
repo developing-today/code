@@ -974,6 +974,7 @@ mod tests {
             Arc::clone(node.tags()),
             AccessPolicy::open(),
             server_id,
+            None,
         );
         let handler = DeadlineMetaProtocol { protocol, deadline };
         let router = Router::builder(endpoint.clone())
@@ -2071,6 +2072,7 @@ mod tests {
             Arc::clone(node.tags()),
             AccessPolicy::restricted([owner]),
             eid(9),
+            None,
         );
 
         // Reads are public.
@@ -2157,6 +2159,7 @@ mod tests {
             Arc::clone(node.tags()),
             AccessPolicy::restricted([eid(1)]),
             eid(9),
+            None,
         );
         match proto.handle(&eid(1), MetaRequest::Whoami).await {
             MetaResponse::Whoami {

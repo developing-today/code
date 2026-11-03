@@ -105,6 +105,7 @@ id list <node_id>
 # Identity and peers
 id id                   # Print local node ID
 id peers                # List discovered peers
+id peers --abuse        # Per-peer frame/byte abuse counters, by direction
 ```
 
 ## Client-only boundary
