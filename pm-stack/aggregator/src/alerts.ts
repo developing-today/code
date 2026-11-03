@@ -23,6 +23,7 @@
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
+import { NOTIFICATION_CLASS_DEFAULTS } from "./notifications.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -127,7 +128,7 @@ export function toPublicSubscription(sub: PushSubscriptionRow): PublicPushSubscr
 // --- Pure helpers (unit-tested) ---------------------------------------------
 
 /** Design §1: the incident class defaults ON for new subscriptions. */
-export const DEFAULT_CLASSES: Record<string, boolean> = { incident: true };
+export const DEFAULT_CLASSES: Record<string, boolean> = NOTIFICATION_CLASS_DEFAULTS;
 /** Design §2: default quiet window 23:00–07:00 America/Chicago. */
 export const DEFAULT_QUIET: QuietPrefs = { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true };
 
@@ -172,9 +173,11 @@ export function mergeQuiet(input: unknown): QuietPrefs {
   return out;
 }
 
-/** A class is on unless the subscription explicitly turned it off. */
+/** Preserve existing subscription choices when new classes are added:
+ * only the original incident class defaults on for old rows; new rows
+ * receive the reviewed defaults from mergeClasses at creation. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] !== false;
+  return sub.classes?.[cls] ?? (cls === "incident");
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?

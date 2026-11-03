@@ -1981,9 +1981,14 @@ async function handler(req: Request): Promise<Response> {
     // tier items are appended in their TierItem shape (tier-annotated
     // needs-orchestrator) so machine consumers see the same queue the
     // HTML renders — the array shape itself is unchanged (Codex P2
-    // on PR #2431).
+    // on PR #2431). #3317: include non-session needs-drew items too,
+    // matching the full queue rendered by the attention page.
     const { view } = await attentionContext();
-    return json([...view.all, ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const }))]);
+    return json([
+      ...view.all,
+      ...view.drewExtra.map((i) => ({ ...i, tier: "needs-drew" as const })),
+      ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const })),
+    ]);
   }
   if (path === "/api/coverage.json") {
     const { view, coverage } = await attentionContext();

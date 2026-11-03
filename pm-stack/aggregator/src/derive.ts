@@ -333,7 +333,8 @@ export interface SectionMatch {
  */
 export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): TieredEntry {
   if (match && e.state !== "in-motion") {
-    if (match.tier === "needs-drew") return { ...e, tier: "needs-drew", drewReason: match.item.reason };
+    if (match.tier === "needs-drew")
+      return { ...e, tier: "needs-drew", tierSince: match.item.since, drewReason: match.item.reason };
     const next = match.item.recommendedAction ? ` Next: ${match.item.recommendedAction}` : "";
     return { ...e, tier: "needs-orchestrator", orchestratorNote: `${match.item.reason}${next}` };
   }

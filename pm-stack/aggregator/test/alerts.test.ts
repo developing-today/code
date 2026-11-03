@@ -91,15 +91,24 @@ describe("sql literals", () => {
 
 describe("class + quiet merges (design §1/§2)", () => {
   test("incident defaults on; explicit off survives", () => {
-    expect(mergeClasses(undefined)).toEqual({ incident: true });
-    expect(mergeClasses({ incident: false })).toEqual({ incident: false });
-    expect(mergeClasses({ incident: true, "quota-wall": false })).toEqual({ incident: true, "quota-wall": false });
-    expect(mergeClasses({ incident: "yes" })).toEqual({ incident: true }); // non-boolean ignored
+    expect(mergeClasses(undefined)).toEqual({
+      incident: true,
+      "needs-drew": true,
+      "quota-wall": true,
+      "quota-near-wall": false,
+      "stack-health": true,
+      "blocked-age": true,
+    });
+    expect(mergeClasses({ incident: false }).incident).toBe(false);
+    expect(mergeClasses({ incident: true, "quota-wall": false })["quota-wall"]).toBe(false);
+    expect(mergeClasses({ incident: "yes" }).incident).toBe(true); // non-boolean ignored
   });
-  test("classEnabled: only an explicit false disables", () => {
+  test("classEnabled preserves old rows while new rows get defaults", () => {
     expect(classEnabled({ classes: {} }, "incident")).toBe(true);
     expect(classEnabled({ classes: { incident: false } }, "incident")).toBe(false);
     expect(classEnabled({ classes: { incident: true } }, "incident")).toBe(true);
+    expect(classEnabled({ classes: {} }, "needs-drew")).toBe(false);
+    expect(classEnabled({ classes: mergeClasses(undefined) }, "needs-drew")).toBe(true);
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {
     expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });
@@ -294,7 +303,14 @@ describe("validation", () => {
     });
     expect(ok.ok).toBe(true);
     if (ok.ok) {
-      expect(ok.value.classes).toEqual({ incident: true });
+      expect(ok.value.classes).toEqual({
+        incident: true,
+        "needs-drew": true,
+        "quota-wall": true,
+        "quota-near-wall": false,
+        "stack-health": true,
+        "blocked-age": true,
+      });
       expect(ok.value.quiet.tz).toBe("America/Chicago");
     }
     expect(
