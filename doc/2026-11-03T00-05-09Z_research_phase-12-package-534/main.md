@@ -3,286 +3,287 @@
 Shared package-opening intake for the 11 Phase 12 D1 items on umbrella issue #534, per the merged workflow design doc/2026-11-01_design_id534.md (PR #3912): one concept per D1 plus the phase-0 inventory/issue-link reconciliation, Drew two option-B order recommendations flagged for confirmation, no D1 box ticked and #534 left open.
 
 <!-- workflow:state -->
+
 {
-  "version": 1,
-  "id": "2026-11-03T00-05-09Z_research_phase-12-package-534",
-  "created_at": "2026-11-03T00:05:09Z",
-  "stage": "intake",
-  "status": "prepared",
-  "transcript": {
-    "path": "transcript.txt",
-    "sha256": "ac02da879e5cd4bfd0754d6e5ab3a49c81603c819761413f8b5f27f1212d317f"
-  },
-  "concepts": [
-    {
-      "id": "C001",
-      "title": "F12.1 declarative world manifest, apply, diff and dry-run delta — D1-019",
-      "path": "concepts/C001-d1-019-f12-1-world-manifest-apply-diff.md",
-      "status": "created",
-      "source_lines": [
-        [
-          1,
-          18
-        ],
-        [
-          113,
-          128
-        ]
-      ],
-      "priority": "crucial",
-      "horizon": "now"
-    },
-    {
-      "id": "C002",
-      "title": "F12.4 capability provider registry with manifested components — D1-022",
-      "path": "concepts/C002-d1-022-f12-4-provider-registry-manifest.md",
-      "status": "created",
-      "source_lines": [
-        [
-          19,
-          23
-        ],
-        [
-          130,
-          140
-        ]
-      ],
-      "priority": "crucial",
-      "horizon": "now"
-    },
-    {
-      "id": "C003",
-      "title": "F12.7 versioned guest ABI spec, plaza_abi_version export and conformance suite — D1-025",
-      "path": "concepts/C003-d1-025-f12-7-guest-abi-spec-version-conformance.md",
-      "status": "created",
-      "source_lines": [
-        [
-          24,
-          28
-        ],
-        [
-          166,
-          176
-        ]
-      ],
-      "priority": "crucial",
-      "horizon": "now"
-    },
-    {
-      "id": "C004",
-      "title": "F12.3 roles v2 builder and moderator scopes with journaled audit — D1-021",
-      "path": "concepts/C004-d1-021-f12-3-builder-moderator-scopes-audit.md",
-      "status": "created",
-      "source_lines": [
-        [
-          29,
-          33
-        ],
-        [
-          149,
-          156
-        ]
-      ],
-      "priority": "recommended",
-      "horizon": "now"
-    },
-    {
-      "id": "C005",
-      "title": "F12.6 durable structured audit log with OpenTelemetry export — D1-024",
-      "path": "concepts/C005-d1-024-f12-6-structured-audit-log-otel-export.md",
-      "status": "created",
-      "source_lines": [
-        [
-          34,
-          38
-        ],
-        [
-          178,
-          180
-        ]
-      ],
-      "priority": "recommended",
-      "horizon": "now"
-    },
-    {
-      "id": "C006",
-      "title": "F12.5 first new providers kv blob http.fetch notify — D1-023",
-      "path": "concepts/C006-d1-023-f12-5-first-new-providers-kv-blob-http-notify.md",
-      "status": "created",
-      "source_lines": [
-        [
-          39,
-          43
-        ],
-        [
-          180,
-          181
-        ]
-      ],
-      "priority": "recommended",
-      "horizon": "next"
-    },
-    {
-      "id": "C007",
-      "title": "F12.8 Rust and AssemblyScript-or-Zig guest SDKs with WIT/component-model decision — D1-026",
-      "path": "concepts/C007-d1-026-f12-8-guest-sdks-wit-component-model.md",
-      "status": "created",
-      "source_lines": [
-        [
-          44,
-          48
-        ]
-      ],
-      "priority": "contingent",
-      "horizon": "later"
-    },
-    {
-      "id": "C008",
-      "title": "F12.9 program upgrade with state migration and rollback — D1-027",
-      "path": "concepts/C008-d1-027-f12-9-program-upgrade-migration-rollback.md",
-      "status": "created",
-      "source_lines": [
-        [
-          49,
-          53
-        ]
-      ],
-      "priority": "contingent",
-      "horizon": "later"
-    },
-    {
-      "id": "C009",
-      "title": "F12.10 fair cross-world scheduling per-account quotas and slow-client back-pressure — D1-028",
-      "path": "concepts/C009-d1-028-f12-10-fair-scheduling-quotas-backpressure.md",
-      "status": "created",
-      "source_lines": [
-        [
-          54,
-          58
-        ]
-      ],
-      "priority": "contingent",
-      "horizon": "later"
-    },
-    {
-      "id": "C010",
-      "title": "F12.14 portals bilateral cross-world messaging by mutual grant — D1-032",
-      "path": "concepts/C010-d1-032-f12-14-portals-cross-world-messaging.md",
-      "status": "created",
-      "source_lines": [
-        [
-          59,
-          63
-        ]
-      ],
-      "priority": "contingent",
-      "horizon": "later"
-    },
-    {
-      "id": "C011",
-      "title": "F12.17 module signature trust list and compiler-version provenance — D1-035",
-      "path": "concepts/C011-d1-035-f12-17-module-trust-compiler-provenance.md",
-      "status": "created",
-      "source_lines": [
-        [
-          64,
-          112
-        ],
-        [
-          182,
-          183
-        ]
-      ],
-      "priority": "contingent",
-      "horizon": "later"
-    },
-    {
-      "id": "C012",
-      "title": "Intake envelope phase-0 process directives ownership and tracker policy — G bucket",
-      "path": "concepts/C012-intake-envelope-phase-0-process-directives-ownership.md",
-      "status": "created",
-      "source_lines": [
-        [
-          146,
-          148
-        ],
-        [
-          160,
-          164
-        ],
-        [
-          185,
-          204
-        ],
-        [
-          130,
-          145
-        ],
-        [
-          156,
-          158
-        ]
-      ],
-      "priority": "unspecified",
-      "horizon": "unspecified"
-    }
-  ],
-  "dependencies": [
-    {
-      "from": "C004",
-      "to": "C001",
-      "kind": "requires",
-      "reason": "Roles v2 authorization design depends on the world manifest delta (roles/invites, apply rerun semantics)."
-    },
-    {
-      "from": "C006",
-      "to": "C002",
-      "kind": "requires",
-      "reason": "First providers depend on the provider registry seam; implementation waits for the registry design."
-    },
-    {
-      "from": "C006",
-      "to": "C005",
-      "kind": "recommended-after",
-      "reason": "Durable audit should precede external-effect providers; research may start early, implementation must honor audit-first.",
-      "rework_if_early": "provider audit wiring is re-specified against the audit schema once it lands."
-    },
-    {
-      "from": "C007",
-      "to": "C003",
-      "kind": "requires",
-      "reason": "SDKs and the WIT/component-model decision consume the versioned ABI and its conformance suite."
-    },
-    {
-      "from": "C008",
-      "to": "C003",
-      "kind": "requires",
-      "reason": "Program upgrade/migration validation depends on the versioned ABI and conformance contract."
-    },
-    {
-      "from": "C010",
-      "to": "C002",
-      "kind": "requires",
-      "reason": "Portals are new registry capabilities; the registry seam must exist first."
-    },
-    {
-      "from": "C010",
-      "to": "C005",
-      "kind": "requires",
-      "reason": "Bilateral portal grants require the durable audit contract on both worlds."
-    }
-  ],
-  "issues": [],
-  "prs": [],
-  "tasks": [],
-  "events": [
-    {
-      "at": "2026-11-03T00:05:09Z",
-      "stage": "intake",
-      "status": "prepared",
-      "reason": "Exact transcript captured and initial concept files prepared."
-    }
-  ]
+"version": 1,
+"id": "2026-11-03T00-05-09Z_research_phase-12-package-534",
+"created_at": "2026-11-03T00:05:09Z",
+"stage": "intake",
+"status": "prepared",
+"transcript": {
+"path": "transcript.txt",
+"sha256": "ac02da879e5cd4bfd0754d6e5ab3a49c81603c819761413f8b5f27f1212d317f"
+},
+"concepts": [
+{
+"id": "C001",
+"title": "F12.1 declarative world manifest, apply, diff and dry-run delta — D1-019",
+"path": "concepts/C001-d1-019-f12-1-world-manifest-apply-diff.md",
+"status": "created",
+"source_lines": [
+[
+1,
+18
+],
+[
+113,
+128
+]
+],
+"priority": "crucial",
+"horizon": "now"
+},
+{
+"id": "C002",
+"title": "F12.4 capability provider registry with manifested components — D1-022",
+"path": "concepts/C002-d1-022-f12-4-provider-registry-manifest.md",
+"status": "created",
+"source_lines": [
+[
+19,
+23
+],
+[
+130,
+140
+]
+],
+"priority": "crucial",
+"horizon": "now"
+},
+{
+"id": "C003",
+"title": "F12.7 versioned guest ABI spec, plaza_abi_version export and conformance suite — D1-025",
+"path": "concepts/C003-d1-025-f12-7-guest-abi-spec-version-conformance.md",
+"status": "created",
+"source_lines": [
+[
+24,
+28
+],
+[
+166,
+176
+]
+],
+"priority": "crucial",
+"horizon": "now"
+},
+{
+"id": "C004",
+"title": "F12.3 roles v2 builder and moderator scopes with journaled audit — D1-021",
+"path": "concepts/C004-d1-021-f12-3-builder-moderator-scopes-audit.md",
+"status": "created",
+"source_lines": [
+[
+29,
+33
+],
+[
+149,
+156
+]
+],
+"priority": "recommended",
+"horizon": "now"
+},
+{
+"id": "C005",
+"title": "F12.6 durable structured audit log with OpenTelemetry export — D1-024",
+"path": "concepts/C005-d1-024-f12-6-structured-audit-log-otel-export.md",
+"status": "created",
+"source_lines": [
+[
+34,
+38
+],
+[
+178,
+180
+]
+],
+"priority": "recommended",
+"horizon": "now"
+},
+{
+"id": "C006",
+"title": "F12.5 first new providers kv blob http.fetch notify — D1-023",
+"path": "concepts/C006-d1-023-f12-5-first-new-providers-kv-blob-http-notify.md",
+"status": "created",
+"source_lines": [
+[
+39,
+43
+],
+[
+180,
+181
+]
+],
+"priority": "recommended",
+"horizon": "next"
+},
+{
+"id": "C007",
+"title": "F12.8 Rust and AssemblyScript-or-Zig guest SDKs with WIT/component-model decision — D1-026",
+"path": "concepts/C007-d1-026-f12-8-guest-sdks-wit-component-model.md",
+"status": "created",
+"source_lines": [
+[
+44,
+48
+]
+],
+"priority": "contingent",
+"horizon": "later"
+},
+{
+"id": "C008",
+"title": "F12.9 program upgrade with state migration and rollback — D1-027",
+"path": "concepts/C008-d1-027-f12-9-program-upgrade-migration-rollback.md",
+"status": "created",
+"source_lines": [
+[
+49,
+53
+]
+],
+"priority": "contingent",
+"horizon": "later"
+},
+{
+"id": "C009",
+"title": "F12.10 fair cross-world scheduling per-account quotas and slow-client back-pressure — D1-028",
+"path": "concepts/C009-d1-028-f12-10-fair-scheduling-quotas-backpressure.md",
+"status": "created",
+"source_lines": [
+[
+54,
+58
+]
+],
+"priority": "contingent",
+"horizon": "later"
+},
+{
+"id": "C010",
+"title": "F12.14 portals bilateral cross-world messaging by mutual grant — D1-032",
+"path": "concepts/C010-d1-032-f12-14-portals-cross-world-messaging.md",
+"status": "created",
+"source_lines": [
+[
+59,
+63
+]
+],
+"priority": "contingent",
+"horizon": "later"
+},
+{
+"id": "C011",
+"title": "F12.17 module signature trust list and compiler-version provenance — D1-035",
+"path": "concepts/C011-d1-035-f12-17-module-trust-compiler-provenance.md",
+"status": "created",
+"source_lines": [
+[
+64,
+112
+],
+[
+182,
+183
+]
+],
+"priority": "contingent",
+"horizon": "later"
+},
+{
+"id": "C012",
+"title": "Intake envelope phase-0 process directives ownership and tracker policy — G bucket",
+"path": "concepts/C012-intake-envelope-phase-0-process-directives-ownership.md",
+"status": "created",
+"source_lines": [
+[
+146,
+148
+],
+[
+160,
+164
+],
+[
+185,
+204
+],
+[
+130,
+145
+],
+[
+156,
+158
+]
+],
+"priority": "unspecified",
+"horizon": "unspecified"
+}
+],
+"dependencies": [
+{
+"from": "C004",
+"to": "C001",
+"kind": "requires",
+"reason": "Roles v2 authorization design depends on the world manifest delta (roles/invites, apply rerun semantics)."
+},
+{
+"from": "C006",
+"to": "C002",
+"kind": "requires",
+"reason": "First providers depend on the provider registry seam; implementation waits for the registry design."
+},
+{
+"from": "C006",
+"to": "C005",
+"kind": "recommended-after",
+"reason": "Durable audit should precede external-effect providers; research may start early, implementation must honor audit-first.",
+"rework_if_early": "provider audit wiring is re-specified against the audit schema once it lands."
+},
+{
+"from": "C007",
+"to": "C003",
+"kind": "requires",
+"reason": "SDKs and the WIT/component-model decision consume the versioned ABI and its conformance suite."
+},
+{
+"from": "C008",
+"to": "C003",
+"kind": "requires",
+"reason": "Program upgrade/migration validation depends on the versioned ABI and conformance contract."
+},
+{
+"from": "C010",
+"to": "C002",
+"kind": "requires",
+"reason": "Portals are new registry capabilities; the registry seam must exist first."
+},
+{
+"from": "C010",
+"to": "C005",
+"kind": "requires",
+"reason": "Bilateral portal grants require the durable audit contract on both worlds."
+}
+],
+"issues": [],
+"prs": [],
+"tasks": [],
+"events": [
+{
+"at": "2026-11-03T00:05:09Z",
+"stage": "intake",
+"status": "prepared",
+"reason": "Exact transcript captured and initial concept files prepared."
+}
+]
 }
 <!-- /workflow:state -->
 
