@@ -50,6 +50,11 @@ export interface NeedsDrewSourceStatus {
   /** True when the page cap stopped the census early — the count is a
    *  floor, and the census says so instead of looking complete. */
   truncated?: boolean;
+  /** True when any page of this query came back with GitHub's
+   *  `incomplete_results: true` (search timed out / partially indexed).
+   *  The count is then a floor even when it equals `total_count`, so the
+   *  census must never present it as authoritative (Codex P2 on #3970). */
+  incomplete?: boolean;
 }
 
 export interface NeedsDrewCensus {
@@ -103,6 +108,60 @@ export function extractNeedsDrewReason(body: unknown): string | null {
   return reason ? reason.slice(0, 240) : null;
 }
 
+export interface NeedsDrewSweeperOptions {
+  /** How long a completed sweep stays fresh. */
+  ttlMs?: number;
+  /** Clock, injectable for tests. */
+  now?: () => number;
+}
+
+/**
+ * Whether an attention context should fetch the census at all (#3970).
+ *
+ * Only the attention page render consumes the census; the overview,
+ * Today, /api/attention.json and /api/coverage.json discard it. The
+ * sweep is up to eight sequential GitHub searches, so paying it for
+ * callers that ignore the result made every view depend on an external
+ * API it never needed. Default is "do not fetch" — opting in is
+ * explicit, so a new caller cannot inherit the dependency by accident.
+ */
+export function shouldFetchNeedsDrewCensus(opts?: { census?: boolean }): boolean {
+  return opts?.census === true;
+}
+
+/**
+ * Cache + single-flight wrapper around one census sweep (#1226/#3970).
+ *
+ * A cold or expired cache used to let every concurrent caller start its
+ * own sweep — the three attention fragments rendering together produced
+ * 24 GitHub search requests instead of 8, burning the search rate limit
+ * and then caching a rate-limited partial result for five minutes.
+ * Callers that arrive mid-sweep now share the in-flight promise. Only a
+ * resolved sweep is cached, so a failure is never served as real data.
+ */
+export function createNeedsDrewSweeper(
+  fetchPage: NeedsDrewFetchPage,
+  buildOpts: { repos?: readonly string[]; labels?: readonly NeedsDrewLabel[] } = {},
+  { ttlMs = 300_000, now = Date.now }: NeedsDrewSweeperOptions = {},
+): () => Promise<NeedsDrewCensus> {
+  let cache: { value: NeedsDrewCensus; at: number } | null = null;
+  let inflight: Promise<NeedsDrewCensus> | null = null;
+  return () => {
+    if (cache && now() - cache.at < ttlMs) return Promise.resolve(cache.value);
+    if (inflight) return inflight;
+    const run = buildNeedsDrewCensus(fetchPage, buildOpts)
+      .then((census) => {
+        cache = { value: census, at: now() };
+        return census;
+      })
+      .finally(() => {
+        if (inflight === run) inflight = null;
+      });
+    inflight = run;
+    return run;
+  };
+}
+
 export async function buildNeedsDrewCensus(
   fetchPage: NeedsDrewFetchPage,
   opts: { repos?: readonly string[]; labels?: readonly NeedsDrewLabel[]; now?: Date } = {},
@@ -127,8 +186,13 @@ export async function buildNeedsDrewCensus(
               typeof j?.status === "number" ? `HTTP ${j.status}` : String(j?.error ?? "fetch failed"),
             );
           }
-          const payload = res.json as { total_count?: unknown; items?: unknown };
+          const payload = res.json as { total_count?: unknown; items?: unknown; incomplete_results?: unknown };
           if (typeof payload?.total_count === "number") total = payload.total_count;
+          // GitHub returns 200 + incomplete_results for a search that
+          // timed out or is only partially indexed. Ignoring the flag
+          // would let a truncated sweep look complete — worst case an
+          // authoritative empty queue (Codex P2 on #3970).
+          if (payload?.incomplete_results === true) status.incomplete = true;
           const rawItems = Array.isArray(payload?.items) ? (payload.items as RawSearchItem[]) : [];
           for (const raw of rawItems) {
             // Defensive: the query asks for state:open, but a stale or
@@ -178,6 +242,6 @@ export async function buildNeedsDrewCensus(
     fetchedAt,
     items,
     sources,
-    complete: sources.every((s) => s.ok && !s.truncated),
+    complete: sources.every((s) => s.ok && !s.truncated && !s.incomplete),
   };
 }

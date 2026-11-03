@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildNeedsDrewCensus,
+  createNeedsDrewSweeper,
   extractNeedsDrewReason,
   needsDrewSearchUrl,
   type NeedsDrewFetchPage,
+  shouldFetchNeedsDrewCensus,
 } from "../src/needs-drew.ts";
 import { needsDrewCensusHtml } from "../src/render.ts";
 
@@ -112,6 +114,114 @@ describe("needs-drew census (#1226)", () => {
     const nix = census.sources.filter((x) => x.repo === "dezren39/nix");
     expect(nix).toHaveLength(2);
     expect(nix.every((x) => !x.ok && x.error?.includes("403"))).toBe(true);
+  });
+
+  // Codex P2 on PR #3970: a search that answers 200 with
+  // incomplete_results:true is a partial sweep, not an empty queue.
+  test("GitHub's incomplete_results flag keeps an authoritative-looking payload incomplete", async () => {
+    const fetchPage: NeedsDrewFetchPage = async () => ({
+      ok: true,
+      json: { total_count: 0, items: [], incomplete_results: true },
+    });
+    const census = await buildNeedsDrewCensus(fetchPage, { now: NOW, repos: [REPO], labels: ["user/review"] });
+    expect(census.items).toHaveLength(0);
+    expect(census.complete).toBe(false);
+    expect(census.sources[0].incomplete).toBe(true);
+    expect(census.sources[0].truncated).toBeUndefined();
+    // The page must warn, not present an authoritative empty queue.
+    const html = needsDrewCensusHtml(census);
+    expect(html).toContain("Label census incomplete");
+    expect(html).toContain("incomplete results");
+    expect(html).toContain("in the sources that answered");
+  });
+
+  test("only a flagged page marks the source incomplete; a clean sweep stays complete", async () => {
+    const clean = await buildNeedsDrewCensus(fakeFetch(() => ({ total: 0, items: [] })), {
+      now: NOW,
+      repos: [REPO],
+      labels: ["user/review"],
+    });
+    expect(clean.complete).toBe(true);
+    expect(clean.sources[0].incomplete).toBeUndefined();
+  });
+
+  // Codex P2 on PR #3970: contexts that discard the census must not pay
+  // for it. Opting in is explicit, so a new caller cannot inherit the
+  // external dependency by accident.
+  test("the census is opt-in for attention contexts", () => {
+    expect(shouldFetchNeedsDrewCensus()).toBe(false);
+    expect(shouldFetchNeedsDrewCensus({})).toBe(false);
+    expect(shouldFetchNeedsDrewCensus({ census: false })).toBe(false);
+    expect(shouldFetchNeedsDrewCensus({ census: true })).toBe(true);
+  });
+
+  // Codex P2 on PR #3970: three concurrent renders must share one sweep.
+  test("concurrent callers share one in-flight sweep (single-flight)", async () => {
+    let calls = 0;
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const fetchPage: NeedsDrewFetchPage = async () => {
+      calls++;
+      await gate;
+      return { ok: true, json: { total_count: 0, items: [] } };
+    };
+    const sweep = createNeedsDrewSweeper(fetchPage, { repos: [REPO], labels: ["user/review"] });
+    const a = sweep();
+    const b = sweep();
+    const c = sweep();
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    release?.();
+    const [ra, rb, rc] = await Promise.all([a, b, c]);
+    expect(calls).toBe(1);
+    expect(ra).toBe(rb);
+    expect(rb).toBe(rc);
+    // A fresh call inside the TTL is served from cache, not re-fetched.
+    const again = await sweep();
+    expect(again).toBe(ra);
+    expect(calls).toBe(1);
+  });
+
+  test("the sweep is reused within the TTL and re-runs after it", async () => {
+    let now = 1_000;
+    let calls = 0;
+    const fetchPage: NeedsDrewFetchPage = async () => {
+      calls++;
+      return { ok: true, json: { total_count: 0, items: [] } };
+    };
+    const sweep = createNeedsDrewSweeper(
+      fetchPage,
+      { repos: [REPO], labels: ["user/review"] },
+      { ttlMs: 100, now: () => now },
+    );
+    const first = await sweep();
+    expect(calls).toBe(1);
+    now += 50;
+    expect(await sweep()).toBe(first);
+    expect(calls).toBe(1);
+    now += 200;
+    const second = await sweep();
+    expect(calls).toBe(2);
+    expect(second).not.toBe(first);
+  });
+
+  // A sweep that fails every query is honest data (complete:false), and
+  // keeping it cached for the TTL is what stops a rate-limited API from
+  // being hammered on every render.
+  test("a wholly failed sweep is marked incomplete and cached for the TTL", async () => {
+    let calls = 0;
+    const fetchPage: NeedsDrewFetchPage = async () => {
+      calls++;
+      return { ok: false, json: { status: 403 } };
+    };
+    const sweep = createNeedsDrewSweeper(fetchPage, { repos: [REPO], labels: ["user/review"] });
+    const first = await sweep();
+    expect(first.complete).toBe(false);
+    expect(first.sources[0].ok).toBe(false);
+    expect(await sweep()).toBe(first);
+    expect(calls).toBe(1);
   });
 
   test("reason comes from an explicit escalation line, else null (honest fallback)", () => {

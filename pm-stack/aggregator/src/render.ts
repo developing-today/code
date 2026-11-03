@@ -2573,13 +2573,16 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
   if (census === null) {
     return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
   }
-  const failed = census.sources.filter((x) => !x.ok || x.truncated);
+  const failed = census.sources.filter((x) => !x.ok || x.truncated || x.incomplete);
   const failureNote = failed.length
     ? `<div class="banner">Label census incomplete — ${failed
-        .map(
-          (x) =>
-            `${esc(x.repo)} ${esc(x.label)}: ${esc(x.ok ? "page cap reached, count is a floor" : (x.error ?? "failed"))}`,
-        )
+        .map((x) => {
+          if (!x.ok) return `${esc(x.repo)} ${esc(x.label)}: ${esc(x.error ?? "failed")}`;
+          // Truncation and GitHub's partial-search signal are different
+          // failures: say which one it was instead of blurring them.
+          const why = x.incomplete ? "search returned incomplete results, count is a floor" : "page cap reached, count is a floor";
+          return `${esc(x.repo)} ${esc(x.label)}: ${why}`;
+        })
         .join("; ")}. The list below may be missing items from those sources.</div>`
     : "";
   const rows = census.items.length

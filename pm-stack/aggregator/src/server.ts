@@ -21,7 +21,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import type { NeedsDrewCensus } from "./needs-drew.ts";
+import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -401,15 +401,22 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   });
 }
 
-async function attentionContext() {
+async function attentionContext(opts: { census?: boolean } = {}) {
+  // #1226/#3970: the Needs-Drew census costs eight sequential GitHub
+  // search calls (up to ~64 s when the API is unreachable). Only the
+  // attention page render consumes it, so it opts in; the overview,
+  // Today, /api/attention.json and /api/coverage.json must not inherit
+  // that external dependency (Codex P2 on PR #3970).
+  const wantsCensus = shouldFetchNeedsDrewCensus(opts);
   const [feed, summary, coverage, census] = await Promise.all([
     source.attention(),
     source.orchestration(),
     source.coverage(),
-    // #1226: the Needs-Drew label census rides the attention context;
-    // a source without the census (or a failed sweep) yields null and
+    // A source without the census (or a failed sweep) yields null and
     // the view renders it as unavailable, never as an empty queue.
-    (source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>,
+    wantsCensus
+      ? ((source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>)
+      : Promise.resolve<NeedsDrewCensus | null>(null),
   ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
@@ -458,7 +465,7 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage, census } = await attentionContext();
+  const { view, coverage, census } = await attentionContext({ census: true });
   const [formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
     commentFormOpts(),
     actionsStore.byObject(),
