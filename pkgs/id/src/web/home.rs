@@ -168,8 +168,12 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
         .into_response()
 }
 
+/// Render the discovery home page. The world explorer consumes the
+/// shared directory serializer's shape ([`crate::world_hub::directory_json`])
+/// — the same JSON the CLI's `id world list --json` prints (#812) — so the
+/// web directory and the CLI directory can never drift apart.
 pub(super) fn render_home(
-    worlds: &[crate::world_hub::WorldInfo],
+    directory: &serde_json::Value,
     default_world: &str,
     world_enabled: bool,
     world_route: &str,
@@ -179,7 +183,8 @@ pub(super) fn render_home(
     let mut html = String::from(
         "<section class=\"space-y-4\" data-home-app><h1>Home</h1><p class=\"text-sm opacity-70\">Discovery and live activity are scoped to this server; they do not synchronize between devices.</p>",
     );
-    html.push_str("<section class=\"card bg-base-200 border border-base-300 p-4\"><h2>World explorer</h2><p>Available worlds on this server. A world marked asleep is stored and opens when selected; unknown worlds are not created just by browsing.</p><ul>");
+    html.push_str("<section class=\"card bg-base-200 border border-base-300 p-4\"><h2>World explorer</h2><p>Available worlds on this server, with how many participants are active in each right now. A world marked asleep is stored and opens when selected; unknown worlds are not created just by browsing.</p><ul>");
+    let worlds: &[serde_json::Value] = directory["worlds"].as_array().map_or(&[], Vec::as_slice);
     if worlds.is_empty() {
         let _ = std::fmt::Write::write_fmt(
             &mut html,
@@ -189,12 +194,14 @@ pub(super) fn render_home(
         );
     } else {
         for world in worlds {
-            let name = html_escape(&world.name);
-            let href = urlencoding::encode(&world.name);
-            let state = if world.open {
-                "open"
+            let raw_name = world["name"].as_str().unwrap_or_default();
+            let name = html_escape(raw_name);
+            let href = urlencoding::encode(raw_name);
+            let active = world["active"].as_u64().unwrap_or(0);
+            let state = if world["loaded"].as_bool().unwrap_or(false) {
+                format!("open · {active} active")
             } else {
-                "stored; opens on selection"
+                "stored; opens on selection".to_owned()
             };
             let _ = std::fmt::Write::write_fmt(
                 &mut html,
@@ -318,7 +325,12 @@ mod tests {
 
     #[test]
     fn homepage_has_world_explorer_live_chat_and_discovery_feed() {
-        let html = render_home(&[], "lobby", true, "/world");
+        let html = render_home(
+            &crate::world_hub::directory_json(&[], "lobby"),
+            "lobby",
+            true,
+            "/world",
+        );
         assert!(html.contains("World explorer"));
         assert!(html.contains("Global chat"));
         assert!(html.contains("Recent documents"));
@@ -327,7 +339,12 @@ mod tests {
         assert!(!html.contains("<main"));
         assert!(html.contains("Popular documents"));
         assert!(html.contains("/world?world=lobby"));
-        let custom = render_home(&[], "lobby", true, "/arena");
+        let custom = render_home(
+            &crate::world_hub::directory_json(&[], "lobby"),
+            "lobby",
+            true,
+            "/arena",
+        );
         assert!(custom.contains("/arena?world=lobby"));
         assert!(!custom.contains("/world?world=lobby"));
         assert!(html.contains("this server"));
@@ -498,7 +515,12 @@ mod tests {
 
     #[test]
     fn global_chat_embeds_existing_authenticated_world_chat() {
-        let html = render_home(&[], "lobby", true, "/world");
+        let html = render_home(
+            &crate::world_hub::directory_json(&[], "lobby"),
+            "lobby",
+            true,
+            "/world",
+        );
         assert!(html.contains("/world?world=lobby"));
         assert!(html.contains("authenticated default world"));
         assert!(html.contains("guest capability"));

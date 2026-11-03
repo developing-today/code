@@ -140,6 +140,12 @@ pub struct WorldInfo {
     /// directory JSON ([`directory_json`]) names this field `loaded`, for what it
     /// means; `open` remains the session-wire name for this struct.
     pub open: bool,
+    /// Distinct participants present in the world right now (live sessions,
+    /// refcounted per participant). Zero for a stored world that is not
+    /// loaded: presence is read only from a running world, never by opening
+    /// one (#812). [`WorldHub::list_directory`] fills this in; the plain
+    /// [`WorldHub::list`] leaves it zero.
+    pub active: usize,
 }
 
 /// The JSON shape of a world directory listing: the shared serializer for the
@@ -147,11 +153,18 @@ pub struct WorldInfo {
 /// and the web UI's directory surface is expected to consume the same shape.
 ///
 /// The shape is `{ "default": <name>, "worlds": [{ "name": ..., "loaded": ...,
-/// "default": ... }] }`. The per-world field for [`WorldInfo::open`] is named
-/// `loaded`, because that is what the value means — the world is currently open
-/// in memory — and not open-to-join: a world with `loaded: false` is stored and
-/// opens when selected. No field here claims presence or joinability; presence
-/// counts are a separate, undesigned part of #812.
+/// "default": ..., "active": ... }] }`. The per-world field for
+/// [`WorldInfo::open`] is named `loaded`, because that is what the value
+/// means — the world is currently open in memory — and not open-to-join: a
+/// world with `loaded: false` is stored and opens when selected. `active`
+/// is the presence count: distinct participants present in the world right
+/// now, read from the running world only (see [`WorldInfo::active`]).
+///
+/// This shape is the public directory feed (#812): world names, loaded
+/// state, and presence counts are what a browsable directory publishes, so
+/// the session layer answers a `directory` frame with it without an admin
+/// token. Nothing beyond this shape — membership, per-user presence, world
+/// contents — is public by way of the directory.
 #[must_use]
 pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value {
     let worlds: Vec<serde_json::Value> = worlds
@@ -161,6 +174,7 @@ pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value 
                 "name": world.name,
                 "loaded": world.open,
                 "default": world.name == default,
+                "active": world.active,
             })
         })
         .collect();
@@ -689,8 +703,42 @@ impl WorldHub {
         }
         names
             .into_iter()
-            .map(|(name, open)| WorldInfo { name, open })
+            .map(|(name, open)| WorldInfo {
+                name,
+                open,
+                active: 0,
+            })
             .collect()
+    }
+
+    /// [`WorldHub::list`] with each loaded world's presence count filled
+    /// in from the running world ([`WorldInfo::active`]). Stored worlds
+    /// are not opened for this — a world that is not loaded keeps a count
+    /// of zero — and a world that cannot answer keeps zero too, so the
+    /// directory never blocks on one bad world.
+    pub async fn list_directory(&self) -> Vec<WorldInfo> {
+        let services: Vec<(String, WorldService)> = self
+            .inner
+            .slots
+            .lock()
+            .map(|slots| {
+                slots
+                    .iter()
+                    .filter_map(|(name, slot)| {
+                        slot.service
+                            .get()
+                            .map(|service| (name.clone(), service.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut worlds = self.list();
+        for world in &mut worlds {
+            if let Some((_, service)) = services.iter().find(|(name, _)| *name == world.name) {
+                world.active = service.world.presence_count().await.unwrap_or(0);
+            }
+        }
+        worlds
     }
 
     /// Shut down durable worlds that no session has used for `idle`. They
@@ -1262,10 +1310,12 @@ mod tests {
             WorldInfo {
                 name: "lobby".to_owned(),
                 open: true,
+                active: 3,
             },
             WorldInfo {
                 name: "attic".to_owned(),
                 open: false,
+                active: 0,
             },
         ];
         let value = directory_json(&worlds, "lobby");
@@ -1275,15 +1325,18 @@ mod tests {
         assert_eq!(list[0]["name"], serde_json::json!("lobby"));
         assert_eq!(list[0]["loaded"], serde_json::json!(true));
         assert_eq!(list[0]["default"], serde_json::json!(true));
+        assert_eq!(list[0]["active"], serde_json::json!(3));
         assert_eq!(list[1]["name"], serde_json::json!("attic"));
         assert_eq!(list[1]["loaded"], serde_json::json!(false));
         assert_eq!(list[1]["default"], serde_json::json!(false));
+        assert_eq!(list[1]["active"], serde_json::json!(0));
         // The honest shape: no entry may claim an "open" field.
         for entry in list {
             assert!(entry.get("open").is_none(), "entry must not carry `open`");
             assert!(entry["name"].is_string());
             assert!(entry["loaded"].is_boolean());
             assert!(entry["default"].is_boolean());
+            assert!(entry["active"].is_u64());
         }
         // An empty directory is a default with no worlds.
         let value = directory_json(&[], "lobby");

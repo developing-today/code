@@ -923,6 +923,24 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     };
     // Hub-level frames are about the server, not one world.
     match &frame {
+        ClientFrame::Directory => {
+            // The public directory feed (#812): no admin token, by design.
+            // The reply carries only what `directory_json` publishes —
+            // world names, loaded state, presence counts — so browsing the
+            // directory never becomes a path to anything administrative.
+            io.mark_authorized();
+            let worlds = hub.list_directory().await;
+            let _ = send_json(
+                &unattributed,
+                io,
+                &ServerFrame::Worlds {
+                    default: hub.default_world(),
+                    worlds,
+                },
+            )
+            .await;
+            return;
+        }
         ClientFrame::ListWorlds { admin_token } => {
             if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
                 let _ = send_error(&unattributed, io, "admin denied").await;
@@ -1537,6 +1555,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         }
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd
+        | ClientFrame::Directory
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::SetIsolation { .. }
@@ -2827,6 +2846,7 @@ async fn handle_client_frame<I: SessionIo>(
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
+        | ClientFrame::Directory
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::SetIsolation { .. }

@@ -45,6 +45,7 @@ impl WorldCommand {
             Self::SetFileScope { .. } => "SetFileScope",
             Self::PolicyInfo { .. } => "PolicyInfo",
             Self::Metrics { .. } => "Metrics",
+            Self::PresenceCount { .. } => "PresenceCount",
             Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::ReplicationFeed { .. } => "ReplicationFeed",
             Self::Shutdown { .. } => "Shutdown",
@@ -241,6 +242,12 @@ pub(crate) enum WorldCommand {
     /// recorded by the actor, the journal path, and the session layer.
     Metrics {
         reply: oneshot::Sender<MetricsSnapshot>,
+    },
+    /// How many distinct participants are present in this world right now:
+    /// the directory feed's presence count (#812). Presence is refcounted
+    /// per participant, so this counts people, not sessions.
+    PresenceCount {
+        reply: oneshot::Sender<usize>,
     },
     /// Admin-only consistent snapshot for replayable fixture export.
     AdminEventHistory {
@@ -1690,6 +1697,9 @@ impl WorldActor {
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
                 let _ = reply.send(self.metrics.snapshot(sessions));
+            }
+            WorldCommand::PresenceCount { reply } => {
+                let _ = reply.send(self.presence.values().filter(|count| **count > 0).count());
             }
             WorldCommand::AdminEventHistory { reply } => {
                 let result = (|| -> Result<AdminEventHistory> {

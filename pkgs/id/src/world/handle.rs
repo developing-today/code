@@ -165,6 +165,26 @@ impl WorldHandle {
             .context("world actor dropped metrics response")
     }
 
+    /// How many distinct participants are present in this world right now
+    /// (live sessions, refcounted per participant by the actor). This is
+    /// the count the world directory feed publishes (#812); reading it
+    /// never opens a stored world, because only a running world's handle
+    /// exists to be asked.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed or drops the response.
+    pub async fn presence_count(&self) -> Result<usize> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::PresenceCount { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped presence response")
+    }
+
     /// Capture journal-order event history and its records for an admin export.
     /// The session layer must authorize the admin token before calling this.
     pub(crate) async fn admin_event_history(&self) -> Result<AdminEventHistory> {

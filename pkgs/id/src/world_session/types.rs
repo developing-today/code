@@ -138,6 +138,13 @@ pub(crate) enum ClientFrame {
         #[serde(default)]
         role: Option<String>,
     },
+    /// Public: the world directory — the worlds this server hosts, with
+    /// names, loaded state, and presence counts, in exactly the shape
+    /// [`crate::world_hub::directory_json`] publishes (#812). No admin
+    /// token: the directory is the browsable feed, and it carries nothing
+    /// beyond that published shape. Listing with administrative detail
+    /// stays on [`ClientFrame::ListWorlds`].
+    Directory,
     /// Admin: list the worlds this server hosts.
     ListWorlds {
         admin_token: String,

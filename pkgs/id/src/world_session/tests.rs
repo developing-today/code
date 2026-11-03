@@ -1545,6 +1545,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_directory_is_public_and_carries_presence_counts() {
+        // #812: the directory frame is the browsable feed — no admin
+        // token — and its rows carry the shared serializer's fields,
+        // including the presence count of a loaded world.
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"arena"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["type"], "world_created");
+
+        let mut guest = Peer::connect_hub(hub, SessionConfig::default());
+        guest.say(serde_json::json!({"type":"directory"})).await;
+        let listed = guest.next().await.unwrap();
+        assert_eq!(listed["type"], "worlds");
+        assert_eq!(listed["default"], "lobby");
+        let arena = listed["worlds"]
+            .as_array()
+            .expect("worlds is a list")
+            .iter()
+            .find(|world| world["name"] == "arena")
+            .expect("arena is listed");
+        assert_eq!(arena["open"], serde_json::json!(true));
+        // Nobody has joined arena, so its presence count is zero — and
+        // the field is present, not omitted.
+        assert_eq!(arena["active"], serde_json::json!(0));
+    }
+
+    #[tokio::test]
     async fn only_an_admin_creates_or_lists_worlds() {
         let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
         let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());

@@ -408,13 +408,19 @@ fn is_partial_request(headers: &HeaderMap) -> bool {
 
 /// Index page handler - discovery home.
 async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let worlds = state.world.as_ref().map_or_else(Vec::new, |hub| hub.list());
+    let worlds = match state.world.as_ref() {
+        Some(hub) => hub.list_directory().await,
+        None => Vec::new(),
+    };
     let default_world = state
         .world
         .as_ref()
         .map_or("lobby", |hub| hub.default_world());
+    // The explorer renders from the shared directory serializer (#812),
+    // with presence counts read from the loaded worlds.
+    let directory = crate::world_hub::directory_json(&worlds, default_world);
     let content = super::home::render_home(
-        &worlds,
+        &directory,
         default_world,
         state.world.is_some(),
         &state.web_route,

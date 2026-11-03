@@ -1036,7 +1036,8 @@ impl WorldClient {
             .context("host sent no isolation")
     }
 
-    /// List the host's worlds as `(default, [(name, open)])`.
+    /// List the host's worlds as `(default, [(name, open, active)])`,
+    /// where `active` is the world's live presence count.
     ///
     /// # Errors
     ///
@@ -1044,12 +1045,32 @@ impl WorldClient {
     pub async fn list_worlds(
         &mut self,
         admin_token: &str,
-    ) -> Result<(String, Vec<(String, bool)>)> {
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         self.send_json(&serde_json::json!({
             "type": "list_worlds",
             "admin_token": admin_token,
         }))
         .await?;
+        self.read_worlds_reply().await
+    }
+
+    /// Read the host's public world directory as
+    /// `(default, [(name, open, active)])` — the same worlds reply as
+    /// [`WorldClient::list_worlds`], but the `directory` frame needs no
+    /// admin token: the directory is the browsable feed (#812) and
+    /// carries only what the shared serializer publishes.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if it refuses the directory read.
+    pub async fn directory(&mut self) -> Result<(String, Vec<(String, bool, usize)>)> {
+        self.send_json(&serde_json::json!({ "type": "directory" }))
+            .await?;
+        self.read_worlds_reply().await
+    }
+
+    /// Parse a `worlds` reply frame into `(default, [(name, open, active)])`.
+    async fn read_worlds_reply(&mut self) -> Result<(String, Vec<(String, bool, usize)>)> {
         let reply = self
             .recv_json()
             .await?
@@ -1067,7 +1088,13 @@ impl WorldClient {
             .as_array()
             .context("worlds reply had no list")?
             .iter()
-            .filter_map(|w| Some((w["name"].as_str()?.to_owned(), w["open"].as_bool()?)))
+            .filter_map(|w| {
+                Some((
+                    w["name"].as_str()?.to_owned(),
+                    w["open"].as_bool()?,
+                    usize::try_from(w["active"].as_u64().unwrap_or(0)).unwrap_or(0),
+                ))
+            })
             .collect();
         Ok((default, worlds))
     }
