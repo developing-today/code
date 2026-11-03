@@ -10,7 +10,13 @@ import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
-import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
+import {
+  checkActionAgainstItem,
+  effectiveNeedsOrder,
+  effectiveStandingAuto,
+  findTierItem,
+  questionIdForOption,
+} from "./tier-items.ts";
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
@@ -828,13 +834,14 @@ async function handler(req: Request): Promise<Response> {
       // consumer rejects what it cannot apply.
       if (parsed.value.kind === "triage") {
         const section = await source.orchestration().catch(() => null);
+        let item: ReturnType<typeof findTierItem>;
         if (section) {
-          const problem = checkActionAgainstItem(
-            parsed.value,
-            findTierItem(section, parsed.value.objectRef),
-            Date.now(),
-          );
+          item = findTierItem(section, parsed.value.objectRef);
+          const problem = checkActionAgainstItem(parsed.value, item, Date.now());
           if (problem) return json({ error: problem }, 400);
+        }
+        if (parsed.value.verb === "answer" && parsed.value.payload.optionId) {
+          parsed.value.payload.questionId = questionIdForOption(item, parsed.value.payload.optionId) ?? "$options";
         }
       }
       // #1509: persistence failure -> 5xx (see /api/comments above).
@@ -845,6 +852,29 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
       const { action, created } = added;
+      if (added.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${added.duplicateOf}`,
+            action,
+            duplicateOf: added.duplicateOf,
+          },
+          409,
+        );
+      }
+      // A client-token replay of an already-persisted duplicate attempt
+      // keeps the rejected semantics instead of reading as a fresh
+      // "sent · pending" success (Codex P2 on PR #4024).
+      if (!created && action.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${action.duplicateOf}`,
+            action,
+            duplicateOf: action.duplicateOf,
+          },
+          409,
+        );
+      }
       // #1276: saved-view preference verbs are applied by the
       // aggregator itself to the views store and marked applied (or
       // rejected, with the reason) in the same request — the action

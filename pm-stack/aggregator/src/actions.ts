@@ -182,6 +182,9 @@ export interface DashActionPayload {
   mode?: "first-pass" | "auto" | "user";
   /** answer: the published option the user picked (one content verb). */
   optionId?: string;
+  /** Canonical survey question answered by an option shortcut. The server
+   *  resolves this from the current published item before storing. */
+  questionId?: string;
   /** answer: survey answers, keyed by the published question id. A
    *  multi-choice answer carries an array of option ids. */
   answers?: { questionId: string; value: string | string[] }[];
@@ -230,6 +233,8 @@ export interface DashAction {
   resultNote?: string;
   /** Id of the action this one replaces (undo = supersede). */
   supersedes?: string;
+  /** Existing answer action this rejected attempt duplicates. */
+  duplicateOf?: string;
 }
 
 export interface ActionsFile {
@@ -248,6 +253,35 @@ export interface NewAction {
   payload: DashActionPayload;
   author: DashAuthor;
   supersedes?: string;
+}
+
+/** The question slots an answer action claims. Survey and option answers
+ *  claim their published question ids (an option with no resolved question
+ *  uses the reserved "$options" slot). A text-only answer claims the
+ *  reserved "$answer" slot, which duplicate detection treats as
+ *  pending-only (see add()): a session reply or free-text decision is a
+ *  conversation turn, not a published question, so once the previous turn
+ *  is applied the next one must be able to land. Persisted records can
+ *  carry malformed payload shapes (load() retains them; see the
+ *  malformed-payload test), so every extraction here is shape-guarded
+ *  exactly as cardState()'s is. */
+function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[] {
+  if (action.verb !== "answer" || !isRecord(action.payload)) return [];
+  const ids = new Set<string>();
+  if (Array.isArray(action.payload.answers)) {
+    for (const entry of action.payload.answers) {
+      if (isRecord(entry) && typeof entry.questionId === "string") ids.add(entry.questionId);
+    }
+  }
+  if (typeof action.payload.optionId === "string" && action.payload.optionId) {
+    ids.add(
+      typeof action.payload.questionId === "string" && action.payload.questionId
+        ? action.payload.questionId
+        : "$options",
+    );
+  }
+  if (typeof action.payload.text === "string" && action.payload.text && !ids.size) ids.add("$answer");
+  return [...ids];
 }
 
 const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
@@ -315,6 +349,8 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   }
   const optionId = cleanText(rawPayload.optionId, 200);
   if (optionId !== undefined) payload.optionId = optionId;
+  const questionId = cleanText(rawPayload.questionId, 200);
+  if (questionId !== undefined) payload.questionId = questionId;
   if (rawPayload.answers !== undefined) {
     if (!Array.isArray(rawPayload.answers) || rawPayload.answers.length > 50) {
       return { ok: false, error: "payload.answers must be an array of at most 50 {questionId, value}" };
@@ -662,12 +698,40 @@ export class ActionsStore {
    * still-new action in `supersedes` transitions it to "superseded" —
    * undo is a superseding action, never a delete; an already-applied
    * action stays in history and the newer action wins by recency in
-   * the effective-state derivation.
+   * the effective-state derivation. A distinct answer for an occupied
+   * question slot is itself persisted as rejected with `duplicateOf`
+   * pointing to the pending/applied answer that owns that slot. The
+   * text-only "$answer" slot is the exception: it dedupes only against
+   * still-pending answers, because a session (or free-text) reply is a
+   * conversation turn — once the previous turn is applied, the next
+   * reply is new work, not a duplicate (Codex P1 on PR #4024).
    */
-  async add(input: NewAction): Promise<{ action: DashAction; created: boolean }> {
+  async add(input: NewAction): Promise<{ action: DashAction; created: boolean; duplicateOf?: string }> {
     await this.load();
     const existing = this.actions.find((a) => a.clientToken === input.clientToken);
     if (existing) return { action: existing, created: false };
+    const questionIds = answerQuestionIds(input);
+    const publishedIds = questionIds.filter((questionId) => questionId !== "$answer");
+    const sameAnswerTarget = (candidate: DashAction) =>
+      candidate.objectRef === input.objectRef && candidate.verb === "answer";
+    const duplicate =
+      (publishedIds.length
+        ? this.actions.find(
+            (candidate) =>
+              sameAnswerTarget(candidate) &&
+              candidate.state !== "rejected" &&
+              candidate.state !== "superseded" &&
+              answerQuestionIds(candidate).some((questionId) => publishedIds.includes(questionId)),
+          )
+        : undefined) ??
+      (questionIds.includes("$answer")
+        ? this.actions.find(
+            (candidate) =>
+              sameAnswerTarget(candidate) &&
+              candidate.state === "new" &&
+              answerQuestionIds(candidate).includes("$answer"),
+          )
+        : undefined);
     const action: DashAction = {
       id: newActionId(),
       clientToken: input.clientToken,
@@ -680,16 +744,17 @@ export class ActionsStore {
       payload: input.payload,
       author: input.author,
       createdAt: new Date().toISOString(),
-      state: "new",
+      state: duplicate ? "rejected" : "new",
       ...(input.supersedes ? { supersedes: input.supersedes } : {}),
+      ...(duplicate ? { duplicateOf: duplicate.id, resultNote: `Duplicate answer; existing action ${duplicate.id} is ${duplicate.state}.` } : {}),
     };
     this.actions.push(action);
-    if (input.supersedes) {
+    if (!duplicate && input.supersedes) {
       const old = this.actions.find((a) => a.id === input.supersedes);
       if (old && old.state === "new") old.state = "superseded";
     }
     await this.persist();
-    return { action, created: true };
+    return { action, created: true, ...(duplicate ? { duplicateOf: duplicate.id } : {}) };
   }
 
   /**
