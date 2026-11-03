@@ -3,6 +3,8 @@
 //! The ALPN is [`crate::event_store::sync::ALPN`], split from `log_sync`'s `/id-sync/1`
 //! in #179: these sessions open with a range flight, not the handshake's `Request`
 //! first frame, and the two shapes no longer share an ALPN.
+//! `serve` always uses range sessions on this ALPN, without `choose()` or the topic-scoped
+//! handshake. Their sync set is the whole store, not a topic subset.
 //!
 //! The session itself is the range sync in [`crate::event_store::sync`]: reconciliation,
 //! then both sides send the events the other lacks, and the receiving store's own ingest
