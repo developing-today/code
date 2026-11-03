@@ -200,6 +200,22 @@ fn interval_verdicts(
     }
     spans.sort_unstable();
     spans.dedup();
+    // Adjacent spans are one continuous active stretch split only by
+    // the calendar: an Always day ends where the next begins, and a
+    // non-wrapping sleep window's active complement is cut at
+    // midnight. Merge spans that touch or overlap before judging, so
+    // a record gap crossing the seam is judged as the single
+    // consecutive gap it is (#5144) — split at the seam, each edge gap
+    // could pass while the real gap ran to nearly twice the max.
+    // Verdict windows below therefore span the merged stretch.
+    let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match merged.last_mut() {
+            Some(last) if span.0 <= last.1 => last.1 = last.1.max(span.1),
+            _ => merged.push(span),
+        }
+    }
+    let spans = merged;
     let mut verdicts = Vec::new();
     for (start, end) in spans {
         let mut matching: Vec<&Record> = records
