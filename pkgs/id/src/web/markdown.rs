@@ -90,6 +90,12 @@ fn commonmark_options() -> Options<'static> {
     options.extension.front_matter_delimiter = Some("---".to_owned());
     options.parse.smart = false; // Don't convert quotes/dashes
     options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
+    // #954: the CommonMark renderer saves an info-less code block as an
+    // indented block whenever it can (its fenced branch otherwise needs a
+    // non-empty info string or a literal edge case). Force the fenced
+    // spelling for every code block so info-less fences round-trip as
+    // fences. Render-only: parsing is unaffected.
+    options.render.prefer_fenced = true;
     options
 }
 
@@ -4204,8 +4210,8 @@ fn hoist_delimiter_edge_spaces<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) 
 /// fenced branch, and return the placeholders for stripping from the
 /// rendered output — the same placeholder-and-restore pattern as
 /// `substitute_spaced_destinations`. Code blocks outside blockquotes
-/// keep the renderer's own spelling (the lone-block fence/indent
-/// choice is #954's territory, deliberately untouched here).
+/// are fenced by the global `prefer_fenced` render option (#954); this
+/// placeholder is kept as belt-and-braces for the quoted shape.
 fn force_fenced_code_blocks_in_blockquotes<'a>(root: &'a AstNode<'a>) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut stack: Vec<(&AstNode<'a>, bool)> = vec![(root, false)];
@@ -4460,7 +4466,14 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 fence_length: 3,
                 fence_offset: 0,
                 info: info.to_owned(),
-                literal: format!("{content}\n"),
+                // #954: comrak's own empty-fence literal is empty; appending
+                // the usual trailing newline here renders a spurious blank
+                // line inside the fence ("```\n\n```").
+                literal: if content.is_empty() {
+                    String::new()
+                } else {
+                    format!("{content}\n")
+                },
                 closed: false,
             }))
         }
@@ -8535,6 +8548,47 @@ mod tests {
 
         assert!(result.contains("```rust"));
         assert!(result.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn test_roundtrip_info_less_code_block_stays_fenced() {
+        // #954: info-less fenced blocks must save as fenced, not as
+        // 4-space indented blocks. Covers blank-line content,
+        // fence-containing content, list nesting, and blockquotes
+        // (the blockquote shape is also pinned by #1496).
+        for (original, opening_fence) in [
+            ("```\nline1\n\n\nline2\n```\n", "```"),
+            ("````\n```\ncode\n```\n````\n", "````"),
+            ("- ```\n  code\n  ```\n", "- ```"),
+            // Blockquote saves with leading empty quote lines (comrak's
+            // block separation); the shape pinned here is fenced, not
+            // indented.
+            ("> ```\n> code\n> ```\n", "> ```"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.lines().any(|l| l == opening_fence),
+                "info-less block lost its fence for {original:?}: {first:?}"
+            );
+            assert!(
+                !first.lines().any(|l| l.starts_with("    ")),
+                "info-less block saved indented for {original:?}: {first:?}"
+            );
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "round trip changed the doc for {original:?}"
+            );
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_empty_code_block_has_no_spurious_blank_line() {
+        // #954: an empty fenced block must not gain a blank line.
+        let (first, second) = two_saves("```\n```\n");
+        assert_eq!(first, "```\n```\n", "empty block grew: {first:?}");
+        assert_eq!(first, second, "no fixpoint for empty block");
     }
 
     #[test]

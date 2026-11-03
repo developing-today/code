@@ -145,6 +145,9 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
                 request.user_source
             );
         }
+        if request.fee_amount > 0 && request.fee_account.is_none() {
+            bail!("preflight: fee_amount > 0 requires a fee_account");
+        }
         if request.fee_amount > 0 && request.fee_account == Some(request.user_source) {
             bail!(
                 "preflight: user source and fee accounts must differ (account {})",
@@ -155,6 +158,14 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
             bail!(
                 "preflight: LP destination and user destination accounts must differ (account {})",
                 request.lp_dest
+            );
+        }
+
+        let expected_transfer_ids = if request.fee_amount > 0 { 3 } else { 2 };
+        if request.transfer_ids.len() != expected_transfer_ids {
+            bail!(
+                "preflight: transfer_ids must cover every leg (T1, fee, T3): expected {expected_transfer_ids} IDs, got {}",
+                request.transfer_ids.len()
             );
         }
 

@@ -251,6 +251,80 @@ mod tests {
         }
     }
 
+    fn export_transfer(handoff_id: &str) -> HandoffTransferState {
+        HandoffTransferState {
+            handoff_id: handoff_id.to_owned(),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            direction: HandoffDirection::Export,
+            prior_owner_epoch: 4,
+            new_owner_epoch: None,
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            payload_digest: "digest".to_owned(),
+            payload: Some(vec![1, 2, 3]),
+            event: handoff_event(),
+        }
+    }
+
+    fn import_transfer(
+        handoff_id: &str,
+        prior_owner_epoch: u64,
+        new_owner_epoch: u64,
+    ) -> HandoffTransferState {
+        HandoffTransferState {
+            handoff_id: handoff_id.to_owned(),
+            entity_ref: "entity-2".to_owned(),
+            source_region: "region-b".to_owned(),
+            target_region: "region-a".to_owned(),
+            direction: HandoffDirection::Import,
+            prior_owner_epoch,
+            new_owner_epoch: Some(new_owner_epoch),
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            payload_digest: "digest-2".to_owned(),
+            payload: None,
+            event: handoff_event(),
+        }
+    }
+
+    fn checkpoint_with_transfers(transfers: Vec<HandoffTransferState>) -> Vec<JournalEntry> {
+        vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            JournalEntry::Checkpoint {
+                sequence: 0,
+                module_hash: "module".to_owned(),
+                seed: 1,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: Some(transfers),
+                snapshot: "state".to_owned(),
+                events: Vec::new(),
+            },
+        ]
+    }
+
+    fn assert_checkpoint_transfer_refused(
+        transfer_list: Vec<HandoffTransferState>,
+        handoff_id: &str,
+    ) -> String {
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            checkpoint_with_transfers(transfer_list),
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains(handoff_id), "{error}");
+        error
+    }
+
     #[test]
     fn handoff_entries_require_journal_version_3() {
         // #3870 phase 1: handoff kinds are the first entries a version-2
@@ -371,6 +445,69 @@ mod tests {
         assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
     }
 
+    #[test]
+    fn checkpoint_handoff_transfers_validate_duplicates_epochs_and_events() {
+        for (first, second) in [
+            (
+                export_transfer("duplicate-export"),
+                export_transfer("duplicate-export"),
+            ),
+            (
+                import_transfer("duplicate-import", 4, 5),
+                import_transfer("duplicate-import", 4, 5),
+            ),
+        ] {
+            let handoff_id = first.handoff_id.clone();
+            let error = assert_checkpoint_transfer_refused(vec![first, second], &handoff_id);
+            assert!(error.contains("twice"), "{error}");
+        }
+
+        let invalid_import = import_transfer("bad-epoch", 5, 5);
+        let error = assert_checkpoint_transfer_refused(vec![invalid_import], "bad-epoch");
+        assert!(
+            error.contains("does not advance the owner epoch"),
+            "{error}"
+        );
+
+        let mut import_without_epoch = import_transfer("missing-epoch", 4, 5);
+        import_without_epoch.new_owner_epoch = None;
+        let error = assert_checkpoint_transfer_refused(vec![import_without_epoch], "missing-epoch");
+        assert!(
+            error.contains("does not advance the owner epoch"),
+            "{error}"
+        );
+
+        let mut invalid_export_epoch = export_transfer("export-epoch");
+        invalid_export_epoch.new_owner_epoch = Some(5);
+        let error = assert_checkpoint_transfer_refused(vec![invalid_export_epoch], "export-epoch");
+        assert!(error.contains("carries a new owner epoch"), "{error}");
+
+        for (mut invalid_event, sequence, participant_id) in [
+            (export_transfer("bad-export-event"), 1, 0),
+            (import_transfer("bad-import-event", 4, 5), 0, 7),
+        ] {
+            invalid_event.event.sequence = sequence;
+            invalid_event.event.participant_id = participant_id;
+            let handoff_id = invalid_event.handoff_id.clone();
+            let error = assert_checkpoint_transfer_refused(vec![invalid_event], &handoff_id);
+            assert!(error.contains("event claims a sequence"), "{error}");
+        }
+    }
+
+    #[test]
+    fn checkpoint_accepts_valid_export_and_import_transfers() {
+        let transfers = vec![
+            export_transfer("valid-export"),
+            import_transfer("valid-import", 4, 5),
+        ];
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            checkpoint_with_transfers(transfers.clone()),
+        )
+        .unwrap();
+        assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
+    }
 
     #[test]
     fn handoff_import_at_max_owner_epoch_is_refused() {
@@ -835,6 +972,107 @@ mod tests {
         assert_eq!(all[0]["text"], "first");
         assert_eq!(all[2]["text"], "third");
         assert!(chat_history(&core.events, 0).is_empty());
+    }
+
+    /// Asks the bounded-read questions of #796 item 9-5 once each and
+    /// captures every result event into its records for the test to read.
+    #[derive(Debug, Default)]
+    struct BoundsProbe {
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+    }
+
+    impl WorldProgram for BoundsProbe {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                let value: serde_json::Value =
+                    serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                if value["cap"] == "result"
+                    && let Some(id) = value["id"].as_str()
+                {
+                    self.answered.insert(id.to_owned());
+                    self.results.insert(id.to_owned(), value);
+                }
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let requests: Vec<serde_json::Value> = [
+                ("records-oversized", "records.read", serde_json::json!({})),
+                ("hist-default", "chat.history", serde_json::json!({})),
+                (
+                    "hist-clamped",
+                    "chat.history",
+                    serde_json::json!({"count": 100_000}),
+                ),
+            ]
+            .into_iter()
+            .filter(|(id, _, _)| !self.answered.contains(*id))
+            .map(|(id, cap, args)| serde_json::json!({"id": id, "cap": cap, "args": args}))
+            .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": requests}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"results": self.results}).to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_defaults_and_clamps_and_records_read_rejects_an_oversized_first_record() {
+        let mut core = world(128);
+        core.ledger.set_granted(BTreeSet::from([
+            "chat.history".to_owned(),
+            "records.read".to_owned(),
+        ]));
+        for sequence in 1..=70_u64 {
+            core.events.push_back(WorldEvent {
+                sequence,
+                participant_id: 1,
+                kind: WorldEventKind::Chat(format!("line-{sequence}")),
+            });
+        }
+        let mut actor = WorldActor::for_test(core, Box::new(BoundsProbe::default()), None);
+        // A single record larger than one records page can only reach the
+        // actor from a store that never passed parse_records; inject it
+        // straight into the published-records channel to prove the read
+        // fails closed instead of serving a truncated page.
+        let mut oversized = Records::new();
+        oversized.insert(
+            "big".to_owned(),
+            serde_json::Value::String("x".repeat(crate::world_session::MAX_RECORDS_PAGE_BYTES + 1)),
+        );
+        actor.records_sender.send_replace((0, Arc::new(oversized)));
+
+        actor.after_change().await;
+
+        let records = actor.records_sender.borrow().1.clone();
+        let results = &records["results"];
+        // chat.history with no count serves the default 16 newest lines,
+        // oldest first.
+        let default = &results["hist-default"];
+        assert_eq!(default["ok"], true, "{default}");
+        let lines = default["value"]["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 16);
+        assert_eq!(lines[0]["text"], "line-55");
+        assert_eq!(lines[15]["text"], "line-70");
+        // An over-large count clamps to MAX_CHAT_HISTORY_LINES.
+        let clamped = &results["hist-clamped"];
+        assert_eq!(clamped["ok"], true, "{clamped}");
+        let lines = clamped["value"]["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), crate::world_caps::MAX_CHAT_HISTORY_LINES);
+        assert_eq!(lines[0]["text"], "line-7");
+        assert_eq!(lines[63]["text"], "line-70");
+        // records.read whose first record cannot fit one page is BadArgs,
+        // never an empty page that looks complete.
+        let oversized_result = &results["records-oversized"];
+        assert_eq!(oversized_result["ok"], false, "{oversized_result}");
+        assert_eq!(oversized_result["error"], "bad_args");
     }
 
     #[tokio::test]
