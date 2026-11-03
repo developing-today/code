@@ -143,7 +143,6 @@
     "huggingface",
     "opencode",
     "github-copilot",
-    "openai-codex",
     "openrouter",
     "cloudflare-workers-ai",
     "open-design",
@@ -161,8 +160,10 @@
   // they are listed here (verified live 2026-11-03 -- with the entries removed
   // all five reappeared in the running server within minutes). The entries are
   // the only trace of them left; there are no definitions to flip back on.
-  // openai-codex was evaluated for the same removal and KEPT whole: live
-  // model_routes still target openai-codex/* directly.
+  // openai-codex followed on 2026-11-03: its ten route legs were re-seated
+  // onto openai-plan (the ChatGPT provider route) and the definition was
+  // deleted with the rest. It is a custom id with no catalog entry, so --
+  // unlike the five tombstones above -- no entry stays for it here.
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
   // what agent configs already default to; restoring the Haiku default
@@ -362,15 +363,10 @@
       // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
     // "openai": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
-    "openai-codex": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "OpenAI Codex CLI (via codex)",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
-        "apiKey": "codex-local"
-      }
-      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
-    },
+    // "openai-codex": retired 2026-11-03 -- definition deleted after its
+    // route legs were re-seated onto openai-plan (see the note at
+    // disabled_providers). The codex door program (:18744) is untouched;
+    // its own retirement stays with the #1154 cutover.
     // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
 //    "open-design": {
 //      "npm": "@ai-sdk/openai-compatible",
@@ -1743,7 +1739,8 @@
       // opencode#1413 persona-routes PR; the prompt leads any caller
       // system text, exactly as the door composed it). Antigravity legs
       // sit on antigravity-direct (:18751) per the #1409 repoint
-      // (code#4626); codex legs on openai-codex (:18744). The door's
+      // (code#4626); gpt legs on openai-plan (re-seated from the
+      // codex door, 2026-11-03). The door's
       // keyword fallback for unknown gpt/codex-shaped ids has no route
       // equivalent and is not carried: unknown ids fail selection
       // cleanly, as they did at the door (400) via the façade envelope.
@@ -1762,7 +1759,7 @@
         "name": "GPT-6 Luna (Design Code)",
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
-          "openai-codex/gpt-6-luna",
+          "openai-plan/gpt-6-luna",
           "antigravity-direct/gemini-3.8-flash"
         ],
         "selection": "ordered",
@@ -1772,7 +1769,7 @@
         "name": "GPT-6.1 Sol (Design Code)",
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
-          "openai-codex/gpt-6.1-sol",
+          "openai-plan/gpt-6.1-sol",
           "antigravity-direct/gemini-3.8-flash"
         ],
         "selection": "ordered",
@@ -1783,7 +1780,7 @@
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
           "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
+          "openai-plan/gpt-5.6-luna"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -1793,7 +1790,7 @@
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
           "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
+          "openai-plan/gpt-5.6-luna"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -1803,7 +1800,7 @@
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
           "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
+          "openai-plan/gpt-5.6-luna"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -1813,7 +1810,7 @@
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
           "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
+          "openai-plan/gpt-5.6-luna"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -1823,7 +1820,7 @@
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
           "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-6.1-sol"
+          "openai-plan/gpt-6.1-sol"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -1833,7 +1830,7 @@
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
           "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-6.1-sol"
+          "openai-plan/gpt-6.1-sol"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -1843,7 +1840,7 @@
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
           "antigravity-direct/gemini-3.8-flash",
-          "openai-codex/gpt-5.6-luna"
+          "openai-plan/gpt-5.6-luna"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -1852,7 +1849,7 @@
         "name": "Open Design Pro",
         "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
         "targets": [
-          "openai-codex/gpt-6.1-sol",
+          "openai-plan/gpt-6.1-sol",
           "antigravity-direct/gemini-3.8-flash"
         ],
         "selection": "ordered",
