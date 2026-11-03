@@ -1933,6 +1933,166 @@ mod tests {
         assert_eq!(restored.core.admin_history.len(), 2);
     }
 
+    #[test]
+    fn admin_history_byte_ledger_counts_unserializable_as_max_until_trimmed() {
+        // Deliberate serialization-failure semantics (#4633): an event that
+        // cannot be serialized counts as usize::MAX bytes — exactly as the
+        // old rescan-every-time helper treated it — so it forces the
+        // retained history to trim rather than occupying unaccounted space.
+        let mut ledger = AdminHistoryByteLedger::default();
+        ledger.track(Some(10));
+        ledger.track(Some(20));
+        assert_eq!(ledger.effective_bytes(), 30);
+        assert_eq!(ledger.tracked(), 2);
+        ledger.track(None);
+        assert_eq!(ledger.effective_bytes(), usize::MAX);
+        ledger.untrack_front();
+        ledger.untrack_front();
+        assert_eq!(
+            ledger.effective_bytes(),
+            usize::MAX,
+            "the unserializable event is still retained"
+        );
+        ledger.untrack_front();
+        assert_eq!(ledger.effective_bytes(), 0);
+        assert_eq!(ledger.tracked(), 0);
+    }
+
+    #[test]
+    fn admin_history_byte_ledger_stays_in_sync_through_count_trim() {
+        let limits = WorldLimits {
+            retained_events: 2,
+            ..WorldLimits::default()
+        };
+        let mut core = WorldCore::new("ledger-trim-sync", limits).unwrap();
+        for n in 0..5 {
+            core.record_admin_history(WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: format!(r#"{{"cap":"host","event":"tick-{n}"}}"#),
+                },
+            });
+        }
+        assert_eq!(core.admin_history.len(), 2);
+        assert!(!core.admin_history_complete);
+        assert_eq!(core.admin_history_ledger.tracked(), core.admin_history.len());
+        let rescanned: usize = core
+            .admin_history
+            .iter()
+            .map(|event| serde_json::to_vec(event).unwrap().len())
+            .sum();
+        assert_eq!(core.admin_history_ledger.effective_bytes(), rescanned);
+    }
+
+    #[test]
+    fn admin_history_byte_cap_trims_even_a_single_oversized_event() {
+        let mut core = WorldCore::new("ledger-byte-cap", WorldLimits::default()).unwrap();
+        core.record_admin_history(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: "small".to_owned(),
+            },
+        });
+        assert_eq!(core.admin_history.len(), 1);
+        core.record_admin_history(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: "x".repeat(MAX_ADMIN_HISTORY_BYTES + 1),
+            },
+        });
+        assert!(
+            core.admin_history.is_empty(),
+            "an event larger than the byte cap cannot be retained"
+        );
+        assert!(!core.admin_history_complete);
+        assert_eq!(core.admin_history_ledger.tracked(), 0);
+        assert_eq!(core.admin_history_ledger.effective_bytes(), 0);
+    }
+
+    #[test]
+    fn admin_history_byte_ledger_stays_in_sync_through_restore() {
+        let mut core = WorldCore::new("ledger-restore-sync", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        core.commit_prepared(WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 7,
+                provenance: None,
+                trust: None,
+            },
+        })
+        .unwrap();
+        for event in ["tick", "schedule"] {
+            core.record_admin_history(WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: format!(r#"{{"cap":"host","event":"{event}"}}"#),
+                },
+            });
+        }
+        let checkpoint = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        let restored =
+            WorldCore::restore("ledger-restore-sync", WorldLimits::default(), checkpoint).unwrap();
+        assert!(restored.core.admin_history_complete);
+        assert_eq!(
+            restored.core.admin_history_ledger.tracked(),
+            restored.core.admin_history.len()
+        );
+        let rescanned: usize = restored
+            .core
+            .admin_history
+            .iter()
+            .map(|event| serde_json::to_vec(event).unwrap().len())
+            .sum();
+        assert_eq!(
+            restored.core.admin_history_ledger.effective_bytes(),
+            rescanned
+        );
+    }
+
+    #[test]
+    fn restore_rejects_checkpoint_admin_history_over_the_byte_bound() {
+        let mut core = WorldCore::new("ledger-restore-bytes", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        core.commit_prepared(WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 7,
+                provenance: None,
+                trust: None,
+            },
+        })
+        .unwrap();
+        let mut checkpoint = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        if let Some(JournalEntry::Checkpoint { admin_history, .. }) = checkpoint.last_mut() {
+            *admin_history = Some(JournalAdminHistory {
+                events: vec![WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: "x".repeat(MAX_ADMIN_HISTORY_BYTES + 1),
+                    },
+                }],
+                complete: false,
+            });
+        } else {
+            panic!("checkpoint entry missing");
+        }
+        assert!(
+            WorldCore::restore("ledger-restore-bytes", WorldLimits::default(), checkpoint)
+                .is_err(),
+            "a checkpoint whose admin history exceeds the byte bound must be refused"
+        );
+    }
+
     #[tokio::test]
     async fn the_actor_journals_host_events_and_grants() {
         #[derive(Default, Clone)]
