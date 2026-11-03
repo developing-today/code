@@ -24,8 +24,14 @@
 //   - jules-review-state.json — keeper supervision entries annotate
 //     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
-//     (#899: tiers, dependencies, goal measurements), embedded as-is
-//     after a structural check; absent/malformed = section omitted.
+//     (#899: tiers, dependencies, goal measurements), embedded only
+//     after normalizeOrchestrationSection accepts it (the collector
+//     gate in the publisher -> collector -> aggregator contract,
+//     #1176); absent/malformed = section omitted. The publisher's
+//     pre-publish gate is `bun run contract:check -- --publisher
+//     <path>` (scripts/check-contract-corpus.ts), which runs this
+//     same validator; the shared corpus lives in
+//     test/contract-corpus/v1/.
 //   - the org GitHub Project "Developing Today" (#4, #910 stage 5) —
 //     read via GraphQL Projects v2 into the feed's `projects` pool.
 //     Token plumbing: GITHUB_PROJECT_TOKEN / GH_TOKEN from the env
@@ -89,6 +95,7 @@ import {
   type FleetFeed,
 } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
+import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import type {
   AaFeedSection,
   AaSection,
@@ -909,8 +916,7 @@ async function main(): Promise<void> {
   // instead of lying quietly. Fail-soft: any git problem becomes
   // state "unknown" with the reason, never a failed collection.
   const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
-  const feed: FleetFeed = {
-    version: 1,
+  const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     checkout,
     meta: { sections: sectionStatuses },
@@ -929,7 +935,7 @@ async function main(): Promise<void> {
     ...(projects ? { projects } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
-  };
+  });
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
