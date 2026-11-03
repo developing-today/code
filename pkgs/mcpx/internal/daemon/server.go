@@ -778,6 +778,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST "+takeoverRoute, s.handleTakeover)
 	s.route(mux, "POST "+upgradeRoute, s.handleUpgrade)
 	s.route(mux, "GET /v1/status", s.handleStatus)
+	// The permissive authorisation funnel's decision report (#1972
+	// step 2): counts by operation and principal, and the clear.
+	s.route(mux, "GET /v1/authz/decisions", s.handleAuthzDecisions)
+	s.route(mux, "DELETE /v1/authz/decisions", s.handleAuthzDecisionsClear)
 	// Server-sent events, because they are plain HTTP: they go through every
 	// proxy that HTTP goes through, reconnect themselves in a browser, and
 	// need nothing but a GET to consume. A WebSocket would buy
