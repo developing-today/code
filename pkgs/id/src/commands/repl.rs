@@ -101,6 +101,11 @@ use crate::{
     is_node_id, load_or_create_keypair, open_store,
 };
 
+/// Trim names entered at the forgiving REPL surface before calling FileOps.
+fn trim_file_name(name: &str) -> &str {
+    name.trim()
+}
+
 /// The current Unix time in seconds, or `0` if the clock is before the epoch.
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -534,6 +539,10 @@ impl ReplContext {
             (data, filename)
         };
 
+        // Forgiving REPL surface: trim what the user typed. FileOps stores
+        // names verbatim and refuses padding (#4102 / design #4766 Phase 3).
+        let filename = trim_file_name(&filename).to_owned();
+
         let store_handle = self.store_handle();
         let (hash, _guard) = add_raw(&store_handle, data).await?;
 
@@ -671,6 +680,7 @@ impl ReplContext {
     ///
     /// Returns an error if `from` is not found.
     pub async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = trim_file_name(to);
         let req = MetaRequest::Rename {
             from: from.to_owned(),
             to: to.to_owned(),
@@ -697,6 +707,7 @@ impl ReplContext {
     ///
     /// Returns an error if `from` is not found.
     pub async fn copy(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = trim_file_name(to);
         let req = MetaRequest::Copy {
             from: from.to_owned(),
             to: to.to_owned(),
@@ -930,6 +941,9 @@ impl ReplContext {
             );
             (data, filename)
         };
+
+        // The remote REPL path is still a forgiving user-facing surface.
+        let filename = trim_file_name(&filename).to_owned();
 
         let store_handle = self.store_handle();
         let (hash, _guard) = add_raw(&store_handle, data).await?;
@@ -1185,6 +1199,14 @@ impl MetaRequester for ReplContext {
 mod tests {
     use super::*;
     use iroh_base::SecretKey;
+
+    #[test]
+    fn user_entered_file_targets_are_trimmed_before_fileops() {
+        for input in [" report.txt", "report.txt ", "\treport.txt\n"] {
+            assert_eq!(trim_file_name(input), "report.txt");
+        }
+        assert_eq!(trim_file_name("my report.txt"), "my report.txt");
+    }
 
     fn announcement(name: Option<&str>) -> PeerAnnouncement {
         PeerAnnouncement {
