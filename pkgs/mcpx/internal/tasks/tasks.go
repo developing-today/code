@@ -463,8 +463,11 @@ const (
 	DefaultMaxTTL          = time.Hour
 	DefaultMaxPerRequestor = 32
 	DefaultPerMinute       = 120
-	DefaultCancelGrace     = 5 * time.Second
 )
+
+// DefaultCancelGrace is declared with the defaults (protoTasks.cancelGrace),
+// not here: the defaults guard forbids a package-level redeclaration.
+var DefaultCancelGrace = defaults.TaskCancelGrace
 
 // ErrPerRequestorCap is the named sentinel Start returns when a requestor
 // already holds MaxPerRequestor non-terminal tasks. The seams map it to
