@@ -23,6 +23,9 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
+use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
+use crate::notes::{NoteOp, check_note_op, is_note_kind};
+use crate::session_checkpoint::{SessionCheckpoint, check_session_checkpoint, is_checkpoint_kind};
 use crate::tag_claims::{TagOp, check_op, is_tag_kind};
 
 /// The domain tag every `ChainExt` carries, so this header type cannot be
@@ -115,6 +118,19 @@ pub struct ChainExt {
     /// The ID of the `document.put` a `document.remove` removes, and `None` for every other kind.
     /// It is signed with the header (P5.6).
     pub removes: Option<Hash>,
+    /// The note operation of a `note.create` or `note.revise`, and `None` for every
+    /// other kind. It is the note's body (#3814): signed with the header, so an event
+    /// carries its whole note operation, and sync needs no separate body.
+    pub note: Option<NoteOp>,
+    /// The note link operation of a `note.link`, and `None` for every other kind.
+    /// It is the link body (#3816): signed with the header, so an event carries
+    /// its whole link operation, and sync needs no separate body.
+    pub link: Option<NoteLinkOp>,
+    /// The session checkpoint of a `session.checkpoint`, and `None` for every
+    /// other kind. It is the checkpoint body (#3794): the session header and
+    /// the segment this checkpoint closes, signed with the header, so an
+    /// event carries its whole checkpoint, and sync needs no separate body.
+    pub checkpoint: Option<SessionCheckpoint>,
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
@@ -133,6 +149,12 @@ struct Wire {
     document: Option<DocumentRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     removes: Option<Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<NoteOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    link: Option<NoteLinkOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<SessionCheckpoint>,
 }
 
 impl From<ChainExt> for Wire {
@@ -145,6 +167,9 @@ impl From<ChainExt> for Wire {
             tag: ext.tag,
             document: ext.document,
             removes: ext.removes,
+            note: ext.note,
+            link: ext.link,
+            checkpoint: ext.checkpoint,
         }
     }
 }
@@ -163,6 +188,9 @@ impl TryFrom<Wire> for ChainExt {
             tag: wire.tag,
             document: wire.document,
             removes: wire.removes,
+            note: wire.note,
+            link: wire.link,
+            checkpoint: wire.checkpoint,
         };
         ext.validate()?;
         Ok(ext)
@@ -183,6 +211,8 @@ impl ChainExt {
     /// carry none. A removal kind must name the document it removes, and any
     /// other kind must name none. A removal carries no tag and no document, as
     /// any kind that is not a tag or a document kind must not.
+    /// A session checkpoint kind must carry a session checkpoint that passes
+    /// [`check_session_checkpoint`], and any other kind must carry none.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -251,6 +281,63 @@ impl ChainExt {
                 )));
             }
             (true, Some(_)) => {}
+        }
+        match (is_note_kind(&self.kind), &self.note) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a note operation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its note operation",
+                    self.kind
+                )));
+            }
+            (true, Some(op)) => {
+                check_note_op(&self.kind, op)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_note_link_kind(&self.kind), &self.link) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a note link operation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its note link operation",
+                    self.kind
+                )));
+            }
+            (true, Some(op)) => {
+                check_note_link_op(&self.kind, op)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_checkpoint_kind(&self.kind), &self.checkpoint) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a session checkpoint",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its session checkpoint",
+                    self.kind
+                )));
+            }
+            (true, Some(checkpoint)) => {
+                check_session_checkpoint(&self.kind, checkpoint)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
         }
         Ok(())
     }
@@ -404,7 +491,21 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
         }
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn unhex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// `count` distinct hashes: the digests of the counters `0..count`.
@@ -692,6 +793,85 @@ mod tests {
             assert!(decode(&event.bytes[..cut]).is_err(), "cut at {cut}");
         }
     }
+
+    /// A `session.checkpoint` event from fixed values, for the golden vector
+    /// below: the test key's session, two participants, segment 0 with an
+    /// audit blob.
+    fn checkpoint_event() -> Event {
+        use crate::session_checkpoint::{MacScope, SegmentCheckpoint, SessionHeader};
+
+        let author = key();
+        let other = SigningKey::from_bytes(&[7; 32]);
+        sign(
+            &author,
+            0,
+            None,
+            None,
+            ChainExt {
+                kind: "session.checkpoint".to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: Some(SessionCheckpoint {
+                    header: SessionHeader {
+                        session_id: hash(1),
+                        purpose: "collab editing".to_owned(),
+                        participants: vec![author.verifying_key(), other.verifying_key()],
+                        started_ms: 1_000,
+                        nonce: hash(2),
+                        mac_key_commitment: hash(3),
+                        mac_scope: MacScope::PerParticipant,
+                    },
+                    segment: SegmentCheckpoint {
+                        segment_seq: 0,
+                        prev_checkpoint: None,
+                        root: hash(4),
+                        event_count: 256,
+                        start_ms: 1_000,
+                        end_ms: 2_800,
+                        audit_blob: Some(hash(5)),
+                    },
+                }),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_session_checkpoint_golden_vector_is_pinned() {
+        const BYTES: &str = "8601582003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8584044bc9d648ffd9e02e2aab846e028b4581a49c4832be635ddacc2a5d3bd31f59a3395c4e85090336563040c8e24cc60bf15ce1a6e987d6ac474f99ac1cb93c50d0000a5646b696e647273657373696f6e2e636865636b706f696e74656166746572806567726f7570f666646f6d61696e6c69642e6576656e74732e76316a636865636b706f696e74a266686561646572a7656e6f6e63655820ab13bedf42e84bae0f7c62c7dd6a8ada571e8829bed6ea558217f0361b5e25d067707572706f73656e636f6c6c61622065646974696e67696d61635f73636f70656e5065725061727469636970616e746a73657373696f6e5f6964582048fc721fbbc172e0925fa27af1671de225ba927134802998b10a1568a188652b6a737461727465645f6d731903e86c7061727469636970616e747382582003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b85820ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c726d61635f6b65795f636f6d6d69746d656e745820e1e0e81d6ea39b0cf8b86ffd440921011f57400cbc3f76a8a171906a9b8d7505677365676d656e74a764726f6f7458200c389a743e34fda435fbd575bb889dbc0d3e66b9f9d81e00be33b7188509e7eb66656e645f6d73190af06873746172745f6d731903e86a61756469745f626c6f62582084cb40e74f0e856bb4bb91233e3cb74113533dca78a74f36f59edaa41895c9466b6576656e745f636f756e741901006b7365676d656e745f736571006f707265765f636865636b706f696e74f6";
+        const ID: &str = "4f6c1d23b5b47657e5e5a4d39da727c2613b8cfc00af23453934f44749845fa7";
+
+        let event = checkpoint_event();
+        assert_eq!(hex(&event.bytes), BYTES);
+        assert_eq!(event.id.to_hex(), ID);
+        assert_eq!(decode(&unhex(BYTES)).unwrap(), event);
+    }
+
+    #[test]
+    fn test_a_checkpoint_kind_without_its_checkpoint_is_refused() {
+        let err = sign(
+            &key(),
+            0,
+            None,
+            None,
+            ext("session.checkpoint", None, Vec::new()),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("session checkpoint"), "{err}");
+    }
+
+    #[test]
+    fn test_a_checkpoint_on_another_kind_is_refused() {
+        let mut ext = checkpoint_event().header.extensions.clone();
+        ext.kind = "message".to_owned();
+        let err = sign(&key(), 0, None, None, ext).unwrap_err();
+        assert!(err.to_string().contains("session checkpoint"), "{err}");
+    }
 }
 
 #[cfg(test)]
@@ -708,7 +888,7 @@ mod golden {
     use dcbor::{ByteString, CBOR};
     use p2panda_core::{AnyHeader, Hash, Header, SigningKey};
 
-    use super::{ChainExt, DOMAIN_TAG, Event, decode, sign};
+    use super::{decode, sign, ChainExt, Event, DOMAIN_TAG};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.
     fn key() -> SigningKey {
@@ -881,6 +1061,9 @@ mod golden {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             },
         )
         .unwrap();
@@ -897,6 +1080,9 @@ mod golden {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             },
         )
         .unwrap();

@@ -587,7 +587,7 @@ impl ReplContext {
             })?;
             send.write_all(&req).await?;
             send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp_buf = read_capped_response(&mut recv).await?;
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
             match resp {
@@ -979,7 +979,7 @@ impl ReplContext {
         })?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {
@@ -1023,7 +1023,7 @@ impl ReplContext {
         })?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {

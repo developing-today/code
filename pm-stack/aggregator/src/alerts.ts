@@ -68,6 +68,36 @@ export interface QuietPrefs {
   enabled?: boolean;
 }
 
+/** #3693: the public shape of a push subscription — everything the
+ * /alerts page already renders, minus the Web Push key material.
+ * p256dh + auth (RFC 8291 push-encryption secrets) never leave the
+ * server; delivery reads the full rows via the store instead. */
+export interface PublicPushSubscription {
+  id: string;
+  endpoint: string;
+  classes: Record<string, boolean>;
+  quiet: QuietPrefs;
+  user_agent: string | null;
+  created_at: string;
+  last_seen_at: string;
+  gone_count: number;
+}
+
+/** #3693: strip the push-encryption secrets before serializing a
+ * subscription to an HTTP response. */
+export function toPublicSubscription(sub: PushSubscriptionRow): PublicPushSubscription {
+  return {
+    id: sub.id,
+    endpoint: sub.endpoint,
+    classes: sub.classes,
+    quiet: sub.quiet,
+    user_agent: sub.user_agent,
+    created_at: sub.created_at,
+    last_seen_at: sub.last_seen_at,
+    gone_count: sub.gone_count,
+  };
+}
+
 // --- Pure helpers (unit-tested) ---------------------------------------------
 
 /** Design §1: the incident class defaults ON for new subscriptions. */
@@ -85,13 +115,32 @@ export function mergeClasses(input: unknown): Record<string, boolean> {
   return out;
 }
 
+/** #3686: clock-shape plus numeric range — hours 00–23, minutes 00–59.
+ * Shape-only checks accept impossible values (99:99, 24:60) that
+ * inQuietHours then reinterprets as a different window. */
+function isClockTime(s: string): boolean {
+  const m = /^(\d{2}):(\d{2})$/.exec(s);
+  if (!m) return false;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  return hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
+}
+
 export function mergeQuiet(input: unknown): QuietPrefs {
   const out = { ...DEFAULT_QUIET };
   if (input && typeof input === "object") {
     const q = input as Record<string, unknown>;
-    if (typeof q.start === "string" && /^\d{2}:\d{2}$/.test(q.start)) out.start = q.start;
-    if (typeof q.end === "string" && /^\d{2}:\d{2}$/.test(q.end)) out.end = q.end;
-    if (typeof q.tz === "string" && q.tz.trim()) out.tz = q.tz.trim();
+    if (typeof q.start === "string" && isClockTime(q.start)) out.start = q.start;
+    if (typeof q.end === "string" && isClockTime(q.end)) out.end = q.end;
+    if (typeof q.tz === "string" && q.tz.trim()) {
+      const tz = q.tz.trim();
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: tz });
+        out.tz = tz;
+      } catch {
+        // Keep the default timezone for an invalid stored preference.
+      }
+    }
     if (typeof q.enabled === "boolean") out.enabled = q.enabled;
   }
   return out;

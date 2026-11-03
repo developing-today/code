@@ -130,6 +130,9 @@
   // Drew: disable the provider, do NOT change the routes - every
   // seat and definition stays in place per the switchboard rule.
   // To re-enable after the pool resets: delete this one line.
+  // REVERSED 2026-11-02 (Drew, direct order): "muse-direct" leaves
+  // the list. The Meta pool reset at 2026-11-02T00:00:00Z and reads
+  // fresh 0% with 100 pts headroom; the door is back in service.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -154,8 +157,7 @@
     "muse",
     "antigravity-ls",
     "antigravity-agy",
-    "commandcode",
-    "muse-direct"
+    "commandcode"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
@@ -184,6 +186,10 @@
   "messaging": {
     "embedding": "off"
   },
+  // Provider catalogs for antigravity-direct, openai-codex, google, openai and
+  // cloudflare-gateway are sync-owned: their "models" live in the runtime overlay
+  // (~/.local/state/opencode/opencode-runtime.jsonc), layered over this file via
+  // OPENCODE_CONFIG — see code#4544. Everything else here is deliberate config.
   "provider": {
     "claude-code": {
       "npm": "@ai-sdk/openai-compatible",
@@ -349,465 +355,8 @@
       "options": {
         "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway/workers-ai/v1",
         "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
-      },
-      "models": {
-        "@cf/deepseek-ai/deepseek-v4-flash-0731": {
-          "name": "DeepSeek V4 Flash (1M Context, Agentic)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 16384
-          }
-        },
-        "@cf/deepseek-ai/deepseek-v4-pro-0813": {
-          "name": "DeepSeek V4 Pro (1M Context, Deep Reasoning)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "high",
-                "max_tokens": 16384
-              }
-            }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 16384
-          }
-        },
-        "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": {
-          "name": "DeepSeek R1 Distill Qwen 32B (Reasoning)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/zai-org/glm-5.3-flash": {
-          "name": "GLM 5.3 Flash (1M Context, Fast Agentic)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 16384
-          }
-        },
-        "@cf/zai-org/glm-5.3": {
-          "name": "GLM 5.3 Flagship (1.3M Context, Multimodal)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1310720,
-            "output": 16384
-          }
-        },
-        "@cf/meta/llama-4-scout-17b-16e-instruct": {
-          "name": "Llama 4 Scout 17B-16E (MoE, 131k Context)",
-          "variants": {
-            "low": {
-              "options": {
-                "temperature": 0.2
-              }
-            },
-            "medium": {
-              "options": {
-                "temperature": 0.5
-              }
-            },
-            "high": {
-              "options": {
-                "temperature": 0.7
-              }
-            }
-          },
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
-          "name": "Llama 3.3 70B Instruct Fast (24k Context, FP8)",
-          "limit": {
-            "context": 24000,
-            "output": 8192
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "temperature": 0.2
-              }
-            },
-            "medium": {
-              "options": {
-                "temperature": 0.5
-              }
-            },
-            "high": {
-              "options": {
-                "temperature": 0.7
-              }
-            }
-          }
-        },
-        "@cf/meta/llama-3.2-11b-vision-instruct": {
-          "name": "Llama 3.2 11B Vision Instruct (Multimodal)",
-          "limit": {
-            "context": 131072,
-            "output": 8192
-          }
-        },
-        "@cf/google/gemma-4-26b-a4b-it": {
-          "name": "Gemma 4 26B-A4B Instruct (Google Open Weights)",
-          "limit": {
-            "context": 131072,
-            "output": 8192
-          }
-        },
-        "@cf/qwen/qwen3.8-27b": {
-          "name": "Qwen 3.8 27B (262k Context)",
-          "limit": {
-            "context": 262144,
-            "output": 16384
-          }
-        },
-        "@cf/qwen/qwen3-30b-a3b-fp8": {
-          "name": "Qwen 3 MoE 30B-A3B (Edge Speed)",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/qwen/qwen2.5-coder-32b-instruct": {
-          "name": "Qwen 2.5 Coder 32B (Code Specialist)",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/qwen/qwq-32b": {
-          "name": "QwQ 32B (Thinking / Math & Architecture)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/moonshotai/kimi-k2.7-code": {
-          "name": "Kimi K2.7 Code (262k Context, Repo Analysis)",
-          "limit": {
-            "context": 262144,
-            "output": 16384
-          }
-        },
-        "@cf/mistralai/mistral-small-3.1-24b-instruct": {
-          "name": "Mistral Small 3.1 24B Instruct",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/openai/gpt-oss-120b": {
-          "name": "GPT-OSS 120B (Open-Weight Flagship)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/openai/gpt-oss-20b": {
-          "name": "GPT-OSS 20B (Open-Weight Latency Tier)",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          }
-        },
-        "@cf/cloudflare/clef": {
-          "name": "Cloudflare Clef 27B (Typed Classifier)",
-          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
-          "limit": {
-            "context": 32768,
-            "output": 4096
-          }
-        },
-        "@cf/cloudflare/clef-flash": {
-          "name": "Cloudflare Clef Flash 9B (Edge Classifier)",
-          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
-          "limit": {
-            "context": 32768,
-            "output": 4096
-          }
-        },
-        "@cf/meta/llama-guard-3-8b": {
-          "name": "Llama Guard 3 8B",
-          "limit": {
-            "context": 131072,
-            "output": 131072
-          }
-        },
-        "@cf/meta/llama-3.1-8b-instruct-fp8": {
-          "name": "Llama 3.1 8B Instruct fp8",
-          "limit": {
-            "context": 32000,
-            "output": 32000
-          }
-        },
-        "@cf/meta/llama-3.2-1b-instruct": {
-          "name": "Llama 3.2 1B Instruct",
-          "limit": {
-            "context": 60000,
-            "output": 60000
-          }
-        },
-        "@cf/meta/llama-3.2-3b-instruct": {
-          "name": "Llama 3.2 3B Instruct",
-          "limit": {
-            "context": 80000,
-            "output": 80000
-          }
-        },
-        "@cf/aisingapore/gemma-sea-lion-v4-27b-it": {
-          "name": "Gemma Sea Lion V4 27B It",
-          "limit": {
-            "context": 128000,
-            "output": 128000
-          }
-        },
-        "@cf/ibm-granite/granite-4.0-h-micro": {
-          "name": "Granite 4.0 H Micro",
-          "limit": {
-            "context": 131000,
-            "output": 131000
-          }
-        },
-        "@cf/moonshotai/kimi-k2.6": {
-          "name": "Kimi K2.6",
-          "limit": {
-            "context": 262144,
-            "output": 256000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "@cf/zai-org/glm-4.7-flash": {
-          "name": "GLM-4.7-Flash",
-          "limit": {
-            "context": 131072,
-            "output": 131072
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "@cf/zai-org/glm-5.2": {
-          "name": "Glm 5.2",
-          "limit": {
-            "context": 262144,
-            "output": 256000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "@cf/nvidia/nemotron-3-120b-a12b": {
-          "name": "Nemotron 3 Super 120B",
-          "limit": {
-            "context": 256000,
-            "output": 256000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
-          "name": "Deepseek V4.1 Flash 1017",
-          "limit": {
-            "context": 1048576,
-            "output": 1048576
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        }
       }
+      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
     // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file).
     "cloudflare-workers-ai": {},
@@ -1261,1136 +810,7 @@
 
       }
     },
-    "google": {
-      "models": {
-        "antigravity-claude-sonnet-5.5": {
-          "name": "Claude Sonnet 5.5 (Antigravity)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingConfig": {
-                "thinkingBudget": 4096
-              }
-            },
-            "medium": {
-              "thinkingConfig": {
-                "thinkingBudget": 16384
-              }
-            },
-            "high": {
-              "thinkingConfig": {
-                "thinkingBudget": 32768
-              }
-            },
-            "xhigh": {
-              "thinkingConfig": {
-                "thinkingBudget": 48000
-              }
-            },
-            "max": {
-              "thinkingConfig": {
-                "thinkingBudget": 64000
-              }
-            }
-          }
-        },
-        "antigravity-claude-sonnet-5.5-thinking": {
-          "name": "Claude Sonnet 5.5 Thinking (Antigravity)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingConfig": {
-                "thinkingBudget": 4096
-              }
-            },
-            "medium": {
-              "thinkingConfig": {
-                "thinkingBudget": 16384
-              }
-            },
-            "high": {
-              "thinkingConfig": {
-                "thinkingBudget": 32768
-              }
-            },
-            "xhigh": {
-              "thinkingConfig": {
-                "thinkingBudget": 48000
-              }
-            },
-            "max": {
-              "thinkingConfig": {
-                "thinkingBudget": 64000
-              }
-            }
-          }
-        },
-        "antigravity-claude-sonnet-5-5": {
-          "name": "Claude Sonnet 5.5 (Antigravity, agy-compat)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingConfig": {
-                "thinkingBudget": 4096
-              }
-            },
-            "medium": {
-              "thinkingConfig": {
-                "thinkingBudget": 16384
-              }
-            },
-            "high": {
-              "thinkingConfig": {
-                "thinkingBudget": 32768
-              }
-            },
-            "xhigh": {
-              "thinkingConfig": {
-                "thinkingBudget": 48000
-              }
-            },
-            "max": {
-              "thinkingConfig": {
-                "thinkingBudget": 64000
-              }
-            }
-          }
-        },
-        "antigravity-claude-opus-5.5": {
-          "name": "Claude Opus 5.5 (Antigravity)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingConfig": {
-                "thinkingBudget": 8192
-              }
-            },
-            "medium": {
-              "thinkingConfig": {
-                "thinkingBudget": 16384
-              }
-            },
-            "high": {
-              "thinkingConfig": {
-                "thinkingBudget": 32768
-              }
-            },
-            "xhigh": {
-              "thinkingConfig": {
-                "thinkingBudget": 48000
-              }
-            },
-            "max": {
-              "thinkingConfig": {
-                "thinkingBudget": 64000
-              }
-            }
-          }
-        },
-        "antigravity-claude-opus-5.5-thinking": {
-          "name": "Claude Opus 5.5 Thinking (Antigravity)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingConfig": {
-                "thinkingBudget": 8192
-              }
-            },
-            "medium": {
-              "thinkingConfig": {
-                "thinkingBudget": 16384
-              }
-            },
-            "high": {
-              "thinkingConfig": {
-                "thinkingBudget": 32768
-              }
-            },
-            "xhigh": {
-              "thinkingConfig": {
-                "thinkingBudget": 48000
-              }
-            },
-            "max": {
-              "thinkingConfig": {
-                "thinkingBudget": 64000
-              }
-            }
-          }
-        },
-        "antigravity-claude-opus-5-5": {
-          "name": "Claude Opus 5.5 (Antigravity, agy-compat)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingConfig": {
-                "thinkingBudget": 8192
-              }
-            },
-            "medium": {
-              "thinkingConfig": {
-                "thinkingBudget": 16384
-              }
-            },
-            "high": {
-              "thinkingConfig": {
-                "thinkingBudget": 32768
-              }
-            },
-            "xhigh": {
-              "thinkingConfig": {
-                "thinkingBudget": 48000
-              }
-            },
-            "max": {
-              "thinkingConfig": {
-                "thinkingBudget": 64000
-              }
-            }
-          }
-        },
-        "antigravity-claude-sonnet-4-6": {
-          "name": "Claude Sonnet 4.6 (Antigravity)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          }
-        },
-        "antigravity-claude-opus-4-6-thinking": {
-          "name": "Claude Opus 4.6 Thinking (Antigravity)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingConfig": {
-                "thinkingBudget": 8192
-              }
-            },
-            "medium": {
-              "thinkingConfig": {
-                "thinkingBudget": 16384
-              }
-            },
-            "high": {
-              "thinkingConfig": {
-                "thinkingBudget": 32768
-              }
-            },
-            "max": {
-              "thinkingConfig": {
-                "thinkingBudget": 64000
-              }
-            }
-          }
-        },
-        "antigravity-gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash (Antigravity)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "minimal": {
-              "thinkingLevel": "minimal"
-            },
-            "low": {
-              "thinkingLevel": "low"
-            },
-            "medium": {
-              "thinkingLevel": "medium"
-            },
-            "high": {
-              "thinkingLevel": "high"
-            },
-            "max": {
-              "thinkingLevel": "high"
-            }
-          }
-        },
-        "antigravity-gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash (Antigravity)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "minimal": {
-              "thinkingLevel": "minimal"
-            },
-            "low": {
-              "thinkingLevel": "low"
-            },
-            "medium": {
-              "thinkingLevel": "medium"
-            },
-            "high": {
-              "thinkingLevel": "high"
-            }
-          }
-        },
-        "antigravity-gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash (Antigravity)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingLevel": "low"
-            },
-            "medium": {
-              "thinkingLevel": "medium"
-            },
-            "high": {
-              "thinkingLevel": "high"
-            }
-          }
-        },
-        "antigravity-gemini-3.1-pro": {
-          "name": "Gemini 3.1 Pro (Antigravity)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "modalities": {
-            "input": [
-              "text",
-              "image",
-              "pdf"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingLevel": "low"
-            },
-            "high": {
-              "thinkingLevel": "high"
-            },
-            "max": {
-              "thinkingLevel": "high"
-            }
-          }
-        },
-        "antigravity-gpt-oss-120b": {
-          "name": "GPT-OSS 120B (Antigravity)",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          },
-          "modalities": {
-            "input": [
-              "text"
-            ],
-            "output": [
-              "text"
-            ]
-          },
-          "variants": {
-            "low": {
-              "thinkingLevel": "low"
-            },
-            "medium": {
-              "thinkingLevel": "medium"
-            },
-            "high": {
-              "thinkingLevel": "high"
-            }
-          }
-        },
-        "gemini-flash-latest": {
-          "name": "Gemini Flash Latest",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemma-4-31b-it": {
-          "name": "Gemma 4 31B IT",
-          "limit": {
-            "context": 262144,
-            "output": 32768
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-omni-flash-preview": {
-          "name": "Gemini Omni Flash Preview",
-          "limit": {
-            "context": 131072,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3.1-flash-image-preview": {
-          "name": "Nano Banana 2",
-          "limit": {
-            "context": 65536,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "veo-3.1-lite-generate-preview": {
-          "name": "Veo 3.1 lite",
-          "limit": {
-            "context": 480,
-            "output": 8192
-          }
-        },
-        "lyria-3-pro-preview": {
-          "name": "Lyria 3 Pro Preview",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-flash-tts-preview": {
-          "name": "Gemini 3.1 Flash TTS Preview",
-          "limit": {
-            "context": 8192,
-            "output": 16384
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-2.5-flash-image": {
-          "name": "Nano Banana",
-          "limit": {
-            "context": 32768,
-            "output": 32768
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-flash-lite-latest": {
-          "name": "Gemini Flash-Lite Latest",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-embedding-2": {
-          "name": "Gemini Embedding 2",
-          "limit": {
-            "context": 8192,
-            "output": 1
-          }
-        },
-        "gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemma-4-26b-a4b-it": {
-          "name": "Gemma 4 26B A4B IT",
-          "limit": {
-            "context": 262144,
-            "output": 32768
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3-pro-image-preview": {
-          "name": "Nano Banana Pro",
-          "limit": {
-            "context": 131072,
-            "output": 32768
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-2.5-pro-preview-tts": {
-          "name": "Gemini 2.5 Pro Preview TTS",
-          "limit": {
-            "context": 8192,
-            "output": 16384
-          }
-        },
-        "gemini-3.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3.1-flash-image": {
-          "name": "Nano Banana 2",
-          "limit": {
-            "context": 131072,
-            "output": 32768
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "lyria-3-clip-preview": {
-          "name": "Lyria 3 Clip Preview",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-pro-preview": {
-          "name": "Gemini 3.1 Pro Preview",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-2.5-computer-use-preview-10-2025": {
-          "name": "Gemini 2.5 Computer Use Preview 10-2025",
-          "limit": {
-            "context": 128000,
-            "output": 64000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3.5-flash": {
-          "name": "Gemini 3.5 Flash",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3-pro-image": {
-          "name": "Nano Banana Pro",
-          "limit": {
-            "context": 65536,
-            "output": 32768
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-2.5-flash": {
-          "name": "Gemini 2.5 Flash",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-2.5-flash-preview-tts": {
-          "name": "Gemini 2.5 Flash Preview TTS",
-          "limit": {
-            "context": 8192,
-            "output": 16384
-          }
-        },
-        "gemini-3.1-flash-lite-image": {
-          "name": "Nano Banana 2 Lite",
-          "limit": {
-            "context": 65536,
-            "output": 4096
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "deep-research-preview-04-2026": {
-          "name": "Deep Research Preview (Apr-21-2026)",
-          "limit": {
-            "context": 131072,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "deep-research-max-preview-04-2026": {
-          "name": "Deep Research Max Preview (Apr-21-2026)",
-          "limit": {
-            "context": 131072,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "veo-3.1-fast-generate-preview": {
-          "name": "Veo 3.1 fast",
-          "limit": {
-            "context": 480,
-            "output": 8192
-          }
-        },
-        "gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "veo-3.1-generate-preview": {
-          "name": "Veo 3.1",
-          "limit": {
-            "context": 480,
-            "output": 8192
-          }
-        },
-        "gemini-3.1-pro-preview-customtools": {
-          "name": "Gemini 3.1 Pro Preview Custom Tools",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3-flash-preview": {
-          "name": "Gemini 3 Flash Preview",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3.5-live-translate-preview": {
-          "name": "Gemini 3.5 Live Translate Preview",
-          "limit": {
-            "context": 16384,
-            "output": 32768
-          }
-        },
-        "gemini-2.5-flash-lite": {
-          "name": "Gemini 2.5 Flash-Lite",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-embedding-001": {
-          "name": "Gemini Embedding 001",
-          "limit": {
-            "context": 2048,
-            "output": 1
-          }
-        },
-        "gemini-3.1-flash-lite-preview": {
-          "name": "Gemini 3.1 Flash Lite Preview",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3.1-flash-live-preview": {
-          "name": "Gemini 3.1 Flash Live Preview",
-          "limit": {
-            "context": 131072,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-3.1-flash-lite": {
-          "name": "Gemini 3.1 Flash Lite",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-4-argon": {
-          "name": "Gemini 4 Argon",
-          "limit": {
-            "context": 1048576,
-            "output": 32768
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        },
-        "gemini-pro-latest": {
-          "name": "Gemini Pro Latest",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "thinkingLevel": "low"
-              }
-            },
-            "high": {
-              "options": {
-                "thinkingLevel": "high"
-              }
-            }
-          }
-        }
-      }
-    },
+    // "google": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     "antigravity-agy": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity CLI (via agy)",
@@ -2653,221 +1073,8 @@
       "options": {
         "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_DIRECT_PORT:-18751}/v1",
         "apiKey": "antigravity-direct-local"
-      },
-      "models": {
-        "gemini-4-argon": {
-          "name": "Gemini 4 Argon (direct)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-4-argon-low": {
-          "name": "Gemini 4 Argon Low (direct)"
-        },
-        "gemini-4-argon-medium": {
-          "name": "Gemini 4 Argon Medium (direct)"
-        },
-        "gemini-4-argon-high": {
-          "name": "Gemini 4 Argon High (direct)"
-        },
-        "gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash (direct)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.8-flash-low": {
-          "name": "Gemini 3.8 Flash Low (direct)"
-        },
-        "gemini-3.8-flash-medium": {
-          "name": "Gemini 3.8 Flash Medium (direct)"
-        },
-        "gemini-3.8-flash-high": {
-          "name": "Gemini 3.8 Flash High (direct)"
-        },
-        "claude-sonnet-5-5": {
-          "name": "Claude Sonnet 5.5 (direct)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "claude-sonnet-5-5-low": {
-          "name": "Claude Sonnet 5.5 Low (direct)"
-        },
-        "claude-sonnet-5-5-medium": {
-          "name": "Claude Sonnet 5.5 Medium (direct)"
-        },
-        "claude-sonnet-5-5-high": {
-          "name": "Claude Sonnet 5.5 High (direct)"
-        },
-        "claude-opus-5-5": {
-          "name": "Claude Opus 5.5 (direct)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "claude-opus-5-5-low": {
-          "name": "Claude Opus 5.5 Low (direct)"
-        },
-        "claude-opus-5-5-medium": {
-          "name": "Claude Opus 5.5 Medium (direct)"
-        },
-        "claude-opus-5-5-high": {
-          "name": "Claude Opus 5.5 High (direct)"
-        },
-        "gpt-oss-120b": {
-          "name": "GPT-OSS 120B (direct)",
-          "limit": {
-            "context": 131072,
-            "output": 16384
-          },
-          "variants": {
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            }
-          }
-        },
-        "gpt-oss-120b-medium": {
-          "name": "GPT-OSS 120B Medium (direct)"
-        },
-        "gemini-2.5-flash": {
-          "name": "Gemini 3.5 Flash Lite (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-flash-thinking": {
-          "name": "Gemini 3.5 Flash Lite (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3-flash": {
-          "name": "Gemini 3 Flash (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-flash-image": {
-          "name": "Gemini 3.1 Flash Image (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.1-flash-lite": {
-          "name": "Gemini 3.1 Flash Lite (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        },
-        "gemini-3.8-flash-tiered": {
-          "name": "gemini-3.8-flash-tiered (direct)",
-          "limit": {
-            "context": 1048576,
-            "output": 65536
-          }
-        }
       }
+      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
     "antigravity-ls": {
       "npm": "@ai-sdk/openai-compatible",
@@ -3104,1237 +1311,15 @@
 
       }
     },
-    "openai": {
-      "models": {
-        "gpt-4o": {
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          }
-        },
-        "gpt-4o-mini": {
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          }
-        },
-        "o1": {
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          }
-        },
-        "o3-mini": {
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          }
-        },
-        "gpt-5.6-sol": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-sol-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-luna": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-luna-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-terra": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-terra-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6-sol": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6-sol-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-sol": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-sol-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-terra": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6-luna": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6-luna-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6-astra": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6-astra-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.5": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.5-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.4": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.4-pro": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5.5-pro": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-5": {
-          "limit": {
-            "context": 400000,
-            "output": 128000
-          }
-        },
-        "gpt-5-mini": {
-          "limit": {
-            "context": 400000,
-            "output": 128000
-          }
-        },
-        "gpt-5.1": {
-          "limit": {
-            "context": 400000,
-            "output": 128000
-          }
-        },
-        "gpt-5.2": {
-          "limit": {
-            "context": 400000,
-            "output": 128000
-          }
-        },
-        "gpt-5.3-codex": {
-          "limit": {
-            "context": 400000,
-            "output": 128000
-          }
-        },
-        "gpt-5.4-mini": {
-          "limit": {
-            "context": 400000,
-            "output": 128000
-          }
-        },
-        "chatgpt-image-latest": {
-          "name": "chatgpt-image-latest",
-          "limit": {
-            "context": 0,
-            "input": 0,
-            "output": 0
-          }
-        },
-        "gpt-3.5-turbo": {
-          "name": "GPT-3.5-turbo",
-          "limit": {
-            "context": 16385,
-            "output": 4096
-          }
-        },
-        "text-embedding-3-small": {
-          "name": "text-embedding-3-small",
-          "limit": {
-            "context": 8191,
-            "output": 1536
-          }
-        },
-        "gpt-5.4-nano": {
-          "name": "GPT-5.4 nano",
-          "limit": {
-            "context": 400000,
-            "input": 272000,
-            "output": 128000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-realtime-2.1": {
-          "name": "GPT-Realtime-2.1",
-          "limit": {
-            "context": 128000,
-            "input": 96000,
-            "output": 32000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-4o-2024-05-13": {
-          "name": "GPT-4o (2024-05-13)",
-          "limit": {
-            "context": 128000,
-            "output": 4096
-          }
-        },
-        "gpt-image-2": {
-          "name": "gpt-image-2",
-          "limit": {
-            "context": 0,
-            "input": 0,
-            "output": 0
-          }
-        },
-        "gpt-5.2-pro": {
-          "name": "GPT-5.2 Pro",
-          "limit": {
-            "context": 400000,
-            "input": 272000,
-            "output": 128000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "o4-mini": {
-          "name": "o4-mini",
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "text-embedding-ada-002": {
-          "name": "text-embedding-ada-002",
-          "limit": {
-            "context": 8192,
-            "output": 1536
-          }
-        },
-        "gpt-4": {
-          "name": "GPT-4",
-          "limit": {
-            "context": 8192,
-            "output": 8192
-          }
-        },
-        "gpt-4.1-nano": {
-          "name": "GPT-4.1 nano",
-          "limit": {
-            "context": 1047576,
-            "output": 32768
-          }
-        },
-        "gpt-5-nano": {
-          "name": "GPT-5 Nano",
-          "limit": {
-            "context": 400000,
-            "input": 272000,
-            "output": 128000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-5.6": {
-          "name": "GPT-5.6",
-          "limit": {
-            "context": 1050000,
-            "input": 922000,
-            "output": 128000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-5.2-chat-latest": {
-          "name": "GPT-5.2 Chat",
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-5-pro": {
-          "name": "GPT-5 Pro",
-          "limit": {
-            "context": 400000,
-            "input": 272000,
-            "output": 272000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-5.3-codex-spark": {
-          "name": "GPT-5.3 Codex Spark",
-          "limit": {
-            "context": 128000,
-            "input": 100000,
-            "output": 32000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "text-embedding-3-large": {
-          "name": "text-embedding-3-large",
-          "limit": {
-            "context": 8191,
-            "output": 3072
-          }
-        },
-        "gpt-4o-2024-08-06": {
-          "name": "GPT-4o (2024-08-06)",
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          }
-        },
-        "o3-pro": {
-          "name": "o3-pro",
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-image-1": {
-          "name": "gpt-image-1",
-          "limit": {
-            "context": 0,
-            "input": 0,
-            "output": 0
-          }
-        },
-        "gpt-daybreak-blue-latest": {
-          "name": "Daybreak Blue",
-          "limit": {
-            "context": 1050000,
-            "input": 922000,
-            "output": 128000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "gpt-4.1": {
-          "name": "GPT-4.1",
-          "limit": {
-            "context": 1047576,
-            "output": 32768
-          }
-        },
-        "gpt-4o-2024-11-20": {
-          "name": "GPT-4o (2024-11-20)",
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          }
-        },
-        "gpt-4.1-mini": {
-          "name": "GPT-4.1 mini",
-          "limit": {
-            "context": 1047576,
-            "output": 32768
-          }
-        },
-        "gpt-5.3-chat-latest": {
-          "name": "GPT-5.3 Chat (latest)",
-          "limit": {
-            "context": 128000,
-            "output": 16384
-          }
-        },
-        "gpt-image-1-mini": {
-          "name": "gpt-image-1-mini",
-          "limit": {
-            "context": 0,
-            "input": 0,
-            "output": 0
-          }
-        },
-        "gpt-image-1.5": {
-          "name": "gpt-image-1.5",
-          "limit": {
-            "context": 0,
-            "input": 0,
-            "output": 0
-          }
-        },
-        "gpt-4-turbo": {
-          "name": "GPT-4 Turbo",
-          "limit": {
-            "context": 128000,
-            "output": 4096
-          }
-        },
-        "gpt-daybreak-red-latest": {
-          "name": "Daybreak Red",
-          "limit": {
-            "context": 400000,
-            "input": 272000,
-            "output": 128000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "o3": {
-          "name": "o3",
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        },
-        "o1-pro": {
-          "name": "o1-pro",
-          "limit": {
-            "context": 200000,
-            "output": 100000
-          },
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            }
-          }
-        }
-      }
-    },
+    // "openai": model catalog maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     "openai-codex": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenAI Codex CLI (via codex)",
       "options": {
         "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
         "apiKey": "codex-local"
-      },
-      "models": {
-        "gpt-6.1-sol": {
-          "name": "GPT-6.1 Sol (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-terra": {
-          "name": "GPT-6.1 Terra (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6-astra": {
-          "name": "GPT-6 Astra (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6-sol": {
-          "name": "GPT-6 Sol (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6-luna": {
-          "name": "GPT-6 Luna (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-sol": {
-          "name": "GPT-5.6 Sol (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-terra": {
-          "name": "GPT-5.6 Terra (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.6-luna": {
-          "name": "GPT-5.6 Luna (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-5.5": {
-          "name": "GPT-5.5 (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-reserve": {
-          "name": "GPT Reserve (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "codex-auto-review": {
-          "name": "Codex Auto Review",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-sol-low": {
-          "name": "GPT-6.1 Sol Low (codex)"
-        },
-        "gpt-6.1-sol-medium": {
-          "name": "GPT-6.1 Sol Medium (codex)"
-        },
-        "gpt-6.1-sol-high": {
-          "name": "GPT-6.1 Sol High (codex)"
-        },
-        "gpt-6.1-sol-xhigh": {
-          "name": "GPT-6.1 Sol XHigh (codex)"
-        },
-        "gpt-6.1-sol-max": {
-          "name": "GPT-6.1 Sol Max (codex)"
-        },
-        "gpt-6.1-sol-ultra": {
-          "name": "GPT-6.1 Sol Ultra (codex)"
-        },
-        "gpt-6-astra-low": {
-          "name": "GPT-6 Astra Low (codex)"
-        },
-        "gpt-6-astra-medium": {
-          "name": "GPT-6 Astra Medium (codex)"
-        },
-        "gpt-6-astra-high": {
-          "name": "GPT-6 Astra High (codex)"
-        },
-        "gpt-6-astra-xhigh": {
-          "name": "GPT-6 Astra XHigh (codex)"
-        },
-        "gpt-6-astra-max": {
-          "name": "GPT-6 Astra Max (codex)"
-        },
-        "gpt-6-astra-ultra": {
-          "name": "GPT-6 Astra Ultra (codex)"
-        },
-        "gpt-6-sol-low": {
-          "name": "GPT-6 Sol Low (codex)"
-        },
-        "gpt-6-sol-medium": {
-          "name": "GPT-6 Sol Medium (codex)"
-        },
-        "gpt-6-sol-high": {
-          "name": "GPT-6 Sol High (codex)"
-        },
-        "gpt-6-sol-xhigh": {
-          "name": "GPT-6 Sol XHigh (codex)"
-        },
-        "gpt-6-sol-max": {
-          "name": "GPT-6 Sol Max (codex)"
-        },
-        "gpt-6-sol-ultra": {
-          "name": "GPT-6 Sol Ultra (codex)"
-        },
-        "gpt-6-luna-low": {
-          "name": "GPT-6 Luna Low (codex)"
-        },
-        "gpt-6-luna-medium": {
-          "name": "GPT-6 Luna Medium (codex)"
-        },
-        "gpt-6-luna-high": {
-          "name": "GPT-6 Luna High (codex)"
-        },
-        "gpt-6-luna-xhigh": {
-          "name": "GPT-6 Luna XHigh (codex)"
-        },
-        "gpt-6-luna-max": {
-          "name": "GPT-6 Luna Max (codex)"
-        },
-        "gpt-5.6-sol-low": {
-          "name": "GPT-5.6 Sol Low (codex)"
-        },
-        "gpt-5.6-sol-medium": {
-          "name": "GPT-5.6 Sol Medium (codex)"
-        },
-        "gpt-5.6-sol-high": {
-          "name": "GPT-5.6 Sol High (codex)"
-        },
-        "gpt-5.6-sol-xhigh": {
-          "name": "GPT-5.6 Sol XHigh (codex)"
-        },
-        "gpt-5.6-sol-max": {
-          "name": "GPT-5.6 Sol Max (codex)"
-        },
-        "gpt-5.6-sol-ultra": {
-          "name": "GPT-5.6 Sol Ultra (codex)"
-        },
-        "gpt-5.6-terra-low": {
-          "name": "GPT-5.6 Terra Low (codex)"
-        },
-        "gpt-5.6-terra-medium": {
-          "name": "GPT-5.6 Terra Medium (codex)"
-        },
-        "gpt-5.6-terra-high": {
-          "name": "GPT-5.6 Terra High (codex)"
-        },
-        "gpt-5.6-terra-xhigh": {
-          "name": "GPT-5.6 Terra XHigh (codex)"
-        },
-        "gpt-5.6-terra-max": {
-          "name": "GPT-5.6 Terra Max (codex)"
-        },
-        "gpt-5.6-terra-ultra": {
-          "name": "GPT-5.6 Terra Ultra (codex)"
-        },
-        "gpt-5.6-luna-low": {
-          "name": "GPT-5.6 Luna Low (codex)"
-        },
-        "gpt-5.6-luna-medium": {
-          "name": "GPT-5.6 Luna Medium (codex)"
-        },
-        "gpt-5.6-luna-high": {
-          "name": "GPT-5.6 Luna High (codex)"
-        },
-        "gpt-5.6-luna-xhigh": {
-          "name": "GPT-5.6 Luna XHigh (codex)"
-        },
-        "gpt-5.6-luna-max": {
-          "name": "GPT-5.6 Luna Max (codex)"
-        },
-        "gpt-5.5-low": {
-          "name": "GPT-5.5 Low (codex)"
-        },
-        "gpt-5.5-medium": {
-          "name": "GPT-5.5 Medium (codex)"
-        },
-        "gpt-5.5-high": {
-          "name": "GPT-5.5 High (codex)"
-        },
-        "gpt-5.5-xhigh": {
-          "name": "GPT-5.5 XHigh (codex)"
-        },
-        "gpt-reserve-low": {
-          "name": "GPT Reserve Low (codex)"
-        },
-        "gpt-reserve-medium": {
-          "name": "GPT Reserve Medium (codex)"
-        },
-        "gpt-reserve-high": {
-          "name": "GPT Reserve High (codex)"
-        },
-        "gpt-reserve-xhigh": {
-          "name": "GPT Reserve XHigh (codex)"
-        },
-        "gpt-reserve-max": {
-          "name": "GPT Reserve Max (codex)"
-        },
-        "codex-auto-review-low": {
-          "name": "Codex Auto Review Low (codex)"
-        },
-        "codex-auto-review-medium": {
-          "name": "Codex Auto Review Medium (codex)"
-        },
-        "codex-auto-review-high": {
-          "name": "Codex Auto Review High (codex)"
-        },
-        "codex-auto-review-xhigh": {
-          "name": "Codex Auto Review XHigh (codex)"
-        },
-        "codex-auto-review-max": {
-          "name": "Codex Auto Review Max (codex)"
-        }
-
       }
+      // "models": maintained by sync-models in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc) — see code#4544.
     },
     "chatgpt": {
       "npm": "@ai-sdk/openai-compatible",
@@ -6039,7 +3024,7 @@
           }
     }
   },
-  "agent": {
+  "agents": {
     "build": {
       "mode": "all",
       "permissions": [
@@ -6530,7 +3515,7 @@
     "provider": "random"
   },
   "warming": true,
-  "plugin": [
+  "plugins": [
     // "@pieliesdie/opencode-antigravity-auth@2.0.0", -- disabled 2026-10-24: direct-auth/API-key agy route off; plan agy runs via the antigravity-ls proxy only
     "opencode-working-memory@latest",
     "opencode-scheduler@latest",
@@ -6564,6 +3549,129 @@
       // Per-model pools join every plan provider serving a model; tier pools nest them.
       // Plan routes only. (The DeepSeek PAYG reserve that used to tail the
       // deepseek-flash route was removed 2026-10-27 — see that route.)
+      // Design-code personas (2026-11-02, opencode#1413): the 11 virtual
+      // personas of bin/design-code-proxy.mjs (:18746) carried as routes —
+      // each persona id is the route name, its recipe (primary then
+      // fallback, ordered) is the target list, and the door's injected
+      // design system prompt is the route's `system` (fork support:
+      // opencode#1413 persona-routes PR; the prompt leads any caller
+      // system text, exactly as the door composed it). Antigravity legs
+      // sit on antigravity-direct (:18751) per the #1409 repoint
+      // (code#4626); codex legs on openai-codex (:18744). The door's
+      // keyword fallback for unknown gpt/codex-shaped ids has no route
+      // equivalent and is not carried: unknown ids fail selection
+      // cleanly, as they did at the door (400) via the façade envelope.
+
+      "claude-haiku-5.5": {
+        "name": "Claude Haiku 5.5 (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/claude-sonnet-5-5",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "gpt-6-luna": {
+        "name": "GPT-6 Luna (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6-luna",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "gpt-6.1-sol": {
+        "name": "GPT-6.1 Sol (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6.1-sol",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "deepseek-v4.1-flash": {
+        "name": "DeepSeek V4.1 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "glm-5.3-flash": {
+        "name": "GLM 5.3 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "glm-5.3-flashx": {
+        "name": "GLM 5.3 FlashX (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "mimo-v2.6-flash": {
+        "name": "MIMO v2.6 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "mimo-v2.6-pro": {
+        "name": "MIMO v2.6 Pro (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-6.1-sol"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "design-code-pro": {
+        "name": "Design Code Pro",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-6.1-sol"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "design-code-flash": {
+        "name": "Design Code Flash",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "open-design-pro": {
+        "name": "Open Design Pro",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6.1-sol",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "deepseek-flash-plan": {
         "name": "DeepSeek Flash - plan providers",
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
@@ -6738,6 +3846,14 @@
         // main the reserve) at the pair's previous combined weight
         // (1.5 + 1 = 2.5). The Go burn-by-expiry weights (3/2) above
         // are untouched.
+        // 2026-11-02 (Drew, refinement): the full plan pool is
+        // restored. The workhorse rule (Luna only from the OpenAI
+        // plans, the doors with no DeepSeek) is applied at the
+        // workhorse-primary seat, which now addresses
+        // openai-plan/gpt-6-luna#xhigh directly; this route keeps
+        // every Luna plan door for its other callers (small-100k)
+        // and for deliberate use. The same-day trim of this route
+        // is reverted - it had blast radius beyond workhorse.
         "targets": [
           "openai-plan/gpt-6-luna",
           {
@@ -7110,8 +4226,22 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      "workhorse-ordered": {
+        "name": "Workhorse ordered - DeepSeek Flash plan first, strictly ordered",
+        // 2026-11-03 (Drew): a dedicated ordered pool in FRONT of
+        // workhorse-primary inside the workhorse chain, seating ONLY
+        // deepseek-flash-plan#high. Workhorse traffic tries this pool
+        // first; the pool yields nothing ready when every Flash door is
+        // walled or demoted, and the chain falls through to
+        // workhorse-primary unchanged. deepseek-flash-plan KEEPS its
+        // workhorse-primary seat (weight 2) in the same edit - this is
+        // an addition, not a move.
+        "targets": ["opencode-route/deepseek-flash-plan#high"],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex only: Luna",
+        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor) + DeepSeek Flash plan",
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
@@ -7196,13 +4326,53 @@
         // (antigravity-ls/gemini-3.8-flash -- the tool-capable Gemini
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
+        // 2026-11-02 (Drew, direct order): Meta joins as CO-PRIMARY
+        // alongside Codex. muse-direct/muse-spark-1.3-contributor
+        // takes a primary seat at weight 2, equal with luna-plan's
+        // 2 — round-robin co-primaries. Why now: the Meta pool reset
+        // 2026-11-02T00:00:00Z fresh at 0% (100 pts, required
+        // ~14.9/day to land at reset) while Codex projects
+        // exhaustion tonight; muse-direct was re-enabled this
+        // morning after its 2026-11-01 park. Spark ALSO keeps its
+        // workhorse-weighted seat (spark-plan#xhigh) — this seat is
+        // additive, the same shape as the 2026-10-29 wrapper.
+        // 2026-11-02 (effort audit, Drew asked): the Spark leg takes its
+        // #xhigh pin, matching every other Spark seat in the fleet
+        // (workhorse-weighted relief, specialist, speed) and the
+        // price-per-point rulings behind them: AA/workbook Spark
+        // xhigh II 45 @ $1.37/task = $0.030/pt beats max II 48 @
+        // $1.60 = $0.033/pt, and Drew dropped specialist Spark
+        // max -> xhigh 2026-11-01 on the same math. The Luna leg
+        // was already correct: luna-plan#xhigh at $0.114 per 100
+        // score pts (AA v5) is the Luna elbow - max jumps to $0.184
+        // for its 38-pt ceiling. The bare Spark seat was the only
+        // unpinned effort in the tier (ledger: variant NULL).
+        // 2026-11-02 (Drew, refinement): the Luna leg seats the
+        // openai-plan leaf directly (openai-plan/gpt-6-luna#xhigh)
+        // instead of routing through luna-plan: the workhorse-only
+        // rule - Luna only from the OpenAI plans, the doors with no
+        // DeepSeek - belongs to this seat, not to the shared plan
+        // route. luna-plan keeps its full pool (see its own note).
+        // 2026-11-02 (Drew): DeepSeek Flash plan moves INTO primary
+        // from workhorse-weighted: opencode-route/deepseek-flash-plan#high
+        // takes a primary seat at weight 2, equal with Luna and Spark -
+        // three-way round-robin. Its weighted-pool seat is removed in
+        // the same edit (a move, not an addition); workhorse-weighted
+        // keeps haiku-plan#high w2 and spark-plan#xhigh w1. Side
+        // benefit: a third of primary picks leave the Meta pool, which
+        // is pacing to exhaust days before its Nov 9 reset; quota
+        // demotion sheds any walled Flash door on its own.
         "targets": [
-          "opencode-route/luna-plan#xhigh"
+          "openai-plan/gpt-6-luna#xhigh",
+          "muse-direct/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/deepseek-flash-plan#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/luna-plan": 2
+          "openai-plan/gpt-6-luna": 2,
+          "muse-direct/muse-spark-1.3-contributor": 2,
+          "opencode-route/deepseek-flash-plan": 2
         }
       },
       "workhorse": {
@@ -7230,7 +4400,11 @@
         // deepseek-flash#high, meta/muse-spark-1.3, and
         // antigravity-agy/gemini-4-argon#high) — see that route's
         // comment for the revert steps.
+        // 2026-11-03 (Drew): workhorse-ordered (deepseek-flash-plan
+        // only, ordered) joins the chain IN FRONT of workhorse-primary.
+        // deepseek-flash-plan is NOT removed from workhorse-primary.
         "targets": [
+          "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted"
         ],
@@ -7258,6 +4432,12 @@
         // routes themselves are untouched (switchboard rule): Gemini
         // Flash and Sonnet stay seated in the deliberate tiers
         // (specialist, summit, speed) exactly as before.
+        // 2026-11-02 (Drew): DeepSeek Flash plan leaves this pool -
+        // it moves up into workhorse-primary at weight 2 (see that
+        // route's note). Haiku and Spark keep their seats and weights.
+        // 2026-11-03 (Drew): deepseek-flash-plan#high rejoins this
+        // pool at weight 2 (it also keeps its workhorse-primary seat
+        // and its new workhorse-ordered seat - additions only).
         "targets": [
           "opencode-route/haiku-plan#high",
           "opencode-route/spark-plan#xhigh",
@@ -7268,7 +4448,7 @@
         "weights": {
           "opencode-route/haiku-plan": 2,
           "opencode-route/spark-plan": 1,
-          "opencode-route/deepseek-flash-plan": 1
+          "opencode-route/deepseek-flash-plan": 2
         }
       },
       "specialist": {

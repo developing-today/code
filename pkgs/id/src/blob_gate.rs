@@ -410,7 +410,7 @@ mod tests {
                 group: Some(create),
                 body: Body::Member(MemberOp::Remove {
                     member,
-                    successor: None,
+                    mode: crate::groups::RemoveMode::Revoke,
                 }),
             });
         }
