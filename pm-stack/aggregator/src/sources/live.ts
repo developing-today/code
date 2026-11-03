@@ -12,6 +12,7 @@ import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
   feedAgeText,
+  FEED_STALE_MS,
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
@@ -23,6 +24,8 @@ import {
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import type { NewStreamEvent } from "../events.ts";
+import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import {
@@ -36,7 +39,9 @@ import {
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
+import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
+import { assembleWorkItems } from "../work-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
@@ -113,13 +118,25 @@ interface KaneoColumn {
   tasks: KaneoTask[];
 }
 
-/** Kaneo project slug -> GitHub repo (pm-stack/kaneo-projects.json, Session H). */
-const KANEO_PROJECT_REPOS: Record<string, string> = {
-  code: "developing-today/code",
-  opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
-  nix: "dezren39/nix",
-};
+/** Kaneo project slug -> GitHub repo, read authoritatively from
+ * pm-stack/kaneo-projects.json (#1201). Unknown slugs stay unmapped
+ * (repo "") — never guessed — so no invented repo-based refs appear.
+ * An unreadable registry degrades to the same empty map. */
+async function kaneoProjectRepos(cfg: Config): Promise<Record<string, string>> {
+  try {
+    const raw = await readFile(cfg.kaneo.projectsFile, "utf8");
+    const doc = JSON.parse(raw) as { projects?: { slug?: unknown; repository?: unknown }[] };
+    const map: Record<string, string> = {};
+    for (const p of doc.projects ?? []) {
+      if (typeof p?.slug === "string" && typeof p?.repository === "string" && p.repository.includes("/")) {
+        map[p.slug] = p.repository;
+      }
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
 
 async function kaneoProjects(
   cfg: Config,
@@ -132,11 +149,14 @@ async function kaneoProjects(
   if (!workspaceId) throw new Error("kaneo workspace empty");
   const proj = await getJson(`${cfg.kaneo.baseUrl}/api/project?workspaceId=${workspaceId}`, { Cookie: cookie });
   if (!proj.ok) throw new Error("kaneo project read failed");
+  // #1201: the registry is the only source of slug -> repo. Unknown
+  // slugs stay unmapped (repo "") instead of guessing a repo name.
+  const repos = await kaneoProjectRepos(cfg);
   return (proj.json as { id: string; slug: string; name: string }[]).map((p) => ({
     id: p.id,
     slug: p.slug,
     name: p.name,
-    repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
+    repo: repos[p.slug] ?? "",
     workspaceId,
   }));
 }
@@ -175,10 +195,13 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
         if (isRetiredDoneTableTitle(t.title)) continue;
         const links: Link[] = (t.externalLinks ?? [])
           .filter((l) => l.resourceType === "issue" || l.resourceType === "pull_request")
-          .map((l) => {
+          .flatMap((l) => {
+            // #1201: only a GitHub URL names a repo. A non-GitHub URL —
+            // or an unmapped project — yields no repo-based ref at all;
+            // refs are never invented from a guessed repo.
             const m = /github\.com\/([\w.-]+\/[\w.-]+)\//.exec(l.url);
-            const repo = m ? m[1] : p.repo;
-            return { ref: `${repo}#${l.externalId}`, relation: "tracks" as const };
+            if (!m) return [];
+            return [{ ref: `${m[1]}#${l.externalId}`, relation: "tracks" as const }];
           });
         out.push({
           // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
@@ -396,6 +419,49 @@ export async function projectorComments(baseUrl: string, refs: RefKey[]): Promis
   return out;
 }
 
+/** The latest non-deleted comment per ref, from a list in any order. */
+export function latestPerRef(comments: Comment[]): Comment[] {
+  const byRef = new Map<RefKey, Comment>();
+  for (const c of comments) {
+    if (c.deleted) continue;
+    const cur = byRef.get(c.ref);
+    if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+  }
+  return [...byRef.values()];
+}
+
+/**
+ * The latest comment for each ref, one projector read per ref (#1279).
+ * The bulk /comments read applies its row limit across every requested
+ * ref (projector default 500), so in a busy batch an item's latest
+ * comment can be truncated away entirely; a per-ref limit=1 read cannot
+ * be crowded out by other items' comments. Reads run with bounded
+ * concurrency against the local projector; any failed read fails the
+ * whole call (null), matching projectorComments' fail-soft contract.
+ */
+export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
+  if (refs.length === 0) return [];
+  const out: Comment[] = [];
+  const CONCURRENCY = 16;
+  for (let i = 0; i < refs.length; i += CONCURRENCY) {
+    const batch = refs.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (ref): Promise<Comment[] | null> => {
+        const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(ref)}&limit=1`);
+        if (!r.ok) return null;
+        return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+          .map(mapProjectorComment)
+          .filter((c) => !c.deleted);
+      }),
+    );
+    for (const rows of results) {
+      if (rows === null) return null;
+      if (rows.length) out.push(latestPerRef(rows)[0]);
+    }
+  }
+  return out;
+}
+
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
 export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
@@ -479,6 +545,20 @@ export function titleRefs(title: string): RefKey[] {
   return out;
 }
 
+/**
+ * Event refs must be whitespace-free (validateStreamEvent in
+ * events.ts), but an orchestration action's target is free text the
+ * publisher chooses — "fleet queues" is a real published target
+ * (#4489 Codex P2). Forwarding it verbatim made emitEvent reject and
+ * permanently drop the action's event. Whitespace-free targets pass
+ * through unchanged; free-text targets are slugified so the action is
+ * preserved in the log instead of dropped.
+ */
+export const orchestrationActionRef = (target: string): string => {
+  const trimmed = target.trim();
+  return /\s/.test(trimmed) ? slugify(trimmed) : trimmed;
+};
+
 const slugify = (s: string): string =>
   s
     .toLowerCase()
@@ -495,11 +575,10 @@ const normTitle = (s: string): string =>
  * The synthetic in-flight entries for one orchestration section,
  * deduped against the board they will be merged into:
  * - a task whose GitHub ref (its own `ref`, or one its title carries)
- *   already appears in a Kaneo card's links is dropped — the Kaneo
- *   card is the record for that work. This is deliberately coarse:
- *   one shared ref drops the whole entry, even when its title names
- *   further refs no Kaneo card carries.
- * - a task whose title matches a Kaneo card's title is dropped.
+ *   already appears in a Kaneo card's links loses only that ref — the
+ *   Kaneo card is the record for that work. Unmatched refs stay linked
+ *   on the in-flight entry.
+ * - a ref-less task whose title matches a Kaneo card's title is dropped.
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
@@ -510,37 +589,41 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
   const existingTitles = new Set(existing.map((b) => normTitle(b.title)));
   const emitted = new Set<string>();
   const out: BoardItem[] = [];
-  for (const goal of section.goals) {
-    for (const task of goal.linedUp) {
-      if (task.status !== "in-progress" && task.status !== "queued" && task.status !== "blocked") continue;
-      const refs: RefKey[] = [];
-      const add = (ref: RefKey) => {
-        if (!refs.includes(ref)) refs.push(ref);
-      };
-      if (task.ref) add(task.ref);
-      for (const ref of titleRefs(task.title)) add(ref);
-      if (refs.some((r) => existingRefs.has(r))) continue;
-      const titleKey = normTitle(task.title);
-      if (existingTitles.has(titleKey)) continue;
-      const key = refs[0] ?? titleKey;
-      if (emitted.has(key) || emitted.has(titleKey)) continue;
-      emitted.add(key);
-      emitted.add(titleKey);
-      out.push({
-        id: `orch:${slugify(goal.goal)}/${slugify(task.title)}`,
-        title: task.title,
-        repo: refs.length ? parseRef(refs[0]).repo : "",
-        source: "orchestrator",
-        status: "in-flight",
-        orchStatus: task.status,
-        goal: goal.goal,
-        blockedBy: task.blockedBy?.map((d) => `${d.task} (${d.status})`),
-        // The lane header dates the lane by the section that produced
-        // it; every synthetic entry carries that stamp.
-        updatedAt: section.generatedAt,
-        links: refs.map((ref) => ({ ref, relation: "tracks" as const })),
-      });
-    }
+  // #1206: identity, status, goal, and blockers come from the canonical
+  // work-item projection; this function only re-shapes them into
+  // BoardItems and dedupes against the Kaneo board they merge into.
+  for (const item of assembleWorkItems(section)) {
+    if (item.goal === undefined || !item.linedUpStatus) continue;
+    if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked")
+      continue;
+    const refs: RefKey[] = [];
+    const add = (ref: RefKey) => {
+      if (!refs.includes(ref)) refs.push(ref);
+    };
+    if (item.ref) add(item.ref);
+    for (const ref of titleRefs(item.title)) add(ref);
+    const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
+    if (refs.length > 0 && remainingRefs.length === 0) continue;
+    const titleKey = normTitle(item.title);
+    if (refs.length === 0 && existingTitles.has(titleKey)) continue;
+    const key = remainingRefs[0] ?? titleKey;
+    if (emitted.has(key) || emitted.has(titleKey)) continue;
+    emitted.add(key);
+    emitted.add(titleKey);
+    out.push({
+      id: item.id,
+      title: item.title,
+      repo: remainingRefs.length ? parseRef(remainingRefs[0]).repo : "",
+      source: "orchestrator",
+      status: "in-flight",
+      orchStatus: item.linedUpStatus,
+      goal: item.goal,
+      blockedBy: item.blockers.length ? item.blockers.map((d) => `${d.task} (${d.status})`) : undefined,
+      // The lane header dates the lane by the section that produced
+      // it; every synthetic entry carries that stamp.
+      updatedAt: section.generatedAt,
+      links: remainingRefs.map((ref) => ({ ref, relation: "tracks" as const })),
+    });
   }
   return out;
 }
@@ -552,7 +635,6 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  * watchdog threshold): a feed-backed facet older than this renders
  * its freshness chip as stale, however live its last read was.
  */
-const FEED_STALE_MS = 15 * 60_000;
 
 /**
  * The gatherer's Turso entry (#1049) overlaid onto usage() services,
@@ -570,7 +652,28 @@ async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasS
   return services;
 }
 
-export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
+/**
+ * One feed attention row safe to key by sessionId (#2427): isFleetFeed
+ * only checks that `attention` is an array, never its entries, so a
+ * null row throws on `.sessionId` here and rows without a string
+ * sessionId all collapse onto the same map key. Malformed rows are
+ * dropped at this consumer, before the dedupe insert — the gate stays
+ * structural (triage task 3640) and the collector's emitted shape is
+ * unchanged. Sibling sections are element-filtered the same way
+ * (registry via isSessionRecord, subscriptions via isSubscriptionRow).
+ */
+export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
+  return isRecord(v) && typeof v.sessionId === "string" && v.sessionId.length > 0;
+}
+
+export function liveSource(
+  cfg: Config,
+  opts?: {
+    standingAuto?: () => Promise<boolean>;
+    onEvent?: (event: NewStreamEvent) => void;
+    hasEvent?: (kind: string, ref: string) => Promise<boolean>;
+  },
+): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
     board: "fixtures",
@@ -591,6 +694,12 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   // surfaces (Source.diagnostics) read it from here, never from a
   // null section, so absent/invalid/stale stay distinguishable.
   let lastOrchestrationDiagnosis: SectionDiagnosis = { state: "absent" };
+  // #1739: the last orchestration run whose publish was recorded in
+  // the event log, plus its tier membership — a new runId is a publish
+  // step, and the tier diff between successive publishes is the
+  // tier-change stream.
+  let lastOrchEventRunId: string | null = null;
+  let lastOrchTierById = new Map<string, string>();
   // #1138: the merged registry total from the last registry() read —
   // the freshness chip counts THIS (the same number /sessions renders
   // in its header), never the per-read incoming batch.
@@ -633,6 +742,20 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #1226: the Needs-Drew label census hits the GitHub search API
+  // (8 queries per sweep). The sweeper caches for 5 minutes and shares
+  // one in-flight sweep between concurrent callers, so the three
+  // attention fragments rendering together do not each pay that cost or
+  // burn the search rate limit (#3970).
+  const needsDrewSweep = createNeedsDrewSweeper((url) => {
+    const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(token ? { Authorization: "Bearer " + token } : {}),
+    };
+    return getJson(url, headers);
+  });
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
     const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
@@ -679,6 +802,28 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     const current = await loadRegistryStore();
     const merged = mergeRecords(current, incoming);
     const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
+    // #1739: the session registry merge is one of the event log's
+    // writers — a session entering the registry is a session outcome
+    // in the cross-stack stream. Fire-and-forget: the callback the
+    // server injects never throws into the merge (emitEvent swallows),
+    // and the merge itself never waits on the event write.
+    if (opts?.onEvent && changed) {
+      const known = new Set(current.map((r) => `${r.source}:${r.id}`));
+      for (const r of merged.filter((x) => !known.has(`${x.source}:${x.id}`))) {
+        try {
+          opts.onEvent({
+            actor: "aggregator",
+            kind: "session-outcome",
+            ref: `session:${r.source}:${r.id}`,
+            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+          });
+        } catch (err) {
+          console.error(
+            `[events] WARNING: session event callback failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
     registryStore = merged;
     if (changed) {
       // Serialized writes + unique temp path per write (#1509): the
@@ -821,6 +966,9 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
     },
+    async needsDrew(): Promise<NeedsDrewCensus | null> {
+      return needsDrewSweep();
+    },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
       return coverageFromFeed(feed);
@@ -834,6 +982,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         }
       }
       return fix.comments(refs);
+    },
+    async latestComments(refs) {
+      if (cfg.projector.baseUrl) {
+        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
+        if (live) {
+          provenance.comments = "live (projector)";
+          return live;
+        }
+      }
+      return latestPerRef(await fix.comments(refs));
     },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced
@@ -851,8 +1009,22 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         view = feed.quota;
         const dropped = feed.quotaDropped;
-        if (dropped && dropped.pools + dropped.windows + dropped.burn > 0) {
-          provenance.quota += ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.windows} window(s), ${dropped.burn} burn segment(s) (#2429)`;
+        if (
+          dropped &&
+          dropped.pools +
+            dropped.credentials +
+            dropped.windows +
+            dropped.activeSessions +
+            dropped.burn +
+            dropped.poolFreshness +
+            dropped.burnTokensPerMin >
+            0
+        ) {
+          provenance.quota +=
+            ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.credentials} credential row(s), ` +
+            `${dropped.windows} window(s), ${dropped.activeSessions} active session(s), ` +
+            `${dropped.burn} burn segment(s), ${dropped.poolFreshness} pool freshness value(s), ` +
+            `${dropped.burnTokensPerMin} burn rate(s) (#2429/#3921/#4546)`;
         }
       } else {
         provenance.quota = "fixtures (no fleet feed file yet)";
@@ -863,12 +1035,24 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const file = parseQuotaCurrent(JSON.parse(raw));
         if (file) {
           provenance.quota += ` · gatherer ${file.generatedAt}`;
+          const sanitized = file.sanitized;
+          if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
+            provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
+          }
           return overlayQuotaCurrent(view, file);
         }
       } catch {
         /* no gatherer file (or unreadable): base view stands */
       }
       return view;
+    },
+    async ingestSnapshots(): Promise<number> {
+      // The server's background writer tick is the landing step for
+      // collector-derived records carried by the feed. Keep this out of
+      // usage(): GETs must remain safe with a read-only snapshot store.
+      const feed = await getFeed();
+      if (!feed?.snapshots?.length) return 0;
+      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
@@ -877,13 +1061,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // from the quota view + registry files; fixtures only when
       // neither exists. Snapshot history comes from the local store
       // (§4): the feed carries the writers' records (collector-derived
-      // plus the stewardship / check-usage outbox), and ingesting them
-      // here — append with dedupe — is the one write this reader makes.
+      // plus the stewardship / check-usage outbox); a background writer
+      // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
       const store = new SnapshotStore(cfg.snapshotsDir);
-      if (feed?.snapshots?.length) {
-        await store.append(feed.snapshots).catch(() => 0);
-      }
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)
@@ -1008,7 +1189,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
 
       const feed = await getFeed();
       if (feed) {
-        for (const e of feed.attention) byId.set(e.sessionId, e);
+        for (const e of feed.attention) if (isFeedAttentionEntry(e)) byId.set(e.sessionId, e);
         parts.push(`sandbox via fleet feed (${feedAgeText(feed.generatedAt)})`);
       }
 
@@ -1053,6 +1234,59 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
             collection?.status === "error"
               ? `error — collector error: ${collection.error ?? "collection failed"}; serving embedded section ${section.runId}`
               : `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          // #1739: the orchestration publish step is an event-log
+          // writer. A new runId = a new publish: record the publish
+          // itself, the run's own published actions, and every item
+          // whose tier changed since the previous publish.
+          // Fire-and-forget — the injected callback never throws into
+          // this read and nothing here awaits an event write.
+          const tierById = new Map<string, string>();
+          for (const item of section.tiers.needsDrew) tierById.set(item.id, "needs-user");
+          for (const item of section.tiers.needsOrchestrator) tierById.set(item.id, "needs-orchestrator");
+          const publishRef = `orchestration:${section.runId}`;
+          const alreadyRecorded = opts?.hasEvent
+            ? await opts.hasEvent("orchestration-published", publishRef).catch(() => false)
+            : false;
+          if (opts?.onEvent && section.runId !== lastOrchEventRunId && !alreadyRecorded) {
+            opts.onEvent({
+              actor: "orchestrator",
+              kind: "orchestration-published",
+              ref: `orchestration:${section.runId}`,
+              summary:
+                `orchestration run ${section.runId} published: ` +
+                `${section.tiers.needsDrew.length} needs-user, ${section.tiers.needsOrchestrator.length} needs-orchestrator`,
+            });
+            for (const action of section.actions) {
+              opts.onEvent({
+                at: action.at,
+                actor: "orchestrator",
+                kind: action.kind,
+                ref: orchestrationActionRef(action.target),
+                summary: action.summary.slice(0, 500),
+              });
+            }
+            if (lastOrchEventRunId !== null) {
+              const allIds = new Set([...lastOrchTierById.keys(), ...tierById.keys()]);
+              for (const id of allIds) {
+                const prev = lastOrchTierById.get(id);
+                const tier = tierById.get(id);
+                if (prev !== tier) {
+                  opts.onEvent({
+                    actor: "orchestrator",
+                    kind: "tier-change",
+                    ref: id,
+                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
+                  });
+                }
+              }
+            }
+            lastOrchEventRunId = section.runId;
+            lastOrchTierById = tierById;
+          } else if (alreadyRecorded) {
+            // The durable publication event proves this run was already emitted.
+            lastOrchEventRunId = section.runId;
+            lastOrchTierById = tierById;
+          }
           // #1290: the per-item extension seam. The section gate above
           // never learns the extension fields; each tier item's
           // extensions are validated here, fail-soft (a malformed
@@ -1238,7 +1472,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
         const feedBacked = text.includes("fleet feed");
-        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs > FEED_STALE_MS) {
+        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";
         }
         const out: ProvenanceFacet = { text, state };
@@ -1262,7 +1496,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
-            if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";
+            if (out.state === "live" && feedAgeMs >= FEED_STALE_MS) out.state = "stale";
           }
         }
         return out;

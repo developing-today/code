@@ -20,6 +20,7 @@ on:
       - "scripts/tests/test_*workflow*.py"
       - "scripts/tests/test_plan_check.py"
       - ".github/workflows/research-workflow.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read

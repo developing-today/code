@@ -5,7 +5,7 @@ description: Orchestrate parallel builders across git worktrees to execute imple
 
 # Implementation Orchestrate (Stage 8)
 
-Coordinate parallel worker subagents across git worktrees to build planned feature phases, driving test-driven development, code review, and merge-commit landing. Detailed rules live in [/planning/workflow/collaboration.md](/planning/workflow/collaboration.md).
+Coordinate parallel worker subagents across git worktrees to build planned feature phases, driving test-driven development, code review, and merge-commit landing. Detailed rules live in [/planning/workflow/collaboration.md](../../../planning/workflow/collaboration.md).
 
 ## Procedure
 

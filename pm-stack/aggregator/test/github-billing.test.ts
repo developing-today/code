@@ -265,3 +265,70 @@ describe("codex regression cases (PR #2236 review)", () => {
     expect(days[0].codespacesHours).toBe(8);
   });
 });
+
+describe("github-billing malformed items and SKU multipliers (#3739)", () => {
+  test("non-object items are skipped and valid neighbors still aggregate", () => {
+    const days = aggregateBillingUsage([
+      null,
+      42,
+      ["not", "an", "item"],
+      {
+        date: "2026-10-04",
+        product: "actions",
+        sku: "Actions Linux",
+        unitType: "Minutes",
+        quantity: 30,
+        grossAmount: 0.24,
+        netAmount: 0.24,
+      },
+    ] as unknown as BillingUsageItem[]);
+    expect(days).toHaveLength(1);
+    expect(days[0].actionsMinutes).toBe(30);
+    expect(days[0].grossUsd).toBe(0.24);
+  });
+
+  test("0-core SKU falls back to face value instead of erasing hours", () => {
+    const days = aggregateBillingUsage([
+      {
+        date: "2026-10-04",
+        product: "codespaces",
+        sku: "Codespaces 0-core",
+        unitType: "Hours",
+        quantity: 3,
+        grossAmount: 0,
+        netAmount: 0,
+      },
+    ]);
+    expect(days[0].codespacesHours).toBe(3);
+  });
+
+  test("huge-core SKU falls back to face value instead of an unbounded multiplier", () => {
+    const days = aggregateBillingUsage([
+      {
+        date: "2026-10-04",
+        product: "codespaces",
+        sku: "Codespaces 999999999999999999999999999999-core",
+        unitType: "Hours",
+        quantity: 2,
+        grossAmount: 0,
+        netAmount: 0,
+      },
+    ]);
+    expect(days[0].codespacesHours).toBe(2);
+  });
+
+  test("control: 4-core x 2 hours still converts to 8 core-hours", () => {
+    const days = aggregateBillingUsage([
+      {
+        date: "2026-10-04",
+        product: "codespaces",
+        sku: "Codespaces 4-core",
+        unitType: "Hours",
+        quantity: 2,
+        grossAmount: 0,
+        netAmount: 0,
+      },
+    ]);
+    expect(days[0].codespacesHours).toBe(8);
+  });
+});

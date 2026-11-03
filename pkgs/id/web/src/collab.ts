@@ -132,6 +132,18 @@ export type StatusCallback = (status: "connecting" | "connected" | "disconnected
  * @param onEditorReady - Callback when editor is initialized
  * @returns The collab connection
  */
+/**
+ * Build the collab WebSocket URL for a document (#2830). The docId goes
+ * into a single path segment, so it must be percent-encoded: a raw `/`
+ * breaks the single-segment route, a raw `#`/`?` truncates the URL
+ * (losing the query string), and a raw `%20` in a name is decoded by
+ * the server into a *different* file. The axum route percent-decodes
+ * the segment, so encoding here round-trips to the exact filename.
+ */
+export function buildCollabWsUrl(wsProtocol: string, host: string, docId: string): string {
+  return `${wsProtocol}//${host}/ws/collab/${encodeURIComponent(docId)}`;
+}
+
 export function initCollab(
   wsUrl: string,
   container: HTMLElement,
@@ -182,9 +194,27 @@ export function initCollab(
     if (onStatus) onStatus(status);
   };
 
+  // The server caps WebSocket messages at MAX_FRAME_BYTES (1 MiB;
+  // pkgs/id/src/frames.rs, applied as max_message_size in
+  // pkgs/id/src/web/collab.rs) and exceeding it closes the socket.
+  // On reconnect the INIT handler rebuilds the editor from server
+  // state, so one oversized STEPS message (e.g. a >1 MiB paste)
+  // would silently discard every unconfirmed local edit. Never send
+  // an over-cap message: dropping it keeps the socket — and the
+  // local document — alive, and the error status says why sync is
+  // stuck. Splitting oversized step batches is tracked separately.
+  const MAX_MESSAGE_BYTES = 1024 * 1024;
+
   // Encode and send a message (always uses currentWs)
   const send = (msgType: number, ...fields: unknown[]): void => {
     const data = packr.pack([msgType, ...fields]);
+    if (data.byteLength > MAX_MESSAGE_BYTES) {
+      console.error(
+        `[collab] not sending oversized message (type ${msgType}, ${data.byteLength} bytes > ${MAX_MESSAGE_BYTES} cap); local changes are preserved but cannot sync until they are smaller`,
+      );
+      updateStatus("error");
+      return;
+    }
     if (connected && currentWs && currentWs.readyState === WebSocket.OPEN) {
       currentWs.send(data);
     } else {
@@ -258,14 +288,7 @@ export function initCollab(
         );
         return;
       }
-      console.log(
-        "[collab] Sending",
-        batch.length,
-        "of",
-        sendable.steps.length,
-        "steps, version:",
-        sendable.version,
-      );
+      console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
       send(MSG.STEPS, sendable.version, batch, sendable.clientID);
     }
   };
@@ -296,9 +319,7 @@ export function initCollab(
         const version = msg[1];
         const doc = msg[2];
         const docRecord =
-          doc !== null && typeof doc === "object" && !Array.isArray(doc)
-            ? (doc as Record<string, unknown>)
-            : null;
+          doc !== null && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>) : null;
         if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
           console.error("[collab] Dropping malformed Init message: invalid version");
           return;

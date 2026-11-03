@@ -10,14 +10,7 @@ on:
       - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
       - "scripts/tests/test_update_nixpkgs_inputs.py"
       - ".github/workflows/scripts-test.yml"
-  pull_request:
-    paths:
-      - "scripts/update-nixpkgs-inputs.py"
-      - "scripts/update-nixpkgs-inputs.sh"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.py"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
-      - "scripts/tests/test_update_nixpkgs_inputs.py"
-      - ".github/workflows/scripts-test.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read

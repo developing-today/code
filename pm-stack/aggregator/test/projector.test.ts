@@ -6,6 +6,7 @@ import {
   parseProjectorLabels,
   projectorComments,
   projectorItems,
+  projectorLatestComments,
   type ProjectorCommentRow,
   type ProjectorItemRow,
 } from "../src/sources/live.ts";
@@ -149,6 +150,65 @@ describe("projector HTTP reads (stub server, actual wire shape)", () => {
       // Deleted tombstones are dropped; review_state survives.
       expect(comments?.map((c) => c.id)).toEqual(["1"]);
       expect(comments?.[0]?.reviewState).toBe("approved");
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe("projector latest-comment reads (#1279 truncation)", () => {
+  test("a busy item's comments cannot crowd out another item's latest", async () => {
+    // The projector's bulk /comments read applies ONE row limit across
+    // all requested refs, newest first: 600 newer comments on ref A push
+    // ref B's latest past the default 500 and it vanishes from the bulk
+    // read. The per-ref latest read cannot be crowded out that way.
+    const refA = "developing-today/code#900";
+    const refB = "developing-today/code#901";
+    const rows: Record<string, unknown>[] = [];
+    for (let i = 0; i < 600; i++) {
+      rows.push({
+        id: `a-${i}`,
+        ref: refA,
+        kind: "issue_comment",
+        author: "amy",
+        body: "noise",
+        created_at: new Date(Date.UTC(2026, 9, 27, 0, i)).toISOString(),
+        deleted: 0,
+      });
+    }
+    rows.push({
+      id: "b-latest",
+      ref: refB,
+      kind: "issue_comment",
+      author: "bee",
+      body: "the one that matters",
+      created_at: "2026-10-20T00:00:00Z",
+      deleted: 0,
+    });
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === "/comments") {
+          const refs = (url.searchParams.get("refs") ?? "").split(",").filter(Boolean);
+          const limit = Number(url.searchParams.get("limit") ?? 500);
+          const mine = rows
+            .filter((r) => refs.includes(r.ref as string))
+            .sort((x, y) => ((x.created_at as string) < (y.created_at as string) ? 1 : -1))
+            .slice(0, limit);
+          return Response.json({ comments: mine });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const bulk = await projectorComments(base, [refA, refB]);
+      expect(bulk?.some((c) => c.ref === refB)).toBe(false); // truncated away
+      const latest = await projectorLatestComments(base, [refA, refB]);
+      expect(latest?.length).toBe(2);
+      expect(latest?.find((c) => c.ref === refB)?.author).toBe("bee");
+      expect(latest?.find((c) => c.ref === refA)?.id).toBe("a-599");
     } finally {
       server.stop(true);
     }

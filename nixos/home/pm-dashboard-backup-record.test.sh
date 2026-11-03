@@ -21,11 +21,16 @@ fi
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 failures=0
-fail() { echo "FAIL: $1" >&2; failures=$((failures + 1)); }
+fail() {
+  echo "FAIL: $1" >&2
+  failures=$((failures + 1))
+}
 
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 if [[ "${BWS_BLOCK:-}" == "1" ]]; then
   [[ -n "${BWS_BLOCK_MARKER:-}" ]] && touch "$BWS_BLOCK_MARKER"
   sleep 60
@@ -39,12 +44,16 @@ echo "stub bws: unsupported args: $*" >&2
 exit 1
 STUB
 } >"$BIN/bws"
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "stub journal line"
 exit 0
 STUB
 } >"$BIN/journalctl"
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 store="${RCLONE_STUB_DIR:?RCLONE_STUB_DIR unset}"
 mkdir -p "$store"
 key() { printf '%s' "$1" | tr '/:' '__'; }
@@ -91,16 +100,20 @@ run_scenario() {
   mkdir -p "$home/backups/dashboard" "$home/.local/state/pm-aggregator" \
     "$home/atlas/meta-quota-export"
   local dump_script="$home/no-such-dump-script.sh"
-  if [[ "$dump_mode" == "ok" ]]; then
+  if [[ $dump_mode == "ok" ]]; then
     dump_script="$home/dump-ok.sh"
-    { printf '#!%s\n' "$BASH"
-      printf '%s\n' 'mkdir -p "$HOME/backups/db-dumps/$1"'
-      printf '%s\n' 'printf "{}\n" > "$HOME/backups/db-dumps/$1/dump.sql"'
+    {
+      printf '#!%s\n' "$BASH"
+      printf '%s\n' 'mkdir -p "$HOME/backups/pm-stack/$1"'
+      printf '%s\n' 'printf "{}\n" > "$HOME/backups/pm-stack/$1/dump.sql"'
     } >"$dump_script"
     chmod +x "$dump_script"
-  elif [[ "$dump_mode" == "fail" ]]; then
+  elif [[ $dump_mode == "fail" ]]; then
     dump_script="$home/dump-fail.sh"
-    { printf '#!%s\n' "$BASH"; printf '%s\n' 'exit 3'; } >"$dump_script"
+    {
+      printf '#!%s\n' "$BASH"
+      printf '%s\n' 'exit 3'
+    } >"$dump_script"
     chmod +x "$dump_script"
   fi
   for f in actions.json comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
@@ -118,8 +131,12 @@ run_scenario() {
 
 check_record() { # $1 scenario, $2 python assertions file
   local rec="$SCEN_HOME/backups/dashboard/.last-run.json"
-  if [[ -f "$rec" ]]; then echo "ok: $1: run record written"
-  else fail "$1: no run record at $rec; log: $(cat "$TMP_ROOT/$1.log")"; return; fi
+  if [[ -f $rec ]]; then
+    echo "ok: $1: run record written"
+  else
+    fail "$1: no run record at $rec; log: $(cat "$TMP_ROOT/$1.log")"
+    return
+  fi
   if RECORD="$rec" HOME_DIR="$SCEN_HOME" python3 "$2"; then
     echo "ok: $1: record contents as expected"
   else
@@ -169,12 +186,14 @@ assert rec["steps"] == [
 PYEOF
 
 run_scenario happy ""
-if [[ "$RC" -eq 0 ]]; then echo "ok: happy: script exited 0"
+if [[ $RC -eq 0 ]]; then
+  echo "ok: happy: script exited 0"
 else fail "happy: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/happy.log")"; fi
 check_record happy "$TMP_ROOT/assert-happy.py"
 
 run_scenario r2fail R2
-if [[ "$RC" -ne 0 ]]; then echo "ok: r2fail: script exited non-zero ($RC)"
+if [[ $RC -ne 0 ]]; then
+  echo "ok: r2fail: script exited non-zero ($RC)"
 else fail "r2fail: expected non-zero exit, got 0"; fi
 check_record r2fail "$TMP_ROOT/assert-r2fail.py"
 
@@ -196,14 +215,19 @@ setsid env HOME="$sig_home" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
   PM_DB_DUMP_SCRIPT="$sig_home/no-such-dump-script.sh" \
   bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/sigterm.log" 2>&1 &
 sig_pid=$!
-for _ in $(seq 1 50); do [[ -f "$TMP_ROOT/sigterm.blocked" ]] && break; sleep 0.2; done
+for _ in $(seq 1 50); do
+  [[ -f "$TMP_ROOT/sigterm.blocked" ]] && break
+  sleep 0.2
+done
 if [[ ! -f "$TMP_ROOT/sigterm.blocked" ]]; then
   fail "sigterm: script never reached the blocking credential call; log: $(cat "$TMP_ROOT/sigterm.log")"
   kill -KILL -"$sig_pid" 2>/dev/null || true
 else
   kill -TERM -"$sig_pid"
-  wait "$sig_pid"; sig_rc=$?
-  if [[ "$sig_rc" -eq 143 ]]; then echo "ok: sigterm: script exited 143"
+  wait "$sig_pid"
+  sig_rc=$?
+  if [[ $sig_rc -eq 143 ]]; then
+    echo "ok: sigterm: script exited 143"
   else fail "sigterm: expected exit 143, got $sig_rc; log: $(cat "$TMP_ROOT/sigterm.log")"; fi
   SCEN_HOME="$sig_home"
   cat >"$TMP_ROOT/assert-sigterm.py" <<'SIGASSERT'
@@ -235,7 +259,8 @@ assert steps["drive-upload"] == "failed", rec
 PYEOF
 
 run_scenario drivefail DRIVE
-if [[ "$RC" -ne 0 ]]; then echo "ok: drivefail: script exited non-zero ($RC)"
+if [[ $RC -ne 0 ]]; then
+  echo "ok: drivefail: script exited non-zero ($RC)"
 else fail "drivefail: expected non-zero exit, got 0"; fi
 check_record drivefail "$TMP_ROOT/assert-drivefail.py"
 
@@ -253,7 +278,8 @@ assert steps["local-archive"] == "not-attempted", rec
 PYEOF
 
 run_scenario dumpfail "" fail
-if [[ "$RC" -ne 0 ]]; then echo "ok: dumpfail: script exited non-zero ($RC)"
+if [[ $RC -ne 0 ]]; then
+  echo "ok: dumpfail: script exited non-zero ($RC)"
 else fail "dumpfail: expected non-zero exit, got 0"; fi
 check_record dumpfail "$TMP_ROOT/assert-dumpfail.py"
 
@@ -268,11 +294,12 @@ assert all(o == "ok" for o in steps.values()), rec
 PYEOF
 
 run_scenario dumpok "" ok
-if [[ "$RC" -eq 0 ]]; then echo "ok: dumpok: script exited 0"
+if [[ $RC -eq 0 ]]; then
+  echo "ok: dumpok: script exited 0"
 else fail "dumpok: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/dumpok.log")"; fi
 check_record dumpok "$TMP_ROOT/assert-dumpok.py"
 
-if (( failures > 0 )); then
+if ((failures > 0)); then
   echo "pm-dashboard-backup record tests: $failures failure(s)" >&2
   exit 1
 fi

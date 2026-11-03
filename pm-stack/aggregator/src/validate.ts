@@ -41,12 +41,10 @@ export function isNonNegative(v: unknown): v is number {
  * validates nothing.
  */
 export function isPercentOf(limit: unknown): (v: unknown) => v is number {
-  return (v: unknown): v is number =>
-    isFiniteNumber(v) && isFiniteNumber(limit) && v >= 0 && v <= limit;
+  return (v: unknown): v is number => isFiniteNumber(v) && isFiniteNumber(limit) && v >= 0 && v <= limit;
 }
 
-const ISO_DATE_RE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
 function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
@@ -147,9 +145,7 @@ export function isTimestampNotFuture(
  * that is a shape failure for the caller's reject path, not an empty
  * success.
  */
-export function arrayOf<T>(
-  guard: (v: unknown) => v is T,
-): (v: unknown) => { values: T[]; dropped: number } | null {
+export function arrayOf<T>(guard: (v: unknown) => v is T): (v: unknown) => { values: T[]; dropped: number } | null {
   return (v: unknown) => {
     if (!Array.isArray(v)) return null;
     const values: T[] = [];

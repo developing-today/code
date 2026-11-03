@@ -320,6 +320,14 @@ pub fn check_profile(inputs: &DoctorInputs) -> Finding {
     if profile.native_call_deadline_ms == Some(0) {
         problems.push("native_call_deadline_ms is zero");
     }
+    // This list mirrors WorldExecutionProfile::validate (the single
+    // source of truth for the bound checks, world_limits.rs) bound for
+    // bound — keep it in sync when a bound is added there (#4785: the
+    // doctor missed total_memory_bytes, added by #557 Phase 1, and
+    // reported a profile validate() refuses as valid).
+    if profile.total_memory_bytes == Some(0) {
+        problems.push("total_memory_bytes is zero");
+    }
     if problems.is_empty() {
         return ok("profile", "execution profile bounds are valid");
     }
@@ -456,11 +464,24 @@ pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
     Ok((summary.entries, summary.version))
 }
 
+/// Milliseconds since the unix epoch at 2100-01-01T00:00:00Z. A clock
+/// reading at or after this bound is absurd: no schedule or expiry this
+/// doctor guards looks anywhere near that far ahead, so the reading can
+/// only mean the system clock is wrong.
+pub const ABSURD_FUTURE_NOW_MS: u64 = 4_102_444_800_000;
+
 /// The clock reads a positive unix time. A zero (or absurd) reading means the
 /// system clock is before the epoch, which breaks every schedule and expiry.
 #[must_use]
 pub fn check_clock(inputs: &DoctorInputs) -> Finding {
     match inputs.now_ms {
+        Some(now) if now >= ABSURD_FUTURE_NOW_MS => fail(
+            "clock",
+            format!(
+                "the system clock reads {now} ms since the epoch, at or after                  the absurd-future bound of {ABSURD_FUTURE_NOW_MS} ms                  (2100-01-01T00:00:00Z)"
+            ),
+            "set the system clock (schedules and expiries depend on it)",
+        ),
         Some(now) if now > 0 => ok("clock", format!("{now} ms since the epoch")),
         _ => fail(
             "clock",
@@ -577,6 +598,27 @@ mod tests {
         assert!(finding.detail.contains("wasm_fuel"), "{}", finding.detail);
 
         assert_eq!(check_profile(&inputs()).severity, Severity::Ok);
+    }
+
+    #[test]
+    fn a_zero_total_memory_bound_fails() {
+        // #4785: total_memory_bytes is a bound validate() refuses at zero;
+        // the doctor must refuse the same profile, not certify it valid.
+        let profile = WorldExecutionProfile {
+            total_memory_bytes: Some(0),
+            ..WorldExecutionProfile::default()
+        };
+        assert!(profile.validate().is_err());
+        let finding = check_profile(&DoctorInputs {
+            profile: Some(profile),
+            ..inputs()
+        });
+        assert_eq!(finding.severity, Severity::Fail);
+        assert!(
+            finding.detail.contains("total_memory_bytes"),
+            "{}",
+            finding.detail
+        );
     }
 
     #[test]
@@ -817,5 +859,36 @@ mod tests {
         assert_eq!(finding.severity, Severity::Fail);
 
         assert_eq!(check_clock(&inputs()).severity, Severity::Ok);
+    }
+
+    #[test]
+    fn a_clock_at_or_after_2100_fails() {
+        // One millisecond before the bound is still a plausible reading.
+        let just_before = check_clock(&DoctorInputs {
+            now_ms: Some(ABSURD_FUTURE_NOW_MS - 1),
+            ..inputs()
+        });
+        assert_eq!(just_before.severity, Severity::Ok);
+
+        // At the bound the reading is absurd and fails, naming both the
+        // reading and the bound, with the zero case's fix text.
+        let at_bound = check_clock(&DoctorInputs {
+            now_ms: Some(ABSURD_FUTURE_NOW_MS),
+            ..inputs()
+        });
+        assert_eq!(at_bound.severity, Severity::Fail);
+        assert!(at_bound.detail.contains("4102444800000"), "{at_bound:#?}");
+        assert!(at_bound.detail.contains("2100-01-01"), "{at_bound:#?}");
+        assert_eq!(
+            at_bound.fix,
+            "set the system clock (schedules and expiries depend on it)"
+        );
+
+        // The largest possible reading fails too.
+        let max = check_clock(&DoctorInputs {
+            now_ms: Some(u64::MAX),
+            ..inputs()
+        });
+        assert_eq!(max.severity, Severity::Fail);
     }
 }

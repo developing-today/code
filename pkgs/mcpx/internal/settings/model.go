@@ -63,6 +63,31 @@ func modelSettings() []Setting {
 				"value: settings are printable, keys are not.",
 		},
 		{
+			Path: "model.providers", Scope: ScopeDaemon, Kind: KindString, Default: "{}",
+			Name:  "Provider-keyed model settings",
+			Short: "JSON object mapping provider names to baseURL and apiKeyEnv",
+			Long: "Optional provider-keyed OpenAI-compatible endpoints and " +
+				"explicit environment-variable names, for example {\"openai\": " +
+				"{\"apiKeyEnv\":\"OPENAI_API_KEY\"}, \"ollama\": " +
+				"{\"baseURL\":\"http://localhost:11434/v1\"}}. A key is read " +
+				"only from the variable named for that provider. Empty baseURL uses " +
+				"the provider's built-in endpoint when one exists. The singular " +
+				"model.baseURL/model.apiKeyEnv remain the fallback for the " +
+				"provider named by model.provider.",
+		},
+		{
+			Path: "model.profiles", Scope: ScopeDaemon, Kind: KindString, Default: "{}",
+			Name:  "Model profiles",
+			Short: "JSON object of named ordered provider/model fallback chains",
+			Long: "Each profile maps a name to {\"models\":[\"openai/gpt-5\", " +
+				"\"anthropic/claude-sonnet\"], \"budget\":2048, " +
+				"\"timeout\":\"30s\"}. Models are tried in order; an " +
+				"unconfigured or failed provider is skipped. An operation's model " +
+				"selection and model.default may name either a profile or a " +
+				"provider/model id. A profile budget caps the per-call token ask; " +
+				"timeout bounds each provider attempt.",
+		},
+		{
 			Path: "model.default", Scope: ScopeDaemon, Kind: KindString, Default: "",
 			Name:  "Default model",
 			Short: "the model id used when an operation names none, as provider/model",

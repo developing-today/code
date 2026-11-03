@@ -21,6 +21,7 @@ import type { Config } from "./config.ts";
 import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
 import {
   ageMsText,
+  FEED_STALE_MS,
   GENERATED_AT_FUTURE_SKEW_MS,
   type FeedSectionStatus,
   type FleetFeed,
@@ -30,8 +31,6 @@ import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
 
-/** Same staleness threshold live.ts applies to feed-backed facets. */
-const FEED_STALE_MS = 15 * 60_000;
 /** Orchestration cadence: hourly; next run is an expectation, not a promise. */
 const ORCHESTRATION_CADENCE_MS = 3_600_000;
 
@@ -263,11 +262,12 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
       : undefined;
   const section = (key: string, generatedAt: string | undefined, present: boolean, note?: string) => {
     const outcome = feed.meta?.sections[key];
-    const outcomeNote = outcome?.status === "error"
-      ? outcome.error
-      : outcome?.status === "skipped"
-        ? "intentionally skipped by collector"
-        : undefined;
+    const outcomeNote =
+      outcome?.status === "error"
+        ? outcome.error
+        : outcome?.status === "skipped"
+          ? "intentionally skipped by collector"
+          : undefined;
     return {
       key,
       status: outcome?.status ?? "unknown",
@@ -351,8 +351,8 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
                 ok: false,
                 detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
               }
-            : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
-              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
+            : feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
+              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — at or past the 5m freshness threshold` }
               : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
@@ -413,7 +413,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
   const degraded =
     inputs.mode === "live" &&
     (services.some((s) => s.ok === false) ||
-      (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS) ||
+      (feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS) ||
       checkout.state === "behind" ||
       sectionHealth.some((section) => section.status === "error"));
 
