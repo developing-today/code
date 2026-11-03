@@ -14,7 +14,7 @@
 //!
 //! Nothing is unique. Two objects may claim the same alias, and both are returned. Each row shows a
 //! prefix of its ID, the shortest one that no other row in the view shares, so the rows can be told
-//! apart. The creation date is not shown, because the signed header has no time field (open).
+//! apart. No creation date is shown: the signed header has no timestamp, and local receipt time is not intrinsic to the claim. This omission is the P5.7 plan decision recorded in [`plan-phases.md`](../../../doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md#10-phase-5-tags-documents-and-search) for issue #1422.
 
 use std::collections::BTreeMap;
 

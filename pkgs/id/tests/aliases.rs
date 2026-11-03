@@ -10,6 +10,7 @@
 //! 3. A prefix of each subject ID is shown. It is the shortest one that no other row in the view
 //!    shares, and the full ID when no prefix is unique.
 //! 4. Nothing is unique: two identities may claim the same alias, and both are returned.
+//! 5. Alias claims have no creation date; see the P5.7 plan decision for issue #1422.
 //!
 //! No identity event kind exists yet (#160), so the identity's first identity event here is the
 //! first event of its writer's chain. The subject rule belongs to the caller, so the display does
