@@ -1,0 +1,13 @@
+diff --git a/pkgs/id/crates/id-core/src/membership/frontier.rs b/pkgs/id/crates/id-core/src/membership/frontier.rs
+index 076a47299..2c757b657 100644
+--- a/pkgs/id/crates/id-core/src/membership/frontier.rs
++++ b/pkgs/id/crates/id-core/src/membership/frontier.rs
+@@ -128,7 +128,7 @@ impl CausalIndex {
+                 .nodes
+                 .get(parent)
+                 .ok_or(FrontierError::UnknownEvent(*parent))?;
+-            if node.graph_group == Some(group) {
++            if node.graph_group != Some(group) {
+                 candidates.push(*parent);
+             } else {
+                 let frontier = self
