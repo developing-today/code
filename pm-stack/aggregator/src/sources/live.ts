@@ -12,6 +12,7 @@ import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
   feedAgeText,
+  FEED_STALE_MS,
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
@@ -634,7 +635,6 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  * watchdog threshold): a feed-backed facet older than this renders
  * its freshness chip as stale, however live its last read was.
  */
-const FEED_STALE_MS = 15 * 60_000;
 
 /**
  * The gatherer's Turso entry (#1049) overlaid onto usage() services,
@@ -1472,7 +1472,7 @@ export function liveSource(
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
         const feedBacked = text.includes("fleet feed");
-        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs > FEED_STALE_MS) {
+        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";
         }
         const out: ProvenanceFacet = { text, state };
@@ -1496,7 +1496,7 @@ export function liveSource(
           }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
-            if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";
+            if (out.state === "live" && feedAgeMs >= FEED_STALE_MS) out.state = "stale";
           }
         }
         return out;
