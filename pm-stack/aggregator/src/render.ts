@@ -2154,7 +2154,7 @@ function metricRow(m: UsageMetric): string {
 
 function attentionStripHtml(usage: UsageView): string {
   if (!usage.attention.length) {
-    return `<div class="card"><strong>Needs attention</strong> — nothing over threshold. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
+    return `<div class="card"><strong>Needs attention</strong> — no quota or credential alerts. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
   }
   const rows = usage.attention
     .map(
@@ -2249,6 +2249,18 @@ export function renderQuota(
   usage?: UsageView,
   detail?: ProvenanceDetail,
 ): string {
+  const credentialLifecycle = view.credentialLifecycle?.length
+    ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
+        .map((credential) => {
+          const expiry = credential.expiresAt ? ` · expires ${fmtDate(credential.expiresAt)}` : " · expiry unknown";
+          const reason = credential.reason ? ` · ${esc(credential.reason)}` : "";
+          const action = credential.userAction
+            ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
+            : "";
+          return `<div><strong>${esc(credential.providerName)} · ${esc(credential.label)}</strong> <span class="badge ${esc(credential.state)}">${esc(credential.state)}</span>${expiry}${reason}${action}</div>`;
+        })
+        .join("")}</div>`
+    : "";
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -2297,6 +2309,7 @@ export function renderQuota(
     return layout(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+${credentialLifecycle}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
       provenance,
@@ -2338,6 +2351,7 @@ ${burnAndChoices}`,
     "Usage & billing",
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
+${credentialLifecycle}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}

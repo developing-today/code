@@ -13,6 +13,7 @@
 // gatherer change; a provider whose usage is not window-shaped keeps
 // its raw usage on the entry and yields no windows (never zeros).
 import type { QuotaCurrentEntry, QuotaCurrentWindow, SnapshotRecord } from "./model.ts";
+import { safeProviderReason } from "./credential-lifecycle.ts";
 
 /** The subset of a quota-module result the mapper reads. */
 export interface QuotaProviderResult {
@@ -26,6 +27,8 @@ export interface QuotaProviderResult {
   planLabel?: string;
   credentialId?: string;
   credentialLabel?: string;
+  credentialExpiresAt?: number | string | null;
+  credentialSource?: "claude-code" | "opencode" | "environment";
 }
 
 interface RawWindow {
@@ -313,12 +316,21 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     state,
     measuredAt,
     source: GATHERER_SOURCE,
+    credentialWatch: true,
     windows: [],
   };
   if (result.credentialId) entry.credentialId = result.credentialId;
   if (result.credentialLabel) entry.credentialLabel = result.credentialLabel;
+  const expiry = result.credentialExpiresAt;
+  if (typeof expiry === "number" && Number.isFinite(expiry)) {
+    const date = new Date(expiry);
+    if (Number.isFinite(date.getTime())) entry.credentialExpiresAt = date.toISOString();
+  } else if (typeof expiry === "string" && Number.isFinite(Date.parse(expiry))) {
+    entry.credentialExpiresAt = new Date(expiry).toISOString();
+  }
+  if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
-  if (result.error) entry.error = result.error;
+  if (result.error) entry.error = safeProviderReason(result.error);
   if (result.usage != null) entry.usage = result.usage;
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
