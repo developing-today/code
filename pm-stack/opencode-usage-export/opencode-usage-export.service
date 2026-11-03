@@ -1,0 +1,8 @@
+[Unit]
+Description=OpenCode usage exporter (pull from the managed-instance history DB) — code#2072 slice 1
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+ExecStart=@NODE@ %h/atlas/opencode-usage-export/opencode-usage-export.mjs --out-dir %h/atlas/opencode-usage-export

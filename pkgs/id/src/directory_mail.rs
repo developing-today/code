@@ -293,8 +293,19 @@ impl MailSink for SmtpSink {
 }
 
 /// A bare address with no spaces, control characters or SMTP syntax in it.
+///
+/// Deliberately narrower than `directory::normalize_email`: this gate only
+/// shapes an address for the local relay — it does not trim, lowercase, or
+/// require a dotted domain — but it does require exactly one `@` with
+/// non-empty local and domain sides, so `@`, `a@`, `@b` and `a@@b.c` are
+/// refused here, before any connection is attempted.
 fn plain_address(text: &str) -> bool {
-    text.contains('@')
+    let Some((local, domain)) = text.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && !domain.contains('@')
         && text
             .chars()
             .all(|c| c.is_ascii_graphic() && !matches!(c, '<' | '>' | ',' | ';' | '"' | '\\'))
@@ -720,6 +731,35 @@ mod tests {
         assert!(!plain_address("john@bücher.example"));
         assert!(!plain_address("john@example.test "));
         assert!(!plain_address("no-at-sign"));
+        assert!(!plain_address("@"));
+        assert!(!plain_address("a@"));
+        assert!(!plain_address("@b"));
+        assert!(!plain_address("a@@b.c"));
+        assert!(!plain_address("a@b@c.d"));
+    }
+
+    #[test]
+    fn a_malformed_sender_or_recipient_is_refused_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        for from in ["@", "a@", "@b", "a@@b.c", "a@b@c.d"] {
+            let error = SmtpSink::new(relay, from.to_owned())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("sender"), "{error}");
+        }
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        for to in ["@", "a@", "@b", "a@@b.c", "a@b@c.d"] {
+            let mut mail = sample();
+            mail.to = to.to_owned();
+            let error = sink.send(&mail).unwrap_err().to_string();
+            assert!(error.contains("recipient"), "{error}");
+        }
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "a refused message opened a connection to the relay"
+        );
     }
 
     #[test]
