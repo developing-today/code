@@ -145,3 +145,44 @@ describe("fleet feed SaaS sanitization (#2451)", () => {
     expect(src.provenance().usage).not.toContain("sanitized at load");
   });
 });
+
+describe("fleet feed SaaS range/order gates (#5188)", () => {
+  const kept = (row: unknown) => sanitizeSaasServices([row]).rows?.length ?? 0;
+
+  test("paygEstimate: inverted and negative pairs drop, ordered and zero pairs keep", () => {
+    const withEstimate = (low: number, high: number) => ({
+      ...VALID,
+      paygEstimate: { low, high, period: "mo" },
+    });
+    expect(kept(withEstimate(100, 60))).toBe(0);
+    expect(kept(withEstimate(-60, -10))).toBe(0);
+    expect(kept(withEstimate(-1, 10))).toBe(0);
+    expect(kept(withEstimate(10, -1))).toBe(0);
+    expect(kept(withEstimate(60, 60))).toBe(1);
+    expect(kept(withEstimate(0, 0))).toBe(1);
+    expect(kept(withEstimate(10, 100))).toBe(1);
+    expect(sanitizeSaasServices([withEstimate(100, 60), VALID]).dropped).toBe(1);
+  });
+
+  test("metrics: negative used/limit/percent drop the service, null and absent keep", () => {
+    const metric = VALID.metrics[0]!;
+    const withMetric = (patch: Record<string, unknown>) => ({
+      ...VALID,
+      metrics: [{ ...metric, ...patch }],
+    });
+    expect(kept(withMetric({ used: -1 }))).toBe(0);
+    expect(kept(withMetric({ limit: -10 }))).toBe(0);
+    expect(kept(withMetric({ percent: -5 }))).toBe(0);
+    expect(kept(withMetric({ used: null, limit: null }))).toBe(1);
+    expect(kept(withMetric({ percent: undefined }))).toBe(1);
+    expect(kept(withMetric({ used: 0, limit: 0, percent: 0 }))).toBe(1);
+  });
+
+  test("service: negative billedUsd and cadenceDays drop, zero keeps", () => {
+    expect(kept({ ...VALID, billedUsd: -0.01 })).toBe(0);
+    expect(kept({ ...VALID, billedUsd: 0 })).toBe(1);
+    expect(kept({ ...VALID, billedUsd: null })).toBe(1);
+    expect(kept({ ...VALID, cadenceDays: -30 })).toBe(0);
+    expect(kept({ ...VALID, cadenceDays: 0 })).toBe(1);
+  });
+});

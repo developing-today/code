@@ -608,11 +608,15 @@ function isUsageMetric(v: unknown): boolean {
   return (
     typeof v.id === "string" &&
     typeof v.label === "string" &&
-    (v.used === null || isFiniteNumber(v.used)) &&
-    (v.limit === null || isFiniteNumber(v.limit)) &&
+    // Range gates mirror isSnapshotRecord (#5188): a negative used,
+    // limit, or percent is never legitimate usage data, and a record
+    // derived from one is refused on snapshot readback — refuse it
+    // here, at the feed boundary, instead.
+    (v.used === null || isNonNegative(v.used)) &&
+    (v.limit === null || isNonNegative(v.limit)) &&
     typeof v.unit === "string" &&
     USAGE_UNITS.includes(v.unit) &&
-    (v.percent === undefined || isFiniteNumber(v.percent)) &&
+    (v.percent === undefined || isNonNegative(v.percent)) &&
     (v.lowerBound === undefined || typeof v.lowerBound === "boolean") &&
     typeof v.highlight === "boolean" &&
     (v.note === undefined || typeof v.note === "string")
@@ -621,9 +625,16 @@ function isUsageMetric(v: unknown): boolean {
 
 function isPaygEstimate(v: unknown): boolean {
   if (!isRecord(v)) return false;
+  const { low, high } = v;
   return (
-    isFiniteNumber(v.low) &&
-    isFiniteNumber(v.high) &&
+    // Order + range gates mirror the snapshot pair rule (#5188):
+    // endpoints are non-negative and low <= high (low === high and
+    // zero endpoints pass); an inverted or negative pair renders
+    // nonsense money and its derived snapshot record is refused by
+    // isSnapshotRecord.
+    isNonNegative(low) &&
+    isNonNegative(high) &&
+    low <= high &&
     typeof v.period === "string" &&
     (v.note === undefined || typeof v.note === "string")
   );
@@ -649,14 +660,14 @@ function isSaasService(v: unknown): v is SaasService {
     v.metrics.every(isUsageMetric) &&
     (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
     (v.paygNote === undefined || typeof v.paygNote === "string") &&
-    (v.billedUsd === undefined || v.billedUsd === null || isFiniteNumber(v.billedUsd)) &&
+    (v.billedUsd === undefined || v.billedUsd === null || isNonNegative(v.billedUsd)) &&
     (typeof v.measuredAt === "string" || v.measuredAt === null) &&
     typeof v.sourceClass === "string" &&
     USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
     typeof v.sourceNote === "string" &&
     sourcesValid &&
     (v.nextDate === undefined || typeof v.nextDate === "string" || v.nextDate === null) &&
-    isFiniteNumber(v.cadenceDays) &&
+    isNonNegative(v.cadenceDays) &&
     isStringArray(v.conflicts) &&
     Array.isArray(v.reads) &&
     v.reads.every((read) => isRecord(read) && typeof read.at === "string" && typeof read.text === "string") &&
