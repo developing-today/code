@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 	_ "modernc.org/sqlite"
 )
 
@@ -98,6 +100,9 @@ type Store struct {
 	mu    sync.Mutex
 	tasks map[string]*Task
 	db    *sql.DB
+	// Audit receives task lifecycle records. Set it before the store is
+	// shared; records contain identifiers and metadata, never task contents.
+	Audit func(logging.Record)
 	// PollInterval is the pollInterval each new task carries. Zero means
 	// the built-in default. Set before the store is shared.
 	PollInterval time.Duration
@@ -161,6 +166,40 @@ func (s *Store) changed(id string) {
 	for _, fn := range fns {
 		fn(id)
 	}
+}
+
+func (s *Store) audit(level slog.Level, event string, attrs map[string]any) {
+	if s.Audit == nil {
+		return
+	}
+	attrs[logging.KeyEvent] = event
+	s.Audit(logging.Record{Time: time.Now(), Level: level, Msg: event, Attrs: attrs})
+}
+
+func requestorAuditAttrs(requestor Requestor) map[string]any {
+	key := requestor.Identity
+	if key == "" {
+		key = "unbound"
+	}
+	return map[string]any{"requestor_key": key, "requestor_role": requestor.Role}
+}
+
+func (s *Store) logTerminal(t *Task) {
+	s.audit(slog.LevelInfo, "task.terminal", map[string]any{
+		"task_id":     t.TaskID,
+		"status":      t.Status,
+		"duration_ms": time.Since(t.CreatedAt).Milliseconds(),
+	})
+}
+
+// RecordRetrieval logs the metadata for a task retrieval at debug level.
+// The surface and method are supplied by the handler; task data is not read.
+func (s *Store) RecordRetrieval(surface, method, id string) {
+	s.audit(slog.LevelDebug, "task.retrieval", map[string]any{
+		"surface": surface,
+		"method":  method,
+		"task_id": id,
+	})
 }
 
 type idKey struct{}
@@ -548,7 +587,14 @@ func (s *Store) Admit(requestor Requestor) bool {
 	}
 	win := s.win
 	s.mu.Unlock()
-	return win.Allow(requestor.key(), time.Now())
+	allowed := win.Allow(requestor.key(), time.Now())
+	if !allowed {
+		attrs := requestorAuditAttrs(requestor)
+		attrs["limit"] = "per_minute"
+		attrs["limit_value"] = limit
+		s.audit(slog.LevelInfo, "task.limit_refused", attrs)
+	}
+	return allowed
 }
 
 // DefaultTTL is the retention a caller gets when it does not ask for one, in
@@ -621,12 +667,14 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 	if ttl <= 0 {
 		ttl = DefaultTTL()
 	}
+	ttlClamped := false
 	maxTTL := s.MaxTTL
 	if maxTTL <= 0 {
 		maxTTL = DefaultMaxTTL
 	}
 	if ttl > maxTTL.Milliseconds() {
 		ttl = maxTTL.Milliseconds()
+		ttlClamped = true
 	}
 	if deadline > 0 {
 		poll := s.PollInterval
@@ -653,6 +701,10 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 		// Counted and inserted under the one lock: concurrent bursts for
 		// the same requestor cannot each observe the same free slot.
 		s.mu.Unlock()
+		attrs := requestorAuditAttrs(requestor)
+		attrs["limit"] = "max_per_requestor"
+		attrs["limit_value"] = capN
+		s.audit(slog.LevelInfo, "task.limit_refused", attrs)
 		return Task{}, fmt.Errorf("%w: protoTasks.maxPerRequestor allows %d non-terminal tasks per requestor", ErrPerRequestorCap, capN)
 	}
 	now := time.Now()
@@ -672,6 +724,11 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 	s.tasks[t.TaskID] = t
 	s.saveTaskLocked(t)
 	s.mu.Unlock()
+	attrs := requestorAuditAttrs(requestor)
+	attrs["task_id"] = t.TaskID
+	attrs["effective_ttl_ms"] = ttl
+	attrs["ttl_clamped"] = ttlClamped
+	s.audit(slog.LevelInfo, "task.created", attrs)
 
 	go func() {
 		result, fault := fn(ctx)
@@ -701,8 +758,8 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 // changed its status: a task cancelled while running keeps its cancellation.
 func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if Terminal(t.Status) {
+		s.mu.Unlock()
 		return false // the first terminal recording under the lock wins
 	}
 	wasCancelling := t.cancelling
@@ -719,24 +776,24 @@ func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 		if t.StatusMessage == "" && wasCancelling {
 			t.StatusMessage = "completed during cancellation"
 		}
-		s.saveTaskLocked(t)
-		s.armRetentionLocked(t)
-		return true
-	}
-	t.Status, t.result = Completed, result
-	// A tool result that is itself an error is a failed task, per the
-	// specification's own note on TaskStatus.
-	if m, ok := result.(map[string]any); ok {
-		if isErr, _ := m["isError"].(bool); isErr {
-			t.Status = Failed
-			t.StatusMessage = toolResultErrorMessage(m)
+	} else {
+		t.Status, t.result = Completed, result
+		// A tool result that is itself an error is a failed task, per the
+		// specification's own note on TaskStatus.
+		if m, ok := result.(map[string]any); ok {
+			if isErr, _ := m["isError"].(bool); isErr {
+				t.Status = Failed
+				t.StatusMessage = toolResultErrorMessage(m)
+			}
 		}
-	}
-	if t.StatusMessage == "" && wasCancelling {
-		t.StatusMessage = "completed during cancellation"
+		if t.StatusMessage == "" && wasCancelling {
+			t.StatusMessage = "completed during cancellation"
+		}
 	}
 	s.saveTaskLocked(t)
 	s.armRetentionLocked(t)
+	s.mu.Unlock()
+	s.logTerminal(t)
 	return true
 }
 
@@ -776,6 +833,11 @@ func (s *Store) SetStatus(id, status, message string) {
 	s.mu.Unlock()
 	if moved {
 		s.changed(id)
+		if Terminal(status) {
+			if snap, ok := s.Get(id); ok {
+				s.logTerminal(&snap)
+			}
+		}
 	}
 }
 
@@ -909,6 +971,7 @@ func (s *Store) CancelImmediate(id string, reason string) (Task, bool) {
 	s.mu.Unlock()
 
 	if transitioned {
+		s.logTerminal(t)
 		if onCancel != nil {
 			ctx, cancelCtx := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
 			onCancel(ctx, reason)
@@ -946,6 +1009,7 @@ func (s *Store) expireCancellation(t *Task, reason string) {
 	s.saveTaskLocked(t)
 	s.armRetentionLocked(t)
 	s.mu.Unlock()
+	s.logTerminal(t)
 	s.changed(t.TaskID)
 }
 

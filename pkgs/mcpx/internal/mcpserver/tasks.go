@@ -633,6 +633,7 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		return reply(out)
 
 	case "tasks/get":
+		st.RecordRetrieval("mcp", "tasks/get", p.TaskID)
 		snap, ok := st.Get(p.TaskID)
 		if !ok {
 			return missing()
@@ -640,6 +641,7 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		return reply(snap)
 
 	case "tasks/result":
+		st.RecordRetrieval("mcp", "tasks/result", p.TaskID)
 		result, fault, err := st.Result(ctx, p.TaskID)
 		switch {
 		case err != nil:
@@ -697,6 +699,7 @@ func (s *Server) handleModernTask(ctx context.Context, req request, id string, m
 	st := s.tasks()
 	switch req.Method {
 	case "tasks/get":
+		st.RecordRetrieval("mcp", "tasks/get", id)
 		out, ok := s.detailedNow(ctx, id)
 		if !ok {
 			return missing()
