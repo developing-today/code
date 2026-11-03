@@ -57,6 +57,16 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { parseProxyPort, parseProxyMillis } from './proxy-port.mjs';
 
+// #2953 (define, don't assign): store an externally-spelled key with
+// define semantics, so "__proto__" becomes an own property instead of
+// invoking the Object.prototype setter and "constructor"/"toString"
+// shadow like any other key.
+const defineValue = (obj, key, value) => {
+  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+};
+
+
 const HOST = process.env.ANTIGRAVITY_DIRECT_HOST || '127.0.0.1';
 // #2823: both env values go through the house helpers, like every other
 // bin/* proxy. A bare Number() let 'abc'/'18941.9'/'99999' reach listen()
@@ -344,7 +354,7 @@ const resolveSchemaRefs = (root) => {
       const target = $ref.startsWith('#') ? lookup($ref) : undefined;
       const merged = (target === undefined || chain.includes($ref) || chain.length >= 10)
         ? {} : { ...walkSchema(target, [...chain, $ref]) };
-      for (const [k, v] of Object.entries(siblings)) merged[k] = walkSchema(v, chain);
+      for (const [k, v] of Object.entries(siblings)) defineValue(merged, k, walkSchema(v, chain));
       return merged;
     }
     const out = {};
@@ -352,11 +362,11 @@ const resolveSchemaRefs = (root) => {
       if (SCHEMA_VALUE_KEYS.has(k)) { out[k] = v; continue; }
       if (SCHEMA_MAP_KEYS.has(k) && isSchemaRecord(v)) {
         const sub = {};
-        for (const [name, s] of Object.entries(v)) sub[name] = walkSchema(s, chain);
+        for (const [name, s] of Object.entries(v)) defineValue(sub, name, walkSchema(s, chain));
         out[k] = sub;
         continue;
       }
-      out[k] = walkSchema(v, chain);
+      defineValue(out, k, walkSchema(v, chain));
     }
     return out;
   };
@@ -394,7 +404,7 @@ const convertSchemaNode = (node) => {
     if (k === 'properties') {
       if (isSchemaRecord(v)) {
         const props = {};
-        for (const [name, sub] of Object.entries(v)) props[name] = convertSchemaNode(sub);
+        for (const [name, sub] of Object.entries(v)) defineValue(props, name, convertSchemaNode(sub));
         out.properties = props;
       }
       continue;

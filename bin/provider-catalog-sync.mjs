@@ -60,6 +60,16 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+// #2953 (define, don't assign): store an externally-spelled key with
+// define semantics, so "__proto__" becomes an own property instead of
+// invoking the Object.prototype setter and "constructor"/"toString"
+// shadow like any other key.
+const defineValue = (obj, key, value) => {
+  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+};
+
+
 // ---------------------------------------------------------------------------
 // Provider source table. `modelsDev` is the provider id in models.dev's
 // api.json used as cross-check (null = no meaningful cross-check).
@@ -430,7 +440,7 @@ function commonSuffix(names) {
   const counts = {};
   for (const n of names) {
     const m = n.match(/(\([^)]*\))\s*$/);
-    if (m) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+    if (m) defineValue(counts, m[1], (Object.hasOwn(counts, m[1]) ? counts[m[1]] : 0) + 1);
   }
   const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
   return best ? best[0] : null;
@@ -596,7 +606,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
     const entry = { config_count: configIds.length };
     if (!src) {
       entry.status = 'no-source-configured';
-      report.providers[providerId] = entry;
+      defineValue(report.providers, providerId, entry);
       continue;
     }
     entry.source = src.kind;
@@ -614,7 +624,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
       entry.status = 'unverifiable';
       entry.note = src.note;
       report.totals.unverifiable += 1;
-      report.providers[providerId] = entry;
+      defineValue(report.providers, providerId, entry);
       continue;
     }
     if (src.kind === 'proxy') {
@@ -645,7 +655,7 @@ export async function runSync({ configPath, modelsDevSpec, sourceDir, runtimeCon
     for (const k of ['additions_validated', 'additions_unverified', 'vanishings']) {
       report.totals[k] += entry[k]?.length ?? 0;
     }
-    report.providers[providerId] = entry;
+    defineValue(report.providers, providerId, entry);
   }
   return { report, configText, config };
 }
@@ -707,7 +717,7 @@ export function renderPrBody(report, addedByProvider) {
 // Apply validated additions to the config text. Returns { text, added }.
 export function applyAdditions(configText, config, report, modelsDev) {
   let text = configText;
-  const added = {};
+  const added = new Map();
   for (const [pid, e] of Object.entries(report.providers)) {
     const ids = e.additions_validated ?? [];
     if (!ids.length) continue;
@@ -718,11 +728,12 @@ export function applyAdditions(configText, config, report, modelsDev) {
       const clonedFrom = entry._clonedFrom;
       delete entry._clonedFrom;
       text = insertModelEntry(text, pid, id, entry);
-      (added[pid] ??= []).push(id);
+      if (!added.has(pid)) added.set(pid, []);
+      added.get(pid).push(id);
       if (clonedFrom) console.error(`[catalog-sync] ${pid}/${id}: variants cloned from sibling ${clonedFrom}`);
     }
   }
-  return { text, added };
+  return { text, added: Object.fromEntries(added) };
 }
 
 // Catalog-only guard: parse before/after and prove nothing outside the
@@ -908,9 +919,9 @@ async function main(argv) {
       console.log(
         `[catalog-sync] skipping ${pid}: ${entry.additions_validated.length} validated addition(s) owned by sync-models (runtime overlay)`,
       );
-      applyReport.providers[pid] = { ...entry, additions_validated: [] };
+      defineValue(applyReport.providers, pid, { ...entry, additions_validated: [] });
     } else {
-      applyReport.providers[pid] = entry;
+      defineValue(applyReport.providers, pid, entry);
     }
   }
   const { text, added } = applyAdditions(configText, config, applyReport, modelsDev);
