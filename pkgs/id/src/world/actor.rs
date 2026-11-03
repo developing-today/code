@@ -104,6 +104,7 @@ pub(crate) enum WorldCommand {
     Input {
         token: JoinCapability,
         input: Vec<u8>,
+        session_id: Option<SessionId>,
         /// The player-signed move event bytes for this input (#2814), when
         /// the participant plays signed. `None` is the unsigned path,
         /// which refuses participants with a bound author key.
@@ -325,6 +326,9 @@ pub(crate) struct WorldActor {
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
+    /// The connection whose input is being processed. Ephemeral actor context;
+    /// it is deliberately absent from `WorldEvent` and the journal.
+    pub(crate) acting_session: Option<SessionId>,
 }
 
 impl WorldActor {
@@ -363,6 +367,7 @@ impl WorldActor {
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
+            self.acting_session = None;
         }
     }
 
@@ -1295,6 +1300,7 @@ impl WorldActor {
             WorldCommand::Input {
                 token,
                 input,
+                session_id,
                 signed_move,
                 reply,
             } => {
@@ -1320,6 +1326,7 @@ impl WorldActor {
                     )),
                     Ok((candidate, signed)) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
+                        self.acting_session = session_id;
                         match self
                             .program
                             .update(&candidate)
@@ -2070,6 +2077,7 @@ impl WorldActor {
             ticks: BTreeMap::new(),
             overdue_at_open,
             acting: None,
+            acting_session: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }
