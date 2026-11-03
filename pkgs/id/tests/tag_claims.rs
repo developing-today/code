@@ -360,9 +360,16 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
                     continue;
                 }
                 let named_count = 1 + rng.below(3);
-                let named: Vec<Hash> = (0..named_count)
-                    .map(|_| sets[rng.below(sets.len())].id())
-                    .collect();
+                // A clear naming a claim twice is invalid input since #4765 (the store
+                // refuses it in check_op), so the generator must not produce one: pick
+                // without replacement.
+                let mut named: Vec<Hash> = Vec::new();
+                for _ in 0..named_count {
+                    let id = sets[rng.below(sets.len())].id();
+                    if !named.contains(&id) {
+                        named.push(id);
+                    }
+                }
                 let seen: HashSet<Hash> = known[w].values().map(Sent::id).collect();
                 let after = frontier(&known[w], count);
                 let sent = writers[w].send(&clear(&named), after, w);
