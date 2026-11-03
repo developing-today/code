@@ -43,6 +43,9 @@ import (
 // socket is not portable across Deno, Bun and Node).
 type Server struct {
 	reg *Registry
+	// completeLimiter holds the completion/complete admission windows
+	// (#2387). The zero value is ready; every Server gets its own.
+	completeLimiter rateLimiter
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths
@@ -261,7 +264,11 @@ func NewServer(opts Options) (*Server, error) {
 			opts.Settings.Duration("elicit.maxAge"))
 	}
 	reg.UseSettings(opts.Settings)
-	reg.InstallHooks(srv.Events, broker, nil)
+	roots, err := rootsFromPaths(opts.Settings.List("daemon.roots"))
+	if err != nil {
+		return nil, err
+	}
+	reg.InstallHooks(srv.Events, broker, roots)
 	if raw := opts.Settings.String("hooks"); raw != "" {
 		declared, herr := hooks.Parse(raw, opts.Settings.Duration("hooks.timeout"))
 		if herr != nil {
@@ -938,7 +945,10 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, r.URL.Query(), "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		cs := s.callSettings(r)
 		if cs != nil {
@@ -985,7 +995,10 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cs := s.callSettings(r)
-	budget, _ := strconv.Atoi(r.URL.Query().Get("budget"))
+	budget, ok := parseOptionalIntQuery(w, r.URL.Query(), "budget")
+	if !ok {
+		return
+	}
 	if budget <= 0 {
 		budget = cs.Int("catalog.budget")
 	}

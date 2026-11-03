@@ -70,6 +70,20 @@ export interface Config {
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const portValue = s(env.DISPATCH_PORT, "4879");
+  if (!/^\d+$/.test(portValue) || Number(portValue) < 1 || Number(portValue) > 65535) {
+    throw new Error(`Invalid DISPATCH_PORT "${portValue}": expected a decimal integer from 1 to 65535`);
+  }
+  const port = Number(portValue);
+  const rawHosts = env.DISPATCH_HOSTS && env.DISPATCH_HOSTS.trim() !== "" ? env.DISPATCH_HOSTS : "127.0.0.1";
+  const hosts = rawHosts
+    .split(",")
+    .map((h) => h.trim())
+    .filter(Boolean);
+  if (hosts.length === 0) {
+    throw new Error(`Invalid DISPATCH_HOSTS "${rawHosts}": expected at least one host`);
+  }
+
   const allowlist = s(env.DISPATCH_REPO_ALLOWLIST, FLEET_REPOS.join(","))
     .split(",")
     .map((r) => r.trim())
@@ -84,11 +98,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     }
   }
   return {
-    port: Number(s(env.DISPATCH_PORT, "4879")),
-    hosts: s(env.DISPATCH_HOSTS, "127.0.0.1")
-      .split(",")
-      .map((h) => h.trim())
-      .filter(Boolean),
+    port,
+    hosts,
     buildVersion: s(env.DISPATCH_BUILD_VERSION, "dev"),
     apiToken: env.DISPATCH_API_TOKEN?.trim() ? env.DISPATCH_API_TOKEN.trim() : null,
     oidcAudience: s(env.DISPATCH_OIDC_AUDIENCE, "pm-dispatch"),
@@ -96,10 +107,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     supabaseUrl: s(env.SUPABASE_URL, "https://nltgxorqwxhgfzseiirt.supabase.co").replace(/\/$/, ""),
     supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY?.trim() ? env.SUPABASE_SERVICE_ROLE_KEY.trim() : null,
     opencodeUrl: s(env.OPENCODE_URL, "http://127.0.0.1:13420").replace(/\/$/, ""),
-    opencodeAuthFile: s(
-      env.OPENCODE_AUTH_FILE,
-      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
-    ),
+    opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),
     githubAppId: env.GITHUB_APP_ID?.trim() ? env.GITHUB_APP_ID.trim() : null,
     githubAppPrivateKeyPem: appPem,
   };

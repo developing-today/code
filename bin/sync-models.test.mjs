@@ -7,7 +7,9 @@
 // If parseJsonc's declaration shape changes, this extraction fails loudly
 // rather than silently testing nothing.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -15,12 +17,19 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(binDir, 'sync-models.mjs'), 'utf-8');
 
-const start = source.indexOf('function parseJsonc(text) {');
-assert.notEqual(start, -1, 'parseJsonc not found in sync-models.mjs');
-const end = source.indexOf('\n}\n', start);
-assert.notEqual(end, -1, 'parseJsonc body not terminated as expected');
-const parseJsonc = new Function(
-  `${source.slice(start, end + 3)}\nreturn parseJsonc;`,
+function extractFunction(name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} not found in sync-models.mjs`);
+  const end = source.indexOf('\n}\n', start);
+  assert.notEqual(end, -1, `${name} body not terminated as expected`);
+  return source.slice(start, end + 3);
+}
+
+const { parseJsonc, parseJsoncTree, removeJsoncPath } = new Function(
+  `${extractFunction('parseJsonc')}\n` +
+  `${extractFunction('parseJsoncTree')}\n` +
+  `${extractFunction('removeJsoncPath')}\n` +
+  'return { parseJsonc, parseJsoncTree, removeJsoncPath };',
 )();
 
 const loadPolicyStart = source.indexOf('function loadPolicy() {');
@@ -107,6 +116,36 @@ for (const family of ['constructor', '__proto__', 'toString', 'hasOwnProperty'])
   });
 }
 
+const inlineCommentCases = [
+  ['after the comma', `{
+  "remove": true, // keep this comment
+  "keep": true
+}`],
+  ['after a last-member value', `{
+  "remove": true // keep this comment
+}`],
+  ['between the value and comma', `{
+  "remove": true /* keep this comment */,
+  "keep": true
+}`],
+  ['before a comma on the next line', `{
+  "remove": true // keep this comment
+  ,
+  "keep": true
+}`],
+];
+
+for (const [placement, text] of inlineCommentCases) {
+  test(`refuses to remove a member with an inline comment ${placement}`, () => {
+    assert.throws(
+      () => removeJsoncPath(text, ['remove']),
+      error => error.name === 'JsoncCommentRemovalError' &&
+        /remove.*inline comment/i.test(error.message),
+    );
+  });
+}
+
+
 test('a family pattern without capture group 1 does not select an id or throw', () => {
   const policy = { families: { plain: '^plain-model$' } };
   assert.deepEqual(
@@ -138,4 +177,80 @@ test('shipped policy still loads unchanged and known families select the newest 
     ),
     new Set(['gemini-2-flash']),
   );
+});
+
+test('removes a comment-free member and leaves parseable JSONC', () => {
+  const output = removeJsoncPath(`{
+  "remove": true,
+  "keep": true
+}`, ['remove']);
+  assert.deepEqual(parseJsonc(output), { keep: true });
+  assert.equal(parseJsoncTree(output).members.length, 1);
+});
+
+test('keeps a standalone comment when removing the following member', () => {
+  const output = removeJsoncPath(`{
+  // standalone note
+  "remove": true,
+  "keep": true
+}`, ['remove']);
+  assert.match(output, /\/\/ standalone note/);
+  assert.deepEqual(parseJsonc(output), { keep: true });
+});
+
+// Strict argv validation (#3297): unknown arguments are a usage error,
+// reported before any fetch/discovery/write. These probes run the real
+// script with an isolated HOME and an explicit OPENCODE_CONFIG_PATH so the
+// temp target config — never the live config — is the only write candidate.
+const scriptPath = path.join(binDir, 'sync-models.mjs');
+
+function runWithTempConfig(args) {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-models-test-home-'));
+  const configPath = path.join(tmpHome, 'opencode.jsonc');
+  const before = '{\n  // temp probe config\n  "provider": {}\n}\n';
+  fs.writeFileSync(configPath, before);
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+    encoding: 'utf-8',
+    timeout: 60000,
+    env: {
+      ...process.env,
+      HOME: tmpHome,
+      OPENCODE_CONFIG_PATH: configPath,
+    },
+  });
+  const after = fs.readFileSync(configPath, 'utf-8');
+  const backupExists = fs.existsSync(`${configPath}.backup`);
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  return { result, before, after, backupExists };
+}
+
+test('rejects --bogus-flag non-zero and leaves the target config byte-identical', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['--bogus-flag']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /--bogus-flag/);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
+});
+
+test('rejects typo --dry-rnu non-zero, names it, and leaves the target config byte-identical', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['--dry-rnu']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /--dry-rnu/);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
+});
+
+test('rejects a positional argument non-zero and leaves the target config byte-identical', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['some-positional']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}${result.stdout}`, /some-positional/);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
+});
+
+test('--dry-run still exits 0 writing nothing', () => {
+  const { result, before, after, backupExists } = runWithTempConfig(['--dry-run']);
+  assert.equal(result.status, 0);
+  assert.equal(after, before);
+  assert.equal(backupExists, false);
 });

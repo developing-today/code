@@ -33,9 +33,12 @@ use crate::membership::{
 };
 use crate::rejection::Reason;
 
-use super::delegation::{Grant, Removal, removed_member};
+use super::delegation::{Grant, GrantVisibility, Removal, removed_member};
 use super::friendship::{Pair, friendship_id};
-use super::policy::{OnMemberRemoved, Policy, Removal as RemovalMode, Template};
+use super::policy::{
+    OnMemberRemoved, Policy, Removal as RemovalMode, RemoveMode, RemoveModeKind, SuccessorKind,
+    Template,
+};
 use super::{Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Role};
 
 /// Why an event had no effect. A refused event changes no state. It is still decided, so the
@@ -67,6 +70,12 @@ pub enum Refusal {
     BadTemplate(Template),
     /// The policy record is not usable: its role rule is not Admin, or its cap allows no member.
     BadPolicy,
+    /// The removal asks for a mode this group's remove policy does not allow.
+    RemoveModeNotAllowed(RemoveModeKind),
+    /// The removal asks for a transfer successor category this policy does not allow.
+    RemoveSuccessorNotAllowed(SuccessorKind),
+    /// `ServerDefault` appeared in a replicated event instead of being resolved before recording.
+    UnresolvedRemoveMode,
     /// The members list repeats an account, or names the author.
     BadMembers,
     /// The member cap would be exceeded.
@@ -116,6 +125,9 @@ impl Refusal {
             | Self::BadFriendship
             | Self::BadTemplate(_)
             | Self::BadPolicy
+            | Self::RemoveModeNotAllowed(_)
+            | Self::RemoveSuccessorNotAllowed(_)
+            | Self::UnresolvedRemoveMode
             | Self::BadMembers
             | Self::OverCap { .. }
             | Self::JoinNotSupported
@@ -382,8 +394,10 @@ fn run(
         outcomes.insert(event.id, outcome);
     }
     let effective = engine.effective();
-    let in_force = engine.in_force(by_id)?;
-    let projection = engine.into_projection(outcomes, effective.clone(), in_force, by_id);
+    let visibility = engine.in_force(by_id)?;
+    let in_force = visibility.keys().copied().collect();
+    let projection =
+        engine.into_projection(outcomes, effective.clone(), in_force, visibility, by_id);
     Ok((projection, effective))
 }
 
@@ -496,7 +510,7 @@ pub(super) enum Effect {
     Remove {
         member: Key,
         dissolves: bool,
-        successor: Option<Key>,
+        mode: RemoveMode,
         by: Hash,
     },
     Delegation {
@@ -654,10 +668,11 @@ impl Engine {
                 let grant = Grant {
                     id: event.id,
                     group,
-                    from: event.author,
+                    from: Some(event.author),
                     to: delegate.grantee,
                     scope: delegate.scope,
                     redelegate: delegate.can_redelegate,
+                    retained: false,
                     target,
                 };
                 self.grants.insert(event.id, grant);
@@ -668,14 +683,15 @@ impl Engine {
             Effect::Remove {
                 member,
                 dissolves,
-                successor,
+                mode,
                 by,
             } => {
                 let removal = Removal {
                     id: by,
                     group,
                     member,
-                    successor,
+                    mode,
+                    actor: event.author,
                     after: event.after.clone(),
                 };
                 self.removals.insert(by, removal);
@@ -685,7 +701,7 @@ impl Engine {
                         Effect::Remove {
                             member,
                             dissolves,
-                            successor,
+                            mode,
                             by,
                         },
                     );
@@ -881,8 +897,24 @@ impl Engine {
         if record.dissolved_by.is_some() {
             return Err(Refusal::Dissolved);
         }
-        let Some((author, author_role)) = self.effective_author(by_id, group, event) else {
-            return Err(Refusal::NotActive);
+        // A removal tangled in a concurrent removal is the membership layer's call, not this
+        // judge's (design §6.2): the layer judges authority at an operation's causal position
+        // and arbitrates concurrent removals — the other half of a mutual removal takes
+        // effect, and a removal cycle removes every member. Judged against the state built
+        // so far instead, the second half of such a tangle is refused for whoever the
+        // canonical order happened to strike first: NotActive when its author was removed,
+        // NotAMember when its target was, NotAdmin when its target is the creator. So an
+        // entangled removal is handed to the layer with no pre-checks of this judge's own.
+        // Only true concurrency entangles: a removal in the event's causal past, or one the
+        // event is in the past of, leaves the checks below in force — a manager's unilateral
+        // removal of an Admin is still refused. Friendships keep their own path: a removal
+        // there dissolves, and the dissolve machinery owns the verdict.
+        let entangled =
+            record.friendship.is_none() && self.removal_entangled(by_id, group, event, op);
+        let (author, author_role) = match self.effective_author(by_id, group, event) {
+            Some(found) => found,
+            None if entangled => (event.author, Role::Pull),
+            None => return Err(Refusal::NotActive),
         };
         let is_admin = author_role == Role::Admin;
         let is_manager = author_role >= Role::Manage;
@@ -914,7 +946,41 @@ impl Engine {
                     },
                 })
             }
-            MemberOp::Remove { member, successor } => {
+            MemberOp::Remove { member, mode } => {
+                let Some(mode_kind) = mode.kind() else {
+                    return Err(Refusal::UnresolvedRemoveMode);
+                };
+                if !record
+                    .policy
+                    .remove_policy
+                    .allowed_modes
+                    .contains(&mode_kind)
+                {
+                    return Err(Refusal::RemoveModeNotAllowed(mode_kind));
+                }
+                if let RemoveMode::Transfer(opts) = mode
+                    && !record
+                        .policy
+                        .remove_policy
+                        .allowed_successors
+                        .contains(&opts.successor.kind())
+                {
+                    return Err(Refusal::RemoveSuccessorNotAllowed(opts.successor.kind()));
+                }
+                if entangled {
+                    return Ok(Decision {
+                        group,
+                        action: Some(GroupAction::Remove {
+                            member: GroupMember::Individual(AuthId::Key(member)),
+                        }),
+                        effect: Effect::Remove {
+                            member,
+                            dissolves: record.policy.on_member_removed == OnMemberRemoved::Dissolve,
+                            mode,
+                            by: event.id,
+                        },
+                    });
+                }
                 if !self.listed(&group, &member) {
                     return Err(Refusal::NotAMember(member));
                 }
@@ -933,7 +999,7 @@ impl Engine {
                     effect: Effect::Remove {
                         member,
                         dissolves: record.policy.on_member_removed == OnMemberRemoved::Dissolve,
-                        successor,
+                        mode,
                         by: event.id,
                     },
                 })
@@ -967,6 +1033,30 @@ impl Engine {
                 })
             }
         }
+    }
+
+    /// Whether the removal `op` in `event` is tangled in a concurrent removal: another
+    /// removal in the same group, concurrent with `event` — neither in the other's causal
+    /// past — names the event's author or the member `op` removes. A removal the event
+    /// causally follows, and one that causally follows the event, do not entangle it.
+    fn removal_entangled(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: Hash,
+        event: &Event,
+        op: MemberOp,
+    ) -> bool {
+        let MemberOp::Remove { member, .. } = op else {
+            return false;
+        };
+        let past = causal_past(by_id, &event.after);
+        by_id.values().any(|other| {
+            other.id != event.id
+                && other.group == Some(group)
+                && !past.contains(&other.id)
+                && !causal_past(by_id, &other.after).contains(&event.id)
+                && matches!(removed_member(other), Some(target) if target == event.author || target == member)
+        })
     }
 
     pub(super) fn record(&self, group: &Hash) -> Result<&Record, Refusal> {
@@ -1069,6 +1159,18 @@ impl Engine {
         if record.is_some_and(|record| record.admins.contains(key)) {
             return true;
         }
+        self.admin_at_position(by_id, group, key, after)
+    }
+
+    /// Whether `key` was an Admin at exactly the causal position `after`, even when the group's
+    /// configured remove strength normally lets a concurrent removal affect the current view.
+    fn admin_at_position(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: &Hash,
+        key: &Key,
+        after: &[Hash],
+    ) -> bool {
         let past = causal_past(by_id, after);
         let Ok(order) = canonical_order(by_id) else {
             return false;
@@ -1086,8 +1188,15 @@ impl Engine {
                 continue;
             }
             match &event.body {
-                Body::Create(create) if event.id == *group => {
-                    admin = Some(if create.admins_on_create {
+                Body::Create(create) if event.id == *group || event.group == Some(*group) => {
+                    admin = Some(if event.group == Some(*group) {
+                        create.admins_on_create
+                            && (event.author == *key
+                                || create
+                                    .members
+                                    .first()
+                                    .is_some_and(|(member, _)| member == key))
+                    } else if create.admins_on_create {
                         event.author == *key
                             || create
                                 .members
@@ -1116,6 +1225,41 @@ impl Engine {
             }
         }
         admin.unwrap_or(false)
+    }
+
+    /// The Admin accounts at a removal's causal position. The candidate set comes from the group's
+    /// membership history; `admin_at_position` filters out accounts not Admin at that position.
+    pub(super) fn admins_at_position(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: &Hash,
+        after: &[Hash],
+    ) -> BTreeSet<Key> {
+        let mut candidates = BTreeSet::new();
+        for event in by_id.values() {
+            if event.id == *group || event.group == Some(*group) {
+                candidates.insert(event.author);
+                if let Body::Create(create) = &event.body {
+                    candidates.extend(create.members.iter().map(|(member, _)| *member));
+                }
+                // Membership-operation subjects are candidates too: an account added
+                // or promoted to Admin after creation may never have authored an
+                // event, so the author/create-member scan above misses it and
+                // Transfer(Admin) would silently skip the only remaining Admin.
+                if let Body::Member(
+                    MemberOp::Add { member, .. }
+                    | MemberOp::SetRole { member, .. }
+                    | MemberOp::Remove { member, .. },
+                ) = &event.body
+                {
+                    candidates.insert(*member);
+                }
+            }
+        }
+        candidates
+            .into_iter()
+            .filter(|key| self.admin_at_position(by_id, group, key, after))
+            .collect()
     }
 
     /// Resolves whether `actor` is an active authorized device for an account in `group` at `after`.
@@ -1326,14 +1470,20 @@ impl Engine {
         outcomes: BTreeMap<Hash, Outcome>,
         effective: BTreeSet<Hash>,
         in_force: BTreeSet<Hash>,
+        visibility: BTreeMap<Hash, GrantVisibility>,
         by_id: &BTreeMap<Hash, &Event>,
     ) -> Projection {
         let membership = &self.membership;
         let grants: Vec<Grant> = self
             .grants
             .values()
-            .filter(|grant| in_force.contains(&grant.id))
-            .cloned()
+            .filter_map(|grant| {
+                let visible = visibility.get(&grant.id)?;
+                let mut grant = grant.clone();
+                grant.from = visible.from;
+                grant.retained = visible.retained;
+                Some(grant)
+            })
             .collect();
         let devices: Vec<DeviceGrant> = self
             .devices

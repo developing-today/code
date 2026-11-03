@@ -576,7 +576,9 @@ func looksLikeSchemaError(msg string) bool {
 // larger word never names a field — "id" inside "invalid" blamed the
 // wrong argument (#1646). An occurrence wrapped in matching quotes or
 // backticks outranks a bare-token occurrence — servers quote the field
-// they mean — and within a class the longest name wins, as before.
+// they mean — and within a class the longest name wins; equal-length
+// matches use the lexicographically smallest name for a deterministic
+// result.
 // Matching stays case-sensitive, and separator variants are not
 // folded: "user-id" does not name "user_id".
 func fieldInMessage(msg string, shape Shape) string {
@@ -597,7 +599,7 @@ func fieldInMessage(msg string, shape Shape) string {
 			if !quoted {
 				continue
 			}
-		} else if len(name) <= len(best) {
+		} else if len(name) < len(best) || (len(name) == len(best) && name >= best) {
 			continue
 		}
 		best, bestQuoted = name, quoted

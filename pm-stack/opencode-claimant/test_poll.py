@@ -118,5 +118,41 @@ class TestSummarizeCap(unittest.TestCase):
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
+
+class TestIsCandidate(unittest.TestCase):
+    def row(self, **over):
+        r = {"progress": {"lane": "opencode", "stage": "handed_off"},
+             "lane_id": "code-a"}
+        r.update(over)
+        return r
+
+    def test_shift_lane_opencode_unbound_is_candidate(self):
+        self.assertTrue(poll.is_candidate(self.row()))
+
+    def test_legacy_claim_without_lane_id_is_candidate(self):
+        self.assertTrue(poll.is_candidate(self.row(lane_id=None)))
+
+    def test_openchamber_lane_claim_is_never_candidate(self):
+        self.assertFalse(poll.is_candidate(
+            self.row(lane_id="8ac61616-3815-4e7b-b33d-840a3829154a")))
+
+    def test_direct_lane_is_not_candidate(self):
+        self.assertFalse(poll.is_candidate(
+            self.row(progress={"lane": "direct"})))
+
+    def test_bound_session_is_not_candidate(self):
+        self.assertFalse(poll.is_candidate(
+            self.row(progress={"lane": "opencode", "session_id": "ses_1"})))
+
+    def test_assigned_but_not_handed_off_is_not_candidate(self):
+        self.assertFalse(poll.is_candidate(
+            self.row(progress={"lane": "opencode", "stage": "verified"})))
+        self.assertFalse(poll.is_candidate(
+            self.row(progress={"lane": "opencode"})))
+
+    def test_unassigned_task_is_not_candidate(self):
+        self.assertFalse(poll.is_candidate(self.row(progress={})))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,20 +31,20 @@ while IFS= read -r pkg; do
   [ -n "$pkg" ] || continue
   if go test -c -o /dev/null "$pkg" 2>"/tmp/darwin-compile-err.txt"; then
     case " $DARWIN_COMPILE_EXCEPTIONS " in
-      *" $pkg "*) echo "note: $pkg now compiles for darwin — remove it from DARWIN_COMPILE_EXCEPTIONS" ;;
+    *" $pkg "*) echo "note: $pkg now compiles for darwin — remove it from DARWIN_COMPILE_EXCEPTIONS" ;;
     esac
   else
     case " $DARWIN_COMPILE_EXCEPTIONS " in
-      *" $pkg "*)
-        echo "known exception (see list in this script): $pkg"
-        sed 's/^/    /' "/tmp/darwin-compile-err.txt" | head -3
-        skipped+=("$pkg")
-        ;;
-      *)
-        echo "FAIL darwin test compile: $pkg"
-        sed 's/^/    /' "/tmp/darwin-compile-err.txt"
-        failed+=("$pkg")
-        ;;
+    *" $pkg "*)
+      echo "known exception (see list in this script): $pkg"
+      sed 's/^/    /' "/tmp/darwin-compile-err.txt" | head -3
+      skipped+=("$pkg")
+      ;;
+    *)
+      echo "FAIL darwin test compile: $pkg"
+      sed 's/^/    /' "/tmp/darwin-compile-err.txt"
+      failed+=("$pkg")
+      ;;
     esac
   fi
 done < <(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
