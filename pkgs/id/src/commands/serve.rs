@@ -51,7 +51,7 @@
 //! ```
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -71,7 +71,9 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
-use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
+use crate::chat_presence::{
+    HEARTBEAT_INTERVAL, PresenceHeartbeat, PresenceTable, decode_frame, encode_frame,
+};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     defaults, resolve_config,
@@ -83,6 +85,7 @@ use crate::peer_announcement::SignedPeerAnnouncement;
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
+use crate::waiting::AuthorKey;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
 /// Print a status line to stdout **without panicking** if stdout is gone.
@@ -598,12 +601,15 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
-/// The server's capability ceiling: the named capabilities, or the whole catalog
-/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+/// The server's capability ceiling: the named capabilities, or the default
+/// ceiling ([`crate::world_caps::default_ceiling_names`]) when no list is
+/// given — providers whose manifest default is `Excluded` do not join a
+/// server by registration alone (#838). Like a world ceiling, it names
+/// capabilities; `*` is refused.
 #[cfg(feature = "world")]
 fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
     match names {
-        None => Ok(crate::world_caps::catalog_names()),
+        None => Ok(crate::world_caps::default_ceiling_names()),
         Some(names) => {
             crate::world_caps::validate_ceiling_names(names)?;
             Ok(names.iter().cloned().collect())
@@ -791,6 +797,14 @@ impl ServeWorlds {
     }
 }
 
+/// The group log the serve warning watcher reads: the global
+/// `--groups-log` option when given, else the default file name —
+/// resolved with the group commands' semantics (#2778; serve used
+/// to hardcode the default and ignore the option).
+fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
+    crate::commands::group::log_path(path)
+}
+
 /// Starts the serve process.
 ///
 /// Initializes the Iroh endpoint, blob store, protocol handlers, and
@@ -830,14 +844,6 @@ impl ServeWorlds {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
-/// The group log the serve warning watcher reads: the global
-/// `--groups-log` option when given, else the default file name —
-/// resolved with the group commands' semantics (#2778; serve used
-/// to hardcode the default and ignore the option).
-fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
-    crate::commands::group::log_path(path)
-}
-
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -887,6 +893,24 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
+    // Resolved early (not at the group-warning block below) so the gossip
+    // receive task can fold the same log for receipt-side membership scoping
+    // (#4363): a channel the receiver holds no fold for scopes to empty.
+    let groups_log = serve_groups_log_path(groups_log);
+    // A web request on a binary built without the `web` feature must
+    // fail loudly: the web startup block is compiled out in that build,
+    // so without this guard --web was accepted and silently served
+    // nothing (no listener bound, no `web:` status line) - the failure
+    // mode that left web-waiting integration tests to die on a startup
+    // timeout instead of hearing the real reason.
+    #[cfg(not(feature = "web"))]
+    if web || !web_listen.is_empty() || port_explicit || bind_explicit {
+        anyhow::bail!(
+            "the web interface was requested (--web/--web-listen/--port/--bind), \
+             but this id binary was built without the `web` feature; \
+             rebuild with `--features web` to serve it"
+        );
+    }
     validate_world_options(
         world,
         world_admin_token.as_deref(),
@@ -953,6 +977,27 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         ))?;
     }
     let endpoint = builder.bind().await?;
+
+    // Do not announce readiness before the endpoint is reachable through
+    // its home relay (#3028). The wait is bounded and non-fatal: a dead
+    // relay entry must not hold startup, so on timeout we warn and carry on.
+    // With `--no-relay` no relay ever connects, so the wait is skipped.
+    if no_relay {
+        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    } else {
+        match crate::connectivity::await_home_relay(
+            &endpoint,
+            crate::connectivity::HOME_RELAY_DEADLINE,
+        )
+        .await
+        {
+            Ok(()) => info!("serve startup: home relay connected"),
+            Err(e) => warn!(
+                "serve startup: proceeding without a home relay after {:?}: {e:#}",
+                crate::connectivity::HOME_RELAY_DEADLINE,
+            ),
+        }
+    }
 
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
@@ -1146,6 +1191,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 crate::world_net::WorldProtocol::new(hub.clone()),
             )
             .accept(
+                crate::world_replication_net::REPLICATION_ALPN,
+                crate::world_replication_net::WorldReplicationProtocol::new(
+                    hub.clone(),
+                    ed25519_dalek::SigningKey::from_bytes(&key.to_bytes()),
+                ),
+            )
+            .accept(
                 crate::envelope_net::ENVELOPE_ALPN,
                 crate::envelope_net::EnvelopeProtocol::new(hub.clone()),
             )
@@ -1250,6 +1302,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
         let gossip_chat_presence = chat_presence.clone();
+        let gossip_groups_log = groups_log.clone();
         let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
@@ -1261,6 +1314,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 receiver,
                 gossip_peer_discovery,
                 gossip_chat_presence,
+                gossip_groups_log,
                 gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
@@ -1504,7 +1558,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // the CLI status output at startup; the spawned task then re-evaluates
     // as membership changes and writes fired warnings to the server log.
     let mut group_watcher = GroupWarningWatcher::new();
-    let groups_log = serve_groups_log_path(groups_log);
     for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
         status!("group warning: {}", warning.message());
     }
@@ -1562,55 +1615,108 @@ const GROUP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_se
 /// every group is observed as client-made. Member counts come from the fold.
 ///
 /// Group events carry no timestamps, so churn cannot be reconstructed from
-/// the log for time before serve started. Instead the watcher derives re-adds
-/// from what it observes between evaluations: a device that is authorized,
-/// later unauthorized, and then authorized again is a re-add, stamped with
-/// the time of the evaluation that first sees it back.
+/// the log for time before serve started. Instead the watcher counts re-adds
+/// from the log events folded since its previous evaluation (#1847): a
+/// device authorization that takes effect for a device the watcher has seen
+/// authorized before, and that is not authorized at that point in the event
+/// stream, is a re-add, stamped with the time of the evaluation that folds
+/// it. Counting from the event stream — not from the net device set — means
+/// a revoke + re-add cycle that completes inside one evaluation interval
+/// still counts. The first evaluation only establishes the baseline (the
+/// devices the fold already shows), so history from before serve started
+/// never counts.
 struct GroupWarningWatcher {
     evaluator: Evaluator,
-    /// The devices authorized per group at the previous evaluation.
-    devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
+    /// The devices authorized per group at the last event the watcher has
+    /// folded, tracked through the event stream, not just at evaluations,
+    /// with the accounts whose grants authorize each device: a revocation
+    /// is account-scoped in the fold (it ends only the revoking account's
+    /// grant), so a device stays authorized while any account's grant for
+    /// it remains. An empty account set means the fold shows the device
+    /// authorized but the watcher has not observed a grant for it (the
+    /// device was adopted in the fold sync in `evaluate`).
+    authorized: std::collections::BTreeMap<
+        Hash,
+        std::collections::BTreeMap<GroupKey, std::collections::BTreeSet<GroupKey>>,
+    >,
     /// Every device ever seen authorized per group.
     seen_devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
     /// The re-add times per group, as observed by this watcher.
     readds: std::collections::BTreeMap<Hash, Vec<u64>>,
+    /// How many log events the watcher has folded, or `None` before the
+    /// first evaluation establishes the baseline.
+    events_seen: Option<usize>,
 }
 
 impl GroupWarningWatcher {
     fn new() -> Self {
         Self {
             evaluator: Evaluator::default(),
-            devices: std::collections::BTreeMap::new(),
+            authorized: std::collections::BTreeMap::new(),
             seen_devices: std::collections::BTreeMap::new(),
             readds: std::collections::BTreeMap::new(),
+            events_seen: None,
         }
     }
 
     /// Evaluates every active group in `projection` at `now` (Unix seconds).
     /// Returns the warnings this evaluation adds, and writes each of them to
     /// the server log through the warnings module.
-    fn evaluate(&mut self, projection: &Projection, now: u64) -> Vec<(Hash, Warning)> {
+    fn evaluate(
+        &mut self,
+        projection: &Projection,
+        events: &[crate::groups::Event],
+        now: u64,
+    ) -> Vec<(Hash, Warning)> {
+        let delta_readds = self.fold_new_events(projection, events);
         let mut fired = Vec::new();
         for (group, view) in projection.groups() {
             if !view.is_active() {
                 continue;
             }
+            // Keep the event-tracked authorization in step with the fold:
+            // a device can leave or rejoin the active set without a device
+            // event of its own (its account was removed or re-added). Such
+            // a change is not a re-add — only a device event counts — but
+            // the tracked set must match the fold, or a later genuine
+            // re-add would be missed or counted twice.
             let current = projection.group_active_devices(group);
-            let mut new_readds = 0_usize;
             {
-                let seen = self.seen_devices.entry(*group).or_default();
-                let previous = self.devices.entry(*group).or_default();
-                for device in &current {
-                    if !previous.contains(device) && seen.contains(device) {
-                        new_readds += 1;
+                // Refresh the authorizing accounts from the fold as well
+                // as the device keys: an account can stop authorizing a
+                // device without a device event of its own (its membership
+                // was removed), and a stale account left in the tracked
+                // set would keep the device authorized through every
+                // later revoke by the remaining accounts, hiding genuine
+                // churn (Codex review on PR #4035).
+                let mut fold_accounts: std::collections::BTreeMap<
+                    GroupKey,
+                    std::collections::BTreeSet<GroupKey>,
+                > = std::collections::BTreeMap::new();
+                for account in view.members.keys() {
+                    for device in projection.active_devices(group, account) {
+                        fold_accounts.entry(device).or_default().insert(*account);
                     }
                 }
-                seen.extend(current.iter().copied());
-                *previous = current;
+                let authorized = self.authorized.entry(*group).or_default();
+                authorized.retain(|device, _accounts| current.contains(device));
+                let seen = self.seen_devices.entry(*group).or_default();
+                for device in &current {
+                    let is_new = !authorized.contains_key(device);
+                    if let Some(accounts) = fold_accounts.get(device) {
+                        authorized.insert(*device, accounts.clone());
+                    } else if is_new {
+                        authorized.insert(*device, std::collections::BTreeSet::new());
+                    }
+                    if is_new {
+                        seen.insert(*device);
+                    }
+                }
             }
-            if new_readds > 0 {
+            let fresh_readds = delta_readds.get(group).copied().unwrap_or(0);
+            if fresh_readds > 0 {
                 let times = self.readds.entry(*group).or_default();
-                for _ in 0..new_readds {
+                for _ in 0..fresh_readds {
                     times.push(now);
                 }
                 times.retain(|at| {
@@ -1631,6 +1737,104 @@ impl GroupWarningWatcher {
             }
         }
         fired
+    }
+
+    /// Folds the log events recorded since the previous evaluation and
+    /// counts the re-adds among them, per group. Only events the fold
+    /// applied count: a refused authorization authorizes nothing, and a
+    /// refused revocation revokes nothing.
+    ///
+    /// The first call only establishes the baseline — it adopts the fold's
+    /// current devices and counts nothing — because events carry no
+    /// timestamps and churn from before serve started must not be
+    /// reconstructed. A log that shrank since the previous evaluation (it
+    /// was replaced) likewise re-baselines instead of counting.
+    fn fold_new_events(
+        &mut self,
+        projection: &Projection,
+        events: &[crate::groups::Event],
+    ) -> std::collections::BTreeMap<Hash, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        let Some(cursor) = self.events_seen else {
+            self.baseline(projection);
+            self.events_seen = Some(events.len());
+            return counts;
+        };
+        if cursor > events.len() {
+            self.baseline(projection);
+            self.events_seen = Some(events.len());
+            return counts;
+        }
+        for event in &events[cursor..] {
+            let Some(group) = event.group else {
+                continue;
+            };
+            let crate::groups::Body::Device(op) = &event.body else {
+                continue;
+            };
+            if projection.outcome(&event.id) != Some(&crate::groups::Outcome::Applied) {
+                continue;
+            }
+            match op {
+                crate::groups::DeviceOp::Add { device, .. } => {
+                    let seen = self.seen_devices.entry(group).or_default();
+                    let was_seen = seen.contains(device);
+                    seen.insert(*device);
+                    let authorized = self.authorized.entry(group).or_default();
+                    if !authorized.contains_key(device) && was_seen {
+                        *counts.entry(group).or_default() += 1;
+                    }
+                    authorized.entry(*device).or_default().insert(event.author);
+                }
+                crate::groups::DeviceOp::Revoke { device } => {
+                    // A revocation is account-scoped in the fold: it ends
+                    // only the revoking account's grant, so the device
+                    // stays authorized while another account's grant for
+                    // it remains (Codex review on PR #4035). Removing the
+                    // device outright would count the other account's
+                    // later re-add as churn that never happened.
+                    if let Some(authorized) = self.authorized.get_mut(&group) {
+                        let mut ended = false;
+                        if let Some(accounts) = authorized.get_mut(device) {
+                            ended = accounts.remove(&event.author) && accounts.is_empty();
+                        }
+                        if ended {
+                            authorized.remove(device);
+                        }
+                    }
+                }
+            }
+        }
+        self.events_seen = Some(events.len());
+        counts
+    }
+
+    /// Adopts the fold's current devices as the watcher's tracked state,
+    /// counting nothing: the state before the baseline is history the
+    /// watcher did not observe.
+    fn baseline(&mut self, projection: &Projection) {
+        self.authorized.clear();
+        self.seen_devices.clear();
+        for (group, view) in projection.groups() {
+            let current = projection.group_active_devices(group);
+            self.seen_devices.insert(*group, current.clone());
+            // Record which accounts' grants authorize each device, so a
+            // later account-scoped revocation replays correctly against
+            // the baseline too.
+            let mut devices: std::collections::BTreeMap<
+                GroupKey,
+                std::collections::BTreeSet<GroupKey>,
+            > = current
+                .iter()
+                .map(|device| (*device, std::collections::BTreeSet::new()))
+                .collect();
+            for account in view.members.keys() {
+                for device in projection.active_devices(group, account) {
+                    devices.entry(device).or_default().insert(*account);
+                }
+            }
+            self.authorized.insert(*group, devices);
+        }
     }
 }
 
@@ -1660,7 +1864,7 @@ fn evaluate_group_warnings(
             return Vec::new();
         }
     };
-    watcher.evaluate(&projection, now)
+    watcher.evaluate(&projection, log.events(), now)
 }
 
 /// The current time as Unix seconds, for the warning evaluator's clock.
@@ -1673,10 +1877,70 @@ fn unix_now() -> u64 {
 
 const MAX_STALE_PROBES_PER_PASS: usize = 4;
 
+/// Verifies an incoming presence heartbeat and stores only the channels whose
+/// folded group membership contains the sender (#4363). Membership comes from
+/// the receiver's own group fold for the channel (the `GroupView` member
+/// set); a channel the receiver holds no fold for scopes to empty, because
+/// membership the receiver cannot see cannot be confirmed. If the local group
+/// log cannot be read or folded, the heartbeat is refused rather than
+/// accepted without its scope check. Signature verification is unchanged: a
+/// heartbeat whose signature by its claimed node does not verify is dropped.
+fn receive_presence_heartbeat(
+    table: &PresenceTable,
+    heartbeat: PresenceHeartbeat,
+    groups_log: &Path,
+) -> bool {
+    if !heartbeat.verify() {
+        debug!("presence heartbeat failed signature verification, dropped");
+        return false;
+    }
+
+    let log = match GroupLog::open(groups_log) {
+        Ok(log) => log,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot open groups log: {error}");
+            return false;
+        }
+    };
+    let projection = match log.projection() {
+        Ok(projection) => projection,
+        Err(error) => {
+            debug!("presence heartbeat dropped: cannot fold groups log: {error}");
+            return false;
+        }
+    };
+
+    let node = heartbeat.node;
+    let channels = heartbeat.channels.len();
+    let accepted = table.update_scoped(heartbeat, &|sender: &AuthorKey, group: &Hash| {
+        projection
+            .group(group)
+            .is_some_and(|view| view.members.contains_key(sender))
+    });
+    if accepted {
+        debug!(
+            "presence heartbeat from {}: {channels} claimed channel(s)",
+            node.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
+    accepted
+}
+
+/// The presence-heartbeat period for the gossip loop: [`HEARTBEAT_INTERVAL`],
+/// the cadence `chat_presence` documents, as the single source (#4777).
+/// A function (not an inline constant at the call site) so a test can pin
+/// the wiring and the constant cannot silently go dead again.
+fn presence_heartbeat_period() -> std::time::Duration {
+    HEARTBEAT_INTERVAL
+}
+
 /// Background loop for gossip-based peer discovery.
 ///
 /// Runs three concurrent tasks:
-/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`]
+/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`],
+///    and a presence heartbeat every [`HEARTBEAT_INTERVAL`] on its own timer
 /// 2. **Receive**: Listens for incoming gossip events and updates the peer table
 /// 3. **Cleanup**: Periodically probes stale peers via `ListPeers` RPC — refreshes
 ///    their `last_seen` if reachable, removes them if not
@@ -1688,6 +1952,7 @@ async fn run_gossip_loop(
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
     chat_presence: PresenceTable,
+    groups_log: PathBuf,
     signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
@@ -1698,66 +1963,76 @@ async fn run_gossip_loop(
     let announce_store = store;
     let announce_node_id = node_id;
 
-    // Spawn announce task
+    // Spawn announce task: peer announcements and presence heartbeats run
+    // on independent timers in this one task. They used to share the
+    // announcement timer, so heartbeats actually went out every 30 s and
+    // the documented 25 s HEARTBEAT_INTERVAL cadence (and the TTL
+    // drop-resilience it promises) never happened (#4777).
     let announce_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut announce_interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut heartbeat_interval = tokio::time::interval(presence_heartbeat_period());
         loop {
-            interval.tick().await;
-            // Get blob count from tags
-            let blob_count = match announce_store.tags().list().await {
-                Ok(mut stream) => {
-                    let mut count = 0u64;
-                    while stream.next().await.is_some() {
-                        count += 1;
-                    }
-                    count
-                }
-                Err(_) => 0,
-            };
+            tokio::select! {
+                _ = announce_interval.tick() => {
+                    // Get blob count from tags
+                    let blob_count = match announce_store.tags().list().await {
+                        Ok(mut stream) => {
+                            let mut count = 0u64;
+                            while stream.next().await.is_some() {
+                                count += 1;
+                            }
+                            count
+                        }
+                        Err(_) => 0,
+                    };
 
-            let announcement = PeerAnnouncement {
-                node_id: announce_node_id,
-                name: None,
-                blob_count,
-                timestamp_secs: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            };
+                    let announcement = PeerAnnouncement {
+                        node_id: announce_node_id,
+                        name: None,
+                        blob_count,
+                        timestamp_secs: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    };
 
-            match SignedPeerAnnouncement::sign(announcement, &signing_key) {
-                Some(signed) => match signed.encode_frame() {
-                    Ok(bytes) => {
-                        if let Err(e) = sender.broadcast(bytes).await {
-                            debug!("gossip broadcast error: {}", e);
+                    match SignedPeerAnnouncement::sign(announcement, &signing_key) {
+                        Some(signed) => match signed.encode_frame() {
+                            Ok(bytes) => {
+                                if let Err(e) = sender.broadcast(bytes).await {
+                                    debug!("gossip broadcast error: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                debug!("gossip announcement serialization error: {}", e);
+                            }
+                        },
+                        None => {
+                            warn!(
+                                "could not sign peer announcement for endpoint {}",
+                                announce_node_id
+                            );
                         }
                     }
-                    Err(e) => {
-                        debug!("gossip announcement serialization error: {}", e);
-                    }
-                },
-                None => {
-                    warn!(
-                        "could not sign peer announcement for endpoint {}",
-                        announce_node_id
-                    );
-                }
-            }
 
-            // Presence rides the same gossip plane (#2809): an ephemeral
-            // heartbeat naming this node. Channel membership lives in the
-            // chat layer above serve, so this heartbeat names no channels;
-            // receivers scope and read it through PresenceTable.
-            let mut presence = PresenceHeartbeat::new(
-                *announce_node_id.as_bytes(),
-                Vec::new(),
-                Vec::new(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            );
-            presence.sign(&signing_key);
-            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
-                debug!("gossip presence broadcast error: {}", e);
+                }
+                _ = heartbeat_interval.tick() => {
+                    // Presence rides the same gossip plane (#2809): an ephemeral
+                    // heartbeat naming this node. Channel membership lives in the
+                    // chat layer above serve, so this heartbeat names no channels;
+                    // receivers scope and read it through PresenceTable.
+                    let mut presence = PresenceHeartbeat::new(
+                        *announce_node_id.as_bytes(),
+                        Vec::new(),
+                        Vec::new(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    );
+                    presence.sign(&signing_key);
+                    if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                        debug!("gossip presence broadcast error: {}", e);
+                    }
+                }
             }
         }
     });
@@ -1765,6 +2040,7 @@ async fn run_gossip_loop(
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
     let recv_presence = chat_presence.clone();
+    let recv_groups_log = groups_log;
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
@@ -1777,16 +2053,10 @@ async fn run_gossip_loop(
                             // heartbeat's signature by its claimed node
                             // verifies, so nobody can forge or suppress
                             // another node's presence (#2809 Codex review).
-                            if heartbeat.verify() {
-                                debug!(
-                                    "presence heartbeat from {}: {} channel(s)",
-                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                                    heartbeat.channels.len()
-                                );
-                                recv_presence.update(heartbeat);
-                            } else {
-                                debug!("presence heartbeat failed signature verification, dropped");
-                            }
+                            // The accepted heartbeat is then scoped to the
+                            // sender's membership in the receiver's group
+                            // fold (#4363).
+                            receive_presence_heartbeat(&recv_presence, heartbeat, &recv_groups_log);
                         } else if let Some(announcement) =
                             SignedPeerAnnouncement::decode_frame(&msg.content)
                         {
@@ -1940,6 +2210,23 @@ mod tests {
     }
 
     #[test]
+    fn presence_heartbeat_period_is_the_documented_interval() {
+        // #4777: HEARTBEAT_INTERVAL was defined and documented in
+        // chat_presence but never used; serve broadcast presence on the
+        // 30 s announcement timer instead. Pin the gossip loop period to
+        // the constant so it cannot silently go dead again.
+        assert_eq!(presence_heartbeat_period(), HEARTBEAT_INTERVAL);
+        assert_ne!(presence_heartbeat_period(), ANNOUNCE_INTERVAL);
+        // The documented TTL resilience: at least two heartbeats land
+        // inside one PRESENCE_TTL_SECS window, so a single dropped
+        // broadcast never flickers a live node stale.
+        assert!(
+            HEARTBEAT_INTERVAL.as_secs() * 2 < crate::chat_presence::PRESENCE_TTL_SECS,
+            "two heartbeats must land inside one TTL window"
+        );
+    }
+
+    #[test]
     fn stale_probe_batches_are_bounded_sorted_and_round_robin() {
         let mut peers: Vec<_> = (1..=5).map(stale_test_peer).collect();
         peers.reverse();
@@ -2010,6 +2297,53 @@ mod tests {
     }
 
     #[test]
+    fn received_presence_keeps_only_channels_the_sender_belongs_to() {
+        // #4363: the serve receipt path must scope an incoming heartbeat to
+        // the sender's membership in the receiver's group fold, not store the
+        // claimed channels unscoped.
+        use ed25519_dalek::SigningKey;
+
+        use crate::chat_presence::Liveness;
+        use crate::groups::Role;
+
+        let dir = serve_test_dir("presence-membership");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let member_channel = group_log_with_members_at(&path, 1);
+        let outsider_channel = Hash::digest(b"not-a-member");
+        let signing_key = SigningKey::from_bytes(&[2; 32]);
+        let node = signing_key.verifying_key().to_bytes();
+        // The sender genuinely belongs to `member_channel`: enrol the
+        // heartbeat key in the receiver's group fold. Nothing enrols it in
+        // `outsider_channel`, which the receiver holds no fold for.
+        {
+            let mut log = GroupLog::open(&path).unwrap();
+            log.add([1; 32], member_channel, node, Role::Read).unwrap();
+        }
+        let mut heartbeat = PresenceHeartbeat::new(
+            node,
+            vec![member_channel, outsider_channel],
+            vec![member_channel, outsider_channel],
+            unix_now(),
+        );
+        heartbeat.sign(&signing_key);
+        assert!(
+            heartbeat.verify(),
+            "fixture heartbeat must be authenticated"
+        );
+
+        let table = PresenceTable::new();
+        assert!(receive_presence_heartbeat(&table, heartbeat, &path));
+        assert_eq!(table.liveness(&node, &member_channel), Liveness::Live);
+        assert_eq!(table.liveness(&node, &outsider_channel), Liveness::Offline);
+        let now = unix_now();
+        let member_rows = table.roster_at(&member_channel, &[node], now);
+        assert!(member_rows.iter().any(|row| row.node == node && row.typing));
+        let outsider_rows = table.roster_at(&outsider_channel, &[node], now);
+        assert!(outsider_rows.iter().all(|row| !row.typing));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn serve_groups_log_path_honours_override_and_default() {
         // #2778: the group-warning watcher's log path must come
         // from the global --groups-log option (threaded through
@@ -2018,10 +2352,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -2129,12 +2460,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn serve_group_warnings_fire_on_intra_interval_readd_churn() {
+        use crate::groups::Role;
+
+        // #1847 regression: revoke + re-add cycles that complete inside
+        // one evaluation interval are invisible to a net-set comparison.
+        // Four cycles written to the group log with no evaluation in
+        // between must still count four re-adds at the next evaluation.
+        let dir = serve_test_dir("churn-intra-interval");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // The first authorization is not a re-add, and warns about nothing.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Four revoke + re-authorize cycles, all inside one interval:
+        // no evaluation runs until every cycle is already in the log.
+        for _ in 0..4 {
+            log.device_revoke(author, group, device).unwrap();
+            log.device_add(author, group, device, Role::Read).unwrap();
+        }
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_001);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_group_warnings_ignore_other_accounts_revoke_readd_cycles() {
+        use crate::groups::Role;
+
+        // Codex review on PR #4035: a revocation is account-scoped in the
+        // fold - it ends only the revoking account's grant. When account A
+        // has authorized a device, revoke + re-add cycles by account B
+        // never leave the device unauthorized (A's grant stands
+        // throughout), so they are not re-adds and must not fire the churn
+        // warning.
+        let dir = serve_test_dir("churn-other-account");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let other: GroupKey = [2; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // Account A authorizes the device; the first evaluation adopts it.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Four revoke + re-add cycles by account B inside one interval:
+        // B's revokes do not touch A's grant, so nothing here is a re-add.
+        for _ in 0..4 {
+            log.device_revoke(other, group, device).unwrap();
+            log.device_add(other, group, device, Role::Read).unwrap();
+        }
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_group_warnings_count_churn_after_a_grant_owner_is_removed() {
+        use crate::groups::Role;
+
+        // Codex review on PR #4035 (second round): when accounts A and B
+        // both authorize a device and A is then removed from the group,
+        // the device stays active through B, but the watcher's tracked
+        // account set must drop A too. A stale A would keep the device
+        // authorized through every later revoke by B, so genuine
+        // revoke + re-add cycles by B would never count as churn.
+        let dir = serve_test_dir("churn-grant-owner-removed");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let other: GroupKey = [2; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // Both accounts authorize the device; the first evaluation
+        // adopts it with both grant owners tracked.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        log.device_add(other, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Removing the other account leaves the device authorized
+        // through the author alone; the evaluation reconciles the
+        // tracked grant owners with the fold. Not itself a re-add.
+        log.remove(author, group, other, crate::groups::RemoveMode::Revoke)
+            .unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+
+        // Four genuine revoke + re-add cycles by the remaining account,
+        // all inside one interval, must count four re-adds and warn.
+        for _ in 0..4 {
+            log.device_revoke(author, group, device).unwrap();
+            log.device_add(author, group, device, Role::Read).unwrap();
+        }
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_002);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(feature = "world")]
     #[test]
-    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+    fn test_the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
         assert_eq!(
             allowed_caps(None).unwrap(),
-            crate::world_caps::catalog_names()
+            crate::world_caps::default_ceiling_names()
         );
         let named = ["time.now".to_owned(), "chat.say".to_owned()];
         assert_eq!(
@@ -2286,7 +2728,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
@@ -2472,20 +2917,28 @@ mod tests {
     #[test]
     fn test_resolve_web_bindings_conflict_names_the_flag() {
         let flags: Vec<SocketAddr> = vec!["127.0.0.1:4001".parse().unwrap()];
-        let err = resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, true, false, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--bind"), "{err}");
-        let err = resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
-            .unwrap_err();
+        let err =
+            resolve_web_bindings(&flags, false, true, "127.0.0.1".parse().unwrap(), 3000, &[])
+                .unwrap_err();
         assert!(err.to_string().contains("--port"), "{err}");
     }
 
     #[test]
     fn test_resolve_web_bindings_malformed_config_line_is_named() {
         let config = vec!["127.0.0.1:3000".to_owned(), "not-an-addr".to_owned()];
-        let err =
-            resolve_web_bindings(&[], false, false, "127.0.0.1".parse().unwrap(), 3000, &config)
-                .unwrap_err();
+        let err = resolve_web_bindings(
+            &[],
+            false,
+            false,
+            "127.0.0.1".parse().unwrap(),
+            3000,
+            &config,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
         assert!(err.to_string().contains("[web_bindings]"), "{err}");
     }

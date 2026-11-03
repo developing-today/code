@@ -17,12 +17,19 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(binDir, 'sync-models.mjs'), 'utf-8');
 
-const start = source.indexOf('function parseJsonc(text) {');
-assert.notEqual(start, -1, 'parseJsonc not found in sync-models.mjs');
-const end = source.indexOf('\n}\n', start);
-assert.notEqual(end, -1, 'parseJsonc body not terminated as expected');
-const parseJsonc = new Function(
-  `${source.slice(start, end + 3)}\nreturn parseJsonc;`,
+function extractFunction(name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `${name} not found in sync-models.mjs`);
+  const end = source.indexOf('\n}\n', start);
+  assert.notEqual(end, -1, `${name} body not terminated as expected`);
+  return source.slice(start, end + 3);
+}
+
+const { parseJsonc, parseJsoncTree, removeJsoncPath } = new Function(
+  `${extractFunction('parseJsonc')}\n` +
+  `${extractFunction('parseJsoncTree')}\n` +
+  `${extractFunction('removeJsoncPath')}\n` +
+  'return { parseJsonc, parseJsoncTree, removeJsoncPath };',
 )();
 
 test('parses a config with a multi-line block comment', () => {
@@ -69,6 +76,54 @@ test('still tolerates trailing commas and // line comments', () => {
 test('still throws on a genuinely malformed config', () => {
   assert.throws(() => parseJsonc('{ "a": }'));
   assert.throws(() => parseJsonc('{ "a": 1'));
+});
+
+const inlineCommentCases = [
+  ['after the comma', `{
+  "remove": true, // keep this comment
+  "keep": true
+}`],
+  ['after a last-member value', `{
+  "remove": true // keep this comment
+}`],
+  ['between the value and comma', `{
+  "remove": true /* keep this comment */,
+  "keep": true
+}`],
+  ['before a comma on the next line', `{
+  "remove": true // keep this comment
+  ,
+  "keep": true
+}`],
+];
+
+for (const [placement, text] of inlineCommentCases) {
+  test(`refuses to remove a member with an inline comment ${placement}`, () => {
+    assert.throws(
+      () => removeJsoncPath(text, ['remove']),
+      error => error.name === 'JsoncCommentRemovalError' &&
+        /remove.*inline comment/i.test(error.message),
+    );
+  });
+}
+
+test('removes a comment-free member and leaves parseable JSONC', () => {
+  const output = removeJsoncPath(`{
+  "remove": true,
+  "keep": true
+}`, ['remove']);
+  assert.deepEqual(parseJsonc(output), { keep: true });
+  assert.equal(parseJsoncTree(output).members.length, 1);
+});
+
+test('keeps a standalone comment when removing the following member', () => {
+  const output = removeJsoncPath(`{
+  // standalone note
+  "remove": true,
+  "keep": true
+}`, ['remove']);
+  assert.match(output, /\/\/ standalone note/);
+  assert.deepEqual(parseJsonc(output), { keep: true });
 });
 
 // Strict argv validation (#3297): unknown arguments are a usage error,

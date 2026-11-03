@@ -414,6 +414,83 @@ mod cli_tests {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("opening phase"), "{stderr}");
     }
+
+    /// `id world verify` surfaces the fixture-header verdict (#1539): a
+    /// fixture whose two replays agree with each other but mismatch the
+    /// tampered header records must print the header verdict, name the
+    /// agree-but-mismatch case, and exit nonzero. Before the fix it
+    /// printed "records verify" and exited 0.
+    #[test]
+    fn test_world_verify_rejects_agree_but_mismatch_header() {
+        let tmp = TempDir::new().unwrap();
+        let module = apps_dir().join("tic-tac-toe/program/tic-tac-toe.wasm");
+        let module = module.to_str().unwrap();
+        // Embedded at build time: the NixOS VM integration suite runs
+        // the compiled test binary without the source tree, so a
+        // CARGO_MANIFEST_DIR runtime read would panic there (Codex P2
+        // finding on PR #4619).
+        let fixture_text = include_str!("fixtures/tic-tac-toe-determinism.jsonl");
+
+        // The checked-in fixture verifies clean: the header verdict is a
+        // match and the command succeeds.
+        let good = tmp.path().join("good.jsonl");
+        std::fs::write(&good, fixture_text).unwrap();
+        let good = good.to_str().unwrap();
+        let verified = run_cmd_success_stdout(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                good,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(verified.contains("records verify"), "{verified}");
+        assert!(
+            verified.contains("header verdict: records match"),
+            "{verified}"
+        );
+
+        // Tamper only the header records: both replays still agree with
+        // each other, but they now mismatch the fixture header.
+        let tampered = fixture_text.replace(
+            r#""records":{"board":"XXXOO----","plays":5,"winner":"X"}"#,
+            r#""records":{"board":"XXXXXXXXX","plays":9,"winner":"X"}"#,
+        );
+        assert_ne!(tampered, fixture_text);
+        let bad = tmp.path().join("tampered.jsonl");
+        std::fs::write(&bad, &tampered).unwrap();
+        let bad = bad.to_str().unwrap();
+        let output = run_cmd(
+            &[
+                "world",
+                "verify",
+                "--module",
+                module,
+                "--fixture",
+                bad,
+                "--seed",
+                "7",
+            ],
+            tmp.path(),
+        );
+        assert!(!output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("header verdict: records differ"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("agree with each other but mismatch the fixture header"),
+            "{stdout}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("differ from the fixture"), "{stderr}");
+    }
 }
 
 mod put_get_tests {
@@ -1773,7 +1850,11 @@ mod serve_tests {
         assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
     }
 
+    /// The world web presentation only exists when the binary is built
+    /// with the `web` feature; without it the server never prints the
+    /// `web:` line this test waits for.
     #[test]
+    #[cfg(feature = "web")]
     fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();

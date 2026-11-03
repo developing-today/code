@@ -25,6 +25,13 @@
 //!   id         Print node ID
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
+//!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   group        Groups: create, policy, add, remove, set roles, list, join
+//!   delegate     Grant a delegate a scope in a group
+//!   revoke       Revoke a delegation by its grant's event ID
+//!   doc          Documents: publish a file; list events, frontier, history
+//!   claim        Tag claims on any subject (set, clear, list, search)
+//!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
 //!
 //! # Search Filtering Flags
@@ -90,6 +97,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 use crate::groups::Role;
 use crate::groups::policy::Delegation;
+use crate::groups::policy::SuccessorKind;
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
 ///
@@ -1374,7 +1382,7 @@ pub enum Command {
         ///
         /// 0 = no crawl, 1 = query direct peers (default),
         /// N = recursively query up to N levels deep.
-        #[arg(long, default_value = "1")]
+        #[arg(long, default_value = "1", allow_negative_numbers = true, value_parser = clap::value_parser!(i32).range(0..))]
         depth: i32,
         /// Maximum total peers to discover.
         ///
@@ -1459,6 +1467,9 @@ pub struct WorldRuntimeArgs {
     /// Wall-clock budget for one native worker call, in milliseconds.
     #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
     pub world_native_deadline_ms: u64,
+    /// Total per-world logical memory budget, in MiB (1..=65536, #557 Phase 1).
+    #[arg(long, default_value_t = 64, requires = "world", value_name = "MIB")]
+    pub world_total_memory_mib: u64,
 }
 
 /// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
@@ -1483,6 +1494,9 @@ impl crate::world_limits::WorldLimitArgs for WorldRuntimeArgs {
     }
     fn world_native_deadline_ms(&self) -> u64 {
         self.world_native_deadline_ms
+    }
+    fn world_total_memory_mib(&self) -> u64 {
+        self.world_total_memory_mib
     }
 }
 
@@ -1521,13 +1535,20 @@ pub enum GroupCommand {
         #[arg(long, value_enum, default_value = "read")]
         role: Role,
     },
-    /// Remove a member. Removing yourself is leaving.
+    /// Remove a member. Removing yourself is leaving. The group's default mode is used when
+    /// `--mode` is omitted.
     Remove {
         /// The group.
         group: String,
         /// The account to remove.
         member: String,
-        /// Under the `transfer` mode, the account that takes over the member's grants.
+        /// Grant-disposition mode. Defaults to the group's configured remove default.
+        #[arg(long, value_enum)]
+        mode: Option<GroupRemoveMode>,
+        /// The successor category for `--mode transfer` (defaults to `member`).
+        #[arg(long, value_enum)]
+        successor_kind: Option<SuccessorKind>,
+        /// The account for a `member` or `designated` transfer successor.
         #[arg(long, value_name = "ACCOUNT")]
         successor: Option<String>,
     },
@@ -1544,7 +1565,7 @@ pub enum GroupCommand {
     },
     /// List the groups in the log, one line each.
     List,
-    /// Join a group with an invitation: a pasted ticket, or an `id:join?` link. Not wired yet.
+    /// Unavailable: group admission and network joining are not implemented yet.
     Join {
         /// The pasted ticket or link.
         invite: String,
@@ -1568,6 +1589,21 @@ pub enum GroupTemplate {
     Normal,
     /// Two members who ask and accept each other.
     Friendship,
+}
+
+/// A requested mode for `id group remove`; `server-default` is resolved before recording.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupRemoveMode {
+    /// Resolve to the group's configured removal default.
+    ServerDefault,
+    /// End the removed member's grants.
+    Revoke,
+    /// Transfer the removed member's grants to a successor.
+    Transfer,
+    /// Keep grants under their original grantor.
+    KeepPrior,
+    /// Re-anchor grants at the group.
+    ReassignToGroup,
 }
 
 /// The arguments of `id delegate`.
@@ -1696,8 +1732,12 @@ pub enum WorldCommand {
         /// Store the replica on disk so it survives between runs.
         #[arg(long, value_name = "PATH")]
         dir: Option<PathBuf>,
-        /// Give up after this many seconds without a completed sync.
-        #[arg(long, default_value_t = 30)]
+        /// Give up after this many seconds without a completed sync (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         timeout_secs: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -2035,8 +2075,12 @@ pub enum WorldCommand {
         /// Guest capability from `id world invite`.
         #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
         capability: String,
-        /// Stop after this many seconds.
-        #[arg(long, default_value_t = 5)]
+        /// Stop after this many seconds (maximum 24 hours).
+        #[arg(
+            long,
+            default_value_t = 5,
+            value_parser = clap::value_parser!(u64).range(0..=86_400)
+        )]
         seconds: u64,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -2065,14 +2109,14 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
-    /// Write a world's retained history and records to a replayable fixture
-    /// (JSON Lines). Needs only a join capability, never admin rights.
+    /// Write a world's retained journal history and records to a replayable
+    /// fixture (JSON Lines). Host events require the host's admin token.
     Record {
         /// The host's node ID (64 hex characters).
         node: String,
-        /// Guest capability from `id world invite`.
-        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
-        capability: String,
+        /// Host admin token.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
         /// Write the fixture here instead of standard output.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
@@ -2107,12 +2151,14 @@ pub enum WorldCommand {
     },
     /// Verify a recorded fixture's determinism: replay it twice offline
     /// through a module and compare the records after every event. Prints a
-    /// verdict line first; exits nonzero at the first divergence.
+    /// verdict line first; exits nonzero at the first divergence, or when
+    /// the two replays agree with each other but mismatch the fixture's
+    /// header records (the header verdict is printed, as `replay` prints
+    /// it).
     ///
-    /// Verification covers the fixture's recorded events only. Host-originated
-    /// events are not retained in the event stream (#242), so a live recording
-    /// never contains them: a guest whose live behaviour depended on host
-    /// events is outside what verify can check.
+    /// Verification covers the events captured by the admin-authorized fixture,
+    /// including host-originated events in their recorded order. It proves
+    /// determinism for that history, not correctness of host policy.
     #[cfg(feature = "sandbox")]
     Verify {
         /// The Wasm module the fixture was recorded under.
@@ -2478,6 +2524,56 @@ pub enum TagCommand {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn test_command_lists_cover_all_clap_subcommands() {
+        let cmd = Cli::command();
+        let names: Vec<&str> = cmd
+            .get_subcommands()
+            .map(|s| s.get_name())
+            .filter(|n| *n != "help")
+            .collect();
+        assert!(
+            names.len() >= 20,
+            "expected the full command set, got {names:?}"
+        );
+
+        // The module-doc command list at the top of this file.
+        let source = include_str!("cli.rs");
+        let doc_list = source
+            .split("Commands:")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("module-doc command list present");
+        for name in &names {
+            assert!(
+                doc_list.lines().any(|line| line
+                    .trim_start_matches('/')
+                    .trim_start_matches('!')
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    == Some(name)),
+                "module-doc command list in cli.rs omits `{name}`"
+            );
+        }
+
+        // The user-facing CLI Commands table in the README.
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+        let table = readme
+            .split("## CLI Commands")
+            .nth(1)
+            .and_then(|rest| rest.split("### ").next())
+            .expect("README CLI Commands table present");
+        for name in &names {
+            let cell = format!("| `{name}`");
+            assert!(
+                table.lines().any(|line| line.starts_with(&cell)),
+                "README CLI Commands table omits `{name}`"
+            );
+        }
+    }
 
     #[test]
     fn test_cli_parse_no_args() {
@@ -3131,6 +3227,30 @@ mod tests {
                 assert_eq!(max_peers, 50);
             }
             _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_peers_depth_rejects_negative_and_preserves_non_negative_values() {
+        for argv in [
+            vec!["id", "peers", "--depth=-1"],
+            vec!["id", "peers", "--depth", "-1"],
+        ] {
+            let err = Cli::try_parse_from(argv).unwrap_err();
+            assert!(
+                err.to_string().contains("depth"),
+                "error should name depth: {err}"
+            );
+        }
+
+        for depth in ["0", "1", "2"] {
+            let cli = Cli::try_parse_from(["id", "peers", "--depth", depth]).unwrap();
+            match cli.command {
+                Some(Command::Peers { depth: parsed, .. }) => {
+                    assert_eq!(parsed, depth.parse::<i32>().unwrap());
+                }
+                _ => panic!("Expected Peers command"),
+            }
         }
     }
 
@@ -4229,9 +4349,7 @@ mod tests {
             }) => assert_eq!(world_module_trust_keys, vec![first.clone(), second]),
             _ => panic!("Expected Serve command"),
         }
-        assert!(
-            Cli::try_parse_from(["id", "serve", "--world-module-trust-key", &first]).is_err()
-        );
+        assert!(Cli::try_parse_from(["id", "serve", "--world-module-trust-key", &first]).is_err());
     }
 
     #[test]
@@ -4531,7 +4649,14 @@ mod tests {
         let client_argvs: Vec<Vec<&str>> = vec![
             vec!["id", "world", "join", &node, "--capability", "c"],
             vec![
-                "id", "world", "invite", &node, "--admin-token", "t", "--name", "ann",
+                "id",
+                "world",
+                "invite",
+                &node,
+                "--admin-token",
+                "t",
+                "--name",
+                "ann",
             ],
             vec!["id", "world", "records", &node, "--capability", "c"],
             vec!["id", "world", "list", &node, "--admin-token", "t"],
@@ -4552,10 +4677,18 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Serve { .. })));
         // There is deliberately no `--client-only` flag (#3846): no
         // world subcommand has a server mode such a flag could disable.
-        assert!(Cli::try_parse_from([
-            "id", "world", "join", &node, "--capability", "c", "--client-only",
-        ])
-        .is_err());
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "join",
+                &node,
+                "--capability",
+                "c",
+                "--client-only",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -4669,6 +4802,67 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_world_timeout_ranges() {
+        let node = "a".repeat(64);
+        let logs_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "logs".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--seconds".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+        let mirror_args = |seconds: &str| {
+            vec![
+                "id".to_owned(),
+                "world".to_owned(),
+                "mirror".to_owned(),
+                node.clone(),
+                "--capability".to_owned(),
+                "c".to_owned(),
+                "--timeout-secs".to_owned(),
+                seconds.to_owned(),
+            ]
+        };
+
+        let logs = Cli::parse_from(["id", "world", "logs", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            logs.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 5, .. })
+        ));
+        let mirror = Cli::parse_from(["id", "world", "mirror", node.as_str(), "--capability", "c"]);
+        assert!(matches!(
+            mirror.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs: 30, .. })
+        ));
+
+        for seconds in ["0", "86400"] {
+            let logs = Cli::try_parse_from(logs_args(seconds)).unwrap();
+            let mirror = Cli::try_parse_from(mirror_args(seconds)).unwrap();
+            let expected = seconds.parse::<u64>().unwrap();
+            assert!(matches!(
+                logs.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds, .. } if seconds == expected)
+            ));
+            assert!(matches!(
+                mirror.command,
+                Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Mirror { timeout_secs, .. } if timeout_secs == expected)
+            ));
+        }
+
+        for seconds in ["86401", "18446744073709551615"] {
+            let logs_error = Cli::try_parse_from(logs_args(seconds)).unwrap_err();
+            assert!(logs_error.to_string().contains("--seconds"));
+            let mirror_error = Cli::try_parse_from(mirror_args(seconds)).unwrap_err();
+            assert!(mirror_error.to_string().contains("--timeout-secs"));
+        }
+    }
+
+    #[test]
     fn test_cli_parse_world_record() {
         let node = "a".repeat(64);
         let cli = Cli::parse_from([
@@ -4676,15 +4870,21 @@ mod tests {
             "world",
             "record",
             &node,
-            "--capability",
-            "c",
+            "--admin-token",
+            "admin-secret",
             "--out",
             "run.jsonl",
             "--no-relay",
         ]);
         match cli.command {
             Some(Command::World(cmd)) => match *cmd {
-                WorldCommand::Record { out, no_relay, .. } => {
+                WorldCommand::Record {
+                    admin_token,
+                    out,
+                    no_relay,
+                    ..
+                } => {
+                    assert_eq!(admin_token, "admin-secret");
                     assert_eq!(out, Some(PathBuf::from("run.jsonl")));
                     assert!(no_relay);
                 }
@@ -4923,74 +5123,83 @@ mod world_limits_args_tests {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;
 
-        fn parse(extra: &[&str]) -> Result<RuntimeLimits> {
-            let mut argv = vec!["id", "serve", "--world", "--world-admin-token", "t"];
-            argv.extend_from_slice(extra);
-            let cli = Cli::try_parse_from(argv).unwrap();
-            let Some(Command::Serve { world_runtime, .. }) = cli.command else {
-                panic!("expected serve");
-            };
-            RuntimeLimits::from_args(&world_runtime)
-        }
+    fn parse(extra: &[&str]) -> Result<RuntimeLimits> {
+        let mut argv = vec!["id", "serve", "--world", "--world-admin-token", "t"];
+        argv.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let Some(Command::Serve { world_runtime, .. }) = cli.command else {
+            panic!("expected serve");
+        };
+        RuntimeLimits::from_args(&world_runtime)
+    }
 
-        #[test]
-        fn flag_defaults_match_the_built_in_limits() {
-            let limits = parse(&[]).unwrap();
-            let defaults = RuntimeLimits::default();
-            assert_eq!(limits.native.memory_bytes, defaults.native.memory_bytes);
-            assert_eq!(limits.native.cpu_seconds, defaults.native.cpu_seconds);
-            assert_eq!(limits.native.call_deadline, defaults.native.call_deadline);
-            #[cfg(feature = "sandbox")]
-            {
-                assert_eq!(limits.sandbox.fuel, defaults.sandbox.fuel);
-                assert_eq!(limits.sandbox.memory_bytes, defaults.sandbox.memory_bytes);
-                assert_eq!(limits.sandbox.message_bytes, defaults.sandbox.message_bytes);
-                assert_eq!(limits.sandbox.module_bytes, defaults.sandbox.module_bytes);
-            }
+    #[test]
+    fn flag_defaults_match_the_built_in_limits() {
+        let limits = parse(&[]).unwrap();
+        let defaults = RuntimeLimits::default();
+        assert_eq!(limits.native.memory_bytes, defaults.native.memory_bytes);
+        assert_eq!(limits.native.cpu_seconds, defaults.native.cpu_seconds);
+        assert_eq!(limits.native.call_deadline, defaults.native.call_deadline);
+        assert_eq!(
+            limits.total_memory_bytes, defaults.total_memory_bytes,
+            "--world-total-memory-mib default must match the built-in budget"
+        );
+        #[cfg(feature = "sandbox")]
+        {
+            assert_eq!(limits.sandbox.fuel, defaults.sandbox.fuel);
+            assert_eq!(limits.sandbox.memory_bytes, defaults.sandbox.memory_bytes);
+            assert_eq!(limits.sandbox.message_bytes, defaults.sandbox.message_bytes);
+            assert_eq!(limits.sandbox.module_bytes, defaults.sandbox.module_bytes);
         }
+    }
 
-        #[test]
-        fn flags_override_each_bound() {
-            let limits = parse(&[
-                "--world-fuel",
-                "5000",
-                "--world-memory-mib",
-                "32",
-                "--world-message-kib",
-                "64",
-                "--world-native-memory-mib",
-                "64",
-                "--world-native-cpu-secs",
-                "3",
-                "--world-native-deadline-ms",
-                "250",
-            ])
-            .unwrap();
-            assert_eq!(limits.native.memory_bytes, 64 * MIB);
-            assert_eq!(limits.native.cpu_seconds, 3);
-            assert_eq!(limits.native.call_deadline, Duration::from_millis(250));
-            #[cfg(feature = "sandbox")]
-            {
-                assert_eq!(limits.sandbox.fuel, 5000);
-                assert_eq!(
-                    limits.sandbox.memory_bytes,
-                    usize::try_from(32 * MIB).unwrap()
-                );
-                assert_eq!(
-                    limits.sandbox.message_bytes,
-                    usize::try_from(64 * KIB).unwrap()
-                );
-            }
+    #[test]
+    fn flags_override_each_bound() {
+        let limits = parse(&[
+            "--world-fuel",
+            "5000",
+            "--world-memory-mib",
+            "32",
+            "--world-message-kib",
+            "64",
+            "--world-native-memory-mib",
+            "64",
+            "--world-native-cpu-secs",
+            "3",
+            "--world-native-deadline-ms",
+            "250",
+            "--world-total-memory-mib",
+            "128",
+        ])
+        .unwrap();
+        assert_eq!(limits.native.memory_bytes, 64 * MIB);
+        assert_eq!(limits.native.cpu_seconds, 3);
+        assert_eq!(limits.native.call_deadline, Duration::from_millis(250));
+        assert_eq!(limits.total_memory_bytes, 128 * MIB);
+        #[cfg(feature = "sandbox")]
+        {
+            assert_eq!(limits.sandbox.fuel, 5000);
+            assert_eq!(
+                limits.sandbox.memory_bytes,
+                usize::try_from(32 * MIB).unwrap()
+            );
+            assert_eq!(
+                limits.sandbox.message_bytes,
+                usize::try_from(64 * KIB).unwrap()
+            );
         }
+    }
 
-        #[test]
-        fn out_of_range_values_are_rejected() {
-            assert!(parse(&["--world-fuel", "0"]).is_err());
-            assert!(parse(&["--world-memory-mib", "0"]).is_err());
-            assert!(parse(&["--world-memory-mib", "4096"]).is_err());
-            assert!(parse(&["--world-message-kib", "2048"]).is_err());
-            assert!(parse(&["--world-native-memory-mib", "8"]).is_err());
-            assert!(parse(&["--world-native-cpu-secs", "0"]).is_err());
-            assert!(parse(&["--world-native-deadline-ms", "0"]).is_err());
-        }
+    #[test]
+    fn out_of_range_values_are_rejected() {
+        assert!(parse(&["--world-fuel", "0"]).is_err());
+        assert!(parse(&["--world-memory-mib", "0"]).is_err());
+        assert!(parse(&["--world-memory-mib", "4096"]).is_err());
+        assert!(parse(&["--world-message-kib", "2048"]).is_err());
+        assert!(parse(&["--world-native-memory-mib", "8"]).is_err());
+        assert!(parse(&["--world-native-cpu-secs", "0"]).is_err());
+        assert!(parse(&["--world-native-deadline-ms", "0"]).is_err());
+        assert!(parse(&["--world-total-memory-mib", "0"]).is_err());
+        assert!(parse(&["--world-total-memory-mib", "131072"]).is_err());
+    }
 }

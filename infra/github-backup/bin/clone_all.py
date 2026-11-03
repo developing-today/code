@@ -118,9 +118,7 @@ def main():
         # record carries cleared_partial so a cleared-partial retry is
         # distinguishable from an ordinary failure in clone-status.jsonl.
         cleared_partial = False
-        if os.path.lexists(dest) and not (
-            os.path.isdir(dest) and not os.listdir(dest)
-        ):
+        if os.path.lexists(dest) and not (os.path.isdir(dest) and not os.listdir(dest)):
             if not dest_is_confirmed_partial(dest):
                 return {
                     "repo": repo,
@@ -200,7 +198,10 @@ def main():
                 if (
                     ref
                     and state.get(ref) is None
-                    and any(q["repo"] == ref for q in pending)
+                    and (
+                        any(q["repo"] == ref for q in pending)
+                        or any(q["repo"] == ref for q in inflight.values())
+                    )
                 ):
                     continue
                 if len(inflight) >= PAR:

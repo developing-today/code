@@ -18,6 +18,7 @@ import {
   runAlertTick,
   sendTestPush,
   TEST_OBJECT_REF,
+  toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
   type AlertsStore,
@@ -68,6 +69,31 @@ describe("class + quiet merges (design §1/§2)", () => {
     expect(mergeQuiet({ start: "9pm" })).toEqual({
       start: "23:00",
       end: "07:00",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
+  test("out-of-range quiet times fall back per field (#3686)", () => {
+    // 99:99 and 24:60 keep the shape but are not real clock times —
+    // each malformed field independently retains its DEFAULT_QUIET value.
+    expect(mergeQuiet({ start: "99:99" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "24:60" }).end).toBe("07:00");
+    expect(mergeQuiet({ start: "24:00" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "12:60" }).end).toBe("07:00");
+    // Mixed: one bad field falls back while the good field is kept.
+    expect(mergeQuiet({ start: "99:99", end: "23:59" })).toEqual({
+      start: "23:00",
+      end: "23:59",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
+  test("boundary clock times 00:00 and 23:59 are accepted (#3686)", () => {
+    expect(mergeQuiet({ start: "00:00" }).start).toBe("00:00");
+    expect(mergeQuiet({ end: "23:59" }).end).toBe("23:59");
+    expect(mergeQuiet({ start: "00:00", end: "23:59" })).toEqual({
+      start: "00:00",
+      end: "23:59",
       tz: "America/Chicago",
       enabled: true,
     });
@@ -448,5 +474,47 @@ describe("alerts page push panel (Drew 2026-11-01: load-order race + saved state
     const html = page([]);
     expect(html).toContain("Saved \u2014 quiet hours off, no time-of-day limit.");
     expect(html).not.toContain("updatePrefs(prefs()); location.reload()");
+  });
+});
+
+describe("push subscription redaction (#3693)", () => {
+  test("GET/POST serialization omits p256dh/auth values and keys, keeps non-secret fields", () => {
+    const sentinelP256dh = "SENTINEL-p256dh-4f8e2c9a";
+    const sentinelAuth = "SENTINEL-auth-7b1d5e3f";
+    const row: PushSubscriptionRow = {
+      id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      endpoint: "https://push.example.test/send/sentinel-3693",
+      p256dh: sentinelP256dh,
+      auth: sentinelAuth,
+      classes: { incident: true },
+      quiet: { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true },
+      user_agent: "sentinel-ua",
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T12:00:00Z",
+      gone_count: 0,
+    };
+    // Serialize exactly as the /api/push/subscriptions handlers do.
+    const getBody = JSON.stringify({ subscriptions: [row].map(toPublicSubscription) });
+    const postBody = JSON.stringify({ subscription: toPublicSubscription(row) });
+    const expectedFields = ["id", "endpoint", "classes", "quiet", "user_agent", "created_at", "last_seen_at", "gone_count"];
+    for (const body of [getBody, postBody]) {
+      expect(body).not.toContain(sentinelP256dh);
+      expect(body).not.toContain(sentinelAuth);
+      expect(body).not.toContain("p256dh");
+      // "auth" as a JSON key; the word also appears inside "user_agent"
+      // only as a substring, so match the quoted key.
+      expect(body).not.toContain('"auth"');
+      expect(body).toContain(row.endpoint);
+      expect(body).toContain("sentinel-ua");
+      expect(body).toContain(row.id);
+      const parsed = JSON.parse(body);
+      const subscription = parsed.subscriptions?.[0] ?? parsed.subscription;
+      expect(Object.keys(subscription).sort()).toEqual(expectedFields.sort());
+    }
+    // The verbatim rows the handlers used to return still carry the
+    // secrets — the old shape fails this redaction by construction.
+    const verbatim = JSON.stringify({ subscriptions: [row] });
+    expect(verbatim).toContain(sentinelP256dh);
+    expect(verbatim).toContain(sentinelAuth);
   });
 });

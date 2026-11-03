@@ -150,6 +150,10 @@ export const richSchema = new Schema({
       attrs: {
         order: { default: 1, validate: "number" },
         tight: { default: true },
+        // #1380: mirror the codec's delimiter attr ("period"/"paren",
+        // default period) so paren-style lists are not rewritten on
+        // save; undeclared, it was dropped on editor load.
+        delimiter: { default: "period" },
       },
     })
     .update("image", {
@@ -211,7 +215,13 @@ export const richSchema = new Schema({
         // depends on it so multi-block task items do not fuse on save.
         // #997: ordered task lists carry their start in `order` (null for
         // bullet task lists), mirroring the markdown codec's attrs.order.
-        attrs: { tight: { default: true }, order: { default: null } },
+        // #1380: ordered task lists also carry `delimiter`, mirroring
+        // the codec (default period, as in ordered_list above).
+        attrs: {
+          tight: { default: true },
+          order: { default: null },
+          delimiter: { default: "period" },
+        },
         parseDOM: [
           {
             tag: "ul",
@@ -234,9 +244,11 @@ export const richSchema = new Schema({
               // reflection admits fractional/negative/hex starts the u64
               // markdown codec cannot represent).
               const el = dom as HTMLOListElement;
-              if (el.classList.contains("contains-task-list")) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (el.classList.contains("contains-task-list"))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               const firstLi = el.querySelector("li");
-              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: parseOrderedListStart(el.getAttribute("start")) };
+              if (firstLi?.querySelector('input[type="checkbox"]'))
+                return { order: parseOrderedListStart(el.getAttribute("start")) };
               return false;
             },
           },
@@ -340,6 +352,26 @@ export const richSchema = new Schema({
         ],
         toDOM(node) {
           return ["span", { "data-html-inline": node.attrs.html as string }, node.attrs.html as string];
+        },
+      },
+      // #1369: YAML front matter block (`---` delimiter only; TOML
+      // `+++` is out of scope) carried verbatim in `text`; the markdown
+      // codec reads/writes it. Atom leaf, never a heading/paragraph.
+      front_matter: {
+        group: "block",
+        atom: true,
+        selectable: false,
+        attrs: { text: { default: "" } },
+        parseDOM: [
+          {
+            tag: "pre[data-front-matter]",
+            getAttrs(dom) {
+              return { text: (dom as HTMLElement).dataset.frontMatter ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["pre", { "data-front-matter": node.attrs.text as string }];
         },
       },
     }),

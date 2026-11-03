@@ -203,8 +203,17 @@ describe("buildHealth probes", () => {
     expect(view.degraded).toBe(true);
 
     const html = renderHealth(view, {
-      board: "", roadmap: "", items: "", comments: "", quota: "", usage: "", attention: "",
-      orchestration: "", dns: "error", registry: "", aa: "",
+      board: "",
+      roadmap: "",
+      items: "",
+      comments: "",
+      quota: "",
+      usage: "",
+      attention: "",
+      orchestration: "",
+      dns: "error",
+      registry: "",
+      aa: "",
     });
     expect(html).toContain("error");
     expect(html).toContain("register parse failed");
@@ -214,7 +223,9 @@ describe("buildHealth probes", () => {
   test("legacy feeds keep presence reporting without inventing collection status", async () => {
     const { fetcher } = fakeFetcher(allUp);
     const view = await buildHealth(inputs({ feed: feedAt(5 * 60_000) }), {
-      fetcher, cache: createProbeCache(), now: NOW,
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
     });
     expect(view.feed.sections.find((section) => section.key === "dns")?.present).toBe(true);
     expect(view.feed.sections.find((section) => section.key === "dns")?.status).toBe("unknown");

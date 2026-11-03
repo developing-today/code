@@ -140,7 +140,7 @@ What a host connected to mcpx gets, over `mcpx serve` (stdio) or the daemon's
 | `subscriptions/listen`                                         | 2026-07-28                        | **any** era                                                                                                                               | an acknowledgement, then only the notifications the filter asked for, each tagged with the subscription id                                                                                                                                                                |
 | `completion/complete`                                          | all                               | always                                                                                                                                    | forwarded to the server that owns the `ref`, as `/v1/complete` does, with `context.arguments`; a 2024-11-05 upstream is asked without a capability (that revision had none); unknown ref `-32602`, upstream failure `-32603`                                              |
 | `logging/setLevel`                                             | legacy                            | legacy peers                                                                                                                              | `{}`; sets the level of upstream log messages relayed to this connection (§4.4)                                                                                                                                                                                           |
-| `tasks/get`, `tasks/list`, `tasks/result`, `tasks/cancel`      | 2025-11-25 core                   | **any** legacy peer                                                                                                                       | the core shapes; a task is visible only to the connection that started it                                                                                                                                                                                                 |
+| `tasks/get`, `tasks/list`, `tasks/result`, `tasks/cancel`      | 2025-11-25 core                   | **any** legacy peer                                                                                                                       | the core shapes; `tasks/list` is connection-scoped, while an unbound task is reachable by its id                                                                                                                                                                          |
 | `tasks/get`, `tasks/update`, `tasks/cancel`                    | 2026-07-28 extension              | modern peers that declared `io.modelcontextprotocol/tasks` on the request; `-32021` with `data.requiredCapabilities` (HTTP 400) otherwise | the extension's shapes; `tasks/list` and `tasks/result` are `-32601`, as the extension says                                                                                                                                                                               |
 | `skills/list`, `skills/get`                                    | skills extension (SEP-2640)       | always, unless the server offers only contributed tools                                                                                   | mcpx's own skills (`plugin/opencode/skills`, embedded at build), each file at `skill://mcpx/<name>/<file>` and also listed and readable as a resource; an unknown URI is `-32602`. Upstreams' skills are not relayed: [in-name-only.md](in-name-only.md#skills-extension) |
 | `resources/directory/read`                                     | skills extension, `directoryRead` | wherever `skills/list` is                                                                                                                 | the direct children of a directory inside one of mcpx's skills: files as `resources/list` lists them, subdirectories as `inode/directory`; paginated. A file or an unknown URI is `-32602`                                                                                |
@@ -190,6 +190,21 @@ acknowledgement, then `notifications/tasks` on that stream -- the task's
 current state at once, then every change, each the `DetailedTask` `tasks/get`
 would answer. [`spec/messages.md`](spec/messages.md#tasks) has the
 rest.
+
+**Task IDs and visibility.** Task IDs contain 128 random bits and are designed
+to be unguessable, but possession of an ID is the access handle: anyone who
+learns an unbound task's ID can retrieve it. An unbound task is never included
+in legacy `tasks/list`. That method lists only tasks owned by the current
+identified connection; a connection without an identity gets an empty list.
+A client that needs its legacy tasks to be listable must provide an identity
+when it starts them. The 2026-07-28 extension has no `tasks/list` method, so
+clients retrieve those tasks by ID. This is an access model, not an additional
+authorization check.
+
+The daemon's `/v1/tasks` endpoints use the same daemon-wide store, not MCP's
+per-connection list filter: `GET /v1/tasks` lists the store, and `GET
+/v1/tasks/{id}` or `/result` retrieves by ID. Treat those IDs as bearer handles
+there too.
 
 **Unknown tools are a protocol error.** `tools/call` naming a tool mcpx does
 not have is `-32602` ("no tool named …"), as every revision's tools page lists
@@ -500,7 +515,9 @@ Which means the call has already returned by the time the answer exists. The
 upstream call therefore cannot be tied to the client's request — if it were,
 there would be nothing left to resume. It runs as a daemon task
 (`internal/tasks`, the same store `/v1/call`'s task option uses, collectable
-from the same `/v1/tasks/{id}`), and questions are correlated to it.
+from the same `/v1/tasks/{id}`), and questions are correlated to it. The
+returned ID is a 128-bit unguessable bearer handle; anyone with access to the
+daemon API who learns it can retrieve the task.
 
 **`requestState` is signed and bound to the request.** The specification says
 the client must treat it as opaque, and that it SHOULD be tamper-evident and
@@ -595,9 +612,9 @@ the tool call for a script that expects to ask.
 
 A call the client stops waiting for — it cancelled, or its connection went —
 keeps running as a task, and its questions keep their deadlines. The result
-can still be collected from `/v1/tasks/{id}`; nothing interrupts the upstream
-call. That is deliberate for work somebody may come back for, and it is also
-why cancellation does not reach an interruptible call (§6).
+can still be collected from `/v1/tasks/{id}` by ID; nothing interrupts the
+upstream call. That is deliberate for work somebody may come back for, and it
+is also why cancellation does not reach an interruptible call (§6).
 
 ---
 

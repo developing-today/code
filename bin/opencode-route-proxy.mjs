@@ -37,6 +37,12 @@
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
 //                                    relative to this file)
+//   OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG
+//                                    runtime overlay jsonc whose provider
+//                                    catalogs are deep-merged over the
+//                                    config's (default:
+//                                    ~/.local/state/opencode/opencode-runtime.jsonc;
+//                                    absent = no overlay) (#4544)
 //   OPENCODE_ROUTE_PROXY_DB          opencode.db path (default:
 //                                    ~/.local/share/opencode/opencode.db)
 //   OPENCODE_ROUTE_PROXY_NOW_MS      pin the clock (epoch ms) used for
@@ -59,6 +65,9 @@ const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
   join(homedir(), ".local/share/opencode/opencode.jsonc");
 const CONFIG_FALLBACK = join(HERE, "..", ".opencode", "opencode.jsonc");
+const RUNTIME_CONFIG_PATH =
+  process.env.OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG ||
+  join(homedir(), ".local/state/opencode/opencode-runtime.jsonc");
 const DB_PATH =
   process.env.OPENCODE_ROUTE_PROXY_DB ||
   join(homedir(), ".local/share/opencode/opencode.db");
@@ -152,6 +161,18 @@ const parseJsonc = (text) => {
   }
 };
 
+const isPlainObj = (v) =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+// Deep-merge plain objects (overlay wins on scalars): mirrors the fork
+// server's config layering for the runtime overlay (#4544), so the proxy
+// resolves the same effective provider catalog the server does.
+const deepMergePlain = (base, over) => {
+  if (!isPlainObj(base) || !isPlainObj(over)) return over;
+  const out = { ...base };
+  for (const k of Object.keys(over)) out[k] = deepMergePlain(base[k], over[k]);
+  return out;
+};
+
 let cfgCache = null;
 const loadConfig = () => {
   let path = CONFIG_PATH;
@@ -162,15 +183,37 @@ const loadConfig = () => {
     path = CONFIG_FALLBACK;
     st = statSync(path);
   }
-  if (cfgCache && cfgCache.path === path && cfgCache.mtimeMs === st.mtimeMs)
+  let rtSt = null;
+  try {
+    rtSt = statSync(RUNTIME_CONFIG_PATH);
+  } catch {
+    rtSt = null;
+  }
+  const rtMtimeMs = rtSt ? rtSt.mtimeMs : null;
+  if (
+    cfgCache &&
+    cfgCache.path === path &&
+    cfgCache.mtimeMs === st.mtimeMs &&
+    cfgCache.rtMtimeMs === rtMtimeMs
+  )
     return cfgCache;
   const raw = parseJsonc(readFileSync(path, "utf8"));
+  if (rtSt) {
+    try {
+      const rt = parseJsonc(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+      if (rt && typeof rt === "object" && rt.provider)
+        raw.provider = deepMergePlain(raw.provider || {}, rt.provider);
+    } catch {
+      // Overlay unreadable: serve the tracked default alone rather than fail.
+    }
+  }
   const windows =
     raw.experimental?.model_route_windows || raw.model_route_windows || {};
   warnInvalidWindows(windows);
   cfgCache = {
     path,
     mtimeMs: st.mtimeMs,
+    rtMtimeMs,
     providers: raw.provider || {},
     providerRoutes:
       raw.experimental?.provider_routes || raw.provider_routes || {},

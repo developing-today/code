@@ -121,32 +121,28 @@ async function launchSession(
     model: req.model,
   });
   const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
-  await withCreatedSession(
-    session.id,
-    failureContext,
-    async () => {
-      await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
+  await withCreatedSession(session.id, failureContext, async () => {
+    await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
-      // Assign immediately: PATCH the exact row the enqueue created (the
-      // claim RPC claims the next task in a queue, not a specific one). The
-      // worker identity must exist in agent.workers first (worker_id is an
-      // FK), so register it idempotently.
-      await requireQueue().ensureWorker();
-      const now = new Date();
-      await requireQueue().patchTask(task.id, {
-        status: "claimed",
-        worker_id: "dispatch-opencode",
-        claimed_at: now.toISOString(),
-        lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
-        progress: {
-          lane: "opencode",
-          session_id: session.id,
-          issue_number: issue?.number ?? null,
-          launched_by: caller,
-        },
-      });
-    },
-  );
+    // Assign immediately: PATCH the exact row the enqueue created (the
+    // claim RPC claims the next task in a queue, not a specific one). The
+    // worker identity must exist in agent.workers first (worker_id is an
+    // FK), so register it idempotently.
+    await requireQueue().ensureWorker();
+    const now = new Date();
+    await requireQueue().patchTask(task.id, {
+      status: "claimed",
+      worker_id: "dispatch-opencode",
+      claimed_at: now.toISOString(),
+      lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
+      progress: {
+        lane: "opencode",
+        session_id: session.id,
+        issue_number: issue?.number ?? null,
+        launched_by: caller,
+      },
+    });
+  });
 
   // Lane ledger: the same assignment the queue workers record after a
   // claim, so a later completion can record the executed lane. The
@@ -309,17 +305,19 @@ export const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled", "failed"]);
 /**
  * The enqueue RPC dedupes on dedupe_key against ALL rows incl. terminal
  * ones and returns the pre-existing row as-is. A returned row is
- * pre-existing when it was created before this request started, or when
- * its status is already terminal — it is never the task this request
- * just queued.
+ * pre-existing when it is the row a pre-enqueue lookup already saw under
+ * the same dedupe key (compared by row id), or when its status is already
+ * terminal — it is never the task this request just queued.
+ *
+ * Deliberately clock-independent (issue #4661): the row's created_at is
+ * assigned by the Supabase Postgres server while any request-side
+ * timestamp comes from the dispatch host, so comparing the two
+ * misclassifies in both directions under ordinary skew (a DB-behind
+ * fresh row reads pre-existing; a DB-ahead live row reads fresh).
  */
-export function isPreExistingTaskRow(row: TaskRow, requestStartedAt: Date): boolean {
+export function isPreExistingTaskRow(row: TaskRow, existing: TaskRow | null): boolean {
   if (TERMINAL_TASK_STATUSES.has(row.status)) return true;
-  const createdAt = row.created_at;
-  if (typeof createdAt === "string") {
-    const parsed = Date.parse(createdAt);
-    if (!Number.isNaN(parsed)) return parsed < requestStartedAt.getTime();
-  }
+  if (existing !== null && row.id === existing.id) return true;
   return false;
 }
 
@@ -345,13 +343,18 @@ export interface EnqueueDispatchOutcome {
  */
 export async function enqueueDispatchTask(args: {
   enqueue: (dedupeKey: string) => Promise<TaskRow>;
+  /** Pre-enqueue lookup: the row already stored under a dedupe key, if
+   * any. Compared by row id after each enqueue — the clock-independent
+   * replacement for the old created_at-vs-requestStartedAt check (#4661).
+   * Lookup failures must resolve to null (unknown), never throw. */
+  findExisting: (dedupeKey: string) => Promise<TaskRow | null>;
   dedupeKey: string;
   attach: boolean;
   callerSuppliedKey: boolean;
-  requestStartedAt: Date;
 }): Promise<EnqueueDispatchOutcome> {
+  const knownFirst = await args.findExisting(args.dedupeKey);
   const first = await args.enqueue(args.dedupeKey);
-  if (!isPreExistingTaskRow(first, args.requestStartedAt)) {
+  if (!isPreExistingTaskRow(first, knownFirst)) {
     return { task: first, preExisting: false, retried: false, warnings: [] };
   }
   if (!args.attach || args.callerSuppliedKey) {
@@ -365,8 +368,13 @@ export async function enqueueDispatchTask(args: {
     };
   }
   const retryKey = `${args.dedupeKey}:dispatch:${randomDispatchSuffix()}`;
+  const knownSecond = await args.findExisting(retryKey);
   const second = await args.enqueue(retryKey);
-  if (!isPreExistingTaskRow(second, args.requestStartedAt)) {
+  // A retry key is freshly random, so a second row carrying the first
+  // row's id means the retry returned no new task even where the
+  // lookup-based check cannot see it (defensive; same-row return).
+  const secondPreExisting = isPreExistingTaskRow(second, knownSecond) || second.id === first.id;
+  if (!secondPreExisting) {
     return {
       task: second,
       preExisting: false,
@@ -391,7 +399,6 @@ export async function enqueueDispatchTask(args: {
 // ---------------------------------------------------------------------------
 
 async function handleTasks(req: Request, caller: CallerIdentity): Promise<Response> {
-  const requestStartedAt = new Date();
   const body: TaskRequest = parseTaskRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
@@ -467,10 +474,10 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
         if (errs.length) throw new QueueError(`internal packet validation failed: ${errs.join("; ")}`);
         return requireQueue().enqueue(p, body.repo);
       },
+      findExisting: (key) => requireQueue().findByDedupeKey(key),
       dedupeKey,
       attach: body.issueNumber !== undefined,
       callerSuppliedKey: body.dedupeKey !== undefined,
-      requestStartedAt,
     });
   } catch (e) {
     if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {
