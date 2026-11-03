@@ -1,7 +1,8 @@
 // Pure derivations from the read model: the execution strip, the roadmap
 // timeline lanes, and the unified comment stream. No I/O here.
 import type { SectionDiagnosis } from "./feed.ts";
-import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
+import type { Comment, GhItem, Link, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
+import { summarizeWipLanes, type WipLaneSummary } from "./wip-limits.ts";
 import { parseIsoDate } from "./validate.ts";
 
 export interface ExecutionStrip {
@@ -676,6 +677,8 @@ export interface ProjectMomentum {
 export interface TodayView {
   objectives: TodayObjective[];
   momentum: ProjectMomentum[];
+  /** The board's configured lane/project/epic caps, also returned by the JSON twin. */
+  wipLanes?: WipLaneSummary[];
   /** True when rendered from the #899 orchestration section. */
   fromOrchestrator: boolean;
   generatedAt?: string;
@@ -760,9 +763,11 @@ export function deriveToday(
   section: OrchestrationSection | null,
   now = new Date(),
   diagnosis?: SectionDiagnosis,
+  projectPool: ProjectPoolItem[] = [],
 ): TodayView {
   if (section) {
     const view = todayFromSection(section);
+    view.wipLanes = summarizeWipLanes(board, projectPool);
     view.sectionDiagnosis = diagnosis ?? {
       state: "live",
       runId: section.runId,
@@ -827,7 +832,13 @@ export function deriveToday(
       detail: inProgress ? undefined : "nothing in progress on the board",
     });
   }
-  return { fromOrchestrator: false, objectives, momentum, sectionDiagnosis: diagnosis ?? { state: "absent" } };
+  return {
+    fromOrchestrator: false,
+    objectives,
+    momentum,
+    wipLanes: summarizeWipLanes(board, projectPool),
+    sectionDiagnosis: diagnosis ?? { state: "absent" },
+  };
 }
 
 // ---------------------------------------------------------------------------
