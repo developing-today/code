@@ -55,11 +55,17 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
+import { parseProxyPort, parseProxyMillis } from './proxy-port.mjs';
 
 const HOST = process.env.ANTIGRAVITY_DIRECT_HOST || '127.0.0.1';
-const PORT = Number(process.env.ANTIGRAVITY_DIRECT_PORT || 18751);
+// #2823: both env values go through the house helpers, like every other
+// bin/* proxy. A bare Number() let 'abc'/'18941.9'/'99999' reach listen()
+// as an anonymous ERR_SOCKET_BAD_PORT, and let '0'/'0x4a35' bind a port
+// nobody configured; a bad timeout started healthy and 502'd every
+// request. Both now fail at startup naming the variable and its value.
+const PORT = parseProxyPort('ANTIGRAVITY_DIRECT_PORT', 18751);
 const UPSTREAM = (process.env.ANTIGRAVITY_DIRECT_UPSTREAM || 'https://daily-cloudcode-pa.googleapis.com').replace(/\/$/, '');
-const TIMEOUT_MS = Number(process.env.ANTIGRAVITY_DIRECT_TIMEOUT_MS || 300000);
+const TIMEOUT_MS = parseProxyMillis('ANTIGRAVITY_DIRECT_TIMEOUT_MS', 300000);
 const PROJECT = 'aicode-consumers';
 
 // The CLI's OAuth client id (public identifier, appears in its sign-in URLs).
