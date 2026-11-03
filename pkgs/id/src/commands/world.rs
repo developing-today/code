@@ -682,14 +682,23 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             no_relay,
         } => {
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, None).await?;
-            let result = client.list_worlds(&admin_token).await;
+            // With an admin token this is the admin listing; without one
+            // it is the host's public directory (#812) — same reply shape.
+            let result = match &admin_token {
+                Some(token) => client.list_worlds(token).await,
+                None => client.directory().await,
+            };
             client.close();
             endpoint.close().await;
             let (default, worlds) = result?;
             if json {
                 let worlds: Vec<crate::world_hub::WorldInfo> = worlds
                     .into_iter()
-                    .map(|(name, open)| crate::world_hub::WorldInfo { name, open })
+                    .map(|(name, open, presence)| crate::world_hub::WorldInfo {
+                        name,
+                        open,
+                        presence,
+                    })
                     .collect();
                 println!(
                     "{}",
@@ -698,7 +707,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     ))?
                 );
             } else {
-                for (name, open) in worlds {
+                for (name, open, _presence) in worlds {
                     println!("{}", world_list_plain_row(&name, &default, open));
                 }
             }

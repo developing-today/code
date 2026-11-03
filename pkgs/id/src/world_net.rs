@@ -1036,7 +1036,8 @@ impl WorldClient {
             .context("host sent no isolation")
     }
 
-    /// List the host's worlds as `(default, [(name, open)])`.
+    /// List the host's worlds as `(default, [(name, open, presence)])`,
+    /// where `presence` is the count of sessions live on the world.
     ///
     /// # Errors
     ///
@@ -1044,12 +1045,35 @@ impl WorldClient {
     pub async fn list_worlds(
         &mut self,
         admin_token: &str,
-    ) -> Result<(String, Vec<(String, bool)>)> {
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         self.send_json(&serde_json::json!({
             "type": "list_worlds",
             "admin_token": admin_token,
         }))
         .await?;
+        self.read_worlds_reply("host refused to list worlds").await
+    }
+
+    /// Read the host's public world directory (#812) as
+    /// `(default, [(name, open, presence)])`. No admin token: the
+    /// directory is public metadata — names, loaded state, and
+    /// presence counts, never identities.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the directory is refused.
+    pub async fn directory(&mut self) -> Result<(String, Vec<(String, bool, usize)>)> {
+        self.send_json(&serde_json::json!({
+            "type": "directory",
+        }))
+        .await?;
+        self.read_worlds_reply("host refused the directory").await
+    }
+
+    async fn read_worlds_reply(
+        &mut self,
+        refuse_message: &str,
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         let reply = self
             .recv_json()
             .await?
@@ -1057,9 +1081,7 @@ impl WorldClient {
         if reply["type"] != "worlds" {
             bail!(
                 "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused to list worlds")
+                reply["message"].as_str().unwrap_or(refuse_message)
             );
         }
         let default = reply["default"].as_str().unwrap_or_default().to_owned();
@@ -1067,7 +1089,13 @@ impl WorldClient {
             .as_array()
             .context("worlds reply had no list")?
             .iter()
-            .filter_map(|w| Some((w["name"].as_str()?.to_owned(), w["open"].as_bool()?)))
+            .filter_map(|w| {
+                Some((
+                    w["name"].as_str()?.to_owned(),
+                    w["open"].as_bool()?,
+                    w["presence"].as_u64().unwrap_or(0) as usize,
+                ))
+            })
             .collect();
         Ok((default, worlds))
     }
