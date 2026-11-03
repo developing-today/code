@@ -10,13 +10,29 @@
 #
 #   1. Ask the CLI for the current spec (`mcpx openapi`) — the same document
 #      the server publishes, from the same code.
-#   2. Generate a client with a PINNED generator version (oapi-codegen,
-#      OPENAPI_SDK_GEN_VERSION) into a throwaway module.
+#   2. Generate a full client (models + client) with a PINNED generator
+#      version (oapi-codegen, OPENAPI_SDK_GEN_VERSION) into a throwaway
+#      module.
 #   3. `go build` the generated package. Generation or compile failure
 #      fails the check, which is exactly spec drift breaking an SDK.
 #
-# Deliberately no publishing, no committed generated code and no spec
-# changes: the point is the proof, not an artifact. The generator runs via
+# Two generator collisions in the current spec are worked around in the
+# spec COPY this check feeds the generator; the published spec is never
+# touched, and neither workaround changes the wire format:
+#
+#   - Path parameter named `server` (/v1/call/{server}/{tool},
+#     /v1/writes/{server}/clear): oapi-codegen request builders take
+#     `server string` as their first parameter, so a path parameter with
+#     the same name redeclares it and the client does not compile. The
+#     copy renames the template variable to `serverName` — a path
+#     template variable name is a label, not part of the URL structure.
+#   - Enum constant `Client` (SettingsListParamsScope = "client"):
+#     collides with the generated `Client` struct. The generator config
+#     below renames the generated client type to `APIClient`
+#     (output-options.client-type-name).
+#
+# Deliberately no publishing and no committed generated code: the point
+# is the proof, not an artifact. The generator runs via
 # `go run <module>@<version>`, so the pin is in this file and the module
 # cache makes CI runs reproducible.
 #
@@ -38,29 +54,43 @@ echo "==> generating the current /v1 OpenAPI document"
 	go run ./cmd/mcpx openapi
 ) >"$WORK_DIR/openapi.json"
 
-python3 - "$WORK_DIR/openapi.json" <<'PY'
+python3 - "$WORK_DIR/openapi.json" "$WORK_DIR/openapi-sdk.json" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
 assert doc.get("openapi"), "spec has no openapi version"
 paths = doc.get("paths") or {}
 assert paths, "spec has no paths"
+# Rename the `server` path parameter in the generator copy (see header):
+# oapi-codegen request builders already take a `server string` parameter.
+renamed = {}
+for path, item in paths.items():
+    for op in (item or {}).values():
+        if isinstance(op, dict):
+            for param in op.get("parameters") or []:
+                if param.get("name") == "server" and param.get("in") == "path":
+                    param["name"] = "serverName"
+    renamed[path.replace("{server}", "{serverName}")] = item
+doc["paths"] = renamed
+json.dump(doc, open(sys.argv[2], "w"))
 print(f"==> spec ok: {len(paths)} paths, openapi {doc['openapi']}")
 PY
 
+cat >"$WORK_DIR/oapi-codegen.yaml" <<'EOF'
+package: sdkcheck
+generate:
+  models: true
+  client: true
+output-options:
+  client-type-name: APIClient
+EOF
+
 echo "==> generating an SDK client with oapi-codegen ${GEN_VERSION}"
-# Models + client in one package collide on spec schema names: /v1 defines
-# schemas literally named "Client" and "Server", which redeclare
-# oapi-codegen's own generated identifiers. Until those are disambiguated
-# (client-type-name handles "Client", "Server" still needs a mapping), this
-# check pins the compile proof to the generated model set — the half that a
-# spec change breaks first — and the collision is recorded on #1851.
 (
 	cd "$WORK_DIR"
 	go run "$GENERATOR" \
-		-generate types \
-		-package sdkcheck \
+		-config oapi-codegen.yaml \
 		-o client.gen.go \
-		openapi.json
+		openapi-sdk.json
 )
 
 echo "==> compiling the generated client"
@@ -71,4 +101,4 @@ echo "==> compiling the generated client"
 	go build ./...
 )
 
-echo "==> OK: /v1/openapi.json generates and compiles"
+echo "==> OK: /v1/openapi.json generates a client that compiles"
