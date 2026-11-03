@@ -12,6 +12,7 @@
 // GET /api/session/{id}/form -> { data: Form[] }.
 import type { SessionFeedEntry, SessionSource } from "../model.ts";
 import { GENERATED_AT_FUTURE_SKEW_MS } from "../feed.ts";
+import { arrayOf, isFiniteNumber, isNonEmptyString, isRecord } from "../validate.ts";
 
 export interface OpenCodeTarget {
   baseUrl: string;
@@ -61,10 +62,6 @@ interface V2PermissionRequest {
   [k: string]: unknown;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function records(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -73,8 +70,9 @@ function isV2Session(value: unknown): value is V2Session {
   return isRecord(value) && typeof value.id === "string" && value.id.trim().length > 0;
 }
 
+/** Shared guard, narrowed to the mapper's optional-string convention. */
 function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  return isNonEmptyString(value) ? value : undefined;
 }
 
 function firstString(...values: unknown[]): string | undefined {
@@ -86,7 +84,7 @@ function firstString(...values: unknown[]): string | undefined {
 }
 
 function finiteNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return isFiniteNumber(value) ? value : 0;
 }
 
 async function getJson<T>(target: OpenCodeTarget, path: string, timeoutMs = 10_000): Promise<T | null> {
@@ -143,6 +141,8 @@ export interface MappedSessions {
   tokensBySession: Map<string, number>;
   /** Session ids the server currently reports active. */
   activeIds: Set<string>;
+  /** Session elements dropped by the element-wise guard (#2543). */
+  droppedElements: number;
 }
 
 /**
@@ -158,7 +158,12 @@ export async function mapServerSessions(
 ): Promise<MappedSessions | null> {
   const list = await getJson<unknown>(target, "/api/session?limit=100");
   if (!isRecord(list) || !Array.isArray(list.data)) return null;
-  const sessions = list.data.filter(isV2Session);
+  // Element-wise validation (#2543): one null/mistyped session is dropped
+  // and counted; its valid siblings still map, and no id-less row is
+  // fabricated. A non-array container stays a shape failure (null).
+  const sessionRows = arrayOf(isV2Session)(list.data);
+  if (sessionRows === null) return null;
+  const sessions = sessionRows.values;
 
   const activeResp = await getJson<unknown>(target, "/api/session/active");
   const activeData = isRecord(activeResp) && isRecord(activeResp.data) ? activeResp.data : {};
@@ -196,7 +201,7 @@ export async function mapServerSessions(
       await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40, opts.source, now),
     );
   }
-  return { entries, tokensBySession, activeIds };
+  return { entries, tokensBySession, activeIds, droppedElements: sessionRows.dropped };
 }
 
 async function mapOne(

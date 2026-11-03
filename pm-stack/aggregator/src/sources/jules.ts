@@ -7,6 +7,7 @@
 // with source "jules" — pure functions, no I/O, so the collector owns
 // the file read and tests can feed it literals.
 import type { JulesSummary, SessionFeedEntry } from "../model.ts";
+import { isRecord } from "../validate.ts";
 
 export interface JulesItem {
   state?: string;
@@ -25,22 +26,18 @@ export interface JulesReviewState {
   [key: string]: unknown;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function validJulesEntries(state: unknown): {
   entries: [string, JulesItem][];
   droppedCount: number;
 } {
-  if (!isPlainObject(state) || !isPlainObject(state.items)) {
+  if (!isRecord(state) || !isRecord(state.items)) {
     return { entries: [], droppedCount: 0 };
   }
 
   const entries: [string, JulesItem][] = [];
   let droppedCount = 0;
   for (const [id, value] of Object.entries(state.items)) {
-    if (!isPlainObject(value)) {
+    if (!isRecord(value)) {
       droppedCount += 1;
       continue;
     }
@@ -140,7 +137,7 @@ function hhmmOf(iso: string | undefined): string | null {
  * to the last run rather than attributing another run's numbers to it.
  */
 export function julesSummary(state: JulesReviewState): JulesSummary {
-  const objectState = isPlainObject(state) ? state : {};
+  const objectState = isRecord(state) ? state : {};
   const lastRun = typeof objectState.last_run === "string" ? objectState.last_run : undefined;
   const summary: JulesSummary = {
     at: lastRun ?? null,

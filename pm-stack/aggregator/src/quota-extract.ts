@@ -18,6 +18,7 @@
 // never collapse them into one pool.
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const MONTHS: Record<string, number> = {
   Jan: 0,
@@ -328,6 +329,10 @@ function goWorkspace(name: "Personal" | "Lab"): Extractor {
   };
 }
 
+/** A "resets in Nd Nh" offset is a plan window, never a date decades out.
+ * Ten years is far beyond any quota window; a larger offset is drift. */
+const MAX_CLINEPASS_RESET_OFFSET_DAYS = 3650;
+
 const extractClinePass: Extractor = (s) => {
   const measured = first(s, /Measured (\d{4}-\d{2}-\d{2}) ~(\d{2}:\d{2}) CDT/i);
   const m = first(
@@ -335,8 +340,34 @@ const extractClinePass: Extractor = (s) => {
     /5-hour \*\*(\d+(?:\.\d+)?)%\*\* used; weekly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\); monthly \*\*(\d+(?:\.\d+)?)%\*\* used \(resets in (\d+)d (\d+)h\)/i,
   );
   if (!measured || !m) return null;
-  const base = Date.parse(dateTimeCentral(measured[1], measured[2]));
-  const rel = (d: string, h: string) => new Date(base + (Number(d) * 24 + Number(h)) * 3_600_000).toISOString();
+  // The measured capture is the anchor for both relative resets (#2383).
+  // It must be a real calendar date: an impossible one makes only THIS
+  // pool's read unparseable (raw null, so the caller retains the previous
+  // read) instead of rolling Feb-30 into March or throwing out of the
+  // extractor and silently discarding the already-matched percentages.
+  let base: number;
+  try {
+    base = Date.parse(dateTimeCentral(measured[1], measured[2]));
+  } catch {
+    return null;
+  }
+  if (!Number.isFinite(base)) return null;
+  const rel = (d: string, h: string): string | null => {
+    const days = Number(d);
+    const hours = Number(h);
+    if (
+      !Number.isInteger(days) ||
+      !Number.isInteger(hours) ||
+      days < 0 ||
+      hours < 0 ||
+      hours > 23 ||
+      days > MAX_CLINEPASS_RESET_OFFSET_DAYS
+    ) {
+      return null;
+    }
+    const iso = new Date(base + (days * 24 + hours) * 3_600_000).toISOString();
+    return parseIsoDate(iso) === null ? null : iso;
+  };
   return {
     windows: [
       pctWindow("5-hour", Number(m[1]), null),
