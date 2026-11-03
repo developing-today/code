@@ -313,7 +313,6 @@ EOF
 check plugins-merge "$tmp/plugins-merge.fixture" \
   '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b",["opencode-plugin-c",{"opt":1}]]}' 0
 
-
 # Case 14 (#4612, probe B): `agents` inline empty object with a
 # standard v1 `agent` block — the old regex splice demanded a
 # newline + two-space closing brace, so this exited 1 forever.
@@ -404,10 +403,102 @@ EOF
 check duplicate-last "$tmp/duplicate-last.fixture" \
   '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
 
-if [ "$failures" -ne 0 ]; then
-  echo "normalize_test: $failures failure(s)"
-  exit 1
-fi
+# Case 19: plugin + plugins both present with comments inside BOTH
+# arrays (#4639) — the merge is a textual element splice, so every
+# comment survives byte-identical instead of the arrays being
+# re-serialised.
+cat >"$tmp/plugins-merge-comments.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  // file-level note
+  "plugin": [
+    /* legacy note */
+    "opencode-plugin-a"
+  ],
+  "plugins": [
+    // native note
+    "opencode-plugin-b"
+    // trailing native
+  ]
+}
+EOF
+check plugins-merge-comments "$tmp/plugins-merge-comments.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+for needle in '/* legacy note */' '// native note' '// trailing native' '// file-level note'; do
+  grep -qF "$needle" "$tmp/plugins-merge-comments.jsonc" || {
+    echo "FAIL plugins-merge-comments: lost comment: $needle"
+    failures=$((failures + 1))
+  }
+done
+
+# Case 20: a // line comment trailing the last legacy element (#4639
+# boundary) — the joining comma would be swallowed by the comment, so
+# the merge fails closed: exit 1 with the file byte-identical.
+cat >"$tmp/plugins-merge-trailing-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-plugin-a" // trailing legacy note
+  ],
+  "plugins": [
+    "opencode-plugin-b"
+  ]
+}
+EOF
+check plugins-merge-trailing-comment "$tmp/plugins-merge-trailing-comment.fixture" '' 1
+
+# Case 21 (Codex P2 on PR #4644): a trailing comma before a trailing
+# block comment is still the legacy array's element separator. Remove
+# that comma while preserving the comment, then perform the merge.
+cat >"$tmp/plugins-merge-trailing-block-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-a", /* keep trailing block */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-trailing-block-comment "$tmp/plugins-merge-trailing-block-comment.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+grep -qF '/* keep trailing block */' "$tmp/plugins-merge-trailing-block-comment.jsonc" || {
+  echo "FAIL plugins-merge-trailing-block-comment: lost trailing block comment"
+  failures=$((failures + 1))
+}
+
+# Case 22 (Codex P2 on PR #4644): legacy array holds only a comment,
+# e.g. [/* disabled */] — no joining comma is emitted, so the merge
+# succeeds and the comment survives instead of failing closed.
+cat >"$tmp/plugins-merge-comment-only-legacy.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [/* disabled */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-comment-only-legacy "$tmp/plugins-merge-comment-only-legacy.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-b"]}' 0
+grep -qF '/* disabled */' "$tmp/plugins-merge-comment-only-legacy.jsonc" || {
+  echo "FAIL plugins-merge-comment-only-legacy: lost legacy comment"
+  failures=$((failures + 1))
+}
+
+# Case 23 (Codex P2 on PR #4644): multiline block comment with a URL on
+# its final line inside the legacy array — the // in the URL is inside
+# /* */, not a live line comment, so the merge succeeds.
+cat >"$tmp/plugins-merge-url-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-a" /* note
+https://example.com/docs */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-url-comment "$tmp/plugins-merge-url-comment.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+grep -qF 'https://example.com/docs */' "$tmp/plugins-merge-url-comment.jsonc" || {
+  echo "FAIL plugins-merge-url-comment: lost block comment"
+  failures=$((failures + 1))
+}
+
 # Case: agent as the last entry, with an inline comment between the
 # preceding entry's comma and the agent key (PR #4625 Codex P2). The
 # backward separator scan in delete_top_level_entry must skip the
@@ -425,5 +516,33 @@ cat >"$tmp/comment-before-agent-last.fixture" <<'EOF'
 EOF
 check comment-before-agent-last "$tmp/comment-before-agent-last.fixture" \
   '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+
+# Case 24 (#4770): a block comment containing a literal /* before the
+# final legacy `agent` entry — the backward separator scan must match
+# the comment's actual opening delimiter, not the inner literal, so
+# the fold succeeds and the comment text is preserved byte-identical.
+cat >"$tmp/block-comment-inner-delimiter.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  /* example syntax: /* text */
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check block-comment-inner-delimiter "$tmp/block-comment-inner-delimiter.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+grep -qF '/* example syntax: /* text */' "$tmp/block-comment-inner-delimiter.jsonc" || {
+  echo "FAIL block-comment-inner-delimiter: comment text not preserved"
+  failures=$((failures + 1))
+}
+
+if [ "$failures" -ne 0 ]; then
+  echo "normalize_test: $failures failure(s)"
+  exit 1
+fi
 
 echo "normalize_test: all cases passed"

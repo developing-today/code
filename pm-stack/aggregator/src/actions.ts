@@ -701,16 +701,25 @@ export class ActionsStore {
     id: string,
     result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
   ): Promise<DashAction | null> {
+    return (await this.markResultTransition(id, result))?.action ?? null;
+  }
+
+  /** Like markResult, but tells audit writers whether this call consumed
+   *  the action or merely observed an already-terminal record. */
+  async markResultTransition(
+    id: string,
+    result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
+  ): Promise<{ action: DashAction; transitioned: boolean } | null> {
     await this.load();
     const a = this.actions.find((x) => x.id === id);
     if (!a) return null;
-    if (a.state !== "new") return a;
+    if (a.state !== "new") return { action: a, transitioned: false };
     a.state = result.outcome;
     a.appliedAt = new Date().toISOString();
     a.appliedByRun = result.byRun.slice(0, 200);
     if (result.note) a.resultNote = result.note.slice(0, 2_000);
     await this.persist();
-    return a;
+    return { action: a, transitioned: true };
   }
 }
 

@@ -52,10 +52,7 @@ class FakeWebSocket {
 
   deliver(msg: unknown): void {
     const packed = packr.pack(msg);
-    const buf = packed.buffer.slice(
-      packed.byteOffset,
-      packed.byteOffset + packed.byteLength,
-    ) as ArrayBuffer;
+    const buf = packed.buffer.slice(packed.byteOffset, packed.byteOffset + packed.byteLength) as ArrayBuffer;
     this.onmessage?.({ data: buf });
   }
 
@@ -84,16 +81,18 @@ function track<T extends { disconnect: () => void }>(conn: T): T {
 }
 
 function openCollab(onEditorReady = vi.fn()) {
-  const conn = track(initCollab(
-    "ws://example.test/collab",
-    makeContainer(),
-    "doc-1",
-    "notes.md",
-    null,
-    undefined,
-    undefined,
-    onEditorReady,
-  ));
+  const conn = track(
+    initCollab(
+      "ws://example.test/collab",
+      makeContainer(),
+      "doc-1",
+      "notes.md",
+      null,
+      undefined,
+      undefined,
+      onEditorReady,
+    ),
+  );
   const socket = FakeWebSocket.instances.at(-1)!;
   socket.open();
   return { conn, socket, onEditorReady };
@@ -119,14 +118,9 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
 
   it("reconnect AUTH sends the AUTH_OK refreshed token, not the init token", () => {
     const onTokenRefresh = vi.fn();
-    const conn = track(initCollab(
-      "ws://example.test/collab",
-      makeContainer(),
-      "doc-1",
-      "notes.md",
-      "OLD_TOKEN_A",
-      onTokenRefresh,
-    ));
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", "OLD_TOKEN_A", onTokenRefresh),
+    );
 
     const first = FakeWebSocket.instances[0];
     first.open();
@@ -149,14 +143,9 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
   });
 
   it("reconnect without any refresh re-sends the init token", () => {
-    const conn = track(initCollab(
-      "ws://example.test/collab",
-      makeContainer(),
-      "doc-1",
-      "notes.md",
-      "ONLY_TOKEN",
-      undefined,
-    ));
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", "ONLY_TOKEN", undefined),
+    );
 
     const first = FakeWebSocket.instances[0];
     first.open();
@@ -172,14 +161,7 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
   });
 
   it("anonymous connect sends no AUTH frame, before or after reconnect", () => {
-    const conn = track(initCollab(
-      "ws://example.test/collab",
-      makeContainer(),
-      "doc-1",
-      "notes.md",
-      null,
-      undefined,
-    ));
+    const conn = track(initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", null, undefined));
 
     const first = FakeWebSocket.instances[0];
     first.open();
@@ -313,13 +295,7 @@ describe("buildCollabWsUrl (#2830)", () => {
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
     const conn = track(
-      initCollab(
-        buildCollabWsUrl("ws:", "example.test", "a#b.md"),
-        makeContainer(),
-        "a#b.md",
-        "a#b.md",
-        null,
-      ),
+      initCollab(buildCollabWsUrl("ws:", "example.test", "a#b.md"), makeContainer(), "a#b.md", "a#b.md", null),
     );
     const socket = FakeWebSocket.instances.at(-1)!;
     const url = new URL(socket.url);

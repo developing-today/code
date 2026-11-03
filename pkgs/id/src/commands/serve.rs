@@ -71,7 +71,9 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
-use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
+use crate::chat_presence::{
+    HEARTBEAT_INTERVAL, PresenceHeartbeat, PresenceTable, decode_frame, encode_frame,
+};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     defaults, resolve_config,
@@ -598,12 +600,15 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
-/// The server's capability ceiling: the named capabilities, or the whole catalog
-/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+/// The server's capability ceiling: the named capabilities, or the default
+/// ceiling ([`crate::world_caps::default_ceiling_names`]) when no list is
+/// given — providers whose manifest default is `Excluded` do not join a
+/// server by registration alone (#838). Like a world ceiling, it names
+/// capabilities; `*` is refused.
 #[cfg(feature = "world")]
 fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
     match names {
-        None => Ok(crate::world_caps::catalog_names()),
+        None => Ok(crate::world_caps::default_ceiling_names()),
         Some(names) => {
             crate::world_caps::validate_ceiling_names(names)?;
             Ok(names.iter().cloned().collect())
@@ -791,6 +796,14 @@ impl ServeWorlds {
     }
 }
 
+/// The group log the serve warning watcher reads: the global
+/// `--groups-log` option when given, else the default file name —
+/// resolved with the group commands' semantics (#2778; serve used
+/// to hardcode the default and ignore the option).
+fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
+    crate::commands::group::log_path(path)
+}
+
 /// Starts the serve process.
 ///
 /// Initializes the Iroh endpoint, blob store, protocol handlers, and
@@ -830,14 +843,6 @@ impl ServeWorlds {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
-/// The group log the serve warning watcher reads: the global
-/// `--groups-log` option when given, else the default file name —
-/// resolved with the group commands' semantics (#2778; serve used
-/// to hardcode the default and ignore the option).
-fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
-    crate::commands::group::log_path(path)
-}
-
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -887,6 +892,20 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
+    // A web request on a binary built without the `web` feature must
+    // fail loudly: the web startup block is compiled out in that build,
+    // so without this guard --web was accepted and silently served
+    // nothing (no listener bound, no `web:` status line) - the failure
+    // mode that left web-waiting integration tests to die on a startup
+    // timeout instead of hearing the real reason.
+    #[cfg(not(feature = "web"))]
+    if web || !web_listen.is_empty() || port_explicit || bind_explicit {
+        anyhow::bail!(
+            "the web interface was requested (--web/--web-listen/--port/--bind), \
+             but this id binary was built without the `web` feature; \
+             rebuild with `--features web` to serve it"
+        );
+    }
     validate_world_options(
         world,
         world_admin_token.as_deref(),
@@ -1831,10 +1850,19 @@ fn unix_now() -> u64 {
 
 const MAX_STALE_PROBES_PER_PASS: usize = 4;
 
+/// The presence-heartbeat period for the gossip loop: [`HEARTBEAT_INTERVAL`],
+/// the cadence `chat_presence` documents, as the single source (#4777).
+/// A function (not an inline constant at the call site) so a test can pin
+/// the wiring and the constant cannot silently go dead again.
+fn presence_heartbeat_period() -> std::time::Duration {
+    HEARTBEAT_INTERVAL
+}
+
 /// Background loop for gossip-based peer discovery.
 ///
 /// Runs three concurrent tasks:
-/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`]
+/// 1. **Announce**: Broadcasts a [`PeerAnnouncement`] every [`ANNOUNCE_INTERVAL`],
+///    and a presence heartbeat every [`HEARTBEAT_INTERVAL`] on its own timer
 /// 2. **Receive**: Listens for incoming gossip events and updates the peer table
 /// 3. **Cleanup**: Periodically probes stale peers via `ListPeers` RPC — refreshes
 ///    their `last_seen` if reachable, removes them if not
@@ -1856,66 +1884,76 @@ async fn run_gossip_loop(
     let announce_store = store;
     let announce_node_id = node_id;
 
-    // Spawn announce task
+    // Spawn announce task: peer announcements and presence heartbeats run
+    // on independent timers in this one task. They used to share the
+    // announcement timer, so heartbeats actually went out every 30 s and
+    // the documented 25 s HEARTBEAT_INTERVAL cadence (and the TTL
+    // drop-resilience it promises) never happened (#4777).
     let announce_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut announce_interval = tokio::time::interval(ANNOUNCE_INTERVAL);
+        let mut heartbeat_interval = tokio::time::interval(presence_heartbeat_period());
         loop {
-            interval.tick().await;
-            // Get blob count from tags
-            let blob_count = match announce_store.tags().list().await {
-                Ok(mut stream) => {
-                    let mut count = 0u64;
-                    while stream.next().await.is_some() {
-                        count += 1;
-                    }
-                    count
-                }
-                Err(_) => 0,
-            };
+            tokio::select! {
+                _ = announce_interval.tick() => {
+                    // Get blob count from tags
+                    let blob_count = match announce_store.tags().list().await {
+                        Ok(mut stream) => {
+                            let mut count = 0u64;
+                            while stream.next().await.is_some() {
+                                count += 1;
+                            }
+                            count
+                        }
+                        Err(_) => 0,
+                    };
 
-            let announcement = PeerAnnouncement {
-                node_id: announce_node_id,
-                name: None,
-                blob_count,
-                timestamp_secs: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            };
+                    let announcement = PeerAnnouncement {
+                        node_id: announce_node_id,
+                        name: None,
+                        blob_count,
+                        timestamp_secs: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    };
 
-            match SignedPeerAnnouncement::sign(announcement, &signing_key) {
-                Some(signed) => match signed.encode_frame() {
-                    Ok(bytes) => {
-                        if let Err(e) = sender.broadcast(bytes).await {
-                            debug!("gossip broadcast error: {}", e);
+                    match SignedPeerAnnouncement::sign(announcement, &signing_key) {
+                        Some(signed) => match signed.encode_frame() {
+                            Ok(bytes) => {
+                                if let Err(e) = sender.broadcast(bytes).await {
+                                    debug!("gossip broadcast error: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                debug!("gossip announcement serialization error: {}", e);
+                            }
+                        },
+                        None => {
+                            warn!(
+                                "could not sign peer announcement for endpoint {}",
+                                announce_node_id
+                            );
                         }
                     }
-                    Err(e) => {
-                        debug!("gossip announcement serialization error: {}", e);
-                    }
-                },
-                None => {
-                    warn!(
-                        "could not sign peer announcement for endpoint {}",
-                        announce_node_id
-                    );
-                }
-            }
 
-            // Presence rides the same gossip plane (#2809): an ephemeral
-            // heartbeat naming this node. Channel membership lives in the
-            // chat layer above serve, so this heartbeat names no channels;
-            // receivers scope and read it through PresenceTable.
-            let mut presence = PresenceHeartbeat::new(
-                *announce_node_id.as_bytes(),
-                Vec::new(),
-                Vec::new(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs()),
-            );
-            presence.sign(&signing_key);
-            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
-                debug!("gossip presence broadcast error: {}", e);
+                }
+                _ = heartbeat_interval.tick() => {
+                    // Presence rides the same gossip plane (#2809): an ephemeral
+                    // heartbeat naming this node. Channel membership lives in the
+                    // chat layer above serve, so this heartbeat names no channels;
+                    // receivers scope and read it through PresenceTable.
+                    let mut presence = PresenceHeartbeat::new(
+                        *announce_node_id.as_bytes(),
+                        Vec::new(),
+                        Vec::new(),
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs()),
+                    );
+                    presence.sign(&signing_key);
+                    if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                        debug!("gossip presence broadcast error: {}", e);
+                    }
+                }
             }
         }
     });
@@ -2095,6 +2133,23 @@ mod tests {
             },
             last_seen: std::time::Instant::now(),
         }
+    }
+
+    #[test]
+    fn presence_heartbeat_period_is_the_documented_interval() {
+        // #4777: HEARTBEAT_INTERVAL was defined and documented in
+        // chat_presence but never used; serve broadcast presence on the
+        // 30 s announcement timer instead. Pin the gossip loop period to
+        // the constant so it cannot silently go dead again.
+        assert_eq!(presence_heartbeat_period(), HEARTBEAT_INTERVAL);
+        assert_ne!(presence_heartbeat_period(), ANNOUNCE_INTERVAL);
+        // The documented TTL resilience: at least two heartbeats land
+        // inside one PRESENCE_TTL_SECS window, so a single dropped
+        // broadcast never flickers a live node stale.
+        assert!(
+            HEARTBEAT_INTERVAL.as_secs() * 2 < crate::chat_presence::PRESENCE_TTL_SECS,
+            "two heartbeats must land inside one TTL window"
+        );
     }
 
     #[test]
@@ -2399,10 +2454,10 @@ mod tests {
 
     #[cfg(feature = "world")]
     #[test]
-    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+    fn test_the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
         assert_eq!(
             allowed_caps(None).unwrap(),
-            crate::world_caps::catalog_names()
+            crate::world_caps::default_ceiling_names()
         );
         let named = ["time.now".to_owned(), "chat.say".to_owned()];
         assert_eq!(

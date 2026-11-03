@@ -237,7 +237,10 @@ describe("world page records fetch (#1458)", () => {
       },
       { type: "event", event: { sequence: 106, participant_id: "2", kind: { kind: "input", data: [27] } } },
       { type: "event", event: { participant_id: 2, kind: { kind: "chat", data: "bad sequence" } } },
-      { type: "event", event: { sequence: Number.NaN, participant_id: 2, kind: { kind: "chat", data: "bad sequence" } } },
+      {
+        type: "event",
+        event: { sequence: Number.NaN, participant_id: 2, kind: { kind: "chat", data: "bad sequence" } },
+      },
     ];
 
     for (const frame of malformedEvents) {
