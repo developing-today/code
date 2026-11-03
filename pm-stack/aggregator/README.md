@@ -449,6 +449,20 @@ Everything defaults to **fixtures** and works with no configuration:
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
+### WIP-cap configuration (#1281 step 1)
+
+The single source for cross-repo board WIP caps is
+[`src/wip-caps.json`](src/wip-caps.json). `laneCaps` sets the starting
+cap for each standard board lane; `defaultCap` applies to any additional
+lane. The initial values are pilot thresholds, not hard limits: exceeding
+one only displays a warning and never blocks work. `projectCaps` may
+override a lane cap by the GitHub Project URL, and `epicCaps` may override
+it by canonical epic ref (`owner/repo#N`). Project and epic counts are
+derived from the board items linked to the current Project-pool snapshot;
+unlinked cards still count toward their lane total. The board and Today
+view use the same summary, and `/api/today.json` includes it. Done cards
+are completion history and are not counted as WIP.
+
 ## Capability provenance matrix (#1200)
 
 The single source of truth for what the aggregator reads, facet by

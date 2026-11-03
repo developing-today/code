@@ -588,15 +588,16 @@ async function todaySignals() {
 }
 
 async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
+  const [{ board, items }, { rows }, { view, coverage }, signals, summary, projectPool] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
     todaySignals(),
     source.orchestration().catch(() => null),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
+  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis, projectPool), view, coverage, ...signals };
 }
 
 async function queueContext() {
