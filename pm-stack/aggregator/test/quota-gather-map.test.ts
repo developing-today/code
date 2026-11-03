@@ -621,6 +621,40 @@ describe("entryFromTurso (#1049)", () => {
   });
 });
 
+describe("entryFromTurso period stamps (#5091)", () => {
+  const usageDoc = { organization: { usage: { databases: 3 } } };
+  const at = "2026-10-29T02:30:00.000Z";
+  const subWith = (start: unknown, end: unknown) => ({
+    subscription: {
+      plan: "starter",
+      current_billing_period_start: start,
+      current_billing_period_end: end,
+    },
+  });
+  const windowSecondsOf = (sub: unknown): number | null => {
+    const entry = entryFromTurso(usageDoc, sub as never, { measuredAt: at });
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.length).toBeGreaterThan(0);
+    return entry.windows[0].windowSeconds;
+  };
+  test("impossible period start yields a null window, not a rolled-over length", () => {
+    // 2026-02-30 does not exist; raw Date.parse rolls it to Mar 2 and would
+    // publish a 28-day window against the 2026-03-30 end.
+    expect(windowSecondsOf(subWith("2026-02-30T00:00:00Z", "2026-03-30T00:00:00Z"))).toBeNull();
+  });
+  test("impossible period end yields a null window", () => {
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-02-30T00:00:00Z"))).toBeNull();
+  });
+  test("non-ISO period stamps yield a null window", () => {
+    // Raw Date.parse accepts these (timezone-dependently); the gate refuses.
+    expect(windowSecondsOf(subWith("February 1, 2026", "March 3, 2026"))).toBeNull();
+  });
+  test("valid ISO period stamps still compute the window", () => {
+    // 2026-02-01 -> 2026-03-03 is exactly 30 days.
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-03-03T00:00:00Z"))).toBe(2_592_000);
+  });
+});
+
 describe("entryFromTurso negative usage (#2553)", () => {
   const subDoc = {
     subscription: {
