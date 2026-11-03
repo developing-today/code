@@ -16,10 +16,6 @@
       "args" = [ "-y" "@ask-llm/antigravity-mcp" ];
       "command" = "npx";
     };
-    "antigravity-jules-orchestration" = {
-      "args" = [ "-y" "@iflow-mcp/scarmonit-antigravity-jules-orchestration" ];
-      "command" = "npx";
-    };
     "chrome-devtools" = {
       "args" = [ "-y" "chrome-devtools-mcp@latest" "--executable-path=/run/current-system/sw/bin/chromium" "--headless" "--isolated" "--viewport=800x600" "--no-usage-statistics" "--no-performance-crux" "--no-category-emulation" ];
       "command" = "npx";
@@ -79,10 +75,6 @@
     "gopls-mcp-server" = {
       "args" = [ "run" "golang.org/x/tools/gopls@latest" "mcp" ];
       "command" = "go";
-    };
-    "jules" = {
-      "args" = [ "-y" "@google/jules-mcp" ];
-      "command" = "npx";
     };
     "mcp-server-neon" = {
       "args" = [ "-y" "mcp-remote" "https://mcp.neon.tech/sse" ];

@@ -49,7 +49,7 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
-  # Hidden-shell auth hook (1Password service account, Jules, Cloudflare).
+  # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
   # mcpx MCP gateway and Code Mode execution runner.
@@ -62,7 +62,7 @@ let
   opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
   # Drew's opencode wrapper -- formerly a standalone home.packages
   # entry (writeShellScriptBin "opencode"), logic unchanged:
-  # Cloudflare + Jules env top-ups and the stamp-gated sync-models
+  # Cloudflare env top-up and the stamp-gated sync-models
   # kick. The one change is the exec target: the cascade build, not
   # this repo's root opencode input (a second fork build, so CLI and
   # service ran different fork commits).
@@ -71,9 +71,6 @@ let
       [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
       [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
       export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-    fi
-    if [ -z "$JULES_API_KEY" ] && [ -r "$HOME/.config/jules/api-key" ]; then
-      export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
     fi
 
     # Opportunistic background model sync (max once every 24h, detached)
@@ -465,7 +462,6 @@ in
       # PathChanged fires on close-after-write. Directories are watched where
       # the interesting file is rewritten rather than edited in place.
       PathChanged = [
-        "%h/.config/jules/api-key"
         "%h/.local/share/opencode/auth.json"
         "%h/.config/opencode/opencode.jsonc"
         "%h/.local/share/t3code/userdata/settings.json"
@@ -1173,7 +1169,6 @@ in
     #
     #   bws-access-token          | ~/.config/bws/access-token          -> BWS_ACCESS_TOKEN (bws login)
     #   op-service-account-token  | ~/.config/op/service-account-token  -> OP_SERVICE_ACCOUNT_TOKEN
-    #   jules-api-key             | ~/.config/jules/api-key             -> JULES_API_KEY
     #   cloudflare-{account-id,gateway-id,ai-inference-token} | ~/.config/cloudflare/...
     #
     # The hook is sourced from bashrcExtra, which home-manager places BEFORE the
@@ -1181,10 +1176,6 @@ in
     # these exports used to be invisible to hidden agent shells). Non-interactive
     # `bash -c` shells get it through BASH_ENV instead (nixos/agent-auth +
     # systemd.user.sessionVariables below). See pkgs/agent-shell-env/env.sh.
-    #
-    # JULES_API_KEY is consumed by the @google/jules-mcp server wired into
-    # opencode via "mcp.jules" -> environment -> {env:JULES_API_KEY}. The `jules`
-    # CLI ignores it and uses the `jules login` OAuth token in gnome-keyring.
     bash = {
       bashrcExtra = ''
         . "${agent-shell-env}/share/agent-shell-env/env.sh"
