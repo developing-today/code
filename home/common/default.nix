@@ -54,9 +54,8 @@ let
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
-  # The environment the mcpx daemon runs with. It is set by the start wrapper
-  # below rather than by the unit, because `mcpx upgrade` starts the successor
-  # through that same wrapper, so the successor gets what a fresh start gets.
+  # The environment the mcpx daemon runs with (services.mcpx.environment
+  # below; the module renders it into the unit).
   mcpxEnvironment = {
     OPENCODE_BINARY = "${inputs.opencode.packages.${system}.opencode}/bin/opencode";
     OPENCODE_V2_BIN = "${inputs.opencode.packages.${system}.opencode}/bin/opencode";
@@ -72,121 +71,26 @@ let
       pkgs.openssh
     ];
   };
-  # The unit's start command, ahead of the binary. Its store path changes when
-  # the environment or the wrapper does, and the activation keys on that.
-  mcpxStart = pkgs.writeShellScript "mcpx-start" ''
-    ${lib.concatStrings (
-      lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}\n") mcpxEnvironment
-    )}
-    exec "$@"
-  '';
+  # The daemon's configuration (the former ~/code/.mcpx.json), and the
+  # config file the mcpx module renders from it: reproduced here so
+  # the deploy key below tracks the daemon's real configuration
+  # without this file needing the module system's `config`. (With an
+  # empty `servers` the module renders
+  # settings // { mcpServers = settings.mcpServers; }, so the two
+  # writeText results are the same store path.)
+  mcpxSettings = import ./mcpx-settings.nix;
+  mcpxConfigRendered = pkgs.writeText "mcpx-config.json" (builtins.toJSON mcpxSettings);
+  # The deploy key for the handover in home.activation.mcpxDeploy
+  # below: a switch that changes the daemon, its configuration or its
+  # environment hands the running daemon over, so the key covers
+  # exactly those three.
   mcpxKey = deployKey "mcpx" [
     mcpx
-    mcpxStart
+    mcpxConfigRendered
+    (builtins.toJSON mcpxEnvironment)
   ];
-  openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
-    # Single-instance guard (dezren39/nix#1117). The unit below is
-    # socket-activated with KillMode=process: a stop terminates only the
-    # tracked main process, so a server that is no longer the tracked
-    # main -- a self-handoff predecessor systemd has lost track of --
-    # survives in the cgroup still holding the listen socket systemd
-    # handed it. The next start passes the same socket to a new server
-    # and both accept() on it, so /api/version answers alternate between
-    # instances. Reap any leftover server before taking the socket over.
-    # Only the web server is matched (its managed OpenCode serves a
-    # different port and must stay up for adoption), and this script's
-    # own pid is excluded -- it execs into the new server below.
-    leftovers=""
-    for proc in /proc/[0-9]*; do
-      pid="''${proc#/proc/}"
-      [ "$pid" = "$$" ] && continue
-      # The pattern text itself rides in the argv of anything inspecting
-      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
-      # is not proof: the process must actually be the node server.
-      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
-      case "$exe" in
-        */node | */openchamber) ;;
-        *) continue ;;
-      esac
-      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
-      case "$cmd" in
-        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
-        *) continue ;;
-      esac
-      case "$cmd" in
-        # Argument boundary required: "--port 3000" must not match the
-        # 30001..30009 of an unrelated instance (cmdline words are
-        # space-separated here, trailing word included).
-        *"--port 3000 "*) leftovers="$leftovers $pid" ;;
-        *"--port=3000 "*) leftovers="$leftovers $pid" ;;
-      esac
-    done
-    if [ -n "$leftovers" ]; then
-      echo "openchamber-serve: reaping leftover server(s):$leftovers" >&2
-      for pid in $leftovers; do
-        kill -TERM "$pid" 2>/dev/null || true
-      done
-      # OpenChamber drains HTTP for up to 10 s on SIGTERM.
-      for _ in $(seq 1 100); do
-        alive=0
-        for pid in $leftovers; do
-          kill -0 "$pid" 2>/dev/null && alive=1
-        done
-        [ "$alive" = 0 ] && break
-        sleep 0.1
-      done
-      for pid in $leftovers; do
-        if kill -0 "$pid" 2>/dev/null; then
-          echo "openchamber-serve: pid $pid ignored SIGTERM; killing" >&2
-          kill -KILL "$pid" 2>/dev/null || true
-        fi
-      done
-      # Verify synchronously, before taking the socket over: a leftover
-      # that could not be reaped fails this start loudly instead of
-      # silently sharing the listener with the new server. (An
-      # ExecStartPost assertion cannot do this: with Type=simple it
-      # races the guard's drain window.)
-      sleep 0.2
-      for pid in $leftovers; do
-        if kill -0 "$pid" 2>/dev/null; then
-          echo "openchamber-serve: leftover server pid $pid could not be reaped; refusing to start a second server on port 3000" >&2
-          exit 1
-        fi
-      done
-    fi
-    pw="$HOME/.config/openchamber/ui-password"
-    if [ -r "$pw" ]; then
-      export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
-    fi
-    if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-      export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-      export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-      export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-    fi
-    export OPENCODE_BINARY="${openchamberBinDir}/opencode"
-    export PATH="${openchamberBinDir}:$PATH"
-    exec ${inputs.openchamber.packages.${system}.openchamber}/bin/openchamber serve \
-      --foreground \
-      --port 3000 --host 127.0.0.1
-  '';
-  # The unit launches through the checkout wrapper (bin/openchamber-start.sh),
-  # which attaches OpenChamber to the standing OpenCode server
-  # (openchamber#766) and execs the serve script above, passed as its
-  # argument. The wrapper reads the server password from
-  # ~/.local/state/opencode/service-prod.json at start time and exports
-  # OPENCODE_HOST / OPENCODE_SKIP_START / OPENCODE_PASSWORD, so the
-  # password never enters the store or a unit file. This is the durable
-  # form of the hand-applied openchamber.service.d/external-opencode.conf
-  # drop-in; same fleet pattern as commandcode-proxy (the checkout path
-  # also avoids the stale-store ExecStart failure of #883).
-  openchamberUnitStart = pkgs.writeShellScript "openchamber-start-unit" ''
-    exec /run/current-system/sw/bin/bash "$HOME/code/bin/openchamber-start.sh" "${openchamberStart}"
-  '';
   # A unit is replaced at switch time only when its start command or binaries change.
   deployKey = name: parts: "${name}:${builtins.concatStringsSep " " (map toString parts)}";
-  # OpenChamber runs the OpenCode behind this link. A switch re-points it and
-  # reloads OpenChamber, so a new OpenCode takes over without a restart.
-  openchamberBinDir = "$HOME/.local/state/openchamber/bin";
 in
 {
   wayland.windowManager.hyprland = {
@@ -973,27 +877,78 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  # mcpx standing daemon: pool management and Code Mode runner.
-  # Runs independently on boot; survives openchamber/opencode restarts.
-  # Supports seamless hot reload via `mcpx reload` on SIGHUP or config changes.
+  # ── Service cascade (2026-11-03) ─────────────────────────────────
+  # The three standing services are defined by the fleet's layered
+  # modules now, not by hand-rolled units in this file:
+  #
+  #   services.openchamber  developing-today/openchamber, nix/modules
+  #   services.opencode     developing-today/opencode fork, nix/modules
+  #   services.mcpx         developing-today/code, pkgs/mcpx/modules
+  #
+  # Each layer's enable cascades to the one below with mkDefault, so
+  # the single switch here turns the whole stack on. OpenChamber
+  # attaches to the standing OpenCode server (openchamber#766, the
+  # one-process rule): the module's start wrapper reads the server's
+  # registration file, exports OPENCODE_PASSWORD / OPENCODE_HOST /
+  # OPENCODE_SKIP_START, reaps leftover servers on the port, and
+  # refuses to start unattached. What remains in this file is only
+  # this deployment's consumer configuration for the three modules,
+  # plus the mcpx handover machinery the modules do not carry.
+  # The cascade modules. NOTE: this file is merged into each user
+  # with lib.merge (a recursiveUpdate fold — see home/user and
+  # home/root), which keeps only one `imports` list; home/user
+  # re-declares the effective union there. This line is what applies
+  # for single-file merges (home/root).
+  imports = [ inputs.openchamber.homeManagerModules.openchamber ];
+
+  services.openchamber = {
+    enable = true;
+    # uiPasswordFile (the browser-UI password the old serve script
+    # read from ~/.config/openchamber/ui-password) is a per-user
+    # absolute path, so it is set in home/user, not in this shared
+    # file. (The CLOUDFLARE_* exports the old script also made are
+    # not lost with it: those values live in the systemd user
+    # manager's environment, via the hand-maintained
+    # ~/.config/environment.d/50-cloudflare.conf, and every user unit
+    # inherits them — the mcpx daemon receives them the same way.)
+  };
+
+  services.mcpx = {
+    # enable comes from the cascade (mkDefault at each layer).
+    #
+    # This repo's own mcpx build — the package the hand-rolled unit
+    # ran (pkgs/mcpx) — rather than the fork's re-export default.
+    package = mcpx;
+    # The daemon's environment, unchanged from the hand-rolled unit
+    # (mcpxEnvironment above).
+    environment = mcpxEnvironment;
+    # The daemon's configuration: mcpxSettings (mcpx-settings.nix,
+    # the former ~/code/.mcpx.json). The module renders it to the
+    # store, starts the daemon with --config pointing there, links
+    # ~/.config/mcpx/config.json to the rendered file, and points
+    # MCPX_CONFIG at it for other clients.
+    settings = mcpxSettings;
+  };
+
+  # Consumer refinements on the module's mcpx unit: the parts of the
+  # hand-rolled unit the module does not express. (Description,
+  # ExecStart, Restart = always and the 20 s stop window are the
+  # module's own.)
   systemd.user.services.mcpx = {
     Unit = {
-      Description = "mcpx standing MCP gateway daemon";
       After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
-      # A switch must not restart the daemon: that would end every child.
-      # mcpxDeploy below hands a changed daemon over instead.
+      # A switch must not restart the daemon: that would end every
+      # pooled MCP child. mcpxDeploy below hands a changed daemon
+      # over instead.
       "X-RestartIfChanged" = false;
     };
     Service = {
       Type = "notify";
       NotifyAccess = "all";
-      ExecStart = "${mcpxStart} ${mcpx}/bin/mcpx daemon";
       ExecReload = "${mcpx}/bin/mcpx reload";
-      Restart = "always";
       RestartSec = 3;
     };
-    Install.WantedBy = [ "default.target" ];
   };
 
   # A switch that changes mcpx, its start command or its environment hands the
@@ -1014,123 +969,6 @@ in
       fi
       run mkdir -p "$(dirname "$state")"
       run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
-    fi
-  '';
-
-  # Watch .mcpx.json to hot-reload the standing mcpx daemon seamlessly.
-  systemd.user.paths.mcpx-config = {
-    Unit.Description = "Watch .mcpx.json for live reload";
-    Path = {
-      PathChanged = [
-        "%h/code/.mcpx.json"
-        "%h/.config/mcpx/config.json"
-      ];
-      Unit = "mcpx-reload.service";
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  systemd.user.services.mcpx-reload = {
-    Unit.Description = "Reload mcpx daemon configuration";
-    Service = {
-      Type = "oneshot";
-      ExecStart = "${mcpx}/bin/mcpx reload";
-    };
-  };
-
-  # systemd holds the listener across restarts, so connections made during a
-  # restart queue for the new process instead of being refused.
-  systemd.user.sockets.openchamber = {
-    Unit.Description = "OpenChamber listener";
-    Socket.ListenStream = "127.0.0.1:3000";
-    Install.WantedBy = [ "sockets.target" ];
-  };
-
-  # The provider proxies are automatic services (Install.WantedBy
-  # default.target, #2104), so they are up independently of OpenChamber;
-  # OpenChamber reaches them by port, not by unit, and only mcpx is a
-  # real unit dependency here. The After ordering entries stay
-  # (ordering only, harmless).
-  systemd.user.services.openchamber = {
-    Unit = {
-      Description = "OpenChamber server";
-      After = [
-        "network-online.target"
-        "mcpx.service"
-        "clef-proxy.service"
-        "codex-proxy.service"
-        "antigravity-direct.service"
-        "design-code-proxy.service"
-        "openchamber.socket"
-      ];
-      Wants = [
-        "network-online.target"
-        "mcpx.service"
-      ];
-      Requires = [ "openchamber.socket" ];
-    };
-    Service = {
-      ExecStart = "${openchamberUnitStart}";
-      ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
-      # Stopping OpenChamber leaves its managed OpenCode running; the next
-      # OpenChamber adopts it, so sessions survive a restart. The same
-      # KillMode lets an untracked server survive a stop with the socket
-      # attached -- the start script reaps leftovers (dezren39/nix#1117).
-      KillMode = "process";
-      # A self-handoff successor names itself the main pid (MAINPID=) from a child process.
-      # With NotifyAccess=none systemd ignores it, so the unit stops when the old process exits.
-      NotifyAccess = "all";
-      Restart = "on-failure";
-      RestartSec = 5;
-      Environment = [
-        "PATH=${
-          lib.makeBinPath [
-            mcpx
-            pkgs.git
-            pkgs.openssh
-            # The start script's single-instance guard scans /proc with
-            # coreutils (readlink, cat, tr, seq, sleep); without it the
-            # guard silently matches nothing. jq is for the checkout
-            # wrapper (bin/openchamber-start.sh), which reads the
-            # standing OpenCode server's state file.
-            pkgs.coreutils
-            pkgs.jq
-          ]
-        }"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  # A new OpenChamber start command restarts the unit. A new OpenCode only moves
-  # the link and reloads OpenChamber, which hands its OpenCode over in place.
-  home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
-    state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
-    key='${
-      deployKey "openchamber" [
-        openchamberStart
-        openchamberUnitStart
-      ]
-    }'
-    link="$HOME/.local/state/openchamber/bin/opencode"
-    target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
-    previous="$(readlink "$link" 2>/dev/null || true)"
-    active=0
-    if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
-      if ${pkgs.systemd}/bin/systemctl --user is-active --quiet openchamber.service 2>/dev/null; then
-        active=1
-      fi
-    fi
-    run mkdir -p "$HOME/.local/state/openchamber/bin"
-    run ln -sfn "$target" "$link"
-    if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
-      if [ "$active" = 1 ]; then
-        run ${pkgs.systemd}/bin/systemctl --user restart openchamber.service
-      fi
-      run mkdir -p "$(dirname "$state")"
-      run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
-    elif [ "$active" = 1 ] && [ "$previous" != "$target" ]; then
-      run ${pkgs.systemd}/bin/systemctl --user reload openchamber.service
     fi
   '';
 
