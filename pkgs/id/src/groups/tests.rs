@@ -970,6 +970,80 @@ fn test_an_admin_scoped_device_grant_stands_under_weak_remove() {
     );
 }
 
+/// Issue #162 (Drew's 2026-10-29 Option 1): authority is judged at the event's causal past in
+/// strong-remove (default) groups too — removal strength governs only voiding. An Admin
+/// authorizes an Admin-scoped device without having seen their own demotion to Write; the
+/// Admin status at the grant's position is what counts, so the grant stands. The demotion
+/// itself still takes effect at the head.
+#[test]
+fn test_an_admin_scoped_device_grant_stands_under_strong_remove_with_a_concurrent_demotion() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Strong, None)),
+        add("a0", 1, g, 2, Role::Admin, &["g"]),
+        device_add("dv0", 2, g, 50, Role::Admin, &["a0"]),
+        set_role("s0", 1, g, 2, Role::Write, &["a0"]),
+    ];
+    let strong = project(&events);
+    assert_eq!(outcome(&strong, "dv0"), Outcome::Applied);
+    assert!(
+        strong.active_devices(&g, &key(2)).contains(&key(50)),
+        "strong remove stands an Admin-scoped device grant concurrent with the Admin's demotion"
+    );
+    assert_eq!(outcome(&strong, "s0"), Outcome::Applied);
+    assert_eq!(
+        role_of(&strong, g, 2),
+        Some(Role::Write),
+        "the demotion itself still takes effect at the head"
+    );
+}
+
+/// Issue #162: the same causal-past rule for the access level. A Manage member adds a member
+/// without having seen their own demotion to Read; their role at the add's position is
+/// Manage, so the add stands under strong remove.
+
+#[test]
+fn test_a_member_add_stands_under_strong_remove_with_a_concurrent_demotion() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Strong, None)),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 2, g, 4, Role::Read, &["a0"]),
+        set_role("s0", 1, g, 2, Role::Read, &["a0"]),
+    ];
+    let strong = project(&events);
+    assert_eq!(
+        outcome(&strong, "a1"),
+        Outcome::Applied,
+        "the add is judged by the author's Manage standing at its own position"
+    );
+    assert_eq!(
+        role_of(&strong, g, 2),
+        Some(Role::Read),
+        "the demotion itself still takes effect at the head"
+    );
+}
+
+/// Issue #162 negative control: an event in the demotion's causal future IS judged at the
+/// demoted standing — causal-past judging honours only what the author had not seen, it
+/// does not freeze their original role forever.
+#[test]
+fn test_an_event_after_a_demotion_is_judged_at_the_demoted_role_under_strong_remove() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Strong, None)),
+        add("a0", 1, g, 2, Role::Admin, &["g"]),
+        set_role("s0", 1, g, 2, Role::Manage, &["a0"]),
+        add("a1", 2, g, 3, Role::Admin, &["s0"]),
+    ];
+    let strong = project(&events);
+    assert_eq!(
+        outcome(&strong, "a1"),
+        Outcome::Refused(Refusal::NotAdmin),
+        "an author who has seen their demotion may not add an Admin"
+    );
+}
+
 #[test]
 fn test_keep_prior_lets_a_grant_made_before_the_removal_stand() {
     let g = id("g");

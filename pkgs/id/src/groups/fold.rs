@@ -1,10 +1,12 @@
 //! The fold: a group's state from the whole set of its events (design §4.4 and §5).
 //!
 //! [`fold`] takes every event and puts them in a canonical order: causal order, with ties going to
-//! the smaller event ID. It then applies each event in that order. A rule sees the state built by
-//! the events before it, so the Admin check, the member cap, and dissolve are all decided against
-//! that prefix. The order depends only on the set of events, so the result does not depend on the
-//! order they arrived in.
+//! the smaller event ID. It then applies each event in that order. Set-state rules — the member
+//! cap and dissolve — are decided against the state built by the events before it in that order.
+//! Authority is not: whether an author may act is judged at the event's own causal past (issue
+//! #162, Drew's 2026-10-29 Option 1), whatever the group's removal mode; removal strength governs
+//! only the voiding track, never the authority check. The order depends only on the set of events,
+//! so the result does not depend on the order they arrived in.
 //!
 //! Two concurrent events are ordered by ID, so the lower ID wins a contested place. That is the
 //! rule for concurrent adds past the cap (design §5.1). The voiding track's rules for removal may
@@ -1080,15 +1082,11 @@ impl Engine {
             .map(|(_, access)| access_role(access))
     }
 
-    /// Whether the account may act in the group. A friendship's member must be present too.
-    pub(super) fn is_active(&self, group: &Hash, record: &Record, key: &Key) -> bool {
-        self.listed(group, key) && (record.friendship.is_none() || record.present.contains(key))
-    }
-
     /// Whether `key` is an active member of `group` at the causal position `after`: listed there,
-    /// and present there for a friendship. Weak remove judges an event's authority at its own
-    /// position, so an event concurrent with a removal keeps the standing its author had there
-    /// (design §6.3). This is the slow path: it does not use the membership layer's frontier memo.
+    /// and present there for a friendship. Authority is judged at the event's own position in
+    /// every removal mode (issue #162), so an event concurrent with a removal keeps the standing
+    /// its author had there (design §6.3). This is the slow path: it does not use the membership
+    /// layer's frontier memo.
     fn is_active_at(&self, group: &Hash, record: &Record, key: &Key, after: &[Hash]) -> bool {
         let listed = self
             .membership
@@ -1099,24 +1097,18 @@ impl Engine {
         listed && (record.friendship.is_none() || record.present.contains(key))
     }
 
-    /// Whether `key` is active in `group` for an event at the causal position `after`. Strong remove
-    /// reads the current state, which is what it has always done; weak remove reads the position
-    /// (design §6.3).
+    /// Whether `key` is active in `group` for an event at the causal position `after`. Authority
+    /// is judged at the position in every removal mode (issue #162): a removal or demotion the
+    /// event is concurrent with does not retroactively change its author's standing. Removal
+    /// strength still decides voiding (design §6.2), which is a separate track.
     fn is_active_for(&self, group: &Hash, record: &Record, key: &Key, after: &[Hash]) -> bool {
-        if self.strong_removal(*group) {
-            self.is_active(group, record, key)
-        } else {
-            self.is_active_at(group, record, key, after)
-        }
+        self.is_active_at(group, record, key, after)
     }
 
     /// The member's role in `group` at the causal position `after`, or `None` when it holds none
-    /// there. Strong remove reads the current state; weak remove reads the position, so an event
-    /// concurrent with a removal keeps its author's role there (design §6.3).
+    /// there. The position is read in every removal mode (issue #162), so an event concurrent
+    /// with a removal or demotion keeps its author's role there (design §6.3).
     fn access_for(&self, group: &Hash, key: &Key, after: &[Hash]) -> Option<Role> {
-        if self.strong_removal(*group) {
-            return self.access(group, key);
-        }
         self.membership
             .access_at_position_shared(after, *group, *key)
             .ok()
@@ -1125,13 +1117,10 @@ impl Engine {
             .or_else(|| self.access(group, key))
     }
 
-    /// Whether `key` is listed in `group` for an event at the causal position `after`. Strong
-    /// remove reads the current membership; weak remove reads the position, so a device grant
-    /// whose account is removed concurrently still resolves (design §6.3).
+    /// Whether `key` is listed in `group` for an event at the causal position `after`. The
+    /// position is read in every removal mode (issue #162), so a device grant whose account is
+    /// removed concurrently still resolves (design §6.3).
     fn listed_for(&self, group: &Hash, key: &Key, after: &[Hash]) -> bool {
-        if self.strong_removal(*group) {
-            return self.listed(group, key);
-        }
         self.membership
             .access_at_position_shared(after, *group, *key)
             .ok()
@@ -1139,10 +1128,10 @@ impl Engine {
             .is_some()
     }
 
-    /// Whether `key` is an Admin of `group` for an event at the causal position `after`. Strong
-    /// remove reads the current record; weak remove also honours the Admin status the key held
-    /// at the position, replayed from the settled events in the event's causal past in canonical
-    /// order — a removal concurrent with the event has already struck the key from the current
+    /// Whether `key` is an Admin of `group` for an event at the causal position `after`. Every
+    /// removal mode also honours the Admin status the key held at the position, replayed from
+    /// the settled events in the event's causal past in canonical order (issue #162) — a removal
+    /// or demotion concurrent with the event may already have struck the key from the current
     /// record's admins, and the membership layer cannot recover the status because it records
     /// Admin as Manage (design §6.3).
     fn admin_for(
@@ -1153,9 +1142,6 @@ impl Engine {
         after: &[Hash],
     ) -> bool {
         let record = self.groups.get(group);
-        if self.strong_removal(*group) {
-            return record.is_some_and(|record| record.admins.contains(key));
-        }
         if record.is_some_and(|record| record.admins.contains(key)) {
             return true;
         }
