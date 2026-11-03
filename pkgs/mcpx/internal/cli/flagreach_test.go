@@ -86,35 +86,83 @@ func TestEverySettingFlagReachesTheResolvedValue(t *testing.T) {
 			continue
 		}
 		cmdName := cmd
+		// Every (command, flag) pair used to get its own handler
+		// invocation, each rebuilding the whole settings schema twice
+		// (bindFlags, then Settings). That is O(commands x flags)
+		// schema builds and made this test the package's top duration
+		// contributor under the stress repetition (#2859). Batch instead:
+		// one invocation carrying every canonical flag, one carrying
+		// every alias, with the same per-setting origin assertion the
+		// per-flag loop made. If a batched invocation fails for a reason
+		// other than the hook, fall back to per-flag invocations for
+		// that command so the diagnosis stays exact.
+		type flagCase struct {
+			path string
+			arg  string
+		}
+		var canonical, aliases []flagCase
 		for _, s := range sch.ForCommand(cmdName) {
 			val := nonDefault(s)
 			if val == "" {
 				continue
 			}
-			for _, name := range append([]string{s.FlagName()}, s.FlagAliases...) {
+			if !handFlagsMeaningOther[cmd][s.FlagName()] {
+				canonical = append(canonical, flagCase{s.Path, "--" + s.FlagName() + "=" + val})
+			}
+			for _, name := range s.FlagAliases {
 				if handFlagsMeaningOther[cmd][name] {
 					continue
 				}
-				a := &App{ConfigPath: cfg}
-				err := a.Handlers()[cmd](ctx, []string{"--" + name + "=" + val})
-				if err != nil && !errors.Is(err, errStopAfterFlags) {
-					// A requirement refusing the value proves it arrived.
-					if v, ok := a.Settings().Value(s.Path); ok && v.Origin.Layer == settings.LayerFlag {
-						checked++
-						continue
-					}
-					t.Errorf("%s --%s=%s: %v", cmd, name, val, err)
-					continue
+				aliases = append(aliases, flagCase{s.Path, "--" + name + "=" + val})
+			}
+		}
+		checkSingle := func(path, arg string) {
+			a := &App{ConfigPath: cfg}
+			err := a.Handlers()[cmd](ctx, []string{arg})
+			if err != nil && !errors.Is(err, errStopAfterFlags) {
+				// A requirement refusing the value proves it arrived.
+				if v, ok := a.Settings().Value(path); ok && v.Origin.Layer == settings.LayerFlag {
+					checked++
+					return
 				}
-				v, ok := a.Settings().Value(s.Path)
+				t.Errorf("%s %s: %v", cmd, arg, err)
+				return
+			}
+			v, ok := a.Settings().Value(path)
+			if !ok || v.Origin.Layer != settings.LayerFlag {
+				t.Errorf("%s %s parsed but %s did not take it (origin %v)",
+					cmd, arg, path, v)
+				return
+			}
+			checked++
+		}
+		checkBatch := func(cases []flagCase) {
+			if len(cases) == 0 {
+				return
+			}
+			args := make([]string, 0, len(cases))
+			for _, c := range cases {
+				args = append(args, c.arg)
+			}
+			a := &App{ConfigPath: cfg}
+			// The error is deliberately ignored here: a flag the
+			// requirements refuse still arrives (its origin is the flag
+			// layer), and a flag the batch aborts before folding simply
+			// is not there. Either way the origins below sort them out.
+			_ = a.Handlers()[cmd](ctx, args)
+			for _, c := range cases {
+				v, ok := a.Settings().Value(c.path)
 				if !ok || v.Origin.Layer != settings.LayerFlag {
-					t.Errorf("%s --%s=%s parsed but %s did not take it (origin %v)",
-						cmd, name, val, s.Path, v)
+					// Only the flags the batch did not carry home get
+					// their own invocation, with the per-flag assertions.
+					checkSingle(c.path, c.arg)
 					continue
 				}
 				checked++
 			}
 		}
+		checkBatch(canonical)
+		checkBatch(aliases)
 	}
 	if checked < 100 {
 		t.Fatalf("only %d (command, flag) pairs checked; the probe is not reaching the commands", checked)
