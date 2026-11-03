@@ -3696,6 +3696,7 @@
         // Code joins as a minor leaf (weight 0.5; $1 Go tier, $10
         // credits/mo — its boosted Flash allowance is small, the free
         // routes are its durable value; issue #1328 D4).
+        // 2026-11-03 (Drew): opendesign/deepseek-v4-flash leaf REMOVED from this pool — the dotted deepseek-v4.1-flash leaf exists in the same opendesign catalog, so the older v4 leaf is dead weight.
         "targets": [
           {
             "model": "opencode-go.personal/deepseek-v4.1-flash",
@@ -3715,10 +3716,6 @@
           },
           {
             "model": "opendesign/deepseek-v4.1-flash",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "opendesign/deepseek-v4-flash",
             "variants": { "xhigh": "high", "max": "high" }
           },
           "commandcode/deepseek/deepseek-v4.1-flash"
