@@ -633,31 +633,11 @@ async function run() {
     }
   }
 
-  // 3. Sync models.dev for cloud providers (google, openai, cloudflare-workers-ai)
+  // 3. Sync models.dev for cloud providers (openai; the google and
+  // cloudflare-gateway syncs were retired 2026-11-03 with their provider definitions)
   if (modelsDev) {
-    // Sync Google
-    if (config.provider.google && modelsDev.google?.models) {
-      const gProv = config.provider.google;
-      gProv.models = gProv.models || {};
-      for (const [mId, mSpec] of Object.entries(modelsDev.google.models)) {
-        if (!gProv.models[mId]) {
-          const entry = {
-            name: mSpec.name,
-            limit: mSpec.limit || { context: 1048576, output: 65536 }
-          };
-          if (mSpec.reasoning) {
-            entry.variants = {
-              low: { options: { thinkingLevel: 'low' } },
-              high: { options: { thinkingLevel: 'high' } }
-            };
-          }
-          console.log(`[sync-models] + Adding google/${mId}`);
-          defineValue(gProv.models, mId, entry);
-          edits.push({ set: ['provider', 'google', 'models', mId], value: entry });
-          totalAdded++;
-        }
-      }
-    }
+    // google: retired 2026-11-03 -- the provider definition was deleted
+    // (dead-provider retirement ordered by Drew), so there is nothing to sync.
 
     // Sync OpenAI
     if (config.provider.openai && modelsDev.openai?.models) {
@@ -684,30 +664,7 @@ async function run() {
       }
     }
 
-    // Sync Cloudflare Workers AI
-    if (config.provider['cloudflare-gateway'] && modelsDev['cloudflare-workers-ai']?.models) {
-      const cfProv = config.provider['cloudflare-gateway'];
-      cfProv.models = cfProv.models || {};
-      for (const [mId, mSpec] of Object.entries(modelsDev['cloudflare-workers-ai'].models)) {
-        if (!cfProv.models[mId]) {
-          const entry = {
-            name: mSpec.name,
-            limit: mSpec.limit || { context: 131072, output: 8192 }
-          };
-          if (mSpec.reasoning) {
-            entry.variants = {
-              low: { options: { reasoning_effort: 'low' } },
-              medium: { options: { reasoning_effort: 'medium' } },
-              high: { options: { reasoning_effort: 'high' } }
-            };
-          }
-          if (VERBOSE) console.log(`[sync-models] + Adding cloudflare-gateway/${mId}`);
-          defineValue(cfProv.models, mId, entry);
-          edits.push({ set: ['provider', 'cloudflare-gateway', 'models', mId], value: entry });
-          totalAdded++;
-        }
-      }
-    }
+    // cloudflare-gateway: retired 2026-11-03 with its provider definition.
   }
 
   console.log(`[sync-models] Summary: ${totalAdded} models added, ${totalUpdated} models updated, ${totalRemoved} models removed.`);
