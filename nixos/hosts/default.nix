@@ -141,16 +141,16 @@ in
         };
       }
       {
-        # Quota exporters (code#1048, code#1301): Cloudflare + Meta
-        # quota snapshots every 15 min for the quota gatherer.
-        # Folded into the flake 2026-11-01 (code#3720).
+        # Quota exporter (code#1048): Cloudflare quota snapshots
+        # every 15 min for the quota gatherer. Folded into the
+        # flake 2026-11-01 (code#3720). (The Meta exporter was
+        # retired 2026-11-03: quota is gathered by asking OpenCode,
+        # PR #5040.)
         home-manager.users.user = {
           imports = [
             ../home/cloudflare-quota-export.nix
-            ../home/meta-quota-export.nix
           ];
           services.cloudflare-quota-export.enable = true;
-          services.meta-quota-export.enable = true;
         };
       }
       {
