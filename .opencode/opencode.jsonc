@@ -4227,7 +4227,7 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor)",
+        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor) + DeepSeek Flash plan",
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
@@ -4339,15 +4339,26 @@
         // rule - Luna only from the OpenAI plans, the doors with no
         // DeepSeek - belongs to this seat, not to the shared plan
         // route. luna-plan keeps its full pool (see its own note).
+        // 2026-11-02 (Drew): DeepSeek Flash plan moves INTO primary
+        // from workhorse-weighted: opencode-route/deepseek-flash-plan#high
+        // takes a primary seat at weight 2, equal with Luna and Spark -
+        // three-way round-robin. Its weighted-pool seat is removed in
+        // the same edit (a move, not an addition); workhorse-weighted
+        // keeps haiku-plan#high w2 and spark-plan#xhigh w1. Side
+        // benefit: a third of primary picks leave the Meta pool, which
+        // is pacing to exhaust days before its Nov 9 reset; quota
+        // demotion sheds any walled Flash door on its own.
         "targets": [
           "openai-plan/gpt-6-luna#xhigh",
-          "muse-direct/muse-spark-1.3-contributor#xhigh"
+          "muse-direct/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/deepseek-flash-plan#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "openai-plan/gpt-6-luna": 2,
-          "muse-direct/muse-spark-1.3-contributor": 2
+          "muse-direct/muse-spark-1.3-contributor": 2,
+          "opencode-route/deepseek-flash-plan": 2
         }
       },
       "workhorse": {
@@ -4403,17 +4414,18 @@
         // routes themselves are untouched (switchboard rule): Gemini
         // Flash and Sonnet stay seated in the deliberate tiers
         // (specialist, summit, speed) exactly as before.
+        // 2026-11-02 (Drew): DeepSeek Flash plan leaves this pool -
+        // it moves up into workhorse-primary at weight 2 (see that
+        // route's note). Haiku and Spark keep their seats and weights.
         "targets": [
           "opencode-route/haiku-plan#high",
-          "opencode-route/spark-plan#xhigh",
-          "opencode-route/deepseek-flash-plan#high"
+          "opencode-route/spark-plan#xhigh"
         ],
         "selection": "weighted",
         "autonomy": "rules",
         "weights": {
           "opencode-route/haiku-plan": 2,
-          "opencode-route/spark-plan": 1,
-          "opencode-route/deepseek-flash-plan": 1
+          "opencode-route/spark-plan": 1
         }
       },
       "specialist": {
