@@ -29,12 +29,18 @@ const base = { actor: "drew", kind: "action-applied", ref: "gh:developing-today/
 describe("events store (#1739)", () => {
   test("append -> reload round-trip persists events, newest first", async () => {
     const { file, store } = tmpStore();
-    await store.record({ ...base, at: "2026-11-01T10:00:00.000Z" });
-    await store.record({ ...base, at: "2026-11-01T11:00:00.000Z", summary: "later thing" });
+    // Relative to now (#4489 Codex re-review): record() prunes against
+    // the real clock, so fixed calendar dates would age out of the
+    // 30-day retention window and this test would start failing
+    // without any code change.
+    const firstAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const secondAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    await store.record({ ...base, at: firstAt });
+    await store.record({ ...base, at: secondAt, summary: "later thing" });
     const reloaded = new EventsStore(file);
     const list = await reloaded.list();
     expect(list.map((e) => e.summary)).toEqual(["later thing", "did a thing"]);
-    expect(list[0]?.at).toBe("2026-11-01T11:00:00.000Z");
+    expect(list[0]?.at).toBe(secondAt);
   });
 
   test("record stamps `at` when the writer omits it", async () => {
@@ -45,20 +51,23 @@ describe("events store (#1739)", () => {
 
   test("kind / ref / actor filters each narrow the stream", async () => {
     const { store } = tmpStore();
-    await store.record({ ...base, at: "2026-11-01T10:00:00.000Z" });
+    // Relative to now, like the round-trip test above: record() prunes
+    // against the real clock (30-day retention).
+    const t0 = Date.now();
+    await store.record({ ...base, at: new Date(t0 - 3000).toISOString() });
     await store.record({
       actor: "orchestrator",
       kind: "tier-change",
       ref: "gh:developing-today/code#2",
       summary: "moved tier",
-      at: "2026-11-01T10:01:00.000Z",
+      at: new Date(t0 - 2000).toISOString(),
     });
     await store.record({
       actor: "keeper",
       kind: "session-outcome",
       ref: "session:opencode-laptop:abc",
       summary: "session merged",
-      at: "2026-11-01T10:02:00.000Z",
+      at: new Date(t0 - 1000).toISOString(),
     });
     expect((await store.list({ kind: "tier-change" })).map((e) => e.ref)).toEqual(["gh:developing-today/code#2"]);
     expect((await store.list({ ref: "gh:developing-today/code#1" })).length).toBe(1);
@@ -126,6 +135,29 @@ describe("events store (#1739)", () => {
     });
     expect(await new EventsStore(file).has("orchestration-published", "orchestration:run-1")).toBe(true);
     expect(await new EventsStore(file).has("orchestration-published", "orchestration:run-2")).toBe(false);
+  });
+
+  test("filterEvents orders by parsed time, not timestamp string", () => {
+    // "2026-11-01T10:00:00Z" is lexicographically AFTER the later
+    // "2026-11-01T10:00:00.500Z"; parsed-time order must win.
+    const events: StreamEvent[] = [
+      { ...base, at: "2026-11-01T10:00:00.500Z", summary: "later instant" },
+      { ...base, at: "2026-11-01T10:00:00Z", summary: "earlier instant" },
+    ];
+    expect(filterEvents(events).map((e) => e.summary)).toEqual(["later instant", "earlier instant"]);
+  });
+
+  test("identities the action-result contract accepts are valid events", async () => {
+    // byRun may carry punctuation (stored as appliedByRun); objectRef
+    // may run to 300 chars (isObjectRef). Neither may be lost here.
+    const at = new Date().toISOString();
+    expect(validateStreamEvent({ ...base, at, actor: "orchestrator (retry 2)" }).ok).toBe(true);
+    expect(validateStreamEvent({ ...base, at, ref: `gh:${"a".repeat(295)}` }).ok).toBe(true);
+    expect(validateStreamEvent({ ...base, at, ref: `gh:${"a".repeat(299)}` }).ok).toBe(false);
+    expect(validateStreamEvent({ ...base, at, ref: "has whitespace" }).ok).toBe(false);
+    const { store } = tmpStore();
+    const recorded = await store.record({ ...base, actor: "orchestrator (retry 2)" });
+    expect(recorded.actor).toBe("orchestrator (retry 2)");
   });
 
   test("validateStreamEvent rejects malformed records", () => {

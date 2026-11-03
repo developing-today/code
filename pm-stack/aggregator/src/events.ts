@@ -54,11 +54,21 @@ export function validateStreamEvent(e: unknown): { ok: true; value: StreamEvent 
   if (typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) {
     return { ok: false, error: "event.at must be an ISO timestamp string" };
   }
-  for (const key of ["actor", "kind", "ref"] as const) {
-    const val = v[key];
-    if (typeof val !== "string" || val.trim() === "" || val.length > 200 || !FIELD.test(val)) {
-      return { ok: false, error: `event.${key} must be a non-empty string` };
-    }
+  // Identity fields align with their upstream contracts (#4489 Codex
+  // re-review): the action-result route accepts any nonblank byRun
+  // (stored as appliedByRun, sliced to 200) - punctuation such as
+  // parentheses included - and an action objectRef is any
+  // whitespace-free string of at most 300 chars (isObjectRef in
+  // comments.ts). kind is an internal constant, so it keeps the
+  // narrow charset.
+  if (typeof v.actor !== "string" || v.actor.trim() === "" || v.actor.trim().length > 200) {
+    return { ok: false, error: "event.actor must be a non-empty string of at most 200 chars" };
+  }
+  if (typeof v.kind !== "string" || v.kind.trim() === "" || v.kind.length > 200 || !FIELD.test(v.kind)) {
+    return { ok: false, error: "event.kind must be a non-empty string" };
+  }
+  if (typeof v.ref !== "string" || v.ref.trim() === "" || v.ref.trim().length > 300 || /\s/.test(v.ref.trim())) {
+    return { ok: false, error: "event.ref must be a non-empty ref string of at most 300 chars" };
   }
   if (typeof v.summary !== "string" || v.summary.trim() === "" || v.summary.length > 500) {
     return { ok: false, error: "event.summary must be a non-empty string of at most 500 chars" };
@@ -102,8 +112,14 @@ export interface EventFilter {
  *  kind / ref / actor (case-insensitive, like the views matcher). */
 export function filterEvents(events: readonly StreamEvent[], filter: EventFilter = {}): StreamEvent[] {
   const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  // Newest first by PARSED time (#4489 Codex re-review): accepted
+  // timestamps may carry offsets or omit fractional seconds, where a
+  // string comparison misorders them; equal instants keep the later
+  // arrival first, matching append order.
   return [...events]
-    .sort((a, b) => b.at.localeCompare(a.at))
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) => Date.parse(b.event.at) - Date.parse(a.event.at) || b.index - a.index)
+    .map(({ event }) => event)
     .filter(
       (e) =>
         (!filter.kind || eq(e.kind, filter.kind)) &&
