@@ -583,6 +583,32 @@ let
                   actionlint
                 ];
               };
+
+              # Lean shell for the fleet build container and GHA job
+              # containers (dezren39/fleet, containers/fleet-build).
+              # Same motivation as mcpx-lint above: `default` is the
+              # whole monorepo workstation environment (Android SDK,
+              # clan, desktop tooling via nix-common.nix) and is far
+              # too heavy to warm into a shared CI image. This shell
+              # carries only the CI toolchains — the repo's pinned
+              # Rust toolchain, Go, Bun, Node, zig — plus basic tools,
+              # all from the same nixpkgs-unstable tree as `default`,
+              # so container CI and the workstation agree on versions.
+              # The fleet image warms THIS shell for this repo.
+              fleet = pkgs.mkShell {
+                packages = [
+                  nixCommon.rustToolchain
+                ]
+                ++ (with pkgs; [
+                  git
+                  jq
+                  ripgrep
+                  go_1_27
+                  bun
+                  nodejs
+                  zig
+                ]);
+              };
             }
           );
     };
