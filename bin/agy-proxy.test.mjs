@@ -83,8 +83,25 @@ while IFS= read -r line; do
     *SIGKILLME*)
       kill -9 $$ ;;
   esac
-  printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
-  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}'
+  case "$line" in
+    *TOOLCALL*)
+      case "$line" in
+        *"[Available Tools]"*)
+          printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Checking for you."}}'
+          printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Checking for you.\\n\`\`\`tool_call\\n{\\"name\\": \\"get_weather\\", \\"arguments\\": {\\"city\\": \\"Oslo\\"}}\\n\`\`\`","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}' ;;
+        *)
+          printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"no tools seen"}}'
+          printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"no tools seen","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}' ;;
+      esac ;;
+    *TOOLRAW*)
+      printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Checking for you."}}'
+      printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Checking for you.\\n\`\`\`tool_call\\n{\\"name\\": \\"get_weather\\", \\"arguments\\": {\\"city\\": \\"Oslo\\"}}\\n\`\`\`","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}' ;;
+    *TOOLUNKNOWN*)
+      printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"\\n\`\`\`tool_call\\n{\\"name\\": \\"nuke_it\\", \\"arguments\\": {}}\\n\`\`\`","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}' ;;
+    *)
+      printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
+      printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}' ;;
+  esac
 done
 `;
 
@@ -549,4 +566,108 @@ test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t
   });
   assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
   await alive.text();
+});
+
+const WEATHER_TOOL = [{
+  type: 'function',
+  function: {
+    name: 'get_weather',
+    description: 'Get the weather for a city',
+    parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] }
+  }
+}];
+
+test('tool bridging: tools are forwarded and a tool_call fence becomes structured tool_calls (#2603)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  // The stub only spells a call when the prompt carried the
+  // [Available Tools] block, so a structured reply also proves the
+  // definitions were forwarded into the prompt.
+  const res = await post(port, {
+    messages: [{ role: 'user', content: 'TOOLCALL please check the weather in Oslo' }],
+    tools: WEATHER_TOOL
+  });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(await res.text());
+  const choice = body.choices[0];
+  assert.equal(choice.finish_reason, 'tool_calls');
+  assert.equal(choice.message.content, 'Checking for you.');
+  assert.equal(choice.message.tool_calls.length, 1);
+  const call = choice.message.tool_calls[0];
+  assert.equal(call.type, 'function');
+  assert.equal(call.function.name, 'get_weather');
+  assert.deepEqual(JSON.parse(call.function.arguments), { city: 'Oslo' });
+  assert.ok(call.id, 'tool call carries an id');
+});
+
+test('tool bridging: streaming emits tool_call chunks and a tool_calls finish, never the fence syntax (#2603)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const res = await post(port, {
+    messages: [{ role: 'user', content: 'TOOLCALL please check the weather in Oslo' }],
+    tools: WEATHER_TOOL,
+    stream: true
+  });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.ok(!sse.includes('tool_call\n'), 'stream must not leak the fenced call syntax');
+  assert.ok(!sse.includes('```'), 'stream must not leak fence markers as content');
+  const events = parseSse(sse);
+  const toolChunks = events.filter(e => e.choices && e.choices[0].delta && e.choices[0].delta.tool_calls);
+  assert.equal(toolChunks.length, 1);
+  assert.equal(toolChunks[0].choices[0].delta.tool_calls[0].function.name, 'get_weather');
+  const finish = events.find(e => e.choices && e.choices[0].finish_reason);
+  assert.equal(finish.choices[0].finish_reason, 'tool_calls');
+});
+
+test('tool bridging: no tools in the request means no extraction — fence text stays inert prose (#2603)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const res = await post(port, {
+    messages: [{ role: 'user', content: 'TOOLRAW show me a raw call' }]
+  });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(await res.text());
+  const choice = body.choices[0];
+  assert.equal(choice.finish_reason, 'stop');
+  assert.equal(choice.message.tool_calls, undefined);
+  assert.match(choice.message.content, /```tool_call/);
+});
+
+test('tool bridging: a fence naming a tool that was not offered stays prose (#2603)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const res = await post(port, {
+    messages: [{ role: 'user', content: 'TOOLUNKNOWN do something drastic' }],
+    tools: WEATHER_TOOL
+  });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(await res.text());
+  const choice = body.choices[0];
+  assert.equal(choice.finish_reason, 'stop');
+  assert.equal(choice.message.tool_calls, undefined);
+  assert.match(choice.message.content, /nuke_it/);
+});
+
+test('tool bridging: history renders tool results and prior calls into the prompt (#2603)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  // Second turn of a tool loop: assistant called get_weather, the
+  // client posts the result back. The stub answers the tool fence
+  // again only if the [Available Tools] block is in this turn's
+  // prompt too — and the turn must not try to resume a resident
+  // conversation with a delta prompt that drops the tool context.
+  const res = await post(port, {
+    messages: [
+      { role: 'user', content: 'TOOLCALL please check the weather in Oslo' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] },
+      { role: 'tool', tool_call_id: 'call_1', content: 'sunny, 20C' },
+      { role: 'user', content: 'TOOLCALL and tomorrow?' }
+    ],
+    tools: WEATHER_TOOL
+  });
+  assert.equal(res.status, 200);
+  const body = JSON.parse(await res.text());
+  assert.equal(body.choices[0].finish_reason, 'tool_calls');
+  assert.equal(body.choices[0].message.tool_calls[0].function.name, 'get_weather');
 });
