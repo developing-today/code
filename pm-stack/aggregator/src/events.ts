@@ -84,7 +84,11 @@ function isStreamEvent(value: unknown): value is StreamEvent {
  *  Input and output are chronological (oldest first). */
 export function pruneEvents(events: readonly StreamEvent[], now = new Date()): StreamEvent[] {
   const cutoff = now.getTime() - EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  const fresh = events.filter((e) => Date.parse(e.at) >= cutoff);
+  const fresh = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => Date.parse(event.at) >= cutoff)
+    .sort((a, b) => Date.parse(a.event.at) - Date.parse(b.event.at) || a.index - b.index)
+    .map(({ event }) => event);
   return fresh.length > EVENT_RETENTION_MAX ? fresh.slice(fresh.length - EVENT_RETENTION_MAX) : fresh;
 }
 
@@ -208,6 +212,13 @@ export class EventsStore {
   async list(filter: EventFilter = {}): Promise<StreamEvent[]> {
     await this.load();
     return filterEvents(this.events, filter);
+  }
+
+  /** Durable identity check used to avoid replaying an orchestration run
+   *  after process restart. */
+  async has(kind: string, ref: string): Promise<boolean> {
+    await this.load();
+    return this.events.some((event) => event.kind === kind && event.ref === ref);
   }
 
   /** Append one event (retention enforced on append). */

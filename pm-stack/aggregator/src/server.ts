@@ -148,15 +148,19 @@ const eventsStore = new EventsStore(cfg.eventsFile);
 function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
   void emitEvent(eventsStore, event);
 }
+async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
+  return eventsStore.has(kind, ref);
+}
 
 function pickSource(): Source {
   // #1290: the live source reads the standing delegation default from
   // the actions store's preference records when it stamps the
   // needs-user fallbacks onto tier items.
   return cfg.source === "live"
-    ? liveSource(cfg, {
+      ? liveSource(cfg, {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
         onEvent: recordStreamEvent,
+        hasEvent: hasStreamEvent,
       })
     : fixtureSource();
 }
@@ -921,25 +925,28 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: 'outcome must be "applied" | "rejected"' }, 400);
       }
       if (typeof body.byRun !== "string" || body.byRun.trim() === "") return json({ error: "byRun required" }, 400);
-      const updated = await actionsStore.markResult(body.id, {
+      const result = await actionsStore.markResultTransition(body.id, {
         outcome: body.outcome,
         byRun: body.byRun,
         note: typeof body.note === "string" ? body.note : undefined,
       });
-      if (updated) {
+      if (result?.transitioned) {
+        const updated = result.action;
         // #1739: the action-result route is one of the event log's
         // writers — the outcome lands in the cross-stack stream.
         // Fire-and-forget: the response never waits on, and is never
         // failed by, the event append.
         recordStreamEvent({
-          actor: body.byRun,
+          actor: updated.appliedByRun ?? body.byRun.slice(0, 200),
           kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
           ref: updated.objectRef,
-          summary:
+          summary: (
             `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
             (typeof body.note === "string" && body.note ? ` — ${body.note}` : ""),
+          ).slice(0, 500),
         });
       }
+      const updated = result?.action;
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);

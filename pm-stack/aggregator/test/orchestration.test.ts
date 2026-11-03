@@ -364,6 +364,79 @@ describe("live source orchestration states (#1140)", () => {
     expect(section?.provenance.sources.length).toBe(3);
     expect(src.provenance().orchestration).toContain("live (orchestration section orch-2026-10-27T03:14:56Z");
   });
+
+  test("departed orchestration items emit a tier-change event", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-orch-events-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
+    const events: Array<{ kind: string; ref: string; summary: string }> = [];
+    const src = liveSource(cfg, { onEvent: (event) => events.push(event) });
+    const writeSection = async (section: any) => writeFile(feedFile, JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+      attention: [],
+      orchestration: section,
+    }));
+    await writeSection(LIVE_SHAPE);
+    await src.orchestration();
+    const next = {
+      ...LIVE_SHAPE,
+      runId: "orch-next",
+      generatedAt: new Date().toISOString(),
+      provenance: { ...LIVE_SHAPE.provenance, runId: "orch-next" },
+      tiers: { needsDrew: [], needsOrchestrator: [] },
+    };
+    await writeSection(next);
+    await src.orchestration();
+    expect(events.find((event) => event.kind === "tier-change" && event.ref === "developing-today/code#812")?.summary)
+      .toContain("needs-user → —");
+  });
+
+  test("a durable publication identity prevents replay after source restart", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-orch-restart-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
+    await writeFile(feedFile, JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+      attention: [],
+      orchestration: LIVE_SHAPE,
+    }));
+    const persisted = new Set<string>();
+    const events: Array<{ kind: string; ref: string }> = [];
+    const opts = {
+      onEvent: (event: { kind: string; ref: string }) => {
+        events.push(event);
+        if (event.kind === "orchestration-published") persisted.add(`${event.kind}:${event.ref}`);
+      },
+      hasEvent: async (kind: string, ref: string) => persisted.has(`${kind}:${ref}`),
+    };
+    await liveSource(cfg, opts).orchestration();
+    const firstRunCount = events.length;
+    await liveSource(cfg, opts).orchestration();
+    expect(events).toHaveLength(firstRunCount);
+  });
+
+  test("registry merge emits events for every newly merged session", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-registry-events-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const registry = Array.from({ length: 60 }, (_, i) => ({
+      id: `session-${i}`, source: "opencode-sandbox", label: `Session ${i}`,
+      agentId: "opencode:test", agentLabel: "test", parentId: null, status: "complete", taskRefs: [],
+    }));
+    await writeFile(feedFile, JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+      attention: [], registry,
+    }));
+    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
+    const events: unknown[] = [];
+    await liveSource(cfg, { onEvent: (event) => events.push(event) }).registry();
+    expect(events).toHaveLength(60);
+  });
 });
 
 describe("orchestration diagnosis (#1139)", () => {

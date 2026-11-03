@@ -631,7 +631,11 @@ export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
 
 export function liveSource(
   cfg: Config,
-  opts?: { standingAuto?: () => Promise<boolean>; onEvent?: (event: NewStreamEvent) => void },
+  opts?: {
+    standingAuto?: () => Promise<boolean>;
+    onEvent?: (event: NewStreamEvent) => void;
+    hasEvent?: (kind: string, ref: string) => Promise<boolean>;
+  },
 ): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
@@ -754,13 +758,17 @@ export function liveSource(
     // and the merge itself never waits on the event write.
     if (opts?.onEvent && changed) {
       const known = new Set(current.map((r) => `${r.source}:${r.id}`));
-      for (const r of merged.filter((x) => !known.has(`${x.source}:${x.id}`)).slice(0, 50)) {
-        opts.onEvent({
-          actor: "aggregator",
-          kind: "session-outcome",
-          ref: `session:${r.source}:${r.id}`,
-          summary: `session ${r.label} (${r.agentLabel}) merged into the registry`,
-        });
+      for (const r of merged.filter((x) => !known.has(`${x.source}:${x.id}`))) {
+        try {
+          opts.onEvent({
+            actor: "aggregator",
+            kind: "session-outcome",
+            ref: `session:${r.source}:${r.id}`,
+            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+          });
+        } catch (err) {
+          console.error(`[events] WARNING: session event callback failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
     registryStore = merged;
@@ -1162,10 +1170,14 @@ export function liveSource(
           // whose tier changed since the previous publish.
           // Fire-and-forget — the injected callback never throws into
           // this read and nothing here awaits an event write.
-          if (opts?.onEvent && section.runId !== lastOrchEventRunId) {
-            const tierById = new Map<string, string>();
-            for (const item of section.tiers.needsDrew) tierById.set(item.id, "needs-user");
-            for (const item of section.tiers.needsOrchestrator) tierById.set(item.id, "needs-orchestrator");
+          const tierById = new Map<string, string>();
+          for (const item of section.tiers.needsDrew) tierById.set(item.id, "needs-user");
+          for (const item of section.tiers.needsOrchestrator) tierById.set(item.id, "needs-orchestrator");
+          const publishRef = `orchestration:${section.runId}`;
+          const alreadyRecorded = opts?.hasEvent
+            ? await opts.hasEvent("orchestration-published", publishRef).catch(() => false)
+            : false;
+          if (opts?.onEvent && section.runId !== lastOrchEventRunId && !alreadyRecorded) {
             opts.onEvent({
               actor: "orchestrator",
               kind: "orchestration-published",
@@ -1180,22 +1192,28 @@ export function liveSource(
                 actor: "orchestrator",
                 kind: action.kind,
                 ref: action.target,
-                summary: action.summary,
+                summary: action.summary.slice(0, 500),
               });
             }
             if (lastOrchEventRunId !== null) {
-              for (const [id, tier] of tierById) {
+              const allIds = new Set([...lastOrchTierById.keys(), ...tierById.keys()]);
+              for (const id of allIds) {
                 const prev = lastOrchTierById.get(id);
+                const tier = tierById.get(id);
                 if (prev !== tier) {
                   opts.onEvent({
                     actor: "orchestrator",
                     kind: "tier-change",
                     ref: id,
-                    summary: `tier ${prev ?? "—"} → ${tier} (run ${section.runId})`,
+                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
                   });
                 }
               }
             }
+            lastOrchEventRunId = section.runId;
+            lastOrchTierById = tierById;
+          } else if (alreadyRecorded) {
+            // The durable publication event proves this run was already emitted.
             lastOrchEventRunId = section.runId;
             lastOrchTierById = tierById;
           }

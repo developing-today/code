@@ -98,6 +98,36 @@ describe("events store (#1739)", () => {
     expect(pruned[pruned.length - 1]?.summary).toBe(`e${EVENT_RETENTION_MAX + 9}`);
   });
 
+  test("retention chooses newest timestamps, not latest arrivals", () => {
+    const now = Date.parse("2026-11-01T00:00:00.000Z");
+    const newest = Array.from({ length: EVENT_RETENTION_MAX }, (_, i) => ({
+      ...base,
+      at: new Date(now + i * 1000).toISOString(),
+      summary: `new-${i}`,
+    }));
+    const oldArrivals = Array.from({ length: 10 }, (_, i) => ({
+      ...base,
+      at: new Date(now - (10 - i) * 1000).toISOString(),
+      summary: `old-${i}`,
+    }));
+    const pruned = pruneEvents([...newest, ...oldArrivals], new Date(now + 10_000));
+    expect(pruned).toHaveLength(EVENT_RETENTION_MAX);
+    expect(pruned[0]?.summary).toBe("new-0");
+    expect(pruned.at(-1)?.summary).toBe(`new-${EVENT_RETENTION_MAX - 1}`);
+  });
+
+  test("publication identity lookup survives a fresh store instance", async () => {
+    const { file, store } = tmpStore();
+    await store.record({
+      actor: "orchestrator",
+      kind: "orchestration-published",
+      ref: "orchestration:run-1",
+      summary: "published run-1",
+    });
+    expect(await new EventsStore(file).has("orchestration-published", "orchestration:run-1")).toBe(true);
+    expect(await new EventsStore(file).has("orchestration-published", "orchestration:run-2")).toBe(false);
+  });
+
   test("validateStreamEvent rejects malformed records", () => {
     expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00.000Z" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "not a date" }).ok).toBe(false);
