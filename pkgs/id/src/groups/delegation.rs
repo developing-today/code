@@ -14,6 +14,12 @@
 //! The mode decides a removed member's grants. Under `keep_prior` they stand. Under `cascade` they
 //! stand only while the grantor still holds the scope. Under `transfer` the removal's successor
 //! reissues them, from the removal on, if it holds the scope then and now.
+//!
+//! One limit on `keep_prior` (issue #169, ruling 2026-11-03): a re-add starts clean. A grant an
+//! account made or received before its removal does not revive when the account is re-added -
+//! at positions whose past contains the re-add, such a grant is no link, and authority flows
+//! only from grants issued after the re-add. Positions before the re-add are judged as before:
+//! there the grant still stands, as a fact about the past.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,6 +68,15 @@ pub(super) struct Removal {
 pub(super) const fn removed_member(event: &Event) -> Option<Key> {
     match &event.body {
         Body::Member(MemberOp::Remove { member, .. }) => Some(*member),
+        _ => None,
+    }
+}
+
+/// The account a member-add event adds, if the event is one. A re-add is an add whose causal
+/// past contains a removal of the same account.
+pub(super) const fn added_member(event: &Event) -> Option<Key> {
+    match &event.body {
+        Body::Member(MemberOp::Add { member, .. }) => Some(*member),
         _ => None,
     }
 }
@@ -360,6 +375,9 @@ impl Engine {
                 }
                 continue;
             }
+            if mode == Delegation::KeepPrior && self.cut_by_readd(by_id, &grant, &removals, &past) {
+                continue;
+            }
             if mode == Delegation::Cascade && !self.holds(group, grant.from, grant.scope, after)? {
                 continue;
             }
@@ -374,6 +392,40 @@ impl Engine {
             });
         }
         Ok(links)
+    }
+
+    /// Whether `keep_prior` must cut this grant at this position because an endpoint was
+    /// re-added (issue #169): for the grantor or the grantee, a settled removal in `past`
+    /// has the grant in its causal past, and a settled re-add of the same account in `past`
+    /// has that removal in its causal past. The re-add starts the account clean, so the
+    /// pre-removal grant is no link at any position that has seen the re-add. Grants issued
+    /// after the re-add are untouched: no removal that follows them contains them in its
+    /// past together with a later re-add, until the account is removed and re-added again.
+    fn cut_by_readd(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        grant: &Grant,
+        removals: &[Removal],
+        past: &BTreeSet<Hash>,
+    ) -> bool {
+        [grant.from, grant.to].iter().any(|member| {
+            removals
+                .iter()
+                .filter(|removal| {
+                    &removal.member == member
+                        && causal_past(by_id, &[removal.id]).contains(&grant.id)
+                })
+                .any(|removal| {
+                    past.iter().any(|id| {
+                        self.settled.contains(id)
+                            && by_id.get(id).is_some_and(|event| {
+                                event.group == Some(grant.group)
+                                    && added_member(event) == Some(*member)
+                                    && causal_past(by_id, &[*id]).contains(&removal.id)
+                            })
+                    })
+                })
+        })
     }
 
     /// Whether a settled removal of the grantor is concurrent with the grant: neither is in the
