@@ -306,10 +306,47 @@ impl LedgerBackend for TigerBeetleLedger {
                 }
             }
         }
-        results
+        // Linked-chain retry (Codex review, PR #5072): TigerBeetle
+        // breaks a linked chain on ANY non-Created status, so
+        // resubmitting an already-posted chain reports `Exists` for
+        // its first leg and `LinkedEventFailed` for every later leg —
+        // while the in-memory backend reports `Exists` per leg and
+        // the executor accepts the retry as idempotent success. When
+        // a whole chain shows exactly that pattern AND every stored
+        // leg verifies identical to the submitted leg, report
+        // `Exists` for all of its legs. A chain that genuinely failed
+        // never starts with `Exists`, and a leg whose stored fields
+        // differ fails the verification, so both keep the raw mapping.
+        let mut mapped: Vec<Result<(), TransferError>> = results
             .iter()
             .map(|result| map_transfer_status(result.status))
-            .collect()
+            .collect();
+        let mut chain_start = 0;
+        while chain_start < batch.len() {
+            let mut chain_end = chain_start;
+            while batch[chain_end].linked && chain_end + 1 < batch.len() {
+                chain_end += 1;
+            }
+            let chain = &batch[chain_start..=chain_end];
+            let raw = &results[chain_start..=chain_end];
+            let already_posted_pattern = chain.len() > 1
+                && !chain[chain.len() - 1].linked
+                && matches!(raw[0].status, tb::CreateTransferStatus::Exists)
+                && raw[1..]
+                    .iter()
+                    .all(|r| matches!(r.status, tb::CreateTransferStatus::LinkedEventFailed));
+            if already_posted_pattern
+                && chain
+                    .iter()
+                    .all(|leg| self.lookup_transfer(leg.id) == Some(leg.clone()))
+            {
+                for slot in &mut mapped[chain_start..=chain_end] {
+                    *slot = Err(TransferError::Exists);
+                }
+            }
+            chain_start = chain_end + 1;
+        }
+        mapped
     }
 
     fn lookup_transfer(&self, id: u128) -> Option<Transfer> {

@@ -109,3 +109,17 @@ includes the three behaviours this record describes: distinct
 0/1 codes with registry-preserving rejected retries, exact zero
 `user_data_128` matching, and failure-then-recovery reporting
 `ResubmissionRejected`.
+
+### Linked-chain retry
+
+TigerBeetle breaks a linked chain on any non-`Created` status, so
+resubmitting an already-posted chain reports `Exists` for its first
+leg and `LinkedEventFailed` for every later leg, while the
+in-memory backend reports `Exists` per leg (and the executor
+accepts that as idempotent success). The binding translates the
+pattern back: when a whole chain shows `Exists` then
+`LinkedEventFailed`s AND every stored leg verifies identical to
+the submitted leg, all legs report `Exists`. A genuinely failed
+chain never starts with `Exists`, and a differing stored leg fails
+verification, so both keep the raw mapping. Covered live by
+`live_same_request_twice_posts_once` (Codex review, PR #5072).

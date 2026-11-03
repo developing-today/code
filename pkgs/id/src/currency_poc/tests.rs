@@ -1617,3 +1617,42 @@ fn live_crash_before_submission_resubmits_same_ids() {
     .expect("second reconcile is a no-op");
     assert!(outcomes.is_empty());
 }
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_same_request_twice_posts_once() {
+    // Codex review, PR #5072: resubmitting an already-posted linked
+    // chain must be an idempotent success, as with the in-memory
+    // backend — TigerBeetle reports Exists for the first leg and
+    // LinkedEventFailed for the rest, which the binding translates
+    // back to per-leg Exists after verifying the stored legs.
+    let (_cluster, mut executor) = live_executor(30028);
+    let first = executor.execute(&request()).expect("first execution posts");
+    assert_eq!(first.state, IntentState::Posted);
+    let balances_after_first = (
+        executor.backend.account_balance(USER_SRC).unwrap(),
+        executor.backend.account_balance(USER_DST).unwrap(),
+        executor.backend.account_balance(LP_DST).unwrap(),
+    );
+
+    let second = executor
+        .execute(&request())
+        .expect("same-request retry is an idempotent success");
+    assert_eq!(second.state, IntentState::Posted);
+    assert_eq!(second.legs, first.legs);
+    assert_eq!(
+        executor.backend.account_balance(USER_SRC).unwrap(),
+        balances_after_first.0,
+        "retry must not move balances a second time"
+    );
+    assert_eq!(
+        executor.backend.account_balance(USER_DST).unwrap(),
+        balances_after_first.1
+    );
+    assert_eq!(
+        executor.backend.account_balance(LP_DST).unwrap(),
+        balances_after_first.2
+    );
+    assert_eq!(executor.backend.transfers_with_user_data_128(777).len(), 3);
+}
