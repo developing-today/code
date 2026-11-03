@@ -38,7 +38,7 @@ behind="$(git -C "$d" rev-list --count "HEAD..@{u}" 2>/dev/null || echo 0)"
 if [ "${behind:-0}" -gt 0 ]; then
   stash_before="$(git -C "$d" stash list)"
   if ! git -C "$d" pull -q --no-rebase --autostash origin "$db"; then
-    mh="$(git -C "$d" rev-parse --git-path MERGE_HEAD)"
+    mh="$(git -C "$d" rev-parse --path-format=absolute --git-path MERGE_HEAD)"
     if [ -f "$mh" ]; then
       paths="$(git -C "$d" diff --name-only --diff-filter=U | paste -sd, -)"
       git -C "$d" merge --abort

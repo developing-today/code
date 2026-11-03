@@ -10,7 +10,9 @@
 // (session/cancel -> POST abort, prompt resolves "cancelled").
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -39,7 +41,13 @@ function startStubServe(script) {
     });
     req.on('end', () => {
       const body = raw ? JSON.parse(raw) : null;
-      calls.push({ method: req.method, pathname: url.pathname, query: url.searchParams, body });
+      calls.push({
+        method: req.method,
+        pathname: url.pathname,
+        query: url.searchParams,
+        body,
+        authorization: req.headers.authorization ?? null,
+      });
       if (req.method === 'GET' && url.pathname === '/event') {
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
         res.flushHeaders();
@@ -86,12 +94,26 @@ function startStubServe(script) {
 // ---------------------------------------------------------------------------
 // Scripted ACP client over the adapter's stdio.
 // ---------------------------------------------------------------------------
-function startAdapter(serverPort) {
-  const child = spawn(process.execPath, [
-    path.join(binDir, 'opencode-acp-adapter.mjs'),
-    '--server',
-    `http://127.0.0.1:${serverPort}`,
-  ]);
+function startAdapter(serverPort, env = {}) {
+  const child = spawn(
+    process.execPath,
+    [path.join(binDir, 'opencode-acp-adapter.mjs'), '--server', `http://127.0.0.1:${serverPort}`],
+    {
+      env: {
+        ...process.env,
+        // Hermetic credential resolution: never the developer's real
+        // env password or real state file unless a test opts in.
+        OPENCODE_SERVER_PASSWORD: '',
+        OPENCODE_AUTH_FILE: path.join(binDir, 'nonexistent-auth-fixture.json'),
+        ...env,
+      },
+    },
+  );
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
   const pending = new Map();
   const notifications = [];
   const clientRequests = [];
@@ -142,12 +164,12 @@ function startAdapter(serverPort) {
     }
     throw new Error(`timed out waiting for ${what}`);
   };
-  return { child, request, notify, respond, notifications, clientRequests, waitFor };
+  return { child, request, notify, respond, notifications, clientRequests, waitFor, stderr: () => stderr };
 }
 
-async function setup(t, script) {
+async function setup(t, script, env) {
   const stub = await startStubServe(script);
-  const acp = startAdapter(stub.port);
+  const acp = startAdapter(stub.port, env);
   t.after(() => {
     acp.child.kill('SIGKILL');
     stub.server.close();
@@ -259,4 +281,60 @@ test('session/cancel aborts on the serve and the prompt resolves cancelled', asy
     stub.calls.find((c) => c.pathname === `/session/${SESSION_ID}/abort`),
     'stub serve saw POST abort',
   );
+});
+
+// ---------------------------------------------------------------------------
+// #4615: the configured gateway launch path (acpx spawns the adapter
+// with no OPENCODE_SERVER_PASSWORD) must still authenticate, by
+// runtime-loading the standing server's own state file. Fixtures use
+// synthetic passwords only.
+// ---------------------------------------------------------------------------
+
+const basicFor = (password) => `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+
+test('gateway launch path: adapter loads the credential from the default state file under HOME', async (t) => {
+  const home = mkdtempSync(path.join(tmpdir(), 'acp-adapter-home-'));
+  const stateDir = path.join(home, '.local', 'state', 'opencode');
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(path.join(stateDir, 'service-prod.json'), JSON.stringify({ password: 'synthetic-gateway-password' }));
+  const { stub, acp } = await setup(t, textEvents(), {
+    HOME: home,
+    OPENCODE_AUTH_FILE: '',
+  });
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/session');
+  assert.equal(create.authorization, basicFor('synthetic-gateway-password'));
+  assert.ok(!acp.stderr().includes('synthetic-gateway-password'), 'credential never reaches stderr');
+});
+
+test('OPENCODE_AUTH_FILE fixture authenticates; the env password wins over the file', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'acp-adapter-auth-'));
+  const authFile = path.join(dir, 'service-prod.json');
+  writeFileSync(authFile, JSON.stringify({ password: 'synthetic-file-password' }));
+
+  const fromFile = await setup(t, textEvents(), { OPENCODE_AUTH_FILE: authFile });
+  await fromFile.acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const fileCreate = fromFile.stub.calls.find((c) => c.method === 'POST' && c.pathname === '/session');
+  assert.equal(fileCreate.authorization, basicFor('synthetic-file-password'));
+
+  const fromEnv = await setup(t, textEvents(), {
+    OPENCODE_AUTH_FILE: authFile,
+    OPENCODE_SERVER_PASSWORD: 'synthetic-env-password',
+  });
+  await fromEnv.acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const envCreate = fromEnv.stub.calls.find((c) => c.method === 'POST' && c.pathname === '/session');
+  assert.equal(envCreate.authorization, basicFor('synthetic-env-password'));
+});
+
+test('malformed credential state file warns on stderr and sends no auth header', async (t) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'acp-adapter-bad-'));
+  const authFile = path.join(dir, 'service-prod.json');
+  writeFileSync(authFile, 'this is not json');
+  const { stub, acp } = await setup(t, textEvents(), { OPENCODE_AUTH_FILE: authFile });
+  const result = await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  assert.equal(result.sessionId, SESSION_ID);
+  const create = stub.calls.find((c) => c.method === 'POST' && c.pathname === '/session');
+  assert.equal(create.authorization, null);
+  await acp.waitFor(() => acp.stderr().includes('not valid JSON') || null, 'stderr warning');
+  assert.ok(acp.stderr().includes(authFile), 'warning names the state file');
 });

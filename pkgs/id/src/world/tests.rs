@@ -127,6 +127,71 @@ mod tests {
     }
 
     #[test]
+    fn restore_checkpoint_sequence_does_not_wrap_at_u64_max() {
+        fn system_event(sequence: u64) -> WorldEvent {
+            WorldEvent {
+                sequence,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: "checkpoint boundary test".to_owned(),
+                },
+            }
+        }
+
+        fn checkpoint(sequence: u64, events: Vec<WorldEvent>) -> JournalEntry {
+            JournalEntry::Checkpoint {
+                sequence,
+                module_hash: "h".to_owned(),
+                seed: 1,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: None,
+                snapshot: "s".to_owned(),
+                events,
+            }
+        }
+
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                checkpoint(0, vec![system_event(u64::MAX), system_event(0)]),
+            ],
+        )
+        .err()
+        .expect("wrapped checkpoint sequence must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("journal checkpoint events are out of order"),
+            "{error:#}"
+        );
+
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                checkpoint(
+                    u64::MAX,
+                    vec![system_event(u64::MAX - 1), system_event(u64::MAX)],
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.sequence, u64::MAX);
+    }
+
+    #[test]
     fn restore_accepts_v1_and_v2_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
@@ -1971,6 +2036,80 @@ mod tests {
             },
         ];
         assert!(WorldCore::restore("test-world", WorldLimits::default(), entries).is_err());
+    }
+
+    #[test]
+    fn restore_does_not_resurrect_a_delegate_issued_after_parent_revocation() {
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability(
+                "Ada",
+                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (child, child_token) = source
+            .attenuate(
+                &owner_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo",
+            )
+            .unwrap();
+        let created = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        let owner_issued = source.issued_entry(owner.id).unwrap();
+        let parent_revoked = JournalEntry::Revoked {
+            participant_id: owner.id,
+            by: None,
+        };
+        let child_issued = source.issued_entry(child.id).unwrap();
+
+        // A hand-written journal can omit the child's redundant Revoked entry.
+        // The earlier parent revocation must still keep the child unusable.
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![
+                created.clone(),
+                owner_issued.clone(),
+                parent_revoked.clone(),
+                child_issued.clone(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            restored
+                .core
+                .authorize(&child_token, WorldScopes::JOIN)
+                .is_err()
+        );
+
+        // Compaction emits the descendant's own Issued/Revoked pair after its
+        // already-revoked parent; that legitimate order must also restore.
+        let compacted = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![
+                created,
+                owner_issued,
+                parent_revoked,
+                child_issued,
+                JournalEntry::Revoked {
+                    participant_id: child.id,
+                    by: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert!(
+            compacted
+                .core
+                .authorize(&child_token, WorldScopes::JOIN)
+                .is_err()
+        );
     }
 
     #[test]
