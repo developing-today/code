@@ -648,6 +648,12 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  sessions_read: {
+    method: "GET",
+    path: "/v1/sessions",
+    params: {},
+    response: "json",
+  },
   settings_get: {
     method: "GET",
     path: "/v1/settings/{path}",
@@ -1353,6 +1359,13 @@ export class DaemonOps {
    */
   sessionRelease(args: { session: string }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("session_release", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * The session inventory: every pool's live instances. `GET /v1/sessions`.
+   */
+  sessionsRead(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("sessions_read", args, opts) as Promise<unknown>
   }
 
   /**
