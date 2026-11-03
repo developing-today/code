@@ -80,7 +80,7 @@ Intake for module-signature verification against an admin trust list, compiler-v
 
 ## Inferred suggestions
 
-- Inference: Inference: verify at S1 what #1069 closure evidence says before the later design cites it.
+- Inference: verify at S1 what #1069 closure evidence says before the later design cites it.
 
 ## Stage results
 

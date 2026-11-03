@@ -232,14 +232,16 @@ Shared package-opening intake for the 11 Phase 12 D1 items on umbrella issue #53
 {
 "from": "C004",
 "to": "C001",
-"kind": "requires",
-"reason": "Roles v2 authorization design depends on the world manifest delta (roles/invites, apply rerun semantics)."
+"kind": "recommended-after",
+"reason": "Roles v2 research can start on the merged-design reconciliation; if the F12.1 manifest delta (roles/invites, apply rerun semantics) is still open when C004 research runs, the wire-authorization design is re-checked against the landed delta.",
+"rework_if_early": "re-check the live install/revoke authorization design against the F12.1 roles/invites delta once it lands."
 },
 {
 "from": "C006",
 "to": "C002",
-"kind": "requires",
-"reason": "First providers depend on the provider registry seam; implementation waits for the registry design."
+"kind": "recommended-after",
+"reason": "First-providers research can start on the catalog/dispatch seam; implementation waits for the registry design, and provider schemas are re-checked against the landed registry seam.",
+"rework_if_early": "re-check provider schemas, ceilings and dispatch validation against the F12.4 registry seam once it lands."
 },
 {
 "from": "C006",
@@ -251,26 +253,30 @@ Shared package-opening intake for the 11 Phase 12 D1 items on umbrella issue #53
 {
 "from": "C007",
 "to": "C003",
-"kind": "requires",
-"reason": "SDKs and the WIT/component-model decision consume the versioned ABI and its conformance suite."
+"kind": "recommended-after",
+"reason": "SDK research can start on the current exports/loader surface; the SDK conformance claim is re-checked against the versioned F12.7 ABI and its suite once specified.",
+"rework_if_early": "re-check the SDK conformance claim against the versioned ABI and conformance suite once specified."
 },
 {
 "from": "C008",
 "to": "C003",
-"kind": "requires",
-"reason": "Program upgrade/migration validation depends on the versioned ABI and conformance contract."
+"kind": "recommended-after",
+"reason": "Upgrade/migration research can start on the checkpoint/snapshot model; the migration contract is re-checked against the versioned F12.7 ABI once specified.",
+"rework_if_early": "re-check the migration contract and probe validation against the versioned ABI once specified."
 },
 {
 "from": "C010",
 "to": "C002",
-"kind": "requires",
-"reason": "Portals are new registry capabilities; the registry seam must exist first."
+"kind": "recommended-after",
+"reason": "Portal research can start on the bilateral-grant contract; implementation waits for the registry seam, and the portal capability shape is re-checked against it once it lands.",
+"rework_if_early": "re-check the portal capability shape against the F12.4 registry seam once it lands."
 },
 {
 "from": "C010",
 "to": "C005",
-"kind": "requires",
-"reason": "Bilateral portal grants require the durable audit contract on both worlds."
+"kind": "recommended-after",
+"reason": "Portal research can start on the bilateral-grant contract; implementation waits for the durable audit contract, and dual-world audit entries are re-checked against it once it lands.",
+"rework_if_early": "re-check dual-world audit entries against the F12.6 durable audit schema once it lands."
 }
 ],
 "issues": [],
@@ -321,7 +327,7 @@ Intake and reconciliation for the F12.1 world.toml manifest, idempotent apply/dr
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
 - **Items:** 2 (2 `created`)
 - **Relations:** none
-- **Required by:** [C004](#c004)
+- **Referenced by:** [C004](#c004) `recommended-after`
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C001 -->
@@ -342,7 +348,7 @@ Intake for the F12.4 provider registry: provider manifests, the catalog/dispatch
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
 - **Items:** 2 (2 `created`)
 - **Relations:** none
-- **Required by:** [C006](#c006), [C010](#c010)
+- **Referenced by:** [C006](#c006) `recommended-after`, [C010](#c010) `recommended-after`
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C002 -->
@@ -363,7 +369,7 @@ Intake for the versioned plaza_* guest ABI spec, the plaza_abi_version export, a
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
 - **Items:** 2 (2 `created`)
 - **Relations:** none
-- **Required by:** [C007](#c007), [C008](#c008)
+- **Referenced by:** [C007](#c007) `recommended-after`, [C008](#c008) `recommended-after`
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C003 -->
@@ -382,14 +388,15 @@ Intake for F12.3 journaled builder/moderator scopes and per-use audit. Reconcile
 <!-- workflow:view concept-C004 -->
 
 - **State:** `created` · stage S0 · priority `recommended` · horizon `now`
-- **Items:** 1 (1 `created`)
+- **Items:** 2 (2 `created`)
 - **Relations:**
-  - `requires` [C001](#c001): Roles v2 authorization design depends on the world manifest delta (roles/invites, apply rerun semantics).
+  - `recommended-after` [C001](#c001): Roles v2 research can start on the merged-design reconciliation; if the F12.1 manifest delta (roles/invites, apply rerun semantics) is still open when C004 research runs, the wire-authorization design is re-checked against the landed delta.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C004 -->
 
 - **C004.1** `created` · S0 · 2026-11-03T00:06:00Z — Phase-0 reconciliation: F12.3 remainder #835 verified OPEN; merged design finds role bits and journal records exist while live install still requires the admin token — the delta is the wire authorization path.
+- **C004.2** `created` · S0 · 2026-11-03T00:17:00Z — S2 deliverable scope for F12.3: the live install/revoke wire-authorization design (builder/moderator acceptance on the session frames and service install path), with a test on the actual protocol acceptance path — not role bits or journal records, which the merged design records as already present.
 
 <a id="c005"></a>
 
@@ -402,15 +409,15 @@ Intake for the durable, replayable F12.6 audit log with the OpenTelemetry export
 <!-- workflow:view concept-C005 -->
 
 - **State:** `created` · stage S0 · priority `recommended` · horizon `now`
-- **Items:** 1 (1 `created`)
+- **Items:** 2 (2 `created`)
 - **Relations:** none
-- **Required by:** [C010](#c010)
-- **Referenced by:** [C006](#c006) `recommended-after`
+- **Referenced by:** [C006](#c006) `recommended-after`, [C010](#c010) `recommended-after`
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C005 -->
 
 - **C005.1** `created` · S0 · 2026-11-03T00:06:00Z — Phase-0 reconciliation: implementation issue #1063 (F12.6 audit) verified OPEN with F11.7/#553 dependency; durable replayable audit facts are separated from snapshots/metrics, OpenTelemetry is an adapter.
+- **C005.2** `created` · S0 · 2026-11-03T00:17:00Z — S2 deliverable scope for F12.6: the durable, replayable audit event schema with per-event ownership, replay-to-grants test shape, and the OpenTelemetry export specified as an adapter — separate from operational metrics and in-memory CapUsage snapshots.
 
 <a id="c006"></a>
 
@@ -425,7 +432,7 @@ Intake for bounded durable KV, content-addressed blobs, allowlisted http.fetch, 
 - **State:** `created` · stage S0 · priority `recommended` · horizon `next`
 - **Items:** 2 (2 `created`)
 - **Relations:**
-  - `requires` [C002](#c002): First providers depend on the provider registry seam; implementation waits for the registry design.
+  - `recommended-after` [C002](#c002): First-providers research can start on the catalog/dispatch seam; implementation waits for the registry design, and provider schemas are re-checked against the landed registry seam.
   - `recommended-after` [C005](#c005): Durable audit should precede external-effect providers; research may start early, implementation must honor audit-first.
 - **Issues and PRs:** none yet
 
@@ -445,14 +452,15 @@ Intake for the F12.8 research package: Rust and AssemblyScript-or-Zig SDKs equal
 <!-- workflow:view concept-C007 -->
 
 - **State:** `created` · stage S0 · priority `contingent` · horizon `later`
-- **Items:** 1 (1 `created`)
+- **Items:** 2 (2 `created`)
 - **Relations:**
-  - `requires` [C003](#c003): SDKs and the WIT/component-model decision consume the versioned ABI and its conformance suite.
+  - `recommended-after` [C003](#c003): SDK research can start on the current exports/loader surface; the SDK conformance claim is re-checked against the versioned F12.7 ABI and its suite once specified.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C007 -->
 
 - **C007.1** `created` · S0 · 2026-11-03T00:06:00Z — Phase-0 reconciliation: implementation issue #1065 (F12.8 SDKs) verified OPEN; the title/body language discrepancy (TypeScript/Zig vs AssemblyScript or Zig) and the WIT/component-model decision are recorded as S1 research questions.
+- **C007.2** `created` · S0 · 2026-11-03T00:17:00Z — S2 deliverable scope for F12.8: a research decision record resolving the title/body language discrepancy (TypeScript/Zig vs AssemblyScript or Zig) and the WIT/component-model direction, with each SDK bound to the same F12.7 conformance suite as its exit check.
 
 <a id="c008"></a>
 
@@ -465,14 +473,15 @@ Intake for versioned snapshots, the optional migrate export, probe-instance vali
 <!-- workflow:view concept-C008 -->
 
 - **State:** `created` · stage S0 · priority `contingent` · horizon `later`
-- **Items:** 1 (1 `created`)
+- **Items:** 2 (2 `created`)
 - **Relations:**
-  - `requires` [C003](#c003): Program upgrade/migration validation depends on the versioned ABI and conformance contract.
+  - `recommended-after` [C003](#c003): Upgrade/migration research can start on the checkpoint/snapshot model; the migration contract is re-checked against the versioned F12.7 ABI once specified.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C008 -->
 
 - **C008.1** `created` · S0 · 2026-11-03T00:06:00Z — Phase-0 reconciliation: implementation issue #1066 (F12.9 upgrades) verified OPEN with the F12.7 prerequisite; the design must specify the commit point (round-trip or no commit) and rollback semantics.
+- **C008.2** `created` · S0 · 2026-11-03T00:17:00Z — S2 deliverable scope for F12.9: versioned migration with the optional migrate export, probe-instance validation, the journal commit point (round-trip or no commit, prior state preserved), transient-state disposition, and rollback — against the checkpoint/snapshot model.
 
 <a id="c009"></a>
 
@@ -485,13 +494,14 @@ Intake for the hub scheduler, per-account quotas (worlds, storage, fuel/s), fair
 <!-- workflow:view concept-C009 -->
 
 - **State:** `created` · stage S0 · priority `contingent` · horizon `later`
-- **Items:** 1 (1 `created`)
+- **Items:** 2 (2 `created`)
 - **Relations:** none
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C009 -->
 
 - **C009.1** `created` · S0 · 2026-11-03T00:06:00Z — Phase-0 reconciliation: implementation issue #1067 (F12.10 scheduling) verified OPEN with F11.7/#553 and F11.8/#539 prerequisites; the p99 isolation threshold is the acceptance anchor.
+- **C009.2** `created` · S0 · 2026-11-03T00:17:00Z — S2 deliverable scope for F12.10: per-account quotas, fair CPU/fuel sharing at the hub/host seam, and slow-client back-pressure — with the measurable exit that a spinning world raises no other world's p99 by more than 10 percent.
 
 <a id="c010"></a>
 
@@ -504,15 +514,16 @@ Intake for portals as a new bilateral guest capability with bounded rate/size an
 <!-- workflow:view concept-C010 -->
 
 - **State:** `created` · stage S0 · priority `contingent` · horizon `later`
-- **Items:** 1 (1 `created`)
+- **Items:** 2 (2 `created`)
 - **Relations:**
-  - `requires` [C002](#c002): Portals are new registry capabilities; the registry seam must exist first.
-  - `requires` [C005](#c005): Bilateral portal grants require the durable audit contract on both worlds.
+  - `recommended-after` [C002](#c002): Portal research can start on the bilateral-grant contract; implementation waits for the registry seam, and the portal capability shape is re-checked against it once it lands.
+  - `recommended-after` [C005](#c005): Portal research can start on the bilateral-grant contract; implementation waits for the durable audit contract, and dual-world audit entries are re-checked against it once it lands.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C010 -->
 
 - **C010.1** `created` · S0 · 2026-11-03T00:06:00Z — Phase-0 reconciliation: implementation issue #1068 (F12.14 portals) verified OPEN; portals are a new bilateral guest capability and the host-level cross-world switch stays out of scope.
+- **C010.2** `created` · S0 · 2026-11-03T00:17:00Z — S2 deliverable scope for F12.14: portals as a new bilateral guest capability with bounded rate/size and an audit entry on both worlds — explicitly not a broadening of the existing host-level cross-world switch.
 
 <a id="c011"></a>
 

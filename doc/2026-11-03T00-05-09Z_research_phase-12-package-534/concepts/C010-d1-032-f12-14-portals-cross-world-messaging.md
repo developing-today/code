@@ -27,7 +27,7 @@ Intake for portals as a new bilateral guest capability with bounded rate/size an
 
 ## Inferred suggestions
 
-- Inference: Inference: frame bilateral grant and dual audit entries as the minimum viable portal contract for S2.
+- Inference: frame bilateral grant and dual audit entries as the minimum viable portal contract for S2.
 
 ## Stage results
 

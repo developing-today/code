@@ -45,7 +45,7 @@ Intake for the F12.4 provider registry: provider manifests, the catalog/dispatch
 
 ## Inferred suggestions
 
-- Inference: Inference: baseline the current catalog and dispatch locations on origin/main during S1 so the research questions cite exact files.
+- Inference: baseline the current catalog and dispatch locations on origin/main during S1 so the research questions cite exact files.
 
 ## Stage results
 

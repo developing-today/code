@@ -37,7 +37,7 @@ Intake for the durable, replayable F12.6 audit log with the OpenTelemetry export
 
 ## Inferred suggestions
 
-- Inference: Inference: draft the event ownership/schema question as the first S1 research question.
+- Inference: draft the event ownership/schema question as the first S1 research question.
 
 ## Stage results
 

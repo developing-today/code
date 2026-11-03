@@ -42,7 +42,7 @@ Intake for F12.3 journaled builder/moderator scopes and per-use audit. Reconcile
 
 ## Inferred suggestions
 
-- Inference: Inference: confirm at S1 whether any install/revoke path other than the documented session frame still bypasses builder identity.
+- Inference: confirm at S1 whether any install/revoke path other than the documented session frame still bypasses builder identity.
 
 ## Stage results
 

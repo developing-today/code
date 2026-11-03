@@ -27,7 +27,7 @@ Intake for versioned snapshots, the optional migrate export, probe-instance vali
 
 ## Inferred suggestions
 
-- Inference: Inference: enumerate snapshot fields and reset behavior precisely at S1 before S2 proposes the migration contract.
+- Inference: enumerate snapshot fields and reset behavior precisely at S1 before S2 proposes the migration contract.
 
 ## Stage results
 

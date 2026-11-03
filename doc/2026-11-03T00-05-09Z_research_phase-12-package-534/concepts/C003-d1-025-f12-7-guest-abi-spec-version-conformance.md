@@ -45,7 +45,7 @@ Intake for the versioned plaza_* guest ABI spec, the plaza_abi_version export, a
 
 ## Inferred suggestions
 
-- Inference: Inference: enumerate the current exports/imports and the existing verify surface as the S1 evidence table.
+- Inference: enumerate the current exports/imports and the existing verify surface as the S1 evidence table.
 
 ## Stage results
 

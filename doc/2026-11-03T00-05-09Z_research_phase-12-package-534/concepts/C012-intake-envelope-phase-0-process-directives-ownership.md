@@ -97,7 +97,7 @@ Global bucket for the merged-design workflow rules and tracker policy: exactly o
 
 ## Inferred suggestions
 
-- Inference: Inference: later stages should treat the two option-B recommendations as reviewable defaults, not research blockers.
+- Inference: later stages should treat the two option-B recommendations as reviewable defaults, not research blockers.
 
 ## Stage results
 

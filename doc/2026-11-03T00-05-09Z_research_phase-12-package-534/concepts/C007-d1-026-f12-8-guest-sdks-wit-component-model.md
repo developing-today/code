@@ -27,7 +27,7 @@ Intake for the F12.8 research package: Rust and AssemblyScript-or-Zig SDKs equal
 
 ## Inferred suggestions
 
-- Inference: Inference: ask S2 to compare the generated host ABI source against a guest-SDK requirement list at intake.
+- Inference: ask S2 to compare the generated host ABI source against a guest-SDK requirement list at intake.
 
 ## Stage results
 

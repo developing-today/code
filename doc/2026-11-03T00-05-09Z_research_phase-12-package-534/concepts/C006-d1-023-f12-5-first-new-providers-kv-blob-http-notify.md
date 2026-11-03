@@ -36,7 +36,7 @@ Intake for bounded durable KV, content-addressed blobs, allowlisted http.fetch, 
 
 ## Inferred suggestions
 
-- Inference: Inference: treat the off-by-default and no-off-list-redirect rules as acceptance constraints on the later design.
+- Inference: treat the off-by-default and no-off-list-redirect rules as acceptance constraints on the later design.
 
 ## Stage results
 

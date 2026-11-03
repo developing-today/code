@@ -64,7 +64,7 @@ Intake and reconciliation for the F12.1 world.toml manifest, idempotent apply/dr
 
 ## Inferred suggestions
 
-- Inference: Inference: verify whether #807 closure changes the design delta (docs/rerun semantics) or only closes the wiring remainder.
+- Inference: verify whether #807 closure changes the design delta (docs/rerun semantics) or only closes the wiring remainder.
 
 ## Stage results
 

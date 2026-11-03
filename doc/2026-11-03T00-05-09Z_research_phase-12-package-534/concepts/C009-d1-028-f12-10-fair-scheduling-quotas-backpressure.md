@@ -27,7 +27,7 @@ Intake for the hub scheduler, per-account quotas (worlds, storage, fuel/s), fair
 
 ## Inferred suggestions
 
-- Inference: Inference: capture current hub limits and metric enumeration at S1 as the baseline the design must supersede.
+- Inference: capture current hub limits and metric enumeration at S1 as the baseline the design must supersede.
 
 ## Stage results
 
