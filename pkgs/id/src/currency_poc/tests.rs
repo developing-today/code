@@ -649,6 +649,87 @@ fn conversion_id_reuse_cannot_replace_persisted_intent() {
 }
 
 #[test]
+fn abandoned_intent_cannot_be_resurrected_by_execute_retry() {
+    let mut executor = executor();
+    let record = executor.prepare(&request()).expect("intent prepared");
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Abandon,
+    )
+    .expect("reconcile with abandon policy");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Abandoned)]);
+
+    let error = executor
+        .execute(&request())
+        .expect_err("an abandoned conversion cannot be submitted on retry");
+    let error = format!("{error:#}");
+    assert!(error.contains("conversion 777"));
+    assert!(error.contains("Abandoned"));
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned
+    );
+    assert_eq!(record.state, IntentState::Recorded);
+}
+
+#[test]
+fn submit_refuses_abandoned_record_without_posting_or_changing_state() {
+    let mut executor = executor();
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+    record.state = IntentState::Abandoned;
+    executor.store.put(&record).unwrap();
+
+    let error = executor
+        .submit(&mut record)
+        .expect_err("submit must refuse an abandoned record");
+    let error = format!("{error:#}");
+    assert!(error.contains("conversion 777"));
+    assert!(error.contains("Abandoned"));
+    assert_eq!(record.state, IntentState::Abandoned);
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Abandoned
+    );
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn submit_refuses_already_posted_record_without_resubmitting() {
+    let mut executor = executor();
+    let mut record = executor.execute(&request()).expect("conversion posts");
+    let posted_legs = executor.backend.transfers_with_user_data_128(777);
+    assert_eq!(posted_legs.len(), 3);
+
+    let error = executor
+        .submit(&mut record)
+        .expect_err("submit must refuse an already-posted record");
+    let error = format!("{error:#}");
+    assert!(error.contains("conversion 777"));
+    assert!(error.contains("Posted"));
+    assert_eq!(record.state, IntentState::Posted);
+    assert_eq!(
+        executor.backend.transfers_with_user_data_128(777),
+        posted_legs
+    );
+    assert_eq!(
+        executor.store.get(777).unwrap().unwrap().state,
+        IntentState::Posted
+    );
+}
+
+#[test]
 fn recovery_scan_continues_after_a_rejected_resubmission() {
     let mut executor = executor();
     let _record_a = executor.prepare(&request()).expect("intent A prepared");

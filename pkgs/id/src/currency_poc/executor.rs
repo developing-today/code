@@ -282,6 +282,13 @@ impl<B: LedgerBackend, S: IntentStore> ConversionExecutor<B, S> {
     /// it never resubmits blindly, and idempotent IDs make even a
     /// resubmission safe.
     pub fn submit(&mut self, record: &mut IntentRecord) -> Result<()> {
+        if matches!(record.state, IntentState::Posted | IntentState::Abandoned) {
+            bail!(
+                "conversion {} is in terminal state {:?}; refusing submission",
+                record.conversion_id,
+                record.state
+            );
+        }
         record.state = IntentState::Submitted;
         self.store
             .put(record)

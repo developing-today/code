@@ -636,7 +636,7 @@ in
       librepcb
       horizon-eda
       # geda # removed from nixpkgs 2026-07-26: unmaintained upstream
-      gerbv
+      # gerbv # depends on gtk2, removed from nixpkgs (broken: gtk2 final release 2020)
 
       # Mechanical CAD / STEP + FreeCAD inspection
       # Used for vendor mechanical design files during hardware research, e.g.
