@@ -231,7 +231,7 @@ jobs:
     name: "full (main tier): nix flake check"
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       # Source-snapshot integrity guard (#1569): see check_each above.
