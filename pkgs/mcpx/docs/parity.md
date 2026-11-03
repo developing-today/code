@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (84)
+## /v1 operations (86)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -46,6 +46,8 @@ carry instead is a description that says so and MCP annotations
 | `ask_poll` | `GET /v1/ask/{id}` | `mcpx ask poll` *generated* | `mcpx_ask_poll` | `ops.askPoll()` |  |
 | `ask_abandon` | `POST /v1/ask/{id}/abandon` | `mcpx ask abandon` *generated* | `mcpx_ask_abandon` | `ops.askAbandon()` | Privileged. Destructive. |
 | `ask_answers` | `POST /v1/ask/{id}/answers` | `mcpx ask answers` *generated* | `mcpx_ask_answers` | `ops.askAnswers()` | Privileged. |
+| `authz_decisions_clear` | `DELETE /v1/authz/decisions` | `mcpx authz decisions clear` *generated* | `mcpx_authz_decisions_clear` | `ops.authzDecisionsClear()` | Privileged. |
+| `authz_decisions` | `GET /v1/authz/decisions` | `mcpx authz decisions` *generated* | `mcpx_authz_decisions` | `ops.authzDecisions()` |  |
 | `batch` | `POST /v1/batch` | `mcpx batch` | `mcpx_batch` | `ops.batch()` |  |
 | `call` | `POST /v1/call` | `mcpx call` | `mcpx_call` | `ops.call()`, `call()`, `callAsTask()` |  |
 | `call_path` | `POST /v1/call/{server}/{tool}` | `mcpx call` | `mcpx_call` | `ops.callPath()` |  |
@@ -121,7 +123,7 @@ carry instead is a description that says so and MCP annotations
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 | `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
-## CLI commands (70)
+## CLI commands (71)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -132,6 +134,7 @@ that reaches none says why: those are decisions, not gaps.
 | `api` | – | OpenAPI declarations are files the CLI reads; the tools they produce are served over MCP, and are not yet a tool source the daemon owns (#83). |
 | `artifact` / `artifacts` | `artifacts_list`, `artifact_put`, `artifact_delete`, `artifact_get` | Generated from the operation table. |
 | `ask` | `ask_begin`, `ask_poll`, `ask_abandon`, `ask_answers` | Generated from the operation table. |
+| `authz` | `authz_decisions_clear`, `authz_decisions` | Generated from the operation table. |
 | `batch` | `batch` |  |
 | `cache` | – | Reads and prunes the cache directory on this machine; no daemon is involved. |
 | `call` | `call`, `call_path` |  |

@@ -36,6 +36,7 @@ import {
   type ItemsCoverage,
 } from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
+import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import {
@@ -66,6 +67,7 @@ import {
   renderBoardBody,
   renderDiscuss,
   renderDns,
+  renderConflicts,
   renderHealth,
   renderItem,
   deriveOverview,
@@ -220,6 +222,20 @@ async function ensureProvenancePrimed(): Promise<void> {
 }
 
 /**
+ * The source-conflict inbox (#1282 slice 1), assembled from the same facets
+ * the rest of the dashboard reads. Read-only: detection collects what the
+ * facets already report, and no render changes because of it.
+ */
+async function assembleConflicts(): Promise<ConflictInbox> {
+  const [pool, orchestration, usage] = await Promise.all([
+    source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.usage().catch(() => emptyUsageView()),
+  ]);
+  return conflictInbox({ pool, orchestration, services: usage.services });
+}
+
+/**
  * The one health assembly behind both /health and /api/health
  * (#1147): primed provenance first (so facet truth never depends on
  * request order, #1267), then the feed snapshot the section ages and
@@ -251,6 +267,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     detail: source.provenanceDetail?.(),
     itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
+    conflicts: await assembleConflicts().catch(() => null),
   });
 }
 
@@ -1308,6 +1325,15 @@ async function handler(req: Request): Promise<Response> {
   // #1279: briefs need the latest comment per item, guaranteed per ref —
   // the bulk comments() read can truncate an item's latest comment away
   // in a busy batch, so prefer the source's per-ref latest read.
+  // #1282 slice 1: one read-only inbox over every disagreement the facets
+  // report. The page and its JSON twin are the same projection, assembled
+  // once per request — they cannot disagree about what disagrees.
+  if (path === "/conflicts" || path === "/api/conflicts.json") {
+    const inbox = await assembleConflicts();
+    if (path === "/api/conflicts.json") return json(inbox);
+    return html(renderConflicts(inbox, prov(), provDetail()));
+  }
+
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
@@ -1737,6 +1763,7 @@ async function handler(req: Request): Promise<Response> {
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
+    body.conflicts = view.conflicts;
     // #1203: the ready-for-agent harness facet — backend readiness,
     // repository settings, work-item counts and GraphQL errors reach the
     // machine surface too, not only the rendered page.

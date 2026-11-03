@@ -22,12 +22,14 @@
 //      itself uses.
 //   3. The Turso org usage API (#1049): usage + subscription over
 //      the verified route, token from Bitwarden by name.
-//   2. File exports (the Meta Phase-1 convention, #1301): producers
-//      the module cannot reach write latest.json documents on the
-//      laptop (v1: Meta, ~/atlas/meta-quota-export/latest.json);
+//   2. File exports (the Phase-1 convention, #1301): producers the
+//      module cannot reach write latest.json documents on the laptop;
 //      the gatherer ingests them in the same tick. A document older
 //      than 30 minutes means the producer is unreachable — an error
-//      entry, never zeros.
+//      entry, never zeros. The v1 producer (Meta's dev.meta.ai
+//      console scrape) was retired 2026-11-03: Drew's ruling is that
+//      quota is gathered by asking OpenCode — family 5 below is its
+//      replacement, and the producer list is empty today.
 //   4. The native ClinePass token adapter (#1159, src/clinepass-
 //      adapter.ts on the #1153 framework): fills the ClinePass row
 //      when the OpenChamber module did not already produce a fresh
@@ -35,6 +37,14 @@
 //      a credential reference on this host. An expired token is
 //      session-expired / re-login with the last-known row retained
 //      (#1268) — never a 0% row.
+//   5. The Meta module ask (2026-11-03): the provider listing
+//      (family 1) filters providers whose session door is disabled
+//      in the opencode config, and `meta` is disabled as a direct
+//      door — sessions reach the pool through model routes — so the
+//      listing never names it. The gatherer asks the module for meta
+//      explicitly (runMetaModule): the read runs through OpenCode's
+//      own credential machinery, which is what gathering quota by
+//      asking OpenCode means for a route-only pool.
 //
 // Outputs:
 //   - quota-current.json — the latest-state contract (model.ts
@@ -65,7 +75,7 @@
 //      OPENCODE_DB_PATH (~/.local/share/opencode/opencode.db),
 //      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH,
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
-//      USAGE_SNAPSHOT_OUTBOX_PATH, META_QUOTA_EXPORT_PATH,
+//      USAGE_SNAPSHOT_OUTBOX_PATH,
 //      QUOTA_GATHER_TIMEOUT_MS (15000),
 //      QUOTA_GATHER_CONCURRENCY (6), TURSO_API_TOKEN (else the
 //      Bitwarden secret turso.platform-api-token-muse-cli, resolved
@@ -135,14 +145,16 @@ const timeoutMs = Number(process.env.QUOTA_GATHER_TIMEOUT_MS ?? 15_000);
 const gatherConcurrency = Number(process.env.QUOTA_GATHER_CONCURRENCY ?? 6);
 const OBSERVED_BY = "quota-gatherer";
 
-/** File-export producers ingested each tick (the #1301 convention). */
-const FILE_EXPORTS = [
-  {
-    key: "meta",
-    path: process.env.META_QUOTA_EXPORT_PATH ?? join(HOME, "atlas/meta-quota-export/latest.json"),
-    staleMs: 30 * 60_000,
-  },
-];
+/**
+ * File-export producers ingested each tick (the #1301 convention).
+ * The v1 producer — Meta, ~/atlas/meta-quota-export/latest.json, a
+ * dev.meta.ai console scrape — was retired 2026-11-03: quota is
+ * gathered by asking OpenCode (Drew's ruling), and the module's own
+ * Meta provider replaced the scrape (see runMetaModule). The list
+ * stays, empty, for the next producer the module cannot reach;
+ * entryFromFileExport keeps the convention's mapping tested.
+ */
+const FILE_EXPORTS: { key: string; path: string; staleMs: number }[] = [];
 
 interface QuotaModule {
   listConfiguredQuotaProviders: (opts?: { includeDisabled?: boolean }) => Promise<string[]>;
@@ -420,6 +432,46 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
   };
 }
 
+/**
+ * The Meta module ask (2026-11-03, Drew's ask-OpenCode ruling): the
+ * quota module's provider listing filters out providers whose
+ * session door is disabled in the opencode config, and `meta` is
+ * disabled as a direct door (sessions reach the pool through model
+ * routes), so the listing never names it and the plain tick never
+ * asked — the board's Meta row went dark even though OpenCode holds
+ * the pool's credential and the module's Meta provider reads the
+ * plan's own usage endpoint with it. The gatherer asks explicitly,
+ * the same out-of-band registration pattern as the native ClinePass
+ * adapter. No outer timeout wraps the ask: the provider self-times
+ * out per request (15s), and its account-token fallback is a second
+ * request — clipping the pair at the generic 15s cap could turn a
+ * slow success into a false error row.
+ */
+async function runMetaModule(quota: QuotaModule, tickIso: string): Promise<ProviderRun> {
+  const t0 = Date.now();
+  try {
+    const results = await quota.fetchQuotaForProviderInstances("meta");
+    const entries = results.map((r) => entryFromResult(r, tickIso));
+    const anyOk = entries.some((e) => e.state === "ok");
+    const firstBad = entries.find((e) => e.state !== "ok");
+    return {
+      id: "meta",
+      state: anyOk ? "ok" : "error",
+      ms: Date.now() - t0,
+      entries,
+      ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
+    };
+  } catch (err) {
+    return {
+      id: "meta",
+      state: "error",
+      ms: Date.now() - t0,
+      entries: [],
+      error: safeProviderReason(err instanceof Error ? err.message : String(err)),
+    };
+  }
+}
+
 interface ProviderRun {
   id: string;
   state: "ok" | "error";
@@ -557,6 +609,20 @@ async function main(): Promise<number> {
       if (clineIdx === -1) runs.push(clineRun);
       else runs[clineIdx] = clineRun;
     }
+  }
+
+  // 2026-11-03: the Meta module ask (see runMetaModule). Exactly one
+  // meta run survives, mirroring the ClinePass discipline above: a
+  // fresh listed run (the door re-enabled someday) wins and the ask
+  // is skipped; otherwise the ask replaces the listed run, or is
+  // appended when the listing never named meta.
+  const metaIdx = runs.findIndex((r) => r.id === "meta");
+  if (metaIdx !== -1 && runs[metaIdx].entries.some((e) => e.state === "ok")) {
+    console.log("quota-gatherer: meta ok via provider listing - explicit module ask skipped");
+  } else {
+    const metaRun = await runMetaModule(quota, tickAt);
+    if (metaIdx === -1) runs.push(metaRun);
+    else runs[metaIdx] = metaRun;
   }
 
   // The Claude auth source exposes an expiry timestamp. Persist only that

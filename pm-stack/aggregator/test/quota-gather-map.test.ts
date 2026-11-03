@@ -532,6 +532,8 @@ describe("serviceIdFor", () => {
   test("known pools map to hub ids; others pass through", () => {
     expect(serviceIdFor("codex")).toBe("openai:codex");
     expect(serviceIdFor("deepseek")).toBe("deepseek:api");
+    expect(serviceIdFor("meta")).toBe("meta:high-usage");
+    expect(serviceIdFor("opendesign")).toBe("opendesign:go");
     expect(serviceIdFor("openai.alternate")).toBe("openai.alternate");
   });
 });

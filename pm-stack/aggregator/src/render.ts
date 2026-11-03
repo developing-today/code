@@ -101,6 +101,7 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
@@ -5965,6 +5966,55 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 
 // --- All pages (the manifest as a page) ---------------------------------------
 
+// --- Source-conflict inbox (#1282, slice 1) -----------------------------------
+
+/**
+ * /conflicts — the read-only source-conflict inbox. Every disagreement the
+ * facets already report, in one queue, grouped by conflict class, each entry
+ * naming the item, both sources, both values and how long the pair has been
+ * on record. It resolves nothing: slice 1 projects only, so this page is the
+ * same list /api/conflicts.json serves, rendered.
+ */
+export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, detail?: ProvenanceDetail): string {
+  const chips = detail ? freshnessChips(detail, ["items", "usage"]) : "";
+  const ageCell = (entry: ConflictEntry): string => {
+    if (entry.ageDays === null) return `<span class="muted">undated</span>`;
+    const days = `<strong>${entry.ageDays}</strong> day${entry.ageDays === 1 ? "" : "s"}`;
+    const floor = entry.ageBasis === "project-item-updated-at" ? " (floor)" : "";
+    return `at least ${days}${floor}<br><span class="muted">${esc(fmtDate(entry.observedAt ?? ""))}${entry.ageBasis === "undated" ? "" : ` · ${esc(entry.ageBasis)}`}</span>`;
+  };
+  const itemCell = (entry: ConflictEntry): string => {
+    const label = esc(entry.item.title);
+    if (!entry.item.url) return `<strong>${label}</strong>`;
+    return `<a href="${esc(entry.item.url)}"><strong>${label}</strong></a>${entry.item.ref ? `<br><span class="muted"><code>${esc(entry.item.ref)}</code></span>` : ""}`;
+  };
+  const groups = inbox.byClass
+    .map((cls) => {
+      const entries = inbox.entries.filter((e) => e.classId === cls.classId);
+      if (!entries.length) return "";
+      const rows = entries
+        .map(
+          (e) =>
+            `<tr><td>${itemCell(e)}</td><td>${esc(e.sources.a)}<br><span class="muted">vs</span><br>${esc(e.sources.b)}</td><td><span class="badge stale">${esc(e.values.a)}</span><br><span class="muted">vs</span><br><span class="badge stale">${esc(e.values.b)}</span></td><td>${ageCell(e)}</td><td>${e.href ? `<a href="${esc(e.href)}">records →</a>` : "—"}</td></tr>`,
+        )
+        .join("");
+      return `<h2 id="class-${esc(cls.classId)}">${esc(cls.label)} (${entries.length})</h2>
+<div class="tblwrap"><table><caption>${esc(cls.label)} — item, sources, both values, age</caption><tr><th scope="col">Item</th><th scope="col">Sources</th><th scope="col">Both values</th><th scope="col">Disagreeing for</th><th scope="col">Records</th></tr>${rows}</table></div>`;
+    })
+    .join("");
+  const oldest = inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const body = `<h1>Source conflicts</h1>
+<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
+<div class="board">
+<div class="card"><strong>Conflicts</strong><br>${inbox.total} live</div>
+${inbox.byClass.map((c) => `<div class="card"><strong>${esc(c.label)}</strong><br>${c.count} live</div>`).join("")}
+<div class="card"><strong>Oldest disagreement</strong><br>${oldest}</div>
+</div>
+<p class="muted">Age is a <strong>floor</strong>, not an exact birthday: it is measured from the newest timestamp the source carries for the pair (a Project item's <code>updatedAt</code>, a service's <code>measuredAt</code>), so the values have disagreed for <em>at least</em> that long — an item edited yesterday for another reason can carry a much older clash.</p>
+${inbox.total ? groups : `<div class="banner">No live source disagreements in this projection — every facet that reports a disagreement agrees with its counterpart right now. An empty inbox here is a real empty, not an unread one: the page and /api/conflicts.json are built from the same projection.</div>`}`;
+  return layout("Source conflicts", body, provenance, "/conflicts", "", chips);
+}
+
 export function renderPages(provenance: Provenance, history: PageHealth[] = []): string {
   const byRoute = new Map(history.map((p) => [p.route, p]));
   const rows = PAGES.map((p) => {
@@ -6108,6 +6158,8 @@ ${rfaSection}
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
+<h2>Source conflicts</h2>
+<div class="card">${view.conflicts ? `<strong><a href="/conflicts">${view.conflicts.total} live source conflict${view.conflicts.total === 1 ? "" : "s"}</a></strong>${view.conflicts.byClass.filter((c) => c.count > 0).map((c) => ` · ${esc(c.label)}: ${c.count}`).join("")}${view.conflicts.oldestAgeDays === null ? "" : ` · oldest at least <strong>${view.conflicts.oldestAgeDays}</strong> day${view.conflicts.oldestAgeDays === 1 ? "" : "s"}`} (#1282 slice 1 — a growing count means the sources keep disagreeing and nobody has ruled on the class)` : `<span class="muted">not assembled for this health view</span>`}</div>
 <h2>Dashboard comments</h2>
 <div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting)</div>
 <h2>Source facets</h2>
