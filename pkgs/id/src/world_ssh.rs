@@ -39,8 +39,10 @@ use std::{
 use futures_lite::StreamExt;
 use russh::{
     Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
-    keys::{Algorithm, PrivateKey, PublicKey, ssh_key::HashAlg, ssh_key::LineEnding},
-    server::{Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session},
+    keys::{Algorithm, PrivateKey, ssh_key::HashAlg, ssh_key::LineEnding},
+    server::{
+        Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session, VerifiedPublicKey,
+    },
 };
 use serde_json::json;
 use tokio::{
@@ -305,12 +307,12 @@ impl Handler for SshClient {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, russh::Error> {
         let Some(world) = user.strip_prefix(EXPLORE_PREFIX) else {
             return Ok(Auth::reject());
         };
-        let Some(ed25519) = public_key.key_data().ed25519() else {
+        let Some(ed25519) = public_key.public_key.key_data().ed25519() else {
             return Ok(Auth::reject());
         };
         if self.permit.is_none() {
