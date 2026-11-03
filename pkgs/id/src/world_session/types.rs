@@ -89,6 +89,11 @@ pub(crate) enum ClientFrame {
         /// Opt in to revisioned JSON screen patches. Omitted by v1 clients.
         #[serde(default)]
         screen_patches: bool,
+        /// Resume token from this client's last applied view. A cursor, not a
+        /// credential: the join capability above still authorizes the session,
+        /// and an unknown, stale or foreign token simply gets a full view.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resume_token: Option<String>,
     },
     Info {
         capability: String,
@@ -318,6 +323,10 @@ pub(crate) enum ServerFrame<'a> {
         /// A negotiated screen delta. `data` is empty and `surface` omitted.
         #[serde(skip_serializing_if = "Option::is_none")]
         patch: Option<&'a crate::world_presentation::ScreenPatch>,
+        /// Token naming `view_revision`, for a client that reconnects and asks
+        /// to resume instead of taking a full view.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resume_token: Option<&'a str>,
     },
     ModuleInfo {
         world_id: String,
@@ -549,6 +558,9 @@ pub struct WorldService {
     pub(crate) metrics: WorldMetrics,
     /// Monotonic, process-local IDs for live connections to this service.
     pub(crate) next_session_id: Arc<AtomicU64>,
+    /// Bounded retained screens a reconnecting client may resume from, keyed
+    /// by an opaque token bound to a participant, viewport and view revision.
+    pub(crate) resume_baselines: Arc<Mutex<super::resume::BaselineCache>>,
 }
 
 impl std::fmt::Debug for WorldService {
