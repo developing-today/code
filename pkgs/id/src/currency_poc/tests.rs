@@ -1327,3 +1327,195 @@ fn canonically_blocked_conversion_is_skipped_and_reported_during_listing() {
     assert!(stray.exists(), "the blocked record's copy stays on disk");
     let _ = std::fs::remove_dir_all(&dir);
 }
+// ---- Live-cluster scenarios (#2289 acceptance item 1) ----
+//
+// The scenarios above run against InMemoryLedger; the ones below run
+// the same acceptance paths against a real single-replica cluster
+// (super::harness::TestCluster) through the official-client binding
+// (super::tb_ledger::TigerBeetleLedger). Ignored by default: they need
+// the pinned TigerBeetle binary. Run with:
+//   TIGERBEETLE_POC_BINARY=<path> cargo test -p id --features currency-poc-tb \
+//     currency_poc::tests::live -- --ignored
+
+#[cfg(feature = "currency-poc-tb")]
+use super::harness::TestCluster;
+#[cfg(feature = "currency-poc-tb")]
+use super::tb_ledger::TigerBeetleLedger;
+
+#[cfg(feature = "currency-poc-tb")]
+fn funded_tb_ledger(address: &str) -> TigerBeetleLedger {
+    let mut ledger = TigerBeetleLedger::connect(address).expect("connect to live cluster");
+    let results = ledger.create_accounts(&[
+        account(ISSUER_SRC, SRC, false),
+        account(ISSUER_DST, DST, false),
+        account(USER_SRC, SRC, true),
+        account(LP_SRC, SRC, false),
+        account(FEE, SRC, false),
+        account(LP_DST, DST, true),
+        account(USER_DST, DST, false),
+    ]);
+    assert!(
+        results.iter().all(|result| result.is_ok()),
+        "live account creation failed: {results:?}"
+    );
+    let results = ledger.create_transfers(&[
+        funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC),
+        funding_transfer(502, ISSUER_DST, LP_DST, 50_000, DST),
+    ]);
+    assert!(
+        results.iter().all(|result| result.is_ok()),
+        "live funding transfers failed: {results:?}"
+    );
+    ledger
+}
+
+#[cfg(feature = "currency-poc-tb")]
+type LiveExecutor = ConversionExecutor<TigerBeetleLedger, InMemoryIntentStore>;
+
+#[cfg(feature = "currency-poc-tb")]
+fn live_executor(port: u16) -> (TestCluster, LiveExecutor) {
+    let cluster = TestCluster::start(port).expect("live cluster should start");
+    let ledger = funded_tb_ledger(&cluster.address);
+    (
+        cluster,
+        ConversionExecutor::new(ledger, InMemoryIntentStore::new()),
+    )
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_posted_conversion_legs_findable_by_user_data_128() {
+    let (_cluster, mut executor) = live_executor(30021);
+    let record = executor.execute(&request()).expect("conversion posts");
+    assert_eq!(record.state, IntentState::Posted);
+    assert_eq!(record.amount_out, 2_000);
+
+    let legs = executor.backend.transfers_with_user_data_128(777);
+    assert_eq!(legs.len(), 3);
+    assert!(legs.iter().all(|leg| leg.user_data_128 == 777));
+
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_SRC)
+            .unwrap()
+            .spendable(),
+        8_975
+    );
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        2_000
+    );
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(LP_DST)
+            .unwrap()
+            .spendable(),
+        48_000
+    );
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_atomic_failure_moves_nothing() {
+    let (_cluster, mut executor) = live_executor(30022);
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+
+    let drain = funding_transfer(900, LP_DST, USER_DST, 49_000, DST);
+    assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
+
+    let before_user = executor.backend.account_balance(USER_SRC).unwrap();
+    let before_lp_src = executor.backend.account_balance(LP_SRC).unwrap();
+    assert!(executor.submit(&mut record).is_err());
+
+    assert_eq!(
+        executor.backend.account_balance(USER_SRC).unwrap(),
+        before_user
+    );
+    assert_eq!(
+        executor.backend.account_balance(LP_SRC).unwrap(),
+        before_lp_src
+    );
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty(),
+        "no leg of a failed linked batch may be stored"
+    );
+    assert_eq!(record.state, IntentState::Submitted);
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_crash_after_submission_recovers_without_double_posting() {
+    let (_cluster, mut executor) = live_executor(30023);
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+    record.state = IntentState::Submitted;
+    executor.store.put(&record).unwrap();
+    let results = executor.backend.create_transfers(&record.legs);
+    assert!(
+        results
+            .iter()
+            .all(|result| matches!(result, Ok(()) | Err(TransferError::Exists)))
+    );
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::AlreadyPosted)]);
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        2_000,
+        "balances must reflect exactly one posting"
+    );
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_crash_before_submission_resubmits_same_ids() {
+    let (_cluster, mut executor) = live_executor(30024);
+    let record = executor.prepare(&request()).expect("intent prepared");
+    assert_eq!(record.state, IntentState::Recorded);
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
+    assert_eq!(executor.backend.transfers_with_user_data_128(777).len(), 3);
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        2_000
+    );
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("second reconcile is a no-op");
+    assert!(outcomes.is_empty());
+}
