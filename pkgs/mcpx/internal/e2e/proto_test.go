@@ -661,3 +661,83 @@ func TestTheDaemonReportsItsRevisionPolicy(t *testing.T) {
 		t.Errorf("strict %v, want 2026-07-28 lenient and the rest strict", strict)
 	}
 }
+
+// The policy decides what a relayed progress notification looks like on the
+// wire. 2024-11-05 has no `message` on progress and every later revision
+// does, so a message-relaying daemon talking to a 2024-11-05 client must
+// strip it only when that revision's rule governs -- by default it does not,
+// with --mcp-spec 2024-11-05 it does. The unit precedent is
+// TestProgressMessagePrecedence; this is the same decision through the
+// daemon, a real upstream and a real client (#307, #2212).
+func TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		serveArg []string
+		want     bool
+	}{
+		{"default", nil, true},
+		{"mcp-spec-2024-11-05", []string{"--mcp-spec", "2024-11-05"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, oneServer)
+			e.run("refresh")
+			notes, res := relaySessionAs(t, e, "2024-11-05", c.serveArg,
+				map[string]any{}, "info", map[string]any{"progressToken": "policy-tok"})
+			if res["result"] == nil {
+				t.Fatalf("the call should still answer:\n%s", dumpJSON(t, res))
+			}
+			var progress int
+			for _, n := range notes {
+				if n["method"] != "notifications/progress" {
+					continue
+				}
+				progress++
+				p, _ := n["params"].(map[string]any)
+				msg, has := p["message"]
+				if has != c.want {
+					t.Errorf("message present=%v, want %v: %s", has, c.want, dumpJSON(t, n))
+				}
+				if has {
+					if s, _ := msg.(string); !strings.Contains(s, "step") {
+						t.Errorf("the upstream's message should be relayed verbatim when kept: %v", msg)
+					}
+				}
+				if p["progressToken"] != "policy-tok" {
+					t.Errorf("the client's own token should survive: %v", p)
+				}
+			}
+			if progress != 2 {
+				t.Errorf("want both progress frames, got %d (%v)", progress, notes)
+			}
+		})
+	}
+}
+
+// A 2026-07-28 server has no server-initiated requests: the client MUST NOT
+// answer one. mcpx drops it while that revision is strict, and answers it
+// with MCPX_SPEC_LENIENT=2026-07-28, for a server that has not caught up
+// with its own revision. The unit precedent is
+// TestLenient2026AnswersServerRequests; this is the same decision through
+// the daemon (#307, #2212).
+func TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"default", nil, "dropped"},
+		{"lenient-2026-07-28", []string{"MCPX_SPEC_LENIENT=2026-07-28"}, "answered"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, _ := eraEnv(t, "modern", "", c.env...)
+			out := e.run("call", "era.ask-server", "{}")
+			if !strings.Contains(out, c.want) {
+				t.Fatalf("want %q, got:\n%s", c.want, out)
+			}
+			row := upstreamRow(t, e)
+			if row["era"] != "modern" {
+				t.Errorf("the upstream must be a 2026-07-28 server for this decision: %v", row)
+			}
+		})
+	}
+}
