@@ -39,6 +39,7 @@ permissions:
 jobs:
   scheduled:
     uses: developing-today/code/.github/workflows/pm-scheduled.yml@main
+    timeout-minutes: 60
     permissions:
       id-token: write
       contents: read
