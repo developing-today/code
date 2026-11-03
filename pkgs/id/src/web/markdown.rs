@@ -3943,6 +3943,15 @@ fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
 
 /// Convert `ProseMirror` JSON document to markdown text.
 ///
+/// Unknown marks are skipped by design (#1045): marks outside the
+/// codec's vocabulary (`em`, `strong`, `strikethrough`, `link`, plus
+/// the `code` mark handled specially by `create_marked_text`) are
+/// dropped while the marked text itself is kept verbatim. This
+/// differs from unknown *nodes*, which return
+/// `ConversionError::UnknownType`, because an unknown inline style
+/// can be shed without corrupting the document text. Known marks
+/// render byte-identically whether or not unknown marks are present.
+///
 /// # Arguments
 ///
 /// * `doc` - The `ProseMirror` JSON document.
@@ -5191,7 +5200,11 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                     title: title.to_owned(),
                 }))
             }
-            _ => continue, // Skip code (handled below) and unknown marks
+            // #1045: `code` is skipped here because it is handled
+            // below as the innermost node; any other unrecognized mark
+            // is skipped by design — the text survives, the unknown
+            // styling is shed (see `prosemirror_to_markdown`).
+            _ => continue,
         };
         wrappers.push(wrapper_value);
     }
@@ -5640,6 +5653,35 @@ mod tests {
         ));
         let ok = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]});
         assert_eq!(prosemirror_to_markdown(&ok).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn test_unknown_marks_are_skipped_by_design() {
+        // #1045: unknown marks are shed while their text survives —
+        // unlike unknown nodes, which error. Pins the documented
+        // skip policy on `prosemirror_to_markdown`.
+        let text = |marks: Value| {
+            json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": "hi", "marks": marks}
+            ]}]})
+        };
+        // Bare unknown mark: text survives, mark vanishes.
+        let doc = text(json!([{"type": "underline"}]));
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), "hi\n");
+        // Mixed known + unknown: the known mark still renders.
+        let doc = text(json!([{"type": "strong"}, {"type": "underline"}]));
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), "**hi**\n");
+        // Unknown mark alongside code + link: code-mark special
+        // handling is unchanged.
+        let doc = text(json!([
+            {"type": "code"},
+            {"type": "link", "attrs": {"href": "http://e.com"}},
+            {"type": "underline"},
+        ]));
+        assert_eq!(
+            prosemirror_to_markdown(&doc).unwrap(),
+            "[`hi`](http://e.com)\n"
+        );
     }
 
     #[test]
