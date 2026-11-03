@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 export ROC="${ROC:-roc}"
-source ../roc-toolchain.sh
+source ../../../examples/roc-toolchain.sh
 if [ -z "${WASM_TOOLS:-}" ]; then
   if command -v wasm-tools >/dev/null 2>&1; then
     WASM_TOOLS="wasm-tools"

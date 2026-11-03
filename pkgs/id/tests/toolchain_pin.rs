@@ -10,14 +10,14 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-const ROC_EXAMPLES: [&str; 7] = [
-    "lounge",
-    "roc-chat",
-    "roc-counter",
-    "roc-grid",
-    "roc-screen",
-    "territory",
-    "tic-tac-toe",
+const ROC_EXAMPLE_BUILDS: [&str; 7] = [
+    "examples/lounge/build.sh",
+    "examples/roc-chat/build.sh",
+    "examples/roc-counter/build.sh",
+    "examples/roc-grid/build.sh",
+    "examples/roc-screen/build.sh",
+    "examples/territory/build.sh",
+    "apps/tic-tac-toe/program/build.sh",
 ];
 
 /// The Nix side of the pin: a literal version, or a value read from the file.
@@ -95,11 +95,11 @@ fn test_roc_examples_and_nix_package_share_the_compiler_pin() {
         "nix/roc.nix must derive its download tag from nix/roc-version"
     );
 
-    for example in ROC_EXAMPLES {
-        let script = fs::read_to_string(root.join(format!("examples/{example}/build.sh"))).unwrap();
+    for build_script in ROC_EXAMPLE_BUILDS {
+        let script = fs::read_to_string(root.join(build_script)).unwrap();
         assert!(
-            script.contains("source ../roc-toolchain.sh"),
-            "examples/{example}/build.sh must check the shared Roc compiler pin"
+            script.contains("roc-toolchain.sh"),
+            "{build_script} must check the shared Roc compiler pin"
         );
     }
 }
