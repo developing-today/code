@@ -109,6 +109,13 @@ pub fn reconcile<B: LedgerBackend, S: IntentStore>(
             match policy {
                 RecoveryPolicy::Resubmit => {
                     let results = backend.create_transfers(&record.legs);
+                    // A short or long result vector violates the backend
+                    // contract; never infer that the unreported legs posted.
+                    if results.len() != record.legs.len() {
+                        outcomes
+                            .push((record.conversion_id, ReconcileOutcome::ResubmissionRejected));
+                        continue;
+                    }
                     let failed = results
                         .iter()
                         .find(|result| !matches!(result, Ok(()) | Err(TransferError::Exists)));
