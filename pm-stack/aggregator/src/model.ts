@@ -320,6 +320,8 @@ export interface BurnSegment {
 
 export interface QuotaView {
   pools: QuotaPool[];
+  /** Safe per-credential lifecycle status from the configured provider set. */
+  credentialLifecycle?: import("./credential-lifecycle.ts").CredentialLifecycleRow[];
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
@@ -338,6 +340,7 @@ export interface QuotaView {
     burn: number;
     poolFreshness: number;
     burnTokensPerMin: number;
+    credentialLifecycle?: number;
   };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
@@ -1276,7 +1279,7 @@ export interface ChargeRow {
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
   label: string;
   detail: string;
   href: string;
@@ -1315,6 +1318,12 @@ export interface QuotaCurrentEntry {
   serviceId: string;
   credentialId?: string;
   credentialLabel?: string;
+  /** Internal provenance marker: this row came from the configured quota-credential registry. */
+  credentialWatch?: boolean;
+  /** Present only when the provider exposes an authoritative expiry instant. */
+  credentialExpiresAt?: string;
+  /** Provenance class for the provider's credential source; never a credential value. */
+  credentialSource?: "claude-code" | "opencode" | "environment";
   planLabel?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;

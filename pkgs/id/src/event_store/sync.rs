@@ -1751,6 +1751,38 @@ mod tests {
         assert_eq!(ids(&a), before_a, "the server's store is unchanged");
     }
 
+    /// #2245: a peer blocked by key is refused by the acceptor's gate
+    /// before any event is sent, under the open policy included. Both
+    /// sides end with an error, and neither store changes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_blocked_peer_range_session_is_refused_and_sends_no_event() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 4)]);
+        let (before_a, before_b) = (ids(&a), ids(&b));
+        let gate = testing::open_gate()
+            .with_blocks(testing::stub_blocks(&[*testing::key(0xd1).public().as_bytes()], &[]));
+        let (dialer, acceptor) = loopback_gated(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &gate,
+            testing::key(0xd1),
+        )
+        .await
+        .unwrap();
+        let refused = acceptor.expect_err("a blocked peer was served events");
+        assert!(
+            refused.downcast_ref::<PullRefused>().is_some(),
+            "{refused:#}"
+        );
+        assert!(dialer.is_err(), "the dialer's session ends with the refusal");
+        assert_eq!(ids(&b), before_b, "no event crossed to the blocked peer");
+        assert_eq!(ids(&a), before_a, "the server's store is unchanged");
+    }
+
     /// P6.5: a member gets every event under the members option.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_pull_policy_members_range_serves_a_member_everything() {

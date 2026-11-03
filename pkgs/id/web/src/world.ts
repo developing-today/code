@@ -267,7 +267,12 @@ function initWorld(): void {
         break;
       case "records": {
         if (!recordsPending) return;
-        Object.assign(records, frame.records ?? {});
+        // #2953 (define, don't assign): frame.records is peer-supplied, so
+        // its keys are stored with define semantics — Object.assign would
+        // run a "__proto__" key through the setter instead of storing it.
+        for (const [k, v] of Object.entries(frame.records ?? {})) {
+          Object.defineProperty(records, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
         recordsAfter = frame.next_after ?? null;
         if (recordsAfter === null) {
           recordsPending = false;
@@ -437,7 +442,9 @@ function initWorld(): void {
           throw new Error("World records changed while paging; refresh the host view");
         }
         recordsSequence = result.records_sequence;
-        Object.assign(allRecords, result.records);
+        for (const [k, v] of Object.entries(result.records)) {
+          Object.defineProperty(allRecords, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
         if (firstPage) {
           firstPage = false;
           cursor = result.snapshot?.current_sequence ?? 0;

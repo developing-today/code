@@ -866,6 +866,19 @@ export function buildAttentionFlags(
       }
     }
   }
+  for (const credential of quota.credentialLifecycle ?? []) {
+    if (credential.state !== "expired" && credential.state !== "expiring" && credential.state !== "rejected") continue;
+    const deadline = credential.expiresAt ? ` · expires ${credential.expiresAt.slice(0, 10)}` : "";
+    const reason = credential.reason ? ` · ${credential.reason}` : "";
+    const action = credential.userAction ? ` · user action: ${credential.userAction.title}` : "";
+    flags.push({
+      kind: "credential-lifecycle",
+      label: `${credential.providerName} · ${credential.label} — ${credential.state}`,
+      detail: `${credential.state}${deadline}${reason}${action}`,
+      href: `/quota/service/${encodeURIComponent(credential.serviceId)}`,
+      severity: credential.state === "expired" || credential.state === "rejected" ? 1000 : 500,
+    });
+  }
   for (const svc of usage.services) {
     for (const m of svc.metrics) {
       if (m.percent != null && m.percent > BUBBLE_PCT) {
@@ -905,7 +918,9 @@ export function buildAttentionFlags(
   // Worst first: over-limit by percent, then PAYG by dollars — the two
   // severities are different units, so kinds stay grouped, worst kind
   // (over-limit) first per the design's "worst first" reading order.
-  return flags.sort((a, b) => (a.kind === b.kind ? b.severity - a.severity : a.kind === "over-limit" ? -1 : 1));
+  const rank = (kind: AttentionFlag["kind"]): number =>
+    kind === "credential-lifecycle" ? 0 : kind === "over-limit" ? 1 : kind === "payg-unbilled" ? 2 : 3;
+  return flags.sort((a, b) => (rank(a.kind) === rank(b.kind) ? b.severity - a.severity : rank(a.kind) - rank(b.kind)));
 }
 
 export interface Freshness {

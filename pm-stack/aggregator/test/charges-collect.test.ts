@@ -67,8 +67,10 @@ describe("mergeChargeRows canonical-label dedupe", () => {
   // the whole-token "Meta" spelling so it still matches the hand-fed
   // "Meta PAYG spill" row for the same charge.
   test("a canonicalized auto row still dedupes the merchant-spelled hand-fed row", () => {
-    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20 }];
-    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20 }];
+    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20, method: "card", source: "Plaid" }];
+    const handFed = [
+      { at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20, method: "card", source: "Gmail card alert" },
+    ];
     expect(mergeChargeRows(auto, handFed)).toEqual(auto);
   });
 
@@ -77,8 +79,10 @@ describe("mergeChargeRows canonical-label dedupe", () => {
     ["AI", "RAILWAY"],
   ]) {
     test(`a short label does not match inside unrelated merchant token ${autoLabel}`, () => {
-      const auto = [{ at: "2026-10-01", label: autoLabel, amountUsd: 20 }];
-      const handFed = [{ at: "2026-10-01", label: handFedLabel, amountUsd: 20 }];
+      const auto = [{ at: "2026-10-01", label: autoLabel, amountUsd: 20, method: "card", source: "Plaid" }];
+      const handFed = [
+        { at: "2026-10-01", label: handFedLabel, amountUsd: 20, method: "card", source: "Gmail card alert" },
+      ];
       expect(
         mergeChargeRows(auto, handFed)
           .map((row) => row.label)
@@ -88,14 +92,18 @@ describe("mergeChargeRows canonical-label dedupe", () => {
   }
 
   test("Meta PAYG spill still dedupes against the METAPAY merchant alias", () => {
-    const auto = [{ at: "2026-10-01", label: "METAPAY", amountUsd: 20 }];
-    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20 }];
+    const auto = [{ at: "2026-10-01", label: "METAPAY", amountUsd: 20, method: "card", source: "Plaid" }];
+    const handFed = [
+      { at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 20, method: "card", source: "Gmail card alert" },
+    ];
     expect(mergeChargeRows(auto, handFed)).toEqual(auto);
   });
 
   test("a different amount under the same provider still keeps both rows", () => {
-    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20 }];
-    const handFed = [{ at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 25 }];
+    const auto = [{ at: "2026-10-01", label: "Meta Model API", amountUsd: 20, method: "card", source: "Plaid" }];
+    const handFed = [
+      { at: "2026-10-01", label: "Meta PAYG spill", amountUsd: 25, method: "card", source: "Gmail card alert" },
+    ];
     expect(mergeChargeRows(auto, handFed)).toHaveLength(2);
   });
 });

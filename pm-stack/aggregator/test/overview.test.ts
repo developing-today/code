@@ -17,7 +17,13 @@ const health: HealthView = {
   bootAt: "2026-10-29T00:00:00Z",
   degraded: false,
   services: [],
-  feed: { generatedAt: null, fileMtime: null, ageMs: 60_000, sections: [] },
+  feed: {
+    generatedAt: null,
+    fileMtime: null,
+    ageMs: 60_000,
+    checkout: { state: "unknown", reason: "test fixture" },
+    sections: [],
+  },
   jobs: {
     orchestration: { state: "unknown" },
     collector: { generatedAt: null, fileMtime: null, ageMs: null },

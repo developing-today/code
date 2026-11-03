@@ -340,6 +340,10 @@ function finishPrompt(sessionId, result, error) {
   const pending = pendingPrompts.get(sessionId);
   if (!pending) return;
   pendingPrompts.delete(sessionId);
+  // A cancel marker belongs to the prompt it arrived during. Always clear
+  // it when that prompt reaches a terminal event so a cancel racing
+  // completion (or an error) cannot mislabel the next prompt (#4618).
+  cancelledSessions.delete(sessionId);
   if (error) sendError(pending.requestId, -32603, error);
   else sendResult(pending.requestId, result);
 }
@@ -372,6 +376,7 @@ function handleServeEvent(event) {
       if (sessionId && pendingPrompts.has(sessionId)) {
         const message =
           data?.error?.message || data?.message || data?.error?.name || 'session execution failed';
+        cancelledSessions.delete(sessionId);
         finishPrompt(sessionId, null, `serve session error: ${message}`);
       }
       break;
@@ -476,6 +481,7 @@ const handlers = {
       });
     } catch (err) {
       pendingPrompts.delete(sessionId);
+      cancelledSessions.delete(sessionId);
       throw err;
     }
     return undefined; // response deferred to finishPrompt
@@ -484,6 +490,12 @@ const handlers = {
   async 'session/cancel'(params) {
     const sessionId = params?.sessionId;
     if (!sessionId || !sessions.has(sessionId)) return;
+    // A cancel arriving after the prompt already reached a terminal event
+    // must not arm a stale marker for the next prompt (#4618). Prompt-state
+    // checks here are synchronous with finishPrompt, rather than racy with
+    // the abort POST outcome, because this prompt already holds a pending
+    // ACP request; terminal-event cleanup is gated on the same map.
+    if (!pendingPrompts.has(sessionId)) return;
     cancelledSessions.add(sessionId);
     try {
       await serveJson(`/api/session/${sessionId}/interrupt`, {

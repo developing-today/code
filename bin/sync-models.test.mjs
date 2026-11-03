@@ -32,6 +32,31 @@ const { parseJsonc, parseJsoncTree, removeJsoncPath } = new Function(
   'return { parseJsonc, parseJsoncTree, removeJsoncPath };',
 )();
 
+const loadPolicyStart = source.indexOf('function loadPolicy() {');
+assert.notEqual(loadPolicyStart, -1, 'loadPolicy not found in sync-models.mjs');
+const loadPolicyEnd = source.indexOf('\n}\n', loadPolicyStart);
+assert.notEqual(loadPolicyEnd, -1, 'loadPolicy body not terminated as expected');
+const loadPolicyFactory = new Function(
+  'fs',
+  'POLICY_PATH',
+  `${source.slice(loadPolicyStart, loadPolicyEnd + 3)}\nreturn loadPolicy;`,
+);
+
+const compareVersionsStart = source.indexOf('const compareVersions = (a, b) => {');
+assert.notEqual(compareVersionsStart, -1, 'compareVersions not found in sync-models.mjs');
+const allowedModelIdsStart = source.indexOf('function allowedModelIds(');
+assert.notEqual(allowedModelIdsStart, -1, 'allowedModelIds not found in sync-models.mjs');
+const allowedModelIdsEnd = source.indexOf('\n}\n', allowedModelIdsStart);
+assert.notEqual(allowedModelIdsEnd, -1, 'allowedModelIds body not terminated as expected');
+const allowedModelIds = new Function(
+  `${source.slice(compareVersionsStart, allowedModelIdsEnd + 3)}\nreturn allowedModelIds;`,
+)();
+
+const loadPolicyFrom = policy => loadPolicyFactory(
+  { existsSync: () => true, readFileSync: () => JSON.stringify(policy) },
+  'test-policy.json',
+)();
+
 test('parses a config with a multi-line block comment', () => {
   const config = parseJsonc(`{
     /* multi
@@ -78,6 +103,19 @@ test('still throws on a genuinely malformed config', () => {
   assert.throws(() => parseJsonc('{ "a": 1'));
 });
 
+for (const family of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+  test(`rejects inherited family name ${JSON.stringify(family)} in provider keep list`, () => {
+    const policy = {
+      families: { known: '^model-(\\d+)$' },
+      providers: { example: { keep: [family] } },
+    };
+    assert.throws(
+      () => loadPolicyFrom(policy),
+      error => error.message === `sync-models.policy.json: example keeps unknown family "${family}"`,
+    );
+  });
+}
+
 const inlineCommentCases = [
   ['after the comma', `{
   "remove": true, // keep this comment
@@ -106,6 +144,40 @@ for (const [placement, text] of inlineCommentCases) {
     );
   });
 }
+
+
+test('a family pattern without capture group 1 does not select an id or throw', () => {
+  const policy = { families: { plain: '^plain-model$' } };
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['plain'] }, ['plain-model']),
+    new Set(),
+  );
+});
+
+test('a non-participating optional capture does not prevent participating ids from selection', () => {
+  const policy = { families: { versioned: '^(?:model-(\\d+)|stable)$' } };
+  assert.deepEqual(
+    allowedModelIds(policy, { keep: ['versioned'] }, ['stable', 'model-2']),
+    new Set(['model-2']),
+  );
+});
+
+test('shipped policy still loads unchanged and known families select the newest model', () => {
+  const policyPath = path.join(binDir, 'sync-models.policy.json');
+  const shippedPolicy = JSON.parse(fs.readFileSync(policyPath, 'utf-8'));
+  const loadShippedPolicy = loadPolicyFactory(fs, policyPath);
+  const loadedPolicy = loadShippedPolicy();
+
+  assert.deepEqual(loadedPolicy, shippedPolicy);
+  assert.deepEqual(
+    allowedModelIds(
+      loadedPolicy,
+      { keep: ['gemini-flash'] },
+      ['gemini-1-flash', 'gemini-2-flash'],
+    ),
+    new Set(['gemini-2-flash']),
+  );
+});
 
 test('removes a comment-free member and leaves parseable JSONC', () => {
   const output = removeJsoncPath(`{

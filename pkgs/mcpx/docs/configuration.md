@@ -993,6 +993,12 @@ skipped launcher phases).
 | `retention.maxTools` | int | `24` | daemon | no | `--retention-max-tools` | `MCPX_RETENTION_MAX_TOOLS` | maximum active tools in reactive working set |
 | `retention.stickyWindow` | duration | `2h` | daemon | no | `--retention-sticky-window` | `MCPX_RETENTION_STICKY_WINDOW` | duration explicitly requested tools remain retained |
 
+### sampling
+
+| setting | kind | default | scope | hot | flag | variable | governs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `sampling.answerLocally` | bool | `false` | daemon | no | `--sampling-answer-locally` | `MCPX_SAMPLING_ANSWER_LOCALLY` | answer upstream sampling requests with mcpx's configured model provider instead of relaying them to the caller |
+
 ### script
 
 | setting | kind | default | scope | hot | flag | variable | governs |

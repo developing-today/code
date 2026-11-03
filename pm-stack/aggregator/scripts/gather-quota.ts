@@ -107,6 +107,7 @@ import {
   gatherClinePass,
 } from "../src/clinepass-adapter.ts";
 import type { CredentialRef } from "../src/token-adapter.ts";
+import { safeProviderReason } from "../src/credential-lifecycle.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -160,6 +161,36 @@ interface AuthModule {
   openCodeLocalCredentialSource: (opts: { dbPath: string }) => unknown;
 }
 
+interface ClaudeCredentialSource {
+  loadClaudeCredential: () => Promise<{
+    expiresAt?: number | null;
+    source?: "keychain" | "credentials-file" | "opencode-auth" | "env";
+  } | null>;
+}
+
+/** Read only Claude expiry metadata; credential values stay local and are discarded. */
+async function claudeExpiryMetadata(): Promise<{
+  expiresAt?: string;
+  source?: "claude-code" | "opencode" | "environment";
+} | null> {
+  try {
+    const auth = (await import(join(libDir, "quota/providers/claude/auth.js"))) as unknown as ClaudeCredentialSource;
+    const credential = await auth.loadClaudeCredential();
+    if (!credential) return null;
+    const metadata: { expiresAt?: string; source?: "claude-code" | "opencode" | "environment" } = {};
+    if (typeof credential.expiresAt === "number" && Number.isFinite(credential.expiresAt)) {
+      const expiry = new Date(credential.expiresAt);
+      if (Number.isFinite(expiry.getTime())) metadata.expiresAt = expiry.toISOString();
+    }
+    if (credential.source === "keychain" || credential.source === "credentials-file") metadata.source = "claude-code";
+    else if (credential.source === "opencode-auth") metadata.source = "opencode";
+    else if (credential.source === "env") metadata.source = "environment";
+    return metadata;
+  } catch {
+    return null;
+  }
+}
+
 async function writeAtomic(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${process.pid}`;
@@ -177,10 +208,10 @@ async function failTick(tickAt: string, started: number, error: string): Promise
     ok: false,
     durationMs: Date.now() - started,
     perProvider: {},
-    error,
+    error: safeProviderReason(error),
   };
   await writeHeartbeat(hb).catch(() => {});
-  console.error(`quota-gatherer: tick failed before providers ran: ${error}`);
+  console.error(`quota-gatherer: tick failed before providers ran: ${safeProviderReason(error)}`);
   return 1;
 }
 
@@ -321,7 +352,7 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
     return done(
       entryFromTurso(null, null, {
         measuredAt: tickIso,
-        error: err instanceof Error ? err.message : String(err),
+        error: safeProviderReason(err instanceof Error ? err.message : String(err)),
       }),
     );
   }
@@ -360,12 +391,14 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
     ref = credentialRefFromConfig(process.env.CLINEPASS_CREDENTIAL_REF);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    const entry = clinePassErrorEntry(safeProviderReason(detail), tickIso);
+    entry.credentialWatch = true;
     return {
       id: CLINEPASS_PROVIDER_ID,
       state: "error",
       ms: Date.now() - t0,
-      entries: [clinePassErrorEntry(detail, tickIso)],
-      error: detail,
+      entries: [entry],
+      error: safeProviderReason(detail),
     };
   }
   if (!ref) return null;
@@ -377,6 +410,7 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
   });
   const entry =
     outcome.value ?? clinePassErrorEntry(outcome.detail ?? `cline-pass adapter: ${outcome.status}`, tickIso);
+  entry.credentialWatch = true;
   return {
     id: CLINEPASS_PROVIDER_ID,
     state: outcome.status === "ok" ? "ok" : "error",
@@ -419,7 +453,7 @@ async function runProvider(quota: QuotaModule, id: string, tickIso: string): Pro
       state: "error",
       ms: Date.now() - t0,
       entries: [],
-      error: err instanceof Error ? err.message : String(err),
+      error: safeProviderReason(err instanceof Error ? err.message : String(err)),
     };
   }
 }
@@ -525,6 +559,19 @@ async function main(): Promise<number> {
     }
   }
 
+  // The Claude auth source exposes an expiry timestamp. Persist only that
+  // metadata and its source class, never the credential object or values.
+  const claudeRun = runs.find((run) => run.id === "claude");
+  if (claudeRun?.entries.length) {
+    const metadata = await claudeExpiryMetadata();
+    if (metadata) {
+      for (const entry of claudeRun.entries) {
+        if (metadata.expiresAt) entry.credentialExpiresAt = metadata.expiresAt;
+        if (metadata.source) entry.credentialSource = metadata.source;
+      }
+    }
+  }
+
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
@@ -546,6 +593,9 @@ async function main(): Promise<number> {
   // onto the four split hub pools and the snapshot writer continues
   // the pool-level series.
   const entries = entriesWithPoolSplits(runs.flatMap((r) => r.entries));
+  for (const entry of entries) {
+    if (entry.error) entry.error = safeProviderReason(entry.error);
+  }
 
   const perProvider: QuotaGatherHeartbeat["perProvider"] = {};
   for (const run of runs) {
@@ -553,10 +603,10 @@ async function main(): Promise<number> {
       state: run.state,
       ms: run.ms,
       rows: run.entries.length,
-      ...(run.error ? { error: run.error } : {}),
+      ...(run.error ? { error: safeProviderReason(run.error) } : {}),
     };
     console.log(
-      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${run.error.slice(0, 140)}` : ""}`,
+      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${safeProviderReason(run.error).slice(0, 140)}` : ""}`,
     );
   }
 

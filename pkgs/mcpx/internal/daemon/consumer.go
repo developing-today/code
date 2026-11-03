@@ -58,6 +58,10 @@ type ConsumerPolicy struct {
 	ModelDefault        string
 	ModelBudget         int
 	ModelTimeout        time.Duration
+
+	// SamplingAnswerLocally is sampling.answerLocally: answer upstream
+	// sampling requests from the configured model layer (#1925 slice 3).
+	SamplingAnswerLocally bool
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -163,6 +167,7 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.ModelDefault = set.String("model.default")
 	p.ModelBudget = set.Int("model.budget")
 	p.ModelTimeout = set.Duration("model.timeout")
+	p.SamplingAnswerLocally = set.Bool("sampling.answerLocally")
 	return p
 }
 
