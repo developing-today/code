@@ -794,6 +794,14 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "response",
   },
+  writes_clear: {
+    method: "POST",
+    path: "/v1/writes/{server}/clear",
+    params: {
+      server: { in: "path", required: true },
+    },
+    response: "json",
+  },
 }
 
 /** A refusal from the daemon, with the status and the body kept. */
@@ -1495,5 +1503,13 @@ export class DaemonOps {
    */
   types(args: { ns?: string; instructions?: "0" | "1"; profile?: string; skipDefault?: "0" | "1"; allProfiles?: "0" | "1" } = {}, opts: CallOptions = {}): Promise<Response> {
     return this.invoke("types", args, opts) as Promise<Response>
+  }
+
+  /**
+   * Clear a server's unknown-write block. `POST /v1/writes/{server}/clear`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  writesClear(args: { server: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("writes_clear", args, opts) as Promise<unknown>
   }
 }

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
@@ -27,6 +28,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/policy"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
@@ -107,6 +109,9 @@ type Registry struct {
 	// wait for them. Both are memory only; see internal/secrets.
 	secrets *secrets.Store
 	board   *secrets.Board
+	// writeLedger persists post-dispatch calls whose outcome could not be
+	// established, so a restart cannot make a retry silently unsafe.
+	writeLedger *WriteLedger
 }
 
 // leaseState remembers which pool keys a caller created, so releasing a
@@ -199,18 +204,23 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		return nil, err
 	}
 	raw, _ := json.Marshal(cfg.MCPServers)
+	writeLedger, err := OpenWriteLedger(paths.State)
+	if err != nil {
+		return nil, err
+	}
 
 	r := &Registry{
-		cfg:     cfg,
-		paths:   paths,
-		hash:    HashConfig(raw),
-		pools:   make(map[string]*pool.Pool, len(servers)),
-		views:   make(map[string]*config.Resolved, len(servers)),
-		leases:  map[string]*leaseState{},
-		asks:    newAskTable(),
-		logf:    logf,
-		secrets: secrets.NewStore(),
-		board:   secrets.NewBoard(defaults.SecretRequestRetention),
+		cfg:         cfg,
+		paths:       paths,
+		hash:        HashConfig(raw),
+		pools:       make(map[string]*pool.Pool, len(servers)),
+		views:       make(map[string]*config.Resolved, len(servers)),
+		leases:      map[string]*leaseState{},
+		asks:        newAskTable(),
+		logf:        logf,
+		secrets:     secrets.NewStore(),
+		board:       secrets.NewBoard(defaults.SecretRequestRetention),
+		writeLedger: writeLedger,
 	}
 	r.loadSessions()
 	if paths.State != "" {
@@ -2192,7 +2202,11 @@ func failureStatus(err error) int {
 	var secret SecretRequired
 	var denied ErrWriteDenied
 	var argDenied ErrArgumentRuleDenied
+	var unknownOutcome ErrUnknownOutcome
 	switch {
+	case errors.As(err, &unknownOutcome):
+		// The daemon has durable state that makes repeating this write unsafe.
+		return http.StatusConflict
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
 		// a bad request and not an upstream failure.
@@ -2260,12 +2274,50 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		return nil, err
 	}
 	defer r.joinAsk(ctx, server, rs.Key)()
-	res, err := p.Call(withRequestedCallTimeout(ctx), rs, effTool, effArgs)
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "call")
 
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
 	return res, nil
+}
+
+func toolReadOnly(p *pool.Pool, tool string) bool {
+	if p == nil {
+		return false
+	}
+	tools, _, _ := p.CachedSchemas()
+	for _, candidate := range tools {
+		if candidate.Name == tool {
+			return policy.Classify(candidate.Annotations).ReadOnly
+		}
+	}
+	// Missing annotations are conservatively treated as a write.
+	return false
+}
+
+func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, tool string, args any, rs config.ResolvedScope, surface string) (json.RawMessage, error) {
+	var dispatched atomic.Bool
+	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
+	result, err := p.Call(callCtx, rs, tool, args)
+	if err != nil && dispatched.Load() && !toolReadOnly(p, tool) && r.writeLedger != nil {
+		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
+	}
+	return result, err
+}
+
+func (r *Registry) recordUnknownOutcome(p *pool.Pool, fallbackServer, tool string, args any, surface string) error {
+	server := p.Name()
+	if server == "" {
+		server = fallbackServer
+	}
+	digest := sha256.Sum256([]byte(policy.CanonicalArgs(args)))
+	record := unknownWriteRecord{
+		Server: server, Tool: tool,
+		ArgsSHA256: hex.EncodeToString(digest[:]),
+		At:         time.Now().UTC(), Surface: surface,
+	}
+	return ErrUnknownOutcome{Record: record, PersistenceError: r.writeLedger.Record(record)}
 }
 
 // resolveAndGuard picks the instance key for a tool call and applies the

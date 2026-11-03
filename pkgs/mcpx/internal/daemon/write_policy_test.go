@@ -2,8 +2,13 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +27,7 @@ import (
 func writePolicyPool(t *testing.T, writePolicy string, annotations string) *pool.Pool {
 	t.Helper()
 	p := pool.New(&config.Resolved{
-		Server:      &config.Server{Command: "demo"},
+		Server:      &config.Server{Name: "demo", Command: "demo"},
 		Namespace:   "demo",
 		WritePolicy: writePolicy,
 	})
@@ -30,6 +35,90 @@ func writePolicyPool(t *testing.T, writePolicy string, annotations string) *pool
 		[]mcpclient.Tool{{Name: "wipe", Annotations: json.RawMessage(annotations)}},
 		nil, nil, "", time.Now(), time.Time{}, false)
 	return p
+}
+
+func TestUnknownOutcomeBlocksWritesUntilClearedAndAllowsReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := OpenWriteLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := writePolicyRegistry("allow")
+	r.writeLedger = ledger
+	p := writePolicyPool(t, "", `{"readOnlyHint":false}`)
+	args := map[string]any{"z": 2, "a": "private-argument"}
+	callErr := r.recordUnknownOutcome(p, "demo", "wipe", args, "call")
+	var recorded ErrUnknownOutcome
+	if !errors.As(callErr, &recorded) {
+		t.Fatalf("recordUnknownOutcome error = %T %v, want ErrUnknownOutcome", callErr, callErr)
+	}
+	wantDigest := sha256.Sum256([]byte(`{"a":"private-argument","z":2}`))
+	if got := recorded.Record.ArgsSHA256; got != hex.EncodeToString(wantDigest[:]) {
+		t.Fatalf("argument digest = %s, want SHA-256 of canonical arguments", got)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, writeLedgerFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "private-argument") {
+		t.Fatalf("ledger persisted original arguments: %s", data)
+	}
+	if _, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil); err == nil {
+		t.Fatal("write passed despite the server's unknown outcome")
+	} else {
+		var blocked ErrUnknownOutcome
+		if !errors.As(err, &blocked) {
+			t.Fatalf("applyWritePolicy error = %T %v, want ErrUnknownOutcome", err, err)
+		}
+		if got := failureStatus(err); got != 409 {
+			t.Errorf("failureStatus(ErrUnknownOutcome) = %d, want 409", got)
+		}
+		if !strings.Contains(err.Error(), "mcpx writes clear demo") {
+			t.Errorf("refusal omits the clear command: %v", err)
+		}
+	}
+
+	// A positively declared read-only call remains available on a blocked
+	// server, but only after the schema says so.
+	p.SetSchemas(
+		[]mcpclient.Tool{{Name: "wipe", Annotations: json.RawMessage(`{"readOnlyHint":true}`)}},
+		nil, nil, "", time.Now(), time.Time{}, false)
+	if _, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil); err != nil {
+		t.Fatalf("read-only call was blocked: %v", err)
+	}
+
+	cleared, err := ledger.Clear("demo")
+	if err != nil || !cleared {
+		t.Fatalf("Clear() = %v, %v; want true, nil", cleared, err)
+	}
+	p.SetSchemas(
+		[]mcpclient.Tool{{Name: "wipe", Annotations: json.RawMessage(`{"readOnlyHint":false}`)}},
+		nil, nil, "", time.Now(), time.Time{}, false)
+	if _, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil); err != nil {
+		t.Fatalf("write remained blocked after clear: %v", err)
+	}
+}
+
+func TestRegistryPreDispatchFailureDoesNotRecordUnknownOutcome(t *testing.T) {
+	ledger, err := OpenWriteLedger(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := writePolicyPool(t, "", `{"readOnlyHint":false}`)
+	r := &Registry{
+		pools:       map[string]*pool.Pool{"demo": p},
+		writeLedger: ledger,
+		logf:        func(string, ...any) {},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = r.Call(ctx, "demo", "wipe", config.CallContext{}, map[string]any{"id": 1})
+	if err == nil {
+		t.Fatal("Call() with a cancelled context unexpectedly succeeded")
+	}
+	if _, blocked := ledger.Lookup("demo"); blocked {
+		t.Fatal("pre-dispatch failure incorrectly recorded an unknown outcome")
+	}
 }
 
 func writePolicyRegistry(mode string) *Registry {

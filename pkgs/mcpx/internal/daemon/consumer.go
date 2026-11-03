@@ -516,7 +516,8 @@ func (e ErrArgumentRuleDenied) Error() string {
 
 // applyWritePolicy is the write policy gate (#1979, Phase 1): before a
 // call, decide from its tool's annotations and the effective mode
-// whether it proceeds, asks, or is refused.
+// whether it proceeds, asks, or is refused. The ledger and argument-rule
+// hooks run first, in the order fixed by #2126.
 //
 // The effective mode is the server's own writePolicy when it sets one,
 // else the daemon's policy.write. An empty effective mode -- a zero
@@ -532,30 +533,61 @@ func (e ErrArgumentRuleDenied) Error() string {
 // under allow confirmDestructive still runs, which is how the floor
 // reaches a destructive call the policy let through.
 func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
-	// Argument rules (#1986) sit in the evaluator's fixed order
-	// (#2126) after the hidden-tool check -- which resolveAndGuard has
-	// already applied -- and the Phase 3 ledger hook (still a no-op),
-	// and BEFORE the write mode below: a call whose arguments break a
-	// rule is refused whatever the mode says, and a call that
-	// satisfies every rule has no opinion from this step and falls
-	// through to the mode. Rules are read from the requested server's
-	// VIEW for the same reason writePolicy is: aliases share a pool
-	// but not a configuration. The check runs even when no write
-	// policy is configured -- rules are their own opt-in -- and before
-	// the pool is touched, so a refused call starts nothing.
-	if view, ok := r.View(server); ok && !view.ArgumentRules.Empty() {
-		rules := view.ArgumentRules
-		var violation *config.ArgumentRuleViolation
-		evaluator := policy.Evaluator{ArgumentRules: func() (policy.Decision, bool) {
-			if v := rules.Check(tool, args); v != nil {
+	// A record only affects a server with an unknown write. Consult it
+	// before argument rules, the write mode, or the destructive floor.
+	// A read-only hint is exempt; if it cannot be refreshed, fail closed
+	// and keep the operator's clear path visible in the error.
+	var ledgerRefusal ErrUnknownOutcome
+	ledgerCheck := func() (policy.Decision, bool) {
+		if r.writeLedger == nil {
+			return policy.Decision{}, false
+		}
+		serverName := p.Name()
+		if serverName == "" {
+			serverName = r.CanonicalName(server)
+		}
+		if serverName == "" {
+			serverName = server
+		}
+		record, blocked := r.writeLedger.Lookup(serverName)
+		if !blocked {
+			return policy.Decision{}, false
+		}
+		tools, _, at := p.CachedSchemas()
+		if at.IsZero() || p.SchemaExpired() {
+			fresh, _, err := p.RefreshSchemas(ctx)
+			if err != nil {
+				ledgerRefusal = ErrUnknownOutcome{Record: record,
+					Reason: "could not verify whether this tool is read-only: " + err.Error()}
+				return policy.Decision{Kind: policy.DecideDeny, Reason: ledgerRefusal.Error()}, true
+			}
+			tools = fresh
+		}
+		for _, candidate := range tools {
+			if candidate.Name == tool && policy.Classify(candidate.Annotations).ReadOnly {
+				return policy.Decision{}, false
+			}
+		}
+		ledgerRefusal = ErrUnknownOutcome{Record: record}
+		return policy.Decision{Kind: policy.DecideDeny, Reason: ledgerRefusal.Error()}, true
+	}
+
+	var violation *config.ArgumentRuleViolation
+	argumentRules := func() (policy.Decision, bool) {
+		if view, ok := r.View(server); ok && !view.ArgumentRules.Empty() {
+			if v := view.ArgumentRules.Check(tool, args); v != nil {
 				violation = v
 				return policy.Decision{Kind: policy.DecideDeny, Reason: v.Error()}, true
 			}
-			return policy.Decision{}, false
-		}}
-		if d := evaluator.Evaluate(policy.Input{Mode: policy.ModeAllow}); d.Kind == policy.DecideDeny {
-			return false, ErrArgumentRuleDenied{Tool: p.Namespace() + "." + tool, Violation: violation}
 		}
+		return policy.Decision{}, false
+	}
+	preflight := policy.Evaluator{LedgerCheck: ledgerCheck, ArgumentRules: argumentRules}
+	if d := preflight.Evaluate(policy.Input{Mode: policy.ModeAllow}); d.Kind == policy.DecideDeny {
+		if ledgerRefusal.Record.Server != "" {
+			return false, ledgerRefusal
+		}
+		return false, ErrArgumentRuleDenied{Tool: p.Namespace() + "." + tool, Violation: violation}
 	}
 
 	mode := r.consumer.WritePolicy
