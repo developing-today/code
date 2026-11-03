@@ -1245,11 +1245,11 @@
         "nixpkgs": "nixpkgs_11"
       },
       "locked": {
-        "lastModified": 1769548169,
-        "narHash": "sha256-03+JxvzmfwRu+5JafM0DLbxgHttOQZkUtDWBmeUkN8Y=",
+        "lastModified": 1792739756,
+        "narHash": "sha256-s0TeXWG5Ci75Y/Hzon0Z7NrN/fG773Rc54/z6oPFszQ=",
         "owner": "Nix-community",
         "repo": "impermanence",
-        "rev": "7b1d382faf603b6d264f58627330f9faa5cba149",
+        "rev": "fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2",
         "type": "github"
       },
       "original": {
@@ -2232,11 +2232,11 @@
         "nixpkgs": "nixpkgs_18"
       },
       "locked": {
-        "lastModified": 1793640627,
-        "narHash": "sha256-NiEOgo5BrEDPYQJdM55PPI3nZ96AWAht/drAwZt4jBU=",
+        "lastModified": 1793647881,
+        "narHash": "sha256-uX903YaUzqlP9Sw6mUdnkSSzmHlPZiYsV04pwyifotg=",
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "401ba065a15c568b15d2aaa5dbccac902ea47274",
+        "rev": "d66c71f5d4700ba16dad4c38bfe6b79aa7ac0068",
         "type": "github"
       },
       "original": {

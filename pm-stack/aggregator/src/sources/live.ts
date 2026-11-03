@@ -936,12 +936,20 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const dropped = feed.quotaDropped;
         if (
           dropped &&
-          dropped.pools + dropped.credentials + dropped.windows + dropped.activeSessions + dropped.burn > 0
+          dropped.pools +
+            dropped.credentials +
+            dropped.windows +
+            dropped.activeSessions +
+            dropped.burn +
+            dropped.poolFreshness +
+            dropped.burnTokensPerMin >
+            0
         ) {
           provenance.quota +=
             ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.credentials} credential row(s), ` +
             `${dropped.windows} window(s), ${dropped.activeSessions} active session(s), ` +
-            `${dropped.burn} burn segment(s) (#2429/#3921)`;
+            `${dropped.burn} burn segment(s), ${dropped.poolFreshness} pool freshness value(s), ` +
+            `${dropped.burnTokensPerMin} burn rate(s) (#2429/#3921/#4546)`;
         }
       } else {
         provenance.quota = "fixtures (no fleet feed file yet)";
