@@ -592,7 +592,8 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
   // BoardItems and dedupes against the Kaneo board they merge into.
   for (const item of assembleWorkItems(section)) {
     if (item.goal === undefined || !item.linedUpStatus) continue;
-    if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked") continue;
+    if (item.linedUpStatus !== "in-progress" && item.linedUpStatus !== "queued" && item.linedUpStatus !== "blocked")
+      continue;
     const refs: RefKey[] = [];
     const add = (ref: RefKey) => {
       if (!refs.includes(ref)) refs.push(ref);
@@ -802,7 +803,9 @@ export function liveSource(
             summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
           });
         } catch (err) {
-          console.error(`[events] WARNING: session event callback failed: ${err instanceof Error ? err.message : String(err)}`);
+          console.error(
+            `[events] WARNING: session event callback failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
     }

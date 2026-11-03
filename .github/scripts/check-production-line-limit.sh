@@ -184,10 +184,10 @@ for base in pkgs apps; do
   while IFS= read -r -d "" file; do
     rel="${file#"$ROOT"/}"
     case "/$rel" in
-      */tests/*) continue ;;
+    */tests/*) continue ;;
     esac
     case "$(basename "$file")" in
-      tests.rs) continue ;;
+    tests.rs) continue ;;
     esac
     prod=$(production_lines "$file")
     checked=$((checked + 1))
