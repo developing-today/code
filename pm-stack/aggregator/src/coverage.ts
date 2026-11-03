@@ -196,13 +196,34 @@ export function diffCoverage(current: CoverageReport, baseline: CoverageReport |
  * be the baseline either, or the delta would measure only the time
  * since the last refresh instead of the week.
  */
+
+/**
+ * A stored anchor is usable only if it is a string that parses as a
+ * real calendar date. `new Date()` alone is not enough: it yields NaN
+ * for garbage ("not-a-date") but silently rolls an impossible date
+ * (2026-02-30) over to a neighbouring day, so the date components are
+ * round-tripped — the parsed date must still be the date the string
+ * names. (#5196)
+ */
+export function isValidAnchorAt(value: unknown): value is string {
+  if (typeof value !== "string" || value === "") return false;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return false;
+  const named = /^\d{4}-\d{2}-\d{2}/.exec(value);
+  if (named && parsed.toISOString().slice(0, 10) !== named[0]) return false;
+  return true;
+}
+
 export function nextCoverageSnapshot(
   stored: CoverageSnapshotFile | null,
   current: CoverageReport,
   now = new Date(),
 ): CoverageSnapshotFile {
   if (!stored) return { baseline: null, current, weekly: current, anchorAt: current.generatedAt };
-  const anchor = stored.anchorAt ?? stored.current.generatedAt;
+  // A poisoned anchor must not freeze rotation forever (#5196): an
+  // unparseable or impossible anchorAt falls back to the current
+  // report's own timestamp, the pre-anchorAt behaviour.
+  const anchor = isValidAnchorAt(stored.anchorAt) ? stored.anchorAt : stored.current.generatedAt;
   const age = now.getTime() - new Date(anchor).getTime();
   if (Number.isFinite(age) && age >= COVERAGE_WEEK_MS) {
     return { baseline: stored.weekly ?? stored.current, current, weekly: current, anchorAt: now.toISOString() };
@@ -221,6 +242,12 @@ export class CoverageSnapshotStore {
     try {
       const parsed = JSON.parse(await readFile(this.file, "utf8")) as CoverageSnapshotFile;
       if (!parsed || typeof parsed !== "object" || !parsed.current || !Array.isArray(parsed.current.repos)) {
+        return null;
+      }
+      // A present-but-unusable anchorAt is corruption, and corrupt
+      // reads as absent (#5196): returning the file would re-persist
+      // the bad anchor on every panel read and freeze rotation.
+      if (parsed.anchorAt !== undefined && !isValidAnchorAt(parsed.anchorAt)) {
         return null;
       }
       return parsed;
