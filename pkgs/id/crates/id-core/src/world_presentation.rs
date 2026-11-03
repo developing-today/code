@@ -1014,4 +1014,80 @@ mod tests {
         });
         assert!(screen(too_large).is_err());
     }
+
+    #[test]
+    fn enforces_screen_height_and_zero_dimension_caps() {
+        // Height one past the cap is rejected, exactly like width.
+        let too_tall = json!({
+            "kind": "screen", "version": 1, "width": 1,
+            "height": MAX_SCREEN_HEIGHT + 1, "rows": ["x"], "styles": [[]],
+        });
+        assert!(screen(too_tall).is_err());
+
+        // Zero is below the 1..=MAX range on both axes.
+        let zero_width = json!({
+            "kind": "screen", "version": 1, "width": 0,
+            "height": 1, "rows": ["x"], "styles": [[]],
+        });
+        assert!(screen(zero_width).is_err());
+        let zero_height = json!({
+            "kind": "screen", "version": 1, "width": 1,
+            "height": 0, "rows": [], "styles": [],
+        });
+        assert!(screen(zero_height).is_err());
+    }
+
+    #[test]
+    fn rejects_style_rows_that_do_not_match_height_and_empty_spans() {
+        // A non-empty styles array carries exactly one row per screen row.
+        let mismatched = json!({
+            "kind": "screen", "version": 1, "width": 2, "height": 2,
+            "rows": ["ab", "cd"], "styles": [[]],
+        });
+        assert!(screen(mismatched).is_err());
+
+        // A span must cover at least one column.
+        let empty_span = json!({
+            "kind": "screen", "version": 1, "width": 2, "height": 1,
+            "rows": ["ab"],
+            "styles": [[{"x": 0, "length": 0, "fg": 1, "bg": 0, "bold": false}]],
+        });
+        assert!(screen(empty_span).is_err());
+    }
+
+    #[test]
+    fn rejects_style_span_totals_past_the_cap() {
+        // Every row filled with single-column spans crosses
+        // MAX_SCREEN_STYLE_SPANS in total (120 x 50 = 6000 > 4096).
+        let rows: Vec<String> = (0..MAX_SCREEN_HEIGHT)
+            .map(|_| "x".repeat(MAX_SCREEN_WIDTH))
+            .collect();
+        let span_row: Vec<Value> = (0..MAX_SCREEN_WIDTH)
+            .map(|x| json!({"x": x, "length": 1, "fg": 1, "bg": 0, "bold": false}))
+            .collect();
+        let styles: Vec<Value> = (0..MAX_SCREEN_HEIGHT)
+            .map(|_| Value::Array(span_row.clone()))
+            .collect();
+        let flooded = json!({
+            "kind": "screen", "version": 1,
+            "width": MAX_SCREEN_WIDTH, "height": MAX_SCREEN_HEIGHT,
+            "rows": rows, "styles": styles,
+        });
+        assert!(screen(flooded).is_err());
+    }
+
+    #[test]
+    fn screen_serialization_is_deterministic() {
+        let payload = json!({
+            "kind": "screen", "version": 1, "width": 4, "height": 2,
+            "rows": ["abcd", "wxyz"],
+            "styles": [[{"x": 0, "length": 2, "fg": 3, "bg": 1, "bold": true}], []],
+        });
+        let first = screen(payload.clone()).unwrap().unwrap();
+        let second = screen(payload).unwrap().unwrap();
+        assert_eq!(first, second);
+        let once = serde_json::to_string(&first).unwrap();
+        assert_eq!(serde_json::to_string(&second).unwrap(), once);
+        assert_eq!(serde_json::to_string(&first).unwrap(), once);
+    }
 }

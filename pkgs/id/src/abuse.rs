@@ -444,14 +444,31 @@ impl WindowCounter {
         u64::try_from(weighted).unwrap_or(u64::MAX)
     }
 
+    /// This counter as it would look after `roll(now_ms)`, without
+    /// mutating: the stored counter only rolls on the mutating charge
+    /// paths, so an estimate taken from the unrolled state keeps
+    /// reporting the last charged window in full forever (#4683).
+    /// Rolling a copy keeps the read path `&self`; a second roll at
+    /// the same `now_ms` is a no-op, so `can_admit` results on an
+    /// already-rolled counter are unchanged.
+    fn rolled(&self, now_ms: u64) -> Self {
+        let mut rolled = *self;
+        rolled.roll(now_ms);
+        rolled
+    }
+
     fn estimate_bytes(&self, now_ms: u64) -> u64 {
-        self.cur_bytes
-            .saturating_add(self.prev_weighted(self.prev_bytes, now_ms))
+        let rolled = self.rolled(now_ms);
+        rolled
+            .cur_bytes
+            .saturating_add(rolled.prev_weighted(rolled.prev_bytes, now_ms))
     }
 
     fn estimate_messages(&self, now_ms: u64) -> u64 {
-        self.cur_messages
-            .saturating_add(self.prev_weighted(self.prev_messages, now_ms))
+        let rolled = self.rolled(now_ms);
+        rolled
+            .cur_messages
+            .saturating_add(rolled.prev_weighted(rolled.prev_messages, now_ms))
     }
 
     /// Whether admitting `bytes` more bytes / one more message
@@ -1501,6 +1518,45 @@ mod budget_tests {
             .expect("recovered after roll");
         // Aged-out scopes prune away.
         assert!(eval.prune_budget_state(10_000) >= 1);
+    }
+
+    #[test]
+    fn budget_usage_rolls_the_estimate_on_the_read_path() {
+        // #4683: with no intervening charge, budget_usage must report
+        // the rolled sliding-window estimate, not the last charged
+        // window in full forever.
+        let mut policy = policy_with(0);
+        policy.per_peer = vec![BudgetLimit {
+            window_ms: 1_000,
+            bytes_per_window: 1_000,
+            messages_per_window: 10,
+        }];
+        let mut eval = budgeted(policy);
+        let ep = endpoint(11);
+        eval.check_budget(Direction::Inbound, ep, None, 100, 0)
+            .expect("first charge in the window");
+        eval.check_budget(Direction::Inbound, ep, None, 100, 0)
+            .expect("second charge in the window");
+        let usage_at = |eval: &AbuseEvaluator, now_ms: u64| {
+            let usage = eval.budget_usage(now_ms);
+            let row = usage
+                .iter()
+                .find(|(scope, _, _)| *scope == BudgetScope::Peer(ep))
+                .expect("peer usage row");
+            (row.2.bytes, row.2.messages)
+        };
+        // In-window: the full charges count.
+        assert_eq!(usage_at(&eval, 0), (200, 2));
+        // A window and a half later, still with no intervening
+        // charge: the charges are the previous window now, weighted
+        // by the half of it still inside the rolling span.
+        assert_eq!(usage_at(&eval, 1_500), (100, 1));
+        // Two or more windows later they have fully aged out, and
+        // admission at the same instant agrees with the report.
+        assert_eq!(usage_at(&eval, 2_000), (0, 0));
+        assert_eq!(usage_at(&eval, 100_000), (0, 0));
+        eval.check_budget(Direction::Inbound, ep, None, 100, 100_000)
+            .expect("admission agrees with the aged-out usage");
     }
 
     #[test]
