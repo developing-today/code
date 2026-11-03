@@ -62,12 +62,22 @@ type WriteLedger struct {
 
 // OpenWriteLedger loads the versioned ledger from the daemon state directory.
 // An empty directory is supported by in-memory registries used in tests.
-func OpenWriteLedger(stateDir string) (*WriteLedger, error) {
+// The file is isolated per configuration: FingerprintConfig over the
+// config sources keys the filename, so two configuration-specific daemons
+// sharing one state directory never overwrite each other's blocks. An
+// empty source list keeps the legacy unkeyed filename.
+func OpenWriteLedger(stateDir string, configSources ...string) (*WriteLedger, error) {
 	l := &WriteLedger{writes: map[string]unknownWriteRecord{}}
 	if stateDir == "" {
 		return l, nil
 	}
-	l.path = filepath.Join(stateDir, writeLedgerFilename)
+	name := writeLedgerFilename
+	if len(configSources) > 0 {
+		if key := FingerprintConfig(configSources); key != "" {
+			name = "unknown-writes-" + key + ".json"
+		}
+	}
+	l.path = filepath.Join(stateDir, name)
 	data, err := os.ReadFile(l.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return l, nil
@@ -193,13 +203,51 @@ func (l *WriteLedger) saveLocked(writes map[string]unknownWriteRecord) error {
 	return nil
 }
 
-func (s *Server) handleWriteClear(w http.ResponseWriter, r *http.Request) {
-	server := s.reg.CanonicalName(r.PathValue("server"))
-	if server == "" || s.reg.writeLedger == nil {
-		http.Error(w, "unknown-write ledger is unavailable", http.StatusInternalServerError)
-		return
+// clearUnknownOutcome clears the unknown-outcome block for server, and for
+// every other configured name sharing its pool. Aliases consult one block
+// (see Registry.ledgerLookupFor), so clearing one must unblock all of them.
+func (r *Registry) clearUnknownOutcome(server string) (bool, error) {
+	if r.writeLedger == nil {
+		return false, errors.New("unknown-write ledger is unavailable")
 	}
-	cleared, err := s.reg.writeLedger.Clear(server)
+	canonical := r.CanonicalName(server)
+	if canonical == "" {
+		canonical = server
+	}
+	targets := []string{server}
+	seen := map[string]bool{server: true}
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		targets = append(targets, name)
+	}
+	add(canonical)
+	if p, ok := r.Pool(server); ok && p != nil {
+		add(p.Name())
+		r.mu.RLock()
+		for name, other := range r.pools {
+			if other == p {
+				add(name)
+			}
+		}
+		r.mu.RUnlock()
+	}
+	cleared := false
+	for _, name := range targets {
+		one, err := r.writeLedger.Clear(name)
+		if err != nil {
+			return false, err
+		}
+		cleared = cleared || one
+	}
+	return cleared, nil
+}
+
+func (s *Server) handleWriteClear(w http.ResponseWriter, r *http.Request) {
+	server := r.PathValue("server")
+	cleared, err := s.reg.clearUnknownOutcome(server)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return

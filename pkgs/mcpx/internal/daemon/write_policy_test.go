@@ -121,6 +121,111 @@ func TestRegistryPreDispatchFailureDoesNotRecordUnknownOutcome(t *testing.T) {
 	}
 }
 
+// A catalogue that has expired, or been invalidated by tools/list_changed,
+// no longer proves a tool is read-only: a tool that has become writable
+// would run, lose its response, and be exempted from the ledger, leaving a
+// retry unblocked. Only a fresh catalogue may grant the exemption.
+func TestToolReadOnlyRejectsStaleCatalogue(t *testing.T) {
+	p := writePolicyPool(t, "", `{"readOnlyHint":true}`)
+	readOnly := []mcpclient.Tool{{Name: "wipe", Annotations: json.RawMessage(`{"readOnlyHint":true}`)}}
+
+	p.SetSchemas(readOnly, nil, nil, "", time.Now(), time.Time{}, false)
+	if !toolReadOnly(p, "wipe") {
+		t.Fatal("a fresh read-only annotation was not honoured")
+	}
+
+	p.SetSchemas(readOnly, nil, nil, "", time.Now().Add(-time.Hour), time.Now().Add(-time.Minute), false)
+	if toolReadOnly(p, "wipe") {
+		t.Fatal("an expired catalogue granted the read-only exemption")
+	}
+
+	p.SetSchemas(readOnly, nil, nil, "", time.Now(), time.Time{}, false)
+	p.Invalidate()
+	if toolReadOnly(p, "wipe") {
+		t.Fatal("an invalidated catalogue granted the read-only exemption")
+	}
+}
+
+// Pools are shared between aliases by process identity, and the pool keeps
+// the name of whichever alias created it. A block persisted under the
+// original name must still block every alias after a restart reorders them.
+func TestLedgerBlockSurvivesSharedPoolAliasChange(t *testing.T) {
+	ledger, err := OpenWriteLedger(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The pool's creating name differs from both aliases, which is exactly
+	// the state a reordered ResolveAll leaves behind.
+	p := writePolicyPool(t, "", `{"readOnlyHint":false}`)
+	views := map[string]*config.Resolved{
+		"aa-github": {Namespace: "aa-github"},
+		"github":    {Namespace: "github"},
+	}
+	r := &Registry{
+		pools:       map[string]*pool.Pool{"aa-github": p, "github": p},
+		views:       views,
+		order:       []string{"aa-github", "github"},
+		writeLedger: ledger,
+		logf:        func(string, ...any) {},
+	}
+	if err := ledger.Record(unknownWriteRecord{
+		Server: "github", Tool: "wipe", ArgsSHA256: strings.Repeat("d", 64),
+		At: time.Now().UTC(), Surface: "call",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, alias := range []string{"github", "aa-github"} {
+		if _, blocked := r.ledgerLookupFor(alias, p); !blocked {
+			t.Fatalf("the block recorded under the original alias was lost for %q", alias)
+		}
+		if _, err := r.applyWritePolicy(context.Background(), p, alias, "wipe", config.CallContext{}, nil); err == nil {
+			t.Fatalf("%q was allowed to write despite the recorded unknown outcome", alias)
+		}
+	}
+
+	// Clearing through either alias unblocks both.
+	cleared, err := r.clearUnknownOutcome("aa-github")
+	if err != nil || !cleared {
+		t.Fatalf("clearUnknownOutcome() = %v, %v; want true, nil", cleared, err)
+	}
+	for _, alias := range []string{"github", "aa-github"} {
+		if _, blocked := r.ledgerLookupFor(alias, p); blocked {
+			t.Fatalf("%q stayed blocked after the block was cleared", alias)
+		}
+	}
+}
+
+// The record must name the server the caller asked for, not the pool's
+// creating alias, so the refusal's `mcpx writes clear <server>` and the
+// persisted key agree.
+func TestRecordUnknownOutcomeUsesRequestedServerName(t *testing.T) {
+	ledger, err := OpenWriteLedger(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := writePolicyPool(t, "", `{"readOnlyHint":false}`) // pool name is "demo"
+	r := &Registry{
+		pools:       map[string]*pool.Pool{"github": p},
+		writeLedger: ledger,
+		logf:        func(string, ...any) {},
+	}
+	callErr := r.recordUnknownOutcome(p, "github", "wipe", map[string]any{"id": 1}, "call")
+	var recorded ErrUnknownOutcome
+	if !errors.As(callErr, &recorded) {
+		t.Fatalf("recordUnknownOutcome error = %T %v, want ErrUnknownOutcome", callErr, callErr)
+	}
+	if recorded.Record.Server != "github" {
+		t.Fatalf("recorded server = %q, want the requested name %q", recorded.Record.Server, "github")
+	}
+	if _, blocked := ledger.Lookup("github"); !blocked {
+		t.Fatal("the block was not persisted under the requested server name")
+	}
+	if !strings.Contains(callErr.Error(), "mcpx writes clear github") {
+		t.Errorf("refusal omits the clear command for the requested name: %v", callErr)
+	}
+}
+
 func writePolicyRegistry(mode string) *Registry {
 	return &Registry{consumer: ConsumerPolicy{WritePolicy: mode}}
 }

@@ -204,7 +204,7 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 		return nil, err
 	}
 	raw, _ := json.Marshal(cfg.MCPServers)
-	writeLedger, err := OpenWriteLedger(paths.State)
+	writeLedger, err := OpenWriteLedger(paths.State, cfg.Sources...)
 	if err != nil {
 		return nil, err
 	}
@@ -2286,7 +2286,14 @@ func toolReadOnly(p *pool.Pool, tool string) bool {
 	if p == nil {
 		return false
 	}
-	tools, _, _ := p.CachedSchemas()
+	tools, _, at := p.CachedSchemas()
+	// A missing, invalidated, or expired catalogue cannot be trusted to
+	// exempt the call: Pool.Invalidate clears the timestamp but retains
+	// the old tools, and an expired deadline means the annotations may
+	// no longer hold. Conservatively treat all of those as a write.
+	if at.IsZero() || p.SchemaExpired() {
+		return false
+	}
 	for _, candidate := range tools {
 		if candidate.Name == tool {
 			return policy.Classify(candidate.Annotations).ReadOnly
@@ -2300,16 +2307,60 @@ func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, too
 	var dispatched atomic.Bool
 	callCtx := mcpclient.WithToolCallDispatchHook(ctx, func() { dispatched.Store(true) })
 	result, err := p.Call(callCtx, rs, tool, args)
-	if err != nil && dispatched.Load() && !toolReadOnly(p, tool) && r.writeLedger != nil {
+	if err != nil && dispatched.Load() && !toolReadOnly(p, tool) && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) {
 		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
 	}
 	return result, err
 }
 
+// ledgerLookupFor finds an unknown-outcome block affecting server, across
+// every name sharing its pool. Pools are shared by process identity, so an
+// alias added later must not lose the block recorded under the earlier
+// creating name: all names mapping to the same pool are checked, plus the
+// requested and canonical spellings.
+func (r *Registry) ledgerLookupFor(server string, p *pool.Pool) (unknownWriteRecord, bool) {
+	if r.writeLedger == nil {
+		return unknownWriteRecord{}, false
+	}
+	seen := map[string]bool{}
+	var candidates []string
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		candidates = append(candidates, name)
+	}
+	add(server)
+	add(r.CanonicalName(server))
+	if p != nil {
+		add(p.Name())
+		r.mu.RLock()
+		for name, other := range r.pools {
+			if other == p {
+				add(name)
+			}
+		}
+		r.mu.RUnlock()
+	}
+	for _, name := range candidates {
+		if record, blocked := r.writeLedger.Lookup(name); blocked {
+			return record, true
+		}
+	}
+	return unknownWriteRecord{}, false
+}
+
 func (r *Registry) recordUnknownOutcome(p *pool.Pool, fallbackServer, tool string, args any, surface string) error {
-	server := p.Name()
+	// Record under the requested server's canonical name so `mcpx writes
+	// clear <server>` names the same key the refusal names, and so the
+	// block survives a restart that changes which alias created the pool.
+	server := r.CanonicalName(fallbackServer)
 	if server == "" {
 		server = fallbackServer
+	}
+	if server == "" && p != nil {
+		server = p.Name()
 	}
 	digest := sha256.Sum256([]byte(policy.CanonicalArgs(args)))
 	record := unknownWriteRecord{

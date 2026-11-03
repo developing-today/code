@@ -542,14 +542,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 		if r.writeLedger == nil {
 			return policy.Decision{}, false
 		}
-		serverName := p.Name()
-		if serverName == "" {
-			serverName = r.CanonicalName(server)
-		}
-		if serverName == "" {
-			serverName = server
-		}
-		record, blocked := r.writeLedger.Lookup(serverName)
+		record, blocked := r.ledgerLookupFor(server, p)
 		if !blocked {
 			return policy.Decision{}, false
 		}

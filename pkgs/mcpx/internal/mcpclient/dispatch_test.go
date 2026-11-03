@@ -2,6 +2,7 @@ package mcpclient
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -41,5 +42,55 @@ func TestHTTPTransportDoesNotMarkPreDispatchFailure(t *testing.T) {
 	}
 	if dispatched.Load() {
 		t.Fatal("request was marked dispatched before any bytes were written")
+	}
+}
+
+// A conclusive upstream answer -- the server received the call and rejected
+// it -- means the write's outcome is known, so the unknown-outcome ledger
+// must not record it. Only a response that never arrived is unknown.
+func TestIsConclusiveUpstreamError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "invalid params rejection",
+			err:  &rpcError{Code: -32602, Message: "invalid params"},
+			want: true,
+		},
+		{
+			name: "internal error answer",
+			err:  &rpcError{Code: -32603, Message: "the tool failed"},
+			want: true,
+		},
+		{
+			name: "stream lost",
+			err: &rpcError{Code: codeStreamLost, Message: "the server closed the response stream before answering",
+				Data: json.RawMessage(`{"mcpxStreamLost":true}`)},
+			want: false,
+		},
+		{
+			name: "server sent -32000 itself",
+			err:  &rpcError{Code: -32000, Message: "connection closed"},
+			want: true,
+		},
+		{
+			name: "cancellation",
+			err:  context.Canceled,
+			want: false,
+		},
+		{
+			name: "deadline",
+			err:  context.DeadlineExceeded,
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsConclusiveUpstreamError(tc.err); got != tc.want {
+				t.Fatalf("IsConclusiveUpstreamError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

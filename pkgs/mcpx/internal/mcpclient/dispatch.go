@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptrace"
 )
 
@@ -45,4 +46,19 @@ func httpDispatchContext(ctx context.Context, msg []byte) context.Context {
 		},
 	}
 	return httptrace.WithClientTrace(ctx, trace)
+}
+
+// IsConclusiveUpstreamError reports whether err is a JSON-RPC error the
+// upstream answered with, as opposed to a lost response. A conclusive
+// rejection (for example -32602 for invalid parameters) means the outcome
+// is known -- the write did not take effect -- so it must never be recorded
+// as an unknown outcome. A stream-lost error (-32000 with the
+// mcpxStreamLost marker) is the opposite: the response never arrived, so
+// the outcome is unknown.
+func IsConclusiveUpstreamError(err error) bool {
+	var re *rpcError
+	if !errors.As(err, &re) {
+		return false
+	}
+	return !isStreamLost(err)
 }

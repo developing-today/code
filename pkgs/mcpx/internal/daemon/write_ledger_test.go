@@ -92,3 +92,52 @@ func TestWriteClearRouteRemovesLedgerBlock(t *testing.T) {
 		t.Fatal("clear route returned success but the server remained blocked")
 	}
 }
+
+// Two configuration-specific daemons share one state directory (Paths.State
+// is not keyed by ForConfig), so an unkeyed ledger filename let the second
+// daemon's save replace the first daemon's block. Each configuration gets
+// its own file.
+func TestWriteLedgerIsolatedPerConfig(t *testing.T) {
+	dir := t.TempDir()
+	first, err := OpenWriteLedger(dir, "/projects/one/.mcpx.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := OpenWriteLedger(dir, "/projects/two/.mcpx.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Record(unknownWriteRecord{
+		Server: "github", Tool: "create_issue", ArgsSHA256: strings.Repeat("a", 64),
+		At: time.Now().UTC(), Surface: "registry",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Record(unknownWriteRecord{
+		Server: "linear", Tool: "create_issue", ArgsSHA256: strings.Repeat("b", 64),
+		At: time.Now().UTC(), Surface: "registry",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedFirst, err := OpenWriteLedger(dir, "/projects/one/.mcpx.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopenedSecond, err := OpenWriteLedger(dir, "/projects/two/.mcpx.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, blocked := reopenedFirst.Lookup("github"); !blocked {
+		t.Fatal("second configuration's ledger overwrote the first configuration's block")
+	}
+	if _, blocked := reopenedFirst.Lookup("linear"); blocked {
+		t.Fatal("first configuration's ledger holds the second configuration's block")
+	}
+	if _, blocked := reopenedSecond.Lookup("linear"); !blocked {
+		t.Fatal("second configuration's block did not survive reopening")
+	}
+	if _, blocked := reopenedSecond.Lookup("github"); blocked {
+		t.Fatal("second configuration's ledger holds the first configuration's block")
+	}
+}
