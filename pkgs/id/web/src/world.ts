@@ -149,8 +149,7 @@ function initWorld(): void {
 
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
-  const isFiniteNumber = (value: unknown): value is number =>
-    typeof value === "number" && Number.isFinite(value);
+  const isFiniteNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
   const isWorldSnapshot = (value: unknown): value is NonNullable<WorldFrame["snapshot"]> =>
     isRecord(value) &&
     typeof value.world_id === "string" &&
@@ -423,9 +422,7 @@ function initWorld(): void {
           cache: "no-store",
         });
         if (!response.ok) {
-          throw new Error(
-            response.status === 401 ? "Host authorization denied" : "Host view unavailable",
-          );
+          throw new Error(response.status === 401 ? "Host authorization denied" : "Host view unavailable");
         }
         if (generation !== hostViewGeneration || !hostMode) return;
         const result = (await response.json()) as {
