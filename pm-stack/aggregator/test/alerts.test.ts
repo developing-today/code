@@ -73,6 +73,31 @@ describe("class + quiet merges (design §1/§2)", () => {
       enabled: true,
     });
   });
+  test("out-of-range quiet times fall back per field (#3686)", () => {
+    // 99:99 and 24:60 keep the shape but are not real clock times —
+    // each malformed field independently retains its DEFAULT_QUIET value.
+    expect(mergeQuiet({ start: "99:99" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "24:60" }).end).toBe("07:00");
+    expect(mergeQuiet({ start: "24:00" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "12:60" }).end).toBe("07:00");
+    // Mixed: one bad field falls back while the good field is kept.
+    expect(mergeQuiet({ start: "99:99", end: "23:59" })).toEqual({
+      start: "23:00",
+      end: "23:59",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
+  test("boundary clock times 00:00 and 23:59 are accepted (#3686)", () => {
+    expect(mergeQuiet({ start: "00:00" }).start).toBe("00:00");
+    expect(mergeQuiet({ end: "23:59" }).end).toBe("23:59");
+    expect(mergeQuiet({ start: "00:00", end: "23:59" })).toEqual({
+      start: "00:00",
+      end: "23:59",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
   test("invalid quiet timezone falls back to the default", () => {
     expect(mergeQuiet({ tz: "Not/AZone" }).tz).toBe("America/Chicago");
   });
