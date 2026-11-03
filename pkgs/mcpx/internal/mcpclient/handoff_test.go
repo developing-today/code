@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -141,31 +142,136 @@ func TestClientHandoffCommitsOnlyWhenActivated(t *testing.T) {
 	<-adopted.exited
 }
 
-// TestRecvRefusesWhileDetached pins the #2842 exclusion: after Detach, a
-// Recv that was waiting (or starts late) must refuse at once instead of
-// consuming frames the successor owns -- and must not write pending
-// against Detach's snapshot of it.
-func TestRecvRefusesWhileDetached(t *testing.T) {
-	tr, err := NewStdio(StdioOptions{Command: "sh", Args: []string{"-c", echoScript}, InheritEnv: true})
+// TestRecvQueuedBehindDetachDoesNotConsumeSuccessorFrame pins the #2842
+// exclusion: a Recv queued behind Detach must refuse instead of consuming a
+// frame the successor owns.
+func TestRecvQueuedBehindDetachDoesNotConsumeSuccessorFrame(t *testing.T) {
+	const successorFrame = `{"n":"successor"}`
+	script := `printf '{"n":"successor"}\n'; printf 'ready\n' >&2; ` + echoScript
+	tr, err := NewStdio(StdioOptions{Command: "sh", Args: []string{"-c", script}, InheritEnv: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tr.Detach(); err != nil {
-		t.Fatal(err)
+	transferred := false
+	t.Cleanup(func() {
+		if !transferred {
+			_ = tr.Close()
+		}
+	})
+
+	// Keep Detach inside its readMu critical section so the receiver below is
+	// queued behind it. The real stderr drain owns its original channel; this
+	// replacement only provides a deterministic gate for the test.
+	readRelease := make(chan struct{})
+	tr.stderrDone = readRelease
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(readRelease) }) }
+	defer release()
+
+	readyDeadline := time.NewTimer(2 * time.Second)
+	defer readyDeadline.Stop()
+	readyPoll := time.NewTicker(time.Millisecond)
+	defer readyPoll.Stop()
+	for !strings.Contains(tr.Stderr(100), "ready") {
+		select {
+		case <-readyDeadline.C:
+			t.Fatal("child did not write its successor frame")
+		case <-readyPoll.C:
+		}
 	}
-	done := make(chan error, 1)
+
+	detachDone := make(chan struct {
+		handoff *StdioHandoff
+		err     error
+	}, 1)
 	go func() {
-		_, err := tr.Recv()
-		done <- err
+		handoff, err := tr.Detach()
+		detachDone <- struct {
+			handoff *StdioHandoff
+			err     error
+		}{handoff, err}
 	}()
+
+	// Wait until Detach owns readMu and is held at readRelease.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if tr.readMu.TryLock() {
+			tr.readMu.Unlock()
+			if time.Now().After(deadline) {
+				t.Fatal("Detach did not acquire readMu")
+			}
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		break
+	}
+
+	recvStarted := make(chan struct{})
+	recvDone := make(chan struct {
+		line []byte
+		err  error
+	}, 1)
+	go func() {
+		close(recvStarted)
+		line, err := tr.Recv()
+		recvDone <- struct {
+			line []byte
+			err  error
+		}{line, err}
+	}()
+	<-recvStarted
 	select {
-	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "detached") {
-			t.Fatalf("Recv on a detached transport: %v", err)
+	case result := <-recvDone:
+		t.Fatalf("Recv escaped Detach's read lock: line=%q err=%v", result.line, result.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	release()
+	var detached struct {
+		handoff *StdioHandoff
+		err     error
+	}
+	select {
+	case detached = <-detachDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Detach did not return after releasing its read lock")
+	}
+	if detached.err != nil {
+		t.Fatal(detached.err)
+	}
+	select {
+	case result := <-recvDone:
+		if result.err == nil || !strings.Contains(result.err.Error(), "detached") {
+			t.Fatalf("queued Recv consumed the successor's frame: line=%q err=%v", result.line, result.err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Recv on a detached transport blocked instead of refusing")
+		t.Fatal("queued Recv did not return after Detach")
 	}
-	tr.Reattach()
-	_ = tr.Close()
+
+	successor, err := AdoptStdio(*detached.handoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transferred = true
+	t.Cleanup(func() {
+		_ = successor.Close()
+		<-successor.exited
+	})
+	type recvResult struct {
+		line []byte
+		err  error
+	}
+	successorRecv := make(chan recvResult, 1)
+	go func() {
+		line, err := successor.Recv()
+		successorRecv <- recvResult{line, err}
+	}()
+	select {
+	case result := <-successorRecv:
+		if result.err != nil || string(result.line) != successorFrame {
+			t.Fatalf("successor frame after handoff: line=%q err=%v", result.line, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("successor could not read its frame")
+	}
 }
