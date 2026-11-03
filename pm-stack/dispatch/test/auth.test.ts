@@ -6,6 +6,7 @@ import {
   authenticate,
   timingSafeStringEqual,
   verifyOidcToken,
+  GITHUB_JWKS_URL,
   type Jwks,
 } from "../src/auth.ts";
 
@@ -154,5 +155,15 @@ describe("cross-repo grants (assertCallerRepo)", () => {
 
   test("bearer callers are rejected for a non-allowlisted target", () => {
     expect(() => assertCallerRepo({ type: "bearer" }, "someone/else", allowlist)).toThrow(/allowlist/);
+  });
+});
+
+describe("GitHub JWKS URL (code#4886)", () => {
+  // The injectable jwksSource seam meant no test ever exercised the real
+  // URL, so a bogus .json suffix shipped and every OIDC validation 401d.
+  // Pin the constant to the jwks_uri published in the GitHub OIDC discovery
+  // document (/.well-known/openid-configuration on the issuer).
+  test("matches the discovery document jwks_uri (no .json suffix)", () => {
+    expect(GITHUB_JWKS_URL).toBe("https://token.actions.githubusercontent.com/.well-known/jwks");
   });
 });

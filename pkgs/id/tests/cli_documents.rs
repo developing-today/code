@@ -195,6 +195,8 @@ fn test_events_lists_the_tags_and_a_removal_on_a_document() {
             tag: None,
             document: None,
             removes: Some(hash(&doc)),
+            note: None,
+            link: None,
         },
     );
 

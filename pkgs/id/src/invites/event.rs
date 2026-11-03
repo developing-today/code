@@ -174,3 +174,57 @@ fn role_from_code(code: u8) -> Result<Role> {
 pub(super) fn ticket_digest(ticket: &EndpointTicket) -> [u8; 32] {
     *Hash::digest([TICKET_DOMAIN, &ticket.encode_bytes()].concat()).as_bytes()
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::test_forgeries::{IDENTITY_KEY, identity_forgery, with_non_canonical_s};
+
+    fn body_for(key: &SigningKey) -> InviteBody {
+        InviteBody {
+            inviter: key.verifying_key().to_bytes(),
+            ticket_digest: [3; 32],
+            group: [4; 32],
+            role: Role::Read,
+            expires_ms: 1_800_000_000_000,
+        }
+    }
+
+    #[test]
+    fn verify_signature_rejects_the_small_order_identity_forgery() {
+        // #1386: the identity point is a small-order key, and the shared
+        // forgery (R = identity, S = 0) passes plain verify for any
+        // message under it — only verify_strict keeps it out.
+        let event = InviteEvent {
+            body: InviteBody {
+                inviter: IDENTITY_KEY,
+                ticket_digest: [3; 32],
+                group: [4; 32],
+                role: Role::Read,
+                expires_ms: 1_800_000_000_000,
+            },
+            signature: identity_forgery(),
+        };
+        assert!(event.verify_signature().is_err());
+    }
+
+    #[test]
+    fn verify_signature_rejects_a_non_canonical_s() {
+        // #1386: a genuine signature mutated to S + L must be refused,
+        // while the original verifies.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let body = body_for(&key);
+        let signature = key.sign(&body.message()).to_bytes();
+        let good = InviteEvent {
+            body: body.clone(),
+            signature,
+        };
+        assert!(good.verify_signature().is_ok());
+        let malleated = InviteEvent {
+            body,
+            signature: with_non_canonical_s(signature),
+        };
+        assert!(malleated.verify_signature().is_err());
+    }
+}

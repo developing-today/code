@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -331,6 +331,11 @@ test-web-unit:
 [group('test')]
 test-web-typecheck:
     cd web && bun run typecheck
+
+# Run the Roc library expect() tests (RocJson, Screen, Key) with the pinned Roc compiler (#813)
+[group('test')]
+roc-test:
+    bash scripts/roc-test.sh
 
 # Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
 [group('test')]

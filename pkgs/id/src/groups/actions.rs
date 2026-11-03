@@ -10,7 +10,7 @@ use p2panda_core::Hash;
 use super::fold::{GroupView, Outcome};
 use super::friendship::{Pair, friendship_id};
 use super::log::{GroupLog, Recorded};
-use super::policy::{Delegation, Policy, Template};
+use super::policy::{Delegation, Policy, RemoveMode, Template};
 use super::{Body, Create, Delegate, DeviceOp, Key, MemberOp, Role};
 
 /// What an action did: the group it acted in, and the event it recorded with what the fold made of
@@ -133,23 +133,32 @@ impl GroupLog {
         self.act(author, group, Body::Member(MemberOp::Add { member, role }))
     }
 
-    /// Removes `member` from `group`. With `successor`, the removal names who takes over the member's
-    /// grants under the `transfer` mode.
+    /// Removes `member` from `group` using the requested grant-disposition mode. `ServerDefault` is
+    /// resolved from the group's remove policy before the event is recorded.
     ///
     /// # Errors
     ///
-    /// Fails if the group is not in the log, or the event cannot be recorded.
+    /// Fails if the group is not in the log, the policy disallows the resolved mode, or the event
+    /// cannot be recorded.
     pub fn remove(
         &mut self,
         author: Key,
         group: Hash,
         member: Key,
-        successor: Option<Key>,
+        mode: RemoveMode,
     ) -> Result<Action> {
+        let view = self.view(group)?;
+        let mode = match mode {
+            RemoveMode::ServerDefault => view.policy.remove_policy.default_mode,
+            concrete => concrete,
+        };
+        if !view.policy.remove_policy.allows(mode) {
+            bail!("group policy does not allow removal mode {mode:?}");
+        }
         self.act(
             author,
             group,
-            Body::Member(MemberOp::Remove { member, successor }),
+            Body::Member(MemberOp::Remove { member, mode }),
         )
     }
 
