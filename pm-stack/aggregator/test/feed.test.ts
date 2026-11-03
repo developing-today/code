@@ -23,7 +23,14 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
-import type { PaygLine, QuotaCredentialRow, QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
+import type {
+  PaygLine,
+  QuotaCredentialRow,
+  QuotaPool,
+  QuotaView,
+  QuotaWindow,
+  SessionRecord,
+} from "../src/model.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -677,7 +684,16 @@ describe("feed subscriptions sanitization (#2446)", () => {
 });
 
 describe("feed registry sanitization (#2539)", () => {
-  const RECORD = { id: "ses-1", source: "claude-code", label: "Muse run", taskRefs: [] };
+  const RECORD: SessionRecord = {
+    id: "ses-1",
+    source: "claude-code",
+    label: "Muse run",
+    agentId: "claude-code",
+    agentLabel: "Muse",
+    parentId: null,
+    status: "in-progress",
+    taskRefs: [],
+  };
   const feedWithRegistry = (registry: unknown) => ({
     version: 1,
     generatedAt: "2026-10-01T00:00:00Z",
@@ -935,7 +951,7 @@ describe("feed chargesAttention gate + sanitization (#2439)", () => {
     normalized: "mystery ai",
     amountUsd: 42.5,
     at: "2026-10-30",
-    source: "plaid",
+    source: "plaid" as const,
   };
   const feedWithCa = (chargesAttention: unknown) => ({
     version: 1,
@@ -1015,7 +1031,7 @@ describe("charge gates reject impossible rows (#3458)", () => {
     normalized: "mystery ai",
     amountUsd: 42.5,
     at: "2026-10-30",
-    source: "plaid",
+    source: "plaid" as const,
   };
   const baseFeed = (extra: unknown) => ({
     version: 1,

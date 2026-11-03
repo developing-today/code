@@ -610,7 +610,7 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
     const pool = out.pools.find((p) => p.id === "openai:codex")!;
     expect(pool.credentials).toHaveLength(2);
     expect(pool.credentials!.map((c) => c.credentialId).sort()).toEqual(["cred-a", "cred-b"]);
-    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => a - b)).toEqual([30, 80]);
+    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([30, 80]);
   });
 
   test("reset drift under the tolerance does not split a shared read", () => {
