@@ -87,6 +87,13 @@ type Instance struct {
 	// config cwd, read from the instance at every (re)start and never
 	// re-resolved at redial. "" when the scope has no root.
 	root string
+	// cwd is the creating caller's working directory stored at
+	// creation alongside root, for the same reason: a definition
+	// referencing ${mcpx.cwd} can only be re-substituted at (re)start
+	// from the caller that created the instance, and a replacement
+	// started by the pool itself (restart, exec watch, subscription
+	// monitor) has no caller to re-resolve it from.
+	cwd string
 	// execStamp and execIdentity identify the executable actually used by
 	// this instance. Scope-rooted relative commands can differ per instance,
 	// so their exec watch cannot use one pool-wide identity.
@@ -235,6 +242,7 @@ type Pool struct {
 	watched   map[string]int
 	watchKey  string
 	watchRoot string
+	watchCwd  string
 
 	// noLegacy is set once a legacy-only start failed under protocol:
 	// follow; legacy callers then share the modern session.
@@ -759,6 +767,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		transport:    tr,
 		key:          rs.Key,
 		root:         rs.Root,
+		cwd:          rs.Cwd,
 		execStamp:    execStamp,
 		execIdentity: execIdentity,
 		trace:        newTraceID("srv"),
@@ -1111,6 +1120,28 @@ func (p *Pool) RefreshSchemas(ctx context.Context) ([]mcpclient.Tool, []mcpclien
 	return p.refreshSchemas(ctx, nil)
 }
 
+// RefreshSchemasFor is RefreshSchemas on the caller's own scope: the
+// catalogue is listed from an instance resolved with the caller's root
+// and cwd, so a definition referencing ${mcpx.root}/${mcpx.cwd} can
+// actually start. The unscoped RefreshSchemas borrows the synthetic
+// schema key, whose rootless start fails for such definitions even
+// when the foreground caller has a perfectly good workspace
+// (Codex review, PR #5135).
+func (p *Pool) RefreshSchemasFor(ctx context.Context, rs config.ResolvedScope) ([]mcpclient.Tool, []mcpclient.Resource, error) {
+	return p.refreshSchemasScoped(ctx, &rs, nil)
+}
+
+// CallerScoped reports whether this pool's definition cannot be
+// started without a caller's scope (it references a root or caller
+// cwd that an empty scope does not supply). Background work with no
+// caller — registry warming — defers such servers to the first
+// caller-backed refresh instead of manufacturing a rootless start
+// that is guaranteed to fail.
+func (p *Pool) CallerScoped() bool {
+	_, err := p.cfg.Effective("", "")
+	return err != nil
+}
+
 // refreshSchemas does the re-list. When staleGen is non-nil it names the
 // cache generation the caller found stale: if another goroutine already
 // refreshed past that generation while this one waited on refreshMu, its
@@ -1118,6 +1149,10 @@ func (p *Pool) RefreshSchemas(ctx context.Context) ([]mcpclient.Tool, []mcpclien
 // expired cache collapse into a single refresh. A nil staleGen is an
 // explicit refresh and always re-lists.
 func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpclient.Tool, []mcpclient.Resource, error) {
+	return p.refreshSchemasScoped(ctx, nil, staleGen)
+}
+
+func (p *Pool) refreshSchemasScoped(ctx context.Context, scoped *config.ResolvedScope, staleGen *time.Time) ([]mcpclient.Tool, []mcpclient.Resource, error) {
 	p.refreshMu.Lock()
 	defer p.refreshMu.Unlock()
 	if staleGen != nil {
@@ -1133,8 +1168,21 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	// own key. For a global scope that is the shared instance everyone uses;
 	// for anything narrower it is a throwaway, stopped again below so a
 	// per-session server does not keep a process nobody asked for.
+	// A caller-scoped refresh (scoped != nil) instead acquires under the
+	// caller's own resolved scope: the instance it lists from is the
+	// caller's, started with the caller's root and cwd.
 	key := p.schemaKey()
-	lease, err := p.Acquire(ctx, config.ResolvedScope{Key: key})
+	acquireScope := config.ResolvedScope{Key: key}
+	if scoped != nil {
+		key = scoped.Key
+		acquireScope = *scoped
+	} else if p.CallerScoped() {
+		// No caller and a definition that needs one: defer to the first
+		// caller-backed refresh rather than starting rootless and
+		// recording a guaranteed failure as the server's state.
+		return p.refreshFailed(staleGen, fmt.Errorf("server %q: schema refresh deferred: definition requires a caller scope", p.cfg.Name))
+	}
+	lease, err := p.Acquire(ctx, acquireScope)
 	if err != nil {
 		return p.refreshFailed(staleGen, err)
 	}
@@ -1224,7 +1272,10 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 
 	lease.Release()
 	lease.done = true // Release is idempotent, but be explicit before ReleaseKey
-	if p.cfg.Scope != config.ScopeGlobal {
+	// The throwaway stop is only for the borrowed schema instance: a
+	// caller-scoped refresh listed from the caller's own instance,
+	// which stays for the caller's next call.
+	if scoped == nil && p.cfg.Scope != config.ScopeGlobal {
 		p.ReleaseKey(key)
 	}
 	return tools, resources, nil
@@ -1733,12 +1784,14 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 	}
 	var keys []string
 	roots := map[string]string{}
+	cwds := map[string]string{}
 	seen := map[string]bool{}
 	for _, in := range stop {
 		if !seen[in.key] {
 			seen[in.key] = true
 			keys = append(keys, in.key)
 			roots[in.key] = in.root
+			cwds[in.key] = in.cwd
 		}
 	}
 	for _, in := range retiring {
@@ -1765,7 +1818,7 @@ func (p *Pool) Restart(ctx context.Context, lazy bool) RestartResult {
 			res.Skipped = append(res.Skipped, RestartFailure{Key: key, Error: "owning process has exited"})
 			continue
 		}
-		id, err := p.startFor(ctx, config.ResolvedScope{Key: key, Root: roots[key]})
+		id, err := p.startFor(ctx, config.ResolvedScope{Key: key, Root: roots[key], Cwd: cwds[key]})
 		if err != nil {
 			res.Failed = append(res.Failed, RestartFailure{Key: key, Error: err.Error()})
 			continue

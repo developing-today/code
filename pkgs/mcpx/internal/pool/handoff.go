@@ -24,6 +24,10 @@ type InstanceHandoff struct {
 	Trace string `json:"trace"`
 	Key   string `json:"key"`
 	Root  string `json:"root,omitempty"`
+	// Cwd is the creating caller's cwd, carried for the same reason
+	// Root is: a successor replacing this instance must re-substitute
+	// ${mcpx.cwd} from the caller that created it.
+	Cwd string `json:"cwd,omitempty"`
 	// ExecStamp and ExecIdentity are the executable identity the instance
 	// was started with, resolved from its effective spawn cwd. They travel
 	// with the handoff so a successor's exec watch compares the adopted
@@ -189,6 +193,7 @@ func (in *Instance) describe(p *Pool) InstanceHandoff {
 		Trace:        in.trace,
 		Key:          in.key,
 		Root:         in.root,
+		Cwd:          in.cwd,
 		ExecStamp:    execStamp,
 		ExecIdentity: execIdentity,
 		StartedAt:    in.startedAt,
@@ -354,6 +359,7 @@ func (p *Pool) resumeInstance(a *Adopted) *Instance {
 		transport:    a.tr,
 		key:          h.Key,
 		root:         h.Root,
+		cwd:          h.Cwd,
 		execStamp:    h.ExecStamp,
 		execIdentity: h.ExecIdentity,
 		trace:        h.Trace,
