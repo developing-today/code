@@ -1744,6 +1744,7 @@ mod tests {
         let blocks = std::sync::Arc::new(testing::StubBlocks {
             peers: Default::default(),
             topics: [topic.as_bytes().to_vec()].into_iter().collect(),
+            ips: Default::default(),
         });
         let gate = testing::open_gate().with_blocks(blocks);
         let (server, _router, mut results) = responder_gated(&store_a, gate).await;

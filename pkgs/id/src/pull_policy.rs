@@ -263,6 +263,9 @@ pub(crate) mod testing {
         pub peers: std::collections::HashSet<[u8; 32]>,
         /// Blocked topic tags, as raw bytes.
         pub topics: std::collections::HashSet<Vec<u8>>,
+        /// Blocked IPs, in the text form `BlockList::ip_blocked`
+        /// formats them in.
+        pub ips: std::collections::HashSet<String>,
     }
 
     impl crate::event_store::BlockList for StubBlocks {
@@ -272,7 +275,9 @@ pub(crate) mod testing {
                     <[u8; 32]>::try_from(value).is_ok_and(|key| self.peers.contains(&key))
                 }
                 crate::event_store::BlockKind::TopicTag => self.topics.iter().any(|t| t == value),
-                crate::event_store::BlockKind::Ip => false,
+                crate::event_store::BlockKind::Ip => {
+                    std::str::from_utf8(value).is_ok_and(|text| self.ips.contains(text))
+                }
             }
         }
     }
@@ -282,6 +287,21 @@ pub(crate) mod testing {
         Arc::new(StubBlocks {
             peers: peers.iter().copied().collect(),
             topics: topics.iter().map(|t| t.as_bytes().to_vec()).collect(),
+            ips: std::collections::HashSet::new(),
+        })
+    }
+
+    /// A stub block list like [`stub_blocks`], additionally naming
+    /// `ips` as blocked.
+    pub(crate) fn stub_blocks_with_ips(
+        peers: &[[u8; 32]],
+        topics: &[&str],
+        ips: &[std::net::IpAddr],
+    ) -> Arc<StubBlocks> {
+        Arc::new(StubBlocks {
+            peers: peers.iter().copied().collect(),
+            topics: topics.iter().map(|t| t.as_bytes().to_vec()).collect(),
+            ips: ips.iter().map(|ip| ip.to_string()).collect(),
         })
     }
 
