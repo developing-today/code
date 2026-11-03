@@ -198,7 +198,7 @@ json.dump({
     "outcome": outcome,
     "signal_fired": signal == "1",
     "restoration_confirmed": confirmed == "1",
-    "stale_threshold_ms": 900000,
+    "stale_threshold_ms": 300000,
 }, open(path, "w"), indent=2)
 PY
 log "result: $OUTCOME (signal=$SIGNAL restored=$CONFIRMED) -> $RESULT_FILE"
