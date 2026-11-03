@@ -213,6 +213,13 @@ pub fn serve_replica(
     restored: ReplicaRestore,
     mut program: Box<dyn WorldProgram>,
 ) -> Result<(WorldHandle, ReplicaCursor)> {
+    anyhow::ensure!(
+        restored
+            .program
+            .as_ref()
+            .is_none_or(|spec| spec.snapshot.is_none()),
+        "replica journal has a checkpoint snapshot; restore the snapshot before serving"
+    );
     for event in &restored.replay {
         program.update(event).with_context(|| {
             format!("replica program rejected replayed input {}", event.sequence)
@@ -397,6 +404,70 @@ mod tests {
         assert!(parse_replica_journal(b"not json\n", "replica-parser-test").is_err());
     }
 
+    #[test]
+    fn serve_replica_refuses_a_checkpoint_until_its_snapshot_is_restored() {
+        let world_id = "replica-checkpoint-test";
+        let restored = WorldCore::restore_replica(
+            world_id,
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: super::super::JOURNAL_VERSION,
+            }],
+        )
+        .unwrap();
+        let replica = ReplicaRestore {
+            core: restored.core,
+            program: Some(RestoredProgram {
+                module_hash: "ab".repeat(32),
+                seed: 1,
+                snapshot: Some("checkpoint state".to_owned()),
+                provenance: None,
+            }),
+            replay: Vec::new(),
+            presence: restored.presence,
+            cursor: ReplicaCursor {
+                entries: 1,
+                sequence: 0,
+                header_version: super::super::JOURNAL_VERSION,
+            },
+        };
+        let error = serve_replica(replica, Box::new(Counter { count: 0 })).unwrap_err();
+        assert!(error.to_string().contains("checkpoint snapshot"));
+    }
+
+    #[test]
+    fn serve_replica_refuses_an_unrestored_checkpoint_snapshot() {
+        let world_id = "replica-checkpoint-test";
+        let restored = WorldCore::restore_replica(
+            world_id,
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: super::super::JOURNAL_VERSION,
+            }],
+        )
+        .unwrap();
+        let replica = ReplicaRestore {
+            core: restored.core,
+            program: Some(RestoredProgram {
+                module_hash: "ab".repeat(32),
+                seed: 1,
+                snapshot: Some("checkpoint state".to_owned()),
+                provenance: None,
+            }),
+            replay: Vec::new(),
+            presence: restored.presence,
+            cursor: ReplicaCursor {
+                entries: 1,
+                sequence: 0,
+                header_version: super::super::JOURNAL_VERSION,
+            },
+        };
+        let error = serve_replica(replica, Box::new(Counter { count: 0 })).unwrap_err();
+        assert!(error.to_string().contains("checkpoint snapshot"));
+    }
+
     /// Counts inputs; records are the count. Mirrors the writer/reader
     /// contract in `world::tests` so parity compares real program state.
     struct Counter {
@@ -512,6 +583,27 @@ mod tests {
         replica.view(ann_token.clone()).await.unwrap();
         replica.metrics().await.unwrap();
         replica.policy().await.unwrap();
+        replica
+            .directory(
+                crate::directory_auth::Caller::default(),
+                crate::directory_view::DirectoryAction::View,
+                false,
+            )
+            .await
+            .unwrap();
+        let artifact_read = replica
+            .directory(
+                crate::directory_auth::Caller::default(),
+                crate::directory_view::DirectoryAction::ReadArtifacts {
+                    account: "01".repeat(32),
+                    after: 0,
+                },
+                false,
+            )
+            .await;
+        if let Err(error) = artifact_read {
+            assert!(!format!("{error:#}").contains("read-only"));
+        }
 
         // Mutations refuse with the replica error.
         let err = |result: Result<()>| format!("{result:?}");
@@ -632,6 +724,30 @@ mod tests {
                     id: "01".repeat(32),
                     name: "local write".to_owned(),
                 })
+                .await
+                .is_err()
+        );
+        assert!(
+            replica
+                .directory(
+                    crate::directory_auth::Caller::default(),
+                    crate::directory_view::DirectoryAction::SignUp {
+                        name: "local write".to_owned(),
+                    },
+                    false,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            replica
+                .directory(
+                    crate::directory_auth::Caller::default(),
+                    crate::directory_view::DirectoryAction::SignUp {
+                        name: "local write".to_owned(),
+                    },
+                    false,
+                )
                 .await
                 .is_err()
         );

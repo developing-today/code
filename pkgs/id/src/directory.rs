@@ -542,17 +542,18 @@ impl Directory {
     /// crash but not journaled is applied in memory (like writer open).
     pub fn replay_read_only(path: &Path) -> Result<Self> {
         let mut directory = Self::new();
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(directory),
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error.into()),
         };
-        let kept_len = if text.is_empty() || text.ends_with('\n') {
-            text.len()
-        } else {
-            text.rfind('\n').map_or(0, |index| index + 1)
-        };
-        for (number, line) in text[..kept_len].lines().enumerate() {
+        let kept_len = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let text =
+            std::str::from_utf8(&bytes[..kept_len]).context("directory journal is not UTF-8")?;
+        for (number, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
@@ -1137,22 +1138,14 @@ impl Directory {
             .collect();
         let mut founders: BTreeMap<u64, String> = BTreeMap::new();
         for id in &ordered {
+            // Admin can be inherited through nested-group membership; use
+            // the same effective-level calculation as `ensure_admins`.
             let founder = self
-                .members
-                .range(
-                    (*id, Member::Account { id: String::new() })
-                        ..=(*id, Member::Group { id: u64::MAX }),
-                )
-                .filter_map(|((_, member), level)| {
-                    if *level != Level::Admin {
-                        return None;
-                    }
-                    match member {
-                        Member::Account { id } => Some(id.clone()),
-                        Member::Group { .. } => None,
-                    }
-                })
-                .min();
+                .accounts
+                .keys()
+                .filter(|account| self.level_in(account.as_str(), *id) == Some(Level::Admin))
+                .min()
+                .cloned();
             let Some(founder) = founder else {
                 anyhow::bail!("replica export cannot represent group {id} with no account admin");
             };
@@ -1247,9 +1240,10 @@ impl Directory {
                 });
             }
         }
-        // Current friendships among the exported accounts. Synthesized
-        // without envelope IDs: the pair validates as a unit and there is
-        // no voided request to track.
+        // Current friendships among the exported accounts. Preserve the
+        // request ID when one exists: a signed FriendRemove artifact uses
+        // it to distinguish this friendship from an older relationship
+        // between the same pair after the directory is projected.
         let sorted: Vec<&String> = accounts.iter().collect();
         let mut pairs: Vec<(&String, &String)> = Vec::new();
         for (index, a) in sorted.iter().enumerate() {
@@ -1260,15 +1254,16 @@ impl Directory {
             }
         }
         for (a, b) in pairs {
+            let request = self.friend_requests.get(&pair(a, b)).cloned();
             entries.push(DirectoryEntry::FriendRequested {
                 from: (*a).clone(),
                 to: (*b).clone(),
-                id: None,
+                id: request.clone(),
             });
             entries.push(DirectoryEntry::FriendAccepted {
                 from: (*a).clone(),
                 to: (*b).clone(),
-                request: None,
+                request,
                 id: None,
             });
         }
@@ -2199,8 +2194,14 @@ mod tests {
     #[test]
     fn replica_facts_create_nested_groups_before_memberships_and_replay_old_names() {
         let mut writer = Directory::new();
-        let (ann, _) = account(&mut writer, "Ann");
-        let (bo, _) = account(&mut writer, "Bo");
+        let (ann, ann_credential) = account(&mut writer, "Ann");
+        let (bo, bo_credential) = account(&mut writer, "Bo");
+        writer
+            .request_friend(&ann_credential, &bo, "replica-facts-test", 1)
+            .unwrap();
+        writer
+            .accept_friend(&bo_credential, &ann, "replica-facts-test", 2)
+            .unwrap();
         let (outer, _) = writer
             .create_group(&ann, "Outer", "nested", WorldScopes::JOIN)
             .unwrap();
@@ -2212,7 +2213,17 @@ mod tests {
                 Actor::Server,
                 outer,
                 Member::Group { id: inner },
-                Some(Level::Read),
+                Some(Level::Admin),
+            )
+            .unwrap();
+        // The outer group now has no direct account admin; its admin is
+        // inherited through the nested group, which `ensure_admins` allows.
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Account { id: ann.clone() },
+                None,
             )
             .unwrap();
         writer
@@ -2251,6 +2262,47 @@ mod tests {
         }
         assert_eq!(replica.ceiling(&bo), writer.ceiling(&bo));
         assert_eq!(replica.group(inner).unwrap().name, "Inner\u{200B}");
+        assert!(replica.are_friends(&ann, &bo));
+
+        // Preserve the friend-request ID in projected facts so a signed
+        // FriendRemove artifact can invalidate the projected relationship.
+        let removal = writer.remove_friend(&ann_credential, &bo).unwrap();
+        let dir = TempDir::new().unwrap();
+        let journal = dir.path().join("directory.jsonl");
+        let mut text = String::new();
+        for fact in &facts {
+            text.push_str(&serde_json::to_string(fact).unwrap());
+            text.push('\n');
+        }
+        std::fs::write(&journal, text).unwrap();
+        artifact::append(&artifact_path(&journal), &removal).unwrap();
+        let replayed = Directory::replay_read_only(&journal).unwrap();
+        assert!(!replayed.are_friends(&ann, &bo));
+    }
+
+    #[test]
+    fn read_only_directory_open_validates_artifacts_without_a_directory_journal() {
+        let dir = TempDir::new().unwrap();
+        let journal = dir.path().join("directory.jsonl");
+        std::fs::write(artifact_path(&journal), b"not-an-artifact\n").unwrap();
+        assert!(Directory::replay_read_only(&journal).is_err());
+    }
+
+    #[test]
+    fn read_only_directory_open_decodes_only_complete_utf8_lines() {
+        let dir = TempDir::new().unwrap();
+        let journal = dir.path().join("directory.jsonl");
+        let entry = DirectoryEntry::AccountKeyed {
+            id: "01".repeat(32),
+            name: "Alice".to_owned(),
+        };
+        let mut bytes = serde_json::to_vec(&entry).unwrap();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&[0xe2, 0x80]);
+        std::fs::write(&journal, &bytes).unwrap();
+        let replayed = Directory::replay_read_only(&journal).unwrap();
+        assert_eq!(replayed.accounts().count(), 1);
+        assert_eq!(std::fs::read(&journal).unwrap(), bytes);
     }
 
     #[test]

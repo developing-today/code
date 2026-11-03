@@ -648,14 +648,18 @@ impl ArtifactLog {
     /// fragment. Used by read-only replicas, whose startup must never
     /// rewrite local state.
     pub fn open_read_only(path: &Path) -> Result<Self> {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error).context("reading the artifact file"),
         };
-        let kept = text.rfind('\n').map_or(0, |index| index + 1);
+        let kept = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let text = std::str::from_utf8(&bytes[..kept]).context("artifact file is not UTF-8")?;
         let mut log = Self::default();
-        for (number, line) in text[..kept].lines().enumerate() {
+        for (number, line) in text.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
@@ -1057,6 +1061,17 @@ mod tests {
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
+    }
+
+    #[test]
+    fn read_only_artifact_open_ignores_a_torn_non_utf8_tail_without_writing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let log = ArtifactLog::open_read_only(&path).unwrap();
+        assert_eq!(log.all().count(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     fn public(seed: u8) -> String {

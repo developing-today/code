@@ -405,11 +405,16 @@ impl WorldActor {
     /// Refuse a local mutation on a read-only replica (F12.13), or when
     /// storage failed on a writer. Replicas carry no journal to append to
     /// and must never originate authoritative events.
-    fn check_writable(&self) -> Result<()> {
+    fn check_not_replica(&self) -> Result<()> {
         ensure!(
             !self.read_only,
             "world is read-only (replica); local mutations are refused"
         );
+        Ok(())
+    }
+
+    fn check_writable(&self) -> Result<()> {
+        self.check_not_replica()?;
         self.check_storage()
     }
 
@@ -1159,10 +1164,19 @@ impl WorldActor {
                 outbox,
                 reply,
             } => {
-                // Replicas refuse directory writes: directory facts arrive
-                // through the verified replication stream, never locally.
-                if let Err(error) = self.check_writable() {
-                    let _ = reply.send(Err(error));
+                // Directory facts are replica state: refuse local changes,
+                // but keep the directory's read-only views and artifact
+                // reads available through the same service.
+                if self.read_only
+                    && !matches!(
+                        &action,
+                        crate::directory_view::DirectoryAction::View
+                            | crate::directory_view::DirectoryAction::ReadArtifacts { .. }
+                    )
+                {
+                    let _ = reply.send(Err(anyhow::anyhow!(
+                        "world is read-only (replica); local mutations are refused"
+                    )));
                     return;
                 }
                 let world = self.core.world_id().to_owned();
@@ -1192,7 +1206,7 @@ impl WorldActor {
             WorldCommand::ApplyDirectory { entry, reply } => {
                 // See `Directory` above: replicas never apply local entries.
                 let result = self
-                    .check_writable()
+                    .check_not_replica()
                     .and_then(|()| self.core.directory_mut().apply(&entry));
                 let _ = reply.send(result);
             }
