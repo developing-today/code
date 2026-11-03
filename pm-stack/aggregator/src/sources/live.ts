@@ -7,7 +7,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
-import { isAaSection } from "../aa.ts";
+import { AA_PLAN_FACTS, isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
@@ -24,7 +24,7 @@ import {
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { isRecord } from "../validate.ts";
-import { buildAttentionFlags } from "../derive.ts";
+import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
@@ -1054,7 +1054,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed.quota, partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(feed.quota, partial),
+            ...quotaActionFlags(buildQuotaActions(feed.quota, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
@@ -1084,12 +1088,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
           chargesDroppedNote;
+        const quotaForFlags = feed?.quota ?? (await fix.quota());
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial), ...feedChargeFlags],
+          attention: [
+            ...buildAttentionFlags(quotaForFlags, partial),
+            ...quotaActionFlags(buildQuotaActions(quotaForFlags, AA_PLAN_FACTS)),
+            ...feedChargeFlags,
+          ],
           domains,
           history,
         };
