@@ -120,5 +120,23 @@ func modelSettings() []Setting {
 				"deterministic result, with a note that the model did not " +
 				"answer.",
 		},
+		{
+			Path: "sampling.answerLocally", Scope: ScopeDaemon, Kind: KindBool, Default: "false",
+			Name:  "Answer sampling locally",
+			Short: "answer upstream sampling requests with mcpx's configured model provider instead of relaying them to the caller",
+			Long: "Slice 3 of #1925. Upstream servers send sampling/" +
+				"createMessage requests to mcpx, and mcpx has always " +
+				"relayed them through the broker to whatever drives it -- " +
+				"but the primary consumer never declares the sampling " +
+				"capability, so the relay goes unanswered. With this set, " +
+				"a sampling request is instead answered by the configured " +
+				"model layer (model.provider / model.profiles through " +
+				"internal/model Resolve), with model.budget and " +
+				"model.timeout as its bounds. The model.* settings stay " +
+				"the source of truth: enabling this with no provider " +
+				"configured fails the request cleanly rather than hanging " +
+				"or silently succeeding. Default false -- the relay " +
+				"behaviour mcpx has always had is unchanged.",
+		},
 	}
 }

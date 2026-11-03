@@ -1601,6 +1601,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn directory_frame_lists_worlds_without_an_admin_token() {
+        let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
+        let mut admin = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        admin
+            .say(serde_json::json!({"type":"create_world","admin_token":"admin","world":"arena"}))
+            .await;
+        assert_eq!(admin.next().await.unwrap()["type"], "world_created");
+
+        // No token at all: the directory is public metadata (#812).
+        let mut guest = Peer::connect_hub(hub, SessionConfig::default());
+        guest.say(serde_json::json!({"type":"directory"})).await;
+        let listed = guest.next().await.unwrap();
+        assert_eq!(listed["type"], "worlds");
+        assert_eq!(listed["default"], "lobby");
+        assert_eq!(listed["worlds"][0]["name"], "arena");
+        assert_eq!(listed["worlds"][0]["presence"], 0);
+    }
+
+    #[tokio::test]
     async fn unauthenticated_frames_cannot_create_or_probe_worlds() {
         let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());
         for frame in [

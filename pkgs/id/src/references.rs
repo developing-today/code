@@ -23,6 +23,9 @@
 //! - Resolution is viewer-relative: the viewer's own petnames live only in their local index,
 //!   so the same phrase may resolve differently for different viewers, and a reference whose
 //!   target a viewer cannot see renders as inert text that reveals only the stored surface.
+//! - Cleared (tombstoned) objects are excluded from resolution candidates and from surface
+//!   claimant counts. A reference inserted while its target is live still renders as cleared if
+//!   that target is cleared later.
 
 use std::collections::BTreeMap;
 
@@ -393,6 +396,7 @@ impl LocalIndex {
         self.objects
             .iter()
             .filter(|object| object.kind == sigil)
+            .filter(|object| !object.cleared)
             .filter(|object| {
                 if match_kind == MatchKind::Petname {
                     sigil == Sigil::Actor
@@ -419,7 +423,11 @@ impl LocalIndex {
         let folded = fold(phrase);
         let mut candidates: Vec<Candidate> = Vec::new();
         if !folded.is_empty() {
-            for object in self.objects.iter().filter(|object| object.kind == sigil) {
+            for object in self
+                .objects
+                .iter()
+                .filter(|object| object.kind == sigil && !object.cleared)
+            {
                 if let Some(candidate) = self.best_match(object, sigil, &folded) {
                     candidates.push(candidate);
                 }
@@ -832,6 +840,40 @@ mod tests {
         assert_eq!(rendered.state, RenderState::Cleared);
         assert_eq!(rendered.text, "#roadmap (cleared)");
         assert_eq!(rendered.current_label, None);
+    }
+
+    #[test]
+    fn a_cleared_only_target_does_not_resolve_or_insert() {
+        let cleared = object(b"cleared", Sigil::Topic, "Roadmap", vec![], 1);
+        let mut index = index_with(vec![cleared.clone()]);
+        assert!(index.clear(&cleared.id));
+
+        assert!(index.resolve(Sigil::Topic, "roadmap").candidates.is_empty());
+        assert_eq!(
+            index.insert_unambiguous(Sigil::Topic, "roadmap", author(7)),
+            Err(InsertError::NoMatch)
+        );
+    }
+
+    #[test]
+    fn a_cleared_duplicate_does_not_contest_a_live_target() {
+        let live = object(b"live", Sigil::Topic, "Roadmap", vec![], 1);
+        let cleared = object(b"cleared", Sigil::Topic, "Roadmap", vec![], 2);
+        let mut index = index_with(vec![live.clone(), cleared.clone()]);
+        assert!(index.clear(&cleared.id));
+
+        let resolution = index.resolve(Sigil::Topic, "roadmap");
+        assert_eq!(resolution.candidates.len(), 1);
+        assert_eq!(resolution.candidates[0].target_id, live.id);
+        assert!(!resolution.is_contested());
+        assert_eq!(
+            resolution.single().map(|candidate| candidate.target_id),
+            Some(live.id)
+        );
+        let inserted = index
+            .insert_unambiguous(Sigil::Topic, "roadmap", author(7))
+            .unwrap();
+        assert_eq!(inserted.target_id, live.id);
     }
 
     #[test]

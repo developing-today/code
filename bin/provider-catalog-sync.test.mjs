@@ -450,6 +450,46 @@ test('deepMergeProviders merges catalogs per model, overlay wins on conflict (#4
   assert.deepEqual(Object.keys(merged.x.models), ['m']);
 });
 
+test('deepMergeProviders defines external keys at depth >= 2 instead of assigning (#4957)', () => {
+  // Design #2953 corollary 4 probe matrix, one level deeper than the merge
+  // root: the overlay is an external file, so every key it spells must be
+  // an own data property rather than a [[Set]] write that can reach a
+  // prototype. JSON.parse (not object-literal syntax) creates the own
+  // __proto__ key exactly as the config parser does.
+  const base = { p: { models: { m: { limit: { context: 1 } } } } };
+  const over = JSON.parse(
+    '{"p":{"models":{"m":{"limit":{' +
+      '"__proto__":{"polluted":true},"constructor":"c","toString":"t","ordinary":42}}}}}',
+  );
+  const merged = deepMergeProviders(base, over);
+  const leaf = merged.p.models.m.limit;
+  assert.equal(Object.getPrototypeOf(leaf), Object.prototype);
+  assert.ok(Object.prototype.hasOwnProperty.call(leaf, '__proto__'));
+  assert.deepEqual(leaf.__proto__, { polluted: true });
+  assert.equal(leaf.constructor, 'c');
+  assert.equal(leaf.toString, 't');
+  assert.equal(leaf.ordinary, 42);
+  assert.equal(leaf.context, 1);
+  assert.equal(Object.prototype.polluted, undefined);
+  // JSON round-trip: the own key survives serialization and the prototype
+  // stays put.
+  const roundTrip = JSON.parse(JSON.stringify(merged));
+  assert.equal(Object.getPrototypeOf(roundTrip.p.models.m.limit), Object.prototype);
+  assert.ok(Object.prototype.hasOwnProperty.call(roundTrip.p.models.m.limit, '__proto__'));
+  assert.deepEqual(roundTrip.p.models.m.limit.__proto__, { polluted: true });
+});
+
+test('deepMergeProviders defines a string __proto__ at depth 3 without moving prototypes (#4957)', () => {
+  const base = { p: { models: { m: { variants: { low: { options: {} } } } } } };
+  const over = JSON.parse('{"p":{"models":{"m":{"variants":{"low":{"options":{"__proto__":"text"}}}}}}}');
+  const merged = deepMergeProviders(base, over);
+  const options = merged.p.models.m.variants.low.options;
+  assert.equal(Object.getPrototypeOf(options), Object.prototype);
+  assert.ok(Object.prototype.hasOwnProperty.call(options, '__proto__'));
+  assert.equal(options.__proto__, 'text');
+  assert.equal(Object.getPrototypeOf(merged.p.models.m.variants.low), Object.prototype);
+});
+
 test('runSync diffs the merged effective config when a runtime overlay exists (#4544)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'catalog-sync-overlay-'));
   const configPath = path.join(dir, 'opencode.jsonc');

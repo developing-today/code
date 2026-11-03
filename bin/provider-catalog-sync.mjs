@@ -560,7 +560,22 @@ export function deepMergeProviders(base, over) {
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   if (!isObj(base) || !isObj(over)) return over;
   const out = { ...base };
-  for (const k of Object.keys(over)) out[k] = deepMergeProviders(base[k], over[k]);
+  const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  for (const k of Object.keys(over)) {
+    // #4957 (design #2953): the overlay is an external file, so a key it
+    // spells must become an own data property at every depth. A plain
+    // `out[k] = ...` is a [[Set]] write: for `__proto__` that invokes the
+    // inherited accessor and moves the prototype instead of storing the
+    // value. Define the leaf explicitly. The own-property check also keeps
+    // a missing base key from resolving through the prototype chain
+    // (base["__proto__"] would otherwise be Object.prototype itself).
+    Object.defineProperty(out, k, {
+      value: deepMergeProviders(hasOwn(base, k) ? base[k] : undefined, over[k]),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
   return out;
 }
 
