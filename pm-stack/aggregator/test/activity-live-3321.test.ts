@@ -29,6 +29,7 @@ async function makeSource(
   opts: {
     onActivity?: (d: ActivityDelivery[]) => Promise<boolean> | boolean;
     onSourceGap?: (source: string, from: string, to: string | null) => void;
+    seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
   },
 ) {
   const dir = await mkdtemp(join(tmpdir(), "pm-activity-live-"));
@@ -133,6 +134,36 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
     }
   });
 
+  test("undated seq resumes above the persisted seen ids after a restart", async () => {
+    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const restore = installFetch(state);
+    const seen: ActivityDelivery[] = [];
+    try {
+      // A previous process already ingested two undated transitions
+      // for card t-p1; the store's persisted seen set is the only
+      // memory of them. This process must not reissue undated:1.
+      const src = await makeSource(state, {
+        onActivity: async (d) => {
+          seen.push(...d);
+          return true;
+        },
+        seenActivityIds: () => [
+          "kaneo:one/t-p1:status:in-progress->in-review:undated:1",
+          "kaneo:one/t-p1:status:in-review->in-progress:undated:2",
+          "kaneo:two/t-p2:appeared:2026-11-03T00:00:00.000Z",
+        ],
+      });
+      await src.board(); // baseline (seeds the counters)
+      expect(seen).toHaveLength(0);
+      state.cardStatus.p1 = "in-review";
+      await src.board();
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.sourceId).toContain("undated:3");
+    } finally {
+      restore();
+    }
+  });
+
   test("a partial poll does not diff or replace the baseline", async () => {
     const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
     const restore = installFetch(state);
@@ -170,16 +201,24 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
           gaps.push({ source, from, to });
         },
       });
-      await src.board(); // healthy baseline: no gap calls
-      expect(gaps).toHaveLength(0);
+      await src.board(); // healthy baseline: exactly one startup gap
+      // reconciliation (to=null), so a gap persisted by a previous
+      // process that died mid-outage gets resolved by the server sink
+      expect(gaps).toHaveLength(1);
+      expect(gaps[0]!.source).toBe("kaneo");
+      expect(gaps[0]!.to).toBeNull();
       state.failAll = true; // every task read fails -> fixtures fallback
       await src.board();
-      expect(gaps.length).toBeGreaterThan(0);
-      expect(gaps[0]!.source).toBe("kaneo");
-      expect(gaps[0]!.to).not.toBeNull();
+      expect(gaps.length).toBeGreaterThan(1);
+      expect(gaps[1]!.source).toBe("kaneo");
+      expect(gaps[1]!.to).not.toBeNull();
       state.failAll = false;
+      const beforeRecovery = gaps.length;
       await src.board(); // recovery is reported with to=null
+      expect(gaps.length).toBe(beforeRecovery + 1);
       expect(gaps[gaps.length - 1]!.to).toBeNull();
+      await src.board(); // healthy again: the reconciliation does not repeat
+      expect(gaps.length).toBe(beforeRecovery + 1);
     } finally {
       restore();
     }

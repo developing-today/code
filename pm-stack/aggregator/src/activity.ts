@@ -211,6 +211,31 @@ export function kaneoChangeDeliveries(
   return out;
 }
 
+/** Highest undated transition sequence already used per card, parsed
+ *  from persisted delivery ids (`<card>:appeared:undated:<n>` and
+ *  `<card>:status:<a>-><b>:undated:<n>`). A restarted process seeds
+ *  its in-memory counters from this so its next undated delivery for
+ *  a card cannot reuse an id the ingestion store has already seen
+ *  and silently dedupe-discard a genuine change (Codex P2, PR
+ *  #5141). Ids without an undated stamp carry no sequence and are
+ *  ignored. */
+export function maxUndatedSeqByCard(seenIds: readonly string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const id of seenIds) {
+    const m = /^(.*):undated:(\d+)$/.exec(id);
+    if (!m) continue;
+    const head = m[1]!;
+    let cardId: string | null = null;
+    const statusAt = head.indexOf(":status:");
+    if (statusAt >= 0) cardId = head.slice(0, statusAt);
+    else if (head.endsWith(":appeared")) cardId = head.slice(0, -":appeared".length);
+    if (!cardId) continue;
+    const seq = Number(m[2]);
+    if (Number.isFinite(seq) && seq > (out.get(cardId) ?? 0)) out.set(cardId, seq);
+  }
+  return out;
+}
+
 // -- gap records -----------------------------------------------------------
 
 export type GapStatus = "open" | "backfilled" | "unrecoverable";
@@ -373,6 +398,15 @@ export class IngestionStore {
   async checkpoints(): Promise<SourceCheckpoint[]> {
     await this.load();
     return Object.values(this.data.checkpoints).sort((a, b) => a.source.localeCompare(b.source));
+  }
+
+  /** The persisted seen-id set for a source (dedupe memory). Read
+   *  by callers that keep in-memory counters keyed to those ids —
+   *  e.g. the live source's undated Kaneo sequence — so a restart
+   *  can resume above every id already ingested (#3321). */
+  async seenIds(source: string): Promise<string[]> {
+    await this.load();
+    return [...(this.data.seen[source] ?? [])];
   }
 
   async gaps(): Promise<GapRecord[]> {

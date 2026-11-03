@@ -25,7 +25,12 @@ import {
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import type { NewStreamEvent } from "../events.ts";
-import { kaneoChangeDeliveries, type ActivityDelivery, type KaneoCardSnapshot } from "../activity.ts";
+import {
+  kaneoChangeDeliveries,
+  maxUndatedSeqByCard,
+  type ActivityDelivery,
+  type KaneoCardSnapshot,
+} from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
@@ -697,6 +702,12 @@ export function liveSource(
     // poll after a gap, so the server can record the missed interval
     // as an activity gap and resolve it on recovery.
     onSourceGap?: (source: string, from: string, to: string | null) => Promise<void> | void;
+    // Persisted ingestion seen-ids reader (#3321, Codex P2 on PR
+    // #5141): on the first complete poll the live source seeds its
+    // in-memory undated Kaneo sequence counters from the ids the
+    // ingestion store has already persisted, so a restart cannot
+    // reissue an undated delivery id that dedupe would discard.
+    seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
   },
 ): Source {
   const fix = fixtureSource();
@@ -743,16 +754,49 @@ export function liveSource(
       );
     }
   }
+  // #3321: whether this process has already sent a gap-recovery
+  // reconciliation. A gap recorded just before a restart is open in
+  // the persisted store but invisible to this process (kaneoGapFrom
+  // starts null), so the FIRST complete poll after startup reports
+  // recovery even with no in-memory gap — the server's sink resolves
+  // every open gap for the source — and later healthy polls do not
+  // repeat it (Codex P2, PR #5141).
+  let kaneoGapReconciled = false;
   async function noteKaneoRecovered(): Promise<void> {
-    if (!kaneoGapFrom) return;
     const from = kaneoGapFrom;
+    if (!from && kaneoGapReconciled) return;
+    kaneoGapReconciled = true;
     kaneoGapFrom = null;
     if (!opts?.onSourceGap) return;
     try {
-      await opts.onSourceGap("kaneo", from, null);
+      // On the startup reconciliation there is no in-memory gap, so
+      // `from` is empty; the sink resolves open gaps by source when
+      // `to` is null and does not use `from`.
+      await opts.onSourceGap("kaneo", from ?? "", null);
     } catch (err) {
       console.error(
         `[activity] WARNING: kaneo gap recovery record failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  // #3321: seed the undated sequence counters from the ingestion
+  // store's persisted seen ids, once, before the first diff. The
+  // counters are in-memory; without this a restarted process starts
+  // them at zero and its next undated transition reuses an id the
+  // store already saw, so dedupe silently discards a genuine change
+  // (Codex P2, PR #5141). Seeding only ever raises a counter.
+  let kaneoSeqSeeded = false;
+  async function seedKaneoSeqFromPersisted(): Promise<void> {
+    if (kaneoSeqSeeded || !opts?.seenActivityIds) return;
+    try {
+      const ids = await opts.seenActivityIds("kaneo");
+      for (const [cardId, seq] of maxUndatedSeqByCard(ids)) {
+        if (seq > (kaneoCardSeq.get(cardId) ?? 0)) kaneoCardSeq.set(cardId, seq);
+      }
+      kaneoSeqSeeded = true;
+    } catch (err) {
+      console.error(
+        `[activity] WARNING: kaneo seq seeding from persisted seen ids failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }
@@ -959,6 +1003,7 @@ export function liveSource(
           );
           await noteKaneoGap(new Date());
         } else {
+          await seedKaneoSeqFromPersisted();
           await noteKaneoRecovered();
           try {
             const cards: KaneoCardSnapshot[] = board

@@ -227,6 +227,7 @@ function pickSource(): Source {
         hasEvent: hasStreamEvent,
         onActivity: recordActivity,
         onSourceGap: recordSourceGap,
+        seenActivityIds: (source) => activityStore.seenIds(source),
       })
     : fixtureSource();
 }

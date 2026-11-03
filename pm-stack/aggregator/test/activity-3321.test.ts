@@ -15,6 +15,7 @@ import {
   gapsHtml,
   ingestActivity,
   kaneoChangeDeliveries,
+  maxUndatedSeqByCard,
   syncWatchdogGaps,
   watchdogDeliveries,
   type ActivityDelivery,
@@ -157,6 +158,38 @@ describe("codex findings on PR #5141 (#3321)", () => {
     const result = await ingestActivity(store, failing, deliveries);
     expect(result.failed).toBe(1);
     expect(result.ingested).toBe(0);
+  });
+});
+
+describe("undated seq seeding (#3321, PR #5141 codex round 2)", () => {
+  test("maxUndatedSeqByCard parses appeared and status ids, ignores dated ones", () => {
+    const m = maxUndatedSeqByCard([
+      "card-a:appeared:undated:2",
+      "card-a:status:in-progress->in-review:undated:5",
+      "card-a:status:in-review->in-progress:undated:3",
+      "card-b:status:in-progress->in-review:2026-11-03T00:00:00.000Z",
+      "watchdog:episode-1",
+    ]);
+    expect(m.get("card-a")).toBe(5);
+    expect(m.has("card-b")).toBe(false);
+    expect(m.size).toBe(1);
+  });
+
+  test("seenIds returns the persisted set per source after a restart", async () => {
+    const { activityFile, events, store } = tmpStores();
+    const delivery: ActivityDelivery = {
+      source: "kaneo",
+      sourceId: "card-a:status:in-progress->in-review:undated:1",
+      at: iso(0),
+      kind: "kaneo-change",
+      ref: "card-a",
+      summary: "moved",
+    };
+    await ingestActivity(store, events, [delivery]);
+    const restarted = new IngestionStore(activityFile);
+    expect(await restarted.seenIds("kaneo")).toEqual([delivery.sourceId]);
+    expect(await restarted.seenIds("watchdog")).toEqual([]);
+    expect(maxUndatedSeqByCard(await restarted.seenIds("kaneo")).get("card-a")).toBe(1);
   });
 });
 
