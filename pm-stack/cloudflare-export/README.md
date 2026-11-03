@@ -26,7 +26,7 @@ One GraphQL analytics POST (`/client/v4/graphql`) plus REST probes:
 | `d1-rows-read`, `d1-rows-written`    | `d1AnalyticsAdaptiveGroups` sum                                                                                                                                                      |
 | `queues-ops`                         | `queueMessageOperationsAdaptiveGroups` sum billableOperations                                                                                                                        |
 | `r2-class-a`, `r2-class-b`           | `r2OperationsAdaptiveGroups` by actionType, classified per Cloudflare's published pricing classes (deletes free; unknown actions reported in `r2UnclassifiedActions`, never guessed) |
-| `r2-storage`                         | `r2StorageAdaptiveGroups` max payloadSize → GB; bucket names enumerated directly via `GET /accounts/{id}/r2/buckets`                                                                 |
+| `r2-storage`                         | `r2StorageAdaptiveGroups` max payloadSize → GB; bucket names enumerated directly via paginated `GET /accounts/{id}/r2/buckets` (fail-closed, #2574)                                        |
 | `workers-ai-neurons`                 | `aiInferenceAdaptiveGroups` sum totalNeurons, as a per-day average over the cycle to date (cycle total in the metric's `detail`)                                                     |
 | neurons/day alert                    | `aiInferenceAdaptiveGroups` grouped by `date` + `modelId` (limit 10000, sized for cycle-days × models) — see the alert section below                                                 |
 
@@ -110,6 +110,19 @@ append-only `history.jsonl`:
 }
 ```
 
+`r2Buckets` is the complete bucket-name enumeration: every page
+reported by `result_info` is followed (cursor form, then `total_pages`
+page form), so accounts with more than 100 buckets list all of them.
+Enumeration is **fail-closed** (#2574): a non-200 answer other than the
+401/403 token-scope case, a missing/malformed `result.buckets`, or a
+nameless entry aborts the run with an `unparseable` failure document
+(exit 6) — a failed enumeration is never published as `r2Buckets: []`
+inside a `status: "ok"` document. If pagination cannot be proven
+complete (a full page with no usable metadata, or the 1000-page safety
+cap), the document keeps the collected names and adds
+`"r2BucketsTruncated": true` plus `r2BucketsDetail`, so the list reads
+as a lower bound instead of a complete enumeration.
+
 ## Failure states (fail-closed)
 
 A failed tick writes a failure document with `status`,
@@ -119,7 +132,7 @@ A failed tick writes a failure document with `status`,
 | -------------- | ------------------------------------------------------------- | ---- |
 | `no-token`     | token not in environment (wrapper/bws problem)                | 2    |
 | `token-scope`  | API answered 401/403; `missingScopes` names the scopes needed | 3    |
-| `unparseable`  | an endpoint answered an unrecognised shape                    | 6    |
+| `unparseable`  | an endpoint answered an unrecognised shape (includes a failed R2 bucket enumeration — #2574) | 6    |
 | `fetch-failed` | network/other error                                           | 7    |
 
 ## Install / schedule (laptop)

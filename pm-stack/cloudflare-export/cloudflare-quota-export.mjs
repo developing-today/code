@@ -361,7 +361,16 @@ export function classifyBilling(probes) {
   };
 }
 
-export function successDocument({ measuredAt, cycleStart, accountId, billing, parsed, r2Buckets }) {
+export function successDocument({
+  measuredAt,
+  cycleStart,
+  accountId,
+  billing,
+  parsed,
+  r2Buckets,
+  r2BucketsTruncated = false,
+  r2BucketsDetail = null,
+}) {
   return {
     service: "cloudflare",
     source: SOURCE,
@@ -371,6 +380,12 @@ export function successDocument({ measuredAt, cycleStart, accountId, billing, pa
     accountId,
     billing,
     r2Buckets,
+    // #2574: present ONLY when pagination could not be proven complete,
+    // so a partial list can never be mistaken for the full bucket set —
+    // the r2-storage lowerBound discipline, applied to the list itself.
+    ...(r2BucketsTruncated
+      ? { r2BucketsTruncated: true, ...(r2BucketsDetail ? { r2BucketsDetail } : {}) }
+      : {}),
     ...(parsed.r2Unclassified?.length ? { r2UnclassifiedActions: parsed.r2Unclassified } : {}),
     // #2287: the alerts array is present ONLY when a day is firing, so
     // consumers can key on its presence; saturation of the grouped
@@ -494,9 +509,11 @@ export async function run({ token, accountId, now = new Date() } = {}) {
 
   // R2 bucket enumeration directly (names only) — the storage figure
   // itself comes from the analytics dataset, not the tracker prose.
-  const buckets = await apiJson(`/accounts/${acct}/r2/buckets?per_page=100`, token);
-  if (buckets.status === 401 || buckets.status === 403) throw scopeError("GET r2/buckets", buckets.status);
-  const r2Buckets = (buckets.body?.result?.buckets ?? []).map((b) => b.name).filter(Boolean);
+  // Fail-closed (#2574): a failed or malformed answer throws; a list the
+  // pages cannot prove complete is published with an explicit truncation
+  // marker. Neither is ever silently rendered as [].
+  const r2Enumeration = await listR2Buckets(acct, token);
+  const r2Buckets = r2Enumeration.buckets;
 
   const start = cycleStartUtc(now);
   const gql = await apiJson("/graphql", token, {
@@ -541,7 +558,101 @@ export async function run({ token, accountId, now = new Date() } = {}) {
     billing,
     parsed,
     r2Buckets,
+    r2BucketsTruncated: r2Enumeration.truncated,
+    r2BucketsDetail: r2Enumeration.detail,
   });
+}
+
+// R2 bucket enumeration, fail-closed and paginated (#2574).
+//
+// The old call made one request (`per_page=100`) and read
+// `result?.buckets ?? []`, so a 500/malformed answer published an empty
+// list and anything past the first 100 buckets vanished — both inside a
+// `status: "ok"` document that also reported R2 storage usage.
+//
+// Contract:
+//   * 401/403 keep the token-scope contract (scopeError, exit 3).
+//   * Any other non-200, a missing/malformed `result.buckets`, or a
+//     nameless entry throws ExportError("unparseable", 6): enumeration
+//     is not knowable, so no document is published at all.
+//   * Pages are followed to completion — `result_info.cursor` (List
+//     Buckets cursor form) or `result_info.total_pages` (page form) —
+//     and a short page without metadata proves completeness.
+//   * If a full page arrives with no usable pagination metadata, or the
+//     safety cap is hit, the accumulated names are returned with
+//     `{ truncated: true }` so successDocument() marks the list as a
+//     LOWER BOUND instead of passing it off as complete.
+export const R2_BUCKETS_PER_PAGE = 100;
+// Safety cap: a server that never stops handing out pages must not spin.
+export const R2_BUCKETS_PAGE_LIMIT = 1000;
+
+export async function listR2Buckets(acct, token) {
+  const names = [];
+  const seen = new Set();
+  let page = 1;
+  let cursor = null;
+  for (;;) {
+    const query = new URLSearchParams({ per_page: String(R2_BUCKETS_PER_PAGE) });
+    if (cursor) query.set("cursor", cursor);
+    else if (page > 1) query.set("page", String(page));
+    const res = await apiJson(`/accounts/${acct}/r2/buckets?${query}`, token);
+    const where = `GET r2/buckets page ${page}`;
+    if (res.status === 401 || res.status === 403) throw scopeError("GET r2/buckets", res.status);
+    if (res.status !== 200) {
+      throw new ExportError(
+        "unparseable",
+        6,
+        `${where}: HTTP ${res.status} — bucket enumeration failed, refusing to publish an empty or partial list (#2574)`,
+      );
+    }
+    const list = res.body?.result?.buckets;
+    if (!Array.isArray(list)) {
+      throw new ExportError(
+        "unparseable",
+        6,
+        `${where}: result.buckets missing or malformed — bucket enumeration failed (#2574)`,
+      );
+    }
+    for (const b of list) {
+      if (typeof b?.name !== "string" || !b.name) {
+        throw new ExportError(
+          "unparseable",
+          6,
+          `${where}: bucket entry without a name — enumeration shape unknown (#2574)`,
+        );
+      }
+      if (!seen.has(b.name)) {
+        seen.add(b.name);
+        names.push(b.name);
+      }
+    }
+    const info = res.body?.result_info ?? {};
+    const nextCursor = typeof info.cursor === "string" && info.cursor ? info.cursor : null;
+    const totalPages = Number.isInteger(info.total_pages) && info.total_pages >= 1 ? info.total_pages : null;
+    if (page >= R2_BUCKETS_PAGE_LIMIT) {
+      return {
+        buckets: names,
+        truncated: true,
+        detail: `${where}: stopped at the ${R2_BUCKETS_PAGE_LIMIT}-page safety limit — bucket list is a LOWER BOUND`,
+      };
+    }
+    if (nextCursor && nextCursor !== cursor) {
+      cursor = nextCursor;
+      page += 1;
+      continue;
+    }
+    if (totalPages !== null) {
+      if (page >= totalPages) return { buckets: names, truncated: false, detail: null };
+      page += 1;
+      continue;
+    }
+    if (list.length < R2_BUCKETS_PER_PAGE) return { buckets: names, truncated: false, detail: null };
+    return {
+      buckets: names,
+      truncated: true,
+      detail: `${where}: full page with no result_info cursor or total_pages — the list may continue and is a LOWER BOUND`,
+    };
+  }
 }
 
 async function writeOutputs(outDir, doc) {

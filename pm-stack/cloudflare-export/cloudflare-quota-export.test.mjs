@@ -14,7 +14,9 @@ import {
   ExportError,
   failureDocument,
   foldKv,
+  listR2Buckets,
   parseGraphqlUsage,
+  R2_BUCKETS_PER_PAGE,
   R2_STORAGE_GROUP_LIMIT,
   run,
   successDocument,
@@ -490,5 +492,167 @@ test("measurement strings use plain decimals; request counts remain integers (#2
       (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6 &&
         error.message.includes("ai.totalNeurons"),
     );
+  }
+});
+
+// #2574: R2 bucket enumeration is fail-closed and paginated. A failed or
+// malformed answer must abort the export (never publish r2Buckets: [] in a
+// status:ok document), and every page must be followed so >100 buckets are
+// listed rather than silently dropped.
+function bucketPage(names, { totalPages, cursor, count } = {}) {
+  return {
+    status: 200,
+    body: {
+      result: { buckets: names.map((name) => ({ name })) },
+      ...(totalPages === undefined && cursor === undefined && count === undefined
+        ? {}
+        : {
+            result_info: {
+              page: 1,
+              per_page: R2_BUCKETS_PER_PAGE,
+              count: count ?? names.length,
+              ...(totalPages === undefined ? {} : { total_pages: totalPages }),
+              ...(cursor === undefined ? {} : { cursor }),
+            },
+          }),
+    },
+  };
+}
+
+// Billing probes and GraphQL answer benignly, so any r2Buckets outcome
+// proves the enumeration path is isolated from the rest of the run.
+async function runWithBucketPages(pages) {
+  let i = 0;
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/r2/buckets")) {
+      const p = pages[Math.min(i, pages.length - 1)];
+      i += 1;
+      return { status: p.status, json: async () => p.body };
+    }
+    if (u.includes("/graphql")) {
+      return { status: 200, json: async () => ({ data: { viewer: { accounts: [ACCOUNT] } } }) };
+    }
+    return { status: 200, json: async () => ({}) };
+  };
+  try {
+    return await run({ token: "tok", accountId: "acct", now: NOW });
+  } finally {
+    globalThis.fetch = prev;
+  }
+}
+
+async function expectBucketExportError(pages, status, exitCode, messagePart) {
+  await assert.rejects(runWithBucketPages(pages), (e) => {
+    assert.ok(e instanceof ExportError, `expected ExportError, got ${e}`);
+    assert.equal(e.status, status);
+    assert.equal(e.exitCode, exitCode);
+    if (messagePart) assert.match(e.message, messagePart);
+    return true;
+  });
+}
+
+test("run: an HTTP 500 on buckets fails closed as unparseable, not an empty list (#2574)", async () => {
+  await expectBucketExportError([{ status: 500, body: {} }], "unparseable", 6, /HTTP 500/);
+});
+
+test("run: a malformed result.buckets body fails closed as unparseable (#2574)", async () => {
+  for (const body of [{}, { result: {} }, { result: { buckets: "nope" } }, { result: { buckets: null } }]) {
+    await expectBucketExportError([{ status: 200, body }], "unparseable", 6, /missing or malformed/);
+  }
+});
+
+test("run: a nameless bucket entry fails closed as unparseable (#2574)", async () => {
+  await expectBucketExportError(
+    [{ status: 200, body: { result: { buckets: [{ name: "ok" }, { id: "no-name" }] } } }],
+    "unparseable",
+    6,
+    /without a name/,
+  );
+});
+
+test("run: a failed later page fails closed instead of publishing the partial list (#2574)", async () => {
+  const first = Array.from({ length: R2_BUCKETS_PER_PAGE }, (_, i) => `b${i}`);
+  await expectBucketExportError(
+    [bucketPage(first, { totalPages: 2 }), { status: 500, body: {} }],
+    "unparseable",
+    6,
+    /page 2/,
+  );
+});
+
+test("run: page-based pagination follows every page to completion (#2574)", async () => {
+  const first = Array.from({ length: R2_BUCKETS_PER_PAGE }, (_, i) => `b${i}`);
+  const rest = Array.from({ length: 50 }, (_, i) => `b${R2_BUCKETS_PER_PAGE + i}`);
+  const doc = await runWithBucketPages([
+    bucketPage(first, { totalPages: 2 }),
+    bucketPage(rest, { totalPages: 2 }),
+  ]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.metrics.length, 11); // GraphQL metrics untouched
+  assert.equal(doc.r2Buckets.length, 150);
+  assert.equal(doc.r2Buckets[0], "b0");
+  assert.equal(doc.r2Buckets[149], "b149");
+  assert.equal("r2BucketsTruncated" in doc, false);
+  assert.equal("r2BucketsDetail" in doc, false);
+});
+
+test("run: cursor pagination follows result_info.cursor to completion (#2574)", async () => {
+  const first = Array.from({ length: R2_BUCKETS_PER_PAGE }, (_, i) => `b${i}`);
+  const rest = ["c1", "c2"];
+  const doc = await runWithBucketPages([
+    bucketPage(first, { cursor: "next-page" }),
+    bucketPage(rest, { count: rest.length }),
+  ]);
+  assert.equal(doc.r2Buckets.length, R2_BUCKETS_PER_PAGE + rest.length);
+  assert.equal(doc.r2Buckets.at(-1), "c2");
+  assert.equal("r2BucketsTruncated" in doc, false);
+});
+
+test("run: a full page with no pagination metadata is flagged as a lower bound (#2574)", async () => {
+  const full = Array.from({ length: R2_BUCKETS_PER_PAGE }, (_, i) => `b${i}`);
+  const doc = await runWithBucketPages([bucketPage(full)]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.r2Buckets.length, R2_BUCKETS_PER_PAGE);
+  assert.equal(doc.r2BucketsTruncated, true);
+  assert.match(doc.r2BucketsDetail, /LOWER BOUND/);
+  // A short page without metadata is still provably complete.
+  const short = await runWithBucketPages([bucketPage(["only"])]);
+  assert.deepEqual(short.r2Buckets, ["only"]);
+  assert.equal("r2BucketsTruncated" in short, false);
+});
+
+test("run: a genuinely empty bucket page stays a known empty list (#2574)", async () => {
+  const doc = await runWithBucketPages([bucketPage([])]);
+  assert.deepEqual(doc.r2Buckets, []);
+  assert.equal("r2BucketsTruncated" in doc, false);
+});
+
+test("run: 401/403 on buckets keep the token-scope contract (#2574)", async () => {
+  await expectBucketExportError([{ status: 403, body: {} }], "token-scope", 3, /lacks a scope/);
+  await expectBucketExportError([{ status: 401, body: {} }], "token-scope", 3);
+});
+
+test("listR2Buckets: duplicate names across pages are reported once (#2574)", async () => {
+  const prev = globalThis.fetch;
+  let i = 0;
+  const pages = [
+    { status: 200, body: { result: { buckets: [{ name: "a" }, { name: "b" }] }, result_info: { total_pages: 2 } } },
+    { status: 200, body: { result: { buckets: [{ name: "b" }, { name: "c" }] }, result_info: { total_pages: 2 } } },
+  ];
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/r2/buckets")) {
+      const p = pages[Math.min(i, pages.length - 1)];
+      i += 1;
+      return { status: p.status, json: async () => p.body };
+    }
+    return { status: 200, json: async () => ({}) };
+  };
+  try {
+    const out = await listR2Buckets("acct", "tok");
+    assert.deepEqual(out, { buckets: ["a", "b", "c"], truncated: false, detail: null });
+  } finally {
+    globalThis.fetch = prev;
   }
 });
