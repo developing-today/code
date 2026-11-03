@@ -58,7 +58,9 @@ function sessionsRequest(token: string, body: Record<string, unknown>): Request 
   });
 }
 
-const base = { repo: "developing-today/code", prompt: "do the thing" };
+// The prompt clears the #4925 spec gate (>= 40 chars, no explicit
+// title) so these tests exercise the directory/body gates behind it.
+const base = { repo: "developing-today/code", prompt: "do the thing properly, with a real spec and acceptance criteria" };
 
 describe("POST /v1/sessions directory scoping (issue #2903)", () => {
   test("OIDC + foreign directory is rejected with 400 before any side effect", async () => {

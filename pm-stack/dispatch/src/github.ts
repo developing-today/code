@@ -298,4 +298,24 @@ export class GitHubClient {
     }
     await this.gh(["issue", "comment", String(issueNumber), "--repo", repo, "--body", body]);
   }
+
+  /** Close an issue as not planned. Used by enqueue-failure cleanup
+   * (#4925): an issue dispatch created for a task that never got
+   * enqueued must not be left dangling open. */
+  async closeIssue(repo: string, issueNumber: number): Promise<void> {
+    if (this.appConfigured) {
+      try {
+        const token = await this.installationToken(repo);
+        const res = await this.appApi("PATCH", `/repos/${repo}/issues/${issueNumber}`, token, {
+          state: "closed",
+          state_reason: "not_planned",
+        });
+        if (!res.ok) throw new GitHubError(`close issue failed (HTTP ${res.status})`);
+        return;
+      } catch {
+        /* fall through to gh */
+      }
+    }
+    await this.gh(["issue", "close", String(issueNumber), "--repo", repo, "--reason", "not planned"]);
+  }
 }
