@@ -608,6 +608,107 @@ mod tests {
         assert!(chat_history(&core.events, 0).is_empty());
     }
 
+    /// Asks the bounded-read questions of #796 item 9-5 once each and
+    /// captures every result event into its records for the test to read.
+    #[derive(Debug, Default)]
+    struct BoundsProbe {
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+    }
+
+    impl WorldProgram for BoundsProbe {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                let value: serde_json::Value =
+                    serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                if value["cap"] == "result"
+                    && let Some(id) = value["id"].as_str()
+                {
+                    self.answered.insert(id.to_owned());
+                    self.results.insert(id.to_owned(), value);
+                }
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let requests: Vec<serde_json::Value> = [
+                ("records-oversized", "records.read", serde_json::json!({})),
+                ("hist-default", "chat.history", serde_json::json!({})),
+                (
+                    "hist-clamped",
+                    "chat.history",
+                    serde_json::json!({"count": 100_000}),
+                ),
+            ]
+            .into_iter()
+            .filter(|(id, _, _)| !self.answered.contains(*id))
+            .map(|(id, cap, args)| serde_json::json!({"id": id, "cap": cap, "args": args}))
+            .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": requests}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"results": self.results}).to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_defaults_and_clamps_and_records_read_rejects_an_oversized_first_record() {
+        let mut core = world(128);
+        core.ledger.set_granted(BTreeSet::from([
+            "chat.history".to_owned(),
+            "records.read".to_owned(),
+        ]));
+        for sequence in 1..=70_u64 {
+            core.events.push_back(WorldEvent {
+                sequence,
+                participant_id: 1,
+                kind: WorldEventKind::Chat(format!("line-{sequence}")),
+            });
+        }
+        let mut actor = WorldActor::for_test(core, Box::new(BoundsProbe::default()), None);
+        // A single record larger than one records page can only reach the
+        // actor from a store that never passed parse_records; inject it
+        // straight into the published-records channel to prove the read
+        // fails closed instead of serving a truncated page.
+        let mut oversized = Records::new();
+        oversized.insert(
+            "big".to_owned(),
+            serde_json::Value::String("x".repeat(crate::world_session::MAX_RECORDS_PAGE_BYTES + 1)),
+        );
+        actor.records_sender.send_replace((0, Arc::new(oversized)));
+
+        actor.after_change().await;
+
+        let records = actor.records_sender.borrow().1.clone();
+        let results = &records["results"];
+        // chat.history with no count serves the default 16 newest lines,
+        // oldest first.
+        let default = &results["hist-default"];
+        assert_eq!(default["ok"], true, "{default}");
+        let lines = default["value"]["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), 16);
+        assert_eq!(lines[0]["text"], "line-55");
+        assert_eq!(lines[15]["text"], "line-70");
+        // An over-large count clamps to MAX_CHAT_HISTORY_LINES.
+        let clamped = &results["hist-clamped"];
+        assert_eq!(clamped["ok"], true, "{clamped}");
+        let lines = clamped["value"]["lines"].as_array().unwrap();
+        assert_eq!(lines.len(), crate::world_caps::MAX_CHAT_HISTORY_LINES);
+        assert_eq!(lines[0]["text"], "line-7");
+        assert_eq!(lines[63]["text"], "line-70");
+        // records.read whose first record cannot fit one page is BadArgs,
+        // never an empty page that looks complete.
+        let oversized_result = &results["records-oversized"];
+        assert_eq!(oversized_result["ok"], false, "{oversized_result}");
+        assert_eq!(oversized_result["error"], "bad_args");
+    }
+
     #[tokio::test]
     async fn a_granted_chat_history_request_is_served_over_the_ledger() {
         let (world, token) = caps_world_sync(false).await;
