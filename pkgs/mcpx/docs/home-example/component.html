@@ -5,6 +5,10 @@
   #1941 the site build) to include where the home page's example slot is.
   It is not a standalone page and builds no parallel site.
 
+  Module imports are resolved against the including page (docs/index.md sits at
+  the book root), not against this fragment, so they name the home-example
+  directory explicitly.
+
   No-JS behaviour: the static, highlighted example below is what a reader
   gets — the same fallback the issue specifies. With JS, the static block
   is replaced by an editable textarea, the Run and copy buttons appear,
@@ -41,9 +45,9 @@ console.log("demo.echo:", String(echoed));</code></pre>
   <pre class="mcpx-home-example-output" aria-live="polite" hidden></pre>
 
   <script type="module">
-    import * as client from "./client.browser.js";
-    import { runExample } from "./run-example.js";
-    import { execCommand, asScript } from "./copy-command.js";
+    import * as client from "home-example/client.browser.js";
+    import { runExample } from "home-example/run-example.js";
+    import { execCommand, asScript } from "home-example/copy-command.js";
 
     // document.currentScript is null inside a type="module" script, so
     // locate the (single, not-yet-initialised) component by selector.
