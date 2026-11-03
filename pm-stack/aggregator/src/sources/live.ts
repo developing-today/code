@@ -25,6 +25,7 @@ import {
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import type { NewStreamEvent } from "../events.ts";
+import { kaneoChangeDeliveries, type ActivityDelivery, type KaneoCardSnapshot } from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
@@ -672,6 +673,7 @@ export function liveSource(
     standingAuto?: () => Promise<boolean>;
     onEvent?: (event: NewStreamEvent) => void;
     hasEvent?: (kind: string, ref: string) => Promise<boolean>;
+    onActivity?: (deliveries: ActivityDelivery[]) => void;
   },
 ): Source {
   const fix = fixtureSource();
@@ -694,6 +696,10 @@ export function liveSource(
   // surfaces (Source.diagnostics) read it from here, never from a
   // null section, so absent/invalid/stale stay distinguishable.
   let lastOrchestrationDiagnosis: SectionDiagnosis = { state: "absent" };
+  // #3321: the previous board poll's Kaneo cards, for change diffing.
+  // In-memory on purpose: a restart re-baselines silently, and the
+  // ingestion store's persisted seen set is the durable dedupe.
+  let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
   // #1739: the last orchestration run whose publish was recorded in
   // the event log, plus its tier membership — a new runId is a publish
   // step, and the tier diff between successive publishes is the
@@ -850,6 +856,34 @@ export function liveSource(
       try {
         const cookie = await kaneoCookie();
         const board = await kaneoBoard(cfg, cookie);
+        // #3321: Kaneo activity ingestion — diff this poll against the
+        // previous one and hand the changes to the server's ingestion
+        // hook. The first poll after start is a silent baseline (no
+        // deliveries): pre-start changes are not claimed as history,
+        // and dedupe lives in the ingestion store, so re-diffs of the
+        // same change never re-emit. Fire-and-forget like onEvent.
+        if (opts?.onActivity) {
+          try {
+            const cards: KaneoCardSnapshot[] = board
+              .filter((b) => b.source === "kaneo")
+              .map((b) => ({
+                id: b.id,
+                status: b.status,
+                title: b.title,
+                ...(b.updatedAt ? { updatedAt: b.updatedAt } : {}),
+                ...(b.kaneoUrl ? { kaneoUrl: b.kaneoUrl } : {}),
+              }));
+            if (prevKaneoCards) {
+              const deliveries = kaneoChangeDeliveries(prevKaneoCards, cards);
+              if (deliveries.length) opts.onActivity(deliveries);
+            }
+            prevKaneoCards = new Map(cards.map((c) => [c.id, c]));
+          } catch (err) {
+            console.error(
+              `[activity] WARNING: kaneo change diff failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
         // A successfully fetched board is live data even when the
         // done policy (#1146) filters it to empty: falling through to
         // fixtures would replace the real (empty) board with
