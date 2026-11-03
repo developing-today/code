@@ -14,7 +14,9 @@ gen() { # gen <path> <production-lines> [test-lines]
   { for i in $(seq 1 "$prod"); do echo "fn f$i() {}"; done
     if [ "$test_lines" -gt 0 ]; then
       echo "#[cfg(test)]"
+      echo "mod tests {"
       for i in $(seq 1 "$test_lines"); do echo "fn t$i() {}"; done
+      echo "}"
     fi
   } > "$path"
 }
@@ -54,6 +56,49 @@ if bash "$SCRIPT" "$TMP/early" > "$TMP/early.out" 2>&1; then
 fi
 grep -q "OVER LIMIT pkgs/id/src/early.rs: 2501 production lines" "$TMP/early.out"
 echo "pass: production after an out-of-line test declaration is counted"
+
+# Production code after a test item whose braces balance on one line
+# still counts (Codex finding on PR #4709): #[cfg(test)] fn helper() {}
+# excludes only the helper; skipping must not swallow what follows.
+mkdir -p "$TMP/sameline/pkgs/id/src"
+{ echo "#[cfg(test)] fn inline_helper() {}"
+  echo "#[cfg(test)]"
+  echo "fn helper() {}"
+  for i in $(seq 1 2501); do echo "fn p$i() {}"; done
+} > "$TMP/sameline/pkgs/id/src/sameline.rs"
+if bash "$SCRIPT" "$TMP/sameline" > "$TMP/sameline.out" 2>&1; then
+  echo "FAIL: guard kept skipping after a one-line test item" >&2; exit 1
+fi
+grep -q "OVER LIMIT pkgs/id/src/sameline.rs: 2501 production lines" "$TMP/sameline.out"
+echo "pass: production after a one-line test item is counted"
+
+# Items gated by a compound cfg predicate that requires test —
+# #[cfg(all(test, feature = "world"))] — are test code (Codex finding
+# on PR #4709): a 3,000-line module under that gate must not count.
+mkdir -p "$TMP/compound/pkgs/id/src"
+{ for i in $(seq 1 100); do echo "fn f$i() {}"; done
+  echo "#[cfg(all(test, feature = \"world\"))]"
+  echo "mod world_only_tests {"
+  for i in $(seq 1 3000); do echo "fn t$i() {}"; done
+  echo "}"
+} > "$TMP/compound/pkgs/id/src/compound.rs"
+bash "$SCRIPT" "$TMP/compound" > "$TMP/compound.out"
+grep -q "production-line-guard: OK" "$TMP/compound.out"
+echo "pass: compound cfg(all(test, ...)) module is excluded"
+
+# Control: a module gated WITHOUT test — #[cfg(all(feature = "world"))]
+# — is production: the same shape must fail the guard.
+mkdir -p "$TMP/prodcfg/pkgs/id/src"
+{ echo "#[cfg(all(feature = \"world\"))]"
+  echo "mod world_prod {"
+  for i in $(seq 1 2501); do echo "fn p$i() {}"; done
+  echo "}"
+} > "$TMP/prodcfg/pkgs/id/src/prodcfg.rs"
+if bash "$SCRIPT" "$TMP/prodcfg" > "$TMP/prodcfg.out" 2>&1; then
+  echo "FAIL: guard excluded a non-test compound cfg module" >&2; exit 1
+fi
+grep -q "OVER LIMIT pkgs/id/src/prodcfg.rs" "$TMP/prodcfg.out"
+echo "pass: compound cfg without test stays production"
 
 # Test code is out of scope: tests/ trees and tests.rs modules.
 mkdir -p "$TMP/tests/pkgs/id/tests" "$TMP/tests/pkgs/id/src/encryption"
