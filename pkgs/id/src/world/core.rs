@@ -10,7 +10,7 @@
 use super::*;
 
 use anyhow::{Context, Result, ensure};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
@@ -205,6 +205,11 @@ impl WorldCore {
         let mut program = None;
         let mut replay = Vec::new();
         let mut present: BTreeMap<u64, u64> = BTreeMap::new();
+        // A compacted journal writes a revoked parent before its descendants'
+        // Issued/Revoked pairs. Remember descendants made unusable by that
+        // earlier revocation so their later explicit Revoked entries remain
+        // valid without allowing duplicate revocation entries.
+        let mut inherited_revocations = HashSet::new();
         let mut entries = entries.into_iter();
         match entries.next() {
             Some(JournalEntry::Created { world_id, version }) => {
@@ -298,6 +303,19 @@ impl WorldCore {
                             participant.id
                         );
                     }
+                    let mut ancestor = parent;
+                    let mut revoked_by_ancestor = false;
+                    while let Some(ancestor_id) = ancestor {
+                        let ancestor_record = core
+                            .capabilities
+                            .get(&ancestor_id)
+                            .context("delegated capability ancestor disappeared during restore")?;
+                        if ancestor_record.revoked {
+                            revoked_by_ancestor = true;
+                            break;
+                        }
+                        ancestor = ancestor_record.parent;
+                    }
                     // #2890: mint refuses scope bits from_bits rejects
                     // and scopes without JOIN; a journaled Issued entry
                     // must meet the same bar, or restore would resurrect
@@ -319,25 +337,31 @@ impl WorldCore {
                             .checked_add(1)
                             .context("participant ID exhausted")?,
                     );
+                    let issued_participant_id = participant.id;
                     core.capabilities.insert(
-                        participant.id,
+                        issued_participant_id,
                         CapabilityRecord {
                             digest,
                             participant,
                             scopes: validated_scopes,
                             parent,
-                            revoked: false,
+                            revoked: revoked_by_ancestor,
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
                             subject,
                         },
                     );
+                    if revoked_by_ancestor {
+                        inherited_revocations.insert(issued_participant_id);
+                    }
                 }
                 JournalEntry::Revoked { participant_id, .. } => {
-                    ensure!(
-                        !core.revoke_tree(participant_id).is_empty(),
-                        "journal revokes unknown or revoked participant {participant_id}"
-                    );
+                    if !inherited_revocations.remove(&participant_id) {
+                        ensure!(
+                            !core.revoke_tree(participant_id).is_empty(),
+                            "journal revokes unknown or revoked participant {participant_id}"
+                        );
+                    }
                 }
                 JournalEntry::CapsGranted { granted } => {
                     for name in &granted {

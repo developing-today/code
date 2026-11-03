@@ -2313,6 +2313,10 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     // long as the opener — a shorter fence line inside a longer
     // fence is literal content, not the end of the block (#1707).
     let mut fence: Option<(u8, usize)> = None;
+    // Whether the current line is a fence line (opens, closes, or is
+    // checked against an open fence): its backticks are fence syntax,
+    // never an inline code span opener.
+    let mut fence_line = false;
     // The open inline code span's backtick run length, when inside
     // one: span content is literal text, so a destination-shaped
     // string inside it must not be protected (#1707).
@@ -2343,11 +2347,13 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             } else {
                 None
             };
+            let was_in_fence = fence.is_some();
             match (fence, fence_run) {
                 (None, Some(open)) => fence = Some(open),
                 (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
                 _ => {}
             }
+            fence_line = fence_run.is_some() && (was_in_fence || fence.is_some());
             // An indented code block starts on a 4+ indented line
             // after a blank line (or at the start, or continuing an
             // indented block); a 4+ indented line inside a paragraph
@@ -2356,7 +2362,7 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
             prev_line_blank = line_blank;
         }
-        let literal_line = fence.is_some() || in_indented;
+        let literal_line = fence.is_some() || in_indented || fence_line;
         if !literal_line && span.is_none() && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
             let lt = if markdown[i..].starts_with("](<") {
                 i + 2
@@ -5235,11 +5241,32 @@ fn build_mark_chain<'a>(
 
 /// Convert plain text to `ProseMirror` JSON document.
 ///
-/// Each line becomes a paragraph.
+/// Each line becomes a paragraph. The split is on the newline
+/// character (not `str::lines`), so a trailing newline yields a final
+/// empty paragraph and the save side (`extract_plain_text`, which joins
+/// paragraphs with a newline) reproduces it exactly: no-edit open/save
+/// is byte-stable for the trailing newline (#1307). A carriage return
+/// left by a CRLF ending is stripped, but only from segments the newline
+/// actually terminated: a lone trailing CR is content and survives. CRLF
+/// files are normalized to LF on save, with their trailing-newline state
+/// preserved (Raw mode stays byte-exact).
 #[must_use]
 pub fn plain_text_to_prosemirror(text: &str) -> Value {
-    let paragraphs: Vec<Value> = text
-        .lines()
+    let segments: Vec<&str> = text.split('\n').collect();
+    let last = segments.len() - 1;
+    let paragraphs: Vec<Value> = segments
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            // Only a segment actually terminated by '\n' can carry the
+            // CR of a CRLF ending; the final segment keeps a lone
+            // trailing CR verbatim (Codex finding on PR #4613).
+            if i < last {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            }
+        })
         .map(|line| {
             if line.is_empty() {
                 json!({"type": "paragraph"})
