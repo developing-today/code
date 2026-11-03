@@ -14,6 +14,7 @@
 // its raw usage on the entry and yields no windows (never zeros).
 import type { QuotaCurrentEntry, QuotaCurrentWindow, SnapshotRecord } from "./model.ts";
 import { safeProviderReason } from "./credential-lifecycle.ts";
+import { parseIsoDate } from "./validate.ts";
 
 /** The subset of a quota-module result the mapper reads. */
 export interface QuotaProviderResult {
@@ -48,8 +49,12 @@ export function normalizeResetAt(v: unknown): string | null {
     return Number.isNaN(d.getTime()) ? null : d.toISOString();
   }
   if (typeof v === "string" && v !== "") {
-    const t = Date.parse(v);
-    return Number.isNaN(t) ? null : new Date(t).toISOString();
+    // #4968: gate on the aggregator's isIsoDate contract (parseIsoDate
+    // round-trips the calendar components), so impossible dates
+    // (2026-02-30) and non-ISO strings ("March 2, 2026") return null
+    // instead of rolling over via Date.parse.
+    const d = parseIsoDate(v);
+    return d === null ? null : d.toISOString();
   }
   return null;
 }
@@ -337,8 +342,12 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (typeof expiry === "number" && Number.isFinite(expiry)) {
     const date = new Date(expiry);
     if (Number.isFinite(date.getTime())) entry.credentialExpiresAt = date.toISOString();
-  } else if (typeof expiry === "string" && Number.isFinite(Date.parse(expiry))) {
-    entry.credentialExpiresAt = new Date(expiry).toISOString();
+  } else if (typeof expiry === "string") {
+    // #4968: same isIsoDate contract as normalizeResetAt — an
+    // impossible or non-ISO expiry stamp is refused (left absent),
+    // not rolled over via Date.parse.
+    const d = parseIsoDate(expiry);
+    if (d !== null) entry.credentialExpiresAt = d.toISOString();
   }
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
@@ -628,8 +637,8 @@ export function entryFromTurso(
   const periodStart =
     sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
   const resetsAt = normalizeResetAt(periodEnd);
-  const startMs = typeof periodStart === "string" ? Date.parse(periodStart) : Number.NaN;
-  const endMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : Number.NaN;
+  const startMs = typeof periodStart === "string" ? (parseIsoDate(periodStart)?.getTime() ?? Number.NaN) : Number.NaN;
+  const endMs = typeof periodEnd === "string" ? (parseIsoDate(periodEnd)?.getTime() ?? Number.NaN) : Number.NaN;
   const windowSeconds =
     Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs ? Math.round((endMs - startMs) / 1000) : null;
 
