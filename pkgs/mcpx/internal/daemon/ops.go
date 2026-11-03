@@ -128,7 +128,10 @@ func namedFilters(q url.Values) []string {
 
 func (s *Server) handleLogQuery(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit == 0 {
 		limit = s.callSettings(r).Int("logstore.queryLimit")
 	}
@@ -200,7 +203,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if dim == "" {
 		dim = "calls"
 	}
-	top, _ := strconv.Atoi(q.Get("top"))
+	top, ok := parseOptionalIntQuery(w, q, "top")
+	if !ok {
+		return
+	}
 	if top <= 0 {
 		top = s.callSettings(r).Int("stats.top")
 	}
@@ -275,7 +281,11 @@ func capped[T any](rows []T, top int) []T {
 
 func (s *Server) handleRegistrySearch(w http.ResponseWriter, r *http.Request) {
 	cs := s.callSettings(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	q := r.URL.Query()
+	limit, ok := parseOptionalIntQuery(w, q, "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		limit = cs.Int("registry.limit")
 	}
@@ -397,7 +407,7 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		fwd["context"] = map[string]any{"arguments": req.Arguments}
 	}
 	params, _ := json.Marshal(fwd)
-	raw, upstream, err := p.Complete(r.Context(), s.reg.keyFor(p, cc), params)
+	raw, upstream, err := p.Complete(r.Context(), s.reg.resolvedFor(p, cc), params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -586,6 +596,8 @@ func (s *Server) taskStore() *tasks.Store {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
 			if store, err := tasks.Open(dbPath); err == nil {
 				s.tasks = store
+			} else if s.logger != nil {
+				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)
 			}
 		}
 		if s.tasks == nil {
@@ -598,6 +610,7 @@ func (s *Server) taskStore() *tasks.Store {
 			// is injected into the MCP server, MCP too.
 			s.tasks.MaxTTL = s.set.Duration("protoTasks.maxTTL")
 			s.tasks.MaxPerRequestor = s.set.Int("protoTasks.maxPerRequestor")
+			s.tasks.CancelGrace = s.set.Duration("protoTasks.cancelGrace")
 			// The setting's 0 disables the window; the store's 0 means
 			// "default", so translate here.
 			if pm := s.set.Int("protoTasks.perMinute"); pm == 0 {

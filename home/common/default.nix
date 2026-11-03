@@ -426,17 +426,21 @@ in
       package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
     };
   };
-  # OpenChamber rewrites opencode's config on every launch, migrating the v1
-  # `plugin` key to v2 `plugins` (and `agent` to `agents`). The system opencode
-  # is 1.x and ignores `plugins` entirely, so each OpenChamber launch silently
-  # stops all 13 plugins from loading for the CLI. Verified with
-  # `opencode debug config` against both builds.
+  # Every opencode on this machine is the 2.x fork (CLI and server), whose
+  # canonical config keys are the v2 `plugins` / `agents`: the v1 `plugin` /
+  # `agent` spellings are decoded as legacy and migrated in memory (the
+  # fork's packages/core/src/config/normalize.ts). OpenChamber also writes
+  # native v2 only. The 1.x CLI that needed the v1 spellings (it ignored
+  # `plugins` entirely) is retired, so there is nothing left to protect by
+  # converting back to v1 — that conversion is what made the keys flap on
+  # every OpenChamber launch.
   #
-  # Rather than fight it by hand, watch the file and normalise it back. The
-  # script is idempotent and refuses to write anything it cannot re-parse.
+  # Watch the file and normalise any v1 spelling that lands in it (hand
+  # edits, older tools) to v2. The script is idempotent and refuses to
+  # write anything it cannot re-parse.
   systemd.user.services.opencode-config-normalize = {
     Unit = {
-      Description = "Normalise opencode config to v1 plugin/agent keys";
+      Description = "Normalise opencode config to v2 plugin/agent keys";
       StartLimitIntervalSec = "30s";
       StartLimitBurst = 30;
     };
@@ -456,7 +460,7 @@ in
     };
   };
   systemd.user.paths.opencode-config-normalize = {
-    Unit.Description = "Watch opencode config for OpenChamber's plugin-key rewrite";
+    Unit.Description = "Watch opencode config for v1 plugin/agent keys";
     Path = {
       PathChanged = "%h/.config/opencode/opencode.jsonc";
       Unit = "opencode-config-normalize.service";
@@ -877,6 +881,11 @@ in
     };
     Service = {
       Type = "oneshot";
+      # #4544: sync-models maintains the runtime overlay, never the tracked
+      # configured default — its rewrites must not dirty the repo tree.
+      Environment = [
+        "OPENCODE_CONFIG_PATH=%h/.local/state/opencode/opencode-runtime.jsonc"
+      ];
       ExecStart = toString (
         pkgs.writeShellScript "sync-models-run" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
@@ -1596,6 +1605,13 @@ in
       # reads OPENCODE_DISABLE_FILEWATCHER; the EXPERIMENTAL_ name was
       # read nowhere, so the watcher was silently still on.)
       OPENCODE_DISABLE_FILEWATCHER = "1";
+      # Config split (#4544): the runtime overlay — the provider catalogs
+      # sync-models maintains, plus the server's own runtime config patches
+      # — layers over the tracked configured default
+      # (.opencode/opencode.jsonc). OPENCODE_CONFIG is the server's explicit
+      # config layer; OPENCODE_CONFIG_PATH points sync-models at the file.
+      OPENCODE_CONFIG = "$HOME/.local/state/opencode/opencode-runtime.jsonc";
+      OPENCODE_CONFIG_PATH = "$HOME/.local/state/opencode/opencode-runtime.jsonc";
       # XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       # XDG_CONFIG_HOME = "$HOME/.config";

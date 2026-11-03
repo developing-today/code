@@ -163,8 +163,6 @@ export interface BoardItem {
   kaneoUrl?: string;
   /** Every linked issue/PR, from any of the four repos. */
   links: Link[];
-  /** Pad notes linked to the item (planning layer), by title + URL. */
-  notes?: { title: string; url: string }[];
 }
 
 /** One row of the Grist "Roadmap" table (doc "Program roadmap"). */
@@ -207,7 +205,7 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "fixtures" | "stale" | "absent" | "invalid";
+  state: "live" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;
@@ -325,12 +323,13 @@ export interface QuotaView {
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
-  /** Feed-load sanitization counts (#2429): present only when the
-   * loader dropped malformed pools/windows/burn segments, so an
+  /** Feed-load sanitization counts (#2429/#3921): present only when the
+   * loader dropped malformed pools, credentials, windows, active sessions,
+   * or burn segments, so an
    * incomplete read is distinguishable from a successful empty one
    * in the public payload (/api/quota.json projects this view).
    * Additive for existing consumers. */
-  dropped?: { pools: number; windows: number; burn: number };
+  dropped?: { pools: number; credentials: number; windows: number; activeSessions: number; burn: number };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
@@ -452,7 +451,9 @@ export function refKey(ref: GhRef): RefKey {
 export function parseRef(key: RefKey): GhRef {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(key);
   if (!m) throw new Error(`not a repo-qualified ref: ${key}`);
-  return { repo: m[1], number: Number(m[2]) };
+  const number = Number(m[2]);
+  if (!Number.isSafeInteger(number)) throw new Error(`ref number is not a safe integer: ${key}`);
+  return { repo: m[1], number };
 }
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
@@ -1072,6 +1073,10 @@ export interface DashComment {
   githubState?: "pending" | "posted" | "failed";
   /** kind "github", once posted: the live comment URL. */
   githubUrl?: string;
+  /** kind "github", when githubState is "failed": the last error a
+   *  fleet poster reported (#1210), rendered so a failed comment
+   *  shows why it failed, not just that it did. Cleared on posting. */
+  githubError?: string;
 }
 
 /** Runtime families the session registry tracks. */
@@ -1304,6 +1309,13 @@ export interface QuotaCurrentEntry {
   planLabel?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;
+  /** #1268: ISO time of the tick that retained this entry from the
+   *  previous tick after the provider's run errored. The data is
+   *  last-known, never a fresh read: readers classify it stale
+   *  regardless of measuredAt freshness (a retained entry is usually
+   *  only one tick old, well inside the freshness bound). Absent on
+   *  fresh reads. */
+  retainedFromFailedTick?: string;
   source: string;
   error?: string;
   windows: QuotaCurrentWindow[];
@@ -1327,6 +1339,8 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Parser diagnostics for malformed entries removed at the ingest boundary. */
+  sanitized?: { droppedProviders: number; droppedWindows: number };
 }
 
 /**

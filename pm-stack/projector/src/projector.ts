@@ -8,7 +8,7 @@ import type { upsertItem, upsertComment, markCommentDeleted, recordPush, ItemRow
 export interface ProjectorStore {
   upsertItem(i: Omit<ItemRow, "fetched_at">): Promise<void>;
   upsertComment(c: Omit<CommentRow, "fetched_at">): Promise<void>;
-  markCommentDeleted(id: string): Promise<void>;
+  markCommentDeleted(c: Omit<CommentRow, "fetched_at">): Promise<void>;
   recordPush(p: {
     deliveryId: string;
     repo: string;
@@ -46,6 +46,12 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
     ? obj.labels.map((l: any) => (typeof l === "string" ? l : l?.name)).filter(Boolean)
     : [];
   const assignees = Array.isArray(obj.assignees) ? obj.assignees.map((a: any) => a?.login).filter(Boolean) : [];
+  // Merge fields (draft / merged / merged_at) exist only on PR-shaped
+  // payloads. Issue-shaped payloads (the `issue` object of issues and
+  // issue_comment events, even when it describes a PR) carry none of them:
+  // emit null so the store preserves the stored values instead of
+  // resetting them to defaults (#4158).
+  const carriesMergeFields = "merged" in obj || "merged_at" in obj || "draft" in obj;
   return {
     ref: itemRef(repo, number),
     repo,
@@ -56,15 +62,15 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
     title: obj.title ?? "",
     state: obj.state === "closed" ? "closed" : "open",
     state_reason: iso(obj.state_reason),
-    draft: obj.draft ? 1 : 0,
-    merged: obj.merged ? 1 : 0,
+    draft: carriesMergeFields ? (obj.draft ? 1 : 0) : null,
+    merged: carriesMergeFields ? (obj.merged ? 1 : 0) : null,
     author: iso(obj.user?.login),
     labels: jstr(labels),
     assignees: jstr(assignees),
     created_at: createdAt,
     updated_at: updatedAt,
     closed_at: iso(obj.closed_at),
-    merged_at: iso(obj.merged_at),
+    merged_at: carriesMergeFields ? iso(obj.merged_at) : null,
     source_updated_at: updatedAt,
   };
 }
@@ -76,6 +82,7 @@ function commentCommon(
   kind: CommentRow["kind"],
 ): Omit<CommentRow, "fetched_at"> {
   const createdAt = iso(c.created_at) ?? iso(c.updated_at) ?? new Date().toISOString();
+  const updatedAt = iso(c.updated_at);
   return {
     id: String(c.id),
     ref,
@@ -83,7 +90,7 @@ function commentCommon(
     author: iso(c.user?.login),
     body: typeof c.body === "string" ? c.body : null,
     created_at: createdAt,
-    updated_at: iso(c.updated_at),
+    updated_at: updatedAt,
     url: iso(c.html_url),
     path: null,
     line: null,
@@ -92,7 +99,7 @@ function commentCommon(
     submitted_at: null,
     commit_id: null,
     deleted: 0,
-    source_updated_at: createdAt,
+    source_updated_at: kind === "review" ? createdAt : (updatedAt ?? createdAt),
   };
 }
 
@@ -155,10 +162,11 @@ export async function applyEvent(
     if (!issue) return;
     await store.upsertItem(fromIssueOrPr(repo, issue, issueIsPr(issue) ? "pr" : "issue"));
     addRef(itemRef(repo, issue.number));
+    const row = commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment");
     if (event === "issue_comment" && payload.action === "deleted") {
-      await store.markCommentDeleted(String(comment.id));
+      await store.markCommentDeleted(row);
     } else {
-      await store.upsertComment(commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"));
+      await store.upsertComment(row);
     }
     wrote = true;
   };
@@ -210,7 +218,7 @@ export async function applyEvent(
         base.line = typeof comment.line === "number" ? comment.line : null;
         base.diff_hunk = iso(comment.diff_hunk);
         if (payload.action === "deleted") {
-          await store.markCommentDeleted(String(comment.id));
+          await store.markCommentDeleted(base);
         } else {
           await store.upsertComment(base);
         }

@@ -22,6 +22,12 @@
 //! genesis and concurred, `Agreed` when both claims concur on outcome
 //! and final-state hash, `Disputed` when both claims exist and differ
 //! (the wrong-winner negative case can never compute `Agreed`).
+//!
+//! Reconstruction is admission, not deserialization: derive conclusions from
+//! signature-verified authors and compare claims with the selected agreement.
+//! Reject, ignore, or dispute inconsistent input according to the API's rules;
+//! never silently repair it or let an input's own claims establish authority.
+//! New fields and restore paths must be checked against verifier-owned state.
 
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
@@ -171,6 +177,8 @@ pub fn sign_genesis(
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
         },
     )?)
 }
@@ -200,6 +208,8 @@ pub fn sign_claim(
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
         },
     )?)
 }
@@ -218,7 +228,9 @@ pub fn sign_claim(
 /// final-state hash are `Agreed`; two claims that differ in either are
 /// `Disputed`. A player claiming twice with different claims is a
 /// fork of position and computes `Disputed`, never `Agreed`. Claims
-/// answering a different agreement, or from non-players, are ignored.
+/// answering a different agreement, from non-players, or with an outcome
+/// other than `"draw"` or a seated player's lowercase 64-character hex id
+/// are ignored.
 #[must_use]
 pub fn compute_state(
     agreement: &GenesisAgreement,
@@ -236,10 +248,20 @@ pub fn compute_state(
     let Ok(agreement_hash) = agreement.agreement_hash() else {
         return MatchState::Proposed;
     };
+    let player_outcomes = agreement.players.map(|player| {
+        player
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    });
     let mut per_player: [Option<&ResultClaim>; 2] = [None, None];
     for (index, player) in agreement.players.iter().enumerate() {
         for (author, claim) in claims {
-            if author == player && claim.agreement == agreement_hash {
+            let valid_outcome = claim.outcome == "draw"
+                || player_outcomes
+                    .iter()
+                    .any(|player_outcome| player_outcome == &claim.outcome);
+            if author == player && claim.agreement == agreement_hash && valid_outcome {
                 match per_player[index] {
                     None => per_player[index] = Some(claim),
                     Some(first) if first != claim => return MatchState::Disputed,

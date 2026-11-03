@@ -626,7 +626,17 @@ export function monthTimeline(rows: RoadmapRow[]): Timeline {
       const [y, m] = ym.split("-").map(Number);
       put(row, { key: ym, label: monthLabel(ym), order: y * 12 + m });
     } else {
-      put(row, laneFor(row.horizon)); // quarter / ongoing / unscheduled lanes
+      const lane = laneFor(row.horizon); // quarter / ongoing / unscheduled lanes
+      // Quarter lanes carry order=year*4+quarter (the quarter view's scale),
+      // which sorts every quarter before every month lane here. Remap them
+      // onto this view's month scale (y*12+m): a quarter lane sits just
+      // after its start month (+0.5), so lanes interleave chronologically.
+      // laneFor/quarterLane stay untouched for timeline() (#3952).
+      const q = /^(\d{4})-Q([1-4])$/.exec(lane.key);
+      put(
+        row,
+        q ? { ...lane, order: Number(q[1]) * 12 + 3 * (Number(q[2]) - 1) + 1 + 0.5 } : lane,
+      );
     }
   }
   return {

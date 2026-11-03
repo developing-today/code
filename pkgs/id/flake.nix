@@ -135,6 +135,7 @@
             fi
             cp "$TEST_BIN" $out/bin/cli_integration_test
             cp -r examples $out/share/id-test/examples
+            cp -r apps $out/share/id-test/apps
           '';
         };
 
@@ -701,6 +702,8 @@
             '';
 
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"
@@ -748,6 +751,8 @@
             preBuild = buildWasmHost;
 
             doCheck = true;
+            # Test phase under the ci-check profile (#3195), not release.
+            checkType = "ci-check";
             # serve_tests require networking (bind/listen), unavailable in nix sandbox
             checkFlags = [
               "--skip"

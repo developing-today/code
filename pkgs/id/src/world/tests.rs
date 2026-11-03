@@ -6,6 +6,25 @@ use std::sync::Arc;
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    #[derive(Debug)]
+    struct SplitClock {
+        wall_ms: AtomicU64,
+        monotonic_ms: AtomicU64,
+        monotonic_origin: Instant,
+    }
+
+    impl Clock for SplitClock {
+        fn now_ms(&self) -> u64 {
+            self.wall_ms.load(Ordering::SeqCst)
+        }
+
+        fn now_instant(&self) -> Instant {
+            self.monotonic_origin + Duration::from_millis(self.monotonic_ms.load(Ordering::SeqCst))
+        }
+    }
 
     fn world(retained_events: usize) -> WorldCore {
         WorldCore::new(
@@ -27,6 +46,7 @@ mod tests {
         ModuleProvenance::SourceBuild(SourceBuildProvenance {
             schema_version: 1,
             compiler_blake3: "compiler".to_owned(),
+            compiler_version: "roc-test 0.0.0".to_owned(),
             platform_blake3: "platform".to_owned(),
             source_blake3: "source".to_owned(),
             target: "wasm32".to_owned(),
@@ -58,6 +78,7 @@ mod tests {
                 module_hash: "h".to_owned(),
                 seed: 3,
                 provenance: Some(sample_source_provenance()),
+                trust: None,
             },
         };
         let encoded = serde_json::to_value(&event).unwrap();
@@ -106,6 +127,71 @@ mod tests {
     }
 
     #[test]
+    fn restore_checkpoint_sequence_does_not_wrap_at_u64_max() {
+        fn system_event(sequence: u64) -> WorldEvent {
+            WorldEvent {
+                sequence,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: "checkpoint boundary test".to_owned(),
+                },
+            }
+        }
+
+        fn checkpoint(sequence: u64, events: Vec<WorldEvent>) -> JournalEntry {
+            JournalEntry::Checkpoint {
+                sequence,
+                module_hash: "h".to_owned(),
+                seed: 1,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: None,
+                snapshot: "s".to_owned(),
+                events,
+            }
+        }
+
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                checkpoint(0, vec![system_event(u64::MAX), system_event(0)]),
+            ],
+        )
+        .err()
+        .expect("wrapped checkpoint sequence must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("journal checkpoint events are out of order"),
+            "{error:#}"
+        );
+
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                checkpoint(
+                    u64::MAX,
+                    vec![system_event(u64::MAX - 1), system_event(u64::MAX)],
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.sequence, u64::MAX);
+    }
+
+    #[test]
     fn restore_accepts_v1_and_v2_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
@@ -140,6 +226,198 @@ mod tests {
         );
     }
 
+    fn handoff_event() -> WorldEvent {
+        WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: "{\"handoff\":true}".to_owned(),
+            },
+        }
+    }
+
+    fn export_entry() -> JournalEntry {
+        JournalEntry::EntityExported {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            prior_owner_epoch: 4,
+            source_event: handoff_event(),
+            payload_schema: "entity/v1".to_owned(),
+            program_module_hash: "module".to_owned(),
+            payload: vec![1, 2, 3],
+            payload_digest: "digest".to_owned(),
+        }
+    }
+
+    #[test]
+    fn handoff_entries_require_journal_version_3() {
+        // #3870 phase 1: handoff kinds are the first entries a version-2
+        // binary cannot read, so they pin the header to version 3 — the
+        // same bump-on-first-write contract as the execution profile (#227).
+        assert_eq!(
+            journal_version_required_by(&export_entry()),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let entity_input = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&entity_input),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let plain = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::Chat("hi".to_owned()),
+            },
+        };
+        assert_eq!(journal_version_required_by(&plain), JOURNAL_VERSION);
+        // A checkpoint whose retained events include an EntityInput event
+        // requires version 3 even with no active handoff (PR #3922 Codex).
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            }],
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        // Coordinator records fix their wire shape in this packet too.
+        let started = CoordinatorJournalEntry::HandoffStarted {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            expected_owner_epoch: 4,
+            region_map_epoch: 2,
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            requested_at: 42,
+        };
+        let json = serde_json::to_string(&started).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CoordinatorJournalEntry>(&json).unwrap(),
+            started
+        );
+    }
+
+    #[test]
+    fn handoff_transfers_survive_restore_and_checkpoint_compaction() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            JournalEntry::EntityImported {
+                handoff_id: "cd".repeat(16),
+                entity_ref: "entity-2".to_owned(),
+                source_region: "region-b".to_owned(),
+                target_region: "region-a".to_owned(),
+                prior_owner_epoch: 1,
+                new_owner_epoch: 2,
+                program_module_hash: "module".to_owned(),
+                payload_schema: "entity/v1".to_owned(),
+                payload_digest: "digest-2".to_owned(),
+                destination_event: handoff_event(),
+            },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        let transfers = restored.core.handoff_transfers().to_vec();
+        assert_eq!(transfers.len(), 2);
+        assert_eq!(transfers[0].direction, HandoffDirection::Export);
+        assert_eq!(transfers[0].payload.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(transfers[1].direction, HandoffDirection::Import);
+        assert_eq!(transfers[1].new_owner_epoch, Some(2));
+
+        // Compaction must preserve the active handoffs (fence, payload,
+        // receipt, epochs) and mark the compacted header version 3.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            compacted[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
+    }
+
+
+    #[test]
+    fn handoff_import_at_max_owner_epoch_is_refused() {
+        // #3961: prior = u64::MAX must never validate an import — the plain
+        // `prior + 1` wrapped to 0 in release (accepting new = 0) and panicked
+        // in debug/test. The checked form refuses every new epoch.
+        for new_owner_epoch in [0, 1, u64::MAX] {
+            let entries = vec![
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION_REGION_HANDOFF,
+                },
+                JournalEntry::EntityImported {
+                    handoff_id: "cd".repeat(16),
+                    entity_ref: "entity-2".to_owned(),
+                    source_region: "region-b".to_owned(),
+                    target_region: "region-a".to_owned(),
+                    prior_owner_epoch: u64::MAX,
+                    new_owner_epoch,
+                    program_module_hash: "module".to_owned(),
+                    payload_schema: "entity/v1".to_owned(),
+                    payload_digest: "digest-2".to_owned(),
+                    destination_event: handoff_event(),
+                },
+            ];
+            let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+            assert!(
+                error.to_string().contains("does not advance the owner epoch"),
+                "new={new_owner_epoch}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_handoff_export_in_journal_is_refused() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            export_entry(),
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(error.to_string().contains("twice"), "{error:#}");
+    }
+
     #[test]
     fn execution_profile_survives_checkpoint_compaction_and_restore() {
         let profile = crate::world_limits::WorldExecutionProfile {
@@ -157,6 +435,235 @@ mod tests {
             entries[0],
             JournalEntry::Created {
                 version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.execution_profile(), profile);
+    }
+
+    /// The total logical charge `WorldCore::restore` accounts for a
+    /// journal: the fixed core charge plus each entry's serialized
+    /// length and structural allowance (#557 Phase 2).
+    fn journal_charge(entries: &[JournalEntry]) -> u64 {
+        let mut total = crate::world_limits::WORLD_MEMORY_BASE_BYTES;
+        for entry in entries {
+            let len = serde_json::to_vec(entry).unwrap().len();
+            total += crate::world_limits::journal_entry_charge(len);
+        }
+        total
+    }
+
+    #[test]
+    fn restore_charges_the_journal_against_the_default_budget() {
+        // #557 Phase 2: a budgetless journal restores under the default
+        // ceiling, and the restored core reports the measured charge.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let expected_charge = journal_charge(&entries);
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        let budget = restored.core.memory_budget();
+        assert_eq!(
+            budget.limit_bytes(),
+            crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES
+        );
+        assert_eq!(budget.charged_bytes(), expected_charge);
+        assert_eq!(budget.high_water_bytes(), expected_charge);
+        assert_eq!(budget.refusal_count(), 0);
+    }
+
+    #[test]
+    fn restore_refuses_a_journal_over_its_persisted_budget_and_retries() {
+        // #557 Phase 2: the persisted profile budget is enforced at
+        // restore with a typed refusal; refusal applies nothing, and
+        // the same journal restores once its budget is raised.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(1),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let mut entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let error = WorldCore::restore("test-world", WorldLimits::default(), entries.clone())
+            .unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::world_limits::WorldMemoryBudgetRefusal>()
+            .expect("an over-budget restore must fail with the typed budget refusal");
+        assert_eq!(refusal.limit_bytes, 1);
+        // Raise the persisted budget past the measured charge (with
+        // headroom for the larger number's own serialized width): the
+        // same entries now restore, charged exactly as accounted.
+        let raised = journal_charge(&entries) + 1024;
+        for entry in &mut entries {
+            if let JournalEntry::Checkpoint {
+                execution_profile, ..
+            } = entry
+            {
+                execution_profile.as_mut().unwrap().total_memory_bytes = Some(raised);
+            }
+        }
+        let expected = journal_charge(&entries);
+        assert!(expected <= raised);
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.memory_budget().limit_bytes(), raised);
+        assert_eq!(restored.core.memory_budget().charged_bytes(), expected);
+    }
+
+    #[test]
+    fn restore_resolves_the_persisted_budget_against_the_current_server_ceiling() {
+        // Codex P1 on PR #4628: restore must enforce the CURRENT server
+        // ceiling, not the persisted request or the default. A journal
+        // persisting an unclamped (over-ceiling) request is charged
+        // against the lowered ceiling and refused with that limit.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(u64::MAX),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let lowered = journal_charge(&entries) - 1;
+        let runtime = crate::world_limits::RuntimeLimits {
+            total_memory_bytes: lowered,
+            ..Default::default()
+        };
+        let error = WorldCore::restore_with_runtime(
+            "test-world",
+            WorldLimits::default(),
+            runtime,
+            entries.clone(),
+        )
+        .unwrap_err();
+        let refusal = error
+            .downcast_ref::<crate::world_limits::WorldMemoryBudgetRefusal>()
+            .expect("restore over the current ceiling must fail with the typed refusal");
+        assert_eq!(refusal.limit_bytes, lowered);
+        // A budgetless journal inherits the CURRENT ceiling: raising it
+        // reopens a journal the default ceiling would refuse, and the
+        // restored budget reports the raised limit.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let raised = journal_charge(&entries) + 1024;
+        let runtime = crate::world_limits::RuntimeLimits {
+            total_memory_bytes: raised,
+            ..Default::default()
+        };
+        let restored =
+            WorldCore::restore_with_runtime("test-world", WorldLimits::default(), runtime, entries)
+                .unwrap();
+        assert_eq!(restored.core.memory_budget().limit_bytes(), raised);
+    }
+
+    #[test]
+    fn restore_tracks_the_final_profile_including_a_budget_reset() {
+        // Codex P2 on PR #4628: replay replaces the whole execution
+        // profile, so a later profile with an unset budget resets an
+        // earlier persisted budget instead of leaving it enforced.
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(1),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let mut entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // Sanity: the persisted Some(1) budget alone refuses restore.
+        assert!(WorldCore::restore("test-world", WorldLimits::default(), entries.clone()).is_err());
+        entries.push(JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile::default(),
+        });
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.memory_budget().limit_bytes(),
+            crate::world_limits::DEFAULT_WORLD_TOTAL_MEMORY_BYTES
+        );
+        assert_eq!(restored.core.execution_profile().total_memory_bytes, None);
+    }
+
+    #[test]
+    fn budget_entries_require_journal_version_4_while_budgetless_ones_do_not() {
+        // #557 Phase 1: a persisted total budget is the first fact a
+        // version-3 binary would parse yet silently ignore, so it pins the
+        // header to version 4. Profiles without a budget keep version 2.
+        let plain_profile = JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile {
+                wasm_fuel: Some(1234),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_profile),
+            JOURNAL_VERSION_EXECUTION_PROFILE
+        );
+        let budget_profile = JournalEntry::ExecutionProfile {
+            profile: crate::world_limits::WorldExecutionProfile {
+                total_memory_bytes: Some(32 * 1024 * 1024),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&budget_profile),
+            JOURNAL_VERSION_WORLD_BUDGET
+        );
+        // A budget checkpoint requires version 4 even with no handoff
+        // content; the handoff version never outranks the budget version.
+        let budget_checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: Some(crate::world_limits::WorldExecutionProfile {
+                total_memory_bytes: Some(32 * 1024 * 1024),
+                ..Default::default()
+            }),
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![],
+        };
+        assert_eq!(
+            journal_version_required_by(&budget_checkpoint),
+            JOURNAL_VERSION_WORLD_BUDGET
+        );
+        let plain_checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![],
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_checkpoint),
+            JOURNAL_VERSION
+        );
+    }
+
+    #[test]
+    fn budget_checkpoint_compacts_to_version_4_and_restores() {
+        let profile = crate::world_limits::WorldExecutionProfile {
+            total_memory_bytes: Some(32 * 1024 * 1024),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // The compacted journal carries the budget, so its header must
+        // refuse binaries that predate the budget version (#227).
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_WORLD_BUDGET,
                 ..
             }
         ));
@@ -205,6 +712,11 @@ mod tests {
             match &event.kind {
                 WorldEventKind::Input(bytes) => {
                     let text = std::str::from_utf8(bytes)?;
+                    self.script = text.parse().unwrap_or(self.script);
+                    self.asks += 1;
+                }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let text = std::str::from_utf8(input)?;
                     self.script = text.parse().unwrap_or(self.script);
                     self.asks += 1;
                 }
@@ -514,6 +1026,76 @@ mod tests {
             restored.core.authorize(&token, WorldScopes::JOIN).is_ok(),
             "capabilities restore after a grant entry"
         );
+    }
+
+    fn issued_entry(scopes: u8) -> JournalEntry {
+        let secret = "ef".repeat(32);
+        let digest = hex_encode(&token_digest(&format!("1.{secret}")));
+        JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "ann".to_owned(),
+            },
+            digest,
+            scopes,
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        }
+    }
+
+    fn restore_with_scopes(scopes: u8) -> anyhow::Result<RestoredWorld> {
+        WorldCore::restore(
+            "scopes",
+            WorldLimits::default(),
+            vec![
+                JournalEntry::Created {
+                    world_id: "scopes".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                issued_entry(scopes),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_restore_refuses_issued_scopes_naming_no_scope() {
+        // 0x80 names no scope; from_bits rejects the whole byte.
+        let error = restore_with_scopes(0x87).unwrap_err();
+        assert!(
+            error.to_string().contains("participant 1"),
+            "error names the participant: {error}"
+        );
+        assert!(
+            error.to_string().contains("name no scope"),
+            "error explains the refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn test_restore_refuses_issued_scopes_without_join() {
+        for scopes in [0, WorldScopes::CHAT.0, WorldScopes::INPUT.0] {
+            let error = restore_with_scopes(scopes).unwrap_err();
+            assert!(
+                error.to_string().contains("join scope"),
+                "scopes {scopes:#04x} refused for missing JOIN: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_restore_accepts_guest_and_admin_bit_scopes() {
+        for scopes in [
+            WorldScopes::GUEST.0,
+            WorldScopes::JOIN.0 | WorldScopes::BUILDER.0,
+            WorldScopes::JOIN.0 | WorldScopes::MODERATOR.0,
+        ] {
+            let restored = restore_with_scopes(scopes).unwrap();
+            let record = restored.core.capabilities.get(&1).unwrap();
+            assert_eq!(record.scopes.bits(), scopes, "scopes round-trip");
+        }
     }
 
     #[test]
@@ -1224,6 +1806,32 @@ mod tests {
         assert_eq!(core.current_sequence(), u64::from(CHAT_RATE_BURST));
     }
 
+    #[test]
+    fn chat_refill_uses_monotonic_time_not_wall_clock_corrections() {
+        let clock = Arc::new(SplitClock {
+            wall_ms: AtomicU64::new(100_000),
+            monotonic_ms: AtomicU64::new(0),
+            monotonic_origin: Instant::now(),
+        });
+        let mut core =
+            WorldCore::new_with_clock("test-world", WorldLimits::default(), clock.clone()).unwrap();
+        let (_, token) = join(&mut core, "Guest");
+        for index in 0..CHAT_RATE_BURST {
+            core.chat(&token, &format!("message {index}")).unwrap();
+        }
+        assert!(core.chat(&token, "exhausted").is_err());
+
+        // A forward wall-clock correction does not refill the bucket.
+        clock.wall_ms.store(10_000_000, Ordering::SeqCst);
+        assert!(core.chat(&token, "still exhausted").is_err());
+
+        // A backward wall-clock correction cannot prevent a real ten-second
+        // monotonic interval from refilling it.
+        clock.wall_ms.store(1, Ordering::SeqCst);
+        clock.monotonic_ms.store(10_000, Ordering::SeqCst);
+        assert!(core.chat(&token, "refilled").is_ok());
+    }
+
     fn in_an_hour() -> u64 {
         unix_ms() + 3_600_000
     }
@@ -1523,6 +2131,80 @@ mod tests {
     }
 
     #[test]
+    fn restore_does_not_resurrect_a_delegate_issued_after_parent_revocation() {
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability(
+                "Ada",
+                WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits()),
+                CapabilityBounds::default(),
+            )
+            .unwrap();
+        let (child, child_token) = source
+            .attenuate(
+                &owner_token,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo",
+            )
+            .unwrap();
+        let created = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        let owner_issued = source.issued_entry(owner.id).unwrap();
+        let parent_revoked = JournalEntry::Revoked {
+            participant_id: owner.id,
+            by: None,
+        };
+        let child_issued = source.issued_entry(child.id).unwrap();
+
+        // A hand-written journal can omit the child's redundant Revoked entry.
+        // The earlier parent revocation must still keep the child unusable.
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![
+                created.clone(),
+                owner_issued.clone(),
+                parent_revoked.clone(),
+                child_issued.clone(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            restored
+                .core
+                .authorize(&child_token, WorldScopes::JOIN)
+                .is_err()
+        );
+
+        // Compaction emits the descendant's own Issued/Revoked pair after its
+        // already-revoked parent; that legitimate order must also restore.
+        let compacted = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            vec![
+                created,
+                owner_issued,
+                parent_revoked,
+                child_issued,
+                JournalEntry::Revoked {
+                    participant_id: child.id,
+                    by: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert!(
+            compacted
+                .core
+                .authorize(&child_token, WorldScopes::JOIN)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn restore_refuses_an_issued_participant_zero() {
         // #2972: participant 0 is the reserved host/system identity —
         // mint can never issue it, so a journal issuing it to itself
@@ -1570,6 +2252,98 @@ mod tests {
             assert!(
                 err.to_string().contains("reserved host identity"),
                 "error must name the reserved id: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn restore_refuses_issued_display_names_mint_could_not_produce() {
+        // #2960: restore inserts journaled participants verbatim, but
+        // mint sanitizes every display name (control/format characters
+        // stripped, 48-char cap, trimmed) and refuses an empty result.
+        // A journaled name mint could never have produced — empty,
+        // control-bearing, over-length, or untrimmed — must refuse the
+        // whole restore, while a legitimately minted journal restores
+        // with byte-identical names.
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let legitimate = JournalEntry::Issued {
+            participant: owner.clone(),
+            digest: hex_encode(&token_digest(owner_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let header = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        // A legitimately minted name restores fine.
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legitimate],
+        )
+        .unwrap();
+        // A name minted before #2112's format stripping — a fixed point
+        // of the legacy sanitizer only, here a ZWJ family emoji — also
+        // restores fine: those journals predate the current sanitizer
+        // and restored successfully before this check existed.
+        let legacy = JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".to_owned(),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), legacy],
+        )
+        .unwrap();
+        for bad_name in [
+            String::new(),
+            "a\u{7}\n".to_owned() + &"x".repeat(98),
+            "a".repeat(49),
+            "Ada ".to_owned(),
+            "\u{1}\u{2}".to_owned(),
+        ] {
+            let forged = JournalEntry::Issued {
+                participant: Participant {
+                    id: 1,
+                    display_name: bad_name.clone(),
+                },
+                digest: "ab".repeat(32),
+                scopes: WorldScopes::GUEST.bits(),
+                parent: None,
+                expires_at: None,
+                uses: None,
+                used: 0,
+                subject: None,
+            };
+            let err = match WorldCore::restore(
+                "test-world",
+                WorldLimits::default(),
+                [header.clone(), forged],
+            ) {
+                Ok(_) => panic!("restore must refuse display name {bad_name:?}"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("display name"),
+                "error must name the display name rule: {err}"
             );
         }
     }
@@ -1953,6 +2727,7 @@ mod tests {
                         module_hash: "ab".repeat(32),
                         seed: 424_242,
                         provenance: None,
+                        trust: None,
                     },
                 },
             },
@@ -2157,6 +2932,7 @@ mod tests {
                 module_hash: "ab".repeat(32),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         for scopes in [WorldScopes::JOIN, WorldScopes::GUEST, WorldScopes::ALL] {
@@ -2167,6 +2943,7 @@ mod tests {
                     module_hash: "ab".repeat(32),
                     seed: 0,
                     provenance: None,
+                    trust: None,
                 }
             );
         }
@@ -2380,6 +3157,11 @@ mod tests {
                 match &event.kind {
                     WorldEventKind::Input(bytes) => {
                         if bytes.as_slice() == b"read" {
+                            self.asks += 1;
+                        }
+                    }
+                    WorldEventKind::EntityInput { input, .. } => {
+                        if input.as_slice() == b"read" {
                             self.asks += 1;
                         }
                     }
@@ -2699,6 +3481,122 @@ mod tests {
             "the fallback triggers a view failure count"
         );
     }
+
+    #[test]
+    fn signed_moves_chain_verify_and_replay_the_journal_order() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let mut core = WorldCore::new("ttt", WorldLimits::default()).unwrap();
+        let (_, token_x) = core
+            .issue_capability("x", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (_, token_o) = core
+            .issue_capability("o", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let key_x = SigningKey::from_bytes(Hash::digest(b"x key").as_bytes());
+        let key_o = SigningKey::from_bytes(Hash::digest(b"o key").as_bytes());
+        let author_x = *key_x.verifying_key().as_bytes();
+        let author_o = *key_o.verifying_key().as_bytes();
+        core.bind_author_key(&token_x, author_x).unwrap();
+        core.bind_author_key(&token_o, author_o).unwrap();
+
+        // Once a key is bound, the unsigned path refuses the participant.
+        assert!(core.input(&token_x, b"cell-0").is_err());
+
+        // A tic-tac-toe game through the world path: alternating signed
+        // moves, each chained to the player's previous move.
+        let script: [(&JoinCapability, &SigningKey, &[u8]); 5] = [
+            (&token_x, &key_x, b"cell-0"),
+            (&token_o, &key_o, b"cell-4"),
+            (&token_x, &key_x, b"cell-1"),
+            (&token_o, &key_o, b"cell-3"),
+            (&token_x, &key_x, b"cell-2"),
+        ];
+        let mut seq: std::collections::HashMap<u64, u32> = Default::default();
+        let mut frontier: std::collections::HashMap<u64, Hash> = Default::default();
+        for (token, key, input) in script {
+            let author = *key.verifying_key().as_bytes();
+            let participant = if author == author_x { 1 } else { 2 };
+            let n = seq.entry(participant).or_default();
+            let signed = signed::sign_move(
+                key,
+                "ttt",
+                *n,
+                frontier.get(&participant).copied(),
+                input,
+            )
+            .unwrap();
+            let event = core.input_signed(token, input, &signed.bytes).unwrap();
+            assert_eq!(event.kind, WorldEventKind::Input(input.to_vec()));
+            frontier.insert(participant, signed.id);
+            *n += 1;
+        }
+
+        // The accepted records cross-reference world sequence and chain
+        // position, and replaying each author's chain against the
+        // journal's input bytes reproduces the journal order.
+        let records = core.signed_moves().to_vec();
+        assert_eq!(records.len(), 5);
+        let mut chains: std::collections::HashMap<u64, signed::MoveChain> = Default::default();
+        for record in &records {
+            let journal_event = core
+                .events
+                .iter()
+                .find(|event| event.sequence == record.world_sequence)
+                .unwrap();
+            let WorldEventKind::Input(input) = &journal_event.kind else {
+                panic!("signed move record does not name an input event");
+            };
+            assert_eq!(journal_event.participant_id, record.participant_id);
+            chains
+                .entry(record.participant_id)
+                .or_default()
+                .verify_and_accept(&record.bytes, "ttt", input, &record.author)
+                .unwrap();
+        }
+
+        // Tampering: a move signed over one input does not verify for
+        // another, and a mutated signed byte string does not verify at
+        // all. Neither advances the author's chain.
+        let next = signed::sign_move(&key_x, "ttt", 3, frontier.get(&1).copied(), b"cell-8")
+            .unwrap();
+        assert!(core.input_signed(&token_x, b"cell-7", &next.bytes).is_err());
+        let mut mutated = next.bytes.clone();
+        mutated[12] ^= 0xff;
+        assert!(core.input_signed(&token_x, b"cell-8", &mutated).is_err());
+        core.input_signed(&token_x, b"cell-8", &next.bytes).unwrap();
+
+        // Equivocation: a rival move signed at the same author sequence
+        // is a valid chain event on its own (the fork-proof material the
+        // event store's ingest rules consume), but the world refuses it
+        // once the first move at that sequence has been accepted.
+        let rival = signed::sign_move(&key_x, "ttt", 3, frontier.get(&1).copied(), b"cell-6")
+            .unwrap();
+        assert!(crate::chain::decode(&rival.bytes).is_ok());
+        assert!(core.input_signed(&token_x, b"cell-6", &rival.bytes).is_err());
+    }
+
+    #[tokio::test]
+    async fn signed_input_flows_through_the_actor() {
+        use p2panda_core::{Hash, SigningKey};
+
+        let core = WorldCore::new("ttt-actor", WorldLimits::default()).unwrap();
+        let handle = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let (_, token) = handle.issue("x", WorldScopes::GUEST).await.unwrap();
+        let key = SigningKey::from_bytes(Hash::digest(b"actor x").as_bytes());
+        handle
+            .bind_author_key(token.clone(), *key.verifying_key().as_bytes())
+            .await
+            .unwrap();
+        assert!(handle.input(token.clone(), b"cell-0".to_vec()).await.is_err());
+        let signed = signed::sign_move(&key, "ttt-actor", 0, None, b"cell-0").unwrap();
+        let event = handle
+            .input_signed(token, b"cell-0".to_vec(), signed.bytes)
+            .await
+            .unwrap();
+        assert_eq!(event.kind, WorldEventKind::Input(b"cell-0".to_vec()));
+    }
+
 }
 
 #[cfg(test)]
@@ -3371,6 +4269,10 @@ mod schedule_tests {
                     let document: serde_json::Value = serde_json::from_slice(bytes)?;
                     self.requests = document["requests"].as_array().cloned().unwrap_or_default();
                 }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let document: serde_json::Value = serde_json::from_slice(input)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
                 WorldEventKind::System { event: text } => {
                     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
                         return Ok(());
@@ -3482,6 +4384,7 @@ mod schedule_tests {
             .handle(WorldCommand::Input {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
+                signed_move: None,
                 reply,
             })
             .await;
@@ -3563,12 +4466,11 @@ mod schedule_tests {
         let mut core = world(8);
         core.schedules.insert("taken".to_owned(), now + 5);
         assert!(
-            core.check_schedule_replacing("taken", now + 9, now, true)
-                .is_ok(),
+            core.check_schedule_replacing("taken", now + 9, now).is_ok(),
             "replacing a pending id is not a duplicate"
         );
         let error = core
-            .check_schedule_replacing("taken", now + horizon + 1, now, true)
+            .check_schedule_replacing("taken", now + horizon + 1, now)
             .unwrap_err();
         assert!(error.to_string().contains("days past"), "{error}");
         assert_eq!(
@@ -3582,12 +4484,34 @@ mod schedule_tests {
             full.schedules.insert(format!("s{index}"), now);
         }
         assert!(
-            full.check_schedule_replacing("s0", now + 9, now, true)
-                .is_ok(),
+            full.check_schedule_replacing("s0", now + 9, now).is_ok(),
             "a replacement at capacity fits: it frees its own slot"
         );
         let error = full.check_schedule("one-more", now, now).unwrap_err();
         assert!(error.to_string().contains("pending schedules"), "{error}");
+    }
+
+    #[test]
+    fn replacement_path_cannot_admit_a_new_id_past_the_schedule_cap() {
+        let now = 1_000_000_000_000u64;
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES {
+            full.schedules.insert(format!("s{index}"), now);
+        }
+
+        let error = full
+            .check_schedule_replacing("new", now + 9, now)
+            .unwrap_err();
+        assert!(error.to_string().contains("pending schedules"), "{error}");
+        assert!(!full.schedules.contains_key("new"));
+    }
+
+    #[test]
+    fn replacement_path_on_an_empty_schedule_map_does_not_underflow() {
+        let now = 1_000_000_000_000u64;
+        let core = world(8);
+
+        assert!(core.check_schedule_replacing("new", now + 9, now).is_ok());
     }
 
     #[tokio::test]
@@ -3939,6 +4863,7 @@ mod schedule_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules,
+            transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         };
@@ -4062,6 +4987,7 @@ mod schedule_tests {
             "unexpected reason: {reason}"
         );
     }
+
 }
 
 /// Structural guard for the one client projection (F11.11, #543).
@@ -4129,6 +5055,7 @@ mod projection_guard_tests {
                 module_hash: "hash".to_owned(),
                 seed: 424_242,
                 provenance: None,
+                trust: None,
             },
         };
         let shown = project_event_for(WorldScopes::GUEST, &installed)

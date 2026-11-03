@@ -26,7 +26,21 @@ beforeAll(async () => {
   const feed = {
     version: 1,
     generatedAt: now,
-    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    quota: {
+      pools: [
+        {
+          id: "quota-health-1",
+          provider: "openai",
+          plan: "test",
+          state: "healthy",
+          windows: [],
+          credentials: [{ label: "malformed credential", providerId: "openai", windows: [] }],
+          activeSessions: [null],
+        },
+      ],
+      burn: [],
+      choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] },
+    },
     attention: [],
     orchestration: {
       version: 1,
@@ -38,7 +52,7 @@ beforeAll(async () => {
       goals: [],
       actions: [],
     },
-    registry: [{ id: "ses-health-1", source: "opencode-sandbox", label: "Health probe session" }],
+    registry: [{ id: "ses-health-1", source: "opencode-sandbox", label: "Health probe session", taskRefs: [] }],
   };
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));
@@ -88,6 +102,8 @@ describe("/api/health provenance priming (#1267)", () => {
   test("the first-ever response reports the live facets truthfully", () => {
     expect(firstHealth?.status).toBe("ok");
     expect(firstHealth?.source.quota).toContain("live (fleet feed");
+    expect(firstHealth?.source.quota).toContain("1 credential row(s)");
+    expect(firstHealth?.source.quota).toContain("1 active session(s)");
     expect(firstHealth?.source.orchestration).toContain("live (orchestration section orch-health-test");
     expect(firstHealth?.source.registry).toContain("1 session records");
     expect(firstHealth?.source.registry).not.toBe("fixtures");
