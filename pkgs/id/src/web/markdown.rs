@@ -4333,6 +4333,11 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for token in fence_tokens {
         output = strip_fence_placeholder(&output, &token);
     }
+    // #1002: collapse the renderer's stray blank lines at the top of a
+    // quote (see `strip_leading_blank_quote_lines`). Stripping runs first
+    // so a quote-leading GitHub alert marker becomes the quote's first
+    // content line for the restore below.
+    let output = strip_leading_blank_quote_lines(&output);
     let output = restore_github_alert_markers(&output);
     Ok(strip_end_list_separators(doc, &output))
 }
@@ -4889,6 +4894,7 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
     }
 }
 
+
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
 /// marks whose markdown spelling is a delimiter run (`*`/`**`/`~~`)
 /// subject to CommonMark flanking rules. Link (bracket syntax) and
@@ -5158,6 +5164,69 @@ fn strip_fence_placeholder(output: &str, token: &str) -> String {
     }
     result.push_str(rest);
     result
+}
+
+/// Whether a rendered line is a blank blockquote line: up to 3 leading
+/// spaces (CommonMark still reads the `>` as a quote marker; 4+ spaces
+/// would be indented code), then only `>` markers and whitespace
+/// (`>`, `> `, `> > `). A list-item quote opener (`- > `) is NOT one —
+/// it carries the list marker, so the list-nested single-blank shape
+/// is out of scope here.
+fn is_blank_quote_line(line: &str) -> bool {
+    let indent = line.bytes().take_while(|&b| b == b' ').count();
+    if indent > 3 {
+        return false;
+    }
+    let rest = &line[indent..];
+    rest.contains('>')
+        && rest.chars().all(|c| c == '>' || c == ' ' || c == '\t')
+}
+
+/// Whether a rendered line is quoted content (as opposed to a blank
+/// quote line or a non-quote line): a `>` marker with non-blank text
+/// after it (`> text`, `> ```rust`, `> | a |`, `> -----`).
+fn is_quote_content_line(line: &str) -> bool {
+    let indent = line.bytes().take_while(|&b| b == b' ').count();
+    if indent > 3 {
+        return false;
+    }
+    line[indent..]
+        .strip_prefix('>')
+        .is_some_and(|after| !after.trim().is_empty())
+}
+
+/// #1002: comrak's CommonMark renderer emits blank `> ` lines before a
+/// blockquote's first child when that child is a fenced code block, a
+/// table, a thematic break, or an HTML block — two at top level, so the
+/// first save of any such quote pollutes the file (the PM document is
+/// correct throughout and the output is already a fixpoint). Drop those
+/// leading blanks from the rendered output, at the start of EVERY quote
+/// run (start of file or right after a non-quote line, so a second
+/// quote after a blank line is covered too). Blank lines BETWEEN blocks
+/// inside a quote are the required separators and are kept: anything
+/// after the run's first content line passes through untouched, as does
+/// an all-blank run (a lone `>` with no quoted content).
+fn strip_leading_blank_quote_lines(output: &str) -> String {
+    let lines: Vec<&str> = output.split('\n').collect();
+    let mut result: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut at_quote_start = true;
+    let mut i = 0;
+    while i < lines.len() {
+        if at_quote_start && is_blank_quote_line(lines[i]) {
+            let mut j = i + 1;
+            while j < lines.len() && is_blank_quote_line(lines[j]) {
+                j += 1;
+            }
+            if j < lines.len() && is_quote_content_line(lines[j]) {
+                i = j;
+                continue;
+            }
+        }
+        result.push(lines[i]);
+        at_quote_start = !is_blank_quote_line(lines[i]) && !is_quote_content_line(lines[i]);
+        i += 1;
+    }
+    result.join("\n")
 }
 
 /// Replace every link/image destination containing whitespace (space,
@@ -6925,26 +6994,51 @@ mod tests {
 
     #[test]
     fn test_blockquote_leading_block_round_trips_without_extra_blank_lines() {
-        // #1002: comrak's formatter inserts two empty quote lines before
-        // certain first blocks unless the save path normalizes them. Keep
-        // paragraph-then-fence's single separator as a control.
-        let mut mismatches = Vec::new();
+        // #1002: comrak's formatter inserts empty quote lines before a
+        // quote's first block when it is a fence, table, or rule unless
+        // the save path strips them. Inputs use the renderer's canonical
+        // spellings (padded table delimiters, `-----` rules, `"> "` blank
+        // quote lines), so the first save is byte-identical and stable.
+        // The last two cases are controls: quotes starting with a
+        // paragraph, and a paragraph-then-fence quote whose single
+        // interior separator must survive.
         for original in [
             "> ```rust\n> code\n> ```\n",
-            "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
-            "> ---\n>\n> after\n",
-            // Controls: these already use the expected blockquote shape.
+            "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
+            "> -----\n> \n> after\n",
+            "> > ```rust\n> > code\n> > ```\n",
+            "> ```rust\n> code\n> ```\n\n> second\n",
             "> paragraph\n",
             "> # heading\n",
             "> - item\n",
-            "> paragraph\n>\n> ```rust\n> code\n> ```\n",
+            "> paragraph\n> \n> ```rust\n> code\n> ```\n",
         ] {
             let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
-            if saved != original {
-                mismatches.push(format!("{original:?} => {saved:?}"));
-            }
+            assert_eq!(saved, original, "first save polluted {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&saved),
+                markdown_to_prosemirror(original),
+                "structure changed for {original:?}"
+            );
+            let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+            assert_eq!(resaved, saved, "no fixpoint for {original:?}");
         }
-        assert!(mismatches.is_empty(), "round-trip mismatches: {mismatches:#?}");
+        // Unpadded table delimiters still take comrak's canonical padded
+        // spelling (pre-existing behaviour, also outside quotes), but the
+        // save must not add leading blank quote lines and must reopen to
+        // the same document.
+        let unpadded = "> | a | b |\n> |---|---|\n> | 1 | 2 |\n";
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(unpadded)).unwrap();
+        assert_eq!(
+            saved,
+            "> | a | b |\n> | --- | --- |\n> | 1 | 2 |\n",
+            "table canonicalized without leading blanks: {saved:?}"
+        );
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(unpadded),
+            "table structure changed"
+        );
     }
 
     #[test]
