@@ -655,6 +655,8 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
     expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
+    expect(html).toContain("const pointY = py.toFixed(1)"); // do not shadow the lane's cy before computing py
+    expect(html).not.toContain("const cy = py.toFixed(1)");
     expect(html).toContain('class="xpl-band-lanes"');
     expect(html).toContain('bandGroup("Fastest within each score band"');
     expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
