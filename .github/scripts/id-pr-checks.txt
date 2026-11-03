@@ -26,6 +26,7 @@ shellcheck-check
 shfmt-check
 statix-check
 taplo-check
+justfmt-check
 clippy-lint
 web-lint
 cargo-check
