@@ -2221,6 +2221,13 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// dropping it. The pre-#1306 version handled only top-level
 /// paragraphs/headings and silently deleted everything else on save.
 ///
+/// Line endings: plain-mode load (`plain_text_to_prosemirror`) strips
+/// the CR of CRLF endings and this join emits LF only, so a CRLF file
+/// is normalized to LF on save - a deliberate, documented choice
+/// (#1307), pinned by the round-trip tests below; the file's
+/// trailing-newline state is preserved through the load/save pair.
+/// Byte-exact CRLF round-trips remain available in Raw mode.
+///
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
 /// text verbatim when non-empty, otherwise its `src` verbatim when
@@ -2605,7 +2612,22 @@ mod upload_router_tests {
         // binding through the public API alone (Codex P2 on PR #3894):
         // parse [interfaces.web] with the re-exported parser and build
         // the app router with the re-exported constructor.
-        let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        // The world page handler 404s when no world is hosted; host
+        // one so the assertions below measure routing (the configured
+        // route registered, the default route absent), not hosting.
+        state.world = Some(crate::world_hub::WorldHub::single(
+            crate::world_session::WorldService::new(
+                crate::world::WorldHandle::spawn(
+                    crate::world::WorldCore::new(
+                        "lobby",
+                        crate::world::WorldLimits::default(),
+                    )
+                    .unwrap(),
+                ),
+                None,
+            ),
+        ));
         let interface = crate::web::web_interface_from_app_toml(
             "[interfaces.web]\nmode = \"adapter\"\nroute = \"/arena\"\nsocket = \"/ws/arena\"\n",
         )
@@ -3318,6 +3340,40 @@ mod tests {
     }
 
     #[test]
+    fn test_plain_mode_roundtrip_preserves_trailing_newline() {
+        // #1307 pinned policy: the real load/save pair is byte-stable
+        // for the common shapes, including the trailing newline.
+        for text in ["a\nb\n", "a\nb", "a\n", "\n", ""] {
+            let doc = super::super::markdown::plain_text_to_prosemirror(text);
+            assert_eq!(extract_plain_text(&doc), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_normalizes_crlf_to_lf() {
+        // #1307 pinned policy: CRLF normalizes to LF on save, and the
+        // trailing-newline state survives the normalization.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\n");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta");
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_preserves_lone_terminal_cr() {
+        // Codex finding on PR #4613: a carriage return that is NOT part
+        // of a CRLF ending is content. Only segments terminated by '\n'
+        // may have their CR stripped; the final segment keeps it.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\r");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\r");
+        // A CR-only line ending mid-file is likewise preserved.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\rbeta\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\rbeta\n");
+    }
+
+    #[test]
     fn test_extract_plain_text_paragraph_heading_byte_identical() {
         // Pre-#1306 behaviour for paragraph/heading-only docs is unchanged.
         let doc = plain_doc(vec![
@@ -3950,7 +4006,7 @@ mod collab_route_tests {
         doc_id
     }
 
-    async fn get(uri: &str) -> (StatusCode, String) {
+    async fn get_doc(uri: &str) -> (StatusCode, String) {
         let app = Router::new().route("/ws/collab/{doc_id}", get(echo_doc_id));
         let response = app
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -3964,7 +4020,7 @@ mod collab_route_tests {
     #[tokio::test]
     async fn encoded_slash_round_trips_to_the_exact_filename() {
         assert_eq!(
-            get("/ws/collab/a%2Fb.md").await,
+            get_doc("/ws/collab/a%2Fb.md").await,
             (StatusCode::OK, "a/b.md".to_owned())
         );
     }
@@ -3973,21 +4029,21 @@ mod collab_route_tests {
     async fn encoded_percent_names_round_trip() {
         // a%20b.md the file, not "a b.md": the client sends a%2520b.md.
         assert_eq!(
-            get("/ws/collab/a%2520b.md").await,
+            get_doc("/ws/collab/a%2520b.md").await,
             (StatusCode::OK, "a%20b.md".to_owned())
         );
         assert_eq!(
-            get("/ws/collab/100%25.md").await,
+            get_doc("/ws/collab/100%25.md").await,
             (StatusCode::OK, "100%.md".to_owned())
         );
         assert_eq!(
-            get("/ws/collab/notes.md").await,
+            get_doc("/ws/collab/notes.md").await,
             (StatusCode::OK, "notes.md".to_owned())
         );
     }
 
     #[tokio::test]
     async fn a_real_second_segment_does_not_match() {
-        assert_eq!(get("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get_doc("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
     }
 }

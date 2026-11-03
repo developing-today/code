@@ -1045,9 +1045,7 @@ class TestBackups(ColdStoreTestBase):
                 return 503, {}, b"unavailable"
             return request(method, url, *args, **kwargs)
 
-        with mock.patch(
-            "cold_store.http_request", side_effect=fail_metadata_readback
-        ):
+        with mock.patch("cold_store.http_request", side_effect=fail_metadata_readback):
             with self.assertRaisesRegex(
                 cold_store.ColdStoreError, "files.get after backup upload failed"
             ):
@@ -1083,9 +1081,7 @@ class TestBackups(ColdStoreTestBase):
 
         self.assertEqual(len(uploaded), 1)
         self.assertTrue(self.fake.file_meta[uploaded[0]]["trashed"])
-        self.assertEqual(
-            [c["id"] for c in self.fake.trashed_calls], uploaded
-        )
+        self.assertEqual([c["id"] for c in self.fake.trashed_calls], uploaded)
 
     def test_put_backup_readback_failure_trashes_upload(self):
         dump = self.write_src("dump.sql", b"-- backup contents\n")
@@ -1096,9 +1092,7 @@ class TestBackups(ColdStoreTestBase):
                 return 503, {}, b"unavailable"
             return request(method, url, *args, **kwargs)
 
-        with mock.patch(
-            "cold_store.http_request", side_effect=fail_metadata_readback
-        ):
+        with mock.patch("cold_store.http_request", side_effect=fail_metadata_readback):
             with self.assertRaisesRegex(
                 cold_store.ColdStoreError, "files.get after backup upload failed"
             ):
@@ -1129,9 +1123,7 @@ class TestBackups(ColdStoreTestBase):
         with mock.patch.object(
             self.store, "_resumable_upload", side_effect=corrupt_after_upload
         ):
-            with mock.patch(
-                "cold_store.http_request", side_effect=fail_trash
-            ):
+            with mock.patch("cold_store.http_request", side_effect=fail_trash):
                 with self.assertRaisesRegex(
                     cold_store.ColdStoreError,
                     "verification mismatch.*ALSO failed to trash",

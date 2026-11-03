@@ -30,7 +30,10 @@ class SeedTest(unittest.TestCase):
 
     def run_script(self, home, script=SEED):
         return subprocess.run(
-            ["bash", str(script)], env=self.seed_env(home), capture_output=True, text=True
+            ["bash", str(script)],
+            env=self.seed_env(home),
+            capture_output=True,
+            text=True,
         )
 
     def run_seed(self, content, script=SEED):

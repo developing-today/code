@@ -65,7 +65,13 @@ import type { ViewFilters } from "./views.ts";
 import { validateViewFilters, validateViewName } from "./views.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
 import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
-import { archiveStoreBytes, quarantineUnreadableStore, quarantineWholeStore, type InvalidStoreRecord, type StoreArchive } from "./store-recovery.ts";
+import {
+  archiveStoreBytes,
+  quarantineUnreadableStore,
+  quarantineWholeStore,
+  type InvalidStoreRecord,
+  type StoreArchive,
+} from "./store-recovery.ts";
 
 export type DashActionKind = "triage" | "status-request" | "session" | "preference";
 
@@ -119,7 +125,14 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
-  preference: ["set-delegation-default", "set-needs-order", "save-view", "rename-view", "delete-view", "set-default-view"],
+  preference: [
+    "set-delegation-default",
+    "set-needs-order",
+    "save-view",
+    "rename-view",
+    "delete-view",
+    "set-default-view",
+  ],
 };
 
 const ACTION_KINDS = new Set<DashActionKind>(["triage", "status-request", "session", "preference"]);
@@ -307,6 +320,7 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       return { ok: false, error: "payload.answers must be an array of at most 50 {questionId, value}" };
     }
     const answers: { questionId: string; value: string | string[] }[] = [];
+    const seenQuestionIds = new Set<string>();
     for (const entry of rawPayload.answers) {
       if (typeof entry !== "object" || entry === null) {
         return { ok: false, error: "payload.answers entries must be {questionId, value}" };
@@ -329,6 +343,14 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       if (q === undefined || v === undefined) {
         return { ok: false, error: "payload.answers entries need non-empty questionId and value" };
       }
+      // #4291: one action answers each question at most once — a
+      // repeated questionId (same or contradictory value) resolves
+      // differently per reader (cardState merges latest-wins, a raw
+      // payload consumer sees both), so reject it here.
+      if (seenQuestionIds.has(q)) {
+        return { ok: false, error: `payload.answers answers question "${q}" more than once` };
+      }
+      seenQuestionIds.add(q);
       answers.push({ questionId: q, value: v });
     }
     if (answers.length) payload.answers = answers;
@@ -555,18 +577,24 @@ export class ActionsStore {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.actions = [];
       this.fileExtras = {};
-      console.error(`[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
     if (!isRecord(parsed) || !Array.isArray(parsed.actions)) {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.actions = [];
       this.fileExtras = {};
-      console.error(`[actions] WARNING: actions store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[actions] WARNING: actions store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
 
-    this.fileExtras = Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== "version" && key !== "actions"));
+    this.fileExtras = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key !== "version" && key !== "actions"),
+    );
     const valid: DashAction[] = [];
     const invalid: InvalidStoreRecord[] = [];
     parsed.actions.forEach((action, index) => {
@@ -673,16 +701,25 @@ export class ActionsStore {
     id: string,
     result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
   ): Promise<DashAction | null> {
+    return (await this.markResultTransition(id, result))?.action ?? null;
+  }
+
+  /** Like markResult, but tells audit writers whether this call consumed
+   *  the action or merely observed an already-terminal record. */
+  async markResultTransition(
+    id: string,
+    result: { outcome: "applied" | "rejected"; byRun: string; note?: string },
+  ): Promise<{ action: DashAction; transitioned: boolean } | null> {
     await this.load();
     const a = this.actions.find((x) => x.id === id);
     if (!a) return null;
-    if (a.state !== "new") return a;
+    if (a.state !== "new") return { action: a, transitioned: false };
     a.state = result.outcome;
     a.appliedAt = new Date().toISOString();
     a.appliedByRun = result.byRun.slice(0, 200);
     if (result.note) a.resultNote = result.note.slice(0, 2_000);
     await this.persist();
-    return a;
+    return { action: a, transitioned: true };
   }
 }
 

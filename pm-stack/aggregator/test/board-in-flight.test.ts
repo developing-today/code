@@ -111,14 +111,16 @@ describe("inFlightBoardItems", () => {
       ]),
       [],
     );
-    expect(out.map((i) => i.orchStatus)).toEqual(["in-progress", "queued", "blocked"]);
+    // #1206: the lane is in canonical queue-rank order (in-progress,
+    // then blocked, then queued), not raw section order.
+    expect(out.map((i) => i.orchStatus)).toEqual(["in-progress", "blocked", "queued"]);
     expect(out.every((i) => i.source === "orchestrator" && i.status === "in-flight")).toBe(true);
     expect(out.every((i) => i.updatedAt === GENERATED)).toBe(true);
     expect(out[0].links.map((l) => l.ref)).toEqual(["developing-today/code#944", "developing-today/code#985"]);
     expect(out[0].repo).toBe("developing-today/code");
-    expect(out[2].blockedBy).toEqual(["Drew's Plaid/Citi sign-in (stalled)"]);
-    expect(out[2].links).toEqual([]);
-    expect(out[2].goal).toBe("Keep the four repos healthy");
+    expect(out[1].blockedBy).toEqual(["Drew's Plaid/Citi sign-in (stalled)"]);
+    expect(out[1].links).toEqual([]);
+    expect(out[1].goal).toBe("Keep the four repos healthy");
   });
 
   test("an explicit linedUp ref is linked even when the title carries none", () => {
@@ -144,18 +146,14 @@ describe("inFlightBoardItems", () => {
       ]),
       existing,
     );
-    expect(out.map((i) => i.title)).toEqual([
-      "code #944 fix - PR #985 opened",
-      "code #968 - queue task 1116 revived",
-    ]);
+    expect(out.map((i) => i.title)).toEqual(["code #944 fix - PR #985 opened", "code #968 - queue task 1116 revived"]);
     expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/code#985"]);
   });
 
   test("removes only refs already represented on Kaneo cards", () => {
-    const out = inFlightBoardItems(
-      section([task("code #944 and openchamber #492 implementation", "in-progress")]),
-      [kaneoCard("Some finished card", ["developing-today/code#944"])],
-    );
+    const out = inFlightBoardItems(section([task("code #944 and openchamber #492 implementation", "in-progress")]), [
+      kaneoCard("Some finished card", ["developing-today/code#944"]),
+    ]);
 
     expect(out).toHaveLength(1);
     expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/openchamber#492"]);

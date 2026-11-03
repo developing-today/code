@@ -328,8 +328,16 @@ describe("quota-current overlay", () => {
     const doc = JSON.parse(
       JSON.stringify(
         file([
-          entry({ serviceId: "openai:codex", measuredAt: iso(1 * 60_000), windows: [win("7-day", 55, iso(1 * 60_000))] }),
-          entry({ serviceId: "openai:codex", measuredAt: iso(5 * 60_000), windows: [win("7-day", 80, iso(5 * 60_000))] }),
+          entry({
+            serviceId: "openai:codex",
+            measuredAt: iso(1 * 60_000),
+            windows: [win("7-day", 55, iso(1 * 60_000))],
+          }),
+          entry({
+            serviceId: "openai:codex",
+            measuredAt: iso(5 * 60_000),
+            windows: [win("7-day", 80, iso(5 * 60_000))],
+          }),
         ]),
       ),
     );
@@ -348,9 +356,7 @@ describe("quota-current overlay", () => {
 
   test("a sole ok entry whose windows are entirely malformed surfaces as an error, never as fresh provenance", () => {
     const doc = JSON.parse(
-      JSON.stringify(
-        file([entry({ serviceId: "openai:codex", windows: [win("7-day", 55, iso(5 * 60_000))] })]),
-      ),
+      JSON.stringify(file([entry({ serviceId: "openai:codex", windows: [win("7-day", 55, iso(5 * 60_000))] })])),
     );
     doc.providers[0].windows = [null, { bogus: true }];
 
@@ -714,6 +720,60 @@ describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
   });
 });
 
+describe("overlay: split gatherer rows land on the four split hub pools (#1331)", () => {
+  test("Go per-workspace + Antigravity per-pool rows map with freshness and values", () => {
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go:personal", []),
+      pool("opencode-go:lab", []),
+      pool("antigravity:gemini", []),
+      pool("antigravity:claude-gpt", []),
+    );
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:personal",
+          credentialId: "cred_personal",
+          credentialLabel: "Personal",
+          windows: [win("monthly", 62.5, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:lab",
+          credentialId: "cred_lab",
+          credentialLabel: "Lab",
+          windows: [win("monthly", 50, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:gemini",
+          windows: [win("weekly", 40, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:claude-gpt",
+          windows: [win("weekly", 90, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const byId = new Map(out.pools.map((p) => [p.id, p]));
+    expect(byId.get("opencode-go:personal")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
+    expect(byId.get("opencode-go:lab")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
+    expect(byId.get("antigravity:gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("antigravity:claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
+    for (const id of ["opencode-go:personal", "opencode-go:lab", "antigravity:gemini", "antigravity:claude-gpt"]) {
+      expect(byId.get(id)!.freshness).toEqual({
+        measuredAt: iso(5 * 60_000),
+        source: "openchamber-quota",
+        state: "ok",
+      });
+    }
+  });
+});
+
 describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
   test("a fresh ok read at 150% does not wall the pool: the window drops and prior windows stand", () => {
     const out = overlayQuotaCurrent(
@@ -779,7 +839,9 @@ describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
       group: "database",
       plan: "Starter Free $0",
       status: "active",
-      metrics: [{ id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true }],
+      metrics: [
+        { id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true },
+      ],
       paygEstimate: null,
       measuredAt: "2026-10-20T00:00:00.000Z",
       sourceClass: "manual",

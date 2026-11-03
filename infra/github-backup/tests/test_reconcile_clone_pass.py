@@ -106,9 +106,7 @@ def run_scenario(clone_rc, inventory_result, with_mirror, fail_repos=()):
                 for repo in fail_repos:
                     f.write(json.dumps({"repo": repo, "status": "fail"}) + "\n")
                 if clone_rc == 0:
-                    f.write(
-                        json.dumps({"repo": item["repo"], "status": "ok"}) + "\n"
-                    )
+                    f.write(json.dumps({"repo": item["repo"], "status": "ok"}) + "\n")
             return subprocess.CompletedProcess(cmd, clone_rc)
         return REAL_RUN(cmd, *args, **kwargs)
 
@@ -159,9 +157,7 @@ check(
 )
 
 # --- Scenario 2: clone pass succeeds ----------------------------------
-rc, report, calls = run_scenario(
-    clone_rc=0, inventory_result=CLEAN, with_mirror=False
-)
+rc, report, calls = run_scenario(clone_rc=0, inventory_result=CLEAN, with_mirror=False)
 check("clone rc=0 + clean inventory -> reconcile exits 0", rc == 0)
 check("report records clone success", "clone pass: succeeded" in report)
 

@@ -24,11 +24,20 @@ describe("world screen presenter", () => {
       width: 4,
       height: 1,
       runs: [
-        { start: 0, cells: [{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }, { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 }] },
+        {
+          start: 0,
+          cells: [
+            { symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 },
+            { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+          ],
+        },
         { start: 3, cells: [{ symbol: "x", fg: 4, bg: 0, bold: true, columns: 1 }] },
       ],
     };
-    const full: ScreenSurface = { ...previous, cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells] };
+    const full: ScreenSurface = {
+      ...previous,
+      cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells],
+    };
     const applied = applyScreenPatch(previous, patch);
     expect(applied).toEqual(full);
     const root = document.createElement("div");
@@ -47,7 +56,15 @@ describe("world screen presenter", () => {
       height: 1,
       runs,
     });
-    expect(applyScreenPatch(previous, patch([{ start: 1, cells: [previous.cells[1]] }, { start: 1, cells: [previous.cells[0]] }]))).toBeNull();
+    expect(
+      applyScreenPatch(
+        previous,
+        patch([
+          { start: 1, cells: [previous.cells[1]] },
+          { start: 1, cells: [previous.cells[0]] },
+        ]),
+      ),
+    ).toBeNull();
     expect(applyScreenPatch(previous, patch([{ start: 2, cells: [previous.cells[0]] }]))).toBeNull();
     expect(
       applyScreenPatch(
@@ -247,9 +264,9 @@ describe("world screen presenter", () => {
     // validator.
     const longGrapheme = `e${"\u0301".repeat(17)}`;
     expect(longGrapheme.length).toBe(18);
-    expect(renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(
-      true,
-    );
+    expect(
+      renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }])),
+    ).toBe(true);
   });
 
   it("measures U+FE0E text-presentation sequences as width 1, like Rust unicode-width 0.2.2 (#1581)", () => {
@@ -356,6 +373,43 @@ describe("world screen presenter", () => {
       expect(renderWorldSurface(root, screen)).toBe(true);
       // …and the same glyph squeezed into 1 column must be refused.
       expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    }
+  });
+
+  it("matches Rust unicode-width 0.2.2 on the residual reachable classes (#2962)", () => {
+    const root = document.createElement("div");
+    // rust=2 / ts=1 before the fix: trigrams U+2630, Khmer U+17A4, Yi U+A000
+    // must measure 2, so a two-column placement is accepted and 1 refused.
+    for (const symbol of ["\u2630", "\u17A4", "\uA000"]) {
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(true);
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    }
+    // rust=1 / ts=2 before the fix: CJK radicals carved out of the broad
+    // wide ranges (U+2E9A, U+2EF4, U+3040) and U+2D7F (rust=1 / ts=0)
+    // must measure 1, so a one-column placement is accepted and 2 refused.
+    for (const symbol of ["\u2E9A", "\u2EF4", "\u3040", "\u2D7F"]) {
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(true);
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(false);
     }
   });
 

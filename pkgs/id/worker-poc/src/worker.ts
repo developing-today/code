@@ -150,23 +150,25 @@ export class WorldObject {
         );
       }
       const guest = await this.ensureGuest();
-      guest.update(participant, enc.encode(event));
-      const view = guest.view();
-      const records = guest.records();
-      const snapshot = guest.snapshot();
-      if (!snapshot) throw new Error("guest exports no snapshot; journaling requires the snapshot/restore pair");
-      const snapshotHash = await sha256Hex(snapshot);
       const nextStep = this.step + 1;
+      let view: Uint8Array;
+      let records: Uint8Array | null;
+      let snapshotHash: string;
       try {
+        guest.update(participant, enc.encode(event));
+        view = guest.view();
+        records = guest.records();
+        const snapshot = guest.snapshot();
+        if (!snapshot) throw new Error("guest exports no snapshot; journaling requires the snapshot/restore pair");
+        snapshotHash = await sha256Hex(snapshot);
         this.sql.exec(
           `INSERT INTO journal (step, participant, event, snapshot, view, records, snapshot_hash) VALUES (?, ?, ?, ?, ?, ?, ?)`,
           nextStep, participant, event, snapshot, dec.decode(view),
           records ? dec.decode(records) : null, snapshotHash,
         );
       } catch (err) {
-        // The guest advanced but nothing was journaled: discard it, so the
-        // next request restores from the journal and the unjournaled event
-        // cannot contaminate later snapshots.
+        // Any failure before the journal commit may leave the guest advanced
+        // without a matching row; restore from the journal on the next request.
         this.dropGuest();
         throw err;
       }

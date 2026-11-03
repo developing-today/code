@@ -48,7 +48,7 @@ Each item has a status.
 | `planned`     | A plan with steps exists and the issues are filed.                    |
 | `in-progress` | At least one PR for it is open or merged.                             |
 | `shipped`     | Done. Close the linked GitHub issue; keep the row in the roadmap.     |
-| `dropped`     | Decided against. Close the linked GitHub issue; keep the row.          |
+| `dropped`     | Decided against. Close the linked GitHub issue; keep the row.         |
 
 A roadmap row records intent. It is not a go-ahead to build the thing, and it does not settle a product question. Wherever this repo says a maintainer decides, a row at `proposed` or earlier still waits for that decision.
 

@@ -33,6 +33,40 @@
 //! A quoted field is a JSON string literal, so a consumer that needs the
 //! original bytes can parse it as JSON. Values with no structure-breaking
 //! character are the common case and stay unwrapped, exactly as before.
+//!
+//! # The plain-output contract (design #3455, Phase 3b)
+//!
+//! A plain-text field is row-safe only if it contains no character that can
+//! act on the terminal. There are exactly two such classes:
+//!
+//! * **Structure characters**: control characters (category Cc, matched by
+//!   `char::is_control`) plus the line/paragraph separators `U+2028` /
+//!   `U+2029`, which are not controls but which some consumers treat as line
+//!   breaks.
+//! * **Format characters**: category Cf, per the crate's one shared set
+//!   (`crate::is_format_char`). These are invisible or reorder the text
+//!   around them (bidi overrides/isolates, zero-width characters), so they
+//!   can falsify a row's columns at the terminal even from inside quotes.
+//!
+//! Every plain renderer in `pkgs/id` accounts for both classes; the
+//! disposition differs by surface kind:
+//!
+//! * **Row renderers escape**: [`plain_field`] (this module) and the
+//!   `key=value` renderer (`crate::commands::group`) quote an affected value and
+//!   render each offending character as `\uXXXX`, so the value stays complete
+//!   and JSON-recoverable but no raw actor reaches the terminal.
+//! * **Stripping sanitizers strip**: `crate::world::sanitize_display_name`,
+//!   `crate::world::sanitize_chat` and the SSH world's terminal gate drop both
+//!   classes (chat keeps `ZWJ`/`ZWNJ` so legitimate emoji survive; the SSH
+//!   gate keeps `LF`/`TAB` so terminal layout survives).
+//! * **Ingest validators refuse**: directory names/descriptions, invite
+//!   names and petnames refuse both classes at the boundary, so no new
+//!   stored value carries one.
+//!
+//! No surface re-derives the character set: the single definition is
+//! `crate::is_format_char`, the complete Unicode 16 general-category Cf
+//! set, defined once in `id-core` (`crates/id-core/src/unicode.rs`) and
+//! shared by validation and rendering.
 
 use std::fmt::Display;
 

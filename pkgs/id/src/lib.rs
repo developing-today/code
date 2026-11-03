@@ -196,6 +196,7 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
+pub mod hosted_binding;
 pub mod idset;
 pub mod invite;
 pub mod invites;
@@ -218,6 +219,7 @@ pub mod sandbox;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
+pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod server_config;
 #[cfg(feature = "world")]
@@ -256,6 +258,8 @@ pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;
 #[cfg(feature = "world")]
+pub mod world_replication_net;
+#[cfg(feature = "world")]
 pub use id_core::world_presentation;
 #[cfg(feature = "world")]
 pub mod world_records;
@@ -287,7 +291,8 @@ pub use discovery::{
     STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
 pub use helpers::{
-    parse_get_spec, parse_put_spec, print_match_cli, print_match_repl, print_matches_cli,
+    download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
+    print_matches_cli,
 };
 pub use protocol::{FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch};
 pub use repl::run_repl;

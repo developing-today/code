@@ -17,6 +17,7 @@ import {
   isFiniteNumber,
   isIsoDate,
   isNonNegative,
+  isPercentOf,
   isRecord,
   isStringArray,
   isTimestampNotFuture,
@@ -31,7 +32,9 @@ import type {
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
+  PoolFreshness,
   ProjectPoolItem,
+  QuotaCredentialRow,
   QuotaPool,
   QuotaView,
   QuotaWindow,
@@ -50,9 +53,18 @@ export interface FleetFeed {
    *  in feeds written before the drift check existed. */
   checkout?: CheckoutDrift;
   quota: QuotaView;
-  /** Element drops loadFeed's quota sanitization made (#2429), set
+  /** Element and optional-field drops loadFeed's quota sanitization made
+   * (#2429/#3921/#4546), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
-  quotaDropped?: { pools: number; windows: number; burn: number };
+  quotaDropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+  };
   /** Element drops loadFeed's chargesAttention sanitization made
    * (#2439), set only when at least one entry dropped; absent on raw
    * parsed feeds and on feeds whose entries all survived. */
@@ -145,7 +157,10 @@ export function sanitizeCollectionError(value: unknown): string {
     .replace(/\bBasic\s+[A-Za-z0-9+/=]+/gi, "Basic [redacted]")
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
-    .replace(/\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "$1[redacted]")
+    .replace(
+      /\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+      "$1[redacted]",
+    )
     .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
     .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
     .replace(/[\r\n\t]+/g, " ")
@@ -153,14 +168,8 @@ export function sanitizeCollectionError(value: unknown): string {
   return message || "collection failed";
 }
 
-export function feedSectionStatus(
-  status: FeedSectionStatus,
-  at: string,
-  error?: unknown,
-): FeedSectionCollectionStatus {
-  return status === "error"
-    ? { status, at, error: sanitizeCollectionError(error) }
-    : { status, at };
+export function feedSectionStatus(status: FeedSectionStatus, at: string, error?: unknown): FeedSectionCollectionStatus {
+  return status === "error" ? { status, at, error: sanitizeCollectionError(error) } : { status, at };
 }
 
 /** Tolerate malformed optional metadata without rejecting an otherwise
@@ -438,18 +447,24 @@ export function coverageFromFeed(feed: Partial<FleetFeed> | null | undefined): R
   return rows.length ? rows : null;
 }
 
+const isQuotaPercent = isPercentOf(100);
+
 /** One quota window as the renderers dereference it (#2429): `limit`
  * is read arithmetically by windowPercent, `used` is rendered, and a
- * non-object element crashes both renderQuota and buildAttentionFlags. */
+ * non-object element crashes both renderQuota and buildAttentionFlags.
+ * Value rules (#3427): a non-null resetsAt must be a real ISO calendar
+ * date (impossible dates roll forward in guidance), non-null limit and
+ * used must be non-negative finite, and percent when present must be
+ * within 0..100 (negative or >100 percents misread as healthy/walled). */
 export function isQuotaWindow(v: unknown): v is QuotaWindow {
   if (!isRecord(v)) return false;
   return (
     typeof v.name === "string" &&
     (v.unit === "requests" || v.unit === "tokens" || v.unit === "usd" || v.unit === "messages" || v.unit === "other") &&
-    (v.limit === null || isFiniteNumber(v.limit)) &&
-    isFiniteNumber(v.used) &&
-    (v.resetsAt === null || typeof v.resetsAt === "string") &&
-    (v.percent === undefined || isFiniteNumber(v.percent))
+    (v.limit === null || isNonNegative(v.limit)) &&
+    isNonNegative(v.used) &&
+    (v.resetsAt === null || isIsoDate(v.resetsAt)) &&
+    (v.percent === undefined || isQuotaPercent(v.percent))
   );
 }
 
@@ -459,21 +474,50 @@ const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
  * must never be iterated as a collection of windows (it fabricated
  * attention flags). Window ELEMENTS are filtered by sanitizeQuotaView,
- * so a pool survives one bad window. Credential rows, when present,
- * must at least be records holding a windows array; their elements are
- * filtered the same way. */
+ * so a pool survives one bad window. Optional credential containers
+ * must be arrays; malformed credential rows and active-session entries
+ * are dropped individually by sanitizeQuotaView. */
 export function isQuotaPool(v: unknown): v is QuotaPool {
   if (!isRecord(v)) return false;
   if (typeof v.id !== "string" || typeof v.provider !== "string" || typeof v.plan !== "string") return false;
   if (typeof v.state !== "string" || !QUOTA_STATES.includes(v.state)) return false;
   if (!Array.isArray(v.windows)) return false;
-  if (v.credentials !== undefined) {
-    if (!Array.isArray(v.credentials)) return false;
-    for (const row of v.credentials) {
-      if (!isRecord(row) || !Array.isArray(row.windows)) return false;
-    }
-  }
+  if (v.credentials !== undefined && !Array.isArray(v.credentials)) return false;
   return true;
+}
+
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+
+function isQuotaFreshness(v: unknown): v is PoolFreshness {
+  return (
+    isRecord(v) &&
+    isIsoDate(v.measuredAt) &&
+    typeof v.source === "string" &&
+    typeof v.state === "string" &&
+    QUOTA_FRESHNESS_STATES.includes(v.state) &&
+    (v.error === undefined || typeof v.error === "string")
+  );
+}
+
+function isQuotaCredentialRow(v: unknown): v is QuotaCredentialRow {
+  return (
+    isRecord(v) &&
+    typeof v.label === "string" &&
+    typeof v.providerId === "string" &&
+    Array.isArray(v.windows) &&
+    isQuotaFreshness(v.freshness)
+  );
+}
+
+type QuotaActiveSession = NonNullable<QuotaPool["activeSessions"]>[number];
+
+function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
+  return (
+    isRecord(v) &&
+    typeof v.session === "string" &&
+    typeof v.model === "string" &&
+    isNonNegative(v.tokens)
+  );
 }
 
 /** One historical burn segment as renderQuota maps it (#2429).
@@ -498,22 +542,33 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
  * with toFixed and used as a severity, so those three must be a
  * string, a finite number, and a string. normalized/source are not
  * gate-required: the consumer tolerates any source value and never
- * dereferences normalized. */
+ * dereferences normalized. (#3458): amountUsd must be positive and at
+ * must be a real ISO calendar date — impossible rows alter charge
+ * totals and attention severity. */
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
-  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+  return (
+    typeof v.merchant === "string" &&
+    isFiniteNumber(v.amountUsd) &&
+    v.amountUsd > 0 &&
+    isIsoDate(v.at)
+  );
 }
 
 /** One charges-evidence row as the /quota charges strip renders it
  * (#2445): a record with string at/label/method/source and a
  * finite-number amountUsd (ChargeRow, model.ts). Built on the shared
- * validate.ts primitives, like the quota element validators above. */
+ * validate.ts primitives, like the quota element validators above.
+ * (#3458): amountUsd must be positive and at must be a real ISO
+ * calendar date — impossible rows alter charge totals and attention
+ * severity. */
 export function isChargeRow(v: unknown): v is ChargeRow {
   if (!isRecord(v)) return false;
   return (
-    typeof v.at === "string" &&
+    isIsoDate(v.at) &&
     typeof v.label === "string" &&
     isFiniteNumber(v.amountUsd) &&
+    v.amountUsd > 0 &&
     typeof v.method === "string" &&
     typeof v.source === "string"
   );
@@ -528,30 +583,61 @@ function isQuotaChoices(v: unknown): boolean {
 export interface QuotaSanitization {
   view: QuotaView;
   droppedPools: number;
+  droppedCredentials: number;
   droppedWindows: number;
+  droppedActiveSessions: number;
   droppedBurn: number;
+  droppedPoolFreshness: number;
+  droppedBurnTokensPerMin: number;
 }
 
-/** Drop-and-count sanitization of a gate-passed quota section (#2429,
+/** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921/#4546,
  * following poolFromFeed's per-element pattern, built on the shared
  * arrayOf primitive from #2577): malformed pools and burn segments
- * drop individually, malformed windows drop out of their pool, and the
- * well-formed remainder renders. The counts ride out on the result so
- * the caller surfaces them, never swallows them. */
+ * drop individually, malformed windows/credential rows/active sessions
+ * drop out of their pool, and the well-formed remainder renders. The
+ * counts ride out on the result so the caller surfaces them, never
+ * swallows them. */
 export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   const pools = arrayOf(isQuotaPool)(quota.pools);
+  let droppedCredentials = 0;
   let droppedWindows = 0;
+  let droppedActiveSessions = 0;
+  let droppedPoolFreshness = 0;
+  let droppedBurnTokensPerMin = 0;
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
     droppedWindows += windows?.dropped ?? 0;
     let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
+    if (pool.freshness !== undefined && !isQuotaFreshness(pool.freshness)) {
+      delete out.freshness;
+      droppedPoolFreshness += 1;
+    }
+    if (pool.burnTokensPerMin !== undefined && !isNonNegative(pool.burnTokensPerMin)) {
+      delete out.burnTokensPerMin;
+      droppedBurnTokensPerMin += 1;
+    }
     if (pool.credentials !== undefined) {
-      const rows = pool.credentials.map((row) => {
+      const rows = arrayOf(isQuotaCredentialRow)(pool.credentials);
+      droppedCredentials += rows?.dropped ?? 0;
+      const credentials = (rows?.values ?? []).map((row) => {
         const rowWindows = arrayOf(isQuotaWindow)(row.windows);
         droppedWindows += rowWindows?.dropped ?? 0;
         return { ...row, windows: rowWindows?.values ?? [] };
       });
-      out = { ...out, credentials: rows };
+      out = { ...out, credentials };
+    }
+    if (pool.activeSessions !== undefined) {
+      if (Array.isArray(pool.activeSessions)) {
+        const sessions = arrayOf(isQuotaActiveSession)(pool.activeSessions);
+        droppedActiveSessions += sessions?.dropped ?? 0;
+        out = { ...out, activeSessions: sessions?.values ?? [] };
+      } else {
+        // A present malformed section is one dropped section, not a pool
+        // failure; the renderer treats an empty list as no active sessions.
+        droppedActiveSessions += 1;
+        out = { ...out, activeSessions: [] };
+      }
     }
     return out;
   });
@@ -573,14 +659,35 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
   // Surface the loss on the view itself (its consumers project the
   // view, e.g. /api/quota.json), not only on the feed wrapper.
-  if (droppedPools + droppedWindows + droppedBurn > 0) {
-    view.dropped = { pools: droppedPools, windows: droppedWindows, burn: droppedBurn };
+  if (
+    droppedPools +
+      droppedCredentials +
+      droppedWindows +
+      droppedActiveSessions +
+      droppedBurn +
+      droppedPoolFreshness +
+      droppedBurnTokensPerMin >
+    0
+  ) {
+    view.dropped = {
+      pools: droppedPools,
+      credentials: droppedCredentials,
+      windows: droppedWindows,
+      activeSessions: droppedActiveSessions,
+      burn: droppedBurn,
+      poolFreshness: droppedPoolFreshness,
+      burnTokensPerMin: droppedBurnTokensPerMin,
+    };
   }
   return {
     view,
     droppedPools,
+    droppedCredentials,
     droppedWindows,
+    droppedActiveSessions,
     droppedBurn,
+    droppedPoolFreshness,
+    droppedBurnTokensPerMin,
   };
 }
 
@@ -750,7 +857,15 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...feed,
       meta,
       quota: san.view,
-      quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      quotaDropped: {
+        pools: san.droppedPools,
+        credentials: san.droppedCredentials,
+        windows: san.droppedWindows,
+        activeSessions: san.droppedActiveSessions,
+        burn: san.droppedBurn,
+        poolFreshness: san.droppedPoolFreshness,
+        burnTokensPerMin: san.droppedBurnTokensPerMin,
+      },
       ...(charges ? { chargesAttention: charges.values } : {}),
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,

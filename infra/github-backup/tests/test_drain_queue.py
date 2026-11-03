@@ -305,7 +305,14 @@ for bad_owner in ("dezren39", ["dezren39"], 42, True):
         drain_queue.event_owner({"repository": {"owner": bad_owner}}) is None,
     )
 h = Harness(
-    [{"id": "e14", "event": "push", "ts": iso_age(60), "repository": {"owner": "dezren39"}}],
+    [
+        {
+            "id": "e14",
+            "event": "push",
+            "ts": iso_age(60),
+            "repository": {"owner": "dezren39"},
+        }
+    ],
     ["owner/repo"],
     {},
 )
@@ -352,7 +359,12 @@ check("string-account: no fetch attempted", h.fetch_calls == [])
 #     the valid planned event behind it is still fetched + acked, exit 0
 h = Harness(
     [
-        {"id": "e16a", "event": "push", "ts": iso_age(60), "repository": {"owner": "dezren39"}},
+        {
+            "id": "e16a",
+            "event": "push",
+            "ts": iso_age(60),
+            "repository": {"owner": "dezren39"},
+        },
         ev("e16b", "owner/repo"),
     ],
     ["owner/repo"],

@@ -11,6 +11,7 @@
 // the live source so the wire shape is parsed exactly once.
 import type { GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { refKey } from "./model.ts";
+import { workItemRefSet } from "./work-items.ts";
 
 export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
 export const PROJECT_URL = "https://github.com/orgs/developing-today/projects/4";
@@ -203,10 +204,7 @@ export function projectPageInfo(json: unknown): { hasNextPage: boolean; endCurso
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
  * the collector can fail-soft and omit the section. Never logs the token. */
-export async function fetchProjectPool(
-  token: string,
-  fetchFn: typeof fetch = fetch,
-): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
@@ -250,6 +248,8 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     typeof p.ref === "string" &&
     typeof p.repo === "string" &&
     typeof p.number === "number" &&
+    Number.isInteger(p.number) &&
+    p.number > 0 &&
     typeof p.issueUrl === "string" &&
     typeof p.title === "string" &&
     // url/projectUrl/contentKind and the Project single-select fields are
@@ -322,16 +322,10 @@ export function derivedProjectState(
 }
 
 function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean {
-  for (const t of [...section.tiers.needsDrew, ...section.tiers.needsOrchestrator]) {
-    if (t.ref === ref) return true;
-  }
-  for (const g of section.goals) {
-    for (const t of g.linedUp) if (t.ref === ref) return true;
-  }
-  for (const d of section.dependencies) {
-    if (d.ref === ref || d.taskRef === ref) return true;
-  }
-  return false;
+  // #1206: the canonical projection's ref set — one assembly answers
+  // "does this ref appear in the section" for every page, instead of
+  // this module rescanning tiers, goals, and dependencies itself.
+  return workItemRefSet(section).has(ref);
 }
 
 /** The disagreement to display, or null when both sides agree (or the

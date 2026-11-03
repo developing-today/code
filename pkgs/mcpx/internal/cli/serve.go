@@ -522,6 +522,11 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// below reads -- so neither surface's cadence changes.
 	if a.daemonStore != nil {
 		srv.TaskStore = a.daemonStore
+	} else {
+		// A standalone server (mcpx serve) keeps a private store;
+		// wire its audit seam to the durable log or its task
+		// lifecycle records are silently dropped (#2500).
+		srv.TaskAudit = a.standaloneTaskAudit()
 	}
 	srv.PageSize = a.Settings().Int("mcp.pageSize")
 	srv.Passthrough = a.passNS()

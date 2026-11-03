@@ -257,6 +257,20 @@ fn main() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("id-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
+    const BENCHMARKS: [&str; 4] = [
+        "journal_append_fsync",
+        "checkpoint_compaction",
+        "guest_replay",
+        "session_fanout",
+    ];
+    if let Some(name) = only
+        && !BENCHMARKS.contains(&name)
+    {
+        eprintln!("error: unknown benchmark '{name}' in --only");
+        eprintln!("valid benchmark names: {}", BENCHMARKS.join(", "));
+        std::process::exit(2);
+    }
+
     let run = |name: &str| only.is_none() || only == Some(name);
 
     if run("journal_append_fsync") {

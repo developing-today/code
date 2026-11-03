@@ -105,37 +105,37 @@ describe("RETENTION_SECONDS", () => {
     { label: "out-of-range value", setting: "8640000000000", expectedMilliseconds: 604_800_000 },
     { label: "seven-day default", setting: "604800", expectedMilliseconds: 604_800_000 },
     { label: "valid decimal seconds", setting: "3600", expectedMilliseconds: 3_600_000 },
-  ])("$label still supports PUT then GET and schedules the expected retention", async ({
-    setting,
-    expectedMilliseconds,
-  }) => {
-    const now = 1_800_000_000_000;
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
-    try {
-      const { store, alarms } = mockStore(setting);
-      const env = testEnv(store, setting);
-      const kp = keypair(25);
-      const key = z32(kp.publicKey);
-      const payload = buildRelayPayload(kp, TS, dnsPacketWithTxt(`_iroh.${key}`, "retention-test"));
+  ])(
+    "$label still supports PUT then GET and schedules the expected retention",
+    async ({ setting, expectedMilliseconds }) => {
+      const now = 1_800_000_000_000;
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+      try {
+        const { store, alarms } = mockStore(setting);
+        const env = testEnv(store, setting);
+        const kp = keypair(25);
+        const key = z32(kp.publicKey);
+        const payload = buildRelayPayload(kp, TS, dnsPacketWithTxt(`_iroh.${key}`, "retention-test"));
 
-      const putResponse = await worker.fetch(
-        new Request(`${BASE}/pkarr/${key}`, {
-          method: "PUT",
-          headers: { "content-type": "application/x-pkarr-signed-packet" },
-          body: payload,
-        }),
-        env,
-      );
-      expect(putResponse.status).toBe(204);
+        const putResponse = await worker.fetch(
+          new Request(`${BASE}/pkarr/${key}`, {
+            method: "PUT",
+            headers: { "content-type": "application/x-pkarr-signed-packet" },
+            body: payload,
+          }),
+          env,
+        );
+        expect(putResponse.status).toBe(204);
 
-      const getResponse = await worker.fetch(new Request(`${BASE}/pkarr/${key}`), env);
-      expect(getResponse.status).toBe(200);
-      expect(new Uint8Array(await getResponse.arrayBuffer())).toEqual(payload);
-      expect(alarms).toEqual([now + expectedMilliseconds]);
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
+        const getResponse = await worker.fetch(new Request(`${BASE}/pkarr/${key}`), env);
+        expect(getResponse.status).toBe(200);
+        expect(new Uint8Array(await getResponse.arrayBuffer())).toEqual(payload);
+        expect(alarms).toEqual([now + expectedMilliseconds]);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    },
+  );
 });
 
 describe("pkarr HTTP relay", () => {

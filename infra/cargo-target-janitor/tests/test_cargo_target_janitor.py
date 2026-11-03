@@ -30,6 +30,7 @@ class JanitorTests(unittest.TestCase):
         stamp = time.time() - age * 3600
         data.touch()
         import os
+
         os.utime(data, (stamp, stamp))
         return path
 
@@ -37,8 +38,13 @@ class JanitorTests(unittest.TestCase):
         target = self.make_target("task-42/pkgs/id/target", size=11)
         worktree = target.parents[2]
         found = janitor.discover_targets(
-            self.root, {worktree.resolve(): "queue/42-fix"}, {42}, {}, set(),
-            [], time.time() - 48 * 3600,
+            self.root,
+            {worktree.resolve(): "queue/42-fix"},
+            {42},
+            {},
+            set(),
+            [],
+            time.time() - 48 * 3600,
         )
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].protected, "live-claimed-task")
@@ -47,8 +53,13 @@ class JanitorTests(unittest.TestCase):
         target = self.make_target("task-43/pkgs/id/target")
         worktree = target.parents[2]
         found = janitor.discover_targets(
-            self.root, {worktree.resolve(): "queue/43-fix"}, set(), {},
-            {"queue/43-fix"}, [], time.time() - 48 * 3600,
+            self.root,
+            {worktree.resolve(): "queue/43-fix"},
+            set(),
+            {},
+            {"queue/43-fix"},
+            [],
+            time.time() - 48 * 3600,
         )
         self.assertEqual(found[0].protected, "open-pr-worktree")
 
@@ -56,8 +67,13 @@ class JanitorTests(unittest.TestCase):
         recent = self.make_target("task-44/pkgs/id/target", age=1)
         unknown = self.make_target("target-not-a-task")
         found = janitor.discover_targets(
-            self.root, {recent.parents[2].resolve(): "queue/44-fix"}, set(), {},
-            set(), [], time.time() - 48 * 3600,
+            self.root,
+            {recent.parents[2].resolve(): "queue/44-fix"},
+            set(),
+            {},
+            set(),
+            [],
+            time.time() - 48 * 3600,
         )
         # "target-not-a-task" is not the documented target-<task-id> shape
         # and holds no pkgs/id/target, so it is not a target at all
@@ -70,8 +86,13 @@ class JanitorTests(unittest.TestCase):
         target = self.make_target("task-45/pkgs/id/target", age=1)
         worktree = target.parents[2]
         found = janitor.discover_targets(
-            self.root, {worktree.resolve(): "queue/45-fix"}, set(),
-            {45: "done"}, set(), [], time.time() - 48 * 3600,
+            self.root,
+            {worktree.resolve(): "queue/45-fix"},
+            set(),
+            {45: "done"},
+            set(),
+            [],
+            time.time() - 48 * 3600,
         )
         self.assertIsNone(found[0].protected)
         self.assertEqual(found[0].reason, "terminal-task")
@@ -81,15 +102,25 @@ class JanitorTests(unittest.TestCase):
         active_worktree = self.root / "task-88"
         active_worktree.mkdir()
         found = janitor.discover_targets(
-            self.root, {}, set(), {46: "done"}, set(),
-            [active_worktree], time.time() - 48 * 3600,
+            self.root,
+            {},
+            set(),
+            {46: "done"},
+            set(),
+            [active_worktree],
+            time.time() - 48 * 3600,
         )
         self.assertEqual(found[0].protected, "fleet-build-active")
 
     def test_adhoc_target_for_gone_worktree_is_eligible(self):
         target = self.make_target("target-47", age=1)
         found = janitor.discover_targets(
-            self.root, {}, set(), {47: "parked"}, set(), [],
+            self.root,
+            {},
+            set(),
+            {47: "parked"},
+            set(),
+            [],
             time.time() - 48 * 3600,
         )
         self.assertIsNone(found[0].protected)
@@ -113,8 +144,12 @@ class JanitorTests(unittest.TestCase):
         target = self.make_target("target-42-worktree/pkgs/id/target")
         worktree = target.parents[2]
         found = janitor.discover_targets(
-            self.root, {worktree.resolve(): "feature/my-current-work"},
-            set(), {}, {"feature/my-current-work"}, [],
+            self.root,
+            {worktree.resolve(): "feature/my-current-work"},
+            set(),
+            {},
+            {"feature/my-current-work"},
+            [],
             time.time() - 48 * 3600,
         )
         self.assertEqual(len(found), 1)
@@ -125,6 +160,7 @@ class JanitorTests(unittest.TestCase):
         # Codex P2 on PR #4175: Cargo hard-links artifacts; summing
         # st_size per path double-charges the same inode.
         import os
+
         single = self.root / "single"
         single.mkdir()
         (single / "bin").write_bytes(b"x" * 100_000)
@@ -132,8 +168,9 @@ class JanitorTests(unittest.TestCase):
         doubled.mkdir()
         (doubled / "bin").write_bytes(b"x" * 100_000)
         os.link(doubled / "bin", doubled / "bin-hash")
-        self.assertEqual(janitor.target_stats(doubled)[0],
-                         janitor.target_stats(single)[0])
+        self.assertEqual(
+            janitor.target_stats(doubled)[0], janitor.target_stats(single)[0]
+        )
 
     def test_worktree_process_guard_helpers(self):
         target = self.root / "task-9" / "pkgs" / "id" / "target"
@@ -141,8 +178,7 @@ class JanitorTests(unittest.TestCase):
         self.assertEqual(worktree, self.root / "task-9")
         self.assertTrue(janitor.cwd_inside([worktree / "pkgs"], worktree))
         self.assertFalse(janitor.cwd_inside([self.root / "other"], worktree))
-        self.assertIsNone(
-            janitor.worktree_root_for_target(self.root / "target-9"))
+        self.assertIsNone(janitor.worktree_root_for_target(self.root / "target-9"))
 
     def test_default_logs_plan_without_deleting(self):
         path = self.make_target("target-7")
@@ -159,12 +195,13 @@ if __name__ == "__main__":
         target = self.make_target("task-43/pkgs/id/target")
         recorded = janitor.Target(target.resolve(), 10, 0, "queue/42-old", 42)
         worktree = target.parents[2].resolve()
-        self.assertTrue(
-            janitor.owner_changed(recorded, {worktree: "queue/43-new"}))
+        self.assertTrue(janitor.owner_changed(recorded, {worktree: "queue/43-new"}))
         self.assertFalse(
             janitor.owner_changed(
                 janitor.Target(target.resolve(), 10, 0, "queue/43-new", 43),
-                {worktree: "queue/43-new"}))
+                {worktree: "queue/43-new"},
+            )
+        )
         # The worktree was unregistered entirely since the plan.
         self.assertTrue(janitor.owner_changed(recorded, {}))
 
@@ -172,4 +209,3 @@ if __name__ == "__main__":
         target = self.make_target("target-42")
         recorded = janitor.Target(target.resolve(), 10, 0, None, 42)
         self.assertFalse(janitor.owner_changed(recorded, {}))
-

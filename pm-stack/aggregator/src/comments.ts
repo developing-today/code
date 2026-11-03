@@ -26,7 +26,13 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
 import { refUrl } from "./model.ts";
-import { archiveStoreBytes, quarantineUnreadableStore, quarantineWholeStore, type InvalidStoreRecord, type StoreArchive } from "./store-recovery.ts";
+import {
+  archiveStoreBytes,
+  quarantineUnreadableStore,
+  quarantineWholeStore,
+  type InvalidStoreRecord,
+  type StoreArchive,
+} from "./store-recovery.ts";
 import { isNonEmptyString, isRecord, parseIsoDate } from "./validate.ts";
 
 export interface CommentsFile {
@@ -67,7 +73,8 @@ function commentRecordProblem(value: unknown): string | null {
     ) {
       return "githubState must be pending, posted, or failed";
     }
-    if (value.githubState === "pending" && value.githubRef === undefined) return "pending github comments require githubRef";
+    if (value.githubState === "pending" && value.githubRef === undefined)
+      return "pending github comments require githubRef";
   }
   return null;
 }
@@ -200,18 +207,24 @@ export class CommentsStore {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.comments = [];
       this.fileExtras = {};
-      console.error(`[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
     if (!isRecord(parsed) || !Array.isArray(parsed.comments)) {
       const quarantined = await quarantineWholeStore(this.file, raw, this.archive);
       this.comments = [];
       this.fileExtras = {};
-      console.error(`[comments] WARNING: comments store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`);
+      console.error(
+        `[comments] WARNING: comments store ${this.file} has the wrong envelope shape; quarantined original bytes to ${quarantined} and started empty.`,
+      );
       return;
     }
 
-    this.fileExtras = Object.fromEntries(Object.entries(parsed).filter(([key]) => key !== "version" && key !== "comments"));
+    this.fileExtras = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => key !== "version" && key !== "comments"),
+    );
     const valid: DashComment[] = [];
     const invalid: InvalidStoreRecord[] = [];
     parsed.comments.forEach((comment, index) => {

@@ -212,6 +212,7 @@ func (t *LegacySSETransport) Send(ctx context.Context, msg []byte) error {
 	if err != nil {
 		return err
 	}
+	req = req.WithContext(httpDispatchContext(req.Context(), msg))
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range t.headers {
 		req.Header.Set(k, v)

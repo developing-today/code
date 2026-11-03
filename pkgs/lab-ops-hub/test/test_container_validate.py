@@ -983,15 +983,31 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # round-trip alone certifies all of these.
         # Mapped-form class (the issue's headline hosts):
         self.assertRefused("http://xn--example-yoa.com/")  # ex\u00c0ample (uppercase)
-        self.assertRefused("http://xn--example-rla.com/")  # ex\u00b2ample (compatibility digit)
-        self.assertRefused("http://xn--ab-cja0631x.com/")  # a\uff0fb\u00e9 (fullwidth solidus)
-        self.assertRefused("http://xn--mnchen-3ya5364d.com/")  # m\u00fcn\u2000chen (space class)
+        self.assertRefused(
+            "http://xn--example-rla.com/"
+        )  # ex\u00b2ample (compatibility digit)
+        self.assertRefused(
+            "http://xn--ab-cja0631x.com/"
+        )  # a\uff0fb\u00e9 (fullwidth solidus)
+        self.assertRefused(
+            "http://xn--mnchen-3ya5364d.com/"
+        )  # m\u00fcn\u2000chen (space class)
         # DISALLOWED class (survive NFKC, assigned, not format chars):
-        self.assertRefused("http://xn--example-hja.com/")  # ex\u00a8ample (diaeresis, Sk)
-        self.assertRefused("http://xn--example-7la.com/")  # ex\u00b4ample (acute accent, Sk)
-        self.assertRefused("http://xn--example-f9e.com/")  # ex\u037eample (Greek question mark, Po)
-        self.assertRefused("http://xn--example-3ha.com/")  # ex\u00a2ample (cent sign, Sc)
-        self.assertRefused("http://xn--example-u17c.com/")  # ex\u20acample (euro sign, Sc)
+        self.assertRefused(
+            "http://xn--example-hja.com/"
+        )  # ex\u00a8ample (diaeresis, Sk)
+        self.assertRefused(
+            "http://xn--example-7la.com/"
+        )  # ex\u00b4ample (acute accent, Sk)
+        self.assertRefused(
+            "http://xn--example-f9e.com/"
+        )  # ex\u037eample (Greek question mark, Po)
+        self.assertRefused(
+            "http://xn--example-3ha.com/"
+        )  # ex\u00a2ample (cent sign, Sc)
+        self.assertRefused(
+            "http://xn--example-u17c.com/"
+        )  # ex\u20acample (euro sign, Sc)
         # The raw spellings of the DISALLOWED class are refused too
         # (the check sits in the shared label judge):
         self.assertRefused("http://ex\u00a8ample.com/")
