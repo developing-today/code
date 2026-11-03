@@ -74,12 +74,25 @@ type ResolvedScope struct {
 	Key      string
 	Root     string
 	Degraded string
+	// Cwd is the creating caller's working directory, canonicalized as
+	// in §1: the value ${mcpx.cwd} substitutes at spawn (decision 0004
+	// §4). It rides along for the same reason Root does — an instance's
+	// spawn definition is fixed at creation and never re-resolved.
+	Cwd string
 }
 
 // Resolve resolves the scope against ctx: the instance key, the
 // scope-resolved root, and whether resolution degraded to something
 // weaker than the scope asked for.
 func (s Scope) Resolve(ctx CallContext) ResolvedScope {
+	rs := s.resolve(ctx)
+	if ctx.Cwd != "" {
+		rs.Cwd = canonical(ctx.Cwd)
+	}
+	return rs
+}
+
+func (s Scope) resolve(ctx CallContext) ResolvedScope {
 	switch s {
 	case ScopeGlobal:
 		return ResolvedScope{Key: "global"}

@@ -613,15 +613,24 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	defer cancel()
 	launched := time.Now()
 
-	spawnCwd, cwdSource := SpawnCwd(p.cfg.Cwd, rs.Root)
+	// The effective spawn definition (decision 0004 §4, #960): the
+	// stored config with ${mcpx.root}/${mcpx.cwd} substituted for this
+	// instance. A definition referencing a root or caller cwd the
+	// instance does not have fails the spawn here, loudly, before
+	// anything starts; the stored config keeps its placeholders.
+	eff, err := p.cfg.Effective(rs.Root, rs.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	spawnCwd, cwdSource := SpawnCwd(eff.Cwd, rs.Root)
 	if !p.cfg.Stdio() {
 		// No process, no cwd: the root is recorded, but nothing spawns
 		// anywhere, so the daemon-cwd source is the honest one.
 		spawnCwd, cwdSource = "", "daemon"
 	}
-	execStamp, execIdentity, _ := p.cfg.ExecStateAt(spawnCwd)
+	execStamp, execIdentity, _ := eff.ExecStateAt(spawnCwd)
 
-	tr, err := p.dial(sctx, rs.Root)
+	tr, err := p.dial(sctx, eff, rs.Root)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -642,7 +651,10 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	opts := mcpclient.Options{ClientName: "mcpx", ClientVersion: Version, Preference: pref, Root: rs.Root}
 	ref := &instanceRef{p: p}
 	p.installServerHooks(&opts, ref)
-	eraKey := Identity(p.cfg)
+	// The era identity hashes the effective (substituted) definition,
+	// so instances differing only by substituted root never share an
+	// era entry (decision 0004 §4).
+	eraKey := Identity(eff)
 	var cached EraRecord
 	var eras EraStore
 	if h := p.Hooks; h != nil {
@@ -661,7 +673,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(sctx, rs.Root); err != nil {
+		} else if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -692,7 +704,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(sctx, rs.Root); err != nil {
+		if tr, err = p.dial(sctx, eff, rs.Root); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -940,28 +952,31 @@ func SpawnCwd(configCwd, root string) (cwd, source string) {
 // so a slow build cannot outlive the startup budget that owns it. root
 // is the spawning instance's resolved scope root, stored on the
 // instance at creation -- never re-resolved here (decision 0004 §2).
-func (p *Pool) dial(ctx context.Context, root string) (mcpclient.Transport, error) {
-	spawnCwd, _ := SpawnCwd(p.cfg.Cwd, root)
+// eff is the instance's effective (substituted) spawn definition; for
+// callers with no instance being spawned (HTTP session adoption) it is
+// simply the pool's stored config.
+func (p *Pool) dial(ctx context.Context, eff *config.Resolved, root string) (mcpclient.Transport, error) {
+	spawnCwd, _ := SpawnCwd(eff.Cwd, root)
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
 	}
-	if p.cfg.Stdio() && p.cfg.Mcpx != nil && p.cfg.Mcpx.Supervised {
+	if eff.Stdio() && eff.Mcpx != nil && eff.Mcpx.Supervised {
 		return mcpclient.NewSupervised(mcpclient.SupervisedOptions{
-			Name:       p.cfg.Name,
-			Command:    p.cfg.Command,
-			Args:       p.cfg.Args,
-			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
+			Name:       eff.Name,
+			Command:    eff.Command,
+			Args:       eff.Args,
+			Env:        overlay(overlay(eff.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
 		})
 	}
-	if p.cfg.Stdio() {
+	if eff.Stdio() {
 		return mcpclient.NewStdio(mcpclient.StdioOptions{
-			Command:    p.cfg.Command,
-			Args:       p.cfg.Args,
-			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
+			Command:    eff.Command,
+			Args:       eff.Args,
+			Env:        overlay(overlay(eff.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        spawnCwd,
 			InheritEnv: true,
 			Context:    ctx,
