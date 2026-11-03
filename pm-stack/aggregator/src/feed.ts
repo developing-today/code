@@ -523,12 +523,7 @@ function isQuotaCredentialRow(v: unknown): v is QuotaCredentialRow {
 type QuotaActiveSession = NonNullable<QuotaPool["activeSessions"]>[number];
 
 function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
-  return (
-    isRecord(v) &&
-    typeof v.session === "string" &&
-    typeof v.model === "string" &&
-    isNonNegative(v.tokens)
-  );
+  return isRecord(v) && typeof v.session === "string" && typeof v.model === "string" && isNonNegative(v.tokens);
 }
 
 /** One historical burn segment as renderQuota maps it (#2429).
@@ -558,12 +553,7 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
  * totals and attention severity. */
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
-  return (
-    typeof v.merchant === "string" &&
-    isFiniteNumber(v.amountUsd) &&
-    v.amountUsd > 0 &&
-    isIsoDate(v.at)
-  );
+  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && v.amountUsd > 0 && isIsoDate(v.at);
 }
 
 /** One charges-evidence row as the /quota charges strip renders it
@@ -608,11 +598,15 @@ function isUsageMetric(v: unknown): boolean {
   return (
     typeof v.id === "string" &&
     typeof v.label === "string" &&
-    (v.used === null || isFiniteNumber(v.used)) &&
-    (v.limit === null || isFiniteNumber(v.limit)) &&
+    // Range gates mirror isSnapshotRecord (#5188): a negative used,
+    // limit, or percent is never legitimate usage data, and a record
+    // derived from one is refused on snapshot readback — refuse it
+    // here, at the feed boundary, instead.
+    (v.used === null || isNonNegative(v.used)) &&
+    (v.limit === null || isNonNegative(v.limit)) &&
     typeof v.unit === "string" &&
     USAGE_UNITS.includes(v.unit) &&
-    (v.percent === undefined || isFiniteNumber(v.percent)) &&
+    (v.percent === undefined || isNonNegative(v.percent)) &&
     (v.lowerBound === undefined || typeof v.lowerBound === "boolean") &&
     typeof v.highlight === "boolean" &&
     (v.note === undefined || typeof v.note === "string")
@@ -621,9 +615,16 @@ function isUsageMetric(v: unknown): boolean {
 
 function isPaygEstimate(v: unknown): boolean {
   if (!isRecord(v)) return false;
+  const { low, high } = v;
   return (
-    isFiniteNumber(v.low) &&
-    isFiniteNumber(v.high) &&
+    // Order + range gates mirror the snapshot pair rule (#5188):
+    // endpoints are non-negative and low <= high (low === high and
+    // zero endpoints pass); an inverted or negative pair renders
+    // nonsense money and its derived snapshot record is refused by
+    // isSnapshotRecord.
+    isNonNegative(low) &&
+    isNonNegative(high) &&
+    low <= high &&
     typeof v.period === "string" &&
     (v.note === undefined || typeof v.note === "string")
   );
@@ -649,14 +650,14 @@ function isSaasService(v: unknown): v is SaasService {
     v.metrics.every(isUsageMetric) &&
     (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
     (v.paygNote === undefined || typeof v.paygNote === "string") &&
-    (v.billedUsd === undefined || v.billedUsd === null || isFiniteNumber(v.billedUsd)) &&
+    (v.billedUsd === undefined || v.billedUsd === null || isNonNegative(v.billedUsd)) &&
     (typeof v.measuredAt === "string" || v.measuredAt === null) &&
     typeof v.sourceClass === "string" &&
     USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
     typeof v.sourceNote === "string" &&
     sourcesValid &&
     (v.nextDate === undefined || typeof v.nextDate === "string" || v.nextDate === null) &&
-    isFiniteNumber(v.cadenceDays) &&
+    isNonNegative(v.cadenceDays) &&
     isStringArray(v.conflicts) &&
     Array.isArray(v.reads) &&
     v.reads.every((read) => isRecord(read) && typeof read.at === "string" && typeof read.text === "string") &&
@@ -713,7 +714,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   let droppedActiveSessions = 0;
   let droppedPoolFreshness = 0;
   let droppedBurnTokensPerMin = 0;
-  const lifecycleRows = quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
+  const lifecycleRows =
+    quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
   const droppedCredentialLifecycle = lifecycleRows?.dropped ?? (quota.credentialLifecycle === undefined ? 0 : 1);
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
@@ -778,7 +780,9 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
             providerName: safeProviderReason(row.providerName),
             label: safeProviderReason(row.label),
             ...(row.reason ? { reason: safeProviderReason(row.reason) } : {}),
-            ...(row.userAction ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } } : {}),
+            ...(row.userAction
+              ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } }
+              : {}),
           })),
         }
       : {}),
@@ -862,9 +866,7 @@ export interface SubscriptionSanitization {
  * render verbatim as renewal dates. */
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
-  return (
-    typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt))
-  );
+  return typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt));
 }
 
 /** Drop malformed subscription rows at the loadFeed boundary (#2446,

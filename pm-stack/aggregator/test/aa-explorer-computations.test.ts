@@ -46,8 +46,16 @@ describe("Cost Explorer browser computations", () => {
       { metric: "gapScore", op: "<=", value: "5" },
       { metric: "gapCost", op: "<=", value: "1.25" },
     ];
-    expect(applyInequalityFilters(rows, "include", "and", conditions).map((p) => p.key)).toEqual(["cheap", "leader", "luna"]);
-    expect(applyInequalityFilters(rows, "include", "or", [conditions[0]]).map((p) => p.key)).toEqual(["cheap", "leader", "luna"]);
+    expect(applyInequalityFilters(rows, "include", "and", conditions).map((p) => p.key)).toEqual([
+      "cheap",
+      "leader",
+      "luna",
+    ]);
+    expect(applyInequalityFilters(rows, "include", "or", [conditions[0]]).map((p) => p.key)).toEqual([
+      "cheap",
+      "leader",
+      "luna",
+    ]);
     expect(applyInequalityFilters(rows, "reject", "and", conditions).map((p) => p.key)).toEqual(["unknown"]);
   });
 
@@ -72,7 +80,18 @@ describe("Cost Explorer browser computations", () => {
     ];
     const recommendations = computeRecommendations(
       points,
-      { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "none", dominance: "none", perBand: 3, maxCost: "", maxSec: "" },
+      {
+        allow: 5,
+        speedPriority: 85,
+        priceAllow: 500,
+        slowAllow: 2,
+        altWindow: 2,
+        diversity: "none",
+        dominance: "none",
+        perBand: 3,
+        maxCost: "",
+        maxSec: "",
+      },
       2,
       "Intelligence",
     );

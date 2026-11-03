@@ -746,7 +746,12 @@ export class ActionsStore {
       createdAt: new Date().toISOString(),
       state: duplicate ? "rejected" : "new",
       ...(input.supersedes ? { supersedes: input.supersedes } : {}),
-      ...(duplicate ? { duplicateOf: duplicate.id, resultNote: `Duplicate answer; existing action ${duplicate.id} is ${duplicate.state}.` } : {}),
+      ...(duplicate
+        ? {
+            duplicateOf: duplicate.id,
+            resultNote: `Duplicate answer; existing action ${duplicate.id} is ${duplicate.state}.`,
+          }
+        : {}),
     };
     this.actions.push(action);
     if (!duplicate && input.supersedes) {

@@ -15,15 +15,15 @@ Run it only to reproduce a CI failure, and then only the packages CI named.
 
 ## What to run, by change
 
-| You changed | Run | Cost |
-| --- | --- | --- |
-| anything | nothing — read the diff first | — |
-| one package | `go test ./internal/<pkg> -count=1` | seconds |
-| a test you just wrote | `go test ./internal/<pkg> -run TestTheName -count=1 -v` | seconds |
-| a registry, table or manifest | its guard test (see below), then the package | seconds |
+| You changed                                    | Run                                                                                     | Cost           |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------- | -------------- |
+| anything                                       | nothing — read the diff first                                                           | —              |
+| one package                                    | `go test ./internal/<pkg> -count=1`                                                     | seconds        |
+| a test you just wrote                          | `go test ./internal/<pkg> -run TestTheName -count=1 -v`                                 | seconds        |
+| a registry, table or manifest                  | its guard test (see below), then the package                                            | seconds        |
 | CLI or daemon behaviour a unit test cannot see | the named e2e tests that cover it: `go test ./internal/e2e -run 'TestThatOne' -count=1` | ~10 s per test |
-| a shared helper used by e2e | `go test ./internal/e2e -count=1` | ~2 min |
-| anything, before merging | `go test ./... -count=1` in CI, not on your machine | ~3 min |
+| a shared helper used by e2e                    | `go test ./internal/e2e -count=1`                                                       | ~2 min         |
+| anything, before merging                       | `go test ./... -count=1` in CI, not on your machine                                     | ~3 min         |
 
 [`docs/testing/inventory.md`](./testing/inventory.md) is the per-package map:
 test counts, which packages hide time, randomness or ports, and which are
@@ -81,7 +81,7 @@ A flake is a bug in the test or the code under it; a retry hides it.
 - CI's PR gate is Linux only; the nightly stress job below also runs macOS,
   so a macOS-only difference surfaces within a day (#35). Say so in the PR
   when the change is platform-sensitive.
-(Decided in #1973.)
+  (Decided in #1973.)
 
 ### The flake policy in CI (#1973, approach C)
 

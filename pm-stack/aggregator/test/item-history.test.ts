@@ -50,11 +50,7 @@ function poolItem(number: number, partial: Partial<ProjectPoolItem> = {}): Proje
   };
 }
 
-function cutoff(
-  cutoffAt: string,
-  items: ProjectPoolItem[],
-  cov: Partial<ItemHistoryCoverage> = {},
-): ItemHistoryCutoff {
+function cutoff(cutoffAt: string, items: ProjectPoolItem[], cov: Partial<ItemHistoryCoverage> = {}): ItemHistoryCutoff {
   return captureItemHistory(items, coverage({ fetchedAt: cutoffAt, ...cov }), cutoffAt);
 }
 
@@ -96,6 +92,27 @@ describe("captureItemHistory", () => {
   });
 });
 
+describe("isItemHistoryCutoff date gates (#5172)", () => {
+  const valid = () => cutoff(W1, [poolItem(7)]);
+
+  test("valid ISO cutoff and coverage stamps pass (control)", () => {
+    expect(isItemHistoryCutoff(valid())).toBe(true);
+  });
+
+  test("impossible and non-ISO cutoffAt stamps are refused", () => {
+    for (const stamp of ["2026-02-30T00:00:00Z", "2026-04-31T00:00:00Z", "March 2, 2026", "03/02/2026"]) {
+      expect(isItemHistoryCutoff({ ...valid(), cutoffAt: stamp })).toBe(false);
+    }
+  });
+
+  test("impossible and non-ISO coverage.fetchedAt stamps are refused", () => {
+    for (const stamp of ["not-a-date", "2026-02-30T00:00:00Z"]) {
+      const c = valid();
+      expect(isItemHistoryCutoff({ ...c, coverage: { ...c.coverage, fetchedAt: stamp } })).toBe(false);
+    }
+  });
+});
+
 describe("weeklyTransitions / weeklyCompletions", () => {
   test("close counts once; a reopen leaves the completed count until re-closed", () => {
     const cutoffs = [
@@ -130,9 +147,7 @@ describe("weeklyTransitions / weeklyCompletions", () => {
     // gap, so it is attributed to NO week (never to W3's bucket, and
     // the gap is not read as a zero week either). Buckets resume at
     // the first uninterrupted pair (W3 -> W4), where #8 closes.
-    expect(weeklyTransitions(cutoffs)).toEqual([
-      { cutoffAt: W4, completedRefs: [`${REPO}#8`], reopenedRefs: [] },
-    ]);
+    expect(weeklyTransitions(cutoffs)).toEqual([{ cutoffAt: W4, completedRefs: [`${REPO}#8`], reopenedRefs: [] }]);
     expect(weeklyCompletions(cutoffs)).toEqual([{ cutoffAt: W4, completed: 1 }]);
     expect(cutoffs[1]!.coverage.unavailable).toBe(true);
     expect(cutoffs[1]!.items).toEqual([]);
@@ -140,11 +155,7 @@ describe("weeklyTransitions / weeklyCompletions", () => {
 
   test("PR transitions never count as completed units", () => {
     const cutoffs = [
-      cutoff(W1, [
-        poolItem(7),
-        poolItem(8, { contentKind: "pr" }),
-        poolItem(9, { contentKind: "pr" }),
-      ]),
+      cutoff(W1, [poolItem(7), poolItem(8, { contentKind: "pr" }), poolItem(9, { contentKind: "pr" })]),
       cutoff(W2, [
         poolItem(7, { state: "closed" }),
         poolItem(8, { contentKind: "pr", state: "merged" }),
@@ -154,9 +165,7 @@ describe("weeklyTransitions / weeklyCompletions", () => {
     // Only the issue is a unit (design SS1): the merged PR and the
     // unmerged-but-closed PR contribute nothing, and an issue plus
     // its PR can never double-count.
-    expect(weeklyTransitions(cutoffs)).toEqual([
-      { cutoffAt: W2, completedRefs: [`${REPO}#7`], reopenedRefs: [] },
-    ]);
+    expect(weeklyTransitions(cutoffs)).toEqual([{ cutoffAt: W2, completedRefs: [`${REPO}#7`], reopenedRefs: [] }]);
     expect(cutoffs[0]!.items.find((i) => i.number === 8)!.kind).toBe("pr");
     expect(cutoffs[0]!.items.find((i) => i.number === 7)!.kind).toBe("issue");
   });
@@ -194,10 +203,7 @@ describe("blockerFirstObserved", () => {
   });
 
   test("an edge removed at the last complete cutoff has no current episode", () => {
-    const cutoffs = [
-      cutoff(W1, [poolItem(7, { blockedBy: [`${REPO}#9`] })]),
-      cutoff(W2, [poolItem(7)]),
-    ];
+    const cutoffs = [cutoff(W1, [poolItem(7, { blockedBy: [`${REPO}#9`] })]), cutoff(W2, [poolItem(7)])];
     expect(blockerFirstObserved(cutoffs, `${REPO}#7`, `${REPO}#9`)).toBeNull();
   });
 });
