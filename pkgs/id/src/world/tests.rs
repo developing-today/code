@@ -1100,6 +1100,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn records_read_pages_fit_the_result_event_that_delivers_them() {
+        // Regression for #4888: sixteen ~8 KiB records total ~128 KiB,
+        // which the old 768 KiB page admission accepted whole — and
+        // result_event then replaced the entire page with a
+        // result_too_large error above 64 KiB, so the program never saw
+        // a single record. The page must now stop at the cap-result
+        // bound and deliver records, with next_after naming the rest.
+        #[derive(Debug, Default)]
+        struct PageProbe {
+            answered: BTreeSet<String>,
+            results: BTreeMap<String, serde_json::Value>,
+        }
+
+        impl WorldProgram for PageProbe {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value =
+                        serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                    if value["cap"] == "result"
+                        && let Some(id) = value["id"].as_str()
+                    {
+                        self.answered.insert(id.to_owned());
+                        self.results.insert(id.to_owned(), value);
+                    }
+                }
+                Ok(())
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                let requests: Vec<serde_json::Value> = [(
+                    "records-page",
+                    "records.read",
+                    serde_json::json!({}),
+                )]
+                .into_iter()
+                .filter(|(id, _, _)| !self.answered.contains(*id))
+                .map(|(id, cap, args)| serde_json::json!({"id": id, "cap": cap, "args": args}))
+                .collect();
+                Ok(Some(
+                    serde_json::json!({"v": 1, "requests": requests}).to_string(),
+                ))
+            }
+
+            fn records(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({"results": self.results}).to_string(),
+                ))
+            }
+        }
+
+        let mut core = world(128);
+        core.ledger
+            .set_granted(BTreeSet::from(["records.read".to_owned()]));
+        let mut actor = WorldActor::for_test(core, Box::new(PageProbe::default()), None);
+        let mut injected = Records::new();
+        for index in 0..16 {
+            injected.insert(
+                format!("r{index:02}"),
+                serde_json::Value::String("x".repeat(8000)),
+            );
+        }
+        actor.records_sender.send_replace((0, Arc::new(injected)));
+
+        actor.after_change().await;
+
+        let records = actor.records_sender.borrow().1.clone();
+        let page = &records["results"]["records-page"];
+        assert_eq!(page["ok"], true, "{page}");
+        let delivered = page["value"]["records"].as_array().unwrap();
+        // Each serialized entry is 8025 bytes with its comma; the
+        // 64512-byte cap-result bound admits exactly 8 of the 16.
+        assert_eq!(delivered.len(), 8, "{page}");
+        assert_eq!(delivered[0]["key"], "r00");
+        assert_eq!(page["value"]["next_after"], "r07");
+    }
+
+    #[tokio::test]
     async fn a_granted_chat_history_request_is_served_over_the_ledger() {
         let (world, token) = caps_world_sync(false).await;
         world
