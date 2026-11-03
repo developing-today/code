@@ -58,7 +58,6 @@ import { identitiesFromRecords } from "./registry.ts";
 import {
   attentionFragment,
   attentionSections,
-  esc,
   ghObjectRef,
   renderAa,
   renderAttention,

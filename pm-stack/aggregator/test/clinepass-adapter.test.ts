@@ -196,7 +196,7 @@ describe("collectClinePassAdapter (framework semantics)", () => {
 describe("fetchClinePassPayload (credential hygiene)", () => {
   test("sends the token only as the Authorization header, to the provider URL", async () => {
     let seenUrl = "";
-    let seenAuth: string | null = null;
+    let seenAuth: string | undefined;
     const fetchImpl: ClinePassFetch = async (url, init) => {
       seenUrl = url;
       seenAuth = init.headers.Authorization;

@@ -158,7 +158,7 @@ describe("needs-drew census (#1226)", () => {
   // Codex P2 on PR #3970: three concurrent renders must share one sweep.
   test("concurrent callers share one in-flight sweep (single-flight)", async () => {
     let calls = 0;
-    let release: (() => void) | null = null;
+    let release: (() => void) | undefined;
     const gate = new Promise<void>((r) => {
       release = r;
     });
