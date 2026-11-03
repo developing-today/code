@@ -39,6 +39,7 @@ func (s *Server) routesV1Ops(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/tasks/{id}", s.handleTaskGet)
 	s.route(mux, "GET /v1/tasks/{id}/result", s.handleTaskResult)
 	s.route(mux, "POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
+	s.route(mux, "POST /v1/writes/{server}/clear", s.handleWriteClear)
 	s.route(mux, "GET /v1/openapi.json", s.handleOpenAPI)
 }
 
