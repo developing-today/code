@@ -576,8 +576,15 @@ func renderMdBook(data []byte, agent bool) ([]byte, error) {
 			}
 		}
 	}
-	if sections, ok := book["sections"].([]interface{}); ok {
-		walk(sections)
+	// mdBook 0.5 serializes the book tree as `items`; older versions and
+	// fixtures used `sections`. Accept both so the renderer works with the
+	// pinned book builder as well as existing callers.
+	items, ok := book["items"].([]interface{})
+	if !ok {
+		items, _ = book["sections"].([]interface{})
+	}
+	if items != nil {
+		walk(items)
 	}
 	return json.Marshal(book)
 }
