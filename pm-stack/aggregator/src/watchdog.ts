@@ -82,7 +82,15 @@ export interface WatchdogInputs {
 
 const WATCHDOG_REF = "developing-today/code#1148" as TierItem["ref"];
 
-function item(input: string, title: string, state: string, reason: string, sinceMs: number, now: number, action: string): TierItem {
+function item(
+  input: string,
+  title: string,
+  state: string,
+  reason: string,
+  sinceMs: number,
+  now: number,
+  action: string,
+): TierItem {
   return {
     id: `watchdog:${input}`,
     kind: "gap",
@@ -126,7 +134,7 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "buildHealth diagnoses a feed generatedAt more than 60s in the future as a failed, never-fresh feed (#1148 watchdog); the clamped age of 0 must not silence the watchdog for the whole skew.",
         now,
         now,
-        "Check the fleet-feed collector's clock and the feed file it pushes; the card clears itself when a feed with a sane generatedAt lands.",
+        "Check the fleet-feed collector's clock and the feed file it writes; the card clears itself when a feed with a sane generatedAt lands.",
       ),
     );
   } else if (inputs.feedAgeMs === null) {
@@ -138,7 +146,7 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "The fleet-feed collector's output cannot be read, so every feed-backed facet is running on its last good data or fixtures. Diagnosed by the aggregator's health assembly (#1148 watchdog).",
         now,
         now,
-        "Check the fleet-feed collector (sandbox timer fleet-feed-collector) and the feed file it pushes; the card clears itself when a readable feed lands.",
+        "Check the fleet-feed collector (laptop user timer fleet-feed-collector) and the feed file it writes; the card clears itself when a readable feed lands.",
       ),
     );
   } else if (inputs.feedAgeMs > WATCHDOG_FEED_STALE_MS) {
@@ -151,7 +159,7 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         `Feed age ${ageMsText(inputs.feedAgeMs)} is past the 15m freshness threshold (#1148 watchdog); feed-backed facets are flipping stale over the dead feed.`,
         (Number.isNaN(generatedMs) ? now - inputs.feedAgeMs : generatedMs) + WATCHDOG_FEED_STALE_MS,
         now,
-        "Check the fleet-feed collector (sandbox timer fleet-feed-collector, ~5 min cadence); the card clears itself when the feed is fresh again.",
+        "Check the fleet-feed collector (laptop user timer fleet-feed-collector, ~5 min cadence); the card clears itself when the feed is fresh again.",
       ),
     );
   }

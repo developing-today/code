@@ -70,7 +70,7 @@ export function parseJwt(token: string): JwtParts | null {
 export type Jwks = { keys: Array<Record<string, unknown>> };
 export type JwksSource = () => Promise<Jwks>;
 
-const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks.json";
+export const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks";
 let jwksCache: { at: number; jwks: Jwks } | null = null;
 const JWKS_TTL_MS = 60 * 60_000;
 

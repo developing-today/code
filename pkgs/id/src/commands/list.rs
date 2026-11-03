@@ -30,6 +30,7 @@ use iroh_base::EndpointId;
 
 use crate::commands::client::create_local_client_endpoint;
 use crate::commands::serve::get_serve_info;
+use crate::commands::text::tsv_row;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
@@ -88,7 +89,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
                     println!("(no files stored)");
                 } else {
                     for (hash, name) in items {
-                        println!("{hash}\t{name}");
+                        println!("{}", tsv_row(hash, &name));
                     }
                 }
                 Ok(())
@@ -107,7 +108,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
     while let Some(item) = list.next().await {
         let item = item?;
         let name = String::from_utf8_lossy(item.name.as_ref());
-        println!("{}\t{}", item.hash, name);
+        println!("{}", tsv_row(item.hash, &name));
         count += 1;
     }
     if count == 0 {
@@ -154,7 +155,7 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
                 println!("(no files stored)");
             } else {
                 for (hash, name) in items {
-                    println!("{hash}\t{name}");
+                    println!("{}", tsv_row(hash, &name));
                 }
             }
             Ok(())

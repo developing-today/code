@@ -8,13 +8,16 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  AA_GO_CAPS,
   aaAbsent,
   aaCaiPoints,
   aaCatalogFromConfig,
   aaPoints,
   caiFamily,
+  num,
   aaSectionFromSupabase,
   computeAaCoverage,
+  effortRank,
   isAaSection,
   normalizeModelName,
   parseOpencodeCoverageInputs,
@@ -26,7 +29,7 @@ import {
 import { PAGES } from "../src/pages.ts";
 import { renderAa } from "../src/render.ts";
 import { FIXTURE_AA, fixtureSource } from "../src/sources/fixtures.ts";
-import type { AaCaiRow, AaPrice, AaRanking, AaSection, AaTestRun, Provenance } from "../src/model.ts";
+import type { AaCaiRow, AaPrice, AaRanking, AaSection, AaTestRun, Provenance, ProvenanceDetail } from "../src/model.ts";
 
 const PROV: Provenance = {
   board: "x",
@@ -41,6 +44,23 @@ const PROV: Provenance = {
   registry: "x",
   aa: "fixtures",
 };
+
+function aaProvenanceDetail(ageMs?: number, state: ProvenanceDetail["aa"]["state"] = "live"): ProvenanceDetail {
+  const fixtures = { text: "fixtures", state: "fixtures" as const };
+  return {
+    board: fixtures,
+    roadmap: fixtures,
+    items: fixtures,
+    comments: fixtures,
+    quota: fixtures,
+    usage: fixtures,
+    attention: fixtures,
+    orchestration: fixtures,
+    dns: fixtures,
+    registry: fixtures,
+    aa: { text: "live (fleet feed)", state, ...(ageMs === undefined ? {} : { ageMs }) },
+  };
+}
 
 describe("stripJsonComments", () => {
   test("removes // and /* */ comments but keeps URLs inside strings", () => {
@@ -144,6 +164,12 @@ describe("Test_Runs mapping", () => {
 });
 
 describe("coverage name matching", () => {
+  test("OpenCode Go cap keys are normalized fixed points", () => {
+    for (const key of Object.keys(AA_GO_CAPS)) {
+      expect(normalizeModelName(key)).toBe(key);
+    }
+  });
+
   test("normalization keeps point versions distinct (GPT-6 vs GPT-6.1)", () => {
     expect(normalizeModelName("GPT-6 Sol")).toBe("gpt 6 sol");
     expect(normalizeModelName("gpt-6.1-sol")).toBe("gpt 6 1 sol");
@@ -292,6 +318,13 @@ describe("payload assembly + section shape", () => {
     expect(isAaSection({ generatedAt: "x", batch: "y", rankings: [] })).toBe(false);
   });
 
+  test("isAaSection rejects the absent form with impossible generatedAt dates (#3441)", () => {
+    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
+      expect(isAaSection(aaAbsent("Supabase unreachable", generatedAt))).toBe(false);
+    }
+  });
+
   test("summarizeAa: usable-up-to + snapshot vintage", () => {
     const summary = summarizeAa(FIXTURE_AA);
     const lunaKey = FIXTURE_AA.testRuns[0].testRunKey;
@@ -416,6 +449,8 @@ describe("fleet catalog (Model Explorer)", () => {
       "opencode-go.personal": { "instanceOf": "opencode-go" },
       "opencode-go.lab": { "name": "OpenCode Go — Lab", "models": {
         "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
+        "muse-spark-1.3-contributor": { "name": "Muse Spark 1.3 Contributor" },
+        "gemini-4-argon-contributor": { "name": "Gemini 4 Argon Contributor" },
       } },
     },
     "experimental": { "model_routes": {
@@ -439,7 +474,7 @@ describe("fleet catalog (Model Explorer)", () => {
       rankings: [],
     });
     expect(catalog).not.toBeNull();
-    expect(catalog!.length).toBe(3); // the instanceOf alias contributes none
+    expect(catalog!.length).toBe(5); // the instanceOf alias contributes none
     const luna = catalog!.find((e) => e.id === "openai/gpt-6-luna")!;
     expect(luna.routes).toEqual(["inner", "outer"]);
     expect(luna.contextLimit).toBe(1050000);
@@ -456,6 +491,10 @@ describe("fleet catalog (Model Explorer)", () => {
     const dsFlash = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
     expect(dsFlash.goCapUsd).toBe(80); // published Go cap (docs reading)
     expect(dsFlash.plan).toBe("OpenCode Go — Lab");
+    const muse = catalog!.find((e) => e.id === "opencode-go.lab/muse-spark-1.3-contributor")!;
+    expect(muse.goCapUsd).toBe(12);
+    const gemini = catalog!.find((e) => e.id === "opencode-go.lab/gemini-4-argon-contributor")!;
+    expect(gemini.goCapUsd).toBe(12);
   });
 
   test("null on unparseable config", () => {
@@ -615,6 +654,18 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-recpreset="fast"');
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
+    expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
+    expect(html).toContain("const pointY = py.toFixed(1)"); // do not shadow the lane's cy before computing py
+    expect(html).not.toContain("const cy = py.toFixed(1)");
+    expect(html).toContain('class="xpl-band-lanes"');
+    expect(html).toContain('bandGroup("Fastest within each score band"');
+    expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
+    expect(html).toContain('bandGroup("Smartest within each speed band"');
+    expect(html).toContain('g4, "score", scoreWord()');
+    expect(html).toContain('bandGroup("Fastest within each task-cost band"');
+    expect(html).toContain('g5, "time", "Time / task (lower is faster)"');
+    expect(html).toContain('bandLaneChart("Lowest price within each speed target", "cost"');
+    expect(html).toContain("g6Lanes.push"); // group 6 charts reuse the table's same qualifying choices
     expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
     expect(html).toContain('data-pjpreset="repo"');
     expect(html).toContain("Proj. $/task");
@@ -633,6 +684,33 @@ describe("aa-explorer manifest + render", () => {
     const absent = renderAa(aaAbsent("Supabase query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
     expect(absent).toContain("Supabase query failed (HTTP 500)");
     expect(absent).not.toContain("Rankings");
+  });
+
+  test("freshness chips and both tab ages use labelled fleet-feed provenance", () => {
+    const html = renderAa(FIXTURE_AA, PROV, aaProvenanceDetail(2 * 60_000));
+
+    expect(html).toContain('class="fchip live" title="live (fleet feed)"');
+    expect(html).toContain("aa · live · 2m old");
+    expect(html).toContain("AA data age: 2m old (fleet-feed age)");
+    expect(html).toContain(
+      "Model catalog age: 2m old (fleet-feed age; catalog and AA are read in the same collector run; no separate catalog timestamp is carried)",
+    );
+  });
+
+  test("an AA facet older than one collector cycle is stale, as is a retained stale section", () => {
+    const oldFeed = renderAa(FIXTURE_AA, PROV, aaProvenanceDetail(6 * 60_000));
+    expect(oldFeed).toContain('class="fchip stale" title="live (fleet feed)"');
+    expect(oldFeed).toContain("aa · stale · 6m old");
+
+    const retained = renderAa({ ...FIXTURE_AA, stale: true }, PROV, aaProvenanceDetail(2 * 60_000));
+    expect(retained).toContain('class="fchip stale" title="live (fleet feed)"');
+  });
+
+  test("legacy callers without provenance detail keep rendering without chips or tab-age claims", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    expect(html).not.toContain('class="fchip');
+    expect(html).not.toContain("AA data age:");
+    expect(html).not.toContain("Model catalog age:");
   });
 
   test("fixtureSource().aa() returns the fixture section", async () => {
@@ -700,5 +778,165 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(section.coverage?.catalogNotPooledUnmeasured).toContain("commandcode/reflection/beam:free");
     expect(section.catalog?.some((e) => e.id === "commandcode/reflection/beam:free")).toBe(true);
     expect(section.catalog?.find((e) => e.id === "claude-code/claude-haiku-5-5")?.disabled).toBe(true);
+  });
+});
+
+describe("aa chart expand + zoom/pan (#3298)", () => {
+  test("every server-rendered explorer chart carries the full tool set", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    for (const id of ["xpl-c1", "xpl-c2", "xpl-c3", "xpl-c4", "xpl-c5", "xpl-c6"]) {
+      expect(html).toContain(`data-tools="${id}"`);
+      for (const act of ["expand", "in", "out", "reset"]) {
+        expect(html).toContain(`data-zact="${act}" data-zfor="${id}"`);
+      }
+    }
+  });
+
+  test("the explorer script ships the uniform enhancer for dynamic charts too", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    // band scatters are built client-side; the enhancer must target
+    // their containers and re-run after renders.
+    expect(html).toContain("function enhanceCharts()");
+    expect(html).toContain("#xpl-recs svg, #xpl-bandgroups svg");
+    expect(html).toContain("chart-expanded");
+    // Codex fixes on PR #4154: deferred pointer capture (plain point
+    // clicks still select), a dedicated wrapper per band chart, and
+    // re-enhancement after recommendation-only redraws.
+    expect(html).toContain("chart-mini");
+    expect(html).toContain("setPointerCapture(drag.id)");
+    expect(html).toContain("Recommendation inputs redraw #xpl-recs directly");
+    expect(html).toContain("data-zbound");
+    expect(html).toContain(".chart-expanded { position: fixed");
+    // the emitted script still parses (same check as #1215)
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+  });
+});
+
+describe("AA_GO_CAPS keys are reachable (#2645)", () => {
+  test("every key is a fixed point of normalizeModelName", () => {
+    // The lookup is AA_GO_CAPS[normalizeModelName(id)] and the table's
+    // keys are documented as normalizeModelName output. A key that is
+    // not a fixed point can never be hit — the two contributor keys
+    // were dead because normalizeModelName strips the "contributor"
+    // noise token.
+    for (const key of Object.keys(AA_GO_CAPS)) {
+      expect(normalizeModelName(key)).toBe(key);
+    }
+  });
+
+  test("catalog publishes goCapUsd 12 for both contributor ids", () => {
+    const snippet = `{
+      "provider": {
+        "opencode-go": { "name": "OpenCode Go", "models": {
+          "muse-spark-1.3-contributor": { "name": "Muse Spark 1.3" },
+          "gemini-4-argon-contributor": { "name": "Gemini 4 Argon" },
+          "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" }
+        } }
+      }
+    }`;
+    const catalog = aaCatalogFromConfig(snippet, { configs: [], rankings: [] });
+    expect(catalog).not.toBeNull();
+    expect(catalog!.find((e) => e.id === "opencode-go/muse-spark-1.3-contributor")!.goCapUsd).toBe(12);
+    expect(catalog!.find((e) => e.id === "opencode-go/gemini-4-argon-contributor")!.goCapUsd).toBe(12);
+    expect(catalog!.find((e) => e.id === "opencode-go/deepseek-v4.1-flash")!.goCapUsd).toBe(80);
+  });
+});
+
+describe("prototype-key lookups in aa maps (#3056)", () => {
+  test("effortRank: prototype names take the unknown fallback, known ranks unchanged", () => {
+    expect(effortRank("constructor")).toBe(50);
+    expect(effortRank("__proto__")).toBe(50);
+    expect(effortRank("toString")).toBe(50);
+    expect(effortRank("high")).toBe(3);
+    expect(effortRank("max")).toBe(5);
+    expect(effortRank("something-else")).toBe(50);
+    expect(effortRank(null)).toBe(99);
+  });
+
+  test("catalog: prototype-named provider gets no plan facts; prototype-named Go model gets no cap", () => {
+    const cfg = `{ "provider": {
+      "constructor": { "name": "Constructor Provider", "models": { "some-model": { "name": "Some Model" } } },
+      "opencode-go.lab": { "name": "OpenCode Go \u2014 Lab", "models": {
+        "constructor": { "name": "Constructor" },
+        "deepseek-v4.1-flash": { "name": "DeepSeek V4.1 Flash" },
+      } },
+    } }`;
+    const catalog = aaCatalogFromConfig(cfg, { configs: [], rankings: [] });
+    expect(catalog).not.toBeNull();
+    const proto = catalog!.find((e) => e.id === "constructor/some-model")!;
+    expect(proto.plan).toBeNull();
+    expect(proto.multiplier).toBeNull();
+    expect(proto.planNote).toBeNull();
+    const ctor = catalog!.find((e) => e.id === "opencode-go.lab/constructor")!;
+    expect(ctor.goCapUsd).toBeNull();
+    const ds = catalog!.find((e) => e.id === "opencode-go.lab/deepseek-v4.1-flash")!;
+    expect(ds.goCapUsd).toBe(80); // known Go cap unchanged
+  });
+
+  test("CAI creator: prototype slugs fall back to the slug; known creators still map", () => {
+    const caiRow = (creatorSlug: string) => ({
+      modelName: "Model X",
+      creatorSlug,
+      effort: "max",
+      version: "v1",
+      score: "10",
+      cost: "1",
+      wallSec: "60",
+    });
+    const section = aaSectionFromSupabase(
+      { ...rawPayload(), cai: [caiRow("constructor"), caiRow("__proto__"), caiRow("deepseek"), caiRow("acme")] },
+      null,
+      "2026-10-26T18:05:00Z",
+    );
+    expect(section).not.toBeNull();
+    expect(section!.cai!.map((r) => r.creator)).toEqual(["constructor", "__proto__", "DeepSeek", "acme"]);
+  });
+});
+
+describe("num() strict decimal contract (#2985)", () => {
+  test("plain decimal spellings parse", () => {
+    expect(num("12")).toBe(12);
+    expect(num("12.5")).toBe(12.5);
+    expect(num("-3")).toBe(-3);
+    expect(num("+3")).toBe(3);
+    expect(num(".5")).toBe(0.5);
+    expect(num("5.")).toBe(5);
+    expect(num("0")).toBe(0);
+  });
+
+  test("radix-prefixed spellings return null (any case)", () => {
+    for (const s of ["0x10", "0X10", "0b101", "0B101", "0o17", "0O17"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("scientific spellings return null (PIN 1: no AA source emits e-notation)", () => {
+    for (const s of ["1e2", "1E2", "1e-3", "1E+2"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("whitespace-padded spellings return null (PIN 2: padding is drift, no trim)", () => {
+    for (const s of ["  12  ", " 12", "12 ", "\t12\n"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("other unparseable strings return null", () => {
+    for (const s of ["", "abc", "12abc", "Infinity", "1,200", "1_000", "-", ".", "+"]) {
+      expect(num(s)).toBeNull();
+    }
+  });
+
+  test("finite numbers pass through; non-finite and non-numeric inputs return null", () => {
+    expect(num(42)).toBe(42);
+    expect(num(12.5)).toBe(12.5);
+    expect(num(NaN)).toBeNull();
+    expect(num(Infinity)).toBeNull();
+    expect(num(null)).toBeNull();
+    expect(num(undefined)).toBeNull();
+    expect(num(true)).toBeNull();
   });
 });

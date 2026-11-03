@@ -46,11 +46,11 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
     if line.is_empty() {
         return None;
     }
-    match line {
-        "/help" => return Some(WorldLine::Help),
-        "/quit" => return Some(WorldLine::Quit),
-        "/stats" => return Some(WorldLine::Stats),
-        "/caps" => return Some(WorldLine::Caps),
+    match line.split_whitespace().next() {
+        Some("/help") => return Some(WorldLine::Help),
+        Some("/quit") => return Some(WorldLine::Quit),
+        Some("/stats") => return Some(WorldLine::Stats),
+        Some("/caps") => return Some(WorldLine::Caps),
         _ => {}
     }
     if line == "/records" || line.starts_with("/records ") {
@@ -165,6 +165,22 @@ mod tests {
         assert_eq!(
             parse_line("/input 00aF"),
             Some(WorldLine::Input("00af".into()))
+        );
+    }
+
+    #[test]
+    fn bare_verbs_ignore_space_separated_arguments() {
+        assert_eq!(parse_line("/help me"), Some(WorldLine::Help));
+        assert_eq!(parse_line("/quit now"), Some(WorldLine::Quit));
+        assert_eq!(parse_line("/stats all"), Some(WorldLine::Stats));
+        assert_eq!(parse_line("/caps list"), Some(WorldLine::Caps));
+        assert_eq!(
+            parse_line("/nonsense arg"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        assert_eq!(
+            parse_line("/helpme"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
         );
     }
 
