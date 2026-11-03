@@ -350,6 +350,37 @@ impl Drop for WorldLease {
     }
 }
 
+/// Releases the lease `acquire_slot` counted if `lease_with` leaves without
+/// handing it to a [`WorldLease`] — on the error path, and on cancellation
+/// of the open await (for example the envelope acceptor's per-stream
+/// deadline dropping a callback mid-lease). Without this, a cancelled open
+/// leaks the count forever: the slot can never be evicted, and an
+/// uninitialized slot is never removed from the map.
+struct SlotLeaseGuard {
+    hub: WorldHub,
+    name: String,
+    slot: Arc<Slot>,
+    armed: bool,
+}
+
+impl Drop for SlotLeaseGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.slot.leases.fetch_sub(1, Ordering::AcqRel);
+        if let Ok(mut slots) = self.hub.inner.slots.lock()
+            && self.slot.leases.load(Ordering::Acquire) == 0
+            && self.slot.service.get().is_none()
+            && slots
+                .get(&self.name)
+                .is_some_and(|held| Arc::ptr_eq(held, &self.slot))
+        {
+            slots.remove(&self.name);
+        }
+    }
+}
+
 impl WorldHub {
     /// A hub that builds worlds with `opener`.
     #[must_use]
@@ -490,6 +521,15 @@ impl WorldHub {
         permit: OwnedSemaphorePermit,
     ) -> Result<WorldLease, ResolveError> {
         let (slot, evicted) = self.acquire_slot(name, create)?;
+        // Armed until the lease is handed to the caller: dropping the guard
+        // (error return, or cancellation of the awaits below) releases the
+        // counted lease exactly once.
+        let mut guard = SlotLeaseGuard {
+            hub: self.clone(),
+            name: name.to_owned(),
+            slot: Arc::clone(&slot),
+            armed: true,
+        };
         for service in evicted {
             let _ = service.world().shutdown().await;
         }
@@ -510,23 +550,18 @@ impl WorldHub {
             })
             .await;
         match opened {
-            Ok(service) => Ok(WorldLease {
-                service: service.clone(),
-                name: name.to_owned(),
-                slot,
-                _permit: permit,
-            }),
-            Err(error) => {
-                slot.leases.fetch_sub(1, Ordering::AcqRel);
-                if let Ok(mut slots) = self.inner.slots.lock()
-                    && slot.leases.load(Ordering::Acquire) == 0
-                    && slot.service.get().is_none()
-                    && slots.get(name).is_some_and(|held| Arc::ptr_eq(held, &slot))
-                {
-                    slots.remove(name);
-                }
-                Err(error)
+            Ok(service) => {
+                guard.armed = false;
+                Ok(WorldLease {
+                    service: service.clone(),
+                    name: name.to_owned(),
+                    slot,
+                    _permit: permit,
+                })
             }
+            // The guard's drop releases the counted lease and removes the
+            // still-uninitialized slot, as the manual cleanup here used to.
+            Err(error) => Err(error),
         }
     }
 
@@ -1253,5 +1288,48 @@ mod tests {
         // An empty directory is a default with no worlds.
         let value = directory_json(&[], "lobby");
         assert_eq!(value["worlds"], serde_json::json!([]));
+    }
+
+    /// An opener whose open never completes, so the lease future can only
+    /// end by cancellation.
+    struct PendingOpener;
+
+    impl WorldOpener for PendingOpener {
+        fn open<'a>(&'a self, _name: &'a str, _create: bool) -> OpenFuture<'a> {
+            Box::pin(std::future::pending())
+        }
+
+        fn exists(&self, _name: &str) -> bool {
+            true
+        }
+
+        fn list(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn durable(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_lease_releases_its_slot() {
+        let opener: Arc<dyn WorldOpener> = Arc::new(PendingOpener);
+        let hub = WorldHub::new(
+            opener,
+            Some("admin".to_owned()),
+            "lobby",
+            HubLimits::default(),
+        );
+        let lease = hub.lease(Some("arena"), Some("admin"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), lease)
+                .await
+                .is_err(),
+            "the pending open should be cut off by the test deadline"
+        );
+        // The cancelled lease must not leak: its slot is gone, so the world
+        // is neither stuck open nor un-evictable.
+        assert_eq!(hub.open_count(), 0);
     }
 }

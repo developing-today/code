@@ -522,6 +522,11 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// below reads -- so neither surface's cadence changes.
 	if a.daemonStore != nil {
 		srv.TaskStore = a.daemonStore
+	} else {
+		// A standalone server (mcpx serve) keeps a private store;
+		// wire its audit seam to the durable log or its task
+		// lifecycle records are silently dropped (#2500).
+		srv.TaskAudit = a.standaloneTaskAudit()
 	}
 	srv.PageSize = a.Settings().Int("mcp.pageSize")
 	srv.Passthrough = a.passNS()
@@ -552,6 +557,7 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 		TaskMaxTTL:          a.Settings().Duration("protoTasks.maxTTL"),
 		TaskMaxPerRequestor: a.Settings().Int("protoTasks.maxPerRequestor"),
 		TaskWindowPerMinute: perMinuteSetting(a.Settings().Int("protoTasks.perMinute")),
+		TaskCancelGrace:     a.Settings().Duration("protoTasks.cancelGrace"),
 	}
 	srv.Cache = mcpserver.Cache{
 		List: a.Settings().Duration("protoMessages.listMaxAge"),

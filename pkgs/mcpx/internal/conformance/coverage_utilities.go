@@ -96,10 +96,17 @@ func init() {
 			"completion-context-arguments",
 			"completion-client-should",
 		),
+		S("completion-server-should",
+			"daemon.TestHandleCompleteRateLimitRefusesBeforePool@all",
+			"daemon.TestHandleCompleteServerWindowBindsAcrossCallers@all",
+			"daemon.TestHandleCompleteRateLimitHotChangeAndZeroDisables@all",
+			"daemon.TestLocalCompletionTiersPrompts@all",
+			"daemon.TestLocalCompletionTiersResources@all",
+			"daemon.TestLocalCompletionCapAfterRanking@all",
+		),
 	)
 	registerGaps(
 		Gap{ID: "cancellation-log-reasons", Side: Server, Issue: "#77", Why: "a cancellation reason reaches Server.OnCancel, which nothing outside tests sets; it is never logged"},
-		Gap{ID: "completion-security", Side: Server, Issue: "#213", Why: "completion/complete has no rate limit and no per-caller access control"},
-		Gap{ID: "completion-server-should", Side: Server, Issue: "#213", Why: "values are sorted alphabetically and matched by substring, not ranked by relevance; no rate limit"},
+		Gap{ID: "completion-security", Side: Server, Issue: "#1968", Why: "partial: completion inputs are validated and completion/complete is rate limited per caller (completion.perMinute) and per server (completion.serverPerMinute) since #2387, but there is no per-caller access control for sensitive suggestions and no completion-specific information-disclosure control; waiting on principals #1968 / permissive-auth #1972"},
 	)
 }

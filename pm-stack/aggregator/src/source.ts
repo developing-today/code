@@ -32,11 +32,21 @@ export interface Source {
   items(refs: RefKey[]): Promise<Map<RefKey, GhItem>>;
   /** The comment projection for the refs, PR-interior comments included. */
   comments(refs: RefKey[]): Promise<Comment[]>;
+  /** The latest comment per ref, guaranteed per ref (#1279): the bulk
+   * comments() read applies one row limit across all requested refs, so
+   * a busy batch can omit an item's latest comment entirely. Briefs only
+   * need the latest, and need it for every item. Optional — callers fall
+   * back to comments() when a source does not provide it. */
+  latestComments?(refs: RefKey[]): Promise<Comment[]>;
   /** Quota + throughput view (#851). */
   quota(): Promise<QuotaView>;
   /** Usage & billing hub view: family-2 SaaS services, PAYG lines,
-   * charges evidence, bubble flags, and snapshot history (hub §3). */
+   * charges evidence, bubble flags, and snapshot history (hub §3). Read-only. */
   usage(): Promise<UsageView>;
+  /** Land the latest feed-carried usage snapshots into the local store.
+   * Optional: live mode runs this from its background writer tick, never
+   * as a side effect of a page/read request. */
+  ingestSnapshots?(): Promise<number>;
   /** Raw session feed for the "needs you" view (#852), pre-classification. */
   attention(): Promise<SessionFeedEntry[]>;
   /** The orchestration job's latest section (#899); null = not measured yet. */
