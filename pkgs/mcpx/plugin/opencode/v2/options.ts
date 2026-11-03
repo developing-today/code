@@ -32,6 +32,14 @@ export type Options = {
   env?: "minimal" | "standard" | "full";
   instructions?: boolean;
   toolTiming?: boolean;
+  /**
+   * Answer mcpx sampling questions (broker sample rows routed to the
+   * agent) with ctx.generate.text. Default on when the host offers
+   * ctx.generate; false turns the watcher off. Plugin-option only --
+   * no env name is declared for it in the settings registry, and the
+   * settings guard forbids reading undeclared MCPX_* names.
+   */
+  answerSampling?: boolean;
   tools?: boolean;
   /** Offer mcpx_daemon_status and mcpx_daemon_select. Default: when unclear. */
   daemonTools?: boolean;
@@ -113,6 +121,7 @@ export function resolveOptions(
     daemonTools: o.daemonTools ?? truthy(env.MCPX_PLUGIN_DAEMON_TOOLS),
     annotate: o.annotate ?? truthy(env.MCPX_PLUGIN_ANNOTATE) ?? true,
     toolTiming: o.toolTiming ?? truthy(env.MCPX_PLUGIN_TOOL_TIMING) ?? false,
+    answerSampling: o.answerSampling ?? true,
     discoveryRetryMs: goDurationMs(env.MCPX_PLUGIN_DISCOVERY_RETRY),
   };
 }
