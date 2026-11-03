@@ -2,7 +2,9 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,7 +18,16 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
-const featureLedgerEnv = "MCPX_FEATURE_COVERAGE_LEDGER"
+const (
+	featureLedgerEnv = "MCPX_FEATURE_COVERAGE_LEDGER"
+	// featureGuardEnv turns TestFeatureCoverageGuard from a skip into the
+	// CI gate. It is set only for the second `go test` invocation, the one
+	// that reads the ledger the full suite wrote (#2691).
+	featureGuardEnv = "MCPX_FEATURE_COVERAGE_GUARD"
+	// featureExemptionsPath is checked in: one reasoned exemption per
+	// feature that has no behavioural integration test yet.
+	featureExemptionsPath = "testdata/feature-coverage-exemptions.json"
+)
 
 type featureCoverageRow struct {
 	Test string `json:"test"`
@@ -94,6 +105,11 @@ func writeFeatureCoverageLedger(path string, rows []featureCoverageRow) error {
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	// The guard invocation reads the ledger the full suite wrote. Writing
+	// here would replace those rows with the guard run's (zero) rows.
+	if os.Getenv(featureGuardEnv) == "1" {
+		os.Exit(code)
+	}
 	path := os.Getenv(featureLedgerEnv)
 	if path == "" {
 		path = filepath.Join(os.TempDir(), fmt.Sprintf("mcpx-feature-coverage-%d.jsonl", os.Getpid()))
@@ -333,5 +349,179 @@ func TestResolveCLICommandAfterGlobalFlags(t *testing.T) {
 	}
 	if got := resolveCLICommand([]string{"--plumbing-strict-unknown-keys", "ls"}, t.TempDir()); got != "ls" {
 		t.Fatalf("resolved command %q after boolean setting flag, want ls", got)
+	}
+}
+
+// featureExemption is one checked-in reason a feature has no behavioural
+// integration test yet. Kind is one of "op" or "cli"; settings reuse the
+// reasoned EffectExemptions in internal/settings, which the effect guard
+// already ratchets (#1971), rather than keeping a second copy here.
+type featureExemption struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+type featureExemptionDoc struct {
+	Exemptions []featureExemption `json:"exemptions"`
+}
+
+func readFeatureCoverageLedger(path string) ([]featureCoverageRow, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open feature coverage ledger: %w", err)
+	}
+	defer f.Close()
+	var rows []featureCoverageRow
+	dec := json.NewDecoder(f)
+	for {
+		var row featureCoverageRow
+		if err := dec.Decode(&row); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("decode feature coverage ledger: %w", err)
+		}
+		if row.Kind == "" || row.Name == "" {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func loadFeatureExemptions(t *testing.T) map[coverageFeature]string {
+	t.Helper()
+	body, err := os.ReadFile(featureExemptionsPath)
+	if err != nil {
+		t.Fatalf("%s should exist and carry one reason per uncovered feature: %v", featureExemptionsPath, err)
+	}
+	var doc featureExemptionDoc
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("%s is not valid JSON: %v", featureExemptionsPath, err)
+	}
+	out := make(map[coverageFeature]string, len(doc.Exemptions)+len(settings.EffectExemptions))
+	for _, e := range doc.Exemptions {
+		key := coverageFeature{Kind: e.Kind, Name: e.Name}
+		if _, dup := out[key]; dup {
+			t.Fatalf("%s lists %s %s twice", featureExemptionsPath, e.Kind, e.Name)
+		}
+		out[key] = e.Reason
+	}
+	for path, reason := range settings.EffectExemptions {
+		out[coverageFeature{Kind: "setting", Name: path}] = reason
+	}
+	return out
+}
+
+// requiredFeatures is the inventory the guard enforces: every /v1
+// operation, every CLI command and alias the dispatcher resolves, and
+// every setting in the registry. Aliases count because the ledger records
+// the word the test typed.
+func requiredFeatures() []coverageFeature {
+	seen := make(map[coverageFeature]bool)
+	add := func(kind, name string) {
+		if name != "" {
+			seen[coverageFeature{Kind: kind, Name: name}] = true
+		}
+	}
+	for _, op := range api.Ops() {
+		add("op", op.Name)
+	}
+	for _, command := range cli.Commands() {
+		add("cli", command.Name)
+		for _, alias := range command.Aliases {
+			add("cli", alias)
+		}
+	}
+	for name := range (&cli.App{}).Handlers() {
+		add("cli", name)
+	}
+	for _, setting := range settings.Registry() {
+		add("setting", setting.Path)
+	}
+	out := make([]coverageFeature, 0, len(seen))
+	for feature := range seen {
+		out = append(out, feature)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+// TestFeatureCoverageGuard is the enforcement half of Approach C (#2691,
+// #1978): a feature in the inventory that no e2e test exercised at run
+// time — and that carries no reasoned exemption — fails CI. The ledger it
+// reads is written by TestMain from the hooks in this file (CLI dispatch,
+// socket client calls, settings effect probes); the CI job runs the full
+// suite first and this test second, so the ledger is complete.
+func TestFeatureCoverageGuard(t *testing.T) {
+	if os.Getenv(featureGuardEnv) != "1" {
+		t.Skip("feature-coverage gate: CI runs it after the full suite with " + featureGuardEnv + "=1 and " + featureLedgerEnv + " set")
+	}
+	path := os.Getenv(featureLedgerEnv)
+	if path == "" {
+		t.Fatalf("%s must name the ledger the full suite wrote", featureLedgerEnv)
+	}
+	rows, err := readFeatureCoverageLedger(path)
+	if err != nil {
+		t.Fatalf("the guard needs a ledger from a full e2e run: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("ledger %s has no rows; run the full e2e suite with %s set before the guard", path, featureLedgerEnv)
+	}
+	violations := coverageViolations(requiredFeatures(), rows, loadFeatureExemptions(t))
+	if len(violations) > 0 {
+		t.Fatalf("%d feature(s) have neither a runtime ledger row nor a reasoned exemption:\n  %s",
+			len(violations), strings.Join(violations, "\n  "))
+	}
+}
+
+// TestFeatureCoveragePluginOpsAreCurrent keeps the plugin op surface in the
+// same guard: the generated ops.gen.ts is one of the four surfaces the
+// inventory enumerates, so a stale generation is a coverage gap too.
+func TestFeatureCoveragePluginOpsAreCurrent(t *testing.T) {
+	path := filepath.Join("..", "..", "plugin", "opencode", "mcpx", "ops.gen.ts")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%s should exist: %v", path, err)
+	}
+	if string(got) != api.PluginTS() {
+		t.Errorf("%s is stale; regenerate it with\n  go test ./internal/api -run TestPluginOpsAreGenerated -update", path)
+	}
+}
+
+// TestCoverageViolationsEdges pins the guard's refusal modes, so an
+// exemption cannot quietly become a bypass.
+func TestCoverageViolationsEdges(t *testing.T) {
+	mini := []coverageFeature{{Kind: "op", Name: "status"}}
+	if v := coverageViolations(mini, []featureCoverageRow{{Test: "TestA", Kind: "op", Name: "status"}}, nil); len(v) != 0 {
+		t.Fatalf("a covered feature should pass, got %v", v)
+	}
+	if v := coverageViolations(mini, nil, map[coverageFeature]string{{Kind: "op", Name: "status"}: "reason"}); len(v) != 0 {
+		t.Fatalf("an exempt feature with a reason should pass, got %v", v)
+	}
+	cases := []struct {
+		name string
+		rows []featureCoverageRow
+		ex   map[coverageFeature]string
+		want string
+	}{
+		{"uncovered", nil, nil, "no integration-test ledger row"},
+		{"empty reason", nil, map[coverageFeature]string{{Kind: "op", Name: "status"}: "  "}, "empty exemption reason"},
+		{"covered and exempt", []featureCoverageRow{{Kind: "op", Name: "status"}}, map[coverageFeature]string{{Kind: "op", Name: "status"}: "reason"}, "both exercised and exempt"},
+		{"unknown exemption", nil, map[coverageFeature]string{{Kind: "op", Name: "gone"}: "reason"}, "unknown op gone"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := coverageViolations(mini, tc.rows, tc.ex)
+			if len(v) == 0 || !strings.Contains(strings.Join(v, "\n"), tc.want) {
+				t.Fatalf("violations %v do not mention %q", v, tc.want)
+			}
+		})
 	}
 }

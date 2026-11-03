@@ -223,6 +223,18 @@ jobs:
           fi
           exit "$rc"
 
+      # The feature-coverage guard (#2691, Approach C): the full suite above
+      # wrote the runtime ledger; this cheap second invocation reads it and
+      # fails when an inventory feature has neither a ledger row nor a
+      # reasoned exemption. It is a separate invocation because TestMain
+      # writes the ledger after the package's tests finish.
+      - name: Feature coverage guard
+        working-directory: pkgs/mcpx
+        env:
+          MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
+          MCPX_FEATURE_COVERAGE_GUARD: "1"
+        run: go test ./internal/e2e -run '^TestFeatureCoverageGuard$' -count=1
+
       # The opencode plugin's bun tests are the one suite `go test` never
       # sees. Bun is already installed above (the Go e2e tests shell out to
       # it); this step runs the plugin suite itself, so a broken plugin

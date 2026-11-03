@@ -32,9 +32,12 @@ func (e *env) longSocketClient(t *testing.T) *http.Client {
 	}
 	return &http.Client{
 		Timeout: 60 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
-		}},
+		Transport: coverageRoundTripper{
+			test: t.Name(),
+			base: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", st.Socket)
+			}},
+		},
 	}
 }
 
