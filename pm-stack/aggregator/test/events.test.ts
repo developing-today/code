@@ -376,4 +376,76 @@ describe("events audit v2 (#3322 slice A)", () => {
     expect(await reloaded.list()).toEqual([]);
     expect(readdirSync(dir).some((name) => name.includes(".corrupt-"))).toBe(true);
   });
+
+  test("a stored record backdated past retention is still integrity-checked (PR #5137 codex)", async () => {
+    // Pruning ran before verification, so altering a record AND
+    // backdating it past the 30-day cutoff removed it before its
+    // hash was ever checked and health reported a healthy stream.
+    const { file, store } = tmpStore();
+    await store.record({ ...base });
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { events: { at: string }[] };
+    onDisk.events[0]!.at = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    const reloaded = new EventsStore(file);
+    expect((await reloaded.health()).integrity.ok).toBe(false);
+  });
+
+  test("a v2 record with an empty hash is quarantined as damaged (PR #5137 codex)", async () => {
+    // An empty hash passed the shape check and was then excluded
+    // from verification by the hash !== "" filters, so a tampered
+    // summary with hash:"" reported healthy integrity.
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-empty-hash-"));
+    const file = join(dir, "events.json");
+    const store = new EventsStore(file);
+    await store.record({ ...base });
+    const onDisk = JSON.parse(readFileSync(file, "utf8")) as { version: number; events: Record<string, unknown>[] };
+    expect(onDisk.version).toBe(2);
+    onDisk.events[0]!.hash = "";
+    onDisk.events[0]!.summary = "tampered";
+    writeFileSync(file, JSON.stringify(onDisk, null, 2));
+    const reloaded = new EventsStore(file);
+    expect(await reloaded.list()).toEqual([]);
+    expect(readdirSync(dir).some((name) => name.includes(".corrupt-"))).toBe(true);
+  });
+
+  test("a caller-supplied id replays idempotently instead of appending a twin (PR #5137 codex)", async () => {
+    const { store } = tmpStore();
+    const first = await store.record({ ...base, id: "evt-caller-1", summary: "first version" });
+    const replay = await store.record({ ...base, id: "evt-caller-1", summary: "second version" });
+    expect(replay.id).toBe(first.id);
+    expect(replay.summary).toBe("first version");
+    const list = await store.list();
+    expect(list.filter((e) => e.id === "evt-caller-1")).toHaveLength(1);
+    // The id resolves unambiguously for corrections.
+    const correction = await store.recordCorrection("evt-caller-1", { actor: "keeper", summary: "correction" });
+    expect(correction.corrects).toBe("evt-caller-1");
+  });
+
+  test("concurrent failed appends both reach the retry outbox; neither flush erases the other (PR #5137 codex)", async () => {
+    // flushOutbox's unlink raced queueForRetry: a flush could delete
+    // a record queued after its snapshot was persisted. The record
+    // lifecycle is serialized now, so concurrent failures queue
+    // independently and both land on recovery.
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-concurrent-retry-"));
+    const file = join(dir, "events.json");
+    const store = new EventsStore(file);
+    await store.record({ ...base, summary: "landed" });
+    rmSync(file);
+    mkdirSync(file);
+    writeFileSync(join(file, "occupant"), "x");
+    const results = await Promise.allSettled([
+      store.record({ ...base, summary: "concurrent failure A" }),
+      store.record({ ...base, summary: "concurrent failure B" }),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    expect(await store.health().then((h) => h.pendingRetries)).toBe(2);
+    rmSync(file, { recursive: true });
+    await store.record({ ...base, summary: "after recovery" });
+    const summaries = (await new EventsStore(file).list()).map((e) => e.summary);
+    expect(summaries).toContain("concurrent failure A");
+    expect(summaries).toContain("concurrent failure B");
+    expect(summaries).toContain("after recovery");
+    expect(summaries).toContain("landed");
+    expect(existsSync(store.outboxFile)).toBe(false);
+  });
 });

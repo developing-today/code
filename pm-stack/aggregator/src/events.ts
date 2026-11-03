@@ -382,6 +382,7 @@ export class EventsStore {
   private events: AuditEvent[] = [];
   private loadPromise: Promise<void> | null = null;
   private writeChain: Promise<void> = Promise.resolve();
+  private recordChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
   private integrityViolation: string | null = null;
 
@@ -422,6 +423,18 @@ export class EventsStore {
       const normalized: AuditEvent[] = [];
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
+        if (isAuditEvent(row) && fileVersion === 2 && row.hash === "") {
+          // A v2 main-file record with an empty hash is damaged, not
+          // unhashed-by-design (#3322 Codex re-review, PR #5137):
+          // persist() rechains before every write, so a record the
+          // store wrote always carries a hash. Accepting an empty
+          // one would exclude it from verification (both checks
+          // filter hash !== "") and let a silent edit pass as
+          // healthy. Unhashed records remain legitimate ONLY as v1
+          // migration rows (fileVersion 1, handled below) and as
+          // retry-outbox lines (parsed in flushOutbox, never here).
+          throw new Error(`event row ${i} is a v2 audit record with an empty hash`);
+        }
         if (isAuditEvent(row)) {
           normalized.push({
             ...row,
@@ -441,13 +454,20 @@ export class EventsStore {
           throw new Error(`event row ${i} does not have the expected StreamEvent/AuditEvent shape`);
         }
       }
-      this.events = pruneEvents(normalized);
       // Integrity is checked against the STORED hashes before any
-      // persist can re-stamp them: a mismatch means the file was
-      // altered outside the store. The records still load (the
-      // stream stays readable) but the violation is loud and is
-      // reported by health() until a human looks.
-      const verdict = verifyEventChain(this.events.filter((e) => e.hash !== ""));
+      // persist can re-stamp them — and before retention pruning
+      // drops any record (#3322 Codex re-review, PR #5137): pruning
+      // first would let an edit hide by also backdating the altered
+      // record past the retention cutoff (it would be dropped
+      // unverified, and the remaining chain's first record is a
+      // trusted retention anchor), so the full normalized chain
+      // verifies first and pruning applies only afterwards. A
+      // mismatch means the file was altered outside the store. The
+      // records still load (the stream stays readable) but the
+      // violation is loud and is reported by health() until a
+      // human looks.
+      const verdict = verifyEventChain(normalized.filter((e) => e.hash !== ""));
+      this.events = pruneEvents(normalized);
       if (!verdict.ok) {
         this.integrityViolation = verdict.error;
         console.error(
@@ -622,14 +642,47 @@ export class EventsStore {
   /** Append one event (retention enforced on append). On a persist
    *  failure the record is queued in the durable retry outbox and
    *  the error is rethrown, so fire-and-forget callers still see the
-   *  failure exactly as before — the record is retried, not lost. */
+   *  failure exactly as before — the record is retried, not lost.
+   *  Whole calls are serialized on recordChain (#3322 Codex
+   *  re-review, PR #5137): flushOutbox's outbox removal and a failed
+   *  append's queueForRetry are both file operations on the outbox,
+   *  and interleaved they lose retries — a flush that read the
+   *  outbox before a concurrent failure queued its record could
+   *  unlink the file after the queue, deleting a record no
+   *  successful persist had ever held. Serializing the complete
+   *  flush/append/retry lifecycle makes the removal always cover
+   *  exactly the snapshot that was persisted. */
   async record(input: NewAuditEvent): Promise<AuditEvent> {
+    let result!: AuditEvent;
+    const run = this.recordChain.then(async () => {
+      result = await this.recordSerialized(input);
+    });
+    this.recordChain = run.then(
+      () => {},
+      () => {},
+    );
+    await run;
+    return result;
+  }
+
+  private async recordSerialized(input: NewAuditEvent): Promise<AuditEvent> {
     await this.load();
     await this.flushOutbox();
     const parsed = validateStreamEvent({ ...input, at: input.at ?? new Date().toISOString() });
     if (!parsed.ok) throw new Error(parsed.error);
     const extras = validateAuditExtras(input);
     if (!extras.ok) throw new Error(extras.error);
+    // A caller-supplied id is a stable identity (#3322 Codex
+    // re-review, PR #5137): replaying it returns the existing record
+    // instead of appending a twin that the id can no longer
+    // unambiguously name (record() and recordCorrection() both
+    // resolve ids with find()). flushOutbox above has already
+    // merged any pending retry with this id into the stream, so a
+    // retry of a queued-but-unlanded append replays correctly too.
+    if (input.id !== undefined) {
+      const existing = this.events.find((e) => e.id === input.id);
+      if (existing) return existing;
+    }
     const event: AuditEvent = {
       ...parsed.value,
       version: 2,
