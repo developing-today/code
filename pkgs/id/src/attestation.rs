@@ -179,6 +179,7 @@ pub fn sign_genesis(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         },
     )?)
 }
@@ -210,6 +211,7 @@ pub fn sign_claim(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         },
     )?)
 }
@@ -226,11 +228,12 @@ pub fn sign_claim(
 /// match is `Proposed`. With a complete genesis, one claim is still
 /// `Proposed`; two claims (one per player) that concur on outcome and
 /// final-state hash are `Agreed`; two claims that differ in either are
-/// `Disputed`. A player claiming twice with different claims is a
-/// fork of position and computes `Disputed`, never `Agreed`. Claims
-/// answering a different agreement, from non-players, or with an outcome
-/// other than `"draw"` or a seated player's lowercase 64-character hex id
-/// are ignored.
+/// `Disputed`. A claim's position is defined by its `agreement`, `outcome`,
+/// and `final_state_hash`; `frontiers` are observation evidence and do not
+/// distinguish positions. A player claiming twice at different positions
+/// is a fork and computes `Disputed`, never `Agreed`. Claims answering a
+/// different agreement, from non-players, or with an outcome other than
+/// `"draw"` or a seated player's lowercase 64-character hex id are ignored.
 #[must_use]
 pub fn compute_state(
     agreement: &GenesisAgreement,
@@ -264,7 +267,13 @@ pub fn compute_state(
             if author == player && claim.agreement == agreement_hash && valid_outcome {
                 match per_player[index] {
                     None => per_player[index] = Some(claim),
-                    Some(first) if first != claim => return MatchState::Disputed,
+                    Some(first)
+                        if first.agreement != claim.agreement
+                            || first.outcome != claim.outcome
+                            || first.final_state_hash != claim.final_state_hash =>
+                    {
+                        return MatchState::Disputed;
+                    }
                     Some(_) => {}
                 }
             }

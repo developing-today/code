@@ -146,6 +146,7 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 	if err != nil {
 		return err
 	}
+	req = req.WithContext(httpDispatchContext(req.Context(), msg))
 	t.setHeadersFor(req, msg)
 
 	resp, err := t.hc.Do(req)

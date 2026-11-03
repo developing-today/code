@@ -720,6 +720,60 @@ describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
   });
 });
 
+describe("overlay: split gatherer rows land on the four split hub pools (#1331)", () => {
+  test("Go per-workspace + Antigravity per-pool rows map with freshness and values", () => {
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go:personal", []),
+      pool("opencode-go:lab", []),
+      pool("antigravity:gemini", []),
+      pool("antigravity:claude-gpt", []),
+    );
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:personal",
+          credentialId: "cred_personal",
+          credentialLabel: "Personal",
+          windows: [win("monthly", 62.5, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:lab",
+          credentialId: "cred_lab",
+          credentialLabel: "Lab",
+          windows: [win("monthly", 50, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:gemini",
+          windows: [win("weekly", 40, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:claude-gpt",
+          windows: [win("weekly", 90, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const byId = new Map(out.pools.map((p) => [p.id, p]));
+    expect(byId.get("opencode-go:personal")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
+    expect(byId.get("opencode-go:lab")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
+    expect(byId.get("antigravity:gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("antigravity:claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
+    for (const id of ["opencode-go:personal", "opencode-go:lab", "antigravity:gemini", "antigravity:claude-gpt"]) {
+      expect(byId.get(id)!.freshness).toEqual({
+        measuredAt: iso(5 * 60_000),
+        source: "openchamber-quota",
+        state: "ok",
+      });
+    }
+  });
+});
+
 describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
   test("a fresh ok read at 150% does not wall the pool: the window drops and prior windows stand", () => {
     const out = overlayQuotaCurrent(
