@@ -16,12 +16,7 @@ const contractDocument: unknown = JSON.parse(
 );
 const contract = parseShellContract(contractDocument);
 
-function withFieldType(
-  side: "client" | "server",
-  frameName: string,
-  fieldName: string,
-  type: string,
-): ShellContract {
+function withFieldType(side: "client" | "server", frameName: string, fieldName: string, type: string): ShellContract {
   const malformed = structuredClone(contract);
   const frames = side === "client" ? malformed.client_frames : malformed.server_frames;
   const frame = frames[frameName];
@@ -90,9 +85,7 @@ describe("shell contract validator", () => {
     session.client({ type: "join", capability: cap, after: null, world: null });
     expect(session.phase).toBe("joined");
     expect(() => session.client({ type: "chat", text: "hi" })).not.toThrow();
-    expect(session.violations).toEqual([
-      { index: 1, side: "client", message: expect.stringContaining("chat.text") },
-    ]);
+    expect(session.violations).toEqual([{ index: 1, side: "client", message: expect.stringContaining("chat.text") }]);
   });
 
   it("accepts the frames a joined shell sends", () => {

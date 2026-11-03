@@ -133,33 +133,10 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             !cli.commands.is_empty(),
             "interfaces.cli.commands must list at least one command"
         );
-        ensure!(
-            cli.commands
-                .iter()
-                .all(|command| !command.trim().is_empty()),
-            "interfaces.cli.commands must not contain empty command names"
-        );
+        ensure_distinct_entries(&cli.commands, "interfaces.cli.commands")?;
     }
     if let Some(capabilities) = &manifest.capabilities {
-        ensure!(
-            capabilities
-                .request
-                .iter()
-                .all(|capability| !capability.trim().is_empty()),
-            "capabilities.request must not contain empty entries"
-        );
-        // Duplicate requests are rejected, not deduplicated: the manifest is
-        // the strict record of what an app asks for, and a repeated entry is
-        // an authoring mistake the gate should name rather than silently
-        // absorb. (Rule pinned by rejects_blank_and_duplicate_capability_requests.)
-        let mut seen = std::collections::HashSet::new();
-        ensure!(
-            capabilities
-                .request
-                .iter()
-                .all(|capability| seen.insert(capability)),
-            "capabilities.request must not contain duplicates"
-        );
+        ensure_distinct_entries(&capabilities.request, "capabilities.request")?;
     }
     if let Some(program) = &manifest.program {
         ensure!(
@@ -309,6 +286,35 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
     discovery
 }
 
+/// One consistent list-entry rule for manifest string lists
+/// (`interfaces.cli.commands`, `capabilities.request`): every entry must be
+/// non-blank with no leading or trailing whitespace, and no entry may
+/// repeat. Duplicate and blank comparisons use the trimmed form, so a
+/// whitespace-padded entry can neither evade the duplicate gate nor be
+/// stored verbatim — padded entries are rejected, not silently trimmed.
+/// Rejections name the field: like the #4082 duplicate gate this extends, a
+/// repeated or padded entry is an authoring mistake the gate should name
+/// rather than silently absorb.
+fn ensure_distinct_entries(entries: &[String], field: &str) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        let trimmed = entry.trim();
+        ensure!(
+            !trimmed.is_empty(),
+            "{field} must not contain empty entries"
+        );
+        ensure!(
+            entry.as_str() == trimmed,
+            "{field} must not contain entries with leading or trailing whitespace: {entry:?}"
+        );
+        ensure!(
+            seen.insert(trimmed.to_owned()),
+            "{field} must not contain duplicates"
+        );
+    }
+    Ok(())
+}
+
 fn is_kebab_id(id: &str) -> bool {
     !id.is_empty()
         && !id.starts_with('-')
@@ -399,6 +405,47 @@ commands = ["play"]
         let blank_command =
             CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \"  \"]");
         assert!(parse_app_manifest(&blank_command, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_and_padded_cli_commands() {
+        // Exact duplicate commands are rejected, naming the field.
+        let duplicate =
+            CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \"play\"]");
+        let error = parse_app_manifest(&duplicate, "tic-tac-toe").unwrap_err();
+        assert!(
+            error.to_string().contains("interfaces.cli.commands"),
+            "duplicate error names the field: {error:#}"
+        );
+        // A whitespace-padded entry cannot evade the duplicate gate.
+        let padded_duplicate =
+            CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \" play \"]");
+        let error = parse_app_manifest(&padded_duplicate, "tic-tac-toe").unwrap_err();
+        assert!(
+            error.to_string().contains("interfaces.cli.commands"),
+            "padded-duplicate error names the field: {error:#}"
+        );
+        // A lone padded entry is rejected rather than stored verbatim.
+        let padded = CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\" play \"]");
+        assert!(parse_app_manifest(&padded, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn rejects_padded_capability_requests() {
+        // A padded duplicate cannot evade the #4082 duplicate gate.
+        let padded_duplicate =
+            format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\", \" store.read \"]\n");
+        let error = parse_app_manifest(&padded_duplicate, "tic-tac-toe").unwrap_err();
+        assert!(
+            error.to_string().contains("capabilities.request"),
+            "padded-duplicate error names the field: {error:#}"
+        );
+        // A lone padded entry is rejected rather than stored untrimmed.
+        let padded = format!("{MANIFEST}\n[capabilities]\nrequest = [\" store.read \"]\n");
+        assert!(parse_app_manifest(&padded, "tic-tac-toe").is_err());
+        // The unpadded baseline still parses.
+        let valid = format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\"]\n");
+        assert!(parse_app_manifest(&valid, "tic-tac-toe").is_ok());
     }
 
     #[test]

@@ -126,6 +126,7 @@ var EffectExemptions = map[string]string{
 	"daemon.uiDir":                       "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.inline":                      "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"daemon.autostart":                   "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
+	"daemon.roots":                       "configured upstream roots only affect an upstream roots/list request; the e2e harness does not yet issue that server request, while daemon hook and mcpclient unit tests cover settings conversion and the response path",
 	"hooks":                              "hook execution: its effect needs a hook configured for a specific event and an event that fires it; the harness has no per-event hook fixture",
 	"hooks.timeout":                      "hook execution: its effect needs a hook configured for a specific event and an event that fires it; the harness has no per-event hook fixture",
 	"mcp.pageSize":                       "MCP list/passthrough surface: paging behaviour is unit-tested in mcpserver, but no e2e with/without probe drives it through a client yet",
@@ -265,7 +266,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 192 // merged count at the PR #2589 merge of origin/main (2026-11-02, queue task 3191): main at 191 (protoTasks.cancelGrace #2499; completion.perMinute and completion.serverPerMinute #2387 on top of the #2498/#2548/#1937/#1979 raises) plus the one branch-side exemption, deps.autoInstall (a runtime fetch policy)
+const EffectExemptionPin = 193 // deliberate +1 for daemon.roots: its observable effect requires an upstream roots/list request that the e2e harness does not yet issue; daemon/mcpclient unit tests cover the conversion and response path.
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

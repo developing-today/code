@@ -305,17 +305,19 @@ export const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled", "failed"]);
 /**
  * The enqueue RPC dedupes on dedupe_key against ALL rows incl. terminal
  * ones and returns the pre-existing row as-is. A returned row is
- * pre-existing when it was created before this request started, or when
- * its status is already terminal — it is never the task this request
- * just queued.
+ * pre-existing when it is the row a pre-enqueue lookup already saw under
+ * the same dedupe key (compared by row id), or when its status is already
+ * terminal — it is never the task this request just queued.
+ *
+ * Deliberately clock-independent (issue #4661): the row's created_at is
+ * assigned by the Supabase Postgres server while any request-side
+ * timestamp comes from the dispatch host, so comparing the two
+ * misclassifies in both directions under ordinary skew (a DB-behind
+ * fresh row reads pre-existing; a DB-ahead live row reads fresh).
  */
-export function isPreExistingTaskRow(row: TaskRow, requestStartedAt: Date): boolean {
+export function isPreExistingTaskRow(row: TaskRow, existing: TaskRow | null): boolean {
   if (TERMINAL_TASK_STATUSES.has(row.status)) return true;
-  const createdAt = row.created_at;
-  if (typeof createdAt === "string") {
-    const parsed = Date.parse(createdAt);
-    if (!Number.isNaN(parsed)) return parsed < requestStartedAt.getTime();
-  }
+  if (existing !== null && row.id === existing.id) return true;
   return false;
 }
 
@@ -341,13 +343,18 @@ export interface EnqueueDispatchOutcome {
  */
 export async function enqueueDispatchTask(args: {
   enqueue: (dedupeKey: string) => Promise<TaskRow>;
+  /** Pre-enqueue lookup: the row already stored under a dedupe key, if
+   * any. Compared by row id after each enqueue — the clock-independent
+   * replacement for the old created_at-vs-requestStartedAt check (#4661).
+   * Lookup failures must resolve to null (unknown), never throw. */
+  findExisting: (dedupeKey: string) => Promise<TaskRow | null>;
   dedupeKey: string;
   attach: boolean;
   callerSuppliedKey: boolean;
-  requestStartedAt: Date;
 }): Promise<EnqueueDispatchOutcome> {
+  const knownFirst = await args.findExisting(args.dedupeKey);
   const first = await args.enqueue(args.dedupeKey);
-  if (!isPreExistingTaskRow(first, args.requestStartedAt)) {
+  if (!isPreExistingTaskRow(first, knownFirst)) {
     return { task: first, preExisting: false, retried: false, warnings: [] };
   }
   if (!args.attach || args.callerSuppliedKey) {
@@ -361,8 +368,13 @@ export async function enqueueDispatchTask(args: {
     };
   }
   const retryKey = `${args.dedupeKey}:dispatch:${randomDispatchSuffix()}`;
+  const knownSecond = await args.findExisting(retryKey);
   const second = await args.enqueue(retryKey);
-  if (!isPreExistingTaskRow(second, args.requestStartedAt)) {
+  // A retry key is freshly random, so a second row carrying the first
+  // row's id means the retry returned no new task even where the
+  // lookup-based check cannot see it (defensive; same-row return).
+  const secondPreExisting = isPreExistingTaskRow(second, knownSecond) || second.id === first.id;
+  if (!secondPreExisting) {
     return {
       task: second,
       preExisting: false,
@@ -387,7 +399,6 @@ export async function enqueueDispatchTask(args: {
 // ---------------------------------------------------------------------------
 
 async function handleTasks(req: Request, caller: CallerIdentity): Promise<Response> {
-  const requestStartedAt = new Date();
   const body: TaskRequest = parseTaskRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
@@ -463,10 +474,10 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
         if (errs.length) throw new QueueError(`internal packet validation failed: ${errs.join("; ")}`);
         return requireQueue().enqueue(p, body.repo);
       },
+      findExisting: (key) => requireQueue().findByDedupeKey(key),
       dedupeKey,
       attach: body.issueNumber !== undefined,
       callerSuppliedKey: body.dedupeKey !== undefined,
-      requestStartedAt,
     });
   } catch (e) {
     if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {

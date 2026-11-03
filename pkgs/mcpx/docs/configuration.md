@@ -489,6 +489,7 @@ skipped launcher phases).
 | `daemon.probeTimeout` | duration | `200ms` | client | no | `--daemon-probe-timeout` | `MCPX_DAEMON_PROBE_TIMEOUT` | *(plumbing)* how long another daemon's socket is given to answer |
 | `daemon.reapInterval` | duration | `30s` | daemon | no | `--daemon-reap-interval` | `MCPX_DAEMON_REAP_INTERVAL` | *(plumbing)* how often idle instances are swept |
 | `daemon.refreshTimeout` | duration | `3m0s` | daemon | yes | `--daemon-refresh-timeout` | `MCPX_DAEMON_REFRESH_TIMEOUT` | how long POST /v1/refresh may take |
+| `daemon.roots` | paths | *(empty)* | daemon | no | `--daemon-roots` | `MCPX_DAEMON_ROOTS` | filesystem paths exposed to upstream servers through roots/list |
 | `daemon.saveInterval` | duration | `5m` | daemon | no | `--daemon-save-interval` | `MCPX_DAEMON_SAVE_INTERVAL` | *(plumbing)* how often daemon state is written to disk |
 | `daemon.socketProbeTimeout` | duration | `500ms` | daemon | no | `--daemon-socket-probe-timeout` | `MCPX_DAEMON_SOCKET_PROBE_TIMEOUT` | *(plumbing)* how long a socket left by a crashed daemon is given to answer |
 | `daemon.takeoverTimeout` | duration | `15s` | daemon | no | `--daemon-takeover-timeout` | `MCPX_DAEMON_TAKEOVER_TIMEOUT` | *(plumbing)* how long a handoff may take, and how long the old daemon waits for its successor to hang up |
