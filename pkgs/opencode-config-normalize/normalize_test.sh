@@ -448,6 +448,23 @@ cat >"$tmp/plugins-merge-trailing-comment.fixture" <<'EOF'
 EOF
 check plugins-merge-trailing-comment "$tmp/plugins-merge-trailing-comment.fixture" '' 1
 
+# Case 21 (Codex P2 on PR #4644): a trailing comma before a trailing
+# block comment is still the legacy array's element separator. Remove
+# that comma while preserving the comment, then perform the merge.
+cat >"$tmp/plugins-merge-trailing-block-comment.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-plugin-a", /* keep trailing block */],
+  "plugins": ["opencode-plugin-b"]
+}
+EOF
+check plugins-merge-trailing-block-comment "$tmp/plugins-merge-trailing-block-comment.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b"]}' 0
+grep -qF '/* keep trailing block */' "$tmp/plugins-merge-trailing-block-comment.jsonc" || {
+  echo "FAIL plugins-merge-trailing-block-comment: lost trailing block comment"
+  failures=$((failures + 1))
+}
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1

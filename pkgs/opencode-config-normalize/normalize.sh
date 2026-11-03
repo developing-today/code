@@ -356,6 +356,85 @@ def line_comment_at_end(fragment):
     return False
 
 
+def strip_trailing_element_comma(fragment):
+    # Remove the trailing element-separator comma (the one before the
+    # closing bracket), skipping over trailing comments, so a legacy
+    # array like ["a", /* keep */] splices without a doubled comma
+    # (Codex P2 on PR #4644: the naive endswith(',') check missed the
+    # comma hidden behind the block comment and the merge wrongly
+    # failed closed on input the old code repaired). Only a comma
+    # followed solely by whitespace/comments is removed; a comma inside
+    # a string, a comment, or a nested array/object is never touched.
+    # Returns the fragment unchanged when there is no trailing comma.
+    last_comma = -1
+    i = 0
+    n = len(fragment)
+    depth = 0
+    in_str = False
+    in_line = False
+    in_block = False
+    while i < n:
+        c = fragment[i]
+        if in_line:
+            if c == '\n':
+                in_line = False
+            i += 1
+            continue
+        if in_block:
+            if c == '*' and fragment[i + 1:i + 2] == '/':
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            if c == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == '/' and fragment[i + 1:i + 2] == '/':
+            in_line = True
+            i += 2
+            continue
+        elif c == '/' and fragment[i + 1:i + 2] == '*':
+            in_block = True
+            i += 2
+            continue
+        elif c in '[{':
+            depth += 1
+        elif c in ']}':
+            depth -= 1
+        elif c == ',' and depth == 0:
+            last_comma = i
+        i += 1
+    if last_comma < 0:
+        return fragment
+    tail = fragment[last_comma + 1:]
+    k = 0
+    m = len(tail)
+    while k < m:
+        if tail[k] in ' \t\r\n':
+            k += 1
+            continue
+        if tail.startswith('//', k):
+            nl = tail.find('\n', k)
+            k = m if nl < 0 else nl + 1
+            continue
+        if tail.startswith('/*', k):
+            end = tail.find('*/', k + 2)
+            if end < 0:
+                return fragment  # unterminated: leave alone, fail closed
+            k = end + 2
+            continue
+        return fragment  # real content after the comma: not trailing
+    return fragment[:last_comma] + tail
+
+
 def splice_plugin_merge(text):
     # Both-present plugin+plugins merge (#4639) as a textual element
     # splice: the legacy elements move into the `plugins` array (legacy
@@ -382,9 +461,7 @@ def splice_plugin_merge(text):
     legacy_inner = legacy_text[1:-1].strip()
     native_inner = native_text[1:-1].strip()
     if legacy_inner and native_inner:
-        core = legacy_inner
-        if core.endswith(','):
-            core = core[:-1].rstrip()
+        core = strip_trailing_element_comma(legacy_inner).rstrip()
         if line_comment_at_end(core):
             return None
         inner = core + ',\n' + native_inner
