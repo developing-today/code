@@ -14,7 +14,6 @@ package elicit
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -359,7 +358,7 @@ CREATE TABLE IF NOT EXISTS elicitation_answers (
 // NewID mints an identifier.
 func NewID() string {
 	var b [8]byte
-	_, _ = rand.Read(b[:])
+	_, _ = RandSource.Read(b[:])
 	return "elc-" + hex.EncodeToString(b[:])
 }
 

@@ -191,9 +191,10 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 		"MCPX_HOOK_EVENT_SESSION="+e.Session,
 		"MCPX_HOOK_EVENT_URI="+e.URI,
 	)
-	var out = limitedHookOutput()
-	cmd.Stdout = out
-	cmd.Stderr = out
+	var stdout = limitedHookOutput()
+	var stderr = limitedHookOutput()
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
 		r.recordFailure(h, e, 0, err)
@@ -229,7 +230,7 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 		return
 	}
 	if runErr != nil {
-		r.recordFailure(h, e, dur, fmt.Errorf("%v: %s", runErr, firstLine(out.String())))
+		r.recordFailure(h, e, dur, fmt.Errorf("%v: %s", runErr, failureText(stderr.String(), stdout.String())))
 		return
 	}
 	if st := r.statsFor(h.Name); st.Slow > 0 && dur >= h.Timeout*4/5 {
@@ -303,4 +304,17 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// failureText names why a hook failed. The hook's own stderr diagnostic wins:
+// stdout and stderr share a size bound but not a meaning, and a hook that
+// fills the bound with stdout (say, a progress dump with no newline) before
+// writing its one-line error to stderr would otherwise have that stdout
+// recorded as the failure. A hook that exits nonzero without a stderr
+// diagnostic still reports its first stdout line.
+func failureText(stderr, stdout string) string {
+	if line := firstLine(stderr); line != "" {
+		return line
+	}
+	return firstLine(stdout)
 }

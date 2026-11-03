@@ -37,7 +37,7 @@ const PREVIOUS: PreviousValue<QuotaCurrentEntry> = {
   value: {
     providerId: "cline-pass",
     providerName: "ClinePass",
-    serviceId: "cline-pass:cline-pass",
+    serviceId: "cline-pass",
     state: "ok",
     measuredAt: "2026-11-02T11:45:00Z",
     source: "token-adapter/cline-pass",
@@ -117,7 +117,7 @@ describe("parseClinePassPayload (ported OpenChamber mapping)", () => {
   test("entry mapping lands on the cline-pass service id with pct windows", () => {
     const entry = entryFromClinePassReading(parseClinePassPayload(DOCUMENTED), NOW.toISOString());
     expect(entry.providerId).toBe("cline-pass");
-    expect(entry.serviceId).toBe("cline-pass:cline-pass");
+    expect(entry.serviceId).toBe("cline-pass");
     expect(entry.state).toBe("ok");
     expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
       ["5h", 43],
@@ -196,7 +196,7 @@ describe("collectClinePassAdapter (framework semantics)", () => {
 describe("fetchClinePassPayload (credential hygiene)", () => {
   test("sends the token only as the Authorization header, to the provider URL", async () => {
     let seenUrl = "";
-    let seenAuth: string | null = null;
+    let seenAuth: string | undefined;
     const fetchImpl: ClinePassFetch = async (url, init) => {
       seenUrl = url;
       seenAuth = init.headers.Authorization;
@@ -237,7 +237,7 @@ describe("gatherClinePass (gatherer registration path)", () => {
       fetchImpl: async () => ({ status: 200, text: async () => JSON.stringify(DOCUMENTED) }),
     });
     expect(out.status).toBe("ok");
-    expect(out.value?.serviceId).toBe("cline-pass:cline-pass");
+    expect(out.value?.serviceId).toBe("cline-pass");
     expect(out.value?.windows.map((w) => w.name)).toEqual(["5h", "weekly", "monthly"]);
     expect(JSON.stringify(out)).not.toContain("fixture-token");
   });

@@ -6,28 +6,51 @@
 //
 //   1. The OpenChamber quota module, imported in-process from the
 //      laptop's OpenChamber checkout, fetching every configured
-//      provider per credential. Credentials come from a DIRECT read
-//      of OpenCode's own credential store (the `credential` table of
-//      opencode.db, opened read-only) instead of the OpenCode server
-//      API, so a stopped server cannot zero the tick (the CLI's
-//      wholesale "Transport: fetch failed" failure mode, #1251).
-//      The read is the OpenChamber module's own
-//      openCodeLocalCredentialSource — the same shared implementation
-//      the quota CLI falls back to (#2490 phase 3) — so its
-//      projection (rows ordered (active, time_created, id), the last
-//      row per integration selected, unreadable rows surfaced rather
-//      than silently dropped) is the one every surface gets.
+//      provider per credential. Credentials come from ASKING THE
+//      OPENCODE SERVER (Drew's ruling, 2026-11-03: the quota ask
+//      terminates at the OpenCode server — never at a standalone
+//      proxy program and never at a direct database read when the
+//      server can answer): the module's own openCodeCredentialSource
+//      against GET /api/credential on the standing fork server
+//      (service-prod.json under ~/.local/state/opencode/ names its
+//      URL and password; the password is read at tick time and never
+//      logged) — the quota CLI's primary path (#2490). The DIRECT
+//      read of OpenCode's credential store (the `credential` table
+//      of opencode.db, opened read-only, the module's
+//      openCodeLocalCredentialSource) remains ONLY as the
+//      transport-failure fallback, the CLI's exact combined-source
+//      shape: a stopped server switches the tick's reads to the
+//      local store instead of zeroing the tick (#1251), and when
+//      even that fails the tick fails loudly and the previous
+//      quota-current.json stands, with #1268 retaining last-known
+//      rows per provider. A server that ANSWERS and refuses is
+//      authoritative — no fallback. The fallback's projection (rows
+//      ordered (active, time_created, id), the last row per
+//      integration selected, unreadable rows surfaced rather than
+//      silently dropped) is the one every surface gets.
 //      Environment-variable keys are not store rows and never appear
 //      here — stored credentials win, which is the order OpenCode
 //      itself uses.
+//      One leg does NOT terminate at the server: OpenDesign. Its
+//      provider reads a managed session credential (a Better Auth
+//      session cookie + workspace id, in OpenChamber's own quota
+//      credential store) because the billing usage API it answers
+//      from accepts only that session — the credential the OpenCode
+//      server holds for `opendesign` is the AMR inference API key,
+//      which that API refuses (verified 403 as Bearer and as session
+//      cookie, 2026-11-03), and the server exposes no quota/usage
+//      surface at all (its route table has credential/session/etc.
+//      groups, no quota group). The gap is filed as code#5060.
 //   3. The Turso org usage API (#1049): usage + subscription over
 //      the verified route, token from Bitwarden by name.
-//   2. File exports (the Meta Phase-1 convention, #1301): producers
-//      the module cannot reach write latest.json documents on the
-//      laptop (v1: Meta, ~/atlas/meta-quota-export/latest.json);
+//   2. File exports (the Phase-1 convention, #1301): producers the
+//      module cannot reach write latest.json documents on the laptop;
 //      the gatherer ingests them in the same tick. A document older
 //      than 30 minutes means the producer is unreachable — an error
-//      entry, never zeros.
+//      entry, never zeros. The v1 producer (Meta's dev.meta.ai
+//      console scrape) was retired 2026-11-03: Drew's ruling is that
+//      quota is gathered by asking OpenCode — family 5 below is its
+//      replacement, and the producer list is empty today.
 //   4. The native ClinePass token adapter (#1159, src/clinepass-
 //      adapter.ts on the #1153 framework): fills the ClinePass row
 //      when the OpenChamber module did not already produce a fresh
@@ -35,6 +58,14 @@
 //      a credential reference on this host. An expired token is
 //      session-expired / re-login with the last-known row retained
 //      (#1268) — never a 0% row.
+//   5. The Meta module ask (2026-11-03): the provider listing
+//      (family 1) filters providers whose session door is disabled
+//      in the opencode config, and `meta` is disabled as a direct
+//      door — sessions reach the pool through model routes — so the
+//      listing never names it. The gatherer asks the module for meta
+//      explicitly (runMetaModule): the read runs through OpenCode's
+//      own credential machinery, which is what gathering quota by
+//      asking OpenCode means for a route-only pool.
 //
 // Outputs:
 //   - quota-current.json — the latest-state contract (model.ts
@@ -63,9 +94,14 @@
 // Env: OPENCHAMBER_LIB_DIR (default: first of ~/git/devtoday-
 //      openchamber, ~/git/openchamber-fork containing the module),
 //      OPENCODE_DB_PATH (~/.local/share/opencode/opencode.db),
+//      OPENCODE_URL (default: the service-prod.json URL, else
+//      http://127.0.0.1:13420), OPENCODE_AUTH_FILE
+//      (~/.local/state/opencode/service-prod.json — the standing
+//      server's URL + password, read at tick time, never logged),
+//      OPENCODE_SERVER_PASSWORD (overrides the file's password),
 //      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH,
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
-//      USAGE_SNAPSHOT_OUTBOX_PATH, META_QUOTA_EXPORT_PATH,
+//      USAGE_SNAPSHOT_OUTBOX_PATH,
 //      QUOTA_GATHER_TIMEOUT_MS (15000),
 //      QUOTA_GATHER_CONCURRENCY (6), TURSO_API_TOKEN (else the
 //      Bitwarden secret turso.platform-api-token-muse-cli, resolved
@@ -107,6 +143,7 @@ import {
   gatherClinePass,
 } from "../src/clinepass-adapter.ts";
 import type { CredentialRef } from "../src/token-adapter.ts";
+import { safeProviderReason } from "../src/credential-lifecycle.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
@@ -134,14 +171,16 @@ const timeoutMs = Number(process.env.QUOTA_GATHER_TIMEOUT_MS ?? 15_000);
 const gatherConcurrency = Number(process.env.QUOTA_GATHER_CONCURRENCY ?? 6);
 const OBSERVED_BY = "quota-gatherer";
 
-/** File-export producers ingested each tick (the #1301 convention). */
-const FILE_EXPORTS = [
-  {
-    key: "meta",
-    path: process.env.META_QUOTA_EXPORT_PATH ?? join(HOME, "atlas/meta-quota-export/latest.json"),
-    staleMs: 30 * 60_000,
-  },
-];
+/**
+ * File-export producers ingested each tick (the #1301 convention).
+ * The v1 producer — Meta, ~/atlas/meta-quota-export/latest.json, a
+ * dev.meta.ai console scrape — was retired 2026-11-03: quota is
+ * gathered by asking OpenCode (Drew's ruling), and the module's own
+ * Meta provider replaced the scrape (see runMetaModule). The list
+ * stays, empty, for the next producer the module cannot reach;
+ * entryFromFileExport keeps the convention's mapping tested.
+ */
+const FILE_EXPORTS: { key: string; path: string; staleMs: number }[] = [];
 
 interface QuotaModule {
   listConfiguredQuotaProviders: (opts?: { includeDisabled?: boolean }) => Promise<string[]>;
@@ -149,6 +188,10 @@ interface QuotaModule {
 }
 interface AuthModule {
   configureOpenCodeCredentials: (source: unknown) => void;
+  openCodeCredentialSource: (opts: {
+    buildOpenCodeUrl: (requestPath?: string) => string;
+    getOpenCodeAuthHeaders: () => Record<string, string>;
+  }) => CredentialSourceLike;
   // The shared direct credential-store read from lib/opencode/auth.js
   // (#2490 phase 3): same projection and failure semantics as the CLI
   // fallback — it throws when the store is missing or holds rows but
@@ -156,8 +199,49 @@ interface AuthModule {
   // listConfiguredQuotaProviders, so a bad store fails the tick loudly
   // instead of producing an empty "not configured" tick. It has no
   // listEnvironmentKeys: stored credentials are the whole story for
-  // this reader, as before.
-  openCodeLocalCredentialSource: (opts: { dbPath: string }) => unknown;
+  // this reader, as before. Since 2026-11-03 it is wired only BEHIND
+  // the server source above (transport-failure fallback), never as
+  // the primary read.
+  openCodeLocalCredentialSource: (opts: { dbPath: string }) => CredentialSourceLike;
+}
+
+interface CredentialSourceLike {
+  list: () => Promise<unknown>;
+  create?: (input: unknown) => Promise<unknown>;
+  remove?: (credentialID: string) => Promise<unknown>;
+  listEnvironmentKeys?: () => Promise<Record<string, string>>;
+  usesLocalStore?: () => boolean;
+  getLaunchEnvironment?: () => unknown;
+}
+
+interface ClaudeCredentialSource {
+  loadClaudeCredential: () => Promise<{
+    expiresAt?: number | null;
+    source?: "keychain" | "credentials-file" | "opencode-auth" | "env";
+  } | null>;
+}
+
+/** Read only Claude expiry metadata; credential values stay local and are discarded. */
+async function claudeExpiryMetadata(): Promise<{
+  expiresAt?: string;
+  source?: "claude-code" | "opencode" | "environment";
+} | null> {
+  try {
+    const auth = (await import(join(libDir, "quota/providers/claude/auth.js"))) as unknown as ClaudeCredentialSource;
+    const credential = await auth.loadClaudeCredential();
+    if (!credential) return null;
+    const metadata: { expiresAt?: string; source?: "claude-code" | "opencode" | "environment" } = {};
+    if (typeof credential.expiresAt === "number" && Number.isFinite(credential.expiresAt)) {
+      const expiry = new Date(credential.expiresAt);
+      if (Number.isFinite(expiry.getTime())) metadata.expiresAt = expiry.toISOString();
+    }
+    if (credential.source === "keychain" || credential.source === "credentials-file") metadata.source = "claude-code";
+    else if (credential.source === "opencode-auth") metadata.source = "opencode";
+    else if (credential.source === "env") metadata.source = "environment";
+    return metadata;
+  } catch {
+    return null;
+  }
 }
 
 async function writeAtomic(path: string, text: string): Promise<void> {
@@ -177,10 +261,10 @@ async function failTick(tickAt: string, started: number, error: string): Promise
     ok: false,
     durationMs: Date.now() - started,
     perProvider: {},
-    error,
+    error: safeProviderReason(error),
   };
   await writeHeartbeat(hb).catch(() => {});
-  console.error(`quota-gatherer: tick failed before providers ran: ${error}`);
+  console.error(`quota-gatherer: tick failed before providers ran: ${safeProviderReason(error)}`);
   return 1;
 }
 
@@ -321,7 +405,7 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
     return done(
       entryFromTurso(null, null, {
         measuredAt: tickIso,
-        error: err instanceof Error ? err.message : String(err),
+        error: safeProviderReason(err instanceof Error ? err.message : String(err)),
       }),
     );
   }
@@ -360,12 +444,14 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
     ref = credentialRefFromConfig(process.env.CLINEPASS_CREDENTIAL_REF);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    const entry = clinePassErrorEntry(safeProviderReason(detail), tickIso);
+    entry.credentialWatch = true;
     return {
       id: CLINEPASS_PROVIDER_ID,
       state: "error",
       ms: Date.now() - t0,
-      entries: [clinePassErrorEntry(detail, tickIso)],
-      error: detail,
+      entries: [entry],
+      error: safeProviderReason(detail),
     };
   }
   if (!ref) return null;
@@ -377,6 +463,7 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
   });
   const entry =
     outcome.value ?? clinePassErrorEntry(outcome.detail ?? `cline-pass adapter: ${outcome.status}`, tickIso);
+  entry.credentialWatch = true;
   return {
     id: CLINEPASS_PROVIDER_ID,
     state: outcome.status === "ok" ? "ok" : "error",
@@ -384,6 +471,46 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
     entries: [entry],
     ...(outcome.status !== "ok" ? { error: outcome.detail ?? outcome.status } : {}),
   };
+}
+
+/**
+ * The Meta module ask (2026-11-03, Drew's ask-OpenCode ruling): the
+ * quota module's provider listing filters out providers whose
+ * session door is disabled in the opencode config, and `meta` is
+ * disabled as a direct door (sessions reach the pool through model
+ * routes), so the listing never names it and the plain tick never
+ * asked — the board's Meta row went dark even though OpenCode holds
+ * the pool's credential and the module's Meta provider reads the
+ * plan's own usage endpoint with it. The gatherer asks explicitly,
+ * the same out-of-band registration pattern as the native ClinePass
+ * adapter. No outer timeout wraps the ask: the provider self-times
+ * out per request (15s), and its account-token fallback is a second
+ * request — clipping the pair at the generic 15s cap could turn a
+ * slow success into a false error row.
+ */
+async function runMetaModule(quota: QuotaModule, tickIso: string): Promise<ProviderRun> {
+  const t0 = Date.now();
+  try {
+    const results = await quota.fetchQuotaForProviderInstances("meta");
+    const entries = results.map((r) => entryFromResult(r, tickIso));
+    const anyOk = entries.some((e) => e.state === "ok");
+    const firstBad = entries.find((e) => e.state !== "ok");
+    return {
+      id: "meta",
+      state: anyOk ? "ok" : "error",
+      ms: Date.now() - t0,
+      entries,
+      ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
+    };
+  } catch (err) {
+    return {
+      id: "meta",
+      state: "error",
+      ms: Date.now() - t0,
+      entries: [],
+      error: safeProviderReason(err instanceof Error ? err.message : String(err)),
+    };
+  }
 }
 
 interface ProviderRun {
@@ -419,7 +546,7 @@ async function runProvider(quota: QuotaModule, id: string, tickIso: string): Pro
       state: "error",
       ms: Date.now() - t0,
       entries: [],
-      error: err instanceof Error ? err.message : String(err),
+      error: safeProviderReason(err instanceof Error ? err.message : String(err)),
     };
   }
 }
@@ -478,6 +605,121 @@ async function readState(): Promise<Map<string, string>> {
   return new Map();
 }
 
+/**
+ * The standing OpenCode fork server's coordinates (Drew's ruling,
+ * 2026-11-03: the quota ask terminates at the OpenCode server). The
+ * service file is the fleet's standing record — the dispatcher's
+ * OPENCODE_AUTH_FILE convention (pm-stack/dispatch/src/config.ts) —
+ * naming the server's URL and its password. OPENCODE_URL /
+ * OPENCODE_SERVER_PASSWORD override it. The password is held in this
+ * closure only: never logged, never written, never placed in a URL.
+ * A missing/unreadable file is not fatal: the default loopback URL is
+ * used with no auth header, and the local-store fallback behind the
+ * server source covers a server that cannot be reached at all.
+ */
+async function resolveOpenCodeServer(): Promise<{ baseUrl: string; authHeaders: () => Record<string, string> }> {
+  let url = process.env.OPENCODE_URL?.trim() || "";
+  let password = process.env.OPENCODE_SERVER_PASSWORD?.trim() || "";
+  if (!url || !password) {
+    try {
+      const filePath =
+        process.env.OPENCODE_AUTH_FILE ?? join(HOME, ".local", "state", "opencode", "service-prod.json");
+      const svc = JSON.parse(await readFile(filePath, "utf8")) as { url?: unknown; password?: unknown };
+      if (!url && typeof svc.url === "string" && svc.url.trim()) url = svc.url.trim();
+      if (!password && typeof svc.password === "string") password = svc.password;
+    } catch {
+      // no service file — the defaults below stand
+    }
+  }
+  const baseUrl = (url || "http://127.0.0.1:13420").replace(/\/+$/, "");
+  return {
+    baseUrl,
+    authHeaders: () =>
+      password ? { Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } : {},
+  };
+}
+
+const TRANSPORT_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "EPIPE",
+]);
+
+/**
+ * Whether a credential read failed because the OpenCode server could
+ * not be reached at all, as opposed to the server answering and
+ * refusing. Ported from the quota CLI's commands-quota.js
+ * isTransportFailure (#2490): the OpenCode client marks its own
+ * transport failures with `reason: 'Transport'` (an HTTP answer is a
+ * different reason and stays authoritative); the walk down the cause
+ * chain covers the fetch and socket errors underneath.
+ */
+function isTransportFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    const rec = current as { reason?: unknown; code?: unknown; message?: unknown; cause?: unknown };
+    if (rec.reason === "Transport") return true;
+    if (typeof rec.code === "string" && TRANSPORT_ERROR_CODES.has(rec.code)) return true;
+    const message = typeof rec.message === "string" ? rec.message : "";
+    if (message.startsWith("Transport:") || message === "fetch failed") return true;
+    current = rec.cause;
+  }
+  return false;
+}
+
+/**
+ * The server-first credential source wired into the quota module:
+ * the OpenCode server answers (GET /api/credential via the module's
+ * openCodeCredentialSource); the direct local-store read stands
+ * behind it ONLY for transport failures — the quota CLI's
+ * createFallbackCredentialSource shape (#2490), kept here so the
+ * gatherer does not import CLI plumbing. The first transport failure
+ * switches every later read this tick to the local store (a server
+ * that is down does not come back mid-tick) and is logged once, so a
+ * tick's provenance is never ambiguous. This is the #1251 resilience
+ * contract: server-down degrades to the store read, and if the store
+ * also fails the error propagates to failTick — the tick fails
+ * loudly and last-known rows stand (#1268), never zeros.
+ */
+function createServerFirstCredentialSource(
+  primary: CredentialSourceLike,
+  fallback: CredentialSourceLike,
+): CredentialSourceLike {
+  let fellBack = false;
+  const source: CredentialSourceLike = {
+    usesLocalStore: () => primary.usesLocalStore?.() ?? false,
+    getLaunchEnvironment: () => primary.getLaunchEnvironment?.() ?? null,
+    list: async () => {
+      if (fellBack) return fallback.list();
+      try {
+        return await primary.list();
+      } catch (error) {
+        if (!isTransportFailure(error)) throw error;
+        fellBack = true;
+        console.log(
+          "quota-gatherer: OpenCode server unreachable — credentials from the local OpenCode store this tick (transport fallback)",
+        );
+        try {
+          return await fallback.list();
+        } catch (fallbackError) {
+          const reason = error instanceof Error ? error.message : "OpenCode server unreachable";
+          const storeReason =
+            fallbackError instanceof Error ? fallbackError.message : "local credential store unreadable";
+          throw new Error(`${reason}; the local credential store could not be read either (${storeReason})`);
+        }
+      }
+    },
+  };
+  if (primary.create) source.create = (input) => primary.create!(input);
+  if (primary.remove) source.remove = (credentialID) => primary.remove!(credentialID);
+  if (primary.listEnvironmentKeys) source.listEnvironmentKeys = () => primary.listEnvironmentKeys!();
+  return source;
+}
+
 async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
@@ -485,7 +727,18 @@ async function main(): Promise<number> {
   let quota: QuotaModule;
   try {
     const auth = (await import(join(libDir, "opencode/auth.js"))) as unknown as AuthModule;
-    auth.configureOpenCodeCredentials(auth.openCodeLocalCredentialSource({ dbPath }));
+    // Ask the OpenCode server first (GET /api/credential on the
+    // standing fork server); the direct store read is only the
+    // transport-failure fallback behind it. See
+    // createServerFirstCredentialSource and the header (family 1).
+    const server = await resolveOpenCodeServer();
+    const serverSource = auth.openCodeCredentialSource({
+      buildOpenCodeUrl: (requestPath?: string) => `${server.baseUrl}${requestPath ?? ""}`,
+      getOpenCodeAuthHeaders: server.authHeaders,
+    });
+    auth.configureOpenCodeCredentials(
+      createServerFirstCredentialSource(serverSource, auth.openCodeLocalCredentialSource({ dbPath })),
+    );
     quota = (await import(join(libDir, "quota/index.js"))) as unknown as QuotaModule;
   } catch (err) {
     return failTick(tickAt, started, `quota module import failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -525,6 +778,33 @@ async function main(): Promise<number> {
     }
   }
 
+  // 2026-11-03: the Meta module ask (see runMetaModule). Exactly one
+  // meta run survives, mirroring the ClinePass discipline above: a
+  // fresh listed run (the door re-enabled someday) wins and the ask
+  // is skipped; otherwise the ask replaces the listed run, or is
+  // appended when the listing never named meta.
+  const metaIdx = runs.findIndex((r) => r.id === "meta");
+  if (metaIdx !== -1 && runs[metaIdx].entries.some((e) => e.state === "ok")) {
+    console.log("quota-gatherer: meta ok via provider listing - explicit module ask skipped");
+  } else {
+    const metaRun = await runMetaModule(quota, tickAt);
+    if (metaIdx === -1) runs.push(metaRun);
+    else runs[metaIdx] = metaRun;
+  }
+
+  // The Claude auth source exposes an expiry timestamp. Persist only that
+  // metadata and its source class, never the credential object or values.
+  const claudeRun = runs.find((run) => run.id === "claude");
+  if (claudeRun?.entries.length) {
+    const metadata = await claudeExpiryMetadata();
+    if (metadata) {
+      for (const entry of claudeRun.entries) {
+        if (metadata.expiresAt) entry.credentialExpiresAt = metadata.expiresAt;
+        if (metadata.source) entry.credentialSource = metadata.source;
+      }
+    }
+  }
+
   // #1268: an errored run with no ok row of its own retains the
   // provider's last-known ok entries from the previous tick instead
   // of replacing them with fresh error rows (or with nothing, on a
@@ -546,6 +826,9 @@ async function main(): Promise<number> {
   // onto the four split hub pools and the snapshot writer continues
   // the pool-level series.
   const entries = entriesWithPoolSplits(runs.flatMap((r) => r.entries));
+  for (const entry of entries) {
+    if (entry.error) entry.error = safeProviderReason(entry.error);
+  }
 
   const perProvider: QuotaGatherHeartbeat["perProvider"] = {};
   for (const run of runs) {
@@ -553,10 +836,10 @@ async function main(): Promise<number> {
       state: run.state,
       ms: run.ms,
       rows: run.entries.length,
-      ...(run.error ? { error: run.error } : {}),
+      ...(run.error ? { error: safeProviderReason(run.error) } : {}),
     };
     console.log(
-      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${run.error.slice(0, 140)}` : ""}`,
+      `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${safeProviderReason(run.error).slice(0, 140)}` : ""}`,
     );
   }
 

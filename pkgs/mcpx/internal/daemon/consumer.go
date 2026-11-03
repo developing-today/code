@@ -58,6 +58,10 @@ type ConsumerPolicy struct {
 	ModelDefault        string
 	ModelBudget         int
 	ModelTimeout        time.Duration
+
+	// SamplingAnswerLocally is sampling.answerLocally: answer upstream
+	// sampling requests from the configured model layer (#1925 slice 3).
+	SamplingAnswerLocally bool
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -163,6 +167,7 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.ModelDefault = set.String("model.default")
 	p.ModelBudget = set.Int("model.budget")
 	p.ModelTimeout = set.Duration("model.timeout")
+	p.SamplingAnswerLocally = set.Bool("sampling.answerLocally")
 	return p
 }
 
@@ -440,7 +445,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		// is what happened on every call that arrived while a new daemon
 		// was still reading schemas -- so read them now, and refuse if
 		// they cannot be read: failing open is the one wrong answer here.
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "its annotations could not be read: " + err.Error()}
@@ -552,7 +557,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 		}
 		tools, _, at := p.CachedSchemas()
 		if at.IsZero() || p.SchemaExpired() {
-			fresh, _, err := p.RefreshSchemas(ctx)
+			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				ledgerRefusal = ErrUnknownOutcome{Record: record,
 					Reason: "could not verify whether this tool is read-only: " + err.Error()}
@@ -630,7 +635,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 	// fail-open this gate exists to prevent.
 	all, _, at := p.CachedSchemas()
 	if at.IsZero() || p.SchemaExpired() {
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "write policy: its annotations could not be read: " + err.Error()}
@@ -863,10 +868,19 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		Prelude:       prelude(nss),
 		ClientSource:  codegen.Module(nss, s.endpoint, session),
 		GlobalsSource: codegen.GlobalDeclarations(nss),
-		Timeout:       timeout,
-		Stdout:        &out,
-		Stderr:        &errOut,
-		Env:           env,
+		// A Python one-shot lands here with a Python prelude when the
+		// source chose it (#1917 Phase 2); the same options the runner
+		// itself would derive reach one from daemon callers.
+		Clients: map[string]runner.Client{
+			codegen.Python.Name: {
+				Module:  codegen.PythonModule(nss, s.endpoint, session),
+				Globals: codegen.PythonGlobals(nss),
+			},
+		},
+		Timeout: timeout,
+		Stdout:  &out,
+		Stderr:  &errOut,
+		Env:     env,
 	})
 	result := &ExecResult{Stdout: out.String(), Stderr: errOut.String()}
 	if rerr != nil {

@@ -348,6 +348,13 @@ alerts-intake-token`, resolved by name at runtime
   `notification_sends` row per attempt. An unacked critical older
   than `ALERT_ACK_WINDOW_MIN` (default 15) escalates with exactly
   one more push (`escalated_at`). Warnings never push in v1.
+- **Measurement**: `/notifications` (#3319) is the read-only weekly
+  sent-vs-acted-on roll-up over `notification_sends`: per class and
+  rolling week, only `outcome = sent` rows count as sends, and a send
+  counts as acted-on when its `acted_on_at` (stamped by Ack) falls
+  within 24 hours. A class under 10% acted-on over the rolling
+  four-week window renders as a default-off *proposal* — display
+  only; the page never changes a preference or a default.
 - **Ack surface**: `/alerts` lists open incidents with Ack/Close.
   Ack is exactly-once: only the open→acked transition writes an
   event (and stamps the sends' `acted_on_at`); a repeat ack returns
@@ -803,3 +810,23 @@ test/
                     cache/degraded), fixtures story, /health boot
                     (#1137, #1147)
 ```
+
+## Store contract: define semantics (#2953)
+
+Define semantics for externally-spelled keys (#2953). A value keyed by a
+name a caller, document, feed, file, peer or user can spell is stored with
+define semantics, never assignment semantics: the store is built in a Map
+or a null-prototype object and converted at the boundary with
+Object.fromEntries / spread, or the entry is written with
+Object.defineProperty. The non-conforming forms for external keys are
+obj[key] = v, obj[key] ??= ..., dst[k] = src[k] copy loops, and
+Object.assign(dst, src) with an externally-keyed src — all go through
+[[Set]], and for the one spelling "__proto__" [[Set]] invokes the
+Object.prototype setter instead of creating an own property, silently
+dropping the entry or moving the container's prototype. Keys are data:
+preserve, don't reject. Code-constructed tables whose keys are all
+internal are exempt. Probe matrix for every covered site — keys
+"__proto__" (string value), "__proto__" (object value), "constructor",
+"toString", and an ordinary key: the entry exists as an own property with
+its value, a JSON round-trip preserves it, and neither the container's
+prototype nor Object.prototype moves or gains own properties.

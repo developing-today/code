@@ -2,6 +2,7 @@
 // timeline lanes, and the unified comment stream. No I/O here.
 import type { SectionDiagnosis } from "./feed.ts";
 import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
+import { parseIsoDate } from "./validate.ts";
 
 export interface ExecutionStrip {
   /** Draft PRs, and open issues already dispatched or in progress. */
@@ -866,6 +867,19 @@ export function buildAttentionFlags(
       }
     }
   }
+  for (const credential of quota.credentialLifecycle ?? []) {
+    if (credential.state !== "expired" && credential.state !== "expiring" && credential.state !== "rejected") continue;
+    const deadline = credential.expiresAt ? ` · expires ${credential.expiresAt.slice(0, 10)}` : "";
+    const reason = credential.reason ? ` · ${credential.reason}` : "";
+    const action = credential.userAction ? ` · user action: ${credential.userAction.title}` : "";
+    flags.push({
+      kind: "credential-lifecycle",
+      label: `${credential.providerName} · ${credential.label} — ${credential.state}`,
+      detail: `${credential.state}${deadline}${reason}${action}`,
+      href: `/quota/service/${encodeURIComponent(credential.serviceId)}`,
+      severity: credential.state === "expired" || credential.state === "rejected" ? 1000 : 500,
+    });
+  }
   for (const svc of usage.services) {
     for (const m of svc.metrics) {
       if (m.percent != null && m.percent > BUBBLE_PCT) {
@@ -905,7 +919,9 @@ export function buildAttentionFlags(
   // Worst first: over-limit by percent, then PAYG by dollars — the two
   // severities are different units, so kinds stay grouped, worst kind
   // (over-limit) first per the design's "worst first" reading order.
-  return flags.sort((a, b) => (a.kind === b.kind ? b.severity - a.severity : a.kind === "over-limit" ? -1 : 1));
+  const rank = (kind: AttentionFlag["kind"]): number =>
+    kind === "credential-lifecycle" ? 0 : kind === "over-limit" ? 1 : kind === "payg-unbilled" ? 2 : 3;
+  return flags.sort((a, b) => (rank(a.kind) === rank(b.kind) ? b.severity - a.severity : rank(a.kind) - rank(b.kind)));
 }
 
 export interface Freshness {
@@ -925,6 +941,16 @@ export const FRESHNESS_FUTURE_TOLERANCE_MS = 86_400_000; // 1 day
 /** A card is stale when its freshest read is older than its cadence (§1.1). */
 export function freshness(measuredAt: string | null, cadenceDays: number, now = new Date()): Freshness {
   if (!measuredAt) return { stale: true, ageDays: null };
+  // #5102: Date.parse is lenient — impossible dates roll (2026-02-30
+  // becomes Mar 2) and non-ISO strings parse ("March 2, 2026"), so a
+  // malformed stamp aged as fresh. Parse strictly via parseIsoDate,
+  // the sibling gates' helper: a stamp that is not a real ISO date
+  // has honestly unknown age. Its instant matches what Date.parse
+  // produced for valid stamps (date-only is UTC midnight; a naive
+  // datetime is read as UTC, not host-local).
+  const parsed = parseIsoDate(measuredAt);
+  if (!parsed) return { stale: true, ageDays: null };
+  const t = parsed.getTime();
   // Date-only stamps age by calendar day (a read dated yesterday is
   // 1 day old all day today); datetimes age by elapsed whole days.
   // The calendar is Chicago's, the timezone every other calendar
@@ -933,8 +959,6 @@ export function freshness(measuredAt: string | null, cadenceDays: number, now = 
   // stale -- from 19:00 Chicago onward, when UTC had rolled over and
   // Chicago had not.
   if (measuredAt.length <= 10) {
-    const t = Date.parse(`${measuredAt}T00:00:00Z`);
-    if (Number.isNaN(t)) return { stale: true, ageDays: null };
     const startOfToday = Date.parse(`${chicagoYmd(now)}T00:00:00Z`);
     // A date-only stamp more than the tolerance past today's Chicago
     // midnight is a future stamp, not a fresh one (#1568): without
@@ -944,8 +968,6 @@ export function freshness(measuredAt: string | null, cadenceDays: number, now = 
     const ageDays = Math.max(0, Math.round((startOfToday - t) / 86_400_000));
     return { stale: ageDays > cadenceDays, ageDays };
   }
-  const t = Date.parse(measuredAt);
-  if (Number.isNaN(t)) return { stale: true, ageDays: null };
   if (t - now.getTime() > FRESHNESS_FUTURE_TOLERANCE_MS) return { stale: true, ageDays: null };
   const ageDays = Math.max(0, Math.floor((now.getTime() - t) / 86_400_000));
   return { stale: ageDays > cadenceDays, ageDays };

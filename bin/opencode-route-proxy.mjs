@@ -318,6 +318,15 @@ const credentialKey = (providerId) => {
   return key;
 };
 
+// The credential a leaf would call with: a static apiKey in its
+// provider config, else its active credential-store row (#3228).
+const leafCredential = (cfg, providerId) => {
+  const def = providerDef(cfg, providerId);
+  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
+  return staticKey || credentialKey(providerId);
+};
+const hasCredential = (cfg, providerId) => Boolean(leafCredential(cfg, providerId));
+
 // (provider,model) pairs demoted by the doctrine: >=3 quota failures
 // (quota detail recorded, or a RateLimit tag) inside the last 4 hours.
 const demotedPairs = () => {
@@ -716,8 +725,7 @@ const callLeaf = async (cfg, leaf, body, wantStream, signal, sessionLabel) => {
       retryable: 0,
     });
   const def = providerDef(cfg, leaf.providerId);
-  const staticKey = def?.options?.apiKey ? expandEnv(def.options.apiKey) : null;
-  const apiKey = staticKey || credentialKey(leaf.providerId);
+  const apiKey = leafCredential(cfg, leaf.providerId);
   if (!apiKey)
     throw new LeafError(`no credential for provider ${leaf.providerId}`, {
       tag: "Authentication",
@@ -796,6 +804,17 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
   candidates = applyDemotion(candidates, demotedPairs());
   if (!candidates.length)
     throw new LeafError(`route ${routeId} has no available members`, {
+      tag: "UnknownProvider",
+      retryable: 0,
+    });
+  // Credential-less leaves are skipped like disabled providers (#3228):
+  // a walk never spends one of its MAX_ATTEMPTS on a provider whose
+  // credential lookup comes back empty (inactive or missing row), and
+  // such a leaf never surfaces its misleading Authentication error as
+  // the run's terminal failure.
+  candidates = candidates.filter((c) => hasCredential(cfg, c.providerId));
+  if (!candidates.length)
+    throw new LeafError(`route ${routeId} has no credentialed members`, {
       tag: "UnknownProvider",
       retryable: 0,
     });

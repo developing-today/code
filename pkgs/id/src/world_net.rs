@@ -29,8 +29,9 @@ use tokio::{
 
 use crate::abuse::{
     AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, ConnectionId, Counters, Direction,
-    EndpointId as AbuseEndpointId, NodeId,
+    EndpointId as AbuseEndpointId, NodeId, RefusalReason,
 };
+use crate::event_store::BlockList;
 use crate::frames::{read_frame_body, read_frame_len};
 use crate::world_hub::WorldHub;
 use crate::world_session::{
@@ -119,13 +120,37 @@ impl WorldProtocol {
         local_node: NodeId,
         budgets: BudgetPolicy,
     ) -> Self {
+        Self::build(hub, local_node, budgets, None)
+    }
+
+    /// Like [`WorldProtocol::with_local_node`], with the operator block
+    /// list (#2245) attached to the shared evaluator: a connection from
+    /// an endpoint blocked by key is refused at admission, before any
+    /// session starts, with the evaluator's
+    /// [`RefusalReason::BlockedByOperator`] refusal. The list is
+    /// consulted live, so a block lands on the next connection.
+    #[must_use]
+    pub fn with_blocks(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        blocks: Arc<dyn BlockList>,
+    ) -> Self {
+        Self::build(hub, local_node, BudgetPolicy::default(), Some(blocks))
+    }
+
+    fn build(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        budgets: BudgetPolicy,
+        blocks: Option<Arc<dyn BlockList>>,
+    ) -> Self {
+        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        if let Some(blocks) = blocks {
+            evaluator = evaluator.with_block_list(blocks);
+        }
         Self {
             hub: hub.into(),
-            abuse: Arc::new(Mutex::new(AbuseEvaluator::with_budgets(
-                AbusePolicy::default(),
-                local_node,
-                budgets,
-            ))),
+            abuse: Arc::new(Mutex::new(evaluator)),
             connection_cap_refusals: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -189,6 +214,22 @@ impl Drop for PeerConnectionRegistration {
     }
 }
 
+/// The remote IP of the connection's selected path, when that path
+/// is a direct IP path (#2245). A connection whose selected path is
+/// a relay or a custom transport has no peer IP an operator block
+/// could name: it yields `None`, and IP blocks never apply to it.
+/// Best-effort by construction — a direct path that opens after
+/// admission is not re-judged, exactly as the issue scopes IP
+/// enforcement to the listener.
+fn direct_ip_of(conn: &Connection) -> Option<std::net::IpAddr> {
+    let paths = conn.paths();
+    let selected = paths.iter().find(|path| path.is_selected())?;
+    match selected.remote_addr() {
+        iroh::TransportAddr::Ip(addr) => Some(addr.ip()),
+        _ => None,
+    }
+}
+
 impl ProtocolHandler for WorldProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // Bound stale endpoint and counter state as new connections arrive;
@@ -198,9 +239,22 @@ impl ProtocolHandler for WorldProtocol {
         let remote = conn.remote_id();
         tracing::debug!("world: connection from node {remote}");
         let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
+        let direct_ip = direct_ip_of(&conn);
         let connection_id = match self.abuse.lock() {
-            Ok(mut abuse) => match abuse.open_connection(remote_endpoint, abuse_now_ms()) {
+            Ok(mut abuse) => match abuse
+                .open_connection_with_direct_ip(remote_endpoint, direct_ip, abuse_now_ms())
+            {
                 Ok(connection_id) => connection_id,
+                Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
+                    // #2245: an operator block is not a cap refusal — it
+                    // is not counted as one, and it offers no retry.
+                    tracing::warn!(
+                        remote = %remote,
+                        "world: operator block; refusing connection"
+                    );
+                    conn.close(0_u32.into(), b"blocked by operator");
+                    return Ok(());
+                }
                 Err(refusal) => {
                     let refusal_count = self
                         .connection_cap_refusals
@@ -1036,7 +1090,8 @@ impl WorldClient {
             .context("host sent no isolation")
     }
 
-    /// List the host's worlds as `(default, [(name, open)])`.
+    /// List the host's worlds as `(default, [(name, open, presence)])`,
+    /// where `presence` is the count of sessions live on the world.
     ///
     /// # Errors
     ///
@@ -1044,12 +1099,35 @@ impl WorldClient {
     pub async fn list_worlds(
         &mut self,
         admin_token: &str,
-    ) -> Result<(String, Vec<(String, bool)>)> {
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         self.send_json(&serde_json::json!({
             "type": "list_worlds",
             "admin_token": admin_token,
         }))
         .await?;
+        self.read_worlds_reply("host refused to list worlds").await
+    }
+
+    /// Read the host's public world directory (#812) as
+    /// `(default, [(name, open, presence)])`. No admin token: the
+    /// directory is public metadata — names, loaded state, and
+    /// presence counts, never identities.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the directory is refused.
+    pub async fn directory(&mut self) -> Result<(String, Vec<(String, bool, usize)>)> {
+        self.send_json(&serde_json::json!({
+            "type": "directory",
+        }))
+        .await?;
+        self.read_worlds_reply("host refused the directory").await
+    }
+
+    async fn read_worlds_reply(
+        &mut self,
+        refuse_message: &str,
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         let reply = self
             .recv_json()
             .await?
@@ -1057,9 +1135,7 @@ impl WorldClient {
         if reply["type"] != "worlds" {
             bail!(
                 "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused to list worlds")
+                reply["message"].as_str().unwrap_or(refuse_message)
             );
         }
         let default = reply["default"].as_str().unwrap_or_default().to_owned();
@@ -1067,7 +1143,13 @@ impl WorldClient {
             .as_array()
             .context("worlds reply had no list")?
             .iter()
-            .filter_map(|w| Some((w["name"].as_str()?.to_owned(), w["open"].as_bool()?)))
+            .filter_map(|w| {
+                Some((
+                    w["name"].as_str()?.to_owned(),
+                    w["open"].as_bool()?,
+                    w["presence"].as_u64().unwrap_or(0) as usize,
+                ))
+            })
             .collect();
         Ok((default, worlds))
     }

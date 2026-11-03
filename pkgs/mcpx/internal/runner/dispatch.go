@@ -15,9 +15,10 @@
 //     be called.
 //  2. script.interpreter: a configured command line, with the script
 //     path appended.
-//  3. script.language / file extension: RESERVED for #1917. Nothing
-//     diverts here yet, by design -- the rank exists so the order does
-//     not change when it lands.
+//  3. script.language / file extension: a .py script runs under the
+//     machine's Python (python3, python, then uv) with the generated
+//     Python client installed beside it (#1917 Phase 2). There is no
+//     script.language setting yet; the extension is the whole rule.
 //  4. The configured TypeScript runtime: today's behaviour, unchanged
 //     when everything above is unset.
 //
@@ -26,12 +27,14 @@
 // Options.Env exactly as they do for a TypeScript run, MCPX_RUNTIME
 // names the interpreter, MCPX_ENTRY names the script, the caller's args
 // follow the script path, and stdout/stderr/exit/timeout handling is the
-// same machinery. What it does not get is the generated client -- there
-// is no TypeScript module a shell script could import -- and that
-// absence is stated once per run (Result.Notice, and a line on stderr),
-// not left for the script to discover. script.permissions profiles are
-// JavaScript-runtime flags; no shell interpreter can enforce them, so
-// they are not applied to a dispatched run and the notice says so.
+// same machinery. A Python dispatch is the exception that gets a client:
+// the generated Python client and its stub are installed beside the
+// script, so `import mcpx_client` works. Every other interpreter has no
+// generated client -- there is no module a shell script could import --
+// and that absence is stated once per run (Result.Notice, and a line on
+// stderr), not left for the script to discover. script.permissions
+// profiles are JavaScript-runtime flags; no shell interpreter can enforce
+// them, so they are not applied to a dispatched run and the notice says so.
 package runner
 
 import (
@@ -48,6 +51,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/cache"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 )
@@ -105,6 +109,14 @@ type dispatch struct {
 	// moves elsewhere (#2611 review).
 	lookupBin  string // command name as the shebang named it (no "/")
 	lookupPath string // PATH value the shebang establishes
+	// language is the codegen target this run is written in, when the run
+	// is harnessed (#1917 Phase 2). Empty for raw dispatch, which has no
+	// generated client; "python" is the first such language.
+	language string
+	// client is the generated client installed beside the script before the
+	// interpreter starts. nil for a raw dispatch: there is nothing to
+	// install and the run says so once.
+	client *Client
 }
 
 // ParseShebang splits a #! line into the interpreter command it names.
@@ -859,8 +871,14 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		}
 	} else {
 		// A snippet runs from a file of its own: no Prelude (that is
-		// TypeScript for the generated client) and no .ts suffix (the
-		// interpreter, not the name, decides what it is).
+		// TypeScript for the generated client) and no suffix unless the
+		// run is harnessed -- a Python snippet is named .py so the
+		// interpreter, tools and tracebacks see the file it is, while a
+		// raw dispatch keeps the interpreter, not the name, deciding.
+		suffix := ""
+		if d.language == codegen.Python.Name {
+			suffix = codegen.Python.ScriptExt
+		}
 		if workDir == "" {
 			wd, err := os.MkdirTemp("", "mcpx-run-")
 			if err != nil {
@@ -872,7 +890,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 			return nil, err
 		}
 		sum := sha256sum([]byte(opts.Source))
-		scriptPath = filepath.Join(workDir, "script-"+sum[:16])
+		scriptPath = filepath.Join(workDir, "script-"+sum[:16]+suffix)
 		if err := writeIfChanged(scriptPath, opts.Source); err != nil {
 			cleanup()
 			return nil, err
@@ -883,6 +901,27 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	// WorkRoot, a script.cwd=workdir run has no runner directory, and
 	// ResolveCwd says so explicitly rather than silently running in
 	// the script's directory under the workdir name.
+
+	// A harnessed run installs its generated client beside the script, the
+	// same place the TypeScript path puts it: Python puts the script's own
+	// directory on sys.path, so `import mcpx_client` is exactly the import
+	// the file names, with no PYTHONPATH to arrange (#1917 Phase 2).
+	clientPath := ""
+	if d.client != nil && d.client.Module != "" {
+		lang, ok := codegen.Lookup(d.language)
+		if !ok {
+			lang = pythonLanguage()
+		}
+		clientPath = filepath.Join(filepath.Dir(scriptPath), lang.ClientFile)
+		if err := writeIfChanged(clientPath, d.client.Module); err != nil {
+			return nil, fmt.Errorf("write %s client next to script: %w", lang.Name, err)
+		}
+		if d.client.Globals != "" {
+			// Best effort, as on the TypeScript path: an editor
+			// convenience should never fail a run.
+			_ = writeIfChanged(filepath.Join(filepath.Dir(scriptPath), lang.GlobalsFile), d.client.Globals)
+		}
+	}
 
 	dir, err := ResolveCwd(opts.CwdPolicy, opts.Dir, scriptPath, opts.ConfigDir, workDir)
 	if err != nil {
@@ -902,12 +941,15 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		d.bin = abs
 	}
 
-	notice := fmt.Sprintf("mcpx: running under %s (%s dispatch): no generated mcpx client is "+
-		"available to a non-JavaScript script, and script.permissions profiles are not enforced "+
-		"for this interpreter; MCPX_ENDPOINT, MCPX_SESSION and MCPX_SOCKET are in the environment",
-		d.name, d.source)
-	if !opts.Phases.Empty() {
-		notice += "; configured launcher phases do not apply to a non-JavaScript run and are skipped"
+	notice := ""
+	if d.client == nil || d.client.Module == "" {
+		notice = fmt.Sprintf("mcpx: running under %s (%s dispatch): no generated mcpx client is "+
+			"available to a non-JavaScript script, and script.permissions profiles are not enforced "+
+			"for this interpreter; MCPX_ENDPOINT, MCPX_SESSION and MCPX_SOCKET are in the environment",
+			d.name, d.source)
+		if !opts.Phases.Empty() {
+			notice += "; configured launcher phases do not apply to a non-JavaScript run and are skipped"
+		}
 	}
 
 	runCtx := ctx
@@ -929,6 +971,12 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	// outer value would shadow the contract (first duplicate wins).
 	cmd.Env = childBaseEnv(d.env, d.unset, d.clear)
 	cmd.Env = append(cmd.Env, "MCPX_RUNTIME="+d.name, "MCPX_ENTRY="+scriptPath, "MCPX_DISPATCH="+d.source)
+	if clientPath != "" {
+		// Same contract as the TypeScript run: the environment names the
+		// client that was installed, so a script can find it without
+		// guessing a path (#1917 Phase 2).
+		cmd.Env = append(cmd.Env, "MCPX_CLIENT="+clientPath)
+	}
 	for k, v := range opts.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
@@ -962,17 +1010,23 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		}()
 		// The notice rides the same stream as the script's own stderr,
 		// ahead of anything the script prints.
-		fmt.Fprintln(pw, notice)
+		if notice != "" {
+			fmt.Fprintln(pw, notice)
+		}
 		defer func() {
 			pw.Close()
 			<-stderrDone
 		}()
 	} else if opts.Stderr != nil {
 		cmd.Stderr = opts.Stderr
-		fmt.Fprintln(opts.Stderr, notice)
+		if notice != "" {
+			fmt.Fprintln(opts.Stderr, notice)
+		}
 	} else {
 		cmd.Stderr = os.Stderr
-		fmt.Fprintln(os.Stderr, notice)
+		if notice != "" {
+			fmt.Fprintln(os.Stderr, notice)
+		}
 	}
 	if opts.Stdin != nil {
 		cmd.Stdin = opts.Stdin
@@ -988,7 +1042,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
 
-	res := &Result{Runtime: d.name, Script: scriptPath, Notice: notice}
+	res := &Result{Runtime: d.name, Script: scriptPath, Client: clientPath, Notice: notice}
 	select {
 	case <-runCtx.Done():
 		res.TimedOut = true

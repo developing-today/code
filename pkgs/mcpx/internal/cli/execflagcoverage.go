@@ -65,6 +65,7 @@ var ExecFlagExemptions = map[string]string{
 	"prompt":      "synthesizes the script through a configured model; the e2e env has no model, so there is no run to probe",
 	"remote":      "probed by construction: every probe row runs twice, and the second half leads with --remote on the daemon path (#192)",
 	"repair":      "model-backed repair of a failing script; the e2e env has no model, so a repaired run cannot be produced",
+	"dry-run":     "call interception lives in the daemon's call path against the shared run registry; the probe rows' local half runs a service with no shared registry, so a with/without row cannot observe it -- the behaviour is covered at the daemon level (internal/daemon dry-run tests) and in internal/execsvc",
 	"runtime":     "the without half is environment-dependent — auto picks the first installed runtime, so the same row would assert different outcomes on different machines",
 	"session":     "names the session key; its effect is continuity ACROSS two runs sharing a key, which this guard's single with/without run cannot express",
 	"timeout":     "a with/without row needs a script that sleeps: with the flag it is killed, without it the guard itself waits out the sleep — the probe would make the guard slow and timing-flaky by construction",

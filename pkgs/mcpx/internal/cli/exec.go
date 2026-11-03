@@ -538,6 +538,7 @@ type execRemoteFlags struct {
 	export      string
 	session     string
 	shape       scriptShape
+	dryRun      bool
 }
 
 // execOnDaemon sends the script to the daemon and renders what comes back.
@@ -603,6 +604,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		Artifacts: eo.artifactOptions(cwd),
 
 		Export:           rf.export,
+		DryRun:           rf.dryRun,
 		Env:              withInputReport(sh.env, a.stdoutOverride == nil),
 		TypeCheck:        sh.typecheck,
 		Imports:          sh.imports,
