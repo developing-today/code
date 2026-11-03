@@ -733,8 +733,7 @@ impl WorldService {
                         .get_bytes(pin.hash())
                         .await
                         .map_err(|_| InstallError::Unavailable)?;
-                    if bytes.len() > MAX_WORLD_MODULE_BYTES
-                        || module_hash(&bytes) != expected_hash
+                    if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash
                     {
                         return Err(InstallError::Unavailable);
                     }

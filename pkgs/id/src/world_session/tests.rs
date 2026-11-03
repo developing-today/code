@@ -653,8 +653,7 @@ mod tests {
     /// to it while uploads stay refused (no blob store to pin into).
     #[tokio::test]
     async fn module_bytes_fall_back_to_the_module_directory_without_blobs() {
-        let dir =
-            std::env::temp_dir().join(format!("id-module-bytes-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("id-module-bytes-test-{}", std::process::id()));
         let modules = crate::world_store::ModuleDir::new(dir.clone());
         let bytes: &[u8] = b"restored-module-bytes";
         let hash = modules.save(bytes).unwrap();
