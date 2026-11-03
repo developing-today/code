@@ -887,6 +887,20 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
+    // A web request on a binary built without the `web` feature must
+    // fail loudly: the web startup block is compiled out in that build,
+    // so without this guard --web was accepted and silently served
+    // nothing (no listener bound, no `web:` status line) - the failure
+    // mode that left web-waiting integration tests to die on a startup
+    // timeout instead of hearing the real reason.
+    #[cfg(not(feature = "web"))]
+    if web || !web_listen.is_empty() || port_explicit || bind_explicit {
+        anyhow::bail!(
+            "the web interface was requested (--web/--web-listen/--port/--bind), \
+             but this id binary was built without the `web` feature; \
+             rebuild with `--features web` to serve it"
+        );
+    }
     validate_world_options(
         world,
         world_admin_token.as_deref(),

@@ -946,7 +946,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "deny");
@@ -970,7 +970,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no answer recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1126,7 +1126,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "no history answer recorded: {report:?}"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1184,7 +1184,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1221,7 +1221,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "no allowed use recorded"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -1235,7 +1235,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "never granted");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
         let report = world.caps_report().await.unwrap();
         assert_eq!(report.policy, "grant-on-use");
@@ -1959,7 +1959,27 @@ mod tests {
             .await
             .unwrap();
         world.input(token, b"3".to_vec()).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait deterministically for the host's chat line to be journaled
+        // instead of settling for a fixed delay: it is the last artifact
+        // this test asserts on, and the actor journals it before the
+        // shutdown below can be observed.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let journaled = {
+                let entries = captured.0.lock().unwrap();
+                entries.iter().any(|entry| {
+                    matches!(entry, JournalEntry::Committed { event } if matches!(&event.kind, WorldEventKind::Chat(text) if text == "hello from the program"))
+                })
+            };
+            if journaled {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the host chat line was never journaled"
+            );
+            tokio::task::yield_now().await;
+        }
         world.shutdown().await.unwrap();
         let entries = captured.0.lock().unwrap().clone();
         assert!(
@@ -3078,6 +3098,55 @@ mod tests {
             [header.clone(), legacy],
         )
         .unwrap();
+        // A name minted before #4711 — 48 chars ending in a space, the
+        // exact output of the pre-fix sanitizer for a longer input —
+        // also restores fine: that journal was written by a live mint
+        // path, and refusing it bricks the world.
+        let boundary = JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: format!("{} ", "a".repeat(47)),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), boundary],
+        )
+        .unwrap();
+        // And a name minted now from a boundary input (>48 chars,
+        // whitespace at position 48) is trimmed at mint and restores.
+        let (minted, minted_token) = source
+            .issue_capability(
+                &format!("{} {}", "a".repeat(47), "b".repeat(10)),
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+            )
+            .unwrap();
+        assert_eq!(minted.display_name, "a".repeat(47));
+        let minted_entry = JournalEntry::Issued {
+            participant: minted.clone(),
+            digest: hex_encode(&token_digest(minted_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), minted_entry],
+        )
+        .unwrap();
         for bad_name in [
             String::new(),
             "a\u{7}\n".to_owned() + &"x".repeat(98),
@@ -3993,7 +4062,7 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no refusal recorded");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
 
         // Granted: the program reads its own published `count` record.
@@ -4011,7 +4080,7 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "the program never read its record: {record:?}"
             );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
     }
 
@@ -4190,6 +4259,107 @@ mod tests {
             "the next view recovers: {second:?}"
         );
         assert_eq!(actor.view_failures, 1, "only the one trap is counted");
+    }
+
+    struct OversizedViewOnce {
+        calls: u64,
+        oversized_bytes: usize,
+    }
+
+    impl WorldProgram for OversizedViewOnce {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            self.calls += 1;
+            if self.calls == 1 {
+                Ok(Some("x".repeat(self.oversized_bytes)))
+            } else {
+                Ok(Some("recovered view".to_owned()))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_view_degrades_to_an_error_and_recovers() {
+        let limits = WorldLimits::default();
+        let presentation_bytes = limits.presentation_bytes;
+        let mut core = WorldCore::new("oversized-view", limits).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(OversizedViewOnce {
+                calls: 0,
+                oversized_bytes: presentation_bytes + 1,
+            }),
+            None,
+        );
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::View {
+                token: token.clone(),
+                reply,
+            })
+            .await;
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains(&format!("world presentation exceeds {presentation_bytes} bytes"))),
+            "the oversized view names the presentation limit: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an oversized view must not poison the world"
+        );
+        assert_eq!(actor.view_failures, 1, "the oversized view is counted");
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::View { token, reply })
+            .await;
+        let second = rx.await.unwrap();
+        assert!(
+            matches!(&second, Ok(Some(text)) if text == "recovered view"),
+            "the next view recovers: {second:?}"
+        );
+        assert_eq!(actor.view_failures, 1, "only the oversized view is counted");
+    }
+
+    #[tokio::test]
+    async fn an_oversized_host_view_degrades_to_an_error_and_recovers() {
+        let limits = WorldLimits::default();
+        let presentation_bytes = limits.presentation_bytes;
+        let core = WorldCore::new("oversized-host-view", limits).unwrap();
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(OversizedViewOnce {
+                calls: 0,
+                oversized_bytes: presentation_bytes + 1,
+            }),
+            None,
+        );
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor.handle(WorldCommand::HostView { reply }).await;
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains(&format!("world presentation exceeds {presentation_bytes} bytes"))),
+            "the oversized host view names the presentation limit: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an oversized host view must not poison the world"
+        );
+        assert_eq!(actor.view_failures, 1, "the oversized host view is counted");
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor.handle(WorldCommand::HostView { reply }).await;
+        let second = rx.await.unwrap();
+        assert!(
+            matches!(&second, Ok((_, Some(text))) if text == "recovered view"),
+            "the next host view recovers: {second:?}"
+        );
+        assert_eq!(
+            actor.view_failures, 1,
+            "only the oversized host view is counted"
+        );
     }
 
     #[derive(Default)]
