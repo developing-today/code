@@ -3,17 +3,17 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/progspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/hooks"
-	"github.com/dezren39/mcpx/internal/opencode"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/hooks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/opencode"
 )
 
 // check is one diagnosis.
@@ -272,6 +272,13 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 			}
 		}
 		_ = st.Close()
+	}
+
+	// Slow remotes (#1936): the log's measured latency and error figures
+	// for configured remote servers, with a local alternative when the
+	// registry offers one. Read-only; see doctor_remote.go.
+	for _, c := range a.doctorSlowRemotes(ctx) {
+		add(c)
 	}
 
 	// Optional integrations. Absent is not a problem, so these are only

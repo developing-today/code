@@ -19,6 +19,17 @@ import type { BoardItem } from "./model.ts";
 
 export const DONE_BOARD_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Future-stamp tolerance, matching the aggregator-wide 60s convention in feed.ts. */
+export const DONE_BOARD_FUTURE_SKEW_MS = 60_000;
+
+/**
+ * How many done cards the board renders into the collapsed strip
+ * (#1179): the strip is a glance at recent finishes, not the record
+ * (GitHub is), and 954 rendered cards cost ~1 MB of HTML on /board.
+ * The full strip is one click away via /board?done=all.
+ */
+export const DONE_STRIP_RENDER_LIMIT = 100;
+
 /** Titles of the retired ROADMAP Done-table bookkeeping class. */
 export function isRetiredDoneTableTitle(title: string): boolean {
   return /\broadmap\s+done\s+table\b/i.test(title);
@@ -33,7 +44,8 @@ export function doneItemIsRecent(item: BoardItem, now: number): boolean {
   if (!item.updatedAt) return true;
   const t = Date.parse(item.updatedAt);
   if (Number.isNaN(t)) return true;
-  return now - t <= DONE_BOARD_WINDOW_MS;
+  const ageMs = now - t;
+  return ageMs >= -DONE_BOARD_FUTURE_SKEW_MS && ageMs <= DONE_BOARD_WINDOW_MS;
 }
 
 /** Drop aged-out done items and the retired Done-table class. */

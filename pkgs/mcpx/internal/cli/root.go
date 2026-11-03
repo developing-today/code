@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,21 +11,22 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"text/tabwriter"
 	"time"
 
 	"strings"
 
-	mcpx "github.com/dezren39/mcpx"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/sdnotify"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/spec"
+	mcpx "github.com/developing-today/code/pkgs/mcpx"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/sdnotify"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // newFlagSet creates a command's flag set and registers every setting the
@@ -250,6 +252,31 @@ func (a *App) adoptSpec() error {
 	return nil
 }
 
+var processInstance struct {
+	once sync.Once
+	id   string
+}
+
+// InstanceID is this process's unique mcpx instance identity (#1877):
+// generated once per process, reported by this process's MCP server
+// as serverInfo.instance, and wired into pool.OwnInstanceID so the
+// self-connection guard can tell this daemon apart from a distinct
+// mcpx daemon configured as an upstream. Per-process, never
+// persisted: two daemons from the same install are different
+// instances, and a restarted daemon is a new one.
+func (a *App) InstanceID() string {
+	processInstance.once.Do(func() {
+		b := make([]byte, 16)
+		if _, err := RandSource.Read(b); err == nil {
+			processInstance.id = hex.EncodeToString(b)
+		} else {
+			processInstance.id = fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
+		}
+		pool.OwnInstanceID = processInstance.id
+	})
+	return processInstance.id
+}
+
 // CmdDaemon runs the daemon in the foreground.
 func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	fs := newFlagSet("daemon")
@@ -276,6 +303,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	// folded in here before anything resolves a server.
 	config.ApplyPoolSettings(cfg, a.Settings())
 	pool.Version = a.Version
+	pool.OwnInstanceID = a.InstanceID()
 
 	// The daemon keys its socket to the config it loaded, matching what the
 	// CLI computes, so a config edit yields a new daemon rather than a stale
@@ -799,6 +827,20 @@ func (a *App) helpText(name string) (string, error) {
 		b.WriteString("\nSETTINGS (also readable from config and the environment)\n")
 		b.WriteString(strings.Join(lines, "\n"))
 		b.WriteString("\n\n  mcpx config --schema   shows every setting with its variable\n")
+	}
+	if groups := handFlagGroups(found.Name); len(groups) > 0 {
+		var flagLines []string
+		for _, g := range groups {
+			if g.Scope != found.Name {
+				flagLines = append(flagLines, "  "+g.Scope+":")
+			}
+			for _, f := range g.Flags {
+				flagLines = append(flagLines, fmt.Sprintf("  --%-26s %s", f.Name, f.Usage))
+			}
+		}
+		b.WriteString("\nFLAGS\n")
+		b.WriteString(strings.Join(flagLines, "\n"))
+		b.WriteString("\n")
 	}
 	return b.String(), nil
 }

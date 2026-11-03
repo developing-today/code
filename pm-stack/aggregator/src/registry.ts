@@ -7,7 +7,17 @@
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
-import { type SessionFeedEntry, type SessionRecord, refsInText } from "./model.ts";
+import { parseRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
+
+function isValidTaskRef(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Agent identity for an OpenCode session entry. */
 export function agentIdentityOf(e: SessionFeedEntry): { agentId: string; agentLabel: string } {
@@ -98,7 +108,11 @@ export function parseLaunchRecords(jsonl: string): SessionRecord[] {
     try {
       const parsed: unknown = JSON.parse(t);
       if (typeof parsed === "object" && parsed !== null && typeof (parsed as ClaudeLaunchRecord).id === "string") {
-        out.push(recordFromLaunch(parsed as ClaudeLaunchRecord));
+        // #2376: route through the same hygiene filter as the store/feed
+        // paths — a launch record carrying a non-string lastSeenAt or
+        // startedAt must not reach mergeRecords' string-only sort.
+        const rec = recordFromLaunch(parsed as ClaudeLaunchRecord);
+        if (isSessionRecord(rec)) out.push(rec);
       }
     } catch {
       /* a torn final line must not lose the registry */
@@ -110,7 +124,14 @@ export function parseLaunchRecords(jsonl: string): SessionRecord[] {
 /**
  * Merge incoming records into the stored set, keyed by (source, id).
  * Tokens are cumulative, so the max wins; lastSeenAt keeps the newest;
- * every other field takes the incoming value when present.
+ * every other field takes the incoming value when present. "Present"
+ * means the incoming key holds a real value: undefined-valued keys are
+ * skipped (a sparse re-read must not wipe what the store already knew,
+ * #1560), an incoming parentId of null is treated as absent (a feed
+ * entry that does not state a parent is not a root claim), and the
+ * label follows the title — when the incoming title is absent the
+ * incoming label is just the session-id fallback, so the stored label
+ * is preserved.
  */
 export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[]): SessionRecord[] {
   const byKey = new Map<string, SessionRecord>();
@@ -122,12 +143,18 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
       byKey.set(key, r);
       continue;
     }
+    const present: Partial<SessionRecord> = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (v !== undefined) (present as Record<string, unknown>)[k] = v;
+    }
     byKey.set(key, {
       ...prev,
-      ...r,
+      ...present,
+      parentId: r.parentId ?? prev.parentId,
+      label: r.title !== undefined ? r.label : prev.label,
       startedAt: prev.startedAt ?? r.startedAt,
       tokensTotal: Math.max(prev.tokensTotal ?? 0, r.tokensTotal ?? 0) || undefined,
-      taskRefs: [...new Set([...prev.taskRefs, ...r.taskRefs])],
+      taskRefs: [...new Set([...(prev.taskRefs ?? []), ...(r.taskRefs ?? [])])],
       lastSeenAt: (prev.lastSeenAt ?? "") >= (r.lastSeenAt ?? "") ? (prev.lastSeenAt ?? r.lastSeenAt) : r.lastSeenAt,
     });
   }
@@ -138,7 +165,28 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
 export function isSessionRecord(v: unknown): v is SessionRecord {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SessionRecord>;
-  return typeof r.id === "string" && typeof r.source === "string" && typeof r.label === "string";
+  // #2376: mergeRecords compares lastSeenAt with string-only methods
+  // (localeCompare / >=), so a present-but-non-string timestamp passes
+  // this filter today and throws TypeError once the sort reaches it.
+  // Timestamps must be string-or-absent; a poisoned record is rejected,
+  // not coerced (the #2347 load-filter precedent).
+  return (
+    typeof r.id === "string" &&
+    typeof r.source === "string" &&
+    typeof r.label === "string" &&
+    (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
+    (r.startedAt === undefined || typeof r.startedAt === "string") &&
+    // #2408/#2485/#4284: mergeRecords spreads taskRefs as an array, and
+    // querying/rendering dereferences it unconditionally (spread in
+    // matchesText, .some in the ?task= filter and the item-page linked-
+    // sessions filter, .flatMap in sessionRecordLine). The validator owns
+    // the rule, per the #2347/#2376 precedent above: SessionRecord.taskRefs
+    // is required, so taskRefs must be a present array of parseable refs
+    // with safe-integer issue numbers; absent or malformed records are
+    // rejected, not coerced.
+    Array.isArray(r.taskRefs) &&
+    r.taskRefs.every(isValidTaskRef)
+  );
 }
 
 /** Standing fleet identities + one per registry session, for comment authorship. */

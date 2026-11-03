@@ -10,14 +10,16 @@ set -uo pipefail
 MCPX=${MCPX:?set MCPX to the mcpx binary}
 ROUNDS=${ROUNDS:-5}
 CONC=${CONC:-3}
-here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 fail=0
 note() { printf '%s\n' "$*"; }
 check() {
-  if [ "$1" = 0 ]; then note "  ok   $2"; else note "  FAIL $2"; fail=1; fi
+  if [ "$1" = 0 ]; then note "  ok   $2"; else
+    note "  FAIL $2"
+    fail=1
+  fi
 }
 
 note "== discovery latency under load =="
@@ -32,7 +34,7 @@ python3 -c "import sys; sys.exit(0 if $per < 200 else 1)"
 check $? "discovery stays under 200ms"
 
 note "== concurrent isolation, $ROUNDS rounds of $CONC =="
-cat > "$work/iso.ts" <<'TS'
+cat >"$work/iso.ts" <<'TS'
 import tools from "./mcpx-client.ts";
 const url = Deno.args[0];
 await tools.chrome_devtools.new_page({ url });
@@ -47,7 +49,7 @@ for round in $(seq 1 "$ROUNDS"); do
   pids=()
   for i in $(seq 0 $((CONC - 1))); do
     u=${urls[$((i % ${#urls[@]}))]}
-    ( "$MCPX" run "$work/iso.ts" "$u" > "$work/r-$round-$i.json" 2>"$work/e-$round-$i.log" ) &
+    ("$MCPX" run "$work/iso.ts" "$u" >"$work/r-$round-$i.json" 2>"$work/e-$round-$i.log") &
     pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p" || true; done
@@ -83,8 +85,8 @@ maxsum=$("$MCPX" --json status | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
 print(sum(s["max"] for s in d["servers"]))')
-[ "$live" -le "$maxsum" ]
-check $? "live instances ($live) within configured maxima ($maxsum)"
+if [ "$live" -le "$maxsum" ]; then within=0; else within=1; fi
+check "$within" "live instances ($live) within configured maxima ($maxsum)"
 
 note "== orphan check =="
 "$MCPX" restart chrome-devtools >/dev/null
@@ -96,7 +98,10 @@ check $? "no orphaned chrome-devtools-mcp processes"
 
 note "== repeated restart stability =="
 for i in 1 2 3; do
-  "$MCPX" restart >/dev/null 2>&1 || { check 1 "restart $i"; break; }
+  "$MCPX" restart >/dev/null 2>&1 || {
+    check 1 "restart $i"
+    break
+  }
   "$MCPX" call fff_nix.find_files '{"query":"flake.nix","maxResults":1}' >/dev/null 2>&1
   check $? "call succeeds after restart $i"
 done

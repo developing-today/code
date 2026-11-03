@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Parity: every layout native discovery claims to read is built here with the

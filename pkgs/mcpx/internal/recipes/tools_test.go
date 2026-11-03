@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
 )
 
 const exposed = `// Close stale issues in a repository.

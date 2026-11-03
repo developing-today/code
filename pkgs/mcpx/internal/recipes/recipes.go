@@ -26,12 +26,13 @@ package recipes
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 )
 
 // Type is the type of a placeholder value.
@@ -51,8 +52,8 @@ type Placeholder struct {
 	Name        string `json:"name"`
 	Type        Type   `json:"type"`
 	Description string `json:"description,omitempty"`
-	// Default is the literal as written in the declaration, already valid
-	// for the type. Absent means there is none.
+	// Default is the literal as written in the declaration. It is validated
+	// against the type when the recipe is rendered. Absent means there is none.
 	Default *string `json:"default,omitempty"`
 	// Required is false when a default was given or the name was marked
 	// optional with a trailing question mark.
@@ -93,6 +94,11 @@ var paramDecl = regexp.MustCompile(
 // scanner can skip one. Without it the `@param` of the declaration itself
 // reads as a placeholder called "param".
 var declLine = regexp.MustCompile(`^\s*(?://|#|\*)\s*@param\b`)
+
+// jsonNumberLiteral recognizes the complete JSON number grammar. ParseFloat
+// accepts additional Go spellings (such as Inf and hexadecimal floats) that
+// are not valid JavaScript/JSON numeric literals.
+var jsonNumberLiteral = regexp.MustCompile(`^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$`)
 
 // toolDecl matches the MCP exposure marker, `@tool` on its own (on, the
 // default) or `@tool false` (off). A recipe is a tool unless its author says
@@ -231,6 +237,25 @@ func splitDefault(s string) (value, tail string) {
 		}
 		depth := 0
 		for i := 0; i < len(s); i++ {
+			// A bracket inside a quoted string is text, not
+			// structure: without string state, {"note": "a}b"}
+			// was truncated at the } inside the string, and the
+			// invalid fragment became the default (#1671). Skip
+			// strings the way the quoted branch above does,
+			// honouring backslash escapes.
+			if s[i] == '"' || s[i] == '\'' || s[i] == '`' {
+				q := s[i]
+				for i++; i < len(s); i++ {
+					if s[i] == '\\' {
+						i++
+						continue
+					}
+					if s[i] == q {
+						break
+					}
+				}
+				continue
+			}
 			switch s[i] {
 			case open:
 				depth++
@@ -249,19 +274,139 @@ func splitDefault(s string) (value, tail string) {
 	return s, ""
 }
 
+// scanCode marks, for every byte of src, whether that byte sits in code
+// position: outside every comment and string literal. refs and substitute
+// share the one scan, so the two can never disagree about whether an
+// `@name` is a placeholder -- the defect behind #1670 was each of them
+// scanning statelessly while this file's own docs promised comment and
+// string skipping.
+//
+// The scan is lexical, carried across lines so block comments and
+// template literals span them, and deliberately small: line comments,
+// block comments, and single-, double- and backtick-quoted literals with
+// backslash escapes. Two known edges follow from that size and are
+// accepted rather than parsed around: a regex literal is not told apart
+// from division, so an `@name` after a `//`-shaped regex is read as a
+// comment; and `${...}` inside a template literal is treated as string
+// text, not as the interpolation it is.
+func scanCode(src string) []bool {
+	const (
+		stCode = iota
+		stLineComment
+		stBlockComment
+		stSingle
+		stDouble
+		stTemplate
+	)
+	code := make([]bool, len(src))
+	state := stCode
+	for i := 0; i < len(src); i++ {
+		if state == stCode && (i == 0 || src[i-1] == '\n') {
+			// A declaration or marker line is metadata, not script.
+			// refs and Render skip such lines for their own
+			// purposes; the scan must skip them too, or their prose
+			// is lexed as JavaScript and a /* in a @param
+			// description opens a block comment over the body.
+			// Only a line the scanner reaches in code position is
+			// neutralized -- a lookalike line inside a comment or
+			// string is content, and its bytes still count.
+			line := src[i:]
+			if j := strings.IndexByte(line, '\n'); j >= 0 {
+				line = line[:j]
+			}
+			if declLine.MatchString(line) || toolDecl.MatchString(line) {
+				i += len(line) - 1 // the loop step lands on the newline
+				continue
+			}
+		}
+		c := src[i]
+		switch state {
+		case stCode:
+			switch {
+			case c == '/' && i+1 < len(src) && src[i+1] == '/':
+				state = stLineComment
+				i++
+			case c == '/' && i+1 < len(src) && src[i+1] == '*':
+				state = stBlockComment
+				i++
+			case c == '\'':
+				state = stSingle
+			case c == '"':
+				state = stDouble
+			case c == '`':
+				state = stTemplate
+			default:
+				code[i] = true
+			}
+		case stLineComment:
+			// JavaScript ends a line comment at every line
+			// terminator -- LF, CR, U+2028 and U+2029 -- not just
+			// LF: code after a standalone CR is code again, and
+			// scanning it as comment text left its placeholders
+			// undiscovered and unsubstituted (Codex P2 on #2957).
+			switch {
+			case c == '\n' || c == '\r':
+				state = stCode
+				code[i] = true
+			case c == 0xE2 && i+2 < len(src) && src[i+1] == 0x80 && (src[i+2] == 0xA8 || src[i+2] == 0xA9):
+				state = stCode
+				code[i] = true
+			}
+		case stBlockComment:
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				state = stCode
+				i++
+			}
+		case stSingle, stDouble:
+			quote := byte('"')
+			if state == stSingle {
+				quote = '\''
+			}
+			switch {
+			case c == '\\':
+				i++ // the escaped byte is string text, whatever it is
+				if i < len(src) && src[i] == '\r' && i+1 < len(src) && src[i+1] == '\n' {
+					// A CRLF continuation is one escaped newline:
+					// escaping only the \r would leave the \n to
+					// end the string below and desync the scan.
+					i++
+				}
+			case c == quote:
+				state = stCode
+			case c == '\n':
+				// An unterminated literal ends at the line, so one bad
+				// string cannot swallow the rest of the script.
+				state = stCode
+				code[i] = true
+			}
+		case stTemplate:
+			switch {
+			case c == '\\':
+				i++
+			case c == '`':
+				state = stCode
+			}
+		}
+	}
+	return code
+}
+
 // refs finds every `@name` in the body, ignoring declarations, comments and
 // anything inside a string.
 func refs(src string) []string {
+	code := scanCode(src)
 	var out []string
 	seen := map[string]bool{}
+	offset := 0
 	for _, line := range strings.Split(src, "\n") {
 		if declLine.MatchString(line) || toolDecl.MatchString(line) {
 			// Declaration and marker lines describe the recipe; the
 			// `@param`/`@tool` words in them are not placeholders.
+			offset += len(line) + 1
 			continue
 		}
 		for i := 0; i < len(line); i++ {
-			if line[i] != '@' {
+			if line[i] != '@' || !code[offset+i] {
 				continue
 			}
 			// An email address or a decorator is not a placeholder, and the
@@ -284,6 +429,7 @@ func refs(src string) []string {
 			}
 			i = j - 1
 		}
+		offset += len(line) + 1
 	}
 	sort.Strings(out)
 	return out
@@ -333,7 +479,15 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 			}
 			lits[p.Name] = lit
 		case p.Default != nil:
-			lits[p.Name] = *p.Default
+			v, ok := decodeLiteral(p, *p.Default)
+			if !ok {
+				return "", fmt.Errorf("%s default must be a valid %s: %q", p.Name, p.Type, *p.Default)
+			}
+			lit, err := literal(p, v)
+			if err != nil {
+				return "", fmt.Errorf("%s default must be a valid %s: %w", p.Name, p.Type, err)
+			}
+			lits[p.Name] = lit
 		case !p.Required:
 			lits[p.Name] = "undefined"
 		default:
@@ -341,25 +495,33 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 		}
 	}
 
+	code := scanCode(r.Source)
 	var b strings.Builder
+	offset := 0
 	for _, line := range strings.Split(r.Source, "\n") {
 		if declLine.MatchString(line) {
 			// The declaration is consumed. Leaving it in would be harmless
 			// but the rendered script is what a diagnostic reports line
 			// numbers against, and they should match what ran.
 			b.WriteString("//" + strings.TrimPrefix(strings.TrimSpace(line), "//") + "\n")
+			offset += len(line) + 1
 			continue
 		}
-		b.WriteString(substitute(line, lits))
+		b.WriteString(substitute(line, code[offset:offset+len(line)], lits))
 		b.WriteString("\n")
+		offset += len(line) + 1
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n", nil
 }
 
-func substitute(line string, lits map[string]string) string {
+// substitute replaces `@name` placeholders on one line. code is the
+// scanCode mask for exactly this line's bytes: an `@name` outside code
+// position (in a comment or a string) is copied through untouched, so a
+// filled value is never spliced into a literal.
+func substitute(line string, code []bool, lits map[string]string) string {
 	var b strings.Builder
 	for i := 0; i < len(line); i++ {
-		if line[i] != '@' || (i > 0 && isWordByte(line[i-1])) {
+		if line[i] != '@' || !code[i] || (i > 0 && isWordByte(line[i-1])) {
 			b.WriteByte(line[i])
 			continue
 		}
@@ -383,15 +545,44 @@ func literal(p Placeholder, v any) (string, error) {
 	switch p.Type {
 	case TypeNumber:
 		switch n := v.(type) {
-		case float64:
-			return strconv.FormatFloat(n, 'g', -1, 64), nil
 		case int:
 			return strconv.Itoa(n), nil
-		case string:
-			if _, err := strconv.ParseFloat(n, 64); err != nil {
-				return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+		case int8:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int16:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int32:
+			return strconv.FormatInt(int64(n), 10), nil
+		case int64:
+			return strconv.FormatInt(n, 10), nil
+		case uint:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint8:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint16:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint32:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case uint64:
+			return strconv.FormatUint(n, 10), nil
+		case uintptr:
+			return strconv.FormatUint(uint64(n), 10), nil
+		case float32:
+			if math.IsNaN(float64(n)) || math.IsInf(float64(n), 0) {
+				return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
 			}
-			return n, nil
+			return strconv.FormatFloat(float64(n), 'g', -1, 32), nil
+		case float64:
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
+			}
+			return strconv.FormatFloat(n, 'g', -1, 64), nil
+		case string:
+			return numberStringLiteral(p, n)
+		case json.Number:
+			return numberStringLiteral(p, n.String())
+		default:
+			return "", fmt.Errorf("%s is a number, got %q", p.Name, v)
 		}
 	case TypeBoolean:
 		switch t := v.(type) {
@@ -403,6 +594,12 @@ func literal(p Placeholder, v any) (string, error) {
 				return "", fmt.Errorf("%s is a boolean, got %q", p.Name, t)
 			}
 			return strconv.FormatBool(b), nil
+		default:
+			return "", fmt.Errorf("%s is a boolean, got %q", p.Name, v)
+		}
+	case TypeString:
+		if _, ok := v.(string); !ok {
+			return "", fmt.Errorf("%s is a string, got %q", p.Name, v)
 		}
 	case TypeJSON:
 		if s, ok := v.(string); ok && json.Valid([]byte(s)) {
@@ -414,6 +611,16 @@ func literal(p Placeholder, v any) (string, error) {
 		return "", fmt.Errorf("%s cannot be encoded: %w", p.Name, err)
 	}
 	return string(b), nil
+}
+
+func numberStringLiteral(p Placeholder, n string) (string, error) {
+	if !jsonNumberLiteral.MatchString(n) {
+		return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+	}
+	if _, err := strconv.ParseFloat(n, 64); err != nil {
+		return "", fmt.Errorf("%s is a number, got %q", p.Name, n)
+	}
+	return n, nil
 }
 
 // FormSchema is the elicitation schema that asks for the missing values.

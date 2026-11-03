@@ -7,13 +7,15 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/mcpauth"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -148,12 +150,46 @@ type Extras struct {
 	// ExcludeTools removes tools from the exposed set, and wins over Tools.
 	// A removed tool is neither listed nor callable.
 	ExcludeTools []string `json:"excludeTools,omitempty"`
+	// ToolViews declares renamed views over an alias target's tools
+	// (#1933 slice 1): each entry exposes one target tool under a new
+	// name, optionally pinning arguments and hiding the pinned
+	// properties from the exposed schema. Only meaningful on an
+	// aliasOf server; a non-empty map replaces the allowlist -- only
+	// the named views are exposed.
+	ToolViews map[string]ToolView `json:"toolViews,omitempty"`
+	// WritePolicy overrides the daemon policy.write setting for this
+	// server alone: ask, allow or deny (#1979). Empty means inherit the
+	// daemon mode.
+	WritePolicy string `json:"writePolicy,omitempty"`
+	// ArgumentRules constrains calls by their arguments (#1986): keys
+	// are tool patterns matched exactly as Tools/ExcludeTools match,
+	// values are JSON Schema objects a call's arguments must validate
+	// against (every matching rule; allOf). In the pool block it
+	// applies to every server; a server's own rules add to the pool's,
+	// and across layered files rules only ever tighten. See
+	// argumentrules.go.
+	ArgumentRules map[string]json.RawMessage `json:"argumentRules,omitempty"`
 	// RequiresSecrets names environment variables that must be non-empty for this server to be active.
 	RequiresSecrets []string `json:"requiresSecrets,omitempty"`
 	// RequiresServers names other upstream server namespaces that must be enabled.
 	RequiresServers []string `json:"requiresServers,omitempty"`
 	// Preconditions maps specific tool names to preconditions.
 	Preconditions map[string]Precondition `json:"preconditions,omitempty"`
+}
+
+// ToolView is one declared view of a target tool (#1933 slice 1).
+type ToolView struct {
+	// From is the target tool's real name on the aliased server.
+	From string `json:"from"`
+	// Pin fixes argument values the caller cannot set or override:
+	// a call through the view merges them over the caller's args.
+	Pin map[string]any `json:"pin,omitempty"`
+	// Hide removes pinned properties from the exposed inputSchema,
+	// so the caller never sees an argument they cannot change.
+	// Every entry must also be pinned.
+	Hide []string `json:"hide,omitempty"`
+	// Description overrides the target tool's description.
+	Description string `json:"description,omitempty"`
 }
 
 // Precondition specifies requirements for a tool or server.
@@ -458,6 +494,20 @@ type Resolved struct {
 	RequiresSecrets []string
 	RequiresServers []string
 	Preconditions   map[string]Precondition
+	// ToolViews is this view's declared tool views (#1933 slice 1),
+	// from its own mcpx block; empty for almost every server.
+	ToolViews map[string]ToolView
+
+	// WritePolicy is this server's resolved writePolicy override, from
+	// its own mcpx block or the pool block; empty means inherit the
+	// daemon policy.write setting (#1979).
+	WritePolicy string
+
+	// ArgumentRules is this server's compiled argument rules (#1986):
+	// the pool block's rules and the server's own, compiled at Resolve
+	// time so a bad pattern or schema is a load-time error. Consumed by
+	// the daemon's write-policy gate and by schema advertising.
+	ArgumentRules *ArgumentRuleSet
 
 	// Runtime, when set, returns the value the daemon holds in memory for a
 	// secret: see internal/secrets. It is consulted before this server's own
@@ -552,6 +602,23 @@ func (r *Resolved) PassesPreconditions(tool string, isServerActive func(string) 
 // lists and passes declared preconditions. Filtering is a property of the view,
 // not of the process: two aliases of one server expose different subsets while sharing a single child.
 func (r *Resolved) VisibleTool(name string) bool {
+	if len(r.ToolViews) > 0 {
+		// #1933 slice 1: a view exposes its declared views and
+		// nothing else -- the map IS the allowlist, under view
+		// names. The target's real name is not callable through
+		// the view.
+		tv, ok := r.ToolViews[name]
+		if !ok {
+			return false
+		}
+		if r.ExcludeTools.Match(tv.From) || r.ExcludeTools.Match(name) {
+			return false
+		}
+		if ok, _ := r.PassesPreconditions(tv.From, nil); !ok {
+			return false
+		}
+		return true
+	}
 	if r.ExcludeTools.Match(name) {
 		return false
 	}
@@ -622,6 +689,7 @@ func pick[T comparable](vals ...T) T {
 }
 
 var nsSanitize = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+var nsIdentifier = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
 
 // SanitizeNamespace turns an arbitrary server name into a valid TypeScript
 // identifier.
@@ -695,6 +763,28 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		return nil, fmt.Errorf("server %q: excludeTools: %w", name, err)
 	}
 
+	// Argument rules (#1986): pool rules and the server's own add up,
+	// compiled here so a bad pattern or schema fails the load, naming
+	// the server, instead of silently constraining nothing at call
+	// time. Origins name the file each rule came from, so a refusal
+	// can say whose rule it was.
+	poolOrigin := "the pool block"
+	if c.Path != "" {
+		poolOrigin = "the pool block in " + c.Path
+	}
+	serverOrigin := fmt.Sprintf("server %q", name)
+	if f := c.Origin[name]; f != "" {
+		serverOrigin = fmt.Sprintf("server %q in %s", name, f)
+	} else if c.Path != "" {
+		serverOrigin = fmt.Sprintf("server %q in %s", name, c.Path)
+	}
+	rules, err := CompileArgumentRules(append(
+		argumentRuleSources(d.ArgumentRules, poolOrigin),
+		argumentRuleSources(ex.ArgumentRules, serverOrigin)...))
+	if err != nil {
+		return nil, fmt.Errorf("server %q: %w", name, err)
+	}
+
 	sharing := Sharing(pick(string(ex.Sharing), string(d.Sharing), string(SharingShared)))
 	switch sharing {
 	case SharingShared, SharingExclusive:
@@ -722,9 +812,45 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		max = 1
 	}
 
-	if ex.Namespace != "" && codegen.ReservedNamespace(ex.Namespace) {
-		return nil, fmt.Errorf("server %q: namespace %q is a reserved word or a name the generated client already uses; pick another",
-			name, ex.Namespace)
+	if len(ex.ToolViews) > 0 {
+		// #1933 slice 1: structural validation that needs no schemas.
+		// Unknown targets and pins of non-schema arguments are
+		// checked against the target's tools when the daemon loads
+		// (registry view validation); what can be known here is
+		// known here.
+		if s.AliasOf == "" {
+			return nil, fmt.Errorf("server %q: toolViews requires aliasOf; a tool view renames another server's tools", name)
+		}
+		viewNames := make([]string, 0, len(ex.ToolViews))
+		for vn := range ex.ToolViews {
+			viewNames = append(viewNames, vn)
+		}
+		sort.Strings(viewNames)
+		for _, vn := range viewNames {
+			tv := ex.ToolViews[vn]
+			if vn == "" {
+				return nil, fmt.Errorf("server %q: toolView name must not be empty", name)
+			}
+			if tv.From == "" {
+				return nil, fmt.Errorf("server %q: toolView %q: from is required", name, vn)
+			}
+			for _, h := range tv.Hide {
+				if _, ok := tv.Pin[h]; !ok {
+					return nil, fmt.Errorf("server %q: toolView %q: hide lists %q, which is not pinned; hide removes pinned properties", name, vn, h)
+				}
+			}
+		}
+	}
+
+	if ex.Namespace != "" {
+		if !nsIdentifier.MatchString(ex.Namespace) {
+			return nil, fmt.Errorf("server %q: namespace %q is not a valid identifier; want [A-Za-z_$][A-Za-z0-9_$]*",
+				name, ex.Namespace)
+		}
+		if codegen.ReservedNamespace(ex.Namespace) {
+			return nil, fmt.Errorf("server %q: namespace %q is a reserved word or a name the generated client already uses; pick another",
+				name, ex.Namespace)
+		}
 	}
 	r := &Resolved{
 		Server:          s,
@@ -741,6 +867,8 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		LogLevel:        pickLoggingLevel(ex.Logging, d.Logging),
 		Tools:           allow,
 		ExcludeTools:    deny,
+		WritePolicy:     pick(ex.WritePolicy, d.WritePolicy),
+		ArgumentRules:   rules,
 		Profiles:        append(append([]string{}, d.Profiles...), ex.Profiles...),
 		Tags:            append(append([]string{}, d.Tags...), ex.Tags...),
 		ToolTags:        mergeToolTags(d.ToolTags, ex.ToolTags),
@@ -748,6 +876,7 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		RequiresSecrets: ex.RequiresSecrets,
 		RequiresServers: ex.RequiresServers,
 		Preconditions:   ex.Preconditions,
+		ToolViews:       ex.ToolViews,
 	}
 	if r.Min > r.Max {
 		r.Min = r.Max
@@ -771,6 +900,12 @@ func pickList(near, far []string) []string {
 }
 
 // ResolveAll returns every enabled server, sorted by name.
+//
+// Two enabled servers resolving to the same namespace are refused: the
+// generated client would declare that namespace twice and no script
+// could run (#1649). ResolveAll is the single choke point every load
+// path passes through, and it resolves in sorted name order, so the
+// first owner named in the error is deterministic.
 func (c *Config) ResolveAll() ([]*Resolved, error) {
 	names := make([]string, 0, len(c.MCPServers))
 	for n, s := range c.MCPServers {
@@ -781,11 +916,16 @@ func (c *Config) ResolveAll() ([]*Resolved, error) {
 	}
 	sort.Strings(names)
 	out := make([]*Resolved, 0, len(names))
+	owners := make(map[string]string, len(names))
 	for _, n := range names {
 		r, err := c.Resolve(n)
 		if err != nil {
 			return nil, err
 		}
+		if first, dup := owners[r.Namespace]; dup {
+			return nil, fmt.Errorf("servers %q and %q both resolve to namespace %q; rename one server or set an explicit mcpx.namespace", first, n, r.Namespace)
+		}
+		owners[r.Namespace] = n
 		out = append(out, r)
 	}
 	return out, nil
@@ -921,7 +1061,20 @@ func LoadFrom(explicit, wd string) (*Config, error) {
 // taken, so nearer always wins without needing to know which fields exist.
 func mergeInto(near, far *Config, farPath string) {
 	for name, s := range far.MCPServers {
-		if _, taken := near.MCPServers[name]; taken {
+		if existing, taken := near.MCPServers[name]; taken {
+			// The nearer file's server definition wins, as for
+			// every other field -- but argument rules are the one
+			// exception, by their own guarantee (#1986): rules
+			// only tighten, so a nearer file that repeats a server
+			// without restating its rules must not silently drop
+			// the farther file's. Compose them into the surviving
+			// definition, as mergeExtras does for the pool block.
+			if s.Mcpx != nil && len(s.Mcpx.ArgumentRules) > 0 {
+				if existing.Mcpx == nil {
+					existing.Mcpx = &Extras{}
+				}
+				existing.Mcpx.ArgumentRules = mergeArgumentRules(existing.Mcpx.ArgumentRules, s.Mcpx.ArgumentRules)
+			}
 			continue
 		}
 		near.MCPServers[name] = s
@@ -955,6 +1108,7 @@ func mergeExtras(near, far Extras) Extras {
 	near.CallTimeout = pick(near.CallTimeout, far.CallTimeout)
 	near.StartTimeout = pick(near.StartTimeout, far.StartTimeout)
 	near.Namespace = pick(near.Namespace, far.Namespace)
+	near.WritePolicy = pick(near.WritePolicy, far.WritePolicy)
 	near.Description = pick(near.Description, far.Description)
 	near.Prelude = pick(near.Prelude, far.Prelude)
 	if len(near.Tools) == 0 {
@@ -980,6 +1134,10 @@ func mergeExtras(near, far Extras) Extras {
 	}
 	// Appending is the point of the field, across files as within one.
 	near.ExtraIncludeTools = concat(far.ExtraIncludeTools, near.ExtraIncludeTools)
+	// Rules only tighten (#1986): a farther file's argument rules
+	// survive into the nearer config, and a key both files use
+	// composes with allOf rather than being replaced.
+	near.ArgumentRules = mergeArgumentRules(near.ArgumentRules, far.ArgumentRules)
 	return near
 }
 
@@ -1014,8 +1172,24 @@ func originsOf(c *Config, path string) map[string]string {
 func parse(b []byte) (*Config, error) {
 	c := &Config{}
 	stripped := stripComments(b)
-	if err := json.Unmarshal(stripped, c); err != nil {
+	// UseNumber: a tool view's pin (#1933) is forwarded verbatim on
+	// every call through the view, and the caller cannot override it.
+	// Decoding an integer pin past the exact float64 range through
+	// float64 would silently forward a different value on every call
+	// (9007199254740993 would arrive as 9007199254740992), so numbers
+	// in free-form values stay exact.
+	dec := json.NewDecoder(bytes.NewReader(stripped))
+	dec.UseNumber()
+	if err := dec.Decode(c); err != nil {
 		return nil, err
+	}
+	// A single Decode stops at the end of the first document, so
+	// trailing garbage or a concatenated second document would be
+	// silently dropped -- and checkKeys, whose own Unmarshal fails on
+	// the same bytes, assumes this decode validated the whole file.
+	// Require EOF instead (Codex, PR #2976).
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("config has data after the first JSON document")
 	}
 	if err := checkKeys(stripped, c); err != nil {
 		return nil, err

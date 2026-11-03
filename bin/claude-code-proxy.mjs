@@ -13,7 +13,8 @@
 //
 // Conversations are keyed like commandcode-proxy keys them (explicit
 // session headers / body ids, else a hash of the first user message), and
-// the key -> CLI session map persists to sessions.json in the proxy dir,
+// the key -> CLI session map persists to sessions.json in the shared
+// CLI-proxy state root (~/.local/state/cli-proxies, #3067),
 // so a proxy restart re-attaches with `--resume <sessionId>` instead of
 // re-bootstrapping. A request whose history no longer matches the mapped
 // session (diverged prefix, extra mid-history user turns, lost session)
@@ -35,6 +36,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 // Default port 18749: the next free port in the fleet family (clef 18742,
 // agy 18743, codex 18744, antigravity-ls 18745, design-code 18746,
@@ -49,7 +52,19 @@ const PROXY_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKROOT = process.env.CLAUDE_CODE_PROXY_WORKDIR || path.join(PROXY_DIR, 'work');
 fs.mkdirSync(WORKROOT, { recursive: true });
 
-const SESSION_FILE = process.env.CLAUDE_CODE_PROXY_SESSION_FILE || path.join(PROXY_DIR, 'sessions.json');
+// Session map: SHARED with commandcode-proxy (mirrored key space), so
+// both proxies must resolve to the SAME path -- the shared CLI-proxy
+// state root, not the script's directory: bin/ is the tracked checkout,
+// and every write there dirtied the primary clone and blocked
+// pm-git-sync (#3067; missed by the #2782 workdir move).
+const SESSION_FILE =
+  process.env.CLAUDE_CODE_PROXY_SESSION_FILE ||
+  path.join(
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'),
+    'cli-proxies',
+    'sessions.json'
+  );
+fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
 const MAX_LIVE_SESSIONS = 32;
 const IDLE_TTL_MS = 2 * 60 * 60 * 1000;
 const TURN_TIMEOUT_MS = 300 * 1000;
@@ -277,6 +292,8 @@ class ClaudeSession {
     this.dead = null; // Error once the child is gone
     this.lineBuffer = '';
     this.stderrTail = '';
+    this.stdoutDecoder = createStreamDecoder();
+    this.stderrDecoder = createStreamDecoder();
     this.turnWaiter = null; // { resolve, reject, onDelta, deltasText, lastAssistantText }
     this.workdir = sessionWorkdirFor(key);
 
@@ -322,7 +339,7 @@ class ClaudeSession {
     this.initRequestId = crypto.randomUUID();
     child.stdout.on('data', chunk => this._onStdout(chunk));
     child.stderr.on('data', chunk => {
-      const msg = chunk.toString('utf-8');
+      const msg = this.stderrDecoder.push(chunk);
       this.stderrTail = (this.stderrTail + msg).slice(-2000);
       if (msg.trim()) console.warn(`[claude-code-proxy stderr ${sessionId.slice(0, 8)}] ${msg.trim().slice(0, 300)}`);
     });
@@ -352,7 +369,7 @@ class ClaudeSession {
   }
 
   _onStdout(chunk) {
-    this.lineBuffer += chunk.toString('utf-8');
+    this.lineBuffer += this.stdoutDecoder.push(chunk);
     const lines = this.lineBuffer.split('\n');
     this.lineBuffer = lines.pop();
     for (const line of lines) {
@@ -490,7 +507,9 @@ const chains = new Map();
 const enqueue = (key, job) => {
   const prev = chains.get(key) || Promise.resolve();
   const run = prev.then(job, job);
-  chains.set(key, run.catch(() => {}));
+  const stored = run.catch(() => {});
+  chains.set(key, stored);
+  stored.then(() => { if (chains.get(key) === stored) chains.delete(key); });
   return run;
 };
 
@@ -687,7 +706,8 @@ const server = http.createServer((req, res) => {
       endpoint: '/v1/chat/completions',
       sessions: {
         live: [...liveSessions.values()].filter(s => !s.dead).length,
-        stored: sessionStore.size
+        stored: sessionStore.size,
+        chains: chains.size
       }
     }, null, 2));
     return;
@@ -704,20 +724,28 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
       }
     });
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try { body = JSON.parse(bodyText); } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `Invalid JSON body: ${err.message}` } }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
         return;
       }
       const messages = Array.isArray(body.messages) ? body.messages : [];

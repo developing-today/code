@@ -7246,7 +7246,7 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "yes on stdio; on HTTP it also POSTs `notifications/cancelled`, which 2026 says is \"not required or expected\" and whose headers \"are not defined by this revision\" (streamable-http note)",
+      "client": "yes on stdio; on legacy-era HTTP it also POSTs `notifications/cancelled`; on a 2026-07-28 HTTP upstream it sends none — `cancelled()` returns early for an HTTP transport with a meta version set (internal/mcpclient/modern.go:582) and closing the response stream is the cancellation signal, which 2026 calls the expected behaviour for that transport",
       "server": "n/a"
     }
   },
@@ -8227,7 +8227,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "partial — no rate limiting"
+      "server": "yes — suggestions ranked by relevance (exact \u003e prefix \u003e substring tiers, `rankCompletions` in `internal/daemon/ops.go`, #2388) and completion requests rate limited per caller (`completion.perMinute`) and per server (`completion.serverPerMinute`) at the /v1 choke point (#2387); inputs validated (see completion-errors)"
     }
   },
   {
@@ -8273,7 +8273,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "**no** for rate limiting (none found); access control inherits mcpx's lack of auth"
+      "server": "partial — inputs validated and rate limiting implemented per caller (`completion.perMinute`) and per server (`completion.serverPerMinute`) (#2387); control of access to sensitive suggestions and prevention of completion-based information disclosure still pending principals (#1968) / permissive-auth (#1972)"
     }
   },
   {
@@ -14339,7 +14339,7 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "yes — `proto.askRounds` (8) bounds rounds per request; no per-server rate limit",
+      "client": "yes — `proto.samplingPerMinute` (60) per server and `proto.samplingSessionPerMinute` (20) per session, fixed window; a refused request reaches no handler (#2192)",
       "server": "n/a"
     }
   },
@@ -15443,7 +15443,7 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "yes — TTL/askRounds only",
+      "client": "yes — `proto.elicitationPerMinute` (30) per server, fixed window; a refused request reaches no handler and is not answered cancel (#2192)",
       "server": "n/a"
     }
   },

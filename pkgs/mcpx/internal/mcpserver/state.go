@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -11,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // stateSigner mints and checks the opaque requestState a modern client
@@ -36,7 +35,7 @@ type stateSigner struct {
 
 func newStateSigner() *stateSigner {
 	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
+	if _, err := RandSource.Read(key); err != nil {
 		// Without a key nothing can be verified, and issuing tokens that
 		// cannot be checked is worse than not issuing them: every mint
 		// fails below instead.
@@ -81,7 +80,7 @@ func (s *stateSigner) mintRound(callID, binding string, rounds int) (string, err
 		return "", errors.New("a requestState must be bound to something")
 	}
 	nonce := make([]byte, 8)
-	if _, err := rand.Read(nonce); err != nil {
+	if _, err := RandSource.Read(nonce); err != nil {
 		return "", err
 	}
 	b, err := json.Marshal(statePayload{Call: callID, Binding: binding,

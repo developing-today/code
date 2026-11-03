@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // sampleRig is a registry with a broker and no upstream connections: the
@@ -58,6 +58,25 @@ func TestSamplingRequestShapeRefusedWithoutAQuestion(t *testing.T) {
 	}
 	if ps := pending(t, b); len(ps) != 0 {
 		t.Fatalf("%d questions opened for a refused request", len(ps))
+	}
+}
+
+func TestSamplingRequestWithoutMessagesIsInvalidParams(t *testing.T) {
+	r, b := sampleRig(t)
+	for _, raw := range []string{`{}`, `{"messages":null}`, `{"messages":[]}`} {
+		t.Run(raw, func(t *testing.T) {
+			_, err := r.sampleViaBroker(context.Background(), "a", "k", json.RawMessage(raw))
+			var inv *elicit.SamplingInvalidParams
+			if !errors.As(err, &inv) {
+				t.Fatalf("err = %v, want SamplingInvalidParams", err)
+			}
+			if inv.RPCCode() != -32602 {
+				t.Fatalf("RPCCode = %d, want -32602", inv.RPCCode())
+			}
+		})
+	}
+	if ps := pending(t, b); len(ps) != 0 {
+		t.Fatalf("%d questions opened for requests with no messages", len(ps))
 	}
 }
 

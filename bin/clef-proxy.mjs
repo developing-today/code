@@ -4,8 +4,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { listenTarget } from './socket-activation.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
 
 const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
+// Test seam (#692): point the gateway base at a stub upstream via
+// CLEF_PROXY_GATEWAY_BASE; the Cloudflare gateway stays the default
+// and the URL shape after the base is unchanged.
+const GATEWAY_BASE = (process.env.CLEF_PROXY_GATEWAY_BASE || 'https://gateway.ai.cloudflare.com/v1').replace(/\/+$/, '');
+// One deadline covers both the data-path fetch and response-body read.
+// The environment override keeps the hanging-upstream regression test fast.
+const configuredDataPathTimeoutMs = Number(process.env.CLEF_PROXY_DATA_PATH_TIMEOUT_MS);
+const DATA_PATH_TIMEOUT_MS = Number.isSafeInteger(configuredDataPathTimeoutMs) && configuredDataPathTimeoutMs > 0
+  ? configuredDataPathTimeoutMs
+  : 30_000;
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
 
 // Warm connections (#480): upstream calls go through fetch, whose bundled
@@ -91,6 +103,17 @@ const getCredentials = (authHeader) => {
 
   return { accountId, gatewayId, token };
 };
+
+// The resolved model is interpolated raw into the gateway run URL, so it
+// must be confined to the Clef family in the cloudflare namespace with
+// plain name characters only (#2410): no '/', no dot segments, no '?',
+// '#', whitespace, or control characters are representable in this
+// grammar, so a hostile model cannot rewrite the upstream path/query or
+// spend the proxy's token on a non-Clef model. This is a deterministic
+// grammar check, deliberately NOT a gate on the live model list (that
+// list is async/TTL'd display machinery for /v1/models and must not
+// become a data-path dependency).
+const CLEF_MODEL_GRAMMAR = /^@cf\/cloudflare\/clef[A-Za-z0-9._-]*$/;
 
 const resolveModel = (model) => {
   if (!model || typeof model !== 'string') return '@cf/cloudflare/clef-flash';
@@ -186,10 +209,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && (pathname === '/v1/systemone' || pathname === '/systemone' || pathname === '/')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(5 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 5 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request body too large' }));
         req.destroy();
@@ -197,6 +220,8 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       // Parse the client body on its own: a malformed request is a 400,
       // not a 500 from the shared upstream catch below (sibling proxies
       // all parse separately — #690).
@@ -208,12 +233,13 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: `Invalid JSON body: ${err.message}` }));
         return;
       }
-      if (!body || typeof body !== 'object') {
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON body: expected an object' }));
         return;
       }
 
+      let dataPathSignal;
       try {
         const { accountId, gatewayId, token } = getCredentials(req.headers['authorization']);
 
@@ -224,20 +250,27 @@ const server = http.createServer(async (req, res) => {
         }
 
         const model = resolveModel(body.model);
-        const cfUrl = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/workers-ai/run/${model}`;
+        if (!CLEF_MODEL_GRAMMAR.test(model)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Refused model '${model}': only Clef-family models (@cf/cloudflare/clef*) are served by this proxy` }));
+          return;
+        }
+        const cfUrl = `${GATEWAY_BASE}/${accountId}/${gatewayId}/workers-ai/run/${model}`;
 
         const payload = {
           state: body.state || {},
           questions: body.questions || {}
         };
 
+        dataPathSignal = AbortSignal.timeout(DATA_PATH_TIMEOUT_MS);
         const cfRes = await fetch(cfUrl, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: dataPathSignal
         });
 
         // The gateway can answer non-JSON (e.g. an HTML error page) or a
@@ -246,7 +279,11 @@ const server = http.createServer(async (req, res) => {
         let cfData = null;
         try {
           cfData = await cfRes.json();
-        } catch {}
+        } catch (err) {
+          // Preserve the existing non-JSON upstream behavior, but do not
+          // swallow an abort while the shared data-path deadline is active.
+          if (dataPathSignal.aborted) throw err;
+        }
 
         if (cfRes.ok && cfData?.success && cfData.result?.answers) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -259,6 +296,11 @@ const server = http.createServer(async (req, res) => {
           }));
         }
       } catch (err) {
+        if (dataPathSignal?.aborted) {
+          res.writeHead(504, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Cloudflare Workers AI Clef request timed out' }));
+          return;
+        }
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message || 'Internal proxy error' }));
       }
@@ -270,7 +312,9 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'Not Found', path: pathname }));
 });
 
-server.listen(PORT, HOST, () => {
+// Socket activation (#1821): under systemd the listener arrives as fd 3
+// and systemd owns the bind; a manual launch binds PORT/HOST directly.
+server.listen(listenTarget({ port: PORT, host: HOST }), () => {
   publishEndpoint();
   console.log(`Clef System One Proxy listening on http://${HOST}:${PORT}`);
   console.log(`Endpoint: http://${HOST}:${PORT}/v1/systemone`);

@@ -59,6 +59,12 @@
 //! not present, so an event of another author that names a voided event still applies. This is
 //! the Phase 1 rule. It has no membership or authority model to void by, so authority-based
 //! voiding (decision 1) replaces it in Phase 2 (P2.3).
+
+//! A session checkpoint's  is a dependency of the same kind (#3794): the
+//! checkpoint waits while the predecessor is absent, and a stored predecessor is verified —
+//! the same author's checkpoint, the same session header, the previous segment number —
+//! before the checkpoint may apply. A predecessor that fails the verification refuses the
+//! checkpoint as malformed.
 //!
 //! Held events count too. Two held events at one sequence number are a fork, though
 //! neither is applied. Held events are rows on disk, so a restart keeps them, and a conflict
@@ -666,16 +672,26 @@ fn settle(
             Settled::Refused(refusal)
         }
         Decision::Wait(deps) => {
-            if let Some(action) = action {
-                store_action(m.txn, &id, action)?;
+            let hold = m.hold(event, deps, false, now)?;
+            if hold == Hold::Held {
+                // #2916: the action is written only once the event is
+                // actually held. Writing it before the hold persisted the
+                // refused event's action whenever the same call committed
+                // for an unrelated reason (e.g. an expiry).
+                if let Some(action) = action {
+                    store_action(m.txn, &id, action)?;
+                }
             }
-            held(m.hold(event, deps, false, now)?)
+            held(hold)
         }
         Decision::Park => {
-            if let Some(action) = action {
-                store_action(m.txn, &id, action)?;
+            let hold = m.hold(event, Vec::new(), true, now)?;
+            if hold == Hold::Held {
+                if let Some(action) = action {
+                    store_action(m.txn, &id, action)?;
+                }
             }
-            held(m.hold(event, Vec::new(), true, now)?)
+            held(hold)
         }
     };
     Ok(settled)
@@ -806,6 +822,39 @@ fn decide_in(
     // proof header is present but never stored, so it is parked too: waiting for it would wait on
     // a dependency that is already present.
     let mut waits = missing_deps(txn, &event.header.extensions.after)?;
+    // A session checkpoint names its predecessor checkpoint (#3794), and the predecessor is
+    // a dependency like an `after` hash: absent, the checkpoint waits for it; present only
+    // as a fork proof header, it can never link, so the checkpoint is parked. A stored
+    // predecessor must be this author's checkpoint carrying the same session header (the
+    // session's signed-once binding) at the previous segment number — anything else is a
+    // broken segment chain, and the checkpoint is refused.
+    if let Some(checkpoint) = &event.header.extensions.checkpoint {
+        if let Some(prev_id) = checkpoint.segment.prev_checkpoint {
+            match stored_by_id(txn, &prev_id)? {
+                Some(prev) => {
+                    let predecessor = author_of(&prev) == author
+                        && prev
+                            .header
+                            .extensions
+                            .checkpoint
+                            .as_ref()
+                            .is_some_and(|prev_checkpoint| {
+                                prev_checkpoint.header == checkpoint.header
+                                    && prev_checkpoint.segment.segment_seq + 1
+                                        == checkpoint.segment.segment_seq
+                            });
+                    if !predecessor {
+                        return Ok(Decision::Refuse(Refusal::Malformed(
+                            "a session checkpoint's prev_checkpoint is not the previous                              segment's checkpoint of the same session"
+                                .to_owned(),
+                        )));
+                    }
+                }
+                None if is_present(txn, &prev_id)? => return Ok(Decision::Park),
+                None => waits.push(prev_id),
+            }
+        }
+    }
     if seq > 0 {
         let linked = match event.header.backlink {
             Some(backlink) => {
@@ -1024,6 +1073,18 @@ fn stored_event(
         .ok_or_else(|| corrupt("an applied sequence number has no stored event"))
 }
 
+/// The stored event with this ID, applied or voided, if there is one. Reads the `hashes`
+/// index for the event's position, then the event at that position.
+fn stored_by_id(txn: &WriteTransaction, id: &Hash) -> Result<Option<Event>, StoreError> {
+    let hashes = txn.open_table(HASHES)?;
+    let Some(position) = hashes.get(id.as_bytes().as_slice())? else {
+        return Ok(None);
+    };
+    let events = txn.open_table(EVENTS)?;
+    let row = events.get(position.value())?;
+    row.map(|row| decode_stored(row.value())).transpose()
+}
+
 /// The `after` hashes that are not present yet.
 fn missing_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, StoreError> {
     let mut missing = Vec::new();
@@ -1097,6 +1158,9 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1468,6 +1532,161 @@ mod tests {
         store.check_invariants().unwrap();
     }
 
+    /// A `session.checkpoint` event (#3794) is an ordinary verified event to
+    /// the store: it waits for an `after` hash it names like any other kind,
+    /// is released by that event's arrival, and reads back byte for byte.
+    #[test]
+    fn test_a_session_checkpoint_waits_and_round_trips() {
+        use crate::session_checkpoint::{
+            MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
+        };
+
+        let (_dir, mut store) = open();
+        let x = key(21);
+        let y = key(22);
+        let x0 = event(&x, 0, None, Vec::new(), "x");
+        let ext = ChainExt {
+            kind: "session.checkpoint".to_owned(),
+            group: None,
+            after: vec![x0.id],
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: Some(SessionCheckpoint {
+                header: SessionHeader {
+                    session_id: Hash::digest(b"session"),
+                    purpose: "collab editing".to_owned(),
+                    participants: vec![y.verifying_key()],
+                    started_ms: 1_000,
+                    nonce: Hash::digest(b"nonce"),
+                    mac_key_commitment: Hash::digest(b"mac key"),
+                    mac_scope: MacScope::Shared,
+                },
+                segment: SegmentCheckpoint {
+                    segment_seq: 0,
+                    prev_checkpoint: None,
+                    root: Hash::digest(b"root"),
+                    event_count: 3,
+                    start_ms: 1_000,
+                    end_ms: 1_500,
+                    audit_blob: None,
+                },
+            }),
+        };
+        let y0 = sign(&y, 0, None, None, ext).unwrap();
+        assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
+        assert_eq!(
+            ingest(&mut store, &x0),
+            Ingest::Accepted {
+                id: x0.id,
+                released: vec![y0.id],
+            }
+        );
+        assert_eq!(store.event(&author(&y), 0).unwrap(), Some(y0));
+        store.check_invariants().unwrap();
+    }
+
+    /// A signed `session.checkpoint` event for `key` at chain position `seq`:
+    /// segment `segment_seq` of one fixed session, naming `prev` as its
+    /// predecessor checkpoint.
+    fn checkpoint_event(
+        key: &SigningKey,
+        seq: SeqNum,
+        backlink: Option<Hash>,
+        segment_seq: u64,
+        prev: Option<Hash>,
+    ) -> Event {
+        use crate::session_checkpoint::{
+            MacScope, SegmentCheckpoint, SessionCheckpoint, SessionHeader,
+        };
+
+        let ext = ChainExt {
+            kind: "session.checkpoint".to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: Some(SessionCheckpoint {
+                header: SessionHeader {
+                    session_id: Hash::digest(b"session"),
+                    purpose: "collab editing".to_owned(),
+                    participants: vec![key.verifying_key()],
+                    started_ms: 1_000,
+                    nonce: Hash::digest(b"nonce"),
+                    mac_key_commitment: Hash::digest(b"mac key"),
+                    mac_scope: MacScope::Shared,
+                },
+                segment: SegmentCheckpoint {
+                    segment_seq,
+                    prev_checkpoint: prev,
+                    root: Hash::digest(b"root"),
+                    event_count: 3,
+                    start_ms: 1_000,
+                    end_ms: 1_500,
+                    audit_blob: None,
+                },
+            }),
+        };
+        sign(key, seq, backlink, None, ext).unwrap()
+    }
+
+    /// The verifier walk for checkpoints (#3794): a checkpoint whose
+    /// predecessor is not yet stored waits for it and is released by its
+    /// arrival, exactly like an `after` dependency.
+    #[test]
+    fn test_a_checkpoint_waits_for_its_predecessor() {
+        let (_dir, mut store) = open();
+        let y = key(23);
+        let seg0 = checkpoint_event(&y, 0, None, 0, None);
+        let seg1 = checkpoint_event(&y, 1, Some(seg0.id), 1, Some(seg0.id));
+        assert_eq!(ingest(&mut store, &seg1), Ingest::Waiting { id: seg1.id });
+        assert_eq!(
+            ingest(&mut store, &seg0),
+            Ingest::Accepted {
+                id: seg0.id,
+                released: vec![seg1.id],
+            }
+        );
+        store.check_invariants().unwrap();
+    }
+
+    /// A checkpoint that skips a segment — its predecessor is segment 0 but
+    /// it claims segment 3 — is refused, not applied.
+    #[test]
+    fn test_a_checkpoint_that_skips_a_segment_is_refused() {
+        let (_dir, mut store) = open();
+        let y = key(24);
+        let seg0 = checkpoint_event(&y, 0, None, 0, None);
+        ingest(&mut store, &seg0);
+        let seg3 = checkpoint_event(&y, 1, Some(seg0.id), 3, Some(seg0.id));
+        assert!(matches!(
+            ingest(&mut store, &seg3),
+            Ingest::Refused(Refusal::Malformed(_))
+        ));
+        store.check_invariants().unwrap();
+    }
+
+    /// A checkpoint whose `prev_checkpoint` names an event that is not a
+    /// checkpoint of the same session is refused.
+    #[test]
+    fn test_a_checkpoint_naming_a_foreign_predecessor_is_refused() {
+        let (_dir, mut store) = open();
+        let y = key(25);
+        let plain = event(&y, 0, None, Vec::new(), "message");
+        ingest(&mut store, &plain);
+        let seg1 = checkpoint_event(&y, 1, Some(plain.id), 1, Some(plain.id));
+        assert!(matches!(
+            ingest(&mut store, &seg1),
+            Ingest::Refused(Refusal::Malformed(_))
+        ));
+        store.check_invariants().unwrap();
+    }
+
     #[test]
     fn test_an_after_hash_naming_a_voided_event_is_applied() {
         let (_dir, mut store) = open();
@@ -1659,6 +1878,9 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1670,6 +1892,301 @@ mod tests {
         assert_eq!(
             store.group_members(&group).unwrap(),
             vec![(who, 0), (who, 1)]
+        );
+        store.check_invariants().unwrap();
+    }
+
+    /// A signed group operation and its encoded body, for the production path.
+    fn group_op(
+        key: &SigningKey,
+        seq: SeqNum,
+        backlink: Option<Hash>,
+        after: Vec<Hash>,
+        group: Option<Hash>,
+        action: &GroupAction<AuthId, ()>,
+    ) -> (Event, Vec<u8>) {
+        let body = crate::membership::body::encode_body(action).unwrap();
+        let ext = ChainExt {
+            kind: "group.op".to_owned(),
+            group,
+            after,
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+        };
+        let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
+        (event, body)
+    }
+
+    fn ingest_op(store: &mut EventStore, event: &Event, body: &[u8]) {
+        store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
+    }
+
+    fn individual(key: &SigningKey) -> p2panda_auth::group::GroupMember<AuthId> {
+        p2panda_auth::group::GroupMember::Individual(AuthId::Key(author(key)))
+    }
+
+    /// The fold gate on production ingest (#168): a role change is an Admin's to make, so a
+    /// manager's promote — which the membership layer alone accepts — does not apply, while
+    /// the Admin's own operations do. The roster follows the fold's verdict.
+    #[test]
+    fn test_a_managers_promote_is_refused_by_the_group_fold() {
+        let (alice, bob, carol) = (key(31), key(32), key(33));
+        let (_dir, mut store) = open();
+
+        // Alice creates the group with Bob as a reader. The group is the create's ID.
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), p2panda_auth::Access::manage()),
+                (individual(&bob), p2panda_auth::Access::read()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(&mut store, &create_event, &create_body);
+        assert!(store.event_applied(&group).unwrap());
+
+        // Alice adds Carol as a reader, then promotes Bob to manager: both are an Admin's
+        // operations (the creator is the group's Admin), and both apply.
+        let add_carol = GroupAction::Add {
+            member: individual(&carol),
+            access: p2panda_auth::Access::read(),
+        };
+        let (add_event, add_body) = group_op(
+            &alice,
+            1,
+            Some(create_event.id),
+            vec![create_event.id],
+            Some(group),
+            &add_carol,
+        );
+        ingest_op(&mut store, &add_event, &add_body);
+        assert!(store.event_applied(&add_event.id).unwrap());
+
+        let promote_bob = GroupAction::Promote {
+            member: individual(&bob),
+            access: p2panda_auth::Access::manage(),
+        };
+        let (promote_event, promote_body) = group_op(
+            &alice,
+            2,
+            Some(add_event.id),
+            vec![add_event.id],
+            Some(group),
+            &promote_bob,
+        );
+        ingest_op(&mut store, &promote_event, &promote_body);
+        assert!(store.event_applied(&promote_event.id).unwrap());
+
+        // Bob, a manager but not an Admin, promotes Carol to writer. The membership layer
+        // accepts a manager's promote; the group fold refuses it (only an Admin changes a
+        // role), so the operation does not apply and Carol stays a reader on the roster.
+        let bob_promotes = GroupAction::Promote {
+            member: individual(&carol),
+            access: p2panda_auth::Access::write(),
+        };
+        let (bob_event, bob_body) = group_op(
+            &bob,
+            0,
+            None,
+            vec![promote_event.id],
+            Some(group),
+            &bob_promotes,
+        );
+        ingest_op(&mut store, &bob_event, &bob_body);
+        assert!(
+            !store.event_applied(&bob_event.id).unwrap(),
+            "a manager's role change must not apply: the fold reserves it to an Admin"
+        );
+        let mut roster = store.roster(&group).unwrap();
+        roster.sort_unstable();
+        let mut expected = vec![author(&alice), author(&bob), author(&carol)];
+        expected.sort_unstable();
+        assert_eq!(roster, expected);
+        store.check_invariants().unwrap();
+    }
+
+    /// The fold gate is a function of the stored set, so it survives a reopen (replay) and a
+    /// manager's removal of a plain member — an operation the fold allows — still applies.
+    #[test]
+    fn test_the_fold_gate_survives_a_reopen_and_allows_a_managers_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (alice, bob, carol) = (key(34), key(35), key(36));
+        let group;
+        let bob_promote_id;
+        let remove_id;
+        {
+            let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+            let create = GroupAction::Create {
+                initial_members: vec![
+                    (individual(&alice), p2panda_auth::Access::manage()),
+                    (individual(&bob), p2panda_auth::Access::manage()),
+                    (individual(&carol), p2panda_auth::Access::read()),
+                ],
+            };
+            let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+            group = create_event.id;
+            ingest_op(&mut store, &create_event, &create_body);
+
+            // Bob (manager, not Admin) promotes Carol: refused by the fold.
+            let bob_promotes = GroupAction::Promote {
+                member: individual(&carol),
+                access: p2panda_auth::Access::write(),
+            };
+            let (bob_event, bob_body) = group_op(
+                &bob,
+                0,
+                None,
+                vec![create_event.id],
+                Some(group),
+                &bob_promotes,
+            );
+            bob_promote_id = bob_event.id;
+            ingest_op(&mut store, &bob_event, &bob_body);
+
+            // Bob removes Carol: a manager may remove a plain member, and the fold's chain
+            // rule is met by a manager who holds Manage at his position, so this applies.
+            let bob_removes = GroupAction::Remove {
+                member: individual(&carol),
+            };
+            let (remove_event, remove_body) = group_op(
+                &bob,
+                1,
+                Some(bob_event.id),
+                vec![create_event.id],
+                Some(group),
+                &bob_removes,
+            );
+            remove_id = remove_event.id;
+            ingest_op(&mut store, &remove_event, &remove_body);
+            assert!(store.event_applied(&remove_id).unwrap());
+        }
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        assert!(
+            !store.event_applied(&bob_promote_id).unwrap(),
+            "the fold's refusal is re-derived on reopen, not remembered"
+        );
+        assert!(store.event_applied(&remove_id).unwrap());
+        let mut roster = store.roster(&group).unwrap();
+        roster.sort_unstable();
+        let mut expected = vec![author(&alice), author(&bob)];
+        expected.sort_unstable();
+        assert_eq!(roster, expected);
+        store.check_invariants().unwrap();
+    }
+
+    /// Codex P1 on PR #3725: a manager's removal of the group's Admin creator is refused by
+    /// the fold, and the refused operation must be a no-op for authority too — the Admin's own
+    /// later operation still applies, because the membership layer no longer contains the
+    /// removal it was judged against.
+    #[test]
+    fn test_a_fold_refused_removal_does_not_strip_the_admins_authority() {
+        let (alice, bob) = (key(41), key(42));
+        let (_dir, mut store) = open();
+
+        // Alice (the creator, hence the Admin) creates the group with Bob as a manager.
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), p2panda_auth::Access::manage()),
+                (individual(&bob), p2panda_auth::Access::manage()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(&mut store, &create_event, &create_body);
+        assert!(store.event_applied(&group).unwrap());
+
+        // Bob, a manager but not an Admin, removes Alice. The membership layer alone takes a
+        // manager's removal seriously; the fold refuses it (only an Admin removes an Admin),
+        // so the operation does not apply.
+        let bob_removes = GroupAction::Remove {
+            member: individual(&alice),
+        };
+        let (remove_event, remove_body) = group_op(
+            &bob,
+            0,
+            None,
+            vec![create_event.id],
+            Some(group),
+            &bob_removes,
+        );
+        ingest_op(&mut store, &remove_event, &remove_body);
+        assert!(
+            !store.event_applied(&remove_event.id).unwrap(),
+            "a manager's removal of the Admin must not apply: the fold refuses it"
+        );
+
+        // Alice removes Bob, causally after Bob's refused removal. The fold accepts it (she
+        // is still the Admin) and the roster still lists her, so it must apply: the refused
+        // removal is a no-op, not a loss of her authority.
+        let alice_removes = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (answer_event, answer_body) = group_op(
+            &alice,
+            1,
+            Some(create_event.id),
+            vec![remove_event.id],
+            Some(group),
+            &alice_removes,
+        );
+        ingest_op(&mut store, &answer_event, &answer_body);
+        assert!(
+            store.event_applied(&answer_event.id).unwrap(),
+            "the Admin's operation after a fold-refused removal of her must still apply"
+        );
+        assert_eq!(store.roster(&group).unwrap(), vec![author(&alice)]);
+        store.check_invariants().unwrap();
+    }
+
+    /// Codex P2 on PR #3725: a create that lists its author below Manage is not bridged (the
+    /// fold would silently upgrade the creator to Admin), so when the membership layer then
+    /// refuses the author's removal of a manager, the roster — which follows the applied
+    /// decisions — still lists that manager.
+    #[test]
+    fn test_a_create_listing_its_author_below_manage_keeps_the_membership_roster() {
+        let (alice, bob) = (key(43), key(44));
+        let (_dir, mut store) = open();
+
+        // Alice creates the group listing herself with Read and Bob with Manage.
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), p2panda_auth::Access::read()),
+                (individual(&bob), p2panda_auth::Access::manage()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(&mut store, &create_event, &create_body);
+
+        // Alice (Read in the membership layer) removes Bob: the layer refuses it for
+        // insufficient access, so it does not apply — and the roster must agree, listing Bob.
+        let alice_removes = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (remove_event, remove_body) = group_op(
+            &alice,
+            1,
+            Some(create_event.id),
+            vec![create_event.id],
+            Some(group),
+            &alice_removes,
+        );
+        ingest_op(&mut store, &remove_event, &remove_body);
+        assert!(
+            !store.event_applied(&remove_event.id).unwrap(),
+            "a reader's removal of a manager must not apply"
+        );
+        let mut roster = store.roster(&group).unwrap();
+        roster.sort_unstable();
+        let mut expected = vec![author(&alice), author(&bob)];
+        expected.sort_unstable();
+        assert_eq!(
+            roster, expected,
+            "the roster must agree with the applied decisions: Bob was not removed"
         );
         store.check_invariants().unwrap();
     }
@@ -2188,6 +2705,105 @@ mod tests {
         assert!(store.waiting_ids().unwrap().is_empty());
     }
 
+    /// #2690, at the mirror itself: a release whose `arrived` expires another
+    /// held event must delete that event's row in the releasing transaction --
+    /// not leave it for a later, unrelated expire to count, or for a restart
+    /// to drop silently. Driven through the mirror directly, because the
+    /// ingest path's own expire-first composition would mask a mirror that
+    /// forgot the flush.
+    #[test]
+    fn test_a_mirror_release_flushes_the_events_it_expires() {
+        let signer = key(39);
+        let events = chain_of(&signer, 3);
+        let (_dir, mut store) = open();
+        // events[2] is held at 0, waiting for events[1]. It is due at WEEK_MS.
+        store
+            .transact(0, |m| {
+                m.hold(events[2].clone(), vec![events[1].id], false, 0)?;
+                Ok(((), true))
+            })
+            .unwrap();
+        // events[1] is held just before the cap, waiting for events[0]: fresh.
+        store
+            .transact(WEEK_MS - 1_000, |m| {
+                m.hold(
+                    events[1].clone(),
+                    vec![events[0].id],
+                    false,
+                    WEEK_MS - 1_000,
+                )?;
+                Ok(((), true))
+            })
+            .unwrap();
+        // Releasing events[0] at the cap releases events[1]; inside that
+        // release, events[2] reaches the age cap and expires.
+        let released = store
+            .transact(WEEK_MS, |m| {
+                let released = m.release(&events[0].id, WEEK_MS)?;
+                Ok((released, true))
+            })
+            .unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].id, events[1].id);
+        // The released event's row stays until its caller decides it; the
+        // expired event's row is gone in the same transaction, and nothing
+        // remains for a later expire to count.
+        let rows = store.waiting_ids().unwrap();
+        assert!(rows.contains(&events[1].id), "rows after release: {rows:?}");
+        assert!(
+            !rows.contains(&events[2].id),
+            "the expired event's row survived the release: {rows:?}"
+        );
+        // Decide the released event the way its caller would, so the store
+        // is back at a transaction boundary it accepts; then nothing remains
+        // for a later expire to count.
+        store
+            .transact(WEEK_MS, |m| {
+                m.drop_row(&events[1].id)?;
+                Ok(((), true))
+            })
+            .unwrap();
+        assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    /// #2690: a release whose `arrived` expires another held event must delete
+    /// that event's row in the releasing transaction -- not leave it for a
+    /// later, unrelated expire to count, or for a restart to drop silently.
+    #[test]
+    fn test_a_release_flushes_the_events_it_expires() {
+        let signer = key(38);
+        let events = chain_of(&signer, 3);
+        let (_dir, mut store) = open();
+        // events[2] is held at 0, waiting for events[1]. It is due at WEEK_MS.
+        assert_eq!(
+            ingest(&mut store, &events[2]),
+            Ingest::Waiting { id: events[2].id }
+        );
+        // events[1] is held just before the cap, waiting for events[0]: fresh.
+        assert_eq!(
+            store.ingest(&events[1].bytes, WEEK_MS - 1_000).unwrap(),
+            Ingest::Waiting { id: events[1].id }
+        );
+        // events[0] arrives at the cap and is accepted, releasing events[1].
+        // Inside that release, events[2] reaches the age cap and expires.
+        assert_eq!(
+            store.ingest(&events[0].bytes, WEEK_MS).unwrap(),
+            Ingest::Accepted {
+                id: events[0].id,
+                released: vec![events[1].id],
+            }
+        );
+        // The expiry belonged to the releasing call: nothing remains for a
+        // later expire to count, the pool holds nothing, and no row for
+        // events[2] (or any waiting row) survives.
+        assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
+        assert_eq!(store.waiting_len(), 0);
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
     #[test]
     fn test_a_refused_waiting_event_leaves_no_row() {
         let dir = tempfile::tempdir().unwrap();
@@ -2208,6 +2824,98 @@ mod tests {
         let store = reopen(&dir, limits, 0);
         assert_eq!(store.waiting_ids().unwrap(), vec![events[1].id]);
         assert!(!store.is_waiting(&events[2].id));
+    }
+
+    /// The action keys in the actions table, read straight from the db.
+    fn action_keys(store: &EventStore) -> Vec<Vec<u8>> {
+        let txn = store.db.begin_read().unwrap();
+        txn.open_table(ACTIONS)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|row| row.unwrap().0.value().to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn test_a_waiting_full_refusal_persists_no_action_even_when_the_call_expires() {
+        // #2916 probe, as a regression: per-author cap 1, max age 1s.
+        // B's seq-1 event is held at t=0 (due at t=1000); A's seq-2 event is
+        // held at t=500, putting A at cap. A's seq-3 group event must wait
+        // behind the held seq-2, so the pool refuses it WaitingFull. Run the
+        // refusal twice: once with nothing due (control), and once at t=1000
+        // where the same call expires B's event and so commits.
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(&key(52)), p2panda_auth::Access::manage())],
+        };
+        for now in [500, 1_000] {
+            let dir = tempfile::tempdir().unwrap();
+            let limits = WaitingLimits::new(1, 1_000);
+            let b_events = chain_of(&key(51), 2);
+            let a_events = chain_of(&key(52), 4);
+            let refused_id = a_events[3].id;
+            {
+                let mut store = reopen(&dir, limits, 0);
+                assert_eq!(
+                    store.ingest(&b_events[1].bytes, 0).unwrap(),
+                    Ingest::Waiting { id: b_events[1].id }
+                );
+                assert_eq!(
+                    store.ingest(&a_events[2].bytes, 500).unwrap(),
+                    Ingest::Waiting { id: a_events[2].id }
+                );
+                assert_eq!(
+                    store
+                        .ingest_with_action(&a_events[3].bytes, Some(&create), now)
+                        .unwrap(),
+                    Ingest::Refused(Refusal::WaitingFull)
+                );
+                assert!(!store.is_waiting(&refused_id));
+            }
+            // After reopening, the refused event left no action row behind,
+            // whichever way its call ended.
+            let store = reopen(&dir, limits, 0);
+            assert!(
+                !store.is_waiting(&refused_id),
+                "the refused event is not waiting at t={now}"
+            );
+            assert_eq!(
+                action_keys(&store),
+                Vec::<Vec<u8>>::new(),
+                "no actions row persists for the refused event at t={now}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_a_held_group_event_keeps_its_action() {
+        // The other half of the #2916 contract: an event the pool does hold
+        // keeps its action, so a later release reads it back.
+        let dir = tempfile::tempdir().unwrap();
+        let limits = WaitingLimits::new(2, WEEK_MS);
+        let a_events = chain_of(&key(52), 4);
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(&key(52)), p2panda_auth::Access::manage())],
+        };
+        {
+            let mut store = reopen(&dir, limits, 0);
+            assert_eq!(
+                store.ingest(&a_events[2].bytes, 0).unwrap(),
+                Ingest::Waiting { id: a_events[2].id }
+            );
+            assert_eq!(
+                store
+                    .ingest_with_action(&a_events[3].bytes, Some(&create), 0)
+                    .unwrap(),
+                Ingest::Waiting { id: a_events[3].id }
+            );
+        }
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(
+            action_keys(&store),
+            vec![a_events[3].id.as_bytes().to_vec()],
+            "the held event's action survives a reopen"
+        );
     }
 
     #[test]
@@ -2231,6 +2939,37 @@ mod tests {
         assert!(!store.is_waiting(&events[3].id));
         assert_eq!(store.waiting_ids().unwrap().len(), 2);
         store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_smaller_total_on_reopen_drops_the_excess_and_still_opens() {
+        // Three authors each hold one waiting event under the default total.
+        // Reopening under a total of two must not brick the store: the excess
+        // row is dropped, the store opens, and the drop is durable.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ids = Vec::new();
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            for n in 41..=43 {
+                let signer = key(n);
+                let events = chain_of(&signer, 2);
+                assert_eq!(
+                    ingest(&mut store, &events[1]),
+                    Ingest::Waiting { id: events[1].id }
+                );
+                ids.push(events[1].id);
+            }
+            assert_eq!(store.waiting_ids().unwrap().len(), 3);
+        }
+        let limits = WaitingLimits::default().with_total(2);
+        {
+            let store = reopen(&dir, limits, 0);
+            assert_eq!(store.waiting_ids().unwrap().len(), 2);
+            assert_eq!(ids.iter().filter(|id| store.is_waiting(id)).count(), 2);
+            store.check_invariants().unwrap();
+        }
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(store.waiting_ids().unwrap().len(), 2);
     }
 
     #[test]

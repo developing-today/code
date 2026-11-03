@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/progspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // StdioTransport runs an MCP server as a child process and speaks
@@ -203,9 +203,15 @@ func (t *StdioTransport) Send(ctx context.Context, msg []byte) error {
 	if t.closed.Load() || t.detached {
 		return errors.New("stdio transport closed")
 	}
-	if _, err := t.stdin.Write(append(msg, '\n')); err != nil {
+	frame := append(msg, '\n')
+	n, err := t.stdin.Write(frame)
+	if err != nil {
 		return fmt.Errorf("write to %s: %w (stderr: %s)", t.label, err, t.lastWords(400))
 	}
+	if n != len(frame) {
+		return fmt.Errorf("write to %s: %w", t.label, io.ErrShortWrite)
+	}
+	markToolCallDispatched(ctx, msg)
 	return nil
 }
 

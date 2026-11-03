@@ -1,13 +1,15 @@
 # Elicitation: a design
 
 ```
+id:           elicitation-a-design
+since:        pre-release
 created:      2026-09-28T18:00:00-05:00
 last-updated: 2026-09-28T18:00:00-05:00
-increment:    1
-status:       partial -- largely shipped, and differently in places
+status:       partial
 tags:         area:protocol, area:integration
 description:  how a server asks a question, and how the answer gets back
               through a CLI, a REST call, a script, an MCP host or a plugin.
+note:         largely shipped, and differently in places
 ```
 
 **This was written before the feature existed, and the feature has since
@@ -20,18 +22,18 @@ in `internal/daemon/server.go:424-426`.
 Where this document and the code disagree, the code is right. The disagreements
 worth knowing before you read on:
 
-| this document says | what shipped |
-| --- | --- |
-| §2's three "live bugs" | all three fixed: `dispatch` routes server-initiated requests (`internal/mcpclient/client.go:404-421`), `negotiate` no longer echoes a version it does not serve (`internal/mcpserver/server.go:1092-1095`), and the client declares `elicitation` (`internal/mcpclient/modern.go:71-84`) |
-| `mcpx call --elicit=<mode>` | not built. There is no `--elicit` flag on any command |
-| a waiting call exits `75` | built (#286), with a different document: `mcpx call`, `mcpx exec` and `mcpx run` exit `75` with the question, its schema, the `mcpx elicit answer` command and the task id that collects the result. The call keeps running on the daemon as a task. The wire is `POST /v1/call` with `X-Mcpx-Input: report`, answered `202 {"inputRequired": {...}}` -- see §5.1 |
-| `POST /v1/elicit/<id>/answer` | `POST /v1/elicit/{id}/{action}` -- the action is in the path, the body is content only |
-| `GET /v1/elicit/subscribe` | not built. `mcpx elicit watch` polls; the SSE stream is `GET /v1/events` |
-| `mcpx_elicit_pending` | the tool is `mcpx_elicit_list` |
-| `plumbing.elicitTTL`, `elicit.mode`, `elicit.rules` | none exist. The TTL is `elicit.ttl` in `defaults.json` and is not a setting; the shipped policy is `elicit.Route` (`internal/elicit/elicit.go:491`), which is not rule-based |
-| `MCPX_PLUGIN_ELICIT` | does not exist |
-| `onElicit()` / `ask()` script globals, the TUI view, the `mcpx-elicitation` skill | none built |
-| a `202` with `Location` and `Retry-After`, an `Elicitation` OpenAPI component | not built. The retry shape that shipped is MCP-side `input_required` |
+| this document says                                                                | what shipped                                                                                                                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §2's three "live bugs"                                                            | all three fixed: `dispatch` routes server-initiated requests (`internal/mcpclient/client.go:404-421`), `negotiate` no longer echoes a version it does not serve (`internal/mcpserver/server.go:1092-1095`), and the client declares `elicitation` (`internal/mcpclient/modern.go:71-84`)                                                                          |
+| `mcpx call --elicit=<mode>`                                                       | not built. There is no `--elicit` flag on any command                                                                                                                                                                                                                                                                                                             |
+| a waiting call exits `75`                                                         | built (#286), with a different document: `mcpx call`, `mcpx exec` and `mcpx run` exit `75` with the question, its schema, the `mcpx elicit answer` command and the task id that collects the result. The call keeps running on the daemon as a task. The wire is `POST /v1/call` with `X-Mcpx-Input: report`, answered `202 {"inputRequired": {...}}` -- see §5.1 |
+| `POST /v1/elicit/<id>/answer`                                                     | `POST /v1/elicit/{id}/{action}` -- the action is in the path, the body is content only                                                                                                                                                                                                                                                                            |
+| `GET /v1/elicit/subscribe`                                                        | not built. `mcpx elicit watch` polls; the SSE stream is `GET /v1/events`                                                                                                                                                                                                                                                                                          |
+| `mcpx_elicit_pending`                                                             | the tool is `mcpx_elicit_list`                                                                                                                                                                                                                                                                                                                                    |
+| `plumbing.elicitTTL`, `elicit.mode`, `elicit.rules`                               | none exist. The TTL is `elicit.ttl` in `defaults.json` and is not a setting; the shipped policy is `elicit.Route` (`internal/elicit/elicit.go:491`), which is not rule-based                                                                                                                                                                                      |
+| `MCPX_PLUGIN_ELICIT`                                                              | does not exist                                                                                                                                                                                                                                                                                                                                                    |
+| `onElicit()` / `ask()` script globals, the TUI view, the `mcpx-elicitation` skill | none built                                                                                                                                                                                                                                                                                                                                                        |
+| a `202` with `Location` and `Retry-After`, an `Elicitation` OpenAPI component     | not built. The retry shape that shipped is MCP-side `input_required`                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -50,10 +52,10 @@ mcpx ◀─── the tool result ──────────── server
 
 Two modes:
 
-| mode | carries | for |
-| --- | --- | --- |
-| `form` | `requestedSchema`, a flat object of primitives | a value the caller can type |
-| `url` | `url` + `elicitationId` | anything that must not pass through a model: credentials, OAuth, payment |
+| mode   | carries                                        | for                                                                      |
+| ------ | ---------------------------------------------- | ------------------------------------------------------------------------ |
+| `form` | `requestedSchema`, a flat object of primitives | a value the caller can type                                              |
+| `url`  | `url` + `elicitationId`                        | anything that must not pass through a model: credentials, OAuth, payment |
 
 Three answers, and the distinction matters:
 
@@ -70,16 +72,16 @@ This is bigger than elicitation, and correcting it is a prerequisite.
 
 The spec divides implementations into two **eras**:
 
-| | versions | how it works |
-| --- | --- | --- |
-| **legacy** | `2025-11-25` and earlier | `initialize` handshake establishes a session; version negotiated once |
+|            | versions                         | how it works                                                                               |
+| ---------- | -------------------------------- | ------------------------------------------------------------------------------------------ |
+| **legacy** | `2025-11-25` and earlier         | `initialize` handshake establishes a session; version negotiated once                      |
 | **modern** | `2026-07-28` (current) and later | no handshake; every request carries its version in `_meta`; `server/discover` is mandatory |
 
 The current version is **`2026-07-28`**. It is not a draft.
 
 The compatibility matrix is unforgiving. A modern client against a legacy
 server **fails**. A legacy client against a modern server **fails**. Only a
-*dual-era* implementation bridges them, and it must implement both.
+_dual-era_ implementation bridges them, and it must implement both.
 
 mcpx was legacy on both sides when this was written: its client sent
 `initialize` with `ProtocolVersion = "2025-06-18"`, and its server answered
@@ -114,7 +116,7 @@ The delivery mechanism differs, which is why the era question comes first.
 - **Legacy**: a genuine mid-flight request. The server sends
   `elicitation/create` while `tools/call` is still open, and waits.
 - **Modern**: a **retry**. The call returns an `InputRequiredResult` carrying
-  `inputRequests`, the call *ends*, and the client re-sends the original
+  `inputRequests`, the call _ends_, and the client re-sends the original
   request with `inputResponses` attached.
 
 The modern shape is dramatically easier for mcpx, because nothing stays open:
@@ -236,7 +238,7 @@ registry setting and **not** per-server overridable: `OpenRequest`
 unconditionally. Making it a setting is unfinished work, not a decision.
 
 On expiry the broker answers `cancel` on the requester's behalf, because that
-is what expiry *means*: dismissed without an explicit choice. Answering
+is what expiry _means_: dismissed without an explicit choice. Answering
 `decline` would tell the server the user said no, which is a different and
 wrong thing.
 
@@ -261,17 +263,14 @@ and `elicit.askTimeout`. The block below is the design, kept for the reasoning.
 ```jsonc
 {
   "elicit": {
-    "mode": "ask",              // ask | auto | decline | error
+    "mode": "ask", // ask | auto | decline | error
     "ttl": "120s",
     "rules": [
-      { "match": { "server": "github", "field": "username" },
-        "answer": "octocat" },
-      { "match": { "mode": "url" }, "action": "decline",
-        "because": "no browser in CI" },
-      { "match": { "field": "confirm" }, "action": "accept",
-        "when": "MCPX_ASSUME_YES=1" }
-    ]
-  }
+      { "match": { "server": "github", "field": "username" }, "answer": "octocat" },
+      { "match": { "mode": "url" }, "action": "decline", "because": "no browser in CI" },
+      { "match": { "field": "confirm" }, "action": "accept", "when": "MCPX_ASSUME_YES=1" },
+    ],
+  },
 }
 ```
 
@@ -399,7 +398,8 @@ whatever the server does with that. To participate -- **not built**: no
 (`internal/codegen/emit.go`):
 
 ```ts
-onElicit(async (q) => {      // NOT BUILT
+onElicit(async (q) => {
+  // NOT BUILT
   if (q.mode === "url") return { action: "decline" };
   if (q.schema.properties.repo) return { action: "accept", content: { repo: "me/thing" } };
   return { action: "cancel" };
@@ -458,7 +458,7 @@ worst moment.
 Then:
 
 - **Client supports elicitation** → forward it, rewriting the message to name
-  the real originator: *"github (via mcpx) asks: which repository?"*. The
+  the real originator: _"github (via mcpx) asks: which repository?"_. The
   agent must know which server is asking; that is a spec requirement and also
   just decent.
 - **Client does not** → fall back to policy, then to returning
@@ -476,34 +476,34 @@ Two new tools on the MCP surface:
 ### 5.4a Who is the question for: the agent or the person?
 
 The spec does not have a field for this, and deliberately so. From the Python
-SDK's own words: *"If the client is an agent, it might decide how to handle
+SDK's own words: _"If the client is an agent, it might decide how to handle
 the elicitation -- either by asking the user or automatically generating a
-response."* **The decision is the client's, not the server's.**
+response."_ **The decision is the client's, not the server's.**
 
 So mcpx needs a routing policy, and the useful thing is that the elicitation
 itself carries enough to route on:
 
-| signal | route to | why |
-| --- | --- | --- |
-| `mode: "url"` | **human** | the point is a browser and a person's consent |
-| `format: "password"`, or a name matching `token\|secret\|key\|password` | **human** | a model should not be handed a credential, and cannot know one |
-| a `confirm`/`approve` boolean on a destructive call | **human** | consent is the whole content of the question |
-| an enum the agent can evaluate from context | **agent** | "which of these three repos" is answerable from what it just read |
-| free text with no constraint | **agent first, human on decline** | the agent may know; if it does not it should decline, not invent |
+| signal                                                                  | route to                          | why                                                               |
+| ----------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------- |
+| `mode: "url"`                                                           | **human**                         | the point is a browser and a person's consent                     |
+| `format: "password"`, or a name matching `token\|secret\|key\|password` | **human**                         | a model should not be handed a credential, and cannot know one    |
+| a `confirm`/`approve` boolean on a destructive call                     | **human**                         | consent is the whole content of the question                      |
+| an enum the agent can evaluate from context                             | **agent**                         | "which of these three repos" is answerable from what it just read |
+| free text with no constraint                                            | **agent first, human on decline** | the agent may know; if it does not it should decline, not invent  |
 
 The last row is the one that matters. A model asked "which repository?" with
 no way to know will produce a plausible name. **The default for anything the
 agent cannot verify must be decline, not guess**, and the skill in §5.7 exists
 mostly to say so.
 
-A server may *hint* through `_meta` -- `io.mcpx/audience: "user"` -- and mcpx
+A server may _hint_ through `_meta` -- `io.mcpx/audience: "user"` -- and mcpx
 should honour a hint toward the human and ignore one toward the agent, because
 a server pushing a question past a person is exactly the direction that needs
 resisting.
 
 In the plugin this becomes concrete: `notify` puts it to the agent, `ask` puts
 it to the person, and the routing policy decides which when the mode is
-`auto`. A question routed to the agent that the agent declines is *re-raised*
+`auto`. A question routed to the agent that the agent declines is _re-raised_
 to the person rather than failing -- that escalation is the behaviour somebody
 would expect and would otherwise have to build by hand.
 
@@ -528,7 +528,7 @@ reads, and there is no `--plugin-elicit`.
    tool result, so the agent sees it and can answer via a tool. No UI needed.
 2. **`MCPX_PLUGIN_ELICIT=ask`** — the plugin uses opencode's own permission
    mechanism (`ask({ permission, metadata })`) to put the question to the
-   *user*. This is the real prize: a genuine dialog, in the harness the person
+   _user_. This is the real prize: a genuine dialog, in the harness the person
    is already looking at.
 3. **`MCPX_PLUGIN_ELICIT=auto`** — policy only.
 
@@ -572,12 +572,12 @@ already has.
 I overstated this in the first draft. Two different things share the word
 OAuth:
 
-1. **MCP's own authorization spec** -- how a *client authenticates to a remote
-   MCP server* over HTTP. That is a separate document, separate machinery
+1. **MCP's own authorization spec** -- how a _client authenticates to a remote
+   MCP server_ over HTTP. That is a separate document, separate machinery
    (OAuth 2.1, resource metadata, token handling), and elicitation does not
    provide it. It remains a genuine gap.
 2. **A server sending its user through someone else's authorisation flow** --
-   "connect your GitHub account". *That* is url-mode elicitation, and it does
+   "connect your GitHub account". _That_ is url-mode elicitation, and it does
    fall out of this design.
 
 The second is common and currently impossible. The first is unaffected. The
@@ -586,7 +586,7 @@ line in `OPENCODE-V2.md` should be split accordingly rather than crossed off.
 ### Write operations in OpenAPI and CLI adapters
 
 Both currently default to read-only, because a specification describes what a
-service *can* do rather than what you meant to allow. With elicitation there is
+service _can_ do rather than what you meant to allow. With elicitation there is
 a middle setting: expose writes, and elicit a confirmation before each one.
 
 ```jsonc
@@ -631,12 +631,12 @@ same machinery.
 The re-exec shape in §5.1 is right for one case and wrong as the only option.
 There are four ways an answer can reach the broker, and each is best somewhere.
 
-| mechanism | latency | survives exit | best for |
-| --- | --- | --- | --- |
-| **stdin/stdout prompt** | immediate | no | a person at a terminal |
-| **re-exec** (`mcpx elicit answer`) | seconds to hours | yes | scripts, CI, anything that returned |
-| **daemon socket subscription** | immediate | while connected | the TUI, the plugin, any long-lived client |
-| **HTTP** (`POST /v1/elicit/<id>/<action>`) | immediate | yes | remote callers, webhooks, another machine |
+| mechanism                                  | latency          | survives exit   | best for                                   |
+| ------------------------------------------ | ---------------- | --------------- | ------------------------------------------ |
+| **stdin/stdout prompt**                    | immediate        | no              | a person at a terminal                     |
+| **re-exec** (`mcpx elicit answer`)         | seconds to hours | yes             | scripts, CI, anything that returned        |
+| **daemon socket subscription**             | immediate        | while connected | the TUI, the plugin, any long-lived client |
+| **HTTP** (`POST /v1/elicit/<id>/<action>`) | immediate        | yes             | remote callers, webhooks, another machine  |
 
 The daemon already owns a unix socket and a loopback port. A long-lived
 client -- the TUI, the plugin, a `mcpx elicit watch` left running -- should
@@ -658,7 +658,7 @@ The defaults follow from the table:
 - TUI, plugin → subscribe
 - REST caller → the HTTP endpoints, which they are already speaking
 
-Re-exec is the *conventional* shape because it is the only one that works when
+Re-exec is the _conventional_ shape because it is the only one that works when
 the asking process is gone, and that is the case a CLI has to handle. It is
 not the best shape when the process is still there.
 
@@ -687,7 +687,7 @@ the original call. And `answeredAfterMs` is the metric worth having: it is the
 human latency, and it is the number that tells you whether a TTL is set
 sensibly.
 
-If the session id is *absent* -- a bare shell, no harness -- the broker binds
+If the session id is _absent_ -- a bare shell, no harness -- the broker binds
 the question to the config fingerprint and the working directory instead, and
 says so in the record. Refusing to work without a session would make the
 feature unusable from a plain terminal, which is where people debug.
@@ -728,8 +728,8 @@ mcpx — the CLI, the scripts, the REST endpoints, the MCP server, the TUI — i
 shaped by that assumption.
 
 Elicitation breaks it. It lets a server stop halfway through a job and ask a
-question: *which repository did you mean? are you sure you want to delete
-this? I need you to log in — here is the link.* The server cannot continue
+question: _which repository did you mean? are you sure you want to delete
+this? I need you to log in — here is the link._ The server cannot continue
 until somebody answers.
 
 That is awkward for mcpx specifically, because mcpx is usually invoked by
@@ -752,8 +752,8 @@ question a human answers from a laptop twenty minutes later. That is not a
 special feature; it falls out of the question being state rather than a
 blocked function call.
 
-**"No" and "not now" stay different.** The spec separates *decline* from
-*cancel*, and it matters: a server told "no" should offer an alternative, and
+**"No" and "not now" stay different.** The spec separates _decline_ from
+_cancel_, and it matters: a server told "no" should offer an alternative, and
 a server told "not now" should ask again later. Collapsing them — which is the
 tempting simplification — makes tools worse in a way nobody traces back to
 this decision.

@@ -82,6 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      contents: read
       issues: write
       actions: read
       pull-requests: read
@@ -92,6 +93,19 @@ jobs:
       RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:
+      # The pm-dispatch-queue action is loaded from this checkout rather
+      # than as `developing-today/code/.github/actions/pm-dispatch-queue@main`.
+      # The remote form made the runner download the whole repo as an
+      # action archive during "Set up job", which failed on every run with
+      # `Could not find file .../_staging/code-<sha>/archive` and broke the
+      # watcher entirely (issue #4867, runs 41627469155 / 41629527441 /
+      # 41665798024). A local action path is resolved from the workspace
+      # and needs no action-repository download.
+      - name: Check out the watcher action
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Identify breakage
         id: identify
         run: |
@@ -141,6 +155,11 @@ jobs:
             action=create
             prompt=$(printf '%s\nDiagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #<number>", using the number of the issue this dispatch created, so the issue closes when the fix lands.\n' "$body")
           fi
+          # Runtime-generated delimiters (#2712): body and prompt carry
+          # arbitrary workflow/issue content, so fixed delimiter lines inside
+          # them would truncate these outputs and corrupt the rest.
+          body_delim="MAIN_BROKEN_BODY_EOF_$(openssl rand -hex 8)"
+          prompt_delim="MAIN_BROKEN_PROMPT_EOF_$(openssl rand -hex 8)"
           {
             echo "action=${action}"
             echo "existing_number=${existing}"
@@ -150,12 +169,12 @@ jobs:
             echo "wf=${wf}"
             echo "short_sha=${short_sha}"
             echo "title=${title}"
-            echo "body<<MAIN_BROKEN_BODY_EOF"
+            echo "body<<$body_delim"
             printf '%s\n' "$body"
-            echo "MAIN_BROKEN_BODY_EOF"
-            echo "prompt<<MAIN_BROKEN_PROMPT_EOF"
+            echo "$body_delim"
+            echo "prompt<<$prompt_delim"
             printf '%s\n' "$prompt"
-            echo "MAIN_BROKEN_PROMPT_EOF"
+            echo "$prompt_delim"
           } >> "$GITHUB_OUTPUT"
           echo "Identified breakage: action=${action} existing=${existing:-none} Breakage-ID=${bid}"
 
@@ -182,7 +201,7 @@ jobs:
       - name: Queue the breakage via pm-dispatch (creates the issue)
         id: dispatch-create
         if: steps.identify.outputs.action == 'create'
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        uses: ./.github/actions/pm-dispatch-queue
         with:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}
@@ -244,7 +263,7 @@ jobs:
       - name: Queue a fresh fix task via pm-dispatch (existing issue)
         id: dispatch-append
         if: steps.identify.outputs.action == 'append'
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        uses: ./.github/actions/pm-dispatch-queue
         with:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}

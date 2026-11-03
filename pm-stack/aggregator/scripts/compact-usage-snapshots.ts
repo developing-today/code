@@ -25,7 +25,7 @@ const dir = process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const apply = process.argv.includes("--apply");
 const monthsArg = process.argv.indexOf("--months");
 const retentionMonths = monthsArg >= 0 ? Number(process.argv[monthsArg + 1]) : 13;
-if (!Number.isInteger(retentionMonths) || retentionMonths < 0) {
+if (!Number.isInteger(retentionMonths) || retentionMonths < 1) {
   console.error(`compact-usage-snapshots: invalid --months '${process.argv[monthsArg + 1]}'`);
   process.exit(2);
 }

@@ -12,13 +12,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/mcpheaders"
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // ProtocolVersion is the MCP revision mcpx negotiates.
@@ -106,10 +108,25 @@ type Client struct {
 	toolValidators map[string]*toolSchemas
 	// onElicit answers server-initiated requests.
 	onElicit ElicitHandler
+	// Rate limits on server-initiated requests (ratelimit.go): the
+	// resolved limits, this session's sampling counter, and the shared
+	// per-server counters (nil when the session names no server).
+	reqLimits       RequestLimits
+	serverName      string
+	reqMu           sync.Mutex
+	sessionSampling *windowCounter
+	server          *ServerRequestLimiter
+
+	// onURLElicitationRequired opens the URL elicitations a -32042
+	// tools/call error names, when something (the daemon broker) can.
+	onURLElicitationRequired URLElicitationHandler
 	// notif holds notification handlers.
 	notif Notifications
 	// roots are the directories servers may work within.
 	roots []Root
+	// root is the scope-resolved workspace root this instance serves, named
+	// at initialize when non-empty (decision 0004 §5).
+	root string
 	// clientName and clientVersion identify mcpx on every modern request.
 	clientName, clientVersion string
 	// metaVersion is the version stamped into each request's _meta. Empty
@@ -154,6 +171,19 @@ type Client struct {
 	// gated on mirrorsHeaders -- the gate must work whether or not
 	// header mirroring is on, and over every transport.
 	toolHints map[string]toolHint
+	// toolExec is each tool's execution.taskSupport declaration, learned
+	// from the same tools/list snapshot as toolHints, for CallTool's
+	// taskSupport "required" handling (tasks.go). A nil map means this
+	// client has never listed, and its calls take the plain path.
+	toolExec map[string]string
+	// toolExecSeeded holds taskSupport declarations seeded from the
+	// pool's cached catalogue (SeedToolExec) for tools this client has
+	// not listed itself. It is tracked separately from toolExec so a
+	// refreshed catalogue can replace earlier seeds -- a tool that
+	// changed from optional to required must not keep the stale seeded
+	// value -- while never overriding the client's own list, which
+	// resolveTaskSupport consults first.
+	toolExecSeeded map[string]string
 	// invalidTools are tools excluded for invalid annotations, with why.
 	invalidTools map[string]string
 	// listen is the subscriptions/listen stream of a modern connection.
@@ -169,6 +199,11 @@ type ServerInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Title   string `json:"title,omitempty"`
+	// Instance is the serving process's unique instance identity, when
+	// it reports one (mcpx does, in serverInfo.instance; #1877). It is
+	// what lets a client tell "mcpx itself, this very daemon" apart
+	// from "a different mcpx daemon" -- the name alone cannot.
+	Instance string `json:"instance,omitempty"`
 }
 
 type initResult struct {
@@ -345,16 +380,18 @@ func NewWithPreference(ctx context.Context, t Transport, clientName, clientVersi
 
 func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 	c := &Client{
-		t:              t,
-		pending:        map[int64]chan *rpcResponse{},
-		closeCh:        make(chan struct{}),
-		clientName:     o.ClientName,
-		clientVersion:  o.ClientVersion,
-		onElicit:       o.OnServerRequest,
-		roots:          append([]Root(nil), o.Roots...),
-		modernVersions: o.ModernVersions,
-		probeTimeout:   o.ProbeTimeout,
-		loopDone:       make(chan struct{}),
+		t:                        t,
+		pending:                  map[int64]chan *rpcResponse{},
+		closeCh:                  make(chan struct{}),
+		clientName:               o.ClientName,
+		clientVersion:            o.ClientVersion,
+		onElicit:                 o.OnServerRequest,
+		onURLElicitationRequired: o.OnURLElicitationRequired,
+		roots:                    append([]Root(nil), o.Roots...),
+		root:                     o.Root,
+		modernVersions:           o.ModernVersions,
+		probeTimeout:             o.ProbeTimeout,
+		loopDone:                 make(chan struct{}),
 	}
 	if len(c.modernVersions) == 0 {
 		c.modernVersions = ModernVersions
@@ -362,6 +399,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 	if c.probeTimeout <= 0 {
 		c.probeTimeout = defaults.UpstreamProbeTimeout
 	}
+	c.setupRequestLimits(o)
 	go c.recvLoop()
 
 	pref := o.Preference
@@ -425,13 +463,33 @@ func (c *Client) initializeLegacy(ctx context.Context, clientName, clientVersion
 }
 
 func (c *Client) initializeParams() json.RawMessage {
-	params, _ := json.Marshal(map[string]any{
+	params := map[string]any{
 		"protocolVersion": ProtocolVersion,
 		// Declared only where mcpx can actually deliver; see capabilities.
 		"capabilities": c.capabilities(false),
 		"clientInfo":   map[string]any{"name": c.clientName, "version": c.clientVersion},
-	})
-	return params
+	}
+	// A scope-resolved instance tells the server which workspace it serves.
+	// initialize params are extensible in every era, so both get the same
+	// fields rather than growing per-server quirks (decision 0004 §5). An
+	// instance with no root -- global scope, or a degraded resolution --
+	// sends nothing and its initialize stays what it always was.
+	if uri, name, ok := c.workspaceRoot(); ok {
+		params["rootUri"] = uri
+		params["workspaceFolders"] = []map[string]any{{"uri": uri, "name": name}}
+	}
+	raw, _ := json.Marshal(params)
+	return raw
+}
+
+// workspaceRoot renders the instance root as the file:// URI and folder name
+// initialize carries. ok is false when the instance serves no root.
+func (c *Client) workspaceRoot() (uri, name string, ok bool) {
+	if c.root == "" {
+		return "", "", false
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(c.root)}
+	return u.String(), filepath.Base(c.root), true
 }
 
 // finishLegacy records an initialize result and completes the handshake.
@@ -458,7 +516,7 @@ func (c *Client) finishLegacy(ctx context.Context, ir initResult) error {
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 	// The standalone GET stream arrived with Streamable HTTP (2025-03-26).
-	if h, ok := c.t.(interface{ listen() }); ok && ir.ProtocolVersion >= "2025-03-26" {
+	if h, ok := c.t.(interface{ listen() }); ok && spec.AtOrAfter("2025-03-26")(ir.ProtocolVersion) {
 		h.listen()
 	}
 	return nil
@@ -598,6 +656,50 @@ func (c *Client) SetElicitHandler(h ElicitHandler) {
 	c.mu.Lock()
 	c.onElicit = h
 	c.mu.Unlock()
+}
+
+// URLElicitation is one entry of a -32042 (UrlElicitationRequired)
+// error's data.elicitations: a URL-mode elicitation the server needs
+// opened before the failed tool call can proceed (2025-11-25).
+type URLElicitation struct {
+	Mode          string `json:"mode"`
+	URL           string `json:"url"`
+	ElicitationID string `json:"elicitationId"`
+	Message       string `json:"message"`
+}
+
+// URLElicitationHandler opens the URL elicitations a -32042 names. It
+// reports true only when every entry was accepted; false or an error
+// fails the call with no retry. A nil handler (the default) means
+// -32042 propagates untouched, exactly as a client with nobody to open
+// URLs behaved before this existed.
+type URLElicitationHandler func(ctx context.Context, elicitations []URLElicitation) (bool, error)
+
+// SetURLElicitationHandler installs the -32042 handler after connect.
+func (c *Client) SetURLElicitationHandler(h URLElicitationHandler) {
+	c.mu.Lock()
+	c.onURLElicitationRequired = h
+	c.mu.Unlock()
+}
+
+// parseURLElicitations reads a -32042 error's data. ok is false for any
+// malformed shape: unparseable data, an empty list, a non-url entry, or
+// an entry with no elicitationId. In every such case the caller returns
+// the original error unmodified, because guessing at a server's
+// question is worse than failing its call.
+func parseURLElicitations(data json.RawMessage) ([]URLElicitation, bool) {
+	var d struct {
+		Elicitations []URLElicitation `json:"elicitations"`
+	}
+	if len(data) == 0 || json.Unmarshal(data, &d) != nil || len(d.Elicitations) == 0 {
+		return nil, false
+	}
+	for _, e := range d.Elicitations {
+		if e.Mode != "url" || e.ElicitationID == "" {
+			return nil, false
+		}
+	}
+	return d.Elicitations, true
 }
 
 // handleServerRequest answers a request the server sent to us.
@@ -1031,15 +1133,19 @@ func (c *Client) callReissue(ctx context.Context, method string, params json.Raw
 		}
 		var ir inputRequired
 		_ = json.Unmarshal(raw, &ir)
-		switch ir.ResultType {
-		case "", "complete":
+		switch {
+		case ir.ResultType == "" || ir.ResultType == "complete" ||
+			(ir.ResultType == "task" && method == "tools/call"):
+			// "task" is a tools/call answer in the 2026-07-28 tasks
+			// extension: a handle, returned raw so CallTool can poll
+			// it (tasks.go). For every other method it stays invalid.
 			// Absent means complete: an earlier revision's result, or a
 			// server that left it out.
 			if out == nil {
 				return nil
 			}
 			return json.Unmarshal(raw, out)
-		case "input_required":
+		case ir.ResultType == "input_required":
 		default:
 			// "A resultType of any value unrecognized by the client MUST
 			// be considered invalid." Treating it as complete would hand a
@@ -1300,11 +1406,40 @@ func (c *Client) ListToolsWithHints(ctx context.Context) ([]Tool, CacheHints, er
 // every transport, since the gate is not a header-mirroring concern.
 func (c *Client) recordToolHints(tools []Tool) {
 	hints := make(map[string]toolHint, len(tools))
+	execs := make(map[string]string, len(tools))
 	for _, t := range tools {
 		hints[t.Name] = parseToolHint(t.Annotations)
+		execs[t.Name] = parseTaskSupport(t.Execution)
 	}
 	c.mu.Lock()
 	c.toolHints = hints
+	c.toolExec = execs
+	c.mu.Unlock()
+}
+
+// SeedToolExec records taskSupport declarations learned elsewhere --
+// the pool's cached catalogue -- for names the client has not listed
+// itself. Pool.refreshSchemas lists on whichever instance the schema
+// lease happens to hold; a session- or call-scoped serving client, or
+// a restarted global instance behind a retained catalogue, may never
+// have listed, and its snapshot would otherwise stay empty so a
+// taskSupport-"required" tool silently took the plain path (#1556
+// Codex review). The seeds live in their own map, replaced whole on
+// every call as recordToolHints replaces the listed snapshot: the
+// pool re-seeds from its current catalogue before every pooled call,
+// so a refreshed catalogue must be able to replace an earlier seed (a
+// tool redeclared from optional to required), while the client's own
+// list -- consulted first by resolveTaskSupport -- is never touched.
+func (c *Client) SeedToolExec(tools []Tool) {
+	if len(tools) == 0 {
+		return
+	}
+	seeded := make(map[string]string, len(tools))
+	for _, t := range tools {
+		seeded[t.Name] = parseTaskSupport(t.Execution)
+	}
+	c.mu.Lock()
+	c.toolExecSeeded = seeded
 	c.mu.Unlock()
 }
 
@@ -1456,6 +1591,38 @@ func (c *Client) toolCallReissueAllowed(name string) bool {
 	return ok && (h.readOnly || h.idempotent)
 }
 
+// urlElicitationRetry applies the bounded -32042 URL-elicitation
+// recovery to one failed call (#2079): on a 2025-11-25 connection, a
+// well-formed -32042 names URL elicitations the installed handler opens
+// before the call can proceed. It reports retry=true when the handler
+// accepted and the call should be re-issued once. Every other outcome
+// returns the error to surface: the original error untouched when the
+// fault is not a recoverable -32042 (wrong version, malformed data, no
+// handler installed), the handler's own error when it fails, and a
+// declined error when the elicitations were refused or expired.
+func (c *Client) urlElicitationRetry(ctx context.Context, name string, err error) (bool, error) {
+	var re *rpcError
+	if err == nil || c.negotiatedVersion() != "2025-11-25" ||
+		!errors.As(err, &re) || re.Code != codeURLElicitationRequired {
+		return false, err
+	}
+	els, wellFormed := parseURLElicitations(re.Data)
+	c.mu.Lock()
+	h := c.onURLElicitationRequired
+	c.mu.Unlock()
+	if !wellFormed || h == nil {
+		return false, err
+	}
+	accepted, herr := h(ctx, els)
+	if herr != nil {
+		return false, herr
+	}
+	if !accepted {
+		return false, fmt.Errorf("mcpx: the URL elicitations required by tool %s were declined or expired", name)
+	}
+	return true, nil
+}
+
 // CallTool invokes a tool and returns the raw CallToolResult.
 //
 // A broken response stream re-issues the call once only when the tool's
@@ -1477,6 +1644,26 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	if err := c.validateToolArgs(ctx, name, argsJSON); err != nil {
 		return nil, err
 	}
+	// A tool that declared taskSupport "required" cannot be called the
+	// plain way (tasks.go): legacy is task-augmented from the start;
+	// modern is server-directed, so the plain call below runs and a
+	// task answer is polled to its terminal result before returning.
+	support := c.resolveTaskSupport(name)
+	if support == taskSupportRequired && c.Era == EraLegacy {
+		raw, err := c.callToolAsLegacyTask(ctx, name, args)
+		if err != nil {
+			// A -32042 can surface from the task-augmented call itself
+			// or from tasks/result at the end of the poll; it gets the
+			// same one-shot URL-elicitation recovery as the plain path
+			// below (#1556 Codex review).
+			if retry, rerr := c.urlElicitationRetry(ctx, name, err); retry {
+				raw, err = c.callToolAsLegacyTask(ctx, name, args)
+			} else {
+				err = rerr
+			}
+		}
+		return raw, err
+	}
 	params, err := json.Marshal(map[string]any{"name": name, "arguments": args})
 	if err != nil {
 		return nil, err
@@ -1488,6 +1675,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	defer done()
 	var raw json.RawMessage
 	allowReissue := false
+	retried32042 := false
 	for attempt := 0; ; attempt++ {
 		hctx, err := c.toolCallHeaders(ctx, name, args, attempt > 0)
 		if err != nil {
@@ -1503,8 +1691,31 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		if attempt == 0 && errors.As(err, &re) && re.Code == codeHeaderMismatch && c.mirrorsHeaders() {
 			continue
 		}
+		// A -32042 on a 2025-11-25 connection names URL elicitations to
+		// open before the call can proceed (#2079). The retry is gated
+		// on its own flag, not the attempt index: the -32020 continue
+		// above already spends attempts, and the -32042 retry must
+		// happen exactly once regardless.
+		if !retried32042 && err != nil {
+			retry, rerr := c.urlElicitationRetry(ctx, name, err)
+			if retry {
+				retried32042 = true
+				continue
+			}
+			err = rerr
+		}
 		if err != nil {
 			return nil, err
+		}
+		// Any modern task answer is polled to its terminal result, not
+		// only a required tool's: advertising the tasks extension lets
+		// the server answer an optional tool with a task past its eager
+		// window, and the handle is not the tool's result.
+		if c.Era == EraModern && isTaskResult(raw) {
+			raw, err = c.finishModernTask(ctx, name, raw)
+			if err != nil {
+				return nil, err
+			}
 		}
 		c.checkToolOutput(ctx, name, raw)
 		return raw, nil
@@ -1527,13 +1738,20 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 		}
 		return nil, err
 	}
+	if err := ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read %q: invalid result from upstream: %w", uri, err)
+	}
 	return raw, nil
 }
 
 const (
-	codeResourceNotFound = -32002
-	codeInvalidParams    = -32602
-	codeInternalError    = -32603
+	// codeURLElicitationRequired is -32042 UrlElicitationRequired
+	// (2025-11-25): the tool call needs the URL-mode elicitations in
+	// the error's data opened before it can proceed.
+	codeURLElicitationRequired = -32042
+	codeResourceNotFound       = -32002
+	codeInvalidParams          = -32602
+	codeInternalError          = -32603
 	// codeUserRejected is the code the sampling error table assigns to a
 	// person refusing a sampling request (2025-11-25 client/sampling
 	// error handling: "User rejected sampling request: -1"). It is not a

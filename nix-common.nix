@@ -104,7 +104,12 @@ let
     # --- Go (mcpx) ---
     # The go_1_27 toolchain is in fmtBins (it also provides gofmt); mcpx is the
     # repository's Go program, built with the same toolchain (buildGo127Module).
+    # golangci-lint and actionlint are the mcpx CI lint leg's tools (#1996):
+    # `nix develop` is where their versions are pinned, so the workflow passes
+    # no per-action version input of its own.
     mcpx
+    golangci-lint
+    actionlint
 
     # --- Git hooks (lefthook.yml: treefmt pre-commit, conform commit-msg) ---
     lefthook

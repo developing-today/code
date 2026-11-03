@@ -92,7 +92,10 @@ type Param struct {
 	Type     string `json:"type,omitempty"`
 	Required bool   `json:"required,omitempty"`
 	// Flag is the option this parameter becomes: "--path". Empty makes it
-	// positional, in declaration order.
+	// positional, in declaration order — except for booleans, which require
+	// a flag: Validate refuses a flagless boolean, because a bare true/false
+	// is never passed positionally (a boolean flag is its presence, and
+	// --verbose true is wrong for almost every program ever written).
 	Flag string `json:"flag,omitempty"`
 	// Repeat sends an array as several occurrences of the flag rather than
 	// one comma-joined value, which is what most programs actually accept.
@@ -181,6 +184,11 @@ func (s Spec) Validate() error {
 			if p.Required && p.Default != "" {
 				problems = append(problems, fmt.Sprintf(
 					"%s.%s: %s is required and also has a default; one of those is wrong",
+					s.Name, t.Name, p.Name))
+			}
+			if p.Type == "boolean" && p.Flag == "" && p.Name != t.Stdin {
+				problems = append(problems, fmt.Sprintf(
+					"%s.%s: %s is a boolean with no flag; booleans need a flag, a bare true/false is never passed positionally",
 					s.Name, t.Name, p.Name))
 			}
 		}
@@ -379,10 +387,6 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 			}
 			raw = p.Default
 		}
-		if p.Name == t.Stdin {
-			stdin = toString(raw)
-			continue
-		}
 		values, err := toValues(raw)
 		if err != nil {
 			return nil, "", fmt.Errorf("%s: %w", p.Name, err)
@@ -394,6 +398,12 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 						p.Name, strings.Join(p.Enum, ", "), v)
 				}
 			}
+		}
+		if p.Name == t.Stdin {
+			// Diverted only after validation: a stdin parameter's enum is
+			// enforced exactly like every other parameter's.
+			stdin = toString(raw)
+			continue
 		}
 		// A boolean flag is its presence, not its value: --verbose true is
 		// wrong for almost every program ever written.
@@ -414,6 +424,26 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 			continue
 		}
 		out = append(out, p.Flag, strings.Join(values, ","))
+	}
+	// A key that names no declared parameter is a caller mistake — a typo is
+	// otherwise indistinguishable from success, and the executed command
+	// differs from the one the caller specified with no signal.
+	declared := make(map[string]bool, len(t.Params))
+	names := make([]string, 0, len(t.Params))
+	for _, p := range t.Params {
+		declared[p.Name] = true
+		names = append(names, p.Name)
+	}
+	var unknown []string
+	for key := range args {
+		if !declared[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, "", fmt.Errorf("unknown argument %q (declared parameters: %s)",
+			strings.Join(unknown, ", "), strings.Join(names, ", "))
 	}
 	return out, stdin, nil
 }

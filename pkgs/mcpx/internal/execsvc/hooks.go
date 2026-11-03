@@ -23,9 +23,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
 
 // Hook phases at the `script` point, in the order they run.
@@ -60,7 +61,7 @@ const hookActionModule = "module"
 // script it was meant to wrap, and a hook that hangs must not hold the whole
 // run open. Bounded generously, because a hook that shells out to install
 // something is a legitimate thing to ask for.
-const hookTimeout = 60 * time.Second
+var hookTimeout = defaults.ExecHookTimeout
 
 // Hook is one entry in the hooks list: a phase and the script that runs in it.
 //
@@ -227,6 +228,13 @@ func (s *Service) runOneHook(ctx context.Context, phase string, h Hook, hctx hoo
 	}
 
 	opts := ropts
+	// The main script's interpreter preference (script.interpreter) is
+	// not the hook's: hooks are TypeScript by definition here, and a
+	// configured sh interpreter would otherwise execute every hook's
+	// TypeScript under sh (Codex review, PR #2611). A hook's own
+	// shebang still selects its interpreter -- rank 1 in the runner's
+	// dispatch order is read from the hook script itself.
+	opts.Interpreter = ""
 	// The hook gets the same runtime, permissions, working directory and
 	// content-addressed client as the script, and nothing of the parent's
 	// phases: a hook running the parent's onSuccess would recurse.

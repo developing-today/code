@@ -234,7 +234,7 @@ func TestSchemasUseOnlyKnownKeywords(t *testing.T) {
 // The package embeds ~1 MB of schema; it must stay out of the binary.
 func TestNotImportedByBinary(t *testing.T) {
 	root, _ := filepath.Abs("../..")
-	const path = `"github.com/dezren39/mcpx/internal/mcpspec"`
+	const path = `"github.com/developing-today/code/pkgs/mcpx/internal/mcpspec"`
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return err

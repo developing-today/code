@@ -2,11 +2,18 @@
 import http from 'node:http';
 import https from 'node:https';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('DESIGN_CODE_PROXY_PORT', 18746);
 const HOST = process.env.DESIGN_CODE_PROXY_HOST || '127.0.0.1';
 
-const ANTIGRAVITY_LS_PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
+// Repointed 2026-11-02 (#1413, unblocks #1409): the antigravity-ls door
+// (:18745) is retired; every recipe leg that used it now targets
+// antigravity-direct (:18751), which serves the same backend model ids
+// (gemini-3.8-flash, claude-sonnet-5-5) — verified live against its
+// /v1/models before this change.
+const ANTIGRAVITY_DIRECT_PORT = parseProxyPort('ANTIGRAVITY_DIRECT_PORT', 18751);
 const CODEX_PROXY_PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const AMR_UPSTREAM_URL = process.env.AMR_UPSTREAM_URL || 'https://amr-link.open-design.ai/v1';
 
@@ -15,6 +22,19 @@ const AMR_UPSTREAM_URL = process.env.AMR_UPSTREAM_URL || 'https://amr-link.open-
 // paying a fresh TCP (and, for the AMR upstream, TLS) handshake per request.
 const httpAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 32 });
 const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 32 });
+
+// Backend inactivity timeout (#2097): a backend (or the AMR upstream) that
+// accepts the request and then goes silent must fail like any other backend
+// error so the fallback fires, instead of hanging the client request and
+// holding a pooled socket forever. The timeout is socket inactivity, not a
+// total deadline: an actively streaming response keeps resetting it, so
+// slow-but-alive streams are never killed. Pinned at 60s — generous for a
+// slow first byte from a local language-server backend — and overridable
+// via DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS (tests pin it short).
+const BACKEND_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 60_000;
+})();
 
 const DESIGN_SYSTEM_PROMPT = `You are an elite Code & Systems Design Architect.
 Your core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.`;
@@ -30,17 +50,17 @@ Your core expertise is in software architecture, clean code design, UI/UX design
 // refreshBackendCatalogs below), and an unknown requested id now gets a
 // clean 400 instead of the old silent remap onto gemini-3.8-flash.
 const MODELS = [
-  { id: 'claude-haiku-5.5', name: 'Claude Haiku 5.5 (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'claude-sonnet-5-5' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
-  { id: 'gpt-6-luna', name: 'GPT-6 Luna (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6-luna' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
-  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
-  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'glm-5.3-flashx', name: 'GLM 5.3 FlashX (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'mimo-v2.6-flash', name: 'MIMO v2.6 Flash (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'mimo-v2.6-pro', name: 'MIMO v2.6 Pro (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
-  { id: 'design-code-pro', name: 'Design Code Pro', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
-  { id: 'design-code-flash', name: 'Design Code Flash', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'open-design-pro', name: 'Open Design Pro', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } }
+  { id: 'claude-haiku-5.5', name: 'Claude Haiku 5.5 (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'claude-sonnet-5-5' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } },
+  { id: 'gpt-6-luna', name: 'GPT-6 Luna (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6-luna' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } },
+  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'glm-5.3-flashx', name: 'GLM 5.3 FlashX (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'mimo-v2.6-flash', name: 'MIMO v2.6 Flash (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'mimo-v2.6-pro', name: 'MIMO v2.6 Pro (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
+  { id: 'design-code-pro', name: 'Design Code Pro', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
+  { id: 'design-code-flash', name: 'Design Code Flash', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'open-design-pro', name: 'Open Design Pro', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } }
 ];
 
 const resolveModelConfig = (requestedModel) => {
@@ -58,7 +78,7 @@ const resolveModelConfig = (requestedModel) => {
       modelId: clean,
       config: {
         primary: { port: CODEX_PROXY_PORT, model: clean },
-        fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }
+        fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }
       }
     };
   }
@@ -75,7 +95,7 @@ const resolveModelConfig = (requestedModel) => {
 // non-fleet backend overrides are never probed. Dispatch uses the
 // last-known-good result: a target proven absent upstream is skipped, and
 // if every target is proven absent the request gets a clean 400.
-const FLEET_BACKEND_PORTS = new Set([18744, 19744, 18745, 19745]);
+const FLEET_BACKEND_PORTS = new Set([18744, 19744, 18751, 19751]);
 const BACKEND_CATALOG_TTL_MS = 60 * 1000;
 let backendCatalogCache = { at: 0, byPort: new Map() };
 let backendCatalogRefresh = null;
@@ -176,10 +196,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Payload too large' } }));
         req.destroy();
@@ -187,12 +207,20 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `Invalid JSON: ${err.message}` } }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
         return;
       }
 
@@ -224,7 +252,22 @@ const server = http.createServer((req, res) => {
           upstreamRes.pipe(res);
         });
 
+        // Socket inactivity bound (#2097): a silent upstream times out into
+        // the same error path as a refused connection, so the local
+        // fallback fires instead of the request hanging forever.
+        clientReq.setTimeout(BACKEND_TIMEOUT_MS, () => {
+          clientReq.destroy(new Error(`AMR upstream silent for ${BACKEND_TIMEOUT_MS}ms (backend timeout)`));
+        });
+
+        let upstreamSettled = false;
         clientReq.on('error', err => {
+          if (upstreamSettled) return;
+          upstreamSettled = true;
+          if (res.headersSent) {
+            console.error(`[design-code-proxy] Upstream error after response started: ${err.message}`);
+            res.destroy();
+            return;
+          }
           console.error(`[design-code-proxy] Upstream error: ${err.message}. Falling back to local dispatch.`);
           dispatchWithFallback(body, res);
         });
@@ -273,7 +316,28 @@ const dispatchWithFallback = (body, clientRes) => {
     });
   }
 
-  const tryTarget = (target, onFail) => {
+  const tryTarget = (target, onFailRaw) => {
+    // onFail must fire at most once per target: a timeout destroy surfaces
+    // as both a request error and (sometimes) a response error, and a
+    // second onFail would re-enter the fallback chain (#2097).
+    let failSettled = false;
+    const onFail = (err) => {
+      if (failSettled) return;
+      failSettled = true;
+      onFailRaw(err);
+    };
+    // A target that has failed is retired: the fallback (or the final 502)
+    // owns the client response from that moment, and nothing the retired
+    // target does afterwards — a late response error, a timeout firing on
+    // a body still being drained — may touch the client response (Codex
+    // P2 on PR #4204).
+    const targetRetired = () => failSettled;
+    // Set when THIS target writes the client head (streaming path). A
+    // retired target whose head the client is carrying is still the owner
+    // of that stream: its late errors must tear the stream down, not be
+    // ignored (PR #4204 Codex P2, second round). Only a retired target
+    // that never wrote the head has handed the client to the fallback.
+    let headWrittenByMe = false;
     const stream = Boolean(body.stream);
     const payload = JSON.stringify({
       ...body,
@@ -299,6 +363,7 @@ const dispatchWithFallback = (body, clientRes) => {
       // pooled socket is released instead of stalling half-open.
       localRes.on('error', err => {
         console.warn(`[design-code-proxy] Error reading response from 127.0.0.1:${target.port}: ${err.message}`);
+        if (targetRetired() && !headWrittenByMe) return; // fallback owns the client response now
         if (!clientRes.headersSent) onFail(err);
         else clientRes.destroy();
       });
@@ -307,7 +372,13 @@ const dispatchWithFallback = (body, clientRes) => {
       if (localRes.statusCode === 429 || localRes.statusCode >= 500) {
         console.warn(`[design-code-proxy] Target 127.0.0.1:${target.port} returned ${localRes.statusCode}`);
         localRes.resume(); // discard response
-        return onFail(new Error(`HTTP ${localRes.statusCode}`));
+        onFail(new Error(`HTTP ${localRes.statusCode}`));
+        // Retire the failed target immediately instead of draining a body
+        // that may never end: its socket is freed now, and the retired
+        // guard above keeps any resulting error away from the fallback's
+        // client response.
+        localReq.destroy();
+        return;
       }
 
       // The head is written up front only for streaming. For a buffered
@@ -336,14 +407,16 @@ const dispatchWithFallback = (body, clientRes) => {
             delete headers['content-length'];
           }
           clientRes.writeHead(localRes.statusCode || 200, headers);
+          headWrittenByMe = true;
         }
       };
 
       if (stream) {
         writeHead();
         let buffer = '';
+        const streamDecoder = createStreamDecoder();
         localRes.on('data', chunk => {
-          buffer += chunk.toString('utf-8');
+          buffer += streamDecoder.push(chunk);
           const lines = buffer.split('\n');
           buffer = lines.pop();
           for (const line of lines) {
@@ -366,11 +439,12 @@ const dispatchWithFallback = (body, clientRes) => {
           clientRes.end();
         });
       } else {
-        let fullBody = '';
+        const fullBodyChunks = [];
         localRes.on('data', chunk => {
-          fullBody += chunk.toString('utf-8');
+          fullBodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         });
         localRes.on('end', () => {
+          const fullBody = Buffer.concat(fullBodyChunks).toString('utf-8');
           try {
             const json = JSON.parse(fullBody);
             if (json.error && (json.error.code === 429 || json.error.type === 'insufficient_quota')) {
@@ -391,6 +465,14 @@ const dispatchWithFallback = (body, clientRes) => {
     localReq.on('error', err => {
       console.warn(`[design-code-proxy] Error connecting to 127.0.0.1:${target.port}: ${err.message}`);
       onFail(err);
+    });
+
+    // Socket inactivity bound (#2097): a backend that accepts and never
+    // answers (or stalls mid-response with no bytes flowing) is destroyed
+    // into the error path above, so onFail fires and the fallback runs.
+    // Actively streaming responses keep the socket busy and are untouched.
+    localReq.setTimeout(BACKEND_TIMEOUT_MS, () => {
+      localReq.destroy(new Error(`backend 127.0.0.1:${target.port} silent for ${BACKEND_TIMEOUT_MS}ms (backend timeout)`));
     });
 
     localReq.write(payload);
@@ -436,5 +518,5 @@ const dispatchWithFallback = (body, clientRes) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[design-code-proxy] Listening on http://${HOST}:${PORT}`);
-  console.log(`[design-code-proxy] Backends: Antigravity LS (${ANTIGRAVITY_LS_PORT}), Codex (${CODEX_PROXY_PORT}), AMR Upstream (${AMR_UPSTREAM_URL})`);
+  console.log(`[design-code-proxy] Backends: Antigravity Direct (${ANTIGRAVITY_DIRECT_PORT}), Codex (${CODEX_PROXY_PORT}), AMR Upstream (${AMR_UPSTREAM_URL})`);
 });

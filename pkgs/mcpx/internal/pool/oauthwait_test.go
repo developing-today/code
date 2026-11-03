@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 const oauthTestURL = "https://mcp.example.com/v1/mcp?toolsets=core"

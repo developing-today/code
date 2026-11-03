@@ -1,6 +1,6 @@
 package settings
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 // protoMessagesSettings govern fields mcpx's own MCP server attaches to the
 // messages it sends, rather than anything about who answers a question.

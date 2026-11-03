@@ -97,7 +97,12 @@ export function parseRequestCount(payload) {
 }
 
 /** Measured $0 (or more) from billing/addons: selected addons priced fixed
- * monthly amounts; usage-priced addons are unknown while none are selected. */
+ * monthly amounts; usage-priced addons are unknown while none are selected.
+ * Fail-closed per addon (#2492): a selected addon whose price amount is
+ * missing, not a finite number, or negative is a shape this parser does
+ * not know — throw unparseable (run() turns that into billing: null for
+ * the tick) instead of silently counting the addon as $0 or letting a
+ * negative amount into a total that gets stamped measured. */
 export function billedFromAddons(payload) {
   const selected = payload?.selected_addons;
   if (!Array.isArray(selected)) {
@@ -106,7 +111,10 @@ export function billedFromAddons(payload) {
   let usd = 0;
   for (const addon of selected) {
     const amount = addon?.price?.amount;
-    if (typeof amount === "number" && Number.isFinite(amount)) usd += amount;
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+      throw new ExportError("unparseable", 6, "billing/addons: selected addon price amount missing/invalid");
+    }
+    usd += amount;
   }
   return Math.round(usd * 100) / 100;
 }

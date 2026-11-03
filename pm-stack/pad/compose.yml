@@ -8,7 +8,12 @@
 # Based on Pad's official docker-compose example, with local changes:
 #   - the web port binds to host loopback and the host's tailnet
 #     address only — no public endpoint (Pad needs no inbound
-#     webhooks; the aggregator reaches it over the tailnet);
+#     webhooks; the aggregator reaches it over the tailnet). The
+#     tailnet address is PM_STACK_TAILNET_IP from the rendered .env
+#     (deploy.sh detects it via `tailscale ip -4`); when it is unset
+#     the second binding falls back to loopback, so the stack binds
+#     loopback only — never a public interface, never another host's
+#     address (#781);
 #   - configuration comes from ./.env, rendered by deploy.sh from
 #     ../../secrets/pm-stack.sops.yaml. Never hand-edit .env on a
 #     host and never commit it.
@@ -19,7 +24,7 @@ services:
     image: ghcr.io/perpetualsoftware/pad:0.18.1@sha256:45e5a63b941e7562f5e07990224f91ae8019b0185f87c06fc21ab5bec254f13e
     ports:
       - "127.0.0.1:7777:7777"
-      - "100.99.113.103:7777:7777"
+      - "${PM_STACK_TAILNET_IP:-127.0.0.1}:7777:7777"
     env_file:
       - .env
     environment:

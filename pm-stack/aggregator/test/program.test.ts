@@ -10,6 +10,7 @@ import {
   unsetPoolCount,
   validateProjectConfigs,
   type ProjectConfig,
+  type ProjectRepoCard,
 } from "../src/project-config.ts";
 import { buildProgramData, buildProgramLive, PROGRAM, programRefs, TRACKED_REFS } from "../src/program.ts";
 import { renderProgram, renderProgramProject } from "../src/render.ts";
@@ -314,7 +315,7 @@ describe("project registry", () => {
     expect(refs).toContain("dezren39/nix#512");
   });
 
-  test("validation catches duplicates and malformed entries", () => {
+  test("validation catches duplicates, malformed refs, and impossible dates", () => {
     const base: ProjectConfig = {
       id: "x-proj",
       title: "X",
@@ -333,6 +334,26 @@ describe("project registry", () => {
     ]);
     expect(bad.some((e) => e.includes("not a slug"))).toBe(true);
     expect(bad.some((e) => e.includes("malformed ref"))).toBe(true);
+    for (const ref of ["a/b/c#12", "a$/b#12", "a+b/c#3"]) {
+      const errors = validateProjectConfigs([{ ...base, trackedRefs: [ref] }]);
+      expect(errors.some((e) => e.includes("malformed ref"))).toBe(true);
+    }
+    expect(validateProjectConfigs([{ ...base, trackedRefs: ["developing-today/code#1"] }])).toEqual([]);
+
+    const repoCard: ProjectRepoCard = {
+      repo: "owner/repo",
+      role: "project",
+      openIssues: 1,
+      openIssuesAsOf: "2024-02-29",
+      trackedRefs: [],
+    };
+    expect(validateProjectConfigs([{ ...base, repoCards: [repoCard] }])).toEqual([]);
+    for (const date of ["2026-02-30", "2026-13-01", "2026-00-00", "2026-04-31", "2026-02-29"]) {
+      const errors = validateProjectConfigs([
+        { ...base, repoCards: [{ ...repoCard, openIssuesAsOf: date }] },
+      ]);
+      expect(errors.some((e) => e.includes("openIssuesAsOf"))).toBe(true);
+    }
     const badLinks = validateProjectConfigs([
       {
         ...base,

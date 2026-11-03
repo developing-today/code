@@ -1,8 +1,16 @@
-// Tests for the pure parsing core of meta-quota-export.mjs.
+// Tests for the parser and bounded transport paths of meta-quota-export.mjs.
 // Run: node --test pm-stack/meta-exporter/
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
+  connectWs,
+  ExportError,
+  exportAndWrite,
   failureDocument,
   parseBillingBanner,
   parsePaygBalance,
@@ -66,11 +74,26 @@ test("parseBillingBanner: minor units to USD, currency checked", () => {
   assert.equal(parseBillingBanner({ kind: "free_partial", remaining_minor_units: 14857, currency: "USD" }), 148.57);
   assert.throws(() => parseBillingBanner({ remaining_minor_units: 100, currency: "EUR" }), /currency/);
   assert.throws(() => parseBillingBanner({}));
+  // Fractional minor units are shape drift: fail closed, never export a fractional dollar amount (#2510).
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 1050.5, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: 0.1, currency: "USD" }), /missing\/invalid/);
+  assert.equal(parseBillingBanner({ remaining_minor_units: 0, currency: "USD" }), 0);
+  // Unsafe integers and negatives reject; MAX_SAFE_INTEGER itself is the
+  // representation limit, not a business cap.
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: Number.MAX_SAFE_INTEGER + 1, currency: "USD" }), /missing\/invalid/);
+  assert.throws(() => parseBillingBanner({ remaining_minor_units: -100, currency: "USD" }), /missing\/invalid/);
 });
 
 test("parsePaygBalance: reads the iframe text, absence stays null", () => {
   assert.equal(parsePaygBalance("Pay as you go\nCurrent balance\n$0.00\nYour balance won't increase"), 0);
   assert.equal(parsePaygBalance("Current balance\n$1,234.56"), 1234.56);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.5"), null);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.567"), null);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.560"), null);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.56 USD"), 1234.56);
+  assert.equal(parsePaygBalance("Current balance\n$5"), 5);
+  assert.equal(parsePaygBalance("Current balance\n$1,234"), 1234);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.56\nYour balance won't increase"), 1234.56);
   assert.equal(parsePaygBalance("nothing relevant here"), null);
   assert.equal(parsePaygBalance(undefined), null);
 });
@@ -158,5 +181,239 @@ test("parseSubscriptionQuota: malformed reset fails closed even at zero usage", 
     const payload = structuredClone(QUOTA_INACTIVE_SHORT);
     payload.subscription_quota.window_resets_at = bad;
     assert.throws(() => parseSubscriptionQuota(payload), /windowReset not a finite number/);
+  }
+});
+
+// #2789: num() used to be a bare Number() coercion, so drifted
+// spellings became real measurements ("" -> 0% window, "0x10" -> 16,
+// "1e2" -> 100). Only plain decimal spellings are accepted now.
+test("parseSubscriptionQuota: non-decimal numeric spellings fail closed", () => {
+  for (const bad of ["", "   ", "0x10", "0b101", "0o17", "1e2", "1E2", "abc", "12,000", " 123", "123 ", "1023570000n"]) {
+    for (const field of ["window_weighted_used", "window_weighted_limit", "window_duration_secs"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = bad;
+      assert.throws(() => parseSubscriptionQuota(payload), /not a finite|window_duration_secs/);
+    }
+  }
+  // The same spellings are rejected on the weekly fields too.
+  for (const bad of ["", "0x10", "1e2"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.weekly_weighted_used = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /weeklyUsed/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a used window fails closed", () => {
+  for (const bad of ["", "   "]) {
+    const shortUsed = structuredClone(QUOTA);
+    shortUsed.subscription_quota.window_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(shortUsed), /windowReset/);
+    const weeklyUsed = structuredClone(QUOTA);
+    weeklyUsed.subscription_quota.weekly_resets_at = bad;
+    assert.throws(() => parseSubscriptionQuota(weeklyUsed), /weeklyReset/);
+  }
+});
+
+test("parseSubscriptionQuota: empty-string reset on a zero-usage window is tolerated like absent", () => {
+  const payload = structuredClone(QUOTA_INACTIVE_SHORT);
+  payload.subscription_quota.window_resets_at = "";
+  assert.equal(parseSubscriptionQuota(payload).windows[0].resetAt, null);
+});
+
+test("parseSubscriptionQuota: decimal spellings still parse, including fractions", () => {
+  const frac = structuredClone(QUOTA);
+  frac.subscription_quota.window_weighted_used = "1023570000.5";
+  assert.equal(parseSubscriptionQuota(frac).windows[0].usedPct, 1.02);
+});
+
+test("parseSubscriptionQuota: empty as_of stays null; non-decimal as_of fails closed", () => {
+  const empty = structuredClone(QUOTA);
+  empty.subscription_quota.as_of = "";
+  assert.equal(parseSubscriptionQuota(empty).consoleAsOf, null);
+  const blank = structuredClone(QUOTA);
+  delete blank.subscription_quota.as_of;
+  assert.equal(parseSubscriptionQuota(blank).consoleAsOf, null);
+  for (const bad of ["0x10", "1e2", "soon"]) {
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = bad;
+    assert.throws(() => parseSubscriptionQuota(payload), /unparseable|finite/);
+  }
+});
+
+test("parseSubscriptionQuota: epoch fields reject values outside the pinned seconds window", () => {
+  const firstAllowed = 1_577_836_800; // 2020-01-01T00:00:00Z
+  const lastAllowed = 4_102_444_800; // 2100-01-01T00:00:00Z
+  const cases = [
+    ["window_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["weekly_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["as_of", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_000_000_000, 1e300]],
+  ];
+  for (const [field, values] of cases) {
+    for (const value of values) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = value;
+      assert.throws(
+        () => parseSubscriptionQuota(payload),
+        (error) => {
+          assert.ok(error instanceof ExportError);
+          assert.equal(error.status, "unparseable");
+          assert.equal(error.exitCode, 6);
+          return true;
+        },
+        `${field}=${value} should fail as unparseable`,
+      );
+    }
+  }
+});
+
+test("parseSubscriptionQuota: epoch window endpoints are inclusive", () => {
+  const endpoints = [
+    [1_577_836_800, "2020-01-01T00:00:00.000Z"],
+    [4_102_444_800, "2100-01-01T00:00:00.000Z"],
+  ];
+  for (const [epoch, expected] of endpoints) {
+    for (const field of ["window_resets_at", "weekly_resets_at"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = epoch;
+      const parsed = parseSubscriptionQuota(payload);
+      assert.equal(parsed.windows[field === "window_resets_at" ? 0 : 1].resetAt, expected);
+    }
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = epoch;
+    assert.equal(parseSubscriptionQuota(payload).consoleAsOf, expected);
+  }
+});
+
+async function listen(server) {
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return server.address().port;
+}
+
+async function closeServer(server) {
+  server.closeAllConnections();
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+test("a non-answering CDP HTTP endpoint writes bounded failure documents", async () => {
+  const server = createServer(() => {});
+  const port = await listen(server);
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-http-timeout-"));
+  try {
+    const result = await exportAndWrite({
+      cdpPort: port,
+      outDir,
+      timeouts: { httpMs: 30 },
+    });
+
+    assert.equal(result.exitCode, 4);
+    assert.equal(result.doc.status, "cdp-unavailable");
+    assert.match(result.doc.detail, /timed out/i);
+    assert.equal("windows" in result.doc, false);
+
+    const latest = JSON.parse(await readFile(join(outDir, "latest.json"), "utf8"));
+    const history = (await readFile(join(outDir, "history.jsonl"), "utf8")).trim().split("\n");
+    assert.deepEqual(latest, result.doc);
+    assert.equal(history.length, 1);
+    assert.deepEqual(JSON.parse(history[0]), result.doc);
+  } finally {
+    await closeServer(server);
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("a non-answering CDP command writes fetch-failed output within its deadline", async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify([
+      {
+        type: "page",
+        url: "https://dev.meta.ai/",
+        webSocketDebuggerUrl: "ws://fake-cdp/",
+      },
+    ]));
+  });
+  const port = await listen(server);
+  const outDir = await mkdtemp(join(tmpdir(), "meta-exporter-ws-timeout-"));
+  class SilentWebSocket {
+    constructor() {
+      queueMicrotask(() => this.onopen?.({}));
+    }
+    send() {}
+    close() {
+      this.onclose?.({});
+    }
+  }
+
+  try {
+    const result = await exportAndWrite({
+      cdpPort: port,
+      outDir,
+      WebSocketImpl: SilentWebSocket,
+      timeouts: { httpMs: 100, websocketOpenMs: 100, commandMs: 30 },
+    });
+
+    assert.equal(result.exitCode, 7);
+    assert.equal(result.doc.status, "fetch-failed");
+    assert.match(result.doc.detail, /timed out/i);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(outDir, "latest.json"), "utf8")),
+      result.doc,
+    );
+    const history = (await readFile(join(outDir, "history.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(history.length, 1);
+    assert.deepEqual(JSON.parse(history[0]), result.doc);
+  } finally {
+    await closeServer(server);
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("connectWs bounds open and rejects every pending command on close or error", async () => {
+  let unopenedSocket;
+  class NeverOpenWebSocket {
+    constructor() {
+      unopenedSocket = this;
+    }
+    close() {
+      this.closed = true;
+    }
+  }
+
+  await assert.rejects(
+    connectWs("ws://fake-cdp/", {
+      WebSocketImpl: NeverOpenWebSocket,
+      openTimeoutMs: 10,
+      commandTimeoutMs: 20,
+    }),
+    /timed out/i,
+  );
+  assert.equal(unopenedSocket.closed, true);
+
+  for (const [event, emit] of [
+    ["close", (socket) => socket.onclose?.({})],
+    ["error", (socket) => socket.onerror?.({ message: "test socket failure" })],
+  ]) {
+    class DisruptedWebSocket {
+      constructor() {
+        queueMicrotask(() => this.onopen?.({}));
+      }
+      send() {
+        queueMicrotask(() => emit(this));
+      }
+      close() {}
+    }
+    const client = await connectWs("ws://fake-cdp/", {
+      WebSocketImpl: DisruptedWebSocket,
+      openTimeoutMs: 100,
+      commandTimeoutMs: 100,
+    });
+    const pending = [client.send("one"), client.send("two")];
+    const results = await Promise.allSettled(pending);
+    assert.equal(results.length, 2, `${event} should settle both requests`);
+    assert.ok(results.every((result) => result.status === "rejected"));
+    assert.ok(results.every((result) => /(closed|failure)/i.test(result.reason.message)));
   }
 });

@@ -33,8 +33,12 @@ Body:
   "prompt": "Fix the flaky widget test", // required
   "title": "fix(widget): flaky test", // optional; default: prompt's first line
   "model": "opencode-go/gpt-5.6-luna", // optional "provider/model" or {"providerID","id"}
-  "directory": "/home/user/git/code", // optional; default: the repo's laptop primary
-  "priority": "high", // optional: 10-90 or critical|high|normal|low → 10/20/40/70
+  "directory": "/home/user/git/code", // optional; default: the repo's laptop primary.
+  // Callers may only omit it or use the repo's primary or a directory
+  // inside it — anything else is rejected (400) before any side effect
+  // (issues #2903, #2664).
+  // Bearer callers are scoped by the same containment rule (issue #2664).
+  "priority": "high", // optional: integer 10-90 (number or decimal string), or critical|high|normal|low → 10/20/40/70
   "issue": true, // optional; default true
   "wait": true, // optional; default true
 }
@@ -42,6 +46,9 @@ Body:
 
 Flow:
 
+0. Scope the directory: OIDC callers must omit `directory` or repeat
+   the repo's laptop primary clone — anything else is a 400 with no
+   issue, task, or session created (issue #2903).
 1. Create the tracking GitHub issue (`source/dispatch` label; body = the
    prompt + a dispatch footer). Skipped with a `warnings` entry for
    dezren39/nix, where the pm-stack GitHub App is not installed.
@@ -59,16 +66,27 @@ Repo <repo>` so the session knows its tracking ids.
 5. Comment the task/session ids on the issue; label it `queue/claimed` +
    `work/assigned`.
 
+Stage/failure semantics (design #2668): step 4's claim PATCH is the
+launch's commit point. Steps before it are pre-commit — a failure
+cancels the task and fails the launch. Step 5 is post-commit: the
+comment and the labels are each guarded independently, a failure is
+recorded on the task and (for `wait: true`) returned as a response
+`warnings` entry, the remaining annotation steps still run, and the
+launch itself never fails because of an annotation.
+
 Responses: `wait: true` → `201 {task_id, session_id, issue_number|null,
 queue, status: "claimed"}` after the launch. `wait: false` → `202
 {task_id, issue_number|null, status: "launching"}` right after the
-enqueue; steps 3–5 finish asynchronously and any failure is PATCHed onto
-the task's `last_error`.
+enqueue; steps 3–5 finish asynchronously.
 
-If the launch fails after the enqueue (wait: true), the task is
-cancelled via `cancel_repo_task`, the failure is noted on the issue, and
-the response is `502 {task_id, error}` — a task is never left `queued`
-for a session that launched, nor `claimed` without a session id.
+If the launch fails after the enqueue, the task is cancelled via
+`cancel_repo_task` and the failure is noted on the issue — the same
+handling for both wait modes. For `wait: true` the response is
+`502 {task_id, error}`; for `wait: false` the `202` has already been
+returned, so the cancellation and the issue note are the record — a
+task is never left `queued` for a session that did not launch, nor
+`claimed` without a session id, nor claimed-and-running reported as
+failed.
 
 ### `POST /v1/tasks` — enqueue only
 
@@ -132,6 +150,12 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
   the claim need not equal the request body's `repo`. Repos outside
   the allowlist can neither call nor be targeted. Bearer callers are
   bound only by the allowlist on the target.
+  **Directory scoping (issues #2903, #2664):** every caller
+  (OIDC and bearer alike) may only omit `directory` (or send a blank
+  one, which resolves to the default) or use the target repo's laptop
+  primary clone or a directory inside it — any other value (relative
+  paths, other repos' clones, arbitrary absolute paths) is rejected
+  with 400 before the issue, task, or session is created.
   See `examples/dispatch-workflow.yml`.
 - **Static bearer secret**: `DISPATCH_API_TOKEN` (in the laptop's
   `~/secrets/dispatch.env`), compared in constant time — the shape a

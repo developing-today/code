@@ -2,6 +2,8 @@
 // body validators for POST /v1/sessions and POST /v1/tasks. Pure functions —
 // unit-tested without a server.
 
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+
 export class ValidationError extends Error {
   status = 400;
 }
@@ -20,20 +22,30 @@ export const PRIORITY_NAMES: Record<string, number> = {
 const DEFAULT_PRIORITY = 40;
 
 /**
- * Resolve a request priority (number 10-90, a scale name, or absent) to a
+ * Resolve a request priority (integer 10-90, its decimal string, a scale name, or absent) to a
  * value on the queue's design scale. Off-scale integers in range snap to
  * the nearest scale value (ties snap down); anything else is a 400.
  */
 export function resolvePriority(input: unknown): number {
   if (input === undefined || input === null) return DEFAULT_PRIORITY;
   if (typeof input === "string") {
-    const v = PRIORITY_NAMES[input.trim().toLowerCase()];
-    if (v === undefined) {
+    // Own-key guard (#2757, Phase 3 of #2792): PRIORITY_NAMES is a plain
+    // object, so an unguarded lookup returns inherited members for
+    // prototype spellings - 'constructor' yielded the Object constructor
+    // function and '__proto__' Object.prototype, both non-numbers that
+    // then flowed toward Packet.priority / p_priority. Object.hasOwn
+    // restricts the lookup to the four real names; every other string
+    // takes the same documented 400 as any unknown name.
+    const key = input.trim().toLowerCase();
+    // Composite action inputs arrive as strings; use the same validation and
+    // snapping as JSON numbers without accepting JavaScript coercion syntax.
+    if (/^[+-]?\d+$/.test(key)) return resolvePriority(Number(key));
+    if (!Object.hasOwn(PRIORITY_NAMES, key)) {
       throw new ValidationError(
         `priority: unknown name ${JSON.stringify(input)} (use critical|high|normal|low or a number 10-90)`,
       );
     }
-    return v;
+    return PRIORITY_NAMES[key];
   }
   if (typeof input === "number" && Number.isInteger(input)) {
     if ((PRIORITY_SCALE as readonly number[]).includes(input)) return input;
@@ -97,6 +109,14 @@ function optString(body: Record<string, unknown>, field: string): string | undef
   return v;
 }
 
+/** Like optString, but an empty or whitespace-only string counts as omitted
+ * (issue #2664): a blank title must fall back to the prompt-derived title and
+ * a blank directory to the repo default, not defeat them with "". */
+function optNonBlankString(body: Record<string, unknown>, field: string): string | undefined {
+  const v = optString(body, field);
+  return v !== undefined && v.trim() !== "" ? v : undefined;
+}
+
 function optBool(body: Record<string, unknown>, field: string, dflt: boolean): boolean {
   const v = body[field];
   if (v === undefined || v === null) return dflt;
@@ -121,13 +141,111 @@ export function parseSessionRequest(body: unknown): SessionRequest {
   return {
     repo: reqString(b, "repo"),
     prompt: reqString(b, "prompt"),
-    title: optString(b, "title"),
+    title: optNonBlankString(b, "title"),
     model: parseModel(b.model),
-    directory: optString(b, "directory"),
+    directory: optNonBlankString(b, "directory"),
     priority: resolvePriority(b.priority),
     issue: optBool(b, "issue", true),
     wait: optBool(b, "wait", true),
   };
+}
+
+/** Session-directory scoping for POST /v1/sessions (issues #2903, #2664).
+ * One rule for every caller type (OIDC and bearer alike): a missing, empty,
+ * or whitespace-only directory resolves to the target repo's clone, and an
+ * explicit directory must be an absolute path equal to or inside that
+ * clone AFTER symlink resolution (issue #3999). Relative paths, other
+ * repos' clones, arbitrary absolute paths, and in-clone paths whose
+ * resolved form escapes the clone (a committed symlink such as the
+ * code clone's worktrees or nixpkgs links) are rejected BEFORE any
+ * issue/task/session is created. Extra roots and allowlists stay out
+ * of scope per design issue #2668. */
+export function resolveSessionDirectory(
+  callerType: "oidc" | "bearer",
+  repo: string,
+  directory: string | undefined,
+  repoDirs: Record<string, string>,
+): string {
+  const scoped = repoDirs[repo];
+  if (scoped === undefined) {
+    throw new ValidationError(`directory: no repo directory is configured for ${repo}`);
+  }
+  const budget: SymlinkBudget = { expansions: 0 };
+  const root = canonicalizeDirectory(scoped, budget);
+  if (directory === undefined || directory.trim() === "") return root;
+  const resolved = canonicalizeDirectory(directory, budget);
+  if (resolved === root || resolved.startsWith(`${root}/`)) return resolved;
+  throw new ValidationError(
+    `directory: ${callerType} callers may only run inside the target repo clone (${root}) or a directory within it`,
+  );
+}
+
+/** Canonicalize an absolute directory path: resolve each component's
+ * symlinks as it is appended, so a ".." segment pops the RESOLVED parent
+ * (kernel order), not the lexical one. A component that does not exist
+ * cannot be a symlink, so the remaining tail is appended lexically onto
+ * the canonical prefix (the nearest-existing-ancestor rule); a dangling
+ * symlink still resolves through its readlink target, so a committed
+ * link pointing outside the clone is judged by where it points, not by
+ * whether its target happens to exist on this machine. Relative paths
+ * are rejected. */
+interface SymlinkBudget {
+  expansions: number;
+}
+
+function canonicalizeDirectory(d: string, budget: SymlinkBudget, depth = 0): string {
+  if (!d.startsWith("/")) {
+    throw new ValidationError(`directory: must be an absolute path, got "${d}"`);
+  }
+  if (depth > 40) {
+    throw new ValidationError(`directory: too many symlink levels in "${d}"`);
+  }
+  let resolved = "/";
+  for (const seg of d.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      resolved = resolved.slice(0, resolved.lastIndexOf("/")) || "/";
+      continue;
+    }
+    const next = resolved === "/" ? `/${seg}` : `${resolved}/${seg}`;
+    resolved = resolveComponent(next, budget, depth);
+  }
+  return resolved;
+}
+
+function resolveComponent(path: string, budget: SymlinkBudget, depth: number): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    // Nonexistent (or dangling): fall through to the symlink check.
+  }
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      const target = readlinkSync(path);
+      const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+      const absolute = target.startsWith("/") ? target : parent === "/" ? `/${target}` : `${parent}/${target}`;
+      // The budget is shared across the WHOLE resolution, not per
+      // recursion: a chain of dangling links shaped
+      // lN -> l(N-1)/../l(N-1) doubles the expansions per level while
+      // every individual recursion stays under the depth limit, so
+      // only a global cap keeps total work linear (Codex review
+      // round 2 of PR #4032). The kernel's per-syscall MAXSYMLINKS
+      // bound inside realpathSync has the same shape.
+      budget.expansions += 1;
+      if (budget.expansions > 40) {
+        throw new ValidationError(`directory: too many symlink expansions resolving "${path}"`);
+      }
+      return canonicalizeDirectory(absolute, budget, depth + 1);
+    }
+  } catch (e) {
+    // Our own depth-limit error must terminate traversal, not be
+    // swallowed as a filesystem miss: with a cyclic symlink
+    // (loop -> loop/../loop) swallowing it lets the caller re-expand
+    // the cycle segment by segment (Codex review of PR #4032).
+    if (e instanceof ValidationError) throw e;
+    // Not present at all: a plain lexical component.
+  }
+  return path;
 }
 
 export interface TaskRequest {
@@ -182,6 +300,21 @@ export function parseTaskRequest(body: unknown): TaskRequest {
 
 /** First line of a prompt, trimmed and length-capped — the fallback title. */
 export function titleFromPrompt(prompt: string, max = 120): string {
-  const first = prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "dispatch request";
-  return first.length > max ? first.slice(0, max - 1) + "…" : first;
+  const first =
+    prompt
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "dispatch request";
+  if (first.length <= max) return first;
+
+  // Keep the UTF-16 cap and suffix, but don't leave half of a surrogate pair.
+  let end = max - 1;
+  if (end > 0 && end < first.length) {
+    const before = first.charCodeAt(end - 1);
+    const after = first.charCodeAt(end);
+    if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) {
+      end--;
+    }
+  }
+  return first.slice(0, end) + "…";
 }

@@ -101,7 +101,18 @@ export default {
       return getContainer(env.HELLO_LITE, "lite-1").fetch(request);
     }
 
-    const name = pathname.startsWith("/name/") ? decodeURIComponent(pathname.slice("/name/".length)) : undefined;
+    let name: string | undefined;
+    if (pathname.startsWith("/name/")) {
+      // A malformed percent-encoding is a 400, never a 500: an unguarded
+      // decodeURIComponent throws URIError out of the Worker (#2720,
+      // design #2747 Phase 2). Only the decode is guarded — the
+      // 401/503/worker-marker paths above stay byte-identical.
+      try {
+        name = decodeURIComponent(pathname.slice("/name/".length));
+      } catch {
+        return json({ error: "malformed percent-encoding in name" }, 400);
+      }
+    }
     const container = name ? getContainer(env.HELLO_CONTAINER, name) : getContainer(env.HELLO_CONTAINER);
     return container.fetch(request);
   },

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/preflight"
+	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
 )
 
 // The shape `deno info --json` (deno 2.9.7) actually emits for a script

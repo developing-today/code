@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/conformance"
+	"github.com/developing-today/code/pkgs/mcpx/internal/conformance"
 )
 
 // The #1950 OAuth decision, expressed per row: a catalogue note that waives

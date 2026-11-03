@@ -21,6 +21,9 @@
 //!   dependency to the rows that wait for it. The `waiting_rows` module describes them, and
 //!   the waiting pool in memory mirrors them.
 //! - `meta`: the store's format.
+//! - `blocks`: the operator block list (see `Block`): one row per blocked peer
+//!   key, IP, or topic tag. A block changes serving and subscribing only; it
+//!   never rejects already-signed objects at ingest.
 //!
 //! A position key is the author's 32 bytes followed by the sequence number in
 //! big-endian, so one author's events sort in sequence order.
@@ -103,6 +106,8 @@ const WAITING: TableDefinition<'static, &'static [u8], &'static [u8]> =
 const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("waiting_by_dep");
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
+const BLOCKS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("blocks");
 /// Each group operation's encoded action, by event ID. Written when the event arrives, held or
 /// stored, so a release reads it back without the caller. The resolution reads it again.
 const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -346,6 +351,268 @@ pub struct EventStore {
     unusable: bool,
 }
 
+/// What an operator block names. The tag byte leads the row key in `blocks`,
+/// so rows sort by kind, then by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind {
+    /// An Iroh endpoint key (the EndpointId of abuse.rs): refuse the peer's
+    /// new sessions, blob serving, and gossip subscriptions.
+    PeerKey,
+    /// An IP address, enforced at the listener only (best-effort).
+    Ip,
+    /// A topic tag, composing with the pull policy.
+    TopicTag,
+}
+
+impl BlockKind {
+    fn tag(self) -> u8 {
+        match self {
+            BlockKind::PeerKey => 0,
+            BlockKind::Ip => 1,
+            BlockKind::TopicTag => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0 => Some(BlockKind::PeerKey),
+            1 => Some(BlockKind::Ip),
+            2 => Some(BlockKind::TopicTag),
+            _ => None,
+        }
+    }
+}
+
+/// One operator block-list row: the blocked value, when it was added, why,
+/// and when it stops being enforced. An `expires_at_ms` of `None` is a
+/// permanent block. An expired block stays on the list (the operator's
+/// record) but is never enforced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Block {
+    /// What the block names.
+    pub kind: BlockKind,
+    /// The blocked value: a 32-byte endpoint key, an IP address, or a topic
+    /// tag.
+    pub value: Vec<u8>,
+    /// When the block was added, in milliseconds since the Unix epoch.
+    pub added_at_ms: u64,
+    /// The operator's reason for the block.
+    pub reason: String,
+    /// When the block stops being enforced, in milliseconds since the Unix
+    /// epoch, or `None` for a permanent block.
+    pub expires_at_ms: Option<u64>,
+}
+
+impl Block {
+    /// Whether the block is enforced at `now_ms`. Expiry is exclusive: a
+    /// block that expires at `t` is no longer enforced at `t`.
+    pub fn is_active(&self, now_ms: u64) -> bool {
+        self.expires_at_ms.map_or(true, |expiry| expiry > now_ms)
+    }
+
+    fn key(&self) -> Vec<u8> {
+        let mut key = Vec::with_capacity(1 + self.value.len());
+        key.push(self.kind.tag());
+        key.extend_from_slice(&self.value);
+        key
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + 1 + 8 + 4 + self.reason.len());
+        out.extend_from_slice(&self.added_at_ms.to_be_bytes());
+        match self.expires_at_ms {
+            Some(expiry) => {
+                out.push(1);
+                out.extend_from_slice(&expiry.to_be_bytes());
+            }
+            None => {
+                out.push(0);
+                out.extend_from_slice(&0u64.to_be_bytes());
+            }
+        }
+        out.extend_from_slice(&(self.reason.len() as u32).to_be_bytes());
+        out.extend_from_slice(self.reason.as_bytes());
+        out
+    }
+
+    fn decode(key: &[u8], value: &[u8]) -> Result<Self, StoreError> {
+        let Some((&tag, blocked)) = key.split_first() else {
+            return Err(corrupt("a block row has an empty key"));
+        };
+        let kind = BlockKind::from_tag(tag)
+            .ok_or_else(|| corrupt("a block row has an unknown kind tag"))?;
+        if value.len() < 8 + 1 + 8 + 4 {
+            return Err(corrupt("a block row is too short"));
+        }
+        let added_at_ms = u64::from_be_bytes(value[0..8].try_into().unwrap());
+        let expires_at_ms = match value[8] {
+            0 => None,
+            1 => Some(u64::from_be_bytes(value[9..17].try_into().unwrap())),
+            _ => return Err(corrupt("a block row has a bad expiry flag")),
+        };
+        let reason_len = u32::from_be_bytes(value[17..21].try_into().unwrap()) as usize;
+        if value.len() != 21 + reason_len {
+            return Err(corrupt("a block row has the wrong reason length"));
+        }
+        let reason = String::from_utf8(value[21..].to_vec())
+            .map_err(|_err| corrupt("a block row's reason is not UTF-8"))?;
+        Ok(Block {
+            kind,
+            value: blocked.to_vec(),
+            added_at_ms,
+            reason,
+            expires_at_ms,
+        })
+    }
+}
+
+impl EventStore {
+    /// Adds `block` to the operator block list, replacing any row that names
+    /// the same kind and value.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the write fails.
+    pub fn add_block(&self, block: &Block) -> Result<(), StoreError> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut blocks = txn.open_table(BLOCKS)?;
+            blocks.insert(block.key().as_slice(), block.encode().as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Removes the block naming (`kind`, `value`), returning whether a row
+    /// was removed. Removing a block that does not exist is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the write fails.
+    pub fn remove_block(&self, kind: BlockKind, value: &[u8]) -> Result<bool, StoreError> {
+        let mut key = Vec::with_capacity(1 + value.len());
+        key.push(kind.tag());
+        key.extend_from_slice(value);
+        let txn = self.db.begin_write()?;
+        let removed = {
+            let mut blocks = txn.open_table(BLOCKS)?;
+            blocks.remove(key.as_slice())?.is_some()
+        };
+        txn.commit()?;
+        Ok(removed)
+    }
+
+    /// Every block on the list, expired ones included, in (kind, value)
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
+    pub fn blocks(&self) -> Result<Vec<Block>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let blocks = txn.open_table(BLOCKS)?;
+        let mut found = Vec::new();
+        for row in blocks.iter()? {
+            let (key, value) = row?;
+            found.push(Block::decode(key.value(), value.value())?);
+        }
+        Ok(found)
+    }
+
+    /// The block naming (`kind`, `value`) if one is on the list and still
+    /// enforced at `now_ms`. An expired block is not returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
+    pub fn active_block(
+        &self,
+        kind: BlockKind,
+        value: &[u8],
+        now_ms: u64,
+    ) -> Result<Option<Block>, StoreError> {
+        let mut key = Vec::with_capacity(1 + value.len());
+        key.push(kind.tag());
+        key.extend_from_slice(value);
+        let txn = self.db.begin_read()?;
+        let blocks = txn.open_table(BLOCKS)?;
+        let Some(row) = blocks.get(key.as_slice())? else {
+            return Ok(None);
+        };
+        let block = Block::decode(&key, row.value())?;
+        Ok(block.is_active(now_ms).then_some(block))
+    }
+
+    /// Whether (`kind`, `value`) is blocked at `now_ms`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or `StoreError::Corrupt`.
+    pub fn is_blocked(
+        &self,
+        kind: BlockKind,
+        value: &[u8],
+        now_ms: u64,
+    ) -> Result<bool, StoreError> {
+        Ok(self.active_block(kind, value, now_ms)?.is_some())
+    }
+}
+
+/// The operator block list as the enforcement seams consult it (#2245).
+///
+/// A seam holds an `Arc<dyn BlockList>` and asks it about a peer, a topic
+/// tag, or an IP; it never reads the `blocks` table itself. Implementations
+/// read the list live on every call, so a block (or an unblock) lands on the
+/// next check, and they judge expiry against the wall clock
+/// ([`crate::time::unix_ms`]) — the same epoch `Block::added_at_ms` and
+/// `Block::expires_at_ms` are stamped in. That is why this trait takes no
+/// `now_ms`: the session clocks the sync seams carry are not all wall
+/// clocks (the abuse evaluator's is monotonic), and a block's expiry is a
+/// wall-clock fact.
+///
+/// The invariant from the module docs rides on this trait's callers: blocks
+/// change serving and subscribing only. No ingest path consults a
+/// `BlockList`, so an already-signed object from a blocked peer is decided
+/// by the store's ordinary rules, exactly as if the block did not exist.
+pub trait BlockList: std::fmt::Debug + Send + Sync + 'static {
+    /// Whether (`kind`, `value`) is blocked now. An expired block is not
+    /// enforced, so this is false for one, however long it stays listed.
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool;
+
+    /// Whether the endpoint with this 32-byte key is blocked.
+    fn peer_blocked(&self, peer: &[u8; 32]) -> bool {
+        self.is_blocked(BlockKind::PeerKey, peer)
+    }
+
+    /// Whether this topic tag is blocked. The tag is raw bytes: a pull
+    /// gate passes its world's name, the sync handshake passes the topic's
+    /// hash bytes; an operator blocks whichever form a surface names.
+    fn topic_tag_blocked(&self, tag: &[u8]) -> bool {
+        self.is_blocked(BlockKind::TopicTag, tag)
+    }
+
+    /// Whether this IP is blocked. IP rows name the address in its text
+    /// form (as the storage tests write them), so the check formats `ip`
+    /// the same way.
+    fn ip_blocked(&self, ip: &std::net::IpAddr) -> bool {
+        self.is_blocked(BlockKind::Ip, ip.to_string().as_bytes())
+    }
+}
+
+impl BlockList for EventStore {
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        // A read error invents no block: the seam fails open, and the
+        // store's error still surfaces on the store's own read paths.
+        EventStore::is_blocked(self, kind, value, crate::time::unix_ms()).unwrap_or(false)
+    }
+}
+
+impl<T: BlockList + ?Sized> BlockList for std::sync::Arc<T> {
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        (**self).is_blocked(kind, value)
+    }
+}
+
 impl EventStore {
     /// Opens the store in `dir`, creating it if the directory has none. `limits` are the caps
     /// on waiting events, and `now_ms` is the clock: the waiting events due at it are dropped.
@@ -376,6 +643,14 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
+        // The blocks table is additive: stores created before it gain it here,
+        // on the write every open already performs, instead of a format change
+        // that would refuse them.
+        {
+            let txn = db.begin_write()?;
+            txn.open_table(BLOCKS)?;
+            txn.commit()?;
+        }
         let mut store = Self {
             db,
             limits,
@@ -573,6 +848,39 @@ impl EventStore {
                 let mut parents = event.header.extensions.after.clone();
                 if let Some(backlink) = event.header.backlink {
                     parents.push(backlink);
+                }
+                // A note revision's causal references live in its note operation, not in
+                // `after`: the note it revises and the parent revisions it builds on are
+                // dependencies too, so a surviving revision keeps its note and its whole
+                // parent history alive through a prune (#3814).
+                if let Some(crate::notes::NoteOp::Revise {
+                    note,
+                    parents: note_parents,
+                    ..
+                }) = &event.header.extensions.note
+                {
+                    parents.push(*note);
+                    parents.extend(note_parents.iter().copied());
+                }
+                // A note link's references live in its link operation, not in the after field:
+                // the source note, the asserting revision, the target note, and the
+                // optional pinned revision are dependencies too, so a surviving link
+                // keeps them alive through a prune; otherwise rebuilding the link
+                // projection after the prune would fail with UnknownTarget (#3816).
+                if let Some(crate::note_links::NoteLinkOp::Assert {
+                    source,
+                    revision,
+                    target,
+                    pin,
+                    ..
+                }) = &event.header.extensions.link
+                {
+                    parents.push(*source);
+                    parents.push(*revision);
+                    parents.push(*target);
+                    if let Some(pin) = pin {
+                        parents.push(*pin);
+                    }
                 }
                 let has_action = actions_table.get(event.id.as_bytes().as_slice())?.is_some();
                 events_by_id.insert(
@@ -933,6 +1241,21 @@ impl EventStore {
         Ok(ids)
     }
 
+    /// Returns the waiting event with `id`, if held in the waiting pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
+    pub fn waiting_event(&self, id: &Hash) -> Result<Option<Event>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let rows = txn.open_table(WAITING)?;
+        let Some(found) = rows.get(id.as_bytes().as_slice())? else {
+            return Ok(None);
+        };
+        let row = Row::decode(*id, found.value())?;
+        row_event(&row).map(Some)
+    }
+
     /// Runs `op` in one write transaction against the waiting pool and its rows. The transaction
     /// commits if `op` reports a change, and is aborted otherwise. If the call fails, the pool may
     /// have moved on from the rows, so it is rebuilt from them. If that fails too, the store
@@ -999,7 +1322,7 @@ impl EventStore {
             let event = row_event(&row)?;
             match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
                 Ok(()) => {}
-                Err(WaitRefusal::AuthorFull) => {
+                Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                     waiting_rows::delete(&txn, &row.id)?;
                     dropped = true;
                 }
@@ -1052,6 +1375,7 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP)?;
     txn.open_table(ACTIONS)?;
     txn.open_table(APPLIED)?;
+    txn.open_table(BLOCKS)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
     drop(meta);
@@ -1334,6 +1658,9 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
         }
     }
 
@@ -1610,5 +1937,149 @@ mod tests {
         let meta = txn.open_table(META).unwrap();
         let found = meta.get(FORMAT_KEY).unwrap().unwrap();
         assert_eq!(found.value(), b"id.events.store.v2".as_slice());
+    }
+
+    fn block(kind: BlockKind, value: &[u8], expires_at_ms: Option<u64>) -> Block {
+        Block {
+            kind,
+            value: value.to_vec(),
+            added_at_ms: 1_000,
+            reason: "test block".to_owned(),
+            expires_at_ms,
+        }
+    }
+
+    #[test]
+    fn test_blocks_persist_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let peer = block(BlockKind::PeerKey, &[7u8; 32], None);
+        {
+            let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+            store.add_block(&peer).unwrap();
+            store
+                .add_block(&block(BlockKind::Ip, b"192.0.2.1", None))
+                .unwrap();
+        }
+        let reopened = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        let listed = reopened.blocks().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0], peer, "peer-key rows sort before IP rows");
+        assert!(
+            reopened
+                .is_blocked(BlockKind::PeerKey, &[7u8; 32], 2_000)
+                .unwrap()
+        );
+        assert!(
+            !reopened
+                .is_blocked(BlockKind::PeerKey, &[8u8; 32], 2_000)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_an_expired_block_is_listed_but_not_enforced() {
+        let (_dir, store) = open_temp();
+        let expiring = block(BlockKind::TopicTag, b"spam", Some(1_500));
+        store.add_block(&expiring).unwrap();
+        assert_eq!(
+            store
+                .active_block(BlockKind::TopicTag, b"spam", 1_499)
+                .unwrap(),
+            Some(expiring.clone())
+        );
+        assert_eq!(
+            store
+                .active_block(BlockKind::TopicTag, b"spam", 1_500)
+                .unwrap(),
+            None,
+            "expiry is exclusive: at the expiry instant the block no longer applies"
+        );
+        assert!(
+            !store
+                .is_blocked(BlockKind::TopicTag, b"spam", 9_999)
+                .unwrap()
+        );
+        assert_eq!(
+            store.blocks().unwrap(),
+            vec![expiring],
+            "the expired row stays on the list as the operator's record"
+        );
+    }
+
+    #[test]
+    fn test_block_list_answers_peer_topic_and_ip_from_the_store() {
+        let (_dir, store) = open_temp();
+        store
+            .add_block(&block(BlockKind::PeerKey, &[7u8; 32], None))
+            .unwrap();
+        store
+            .add_block(&block(BlockKind::TopicTag, b"spam", None))
+            .unwrap();
+        store
+            .add_block(&block(BlockKind::Ip, b"192.0.2.1", None))
+            .unwrap();
+        // The trait is what the enforcement seams hold: it answers from the
+        // store's live rows, with no clock handed in.
+        let list: &dyn BlockList = &store;
+        assert!(list.peer_blocked(&[7u8; 32]));
+        assert!(!list.peer_blocked(&[8u8; 32]));
+        assert!(list.topic_tag_blocked(b"spam"));
+        assert!(!list.topic_tag_blocked(b"ham"));
+        let blocked_ip: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        let other_ip: std::net::IpAddr = "192.0.2.2".parse().unwrap();
+        assert!(list.ip_blocked(&blocked_ip));
+        assert!(!list.ip_blocked(&other_ip));
+        // An expired block is listed but never enforced, through the trait
+        // exactly as through the store (its expiry, 1_500, is long past).
+        store
+            .add_block(&block(BlockKind::PeerKey, &[9u8; 32], Some(1_500)))
+            .unwrap();
+        assert!(!list.peer_blocked(&[9u8; 32]));
+        assert_eq!(store.blocks().unwrap().len(), 4);
+    }
+
+    /// The #2245 invariant: a block changes serving and subscribing only.
+    /// Signed events from a blocked author are ingested and applied by the
+    /// ordinary rules — if ingest ever consulted the block list, the graph
+    /// would diverge between nodes that block and nodes that do not.
+    #[test]
+    fn test_a_blocked_authors_signed_events_are_still_ingested() {
+        let (_dir, mut store) = open_temp();
+        let signer = key(41);
+        let who = author(&signer);
+        store
+            .add_block(&block(BlockKind::PeerKey, &who, None))
+            .unwrap();
+        assert!(store.is_blocked(BlockKind::PeerKey, &who, 2_000).unwrap());
+        let events = chain_of(&signer, 2);
+        for event in &events {
+            assert!(
+                matches!(
+                    store.ingest(&event.bytes, 0).unwrap(),
+                    Ingest::Accepted { .. }
+                ),
+                "a blocked author's signed event was not accepted"
+            );
+        }
+        assert_eq!(
+            store.chain(&who).unwrap().map(|chain| chain.next_seq),
+            Some(2),
+            "both events applied, block notwithstanding"
+        );
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_remove_block() {
+        let (_dir, store) = open_temp();
+        store
+            .add_block(&block(BlockKind::Ip, b"198.51.100.7", None))
+            .unwrap();
+        assert!(store.remove_block(BlockKind::Ip, b"198.51.100.7").unwrap());
+        assert!(
+            !store.remove_block(BlockKind::Ip, b"198.51.100.7").unwrap(),
+            "removing an absent block is false, not an error"
+        );
+        assert!(store.blocks().unwrap().is_empty());
     }
 }

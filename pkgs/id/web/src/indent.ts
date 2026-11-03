@@ -16,8 +16,12 @@ const INDENT = "  "; // 2 spaces
  * overlaps: the line containing `from` through the line containing `to`.
  * A selection ending exactly at a line start does not overlap that line
  * (the standard editor rule), unless the selection is empty.
+ * `endInclusive` overrides that rule for a caller-clamped `to`: when a
+ * multi-block selection continues past a block, the block's end is not
+ * the selection's end, so a trailing line start at the clamp point IS
+ * overlapped (Codex finding on PR #2872).
  */
-export function selectedLineStarts(lineStarts: number[], from: number, to: number): number[] {
+export function selectedLineStarts(lineStarts: number[], from: number, to: number, endInclusive = false): number[] {
   if (lineStarts.length === 0) return [];
 
   // Helper to find index of the line start containing pos via binary search
@@ -51,7 +55,7 @@ export function selectedLineStarts(lineStarts: number[], from: number, to: numbe
     return false;
   };
 
-  const endPos = to > from && isLineStart(to) ? to - 1 : to;
+  const endPos = to > from && !endInclusive && isLineStart(to) ? to - 1 : to;
   const firstIdx = lineIndexContaining(from);
   const lastIdx = lineIndexContaining(endPos);
 
@@ -60,10 +64,49 @@ export function selectedLineStarts(lineStarts: number[], from: number, to: numbe
 }
 
 /**
+ * Every code_block node intersecting [from, to], with its doc position.
+ * Used to apply indent/dedent line math per block instead of treating a
+ * multi-block selection as one block's text (#1399).
+ */
+function codeBlocksInRange(doc: import("prosemirror-model").Node, from: number, to: number): { pos: number }[] {
+  const blocks: { pos: number }[] = [];
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (node.type.name === "code_block") {
+      blocks.push({ pos });
+      return false;
+    }
+    return true;
+  });
+  return blocks;
+}
+
+/**
+ * Line starts (ascending) of one code_block's own text.
+ * `pos` is the block node's doc position; content runs
+ * [pos + 1, pos + nodeSize - 1].
+ */
+function blockLineStarts(
+  doc: import("prosemirror-model").Node,
+  block: import("prosemirror-model").Node,
+  pos: number,
+): { contentStart: number; contentEnd: number; lineStarts: number[] } {
+  const contentStart = pos + 1;
+  const contentEnd = pos + block.nodeSize - 1;
+  const blockText = doc.textBetween(contentStart, contentEnd);
+  const lineStarts: number[] = [contentStart];
+  for (let i = 0; i < blockText.length; i++) {
+    if (blockText[i] === "\n") {
+      lineStarts.push(contentStart + i + 1);
+    }
+  }
+  return { contentStart, contentEnd, lineStarts };
+}
+
+/**
  * Insert indentation at cursor, or indent all selected lines.
  */
 export const indentCommand: Command = (state, dispatch) => {
-  const { $from, $to, from, to } = state.selection;
+  const { $from, from, to } = state.selection;
 
   // Check if we're in a code_block
   const inCode =
@@ -80,31 +123,36 @@ export const indentCommand: Command = (state, dispatch) => {
     return true;
   }
 
-  // Multi-line selection: indent each line
+  // Multi-line selection: indent each overlapped line of every
+  // intersected code_block (#1399). Non-code content is untouched.
+  const blocks = codeBlocksInRange(state.doc, from, to);
+  if (blocks.length === 0) return false;
+
   if (dispatch) {
-    // Find all line start positions within the selection
-    let tr = state.tr;
-    let offset = 0;
-
-    // Start of the block
-    const blockStart = $from.start($from.depth);
-    const blockEnd = $to.end($to.depth);
-    const blockText = state.doc.textBetween(blockStart, blockEnd);
-
-    // Find newline positions to determine line starts
-    const lineStarts: number[] = [blockStart]; // first line starts at blockStart
-    for (let i = 0; i < blockText.length; i++) {
-      if (blockText[i] === "\n") {
-        lineStarts.push(blockStart + i + 1);
+    // Collect insert positions against the original doc, then apply in
+    // descending order so earlier positions stay valid.
+    const inserts: number[] = [];
+    for (const { pos } of blocks) {
+      const block = state.doc.nodeAt(pos);
+      if (!block) continue;
+      const { contentStart, contentEnd, lineStarts } = blockLineStarts(state.doc, block, pos);
+      // Strict overlap: a selection merely touching the block's edge
+      // covers none of its characters, so the block is skipped.
+      if (contentStart >= to || contentEnd <= from) continue;
+      for (const lineStart of selectedLineStarts(
+        lineStarts,
+        Math.max(from, contentStart),
+        Math.min(to, contentEnd),
+        to > contentEnd,
+      )) {
+        inserts.push(lineStart);
       }
     }
 
-    // Only indent lines that overlap with the selection
-    for (const lineStart of selectedLineStarts(lineStarts, from, to)) {
-      tr = tr.insertText(INDENT, lineStart + offset);
-      offset += INDENT.length;
+    let tr = state.tr;
+    for (const insertPos of inserts.sort((a, b) => b - a)) {
+      tr = tr.insertText(INDENT, insertPos);
     }
-
     dispatch(tr);
   }
   return true;
@@ -114,7 +162,7 @@ export const indentCommand: Command = (state, dispatch) => {
  * Remove indentation from cursor line, or dedent all selected lines.
  */
 export const dedentCommand: Command = (state, dispatch) => {
-  const { $from, $to, from, to } = state.selection;
+  const { $from, from, to } = state.selection;
 
   // Check if we're in a code_block
   const inCode =
@@ -124,44 +172,54 @@ export const dedentCommand: Command = (state, dispatch) => {
   if (!inCode) return false;
 
   if (dispatch) {
-    const blockStart = $from.start($from.depth);
-    const blockEnd = $to.end($to.depth);
-    const blockText = state.doc.textBetween(blockStart, blockEnd);
+    const blocks = codeBlocksInRange(state.doc, from, to);
+    if (blocks.length === 0) return false;
 
-    // Find all line start positions
-    const lineStarts: number[] = [blockStart];
-    for (let i = 0; i < blockText.length; i++) {
-      if (blockText[i] === "\n") {
-        lineStarts.push(blockStart + i + 1);
-      }
-    }
+    // Collect deletions against the original doc, then apply in
+    // descending order so earlier positions stay valid.
+    const deletions: { pos: number; count: number }[] = [];
+    for (const { pos } of blocks) {
+      const block = state.doc.nodeAt(pos);
+      if (!block) continue;
+      const { contentStart, contentEnd, lineStarts } = blockLineStarts(state.doc, block, pos);
+      // Strict overlap: a non-empty selection merely touching the block's
+      // edge covers none of its characters, so the block is skipped. (An
+      // empty selection/cursor at the edge still belongs to its line.)
+      if (from === to ? contentStart > from || contentEnd < from : contentStart >= to || contentEnd <= from) continue;
+      const blockText = state.doc.textBetween(contentStart, contentEnd);
 
-    let tr = state.tr;
-    let offset = 0;
+      // Handle selected lines (for single cursor, selectedLineStarts returns just the current line)
+      const linesToDedent = selectedLineStarts(
+        lineStarts,
+        Math.max(from, contentStart),
+        Math.min(to, contentEnd),
+        to > contentEnd,
+      );
 
-    // Handle selected lines (for single cursor, selectedLineStarts returns just the current line)
-    const linesToDedent = selectedLineStarts(lineStarts, from, to);
+      for (const lineStart of linesToDedent) {
+        // Check how many leading spaces this line has, using the
+        // block's own text (#1399)
+        const lineOffset = lineStart - contentStart;
+        let spacesToRemove = 0;
+        for (let i = 0; i < INDENT.length && lineOffset + i < blockText.length; i++) {
+          if (blockText[lineOffset + i] === " ") {
+            spacesToRemove++;
+          } else {
+            break;
+          }
+        }
 
-    for (const lineStart of linesToDedent) {
-      const adjustedPos = lineStart + offset;
-      // Check how many leading spaces this line has
-      const lineOffset = lineStart - blockStart;
-      let spacesToRemove = 0;
-      for (let i = 0; i < INDENT.length && lineOffset + i < blockText.length; i++) {
-        if (blockText[lineOffset + i] === " ") {
-          spacesToRemove++;
-        } else {
-          break;
+        if (spacesToRemove > 0) {
+          deletions.push({ pos: lineStart, count: spacesToRemove });
         }
       }
-
-      if (spacesToRemove > 0) {
-        tr = tr.delete(adjustedPos, adjustedPos + spacesToRemove);
-        offset -= spacesToRemove;
-      }
     }
 
-    if (offset !== 0) {
+    if (deletions.length > 0) {
+      let tr = state.tr;
+      for (const { pos: deletePos, count } of deletions.sort((a, b) => b.pos - a.pos)) {
+        tr = tr.delete(deletePos, deletePos + count);
+      }
       dispatch(tr);
     }
   }

@@ -58,18 +58,29 @@
 //! - [`MatchKind::Prefix`]: Name/hash starts with query (good)
 //! - [`MatchKind::Contains`]: Name/hash contains query anywhere (okay)
 
+use std::{sync::Arc, time::Duration};
+
 use futures_lite::StreamExt;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointId;
 use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::access::AccessPolicy;
 use crate::discovery::{PeerAnnouncement, PeerDiscovery};
 use crate::fileops::{FileOpError, FileOps};
 use crate::tags::TagStore;
+
+/// Maximum time for one network phase (request read or response write) of a
+/// meta stream. The phases are bounded separately on purpose: once a request
+/// has been fully read, its handler runs to completion, so the deadline can
+/// never cancel a non-transactional mutation (e.g. a rename) midway through.
+const META_STREAM_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Concurrent meta requests allowed on one connection.
+const MAX_META_STREAMS_PER_CONNECTION: usize = 16;
 
 /// Match quality for find/search operations.
 ///
@@ -694,35 +705,124 @@ impl MetaProtocol {
         });
         matches
     }
-}
 
-impl ProtocolHandler for MetaProtocol {
-    /// Serves requests on a connection until the peer closes it.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AcceptError` if a response cannot be serialized or written.
-    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+    async fn accept_connection(
+        &self,
+        conn: Connection,
+        stream_deadline: Duration,
+    ) -> Result<(), AcceptError> {
         let remote = conn.remote_id();
-        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-            let resp = match recv.read_to_end(MAX_REQUEST_BYTES).await {
-                Ok(buf) => match postcard::from_bytes::<MetaRequest>(&buf) {
-                    Ok(req) => self.handle(&remote, req).await,
-                    Err(e) => MetaResponse::Error {
-                        message: format!("malformed request: {e}"),
-                    },
-                },
-                Err(e) => MetaResponse::Error {
-                    message: format!("could not read request: {e}"),
-                },
-            };
+        let permits = Arc::new(Semaphore::new(MAX_META_STREAMS_PER_CONNECTION));
+        let mut streams = JoinSet::new();
+
+        loop {
+            tokio::select! {
+                incoming = conn.accept_bi() => {
+                    let Ok((mut send, recv)) = incoming else {
+                        break;
+                    };
+                    let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                        // Refuse only this stream; the connection remains usable.
+                        let _ = send.reset(1_u32.into());
+                        continue;
+                    };
+                    let protocol = self.clone();
+                    streams.spawn(async move {
+                        let _permit = permit;
+                        protocol
+                            .handle_stream(remote, send, recv, stream_deadline)
+                            .await;
+                    });
+                }
+                Some(result) = streams.join_next(), if !streams.is_empty() => {
+                    if let Err(error) = result {
+                        tracing::warn!(%error, "meta stream handler task failed");
+                    }
+                }
+            }
+        }
+
+        // The peer closed the connection. Drain admitted handlers instead
+        // of aborting them: shutdown() would cancel a handler at its next
+        // suspension point, and a mutating handler cancelled mid-flight
+        // (e.g. FileOps::rename, which deletes the source before awaiting
+        // the metadata transfer) can leave partial state behind. Each
+        // handler's network phases stay bounded by the stream deadline,
+        // so this drain terminates.
+        while let Some(result) = streams.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(%error, "meta stream handler task failed");
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_stream(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+        stream_deadline: Duration,
+    ) {
+        // Phase 1: read the request under the deadline. A stalled or
+        // trickling peer is cut off here, without affecting other streams.
+        let buf = match tokio::time::timeout(stream_deadline, recv.read_to_end(MAX_REQUEST_BYTES))
+            .await
+        {
+            Ok(Ok(buf)) => buf,
+            Ok(Err(error)) => {
+                tracing::debug!(%remote, %error, "meta stream read failed");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!(%remote, ?stream_deadline, "meta stream read deadline exceeded");
+                let _ = send.reset(1_u32.into());
+                return;
+            }
+        };
+
+        // Phase 2: handle the admitted request to completion. This is
+        // deliberately NOT wrapped in the deadline: handlers perform
+        // non-transactional mutations (e.g. FileOps::rename moves a blob and
+        // then transfers metadata), and cancelling one midway would corrupt
+        // state. The handler does no peer-controlled waiting — the network
+        // phases on either side of it carry the deadline.
+        let resp = match postcard::from_bytes::<MetaRequest>(&buf) {
+            Ok(req) => self.handle(&remote, req).await,
+            Err(error) => MetaResponse::Error {
+                message: format!("malformed request: {error}"),
+            },
+        };
+
+        // Phase 3: write the response under the deadline; a peer that stops
+        // reading is cut off and its stream reset.
+        let written = tokio::time::timeout(stream_deadline, async {
             let bytes = postcard::to_allocvec(&resp).map_err(AcceptError::from_err)?;
             send.write_all(&bytes)
                 .await
                 .map_err(AcceptError::from_err)?;
             send.finish()?;
+            Ok::<(), AcceptError>(())
+        })
+        .await;
+
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::debug!(%remote, %error, "meta stream failed"),
+            Err(_) => {
+                tracing::debug!(%remote, ?stream_deadline, "meta stream write deadline exceeded");
+                let _ = send.reset(1_u32.into());
+            }
         }
-        Ok(())
+    }
+}
+
+impl ProtocolHandler for MetaProtocol {
+    /// Serves requests on a connection until the peer closes it.
+    /// Individual stream failures are isolated; active streams are stopped when
+    /// the peer closes the connection.
+    async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+        self.accept_connection(conn, META_STREAM_DEADLINE).await
     }
 }
 
@@ -730,6 +830,86 @@ impl ProtocolHandler for MetaProtocol {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use iroh::{
+        EndpointAddr,
+        endpoint::{Endpoint, RelayMode, presets},
+        protocol::Router,
+    };
+    use iroh_base::{SecretKey, TransportAddr};
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use crate::{META_ALPN, local::LocalNode};
+
+    #[derive(Clone, Debug)]
+    struct DeadlineMetaProtocol {
+        protocol: Arc<MetaProtocol>,
+        deadline: Duration,
+    }
+
+    impl ProtocolHandler for DeadlineMetaProtocol {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            self.protocol.accept_connection(conn, self.deadline).await
+        }
+    }
+
+    struct MetaTestServer {
+        node: LocalNode,
+        endpoint: Endpoint,
+        router: Router,
+        addr: EndpointAddr,
+    }
+
+    async fn meta_test_server(deadline: Duration) -> MetaTestServer {
+        let node = LocalNode::open(true).await.unwrap();
+        let key = SecretKey::generate();
+        let server_id = key.public();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .secret_key(key)
+            .bind_addr(std::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let protocol = MetaProtocol::new(
+            &node.blobs(),
+            None,
+            Arc::clone(node.tags()),
+            AccessPolicy::open(),
+            server_id,
+        );
+        let handler = DeadlineMetaProtocol { protocol, deadline };
+        let router = Router::builder(endpoint.clone())
+            .accept(META_ALPN, handler)
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            server_id,
+            endpoint.bound_sockets().into_iter().map(|address| {
+                TransportAddr::Ip(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), address.port()))
+            }),
+        );
+        MetaTestServer {
+            node,
+            endpoint,
+            router,
+            addr,
+        }
+    }
+
+    async fn meta_test_client() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn shutdown_meta_test(server: MetaTestServer, client: Endpoint) {
+        client.close().await;
+        server.router.shutdown().await.unwrap();
+        server.endpoint.close().await;
+        server.node.shutdown().await.unwrap();
+    }
 
     #[test]
     fn test_find_match_struct() {
@@ -1213,8 +1393,6 @@ mod tests {
     // Handler behaviour against real iroh-blobs + iroh-docs (in memory)
     // ========================================================================
 
-    use crate::local::LocalNode;
-
     async fn put(node: &LocalNode, name: &str, data: &[u8]) -> Hash {
         // A temp tag protects the blob without leaving an `auto-*` tag behind.
         let guard = node
@@ -1303,6 +1481,125 @@ mod tests {
         assert!(tags.iter().any(|t| t.key == b"modified"));
         assert!(has_tag(&tags, "name", Some("dir/a.txt")));
         assert!(has_tag(&tags, "file", Some("a.txt")));
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fileops_reject_unsafe_names_without_mutating_files() {
+        let node = LocalNode::open(true).await.unwrap();
+        let source_hash = put(&node, "source.txt", b"source").await;
+        let upload = node
+            .blobs()
+            .add_bytes(b"candidate".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        let put_hash = upload.hash();
+        let invalid_names = [
+            "../escape.txt",
+            "nested/../escape.txt",
+            "./dot.txt",
+            "/rooted.txt",
+            r"..\escape.txt",
+            r"nested\..\escape.txt",
+            r"\rooted.txt",
+            r"\\server\share.txt",
+            r"C:\rooted.txt",
+            "C:/rooted.txt",
+            "C:relative.txt",
+        ];
+
+        for invalid in invalid_names {
+            let put_response = node
+                .request(MetaRequest::Put {
+                    filename: invalid.to_owned(),
+                    hash: put_hash,
+                })
+                .await;
+            assert!(
+                put_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
+                "put accepted unsafe name {invalid:?}: {put_response:?}"
+            );
+
+            let rename_response = node
+                .request(MetaRequest::Rename {
+                    from: "source.txt".to_owned(),
+                    to: invalid.to_owned(),
+                })
+                .await;
+            assert!(
+                rename_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
+                "rename accepted unsafe name {invalid:?}: {rename_response:?}"
+            );
+
+            let copy_response = node
+                .request(MetaRequest::Copy {
+                    from: "source.txt".to_owned(),
+                    to: invalid.to_owned(),
+                })
+                .await;
+            assert!(
+                copy_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
+                "copy accepted unsafe name {invalid:?}: {copy_response:?}"
+            );
+
+            assert_eq!(names(&node).await, vec!["source.txt".to_owned()]);
+            assert!(tags_of(&node, invalid).await.is_empty());
+            assert!(matches!(
+                node.request(MetaRequest::Get {
+                    filename: "source.txt".to_owned(),
+                })
+                .await,
+                MetaResponse::Get { hash: Some(hash) } if hash == source_hash
+            ));
+        }
+
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fileops_accept_safe_nested_names_for_rename_and_copy() {
+        let node = LocalNode::open(true).await.unwrap();
+        let hash = put(&node, "dir/a.txt", b"hello").await;
+
+        assert!(matches!(
+            node.request(MetaRequest::Rename {
+                from: "dir/a.txt".to_owned(),
+                to: "renamed/deep.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Rename { success: true }
+        ));
+        assert!(matches!(
+            node.request(MetaRequest::Copy {
+                from: "renamed/deep.txt".to_owned(),
+                to: "copies/copy.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Copy { success: true }
+        ));
+
+        assert!(matches!(
+            node.request(MetaRequest::Get {
+                filename: "renamed/deep.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Get { hash: Some(found) } if found == hash
+        ));
+        assert!(matches!(
+            node.request(MetaRequest::Get {
+                filename: "copies/copy.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Get { hash: Some(found) } if found == hash
+        ));
+
         node.shutdown().await.unwrap();
     }
 
@@ -1727,5 +2024,79 @@ mod tests {
         assert_eq!(order[1], "readme.md", "prefix second: {order:?}");
         assert_eq!(order[2], "the-readme", "contains last: {order:?}");
         node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_meta_stream_does_not_block_later_requests_and_times_out() {
+        let server = meta_test_server(Duration::from_millis(200)).await;
+        let client = meta_test_client().await;
+        let conn = client
+            .connect(server.addr.clone(), META_ALPN)
+            .await
+            .unwrap();
+
+        let (mut stalled_send, mut stalled_recv) = conn.open_bi().await.unwrap();
+        stalled_send.write_all(b"\0").await.unwrap();
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            crate::meta_client::request_over(&conn, &MetaRequest::Whoami),
+        )
+        .await
+        .expect("a stalled stream must not block another request")
+        .unwrap();
+        assert!(
+            matches!(response, MetaResponse::Whoami { .. }),
+            "{response:?}"
+        );
+
+        let timed_out =
+            tokio::time::timeout(Duration::from_secs(1), stalled_recv.read_to_end(64 * 1024))
+                .await
+                .expect("the stalled stream should be reset at its deadline");
+        assert!(
+            timed_out.is_err(),
+            "timed-out stream unexpectedly completed: {timed_out:?}"
+        );
+
+        drop(stalled_send);
+        drop(conn);
+        shutdown_meta_test(server, client).await;
+    }
+
+    #[tokio::test]
+    async fn excess_meta_streams_are_reset() {
+        let server = meta_test_server(Duration::from_secs(5)).await;
+        let client = meta_test_client().await;
+        let conn = client
+            .connect(server.addr.clone(), META_ALPN)
+            .await
+            .unwrap();
+        let mut streams = Vec::new();
+
+        for _ in 0..=MAX_META_STREAMS_PER_CONNECTION {
+            let (mut send, recv) = conn.open_bi().await.unwrap();
+            // A stream the client never writes to is never observed by the
+            // server's accept loop (noq only surfaces a stream once it
+            // carries data), so write one incomplete-request byte to make
+            // each stream visible — the same trick the stalled-stream test
+            // uses. Without this the excess stream is never reset and the
+            // test times out regardless of the implementation.
+            send.write_all(b" ").await.unwrap();
+            streams.push((send, recv));
+        }
+
+        let excess = streams.last_mut().unwrap();
+        let reset = tokio::time::timeout(Duration::from_secs(1), excess.1.read_to_end(64 * 1024))
+            .await
+            .expect("the excess stream should be reset promptly");
+        assert!(
+            reset.is_err(),
+            "excess stream unexpectedly completed: {reset:?}"
+        );
+
+        drop(streams);
+        drop(conn);
+        shutdown_meta_test(server, client).await;
     }
 }

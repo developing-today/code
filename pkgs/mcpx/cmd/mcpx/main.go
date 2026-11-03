@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/dezren39/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".

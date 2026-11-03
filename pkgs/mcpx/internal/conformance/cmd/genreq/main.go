@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dezren39/mcpx/internal/conformance"
+	"github.com/developing-today/code/pkgs/mcpx/internal/conformance"
 )
 
 func main() {

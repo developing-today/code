@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/refdoc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/refdoc"
 )
 
 func TestTableEscapesPipesAndNewlines(t *testing.T) {

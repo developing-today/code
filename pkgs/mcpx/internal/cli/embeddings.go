@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
 )
 
 // CmdEmbeddings implements the `mcpx embeddings` CLI commands.

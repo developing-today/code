@@ -63,6 +63,36 @@ func protoSettings() []Setting {
 				"without a bound mcpx would relay it forever.",
 		},
 		{
+			Path: "proto.samplingPerMinute", Scope: ScopeDaemon, Kind: KindInt, Default: "60",
+			Commands: []string{"daemon"},
+			Name:     "Sampling limit per server",
+			Short:    "max sampling requests one upstream server may make per minute, across all its sessions",
+			Long: "The sampling security considerations say a client SHOULD rate-limit: without a " +
+				"bound a buggy or hostile server can make mcpx relay sampling requests -- each " +
+				"one a model call wherever it lands -- as fast as it can send them. Over-limit " +
+				"requests fail with an error naming this setting. 0 disables the limit.",
+		},
+		{
+			Path: "proto.samplingSessionPerMinute", Scope: ScopeDaemon, Kind: KindInt, Default: "20",
+			Commands: []string{"daemon"},
+			Name:     "Sampling limit per session",
+			Short:    "max sampling requests one upstream server may make within a single session per minute",
+			Long: "The per-session companion to proto.samplingPerMinute: one connection's share, " +
+				"checked first, so a session refused here does not consume the server's shared " +
+				"budget. Over-limit requests fail with an error naming this setting. 0 disables " +
+				"the limit.",
+		},
+		{
+			Path: "proto.elicitationPerMinute", Scope: ScopeDaemon, Kind: KindInt, Default: "30",
+			Commands: []string{"daemon"},
+			Name:     "Elicitation limit per server",
+			Short:    "max elicitation requests one upstream server may make per minute, across all its sessions",
+			Long: "The elicitation security considerations say a client SHOULD rate-limit: each " +
+				"elicitation spends a person's attention, and an unbounded server can flood the " +
+				"question broker. Over-limit requests fail with an error naming this setting -- " +
+				"never a fabricated cancel, which would claim a person decided. 0 disables the limit.",
+		},
+		{
 			Path: "proto.askTTL", Scope: ScopeDaemon, Kind: KindDuration, Default: "15m",
 			Plumbing: true,
 			Name:     "Interruptible call lifetime",

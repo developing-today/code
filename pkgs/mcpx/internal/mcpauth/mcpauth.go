@@ -16,6 +16,17 @@
 // This package covers the first two cases completely and gives the third a
 // place to attach, because building OAuth before anything needs it would be
 // guessing at a shape.
+//
+// Expansion contract for credential values (Token, Username, Password,
+// header and query values, and non-empty Env values): only the braced
+// shape ${VAR} is a reference and expands through the lookup. Every other
+// $ is literal text, byte-for-byte — $VAR, $2, $$, a trailing $, and a
+// ${...} whose contents are not a plain variable name all reach the
+// server exactly as written, so a credential like "hunter$2" or
+// "pa$$word" is never rewritten and never contributes a name to
+// Resolved.Missing. To write a literal ${VAR}, double the dollar:
+// $${VAR} renders the literal text ${VAR}. Missing names only variables
+// that a genuine ${VAR} reference named and the lookup could not supply.
 package mcpauth
 
 import (
@@ -31,7 +42,9 @@ type Auth struct {
 	Type string `json:"type,omitempty"`
 
 	// Token is used by bearer. Expanded, so ${GITHUB_TOKEN} works and the
-	// secret itself never has to be in the file.
+	// secret itself never has to be in the file. Only the braced ${VAR}
+	// shape expands — see the package doc for the expansion contract,
+	// including the $${VAR} escape for writing a literal ${VAR}.
 	Token string `json:"token,omitempty"`
 
 	// Username and Password are used by basic.
@@ -109,18 +122,45 @@ func (a *Auth) ResolveWith(get func(name string) string) (*Resolved, error) {
 		return out, nil
 	}
 
+	// expand applies the expansion contract from the package doc: only
+	// the braced ${VAR} shape is a reference. Every other $ is literal
+	// text, and $${VAR} is the escape that writes a literal ${VAR}.
 	expand := func(v string) string {
-		if v == "" {
-			return ""
+		if !strings.Contains(v, "$") {
+			return v
 		}
-		expanded := os.Expand(v, func(name string) string {
-			got := get(name)
-			if got == "" {
-				out.Missing = append(out.Missing, name)
+		var b strings.Builder
+		b.Grow(len(v))
+		for i := 0; i < len(v); {
+			if v[i] != '$' {
+				b.WriteByte(v[i])
+				i++
+				continue
 			}
-			return got
-		})
-		return expanded
+			rest := v[i:]
+			if strings.HasPrefix(rest, "$${") {
+				// The escape: $${VAR} writes the literal text ${VAR}.
+				if _, n, ok := bracedName(rest[1:]); ok {
+					b.WriteString(rest[1 : 1+n])
+					i += 1 + n
+					continue
+				}
+			}
+			if strings.HasPrefix(rest, "${") {
+				if name, n, ok := bracedName(rest); ok {
+					got := get(name)
+					if got == "" {
+						out.Missing = append(out.Missing, name)
+					}
+					b.WriteString(got)
+					i += n
+					continue
+				}
+			}
+			b.WriteByte('$')
+			i++
+		}
+		return b.String()
 	}
 
 	for k, v := range a.Env {
@@ -278,6 +318,26 @@ func isPureRef(v string) bool {
 		}
 	}
 	return len(v) > 0
+}
+
+// bracedName parses a ${NAME} reference at the start of s, where NAME is
+// letters, digits and underscores. It returns the name and the length of
+// the whole reference. Anything else — an empty name, a name with other
+// characters (such as a shell ${VAR:-default}), or a missing closing
+// brace — is not a reference under the expansion contract and is left
+// literal by the caller.
+func bracedName(s string) (string, int, bool) {
+	if !strings.HasPrefix(s, "${") {
+		return "", 0, false
+	}
+	i := 2
+	for i < len(s) && (s[i] == '_' || '0' <= s[i] && s[i] <= '9' || 'a' <= s[i] && s[i] <= 'z' || 'A' <= s[i] && s[i] <= 'Z') {
+		i++
+	}
+	if i == 2 || i >= len(s) || s[i] != '}' {
+		return "", 0, false
+	}
+	return s[2:i], i + 1, true
 }
 
 // isShellSpecialVar is os.Expand's set: the characters that, directly

@@ -7,14 +7,21 @@
 // for the other fleet repos. The RPC returns the created row (incl. id);
 // NOTE it dedupes on dedupe_key against ALL tasks incl. done ones, so a
 // returned row whose dedupe_key was already consumed is the OLD task —
-// callers get the row as-is and the canonical-key flows anchor to fresh
-// issues, which cannot collide.
+// callers get the row as-is. The create-an-issue canonical-key flow
+// anchors to a fresh issue, which cannot collide; the issue_number
+// ATTACH flow anchors to an existing issue whose canonical key may
+// already be consumed (live or terminal), so attach callers MUST detect
+// a pre-existing row and must never report it as newly queued — see
+// enqueueDispatchTask in server.ts (issue #2677).
 import type { Packet } from "./packet.ts";
 import { REPO_QUEUES } from "./config.ts";
 
 export class QueueError extends Error {
   status = 502;
-  constructor(message: string, readonly httpStatus?: number) {
+  constructor(
+    message: string,
+    readonly httpStatus?: number,
+  ) {
     super(message);
   }
 }
@@ -113,6 +120,23 @@ export class QueueClient {
     return rows[0] ?? null;
   }
 
+  /** Pre-enqueue dedupe-key lookup (issue #4661): the row, if any, that
+   * already consumes `dedupeKey`. Compared by row id after the enqueue
+   * (see isPreExistingTaskRow in server.ts) — never by comparing the
+   * DB-assigned created_at against the dispatch-host clock. Returns the
+   * existing row or null; a lookup failure returns null so a transient
+   * PostgREST blip degrades to "no known existing row" (the terminal-
+   * status check still catches terminal pre-existing rows). */
+  async findByDedupeKey(dedupeKey: string): Promise<TaskRow | null> {
+    const res = await fetch(
+      `${this.baseUrl}/rest/v1/tasks?dedupe_key=eq.${encodeURIComponent(dedupeKey)}&select=*&limit=1`,
+      { headers: this.headers(false) },
+    );
+    if (!res.ok) return null;
+    const rows = (await res.json()) as TaskRow[];
+    return rows[0] ?? null;
+  }
+
   async cancelTask(id: number, reason: string, worker = "dispatch"): Promise<void> {
     await this.rpc("cancel_repo_task", { p_task_id: id, p_worker: worker, p_reason: reason });
   }
@@ -153,7 +177,20 @@ export class QueueClient {
         const text = await res.text();
         throw new QueueError(`worker registration failed (HTTP ${res.status}): ${text.slice(0, 200)}`, res.status);
       }
-    })();
+    })().catch((err: unknown) => {
+      // A rejected registration must not be cached (#2902):
+      // registration failures are overwhelmingly transient (a
+      // PostgREST 5xx, a network blip), and memoizing the rejection
+      // wedges every later launch for the life of the process.
+      // Reset the memo so the next call retries the upsert; a
+      // successful registration stays cached. The reset runs before
+      // the rejection reaches any caller awaiting this promise, and
+      // no newer attempt can have replaced the memo in between --
+      // a new attempt is only assigned while the memo is null, and
+      // this catch is the only place that nulls it.
+      this.workerEnsured = null;
+      throw err;
+    });
     return this.workerEnsured;
   }
 }
