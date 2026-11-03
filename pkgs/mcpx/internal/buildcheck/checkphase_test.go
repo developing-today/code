@@ -83,8 +83,8 @@ func TestCheckPhaseTestsEveryPackageWithTests(t *testing.T) {
 	if !strings.Contains(nix, derivedList) {
 		t.Fatalf("checkPhase must compute its packages with\n  %s\nso new packages are tested by default", derivedList)
 	}
-	if !strings.Contains(nix, "go test -timeout 30m $pkgs") {
-		t.Fatal("checkPhase must run `go test -timeout 30m $pkgs` on the computed list (the 30m per-package budget keeps internal/e2e from hitting Go's 10m default on small machines, dezren39/nix#510). This exact line is also the rewrite pattern for dezren39/nix's darwin -skip override (#418): changing it requires updating that pattern in the same change set.")
+	if !strings.Contains(nix, "goTestCmd =") || !strings.Contains(nix, `"-timeout 30m "`) || !strings.Contains(nix, `"$pkgs"`) || !strings.Contains(nix, "${goTestCmd}") {
+		t.Fatal("checkPhase must run the computed list with the 30m per-package budget (it keeps internal/e2e from hitting Go's 10m default on small machines, dezren39/nix#510): package.nix constructs the command as goTestCmd — `go test ` + platform flags + `-timeout 30m ` + `$pkgs` — and interpolates ${goTestCmd} into the phase. The platform adaptations (Linux -p 1, darwin takeover-test -skip, #4798) are part of that construction; before #4798 the literal `go test -timeout 30m $pkgs` line was also dezren39/nix's rewrite pattern (#418), which is why this guard pinned the exact line.")
 	}
 	// A hand-written package list next to the computed one would silently
 	// narrow it again.
