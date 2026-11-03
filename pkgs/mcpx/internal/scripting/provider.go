@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // CompletionRequest represents an inference request sent to an LLM provider.

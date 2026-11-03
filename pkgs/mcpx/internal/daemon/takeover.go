@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // A takeover moves the running daemon's listening sockets and its stdio

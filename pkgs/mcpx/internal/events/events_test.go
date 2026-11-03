@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 func recv(t *testing.T, s *events.Subscription) events.Event {

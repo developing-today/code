@@ -26,6 +26,7 @@ in
       "services/pm-stack"
       "services/pm-apps"
       "services/power-guard"
+      "services/openai-cred-watchdog"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -72,6 +73,12 @@ in
         services.power-guard.enable = true;
       }
       {
+        # OpenAI credential watchdog (code#3216): hourly user timer
+        # asserting the OpenCode credential store never regains an
+        # active token-sharing credential for the GPT providers.
+        services.openai-cred-watchdog.enable = true;
+      }
+      {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
         # backup (local + R2 + Drive) and the repo-archive restic job,
         # declared in this flake (nixos/home/laptop-backups.nix) as a
@@ -111,6 +118,58 @@ in
         home-manager.users.user = {
           imports = [ ../home/laptop-autocommit.nix ];
           services.laptop-autocommit.enable = true;
+        };
+      }
+      {
+        # GitHub backup mirror timers (code#3215): webhook-queue
+        # drain every 5 min, daily mirror fetch, weekly reconcile.
+        # Folded into the flake 2026-11-01 (code#3720); the scripts
+        # run from the primary checkout (infra/github-backup).
+        home-manager.users.user = {
+          imports = [ ../home/github-backup.nix ];
+          services.github-backup.enable = true;
+        };
+      }
+      {
+        # Worktree reaper (code#3698): hourly retirement of dead
+        # fleet worktrees under the 6-hour quiet rule. Folded into
+        # the flake 2026-11-01 (code#3720); ExecStart points at the
+        # primary checkout, retiring the bootstrap-worktree install.
+        home-manager.users.user = {
+          imports = [ ../home/worktree-reaper.nix ];
+          services.worktree-reaper.enable = true;
+        };
+      }
+      {
+        # Quota exporters (code#1048, code#1301): Cloudflare + Meta
+        # quota snapshots every 15 min for the quota gatherer.
+        # Folded into the flake 2026-11-01 (code#3720).
+        home-manager.users.user = {
+          imports = [
+            ../home/cloudflare-quota-export.nix
+            ../home/meta-quota-export.nix
+          ];
+          services.cloudflare-quota-export.enable = true;
+          services.meta-quota-export.enable = true;
+        };
+      }
+      {
+        # Dashboard backup, laptop leg (code#1459) — the older
+        # ~/tools job, distinct from pm-dashboard-backup above.
+        # Folded into the flake 2026-11-01 (code#3720).
+        home-manager.users.user = {
+          imports = [ ../home/dashboard-backup.nix ];
+          services.dashboard-backup.enable = true;
+        };
+      }
+      {
+        # OpenChamber password sync (openchamber#894): a .path unit
+        # watches the prod OpenCode service file and triggers the
+        # sync oneshot when the password rotates.
+        # Folded into the flake 2026-11-01 (code#3720).
+        home-manager.users.user = {
+          imports = [ ../home/oc-password-sync.nix ];
+          services.oc-password-sync.enable = true;
         };
       }
       # KRdp remote desktop for this laptop (user service + package);

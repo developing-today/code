@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,16 +17,16 @@ import (
 
 	"strings"
 
-	mcpx "github.com/dezren39/mcpx"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/sdnotify"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/spec"
+	mcpx "github.com/developing-today/code/pkgs/mcpx"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/sdnotify"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // newFlagSet creates a command's flag set and registers every setting the
@@ -268,7 +267,7 @@ var processInstance struct {
 func (a *App) InstanceID() string {
 	processInstance.once.Do(func() {
 		b := make([]byte, 16)
-		if _, err := rand.Read(b); err == nil {
+		if _, err := RandSource.Read(b); err == nil {
 			processInstance.id = hex.EncodeToString(b)
 		} else {
 			processInstance.id = fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())

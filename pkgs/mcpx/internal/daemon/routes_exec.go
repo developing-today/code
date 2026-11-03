@@ -6,22 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // routesExec registers running a script on the daemon and fetching what it
@@ -59,6 +58,11 @@ func (s *Server) execSettings() *settings.Set {
 		}
 		set := settings.NewSet(sch)
 		if s.cfg != nil && s.cfg.Path != "" {
+			// The path the settings were read from, kept with them:
+			// script.cwd=config has to resolve against the directory
+			// of the file this policy came from, not of whichever file
+			// a later reload moved s.cfg to (#2611 review).
+			s.execSetPath = s.cfg.Path
 			if b, rerr := os.ReadFile(s.cfg.Path); rerr == nil {
 				var doc map[string]any
 				if json.Unmarshal(config.StripJSONC(b), &doc) == nil {
@@ -91,6 +95,8 @@ func (s *Server) Artifacts() (*artifacts.Store, error) {
 		st, err := artifacts.Open(artifacts.Options{
 			Dir:      filepath.Join(s.paths.State, "artifacts"),
 			TTL:      set.Duration("artifacts.ttl"),
+			IdleTTL:  set.Duration("artifacts.idleTtl"),
+			MaxAge:   set.Duration("artifacts.maxAge"),
 			MaxBytes: set.Bytes("artifacts.maxBytes"),
 			Quota:    set.Bytes("artifacts.quota"),
 		})
@@ -153,6 +159,22 @@ func (r registrySource) Globals(_ context.Context, ns []string) (string, error) 
 	return codegen.GlobalDeclarations(nss), nil
 }
 
+// ClientModuleFor renders the generated client for one named script
+// language (#1917 Phase 2): the module installed beside a script of that
+// language and its ambient declarations. Today "python" is the only name a
+// caller asks for; any unknown name is an error, never the default target.
+func (r registrySource) ClientModuleFor(_ context.Context, language string, ns []string) (module, globals string, err error) {
+	lang, ok := codegen.Lookup(language)
+	if !ok {
+		return "", "", fmt.Errorf("unknown script language %q", language)
+	}
+	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
+	if err != nil {
+		return "", "", err
+	}
+	return lang.EmitModule(nss, r.endpoint, ""), lang.EmitGlobals(nss), nil
+}
+
 func (r registrySource) Namespaces(_ context.Context, ns []string) ([]string, error) {
 	nss, err := r.reg.CodegenNamespaces(ns, config.Profile{})
 	if err != nil {
@@ -173,6 +195,8 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Timeout = set.Duration("exec.timeout")
 	lim.Runtime = set.String("script.runtime")
 	lim.Permissions = set.String("script.permissions")
+	lim.Interpreter = set.String("script.interpreter")
+	lim.CwdPolicy = set.String("script.cwd")
 	// A malformed definition is reported by the run that needs it, rather
 	// than failing every other route that builds a service.
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
@@ -187,12 +211,26 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 
+	// script.cwd=config resolves against the directory holding the
+	// configuration the exec policy was built from -- the file
+	// execSettings read, not whichever file a reload has since moved
+	// s.cfg to. Without it every /v1/exec run under that policy fails in
+	// ResolveCwd before the script starts; with s.cfg it could point at
+	// the wrong directory after a reload (#2611 review).
+	configDir := ""
+	if s.execSetPath != "" {
+		configDir = filepath.Dir(s.execSetPath)
+	} else if cfg := s.currentConfig(); cfg != nil && cfg.Path != "" {
+		configDir = filepath.Dir(cfg.Path)
+	}
+
 	svc := &execsvc.Service{
-		Calls:    s.callRegistry(),
-		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
-		Store:    store,
-		Endpoint: s.endpoint,
-		Socket:   s.paths.Socket,
+		Src:       registrySource{reg: s.reg, endpoint: s.endpoint},
+		Store:     store,
+		Endpoint:  s.endpoint,
+		Socket:    s.paths.Socket,
+		ConfigDir: configDir,
+		Calls:     s.callRegistry(),
 		// The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
@@ -237,7 +275,7 @@ type execReq struct {
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	var req execReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -270,13 +308,23 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		if ttl <= 0 {
 			ttl = s.set.Duration("tasks.ttl").Milliseconds()
 		}
-		t := store.Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
-			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+		// The task counts against the caller's identity — the session
+		// named in the options or the header, else its run — so one
+		// caller's tasks cannot exhaust another's cap; only a caller
+		// that named nothing lands in the unbound bucket (an empty
+		// requestor, which Start maps there), capped like any other.
+		requestor := tasks.Caller(firstNonEmpty(req.Options.Session, r.Header.Get("X-Mcpx-Session"), r.Header.Get("X-Mcpx-Run")))
+		t, terr := store.Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 			if err != nil && res == nil {
 				return nil, &tasks.Fault{Code: -32603, Message: err.Error()}
 			}
 			return res, nil
 		})
+		if terr != nil {
+			writeErr(w, http.StatusTooManyRequests, terr)
+			return
+		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"task": t})
 		return
 	}
@@ -288,7 +336,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	case execsvc.OutputStream:
 		s.execStream(w, r, svc, req)
 	case "", execsvc.OutputStructured, execsvc.OutputText:
-		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 		if err != nil && res == nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -367,7 +415,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 		}
 		return nil
 	}
-	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, enc)
+	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, enc)
 }
 
 // ---- artifacts ----
@@ -375,10 +423,10 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 // handleArtifactPut is how artifact() in a script registers a file.
 //
 // The body is the bytes, or -- when the script is on this machine and said so
-// with X-Mcpx-Path -- nothing, and the named file is hardlinked instead.
-// Reading, hashing into memory and writing again to hand somebody a file they
-// can already see would be the wrong shape for the local case, which is most
-// cases.
+// with X-Mcpx-Path -- the daemon reads and copies the named file into the
+// content-addressed store. The path hint avoids uploading the body over the
+// client transport, but the source is still read and hashed so the stored blob
+// is independent of the file outside the store (#1660).
 func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 	store, err := s.Artifacts()
 	if err != nil {
@@ -446,10 +494,15 @@ func (s *Server) handleArtifactList(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	limit := defaults.ArtifactListLimit
-	if v := q.Get("limit"); v != "" {
-		if n, cerr := strconv.Atoi(v); cerr == nil {
-			limit = n
+	// A present-but-unparseable limit is a 400, not the default (#3485 —
+	// this handler was the seventh member of the class, found by the
+	// registry guard in numeric_params_test.go).
+	if _, present := q["limit"]; present {
+		n, ok := parseOptionalIntQuery(w, q, "limit")
+		if !ok {
+			return
 		}
+		limit = n
 	}
 	list, err := store.List(artifacts.Filter{
 		Run: q.Get("run"), Session: q.Get("session"), Limit: limit,
@@ -517,6 +570,11 @@ type artifactState struct {
 	artifactsErr  error
 	execSetOnce   sync.Once
 	execSet       *settings.Set
+	// execSetPath is the configuration file execSettings built execSet
+	// from. script.cwd=config resolves against its directory, so a
+	// reload that moves s.cfg cannot redirect a policy already in force
+	// (#2611 review).
+	execSetPath string
 }
 
 // InlineArtifact renders one artifact as an MCP resource body.

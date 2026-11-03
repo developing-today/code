@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // A daemon stop drains its pools for the window it is given. A call that
@@ -16,7 +16,7 @@ import (
 func TestCloseDrainedWithinCutsACallThatNeverReturnsAtTheWindow(t *testing.T) {
 	bin := testsupport.FakeMCPBinary(t)
 	p := pool.New(resolved(t, bin, &config.Extras{Sharing: config.SharingExclusive, Scope: config.ScopeSession, Max: 2}))
-	lease, err := p.Acquire(context.Background(), "s1")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "s1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestCloseDrainedWithinCutsACallThatNeverReturnsAtTheWindow(t *testing.T) {
 func TestCloseDrainedWithinLetsACallFinishInsideTheWindow(t *testing.T) {
 	bin := testsupport.FakeMCPBinary(t)
 	p := pool.New(resolved(t, bin, &config.Extras{Sharing: config.SharingExclusive, Scope: config.ScopeSession, Max: 2}))
-	lease, err := p.Acquire(context.Background(), "s1")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "s1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestCloseDrainedWithinLetsACallFinishInsideTheWindow(t *testing.T) {
 func TestCloseDrainedWithinZeroCutsAtOnce(t *testing.T) {
 	bin := testsupport.FakeMCPBinary(t)
 	p := pool.New(resolved(t, bin, &config.Extras{Sharing: config.SharingExclusive, Scope: config.ScopeSession, Max: 2}))
-	lease, err := p.Acquire(context.Background(), "s1")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "s1"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/progspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // Supervised stdio transport — Phase 1 of the mcpx supervisor design
@@ -872,9 +872,15 @@ func (t *SupervisedTransport) Send(ctx context.Context, msg []byte) error {
 	if t.exited {
 		return fmt.Errorf("write to %s: child already exited: %s (stderr: %s)", t.label, t.exitErr, t.stderrTail)
 	}
-	if _, err := t.conn.Write(append(msg, '\n')); err != nil {
+	frame := append(msg, '\n')
+	n, err := t.conn.Write(frame)
+	if err != nil {
 		return fmt.Errorf("write to %s: %w", t.label, err)
 	}
+	if n != len(frame) {
+		return fmt.Errorf("write to %s: %w", t.label, io.ErrShortWrite)
+	}
+	markToolCallDispatched(ctx, msg)
 	return nil
 }
 

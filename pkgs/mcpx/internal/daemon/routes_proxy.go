@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 type openAITool struct {
@@ -41,7 +41,7 @@ type chatCompletionReq struct {
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit)))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -299,6 +299,6 @@ func extractUserQuery(msgs []chatMessage) string {
 
 func randomHex(n int) string {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	_, _ = RandSource.Read(b)
 	return hex.EncodeToString(b)
 }

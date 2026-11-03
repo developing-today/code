@@ -1,7 +1,6 @@
 package logging
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net"
@@ -12,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // TraceID identifies one thing that started and will end: a daemon, a server
@@ -29,7 +28,7 @@ type TraceID string
 // NewTraceID mints an identifier with a short readable prefix.
 func NewTraceID(prefix string) TraceID {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		// Randomness failing is not a reason to stop logging.
 		return TraceID(prefix + "-0000000000000000")
 	}

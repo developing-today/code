@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
 )
 
 func TestNamespaceStripsTheReverseDNSPrefix(t *testing.T) {

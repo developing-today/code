@@ -18,17 +18,20 @@ use clap::ValueEnum;
 use p2panda_core::Hash;
 use serde_json::{Map, Value, json};
 
-use crate::cli::{DelegateArgs, GroupCommand, GroupTemplate, RevokeArgs};
+use crate::cli::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 use crate::groups::actions::{Action, NewGroup};
 use crate::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
-use crate::groups::policy::{History, Join, OnMemberRemoved, Removal};
+use crate::groups::policy::{
+    History, Join, OnMemberRemoved, Removal, RemoveMode, RemoveSuccessor, SuccessorKind,
+    TransferOpts,
+};
 use crate::groups::warnings::{Evaluator, Observation, Warning, size_tier};
-use crate::groups::{Delegate, GroupView, Key, Outcome};
+use crate::groups::{Body, Delegate, GroupView, Key, MemberOp, Outcome};
 use crate::invites::Invitation;
 use crate::{KEY_FILE, load_or_create_keypair};
 
 /// The log a command reads and appends to: `--groups-log`, or the default file in the data directory.
-fn log_path(path: Option<PathBuf>) -> PathBuf {
+pub(crate) fn log_path(path: Option<PathBuf>) -> PathBuf {
     path.unwrap_or_else(|| PathBuf::from(FILE_NAME))
 }
 
@@ -61,14 +64,69 @@ fn name_of<T: ValueEnum>(value: &T) -> String {
 /// a row's real trailing fields (such as `author=` and `event=`) are the only unquoted
 /// occurrences. Strings without whitespace or control characters render byte-identically
 /// to before, and `--json` output (which goes through [`object`]) is unchanged.
+///
+/// Format characters (#3111, design #3455 Phase 2): a string containing a Unicode
+/// format character (Cf, per the shared [`crate::is_format_char`] set landed by
+/// #2839) is quoted the same way, and the format characters themselves are escaped
+/// as `\uXXXX` inside the literal — `serde_json` alone would leave them raw, so a
+/// bidi override such as `U+202E` could still visually reorder a row's real fields
+/// at the terminal even inside quotes. A format character on its own therefore
+/// triggers quoting too, exactly like a control character.
 fn text(value: &Value) -> String {
     match value {
-        Value::String(string) if string.chars().any(|c| c.is_whitespace() || c.is_control()) => {
-            Value::String(string.clone()).to_string()
+        Value::String(string)
+            if string
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || crate::is_format_char(c)) =>
+        {
+            quoted(string)
         }
         Value::String(string) => string.clone(),
         other => other.to_string(),
     }
+}
+
+fn push_unicode_escape(rendered: &mut String, c: char) {
+    use std::fmt::Write as _;
+
+    let code_point = u32::from(c);
+    if code_point <= 0xFFFF {
+        // Writing into a String cannot fail.
+        let _ = write!(rendered, "\\u{code_point:04x}");
+    } else {
+        // JSON escapes supplementary scalars as a UTF-16 surrogate pair.
+        let scalar = code_point - 0x1_0000;
+        let high = 0xD800 + (scalar >> 10);
+        let low = 0xDC00 + (scalar & 0x3FF);
+        let _ = write!(rendered, "\\u{high:04x}\\u{low:04x}");
+    }
+}
+
+/// `string` as a double-quoted JSON string literal, with format characters escaped.
+///
+/// Identical to `serde_json`'s string rendering except that Unicode format
+/// characters (Cf) are written as `\uXXXX` instead of raw: the result still parses
+/// as the same JSON string, but no raw format character reaches the terminal.
+fn quoted(string: &str) -> String {
+    let mut rendered = String::with_capacity(string.len() + 2);
+    rendered.push('"');
+    for c in string.chars() {
+        match c {
+            '"' => rendered.push_str("\\\""),
+            '\\' => rendered.push_str("\\\\"),
+            '\u{0008}' => rendered.push_str("\\b"),
+            '\u{000c}' => rendered.push_str("\\f"),
+            '\n' => rendered.push_str("\\n"),
+            '\r' => rendered.push_str("\\r"),
+            '\t' => rendered.push_str("\\t"),
+            c if crate::is_format_char(c) || (c.is_control() && (c as u32) < 0x20) => {
+                push_unicode_escape(&mut rendered, c);
+            }
+            c => rendered.push(c),
+        }
+    }
+    rendered.push('"');
+    rendered
 }
 
 /// The fields as `key=value` tokens.
@@ -298,15 +356,75 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
         GroupCommand::Remove {
             group,
             member,
+            mode,
+            successor_kind,
             successor,
         } => {
             let group = hash_from_hex(&group)?;
             let member = key_from_hex(&member)?;
-            let successor = successor.as_deref().map(key_from_hex).transpose()?;
-            let action = log.remove(author().await?, group, member, successor)?;
+            let selected_mode = mode.unwrap_or_else(|| {
+                if successor.is_some() || successor_kind.is_some() {
+                    GroupRemoveMode::Transfer
+                } else {
+                    GroupRemoveMode::ServerDefault
+                }
+            });
+            if selected_mode != GroupRemoveMode::Transfer
+                && (successor.is_some() || successor_kind.is_some())
+            {
+                bail!("--successor and --successor-kind require --mode transfer");
+            }
+            let successor_key = successor.as_deref().map(key_from_hex).transpose()?;
+            let remove_mode = match selected_mode {
+                GroupRemoveMode::ServerDefault => RemoveMode::ServerDefault,
+                GroupRemoveMode::Revoke => RemoveMode::Revoke,
+                GroupRemoveMode::KeepPrior => RemoveMode::KeepPrior,
+                GroupRemoveMode::ReassignToGroup => RemoveMode::ReassignToGroup,
+                GroupRemoveMode::Transfer => {
+                    let kind = successor_kind.unwrap_or(SuccessorKind::Member);
+                    let successor = match (kind, successor_key) {
+                        (SuccessorKind::Member, Some(key)) => RemoveSuccessor::Member(key),
+                        (SuccessorKind::Designated, Some(key)) => RemoveSuccessor::Designated(key),
+                        (SuccessorKind::Admin, None) => RemoveSuccessor::Admin,
+                        (SuccessorKind::Actor, None) => RemoveSuccessor::Actor,
+                        (SuccessorKind::Member | SuccessorKind::Designated, None) => {
+                            bail!("--successor is required for a member or designated successor")
+                        }
+                        (SuccessorKind::Admin | SuccessorKind::Actor, Some(_)) => {
+                            bail!("--successor is not used for an admin or actor successor")
+                        }
+                    };
+                    RemoveMode::Transfer(TransferOpts { successor })
+                }
+            };
+            let action = log.remove(author().await?, group, member, remove_mode)?;
+            let resolved_mode = log
+                .events()
+                .iter()
+                .find(|event| event.id == action.event)
+                .and_then(|event| match &event.body {
+                    Body::Member(MemberOp::Remove { mode, .. }) => Some(*mode),
+                    _ => None,
+                })
+                .unwrap_or(remove_mode);
             let mut fields = vec![("member", json!(hex(&member)))];
-            if let Some(successor) = successor {
-                fields.push(("successor", json!(hex(&successor))));
+            match resolved_mode {
+                RemoveMode::Revoke => fields.push(("mode", json!("revoke"))),
+                RemoveMode::KeepPrior => fields.push(("mode", json!("keep_prior"))),
+                RemoveMode::ReassignToGroup => {
+                    fields.push(("mode", json!("reassign_to_group")));
+                }
+                RemoveMode::ServerDefault => fields.push(("mode", json!("server_default"))),
+                RemoveMode::Transfer(opts) => {
+                    fields.push(("mode", json!("transfer")));
+                    fields.push(("successor_kind", json!(name_of(&opts.successor.kind()))));
+                    match opts.successor {
+                        RemoveSuccessor::Member(key) | RemoveSuccessor::Designated(key) => {
+                            fields.push(("successor", json!(hex(&key))));
+                        }
+                        RemoveSuccessor::Admin | RemoveSuccessor::Actor => {}
+                    }
+                }
             }
             print_action(json, "remove", fields, &action)
         }
@@ -355,10 +473,8 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
         GroupCommand::Join { invite } => {
             Invitation::parse(&invite)?;
             bail!(
-                "join is not wired yet: the paste parsed, but nothing was recorded. The fold has no \
-                 event that admits an invited joiner (its join is a friendship's accept), and the \
-                 accept goes over the network to the inviter, which the pull and sync work (P6.5, P3) \
-                 provides"
+                "group join is unavailable: invitation parsing works, but admission and network \
+                 acceptance are not implemented yet; no group membership was recorded"
             )
         }
     }
@@ -494,6 +610,66 @@ mod tests {
                 "value=\"x\\nsubject=deadbeef name=forged author=deadbeef event=deadbeef\""
             )
         );
+    }
+
+    #[test]
+    fn test_format_char_alone_is_quoted_and_escaped() {
+        // Cf-only path (#3111): no whitespace and no control character, so the
+        // pre-#3111 renderer passed the value through raw and unquoted.
+        let rendered = row("tag", "\u{202e}");
+        assert_eq!(
+            rendered,
+            "subject=deadbeef name=tag value=\"\\u202e\" author=cafe event=beef"
+        );
+        assert!(!rendered.contains('\u{202e}'), "raw Cf must never render");
+    }
+
+    #[test]
+    fn test_format_char_in_name_is_quoted_and_escaped() {
+        let rendered = row("a\u{202e}b", "v");
+        assert!(rendered.contains("name=\"a\\u202eb\""));
+        assert!(!rendered.contains('\u{202e}'), "raw Cf must never render");
+    }
+
+    #[test]
+    fn test_every_named_format_char_is_escaped_alone_and_with_a_space() {
+        // The full Cf set named in #3111's acceptance: U+202A-202E, U+2066-2069,
+        // U+200E/U+200F, U+200B, U+FEFF, U+00AD.
+        let named: Vec<char> = (0x202a..=0x202e)
+            .chain(0x2066..=0x2069)
+            .chain([0x200e, 0x200f, 0x200b, 0xfeff, 0x00ad])
+            .map(|cp| char::from_u32(cp).expect("named Cf code point"))
+            .collect();
+        for c in named {
+            assert!(
+                crate::is_format_char(c),
+                "{c:?} must be in the shared Cf set"
+            );
+            // Cf-only (unquoted before the fix): quoted, escaped, round-trips.
+            let alone = text(&json!(c.to_string()));
+            assert_eq!(alone, format!("\"\\u{:04x}\"", c as u32), "Cf-only {c:?}");
+            assert!(!alone.contains(c), "raw Cf {c:?} remains in {alone}");
+            assert_eq!(
+                serde_json::from_str::<String>(&alone).expect("valid JSON literal"),
+                c.to_string()
+            );
+            // Cf-plus-space (quoted before the fix, but serde_json left Cf raw).
+            let value = format!("a{c} b");
+            let with_space = text(&json!(value));
+            assert_eq!(
+                with_space,
+                format!("\"a\\u{:04x} b\"", c as u32),
+                "Cf-plus-space {c:?}"
+            );
+            assert!(
+                !with_space.contains(c),
+                "raw Cf {c:?} remains in {with_space}"
+            );
+            assert_eq!(
+                serde_json::from_str::<String>(&with_space).expect("valid JSON literal"),
+                value
+            );
+        }
     }
 
     #[test]

@@ -11,9 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/adapter"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // CallSettingsHeader carries a client's call-scoped settings with a request.
@@ -70,7 +70,11 @@ func (s *Server) callSettings(r *http.Request) *settings.Set {
 	ov := map[string]string{}
 	for path, v := range given {
 		decl, ok := sch.Lookup(path)
-		if !ok || decl.Scope != settings.ScopeCall {
+		// CallRequest settings are admitted as requests, not orders:
+		// pool.callTimeout's only reader from a call set clamps it to the
+		// pool's configured value before use (#1864 item 4), so admitting
+		// it here cannot raise the daemon's bound.
+		if !ok || (decl.Scope != settings.ScopeCall && !decl.CallRequest) {
 			continue
 		}
 		nv, err := settings.Normalize(*decl, v)
@@ -616,6 +620,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// The file write and the reload are one transaction: two live
+	// changes racing would otherwise read the same declarations and
+	// overwrite each other's file edit while both report success
+	// (#2674). The adapters handlers hold reloadMu the same way.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	scope := config.WriteScope(req.Scope)
 	if scope == "" {
 		scope = config.ScopeProject
@@ -641,6 +651,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServersRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// The defining-file lookup, the file write and the reload are one
+	// transaction under reloadMu, like the add handler (#2674): a
+	// concurrent add must not resurrect what this removes, and a
+	// concurrent remove must not be overwritten by this reload.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	path := ""
 	if scope := config.WriteScope(r.URL.Query().Get("scope")); scope != "" {
 		p, err := config.ResolveWritePath(scope, s.configPathFor(scope))

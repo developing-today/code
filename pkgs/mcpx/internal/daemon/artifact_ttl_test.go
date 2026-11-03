@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
 )
 
 // #2327: a per-request ttl on POST /v1/artifacts may shorten retention

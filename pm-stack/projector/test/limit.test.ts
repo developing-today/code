@@ -105,6 +105,17 @@ describe("parseLimit", () => {
     }
   });
 
+  test("coercible non-decimal spellings fall back to the default (#2971)", () => {
+    for (const raw of ["1e2", "0x10", "5.0", "+5", " 5", "5 "]) {
+      expect(parseLimit(raw, DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT)).toBe(DEFAULT_ITEMS_LIMIT);
+      expect(parseLimit(raw, DEFAULT_COMMENTS_LIMIT, MAX_COMMENTS_LIMIT)).toBe(DEFAULT_COMMENTS_LIMIT);
+    }
+    expect(parseLimit("5", DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT)).toBe(5);
+    expect(parseLimit("5", DEFAULT_COMMENTS_LIMIT, MAX_COMMENTS_LIMIT)).toBe(5);
+    expect(parseLimit("99999", DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT)).toBe(MAX_ITEMS_LIMIT);
+    expect(parseLimit("99999", DEFAULT_COMMENTS_LIMIT, MAX_COMMENTS_LIMIT)).toBe(MAX_COMMENTS_LIMIT);
+  });
+
   test("over-max values clamp to the named per-endpoint maximum", () => {
     expect(parseLimit("999999999", DEFAULT_ITEMS_LIMIT, MAX_ITEMS_LIMIT)).toBe(MAX_ITEMS_LIMIT);
     expect(parseLimit("1001", DEFAULT_COMMENTS_LIMIT, MAX_COMMENTS_LIMIT)).toBe(MAX_COMMENTS_LIMIT);
@@ -120,8 +131,8 @@ describe("read API limit handling", () => {
   });
 
   test("GET /items with an invalid limit never 500s and stays bounded by the default", async () => {
-    for (const raw of ["-1", "0", "2.7", "abc"]) {
-      const { status, body } = await get(`/items?limit=${raw}`);
+    for (const raw of ["-1", "0", "2.7", "abc", "1e2", "0x10", "5.0", "+5"]) {
+      const { status, body } = await get(`/items?limit=${encodeURIComponent(raw)}`);
       expect(status).toBe(200);
       // 8 seeded items < default 200, so the default-bounded result is all 8;
       // parseLimit's unit tests pin that the bound itself is the default.

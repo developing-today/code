@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // Tests for the communication conflicts recorded by WP7 and fixed in WP9.

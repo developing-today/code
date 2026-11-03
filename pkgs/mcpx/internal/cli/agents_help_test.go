@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	mcpx "github.com/dezren39/mcpx"
+	mcpx "github.com/developing-today/code/pkgs/mcpx"
 )
 
 // firstDifference describes where two strings first disagree, for a test

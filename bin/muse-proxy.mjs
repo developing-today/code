@@ -31,6 +31,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 // Default port 18747: 18746 is claimed by design-code-proxy
 // (DESIGN_CODE_PROXY_PORT) in this repo's config, so muse-proxy takes the
@@ -239,8 +241,10 @@ const probeCliFlags = (subcommand) => new Promise((resolve) => {
   const timer = setTimeout(() => {
     try { child.kill('SIGKILL'); } catch { /* already gone */ }
   }, 10000);
-  child.stdout.on('data', c => { out += c.toString('utf-8'); });
-  child.stderr.on('data', c => { out += c.toString('utf-8'); });
+  const flagScanDecoder = createStreamDecoder();
+  child.stdout.on('data', c => { out += flagScanDecoder.push(c); });
+  const flagScanStderrDecoder = createStreamDecoder();
+  child.stderr.on('data', c => { out += flagScanStderrDecoder.push(c); });
   child.on('error', () => { clearTimeout(timer); resolve(null); });
   child.on('close', () => {
     clearTimeout(timer);
@@ -321,6 +325,42 @@ const WARM_STATE_FILE =
 const WARM_TTL_MS = 2 * 60 * 60 * 1000;
 const WARM_MAX_SESSIONS = 64;
 const WARM_TURN_TIMEOUT_MS = 300 * 1000;
+
+// Exec-fallback turn deadline (#2159): the exec path settles a request
+// only when its child closes, so without a deadline a hung `muse exec`
+// child wedges the request forever and leaks the process. The override
+// is a strict positive integer of milliseconds within Node's timer
+// range (<= 2^31 - 1; setTimeout clamps larger delays to ~1ms, which
+// would time out every turn immediately); anything else warns once
+// and falls back to the default — 0/disabled is not expressible.
+const EXEC_TURN_TIMEOUT_MS = 300 * 1000;
+const EXEC_KILL_GRACE_MS = 3000;
+const parseExecTurnTimeoutMs = () => {
+  const raw = process.env.MUSE_PROXY_EXEC_TURN_TIMEOUT_MS;
+  if (raw === undefined) return EXEC_TURN_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0 || n > 2147483647) {
+    console.warn(`[muse-proxy] ignoring invalid MUSE_PROXY_EXEC_TURN_TIMEOUT_MS=${JSON.stringify(raw)}; using ${EXEC_TURN_TIMEOUT_MS}ms`);
+    return EXEC_TURN_TIMEOUT_MS;
+  }
+  return n;
+};
+const EXEC_TURN_TIMEOUT_MS_VALUE = parseExecTurnTimeoutMs();
+
+// Shared kill escalation for the exec fallback (#2159): SIGTERM, then
+// SIGKILL after a grace period. Used by both the turn deadline and the
+// client-disconnect handler, and idempotent so the two can race safely.
+const killChildWithEscalation = (child) => {
+  if (!child || child.__killEscalationStarted) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.__killEscalationStarted = true;
+  try { child.kill('SIGTERM'); } catch (_) {}
+  const grace = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch (_) {}
+  }, EXEC_KILL_GRACE_MS);
+  grace.unref?.();
+  child.once('close', () => clearTimeout(grace));
+};
 
 // MSP command ids must be UUIDv7 (the host rejects v4: "expected UUIDv7").
 let uuidV7LastMs = -1;
@@ -459,14 +499,16 @@ const warmHost = {
     this.child = child;
     this.stderrTail = '';
     let lineBuffer = '';
+    const stdoutDecoder = createStreamDecoder();
+    const stderrDecoder = createStreamDecoder();
     child.stdout.on('data', chunk => {
-      lineBuffer += chunk.toString('utf-8');
+      lineBuffer += stdoutDecoder.push(chunk);
       const lines = lineBuffer.split('\n');
       lineBuffer = lines.pop();
       for (const line of lines) this._onLine(line);
     });
     child.stderr.on('data', chunk => {
-      const msg = chunk.toString('utf-8');
+      const msg = stderrDecoder.push(chunk);
       this.stderrTail = (this.stderrTail + msg).slice(-2000);
       if (msg.trim().length > 0) console.warn(`[muse-proxy warm stderr] ${msg.trim()}`);
     });
@@ -681,7 +723,9 @@ const warmChains = new Map();
 const enqueueWarm = (key, job) => {
   const prev = warmChains.get(key) || Promise.resolve();
   const run = prev.then(job, job);
-  warmChains.set(key, run.catch(() => {}));
+  const stored = run.catch(() => {});
+  warmChains.set(key, stored);
+  stored.then(() => { if (warmChains.get(key) === stored) warmChains.delete(key); });
   return run;
 };
 
@@ -1395,6 +1439,25 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
       writeJsonBody(res, 502, { error: { message: 'Direct Meta route returned an unreadable response body' } });
       return true;
     }
+    const failedMessage = respBody && respBody.status === 'failed'
+      ? ((respBody.error && respBody.error.message) || 'Direct Meta Responses request failed')
+      : null;
+    if (failedMessage) {
+      // A failed upstream body must surface as an error even when output
+      // carries partial text (#2780): never report it as a 200 completion.
+      writeJsonBody(res, 500, { error: { message: failedMessage } });
+      return true;
+    }
+    const incompleteReason = respBody && respBody.status === 'incomplete' &&
+      (!respBody.incomplete_details || respBody.incomplete_details.reason !== 'max_output_tokens')
+      ? ((respBody.incomplete_details && respBody.incomplete_details.reason) || 'unknown')
+      : null;
+    if (incompleteReason) {
+      // An incomplete body that was not cut off by max_output_tokens is an
+      // upstream failure, not a finish_reason stop (#2780).
+      writeJsonBody(res, 500, { error: { message: `Direct Meta response incomplete: ${incompleteReason}` } });
+      return true;
+    }
     writeJsonBody(res, 200, responsesToChatCompletion(respBody, { chatId, created, fullName, inverse }));
     return true;
   }
@@ -1435,7 +1498,8 @@ const server = http.createServer((req, res) => {
         enabled: WARM_ENABLED,
         hostGen: warmHost.gen,
         hostUp: Boolean(warmHost.child),
-        sessions: warmStore.map.size
+        sessions: warmStore.map.size,
+        chains: warmChains.size
       },
       direct: {
         enabled: DIRECT_ENABLED,
@@ -1487,16 +1551,18 @@ const server = http.createServer((req, res) => {
   // HTTP response is piped through as-is. Without direct credentials the
   // route is not offered (404, as before direct mode existed).
   if (req.method === 'POST' && (pathname === '/v1/responses' || pathname === '/responses')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
       }
     });
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       const keyResult = await getDirectKey();
       if (keyResult.status === 'disabled' || keyResult.status === 'none') {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1585,10 +1651,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -1596,12 +1662,20 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `Invalid JSON body: ${err.message}` } }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
         return;
       }
 
@@ -1689,9 +1763,35 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      // Turn deadline (#2159): from spawn, exec fallback only. The kill
+      // normally produces the child's close event, and the close handler
+      // below settles the request through the existing error shape. But
+      // 'close' waits for the child's stdio pipes to drain, and a
+      // descendant that inherited those pipes can hold them open
+      // indefinitely after the child itself is dead — so the deadline
+      // also arms an independent settle at deadline + kill grace that
+      // bounds settlement and prompt-file cleanup whether or not
+      // 'close' ever fires (Codex review on PR #4242).
+      let timedOut = false;
+      let settleTimer = null;
+      const deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        killChildWithEscalation(child);
+        // The +1s past the grace lets the normal SIGKILL path settle
+        // through 'close' first; only a 'close' that never comes (the
+        // descendant-pipe case) actually reaches this timer.
+        settleTimer = setTimeout(() => {
+          try { child.stdout?.destroy(); } catch (_) {}
+          try { child.stderr?.destroy(); } catch (_) {}
+          settleRequest(null, null);
+        }, EXEC_KILL_GRACE_MS + 1000);
+        settleTimer.unref?.();
+      }, EXEC_TURN_TIMEOUT_MS_VALUE);
+      deadlineTimer.unref?.();
+
       res.on('close', () => {
         if (!res.writableEnded) {
-          try { child.kill('SIGTERM'); } catch (_) {}
+          killChildWithEscalation(child);
         }
       });
 
@@ -1705,6 +1805,8 @@ const server = http.createServer((req, res) => {
       }
 
       let lineBuffer = '';
+      const stdoutDecoder = createStreamDecoder();
+      const stderrDecoder = createStreamDecoder();
       let fullContent = '';
       let promptTokens = Math.max(1, Math.ceil(prompt.length / 4));
       let completionTokens = 0;
@@ -1764,7 +1866,7 @@ const server = http.createServer((req, res) => {
       };
 
       child.stdout.on('data', chunk => {
-        lineBuffer += chunk.toString('utf-8');
+        lineBuffer += stdoutDecoder.push(chunk);
         const lines = lineBuffer.split('\n');
         lineBuffer = lines.pop(); // remainder
         for (const line of lines) {
@@ -1773,19 +1875,56 @@ const server = http.createServer((req, res) => {
       });
 
       child.stderr.on('data', chunk => {
-        const msg = chunk.toString('utf-8');
+        const msg = stderrDecoder.push(chunk);
         stderrTail = (stderrTail + msg).slice(-2000);
         if (msg.trim().length > 0) {
           console.warn(`[muse-proxy stderr] ${msg.trim()}`);
         }
       });
 
-      child.on('close', (code, signal) => {
+      const emitFailure = (detail) => {
+        const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
+        if (stream) {
+          // The 200 + text/event-stream headers are already on the wire,
+          // so a bare JSON body would be invisible to an SSE client
+          // parsing `data:` lines — it would see an empty, successful
+          // stream (#670). Frame the error as an SSE event and close
+          // the stream with [DONE] instead.
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
+            res.write('data: [DONE]\n\n');
+          }
+          res.end();
+          return;
+        }
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+        }
+        res.end(JSON.stringify(errorBody));
+      };
+
+      let settled = false;
+      const settleRequest = (code, signal) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        if (settleTimer) clearTimeout(settleTimer);
         if (lineBuffer.trim().length > 0) {
           processJsonLine(lineBuffer);
           lineBuffer = '';
         }
         try { fs.unlinkSync(promptFile); } catch (_) {}
+
+        // Deadline check FIRST (#2159): a turn killed for exceeding the
+        // deadline is a timeout failure even if the child had already
+        // emitted a completed terminal event — never a silent
+        // successful stop — and the #484 reconciliation is skipped.
+        if (timedOut) {
+          if (!res.writableEnded) {
+            emitFailure(`muse exec turn timed out after ${EXEC_TURN_TIMEOUT_MS_VALUE}ms`);
+          }
+          return;
+        }
 
         if (res.writableEnded) return;
 
@@ -1826,24 +1965,7 @@ const server = http.createServer((req, res) => {
               ? `muse exec terminated by signal ${signal}`
               : `muse exec exited with code ${code}`;
           const detail = (stderrLine || fallback).trim();
-          const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
-          if (stream) {
-            // The 200 + text/event-stream headers are already on the wire,
-            // so a bare JSON body would be invisible to an SSE client
-            // parsing `data:` lines — it would see an empty, successful
-            // stream (#670). Frame the error as an SSE event and close
-            // the stream with [DONE] instead.
-            if (!res.writableEnded) {
-              res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
-              res.write('data: [DONE]\n\n');
-            }
-            res.end();
-            return;
-          }
-          if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-          }
-          res.end(JSON.stringify(errorBody));
+          emitFailure(detail);
           return;
         }
 
@@ -1907,9 +2029,15 @@ const server = http.createServer((req, res) => {
             }
           }, null, 2));
         }
-      });
+      };
+
+      child.on('close', settleRequest);
 
       child.on('error', err => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        if (settleTimer) clearTimeout(settleTimer);
         console.error(`[muse-proxy child error] ${err.message}`);
         try { fs.unlinkSync(promptFile); } catch (_) {}
         if (!res.headersSent) {

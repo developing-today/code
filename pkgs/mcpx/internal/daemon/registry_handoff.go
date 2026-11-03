@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // RegistryHandoff is the registry's pools taken out of service for a successor.

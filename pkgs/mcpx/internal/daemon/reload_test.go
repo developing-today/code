@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // childPID starts (or finds) the global instance of p and reports its pid.
 func childPID(t *testing.T, p *pool.Pool) int {
 	t.Helper()
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatalf("acquire %s: %v", p.Name(), err)
 	}

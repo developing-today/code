@@ -78,7 +78,8 @@ jobs:
       - name: Find an open failure issue
         id: failure-issue
         run: |
-          gh issue list --state open --limit 100 --json number,title > "$RUNNER_TEMP/issues.json"
+          gh issue list --state open --search "in:title \"$FAILURE_ISSUE_TITLE\"" \
+            --limit 100 --json number,title > "$RUNNER_TEMP/issues.json"
           number=$(jq -r --arg title "$FAILURE_ISSUE_TITLE" \
             '.[] | select(.title == $title) | .number' "$RUNNER_TEMP/issues.json" | head -n 1)
           echo "number=${number}" >> "$GITHUB_OUTPUT"

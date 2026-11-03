@@ -12,13 +12,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/mcpheaders"
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // ProtocolVersion is the MCP revision mcpx negotiates.
@@ -122,6 +124,9 @@ type Client struct {
 	notif Notifications
 	// roots are the directories servers may work within.
 	roots []Root
+	// root is the scope-resolved workspace root this instance serves, named
+	// at initialize when non-empty (decision 0004 §5).
+	root string
 	// clientName and clientVersion identify mcpx on every modern request.
 	clientName, clientVersion string
 	// metaVersion is the version stamped into each request's _meta. Empty
@@ -383,6 +388,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 		onElicit:                 o.OnServerRequest,
 		onURLElicitationRequired: o.OnURLElicitationRequired,
 		roots:                    append([]Root(nil), o.Roots...),
+		root:                     o.Root,
 		modernVersions:           o.ModernVersions,
 		probeTimeout:             o.ProbeTimeout,
 		loopDone:                 make(chan struct{}),
@@ -457,13 +463,33 @@ func (c *Client) initializeLegacy(ctx context.Context, clientName, clientVersion
 }
 
 func (c *Client) initializeParams() json.RawMessage {
-	params, _ := json.Marshal(map[string]any{
+	params := map[string]any{
 		"protocolVersion": ProtocolVersion,
 		// Declared only where mcpx can actually deliver; see capabilities.
 		"capabilities": c.capabilities(false),
 		"clientInfo":   map[string]any{"name": c.clientName, "version": c.clientVersion},
-	})
-	return params
+	}
+	// A scope-resolved instance tells the server which workspace it serves.
+	// initialize params are extensible in every era, so both get the same
+	// fields rather than growing per-server quirks (decision 0004 §5). An
+	// instance with no root -- global scope, or a degraded resolution --
+	// sends nothing and its initialize stays what it always was.
+	if uri, name, ok := c.workspaceRoot(); ok {
+		params["rootUri"] = uri
+		params["workspaceFolders"] = []map[string]any{{"uri": uri, "name": name}}
+	}
+	raw, _ := json.Marshal(params)
+	return raw
+}
+
+// workspaceRoot renders the instance root as the file:// URI and folder name
+// initialize carries. ok is false when the instance serves no root.
+func (c *Client) workspaceRoot() (uri, name string, ok bool) {
+	if c.root == "" {
+		return "", "", false
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(c.root)}
+	return u.String(), filepath.Base(c.root), true
 }
 
 // finishLegacy records an initialize result and completes the handshake.
@@ -1711,6 +1737,9 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 			return nil, &ResourceNotFoundError{URI: uri, err: re}
 		}
 		return nil, err
+	}
+	if err := ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read %q: invalid result from upstream: %w", uri, err)
 	}
 	return raw, nil
 }

@@ -1,5 +1,7 @@
 # Summary
 
+<!-- id: book-summary since: pre-release -->
+
 - [Archive](archive.md)
 - [The binary](binary.md)
 - [The CLI](cli.md)
@@ -36,12 +38,13 @@
 - [Quick start](quick-start.md)
 - [Release runbook](release-runbook.md)
 - [Reaching a daemon on another machine](remote.md)
+- [Research and incidental findings](research-and-findings.md)
 - [Script runtimes, permission profiles and presets](runtimes.md)
 - [Schema validation (`internal/schemaval`)](schema-validation.md)
 - [Scripts](scripts.md)
 - [mcpx](story.md)
 - [mcpx Development Strategies & Lessons Learned](work-strategies.md)
-- [Audit]()
+- [Audit](<>)
   - [Audit: features (end to end)](audit/features.md)
   - [Audit: the MCP specification (area `spec`)](audit/spec.md)
   - [Audit: mcpx's own surface](audit/surface.md)
@@ -58,7 +61,7 @@
   - [MCP revisions × features](compare/matrix-revisions.md)
   - [Stateless and every revision: can mcpx do both?](compare/stateless.md)
   - [What each says a server should be](compare/what-a-server-should-be.md)
-  - [Register]()
+  - [Register](<>)
     - [Authorization](compare/register/auth.md)
     - [Capabilities](compare/register/capabilities.md)
     - [Code mode and script execution](compare/register/code-mode.md)

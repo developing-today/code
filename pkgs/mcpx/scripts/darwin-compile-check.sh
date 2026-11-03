@@ -14,11 +14,10 @@ cd "$(dirname "$0")/.."
 
 # The single exception list. A package named here may fail the darwin
 # test compile without failing this gate; every other package must
-# compile. Empty this list (one line) when the last entry is fixed.
-#   github.com/dezren39/mcpx/internal/daemon — #237: takeover_test.go
-#   uses syscall.SOCK_CLOEXEC (undefined on darwin). DELETE this entry
-#   when #237's compile fix lands.
-DARWIN_COMPILE_EXCEPTIONS="${DARWIN_COMPILE_EXCEPTIONS-github.com/dezren39/mcpx/internal/daemon}"
+# compile. Empty since #237 landed (the internal/daemon entry — its
+# takeover_test.go used the Linux-only syscall.SOCK_CLOEXEC — was the
+# last one). Add an entry only with a tracking issue.
+DARWIN_COMPILE_EXCEPTIONS="${DARWIN_COMPILE_EXCEPTIONS-}"
 
 export GOOS=darwin GOARCH=arm64 CGO_ENABLED=0
 
@@ -32,20 +31,20 @@ while IFS= read -r pkg; do
   [ -n "$pkg" ] || continue
   if go test -c -o /dev/null "$pkg" 2>"/tmp/darwin-compile-err.txt"; then
     case " $DARWIN_COMPILE_EXCEPTIONS " in
-      *" $pkg "*) echo "note: $pkg now compiles for darwin — remove it from DARWIN_COMPILE_EXCEPTIONS" ;;
+    *" $pkg "*) echo "note: $pkg now compiles for darwin — remove it from DARWIN_COMPILE_EXCEPTIONS" ;;
     esac
   else
     case " $DARWIN_COMPILE_EXCEPTIONS " in
-      *" $pkg "*)
-        echo "known exception (see list in this script): $pkg"
-        sed 's/^/    /' "/tmp/darwin-compile-err.txt" | head -3
-        skipped+=("$pkg")
-        ;;
-      *)
-        echo "FAIL darwin test compile: $pkg"
-        sed 's/^/    /' "/tmp/darwin-compile-err.txt"
-        failed+=("$pkg")
-        ;;
+    *" $pkg "*)
+      echo "known exception (see list in this script): $pkg"
+      sed 's/^/    /' "/tmp/darwin-compile-err.txt" | head -3
+      skipped+=("$pkg")
+      ;;
+    *)
+      echo "FAIL darwin test compile: $pkg"
+      sed 's/^/    /' "/tmp/darwin-compile-err.txt"
+      failed+=("$pkg")
+      ;;
     esac
   fi
 done < <(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)

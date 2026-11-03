@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 )
 
 func pythonLang(t *testing.T) codegen.Language {

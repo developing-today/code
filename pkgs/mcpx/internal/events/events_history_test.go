@@ -3,7 +3,7 @@ package events_test
 import (
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // The retained history is what "reconnect from zero" promises. The existing

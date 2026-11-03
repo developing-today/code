@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
 )
 
 func TestTheVersionHeaderFollowsTheFrame(t *testing.T) {
