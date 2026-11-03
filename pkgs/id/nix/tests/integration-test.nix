@@ -150,6 +150,7 @@
     )
 
     suite_started = time.monotonic()
+    failed_groups = []
     for name, filters, cap in GROUPS:
         elapsed = int(time.monotonic() - suite_started)
         remaining = SUITE_BUDGET_SECONDS - elapsed
@@ -176,15 +177,28 @@
                 f"{TEST_BIN} {filter_args} "
                 f"--test-threads=2 --nocapture --format=pretty 2>&1"
             )
-        except Exception as exc:
-            # The driver logs the captured output (including the last started
-            # test and libtest's "has been running" warnings) before raising;
-            # re-raise with the group and its deadline so the failure is named.
-            raise AssertionError(
+        except Exception:
+            # The driver has already logged the captured output, including the
+            # last started test and libtest's "has been running" warnings.
+            # Record the group, keep going so every group still runs, and fail
+            # with a summary naming all failed groups at the end.
+            failed_groups.append(name)
+            print(
                 f"[id-integration] group '{name}' failed or exceeded its "
-                f"{deadline}s deadline; filters: {filter_args}"
-            ) from exc
+                f"{deadline}s deadline; filters: {filter_args}; continuing",
+                flush=True,
+            )
+        else:
+            print(
+                f"[id-integration] group '{name}' finished in "
+                f"{time.monotonic() - group_started:.1f}s",
+                flush=True,
+            )
 
+    if failed_groups:
+        raise AssertionError(
+            "[id-integration] failed groups: " + ", ".join(failed_groups)
+        )
         print(
             f"[id-integration] group '{name}' finished in "
             f"{time.monotonic() - group_started:.1f}s",
