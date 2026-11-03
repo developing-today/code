@@ -366,7 +366,7 @@ export const FIXTURE_QUOTA: QuotaView = {
       activeSessions: [{ session: "ses_e8e4b5a44ffe0fnmHE0FmlGpkG", model: "deepseek-v4-pro", tokens: 3_400_000 }],
     },
     {
-      id: "antigravity:gemini",
+      id: "antigravity-direct.gemini",
       provider: "Antigravity",
       plan: "Google Antigravity",
       note: "Antigravity has TWO independent pools: Gemini models, and the Claude models it supports.",
@@ -376,7 +376,7 @@ export const FIXTURE_QUOTA: QuotaView = {
       ],
     },
     {
-      id: "antigravity:claude",
+      id: "antigravity-direct.claude-gpt",
       provider: "Antigravity",
       plan: "Google Antigravity",
       note: "The Claude models Antigravity supports — a separate pool from its Gemini models.",
@@ -437,8 +437,8 @@ export const FIXTURE_QUOTA: QuotaView = {
     },
   ],
   choices: {
-    hasHeadroom: ["antigravity:claude", "antigravity:gemini", "meta:model-api", "openai:chatgpt"],
-    burnBeforeReset: ["antigravity:gemini", "antigravity:claude"],
+    hasHeadroom: ["antigravity-direct.claude-gpt", "antigravity-direct.gemini", "meta:model-api", "openai:chatgpt"],
+    burnBeforeReset: ["antigravity-direct.gemini", "antigravity-direct.claude-gpt"],
     doNotStart: ["anthropic:claude-subscription", "opencode-go.drewrypope"],
   },
 };

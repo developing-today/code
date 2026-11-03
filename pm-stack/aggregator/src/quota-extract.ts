@@ -262,21 +262,15 @@ const extractChatGptAlternate: Extractor = (s) => {
 };
 
 const extractMeta: Extractor = (s, now) => {
-  // A dated billing-blocked read (402 billing_not_configured — the
-  // billing-verification wall) outranks every window/reset read: the
-  // pool is blocked at the account level, whatever the windows say.
-  // The 100% weekly window is the fleet's blocked-status mapping (it
-  // drives poolState → walled), NOT a measured consumption percentage;
-  // the note says so, and no reset is invented for when it lifts.
-  const blocked =
-    /(\d{4}-\d{2}-\d{2})[^\n]{0,200}?billing_not_configured/i.exec(s) ??
-    /billing_not_configured[^\n]{0,200}?(\d{4}-\d{2}-\d{2})/i.exec(s);
-  if (blocked) {
-    return {
-      windows: [pctWindow("weekly", 100, null)],
-      note: `BLOCKED ${blocked[1]} — API returns 402 billing_not_configured (billing-verification wall); laptop meta-provider probes all walled, stewardship measurement gate closed. The 100% weekly window is a blocked-status mapping, not measured consumption.`,
-    };
-  }
+  // Dated-read fallback only (Drew, 2026-11-03 — the dashboard is a
+  // straight display of the OpenCode quota read and must not interpose
+  // interpretations of its own): this extractor reports the newest
+  // DATED percentage/reset read in the steward's view and nothing
+  // more. The former billing_not_configured branch PROMOTED a dated
+  // prose mention into a fabricated walled 100% window + BLOCKED note
+  // that outranked the live read for days after the account
+  // recovered; a billing wall now arrives as the quota read's own
+  // error state (overlayQuotaCurrent), never as promoted prose.
   const reset = first(s, /[Ww]eekly reset (?:today )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/);
   const resetIso = reset ? resetDateTimeCentral(reset[1], reset[2]) : null;
   const burned = /burned to empty/i.test(s);
@@ -474,12 +468,22 @@ interface PoolSpec {
 // replaced (meta:high-usage, openai:codex, opencode-go:drewrypope, ...)
 // survive only in the historical snapshot series and the one-shot
 // backfill seed (scripts/backfill-usage-snapshots.ts), which keep the
-// ids in use on their observation dates. Two pools keep colon ids
-// because the config defines no provider with their name:
-// anthropic:claude-pro (burned through the claude-code provider) and
-// the antigravity:* splits (burned through antigravity-ls /
-// antigravity-agy / google; the config's antigravity-direct is a
-// different door and renaming would misattribute the pools).
+// ids in use on their observation dates. The two Antigravity pools
+// are the quota module's model-family splits of the one Antigravity
+// account; they ride under the config's surviving antigravity
+// provider, antigravity-direct, with the family as a dot suffix —
+// antigravity-direct.gemini / antigravity-direct.claude-gpt — the
+// opencode-go.<workspace> pattern (Drew, 2026-11-03: "why are you not
+// including antigravity in the board?"). Ground truth for the
+// choice: the deployed config defines antigravity-agy,
+// antigravity-direct and antigravity-ls (ls/agy are the disabled
+// legacy doors; no antigravity-local provider exists), and
+// antigravity-direct is the in-fork door the account's traffic was
+// consolidated onto. One pool keeps a colon id because the config
+// defines no provider with its name: anthropic:claude-pro (burned
+// through the claude-code provider; the pool is the Claude Pro
+// subscription that door spends, and the colon id keeps that
+// attribution honest).
 export const POOL_SPECS: PoolSpec[] = [
   {
     id: "meta",
@@ -547,7 +551,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity:gemini",
+    id: "antigravity-direct.gemini",
     provider: "Antigravity",
     plan: "Gemini pool",
     heading: /^### Gemini/,
@@ -555,7 +559,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "antigravity:claude-gpt",
+    id: "antigravity-direct.claude-gpt",
     provider: "Antigravity",
     plan: "Claude+GPT pool",
     heading: /^### Gemini/,
@@ -585,107 +589,38 @@ const SHELL_POOLS: QuotaPool[] = [
 ];
 
 /**
- * Pools whose consuming opencode provider ("door") is NOT the pool-id
- * prefix. Source of truth: `poolFor` in scripts/collect-fleet-feed.ts,
- * which attributes sessions to pools by door provider — the Claude Pro
- * pool is burned exclusively through the `claude-code` provider (there
- * is no `anthropic` provider in the deployed config), so disabling
- * `claude-code` must filter `anthropic:claude-pro`. Every other pool's
- * door is its prefix.
+ * REMOVED 2026-11-03 (Drew: "the dashboard should not be doing any of
+ * that"): the #1114 disabled-door filter family — poolProviderId,
+ * poolProviderIds, poolFilteredByDisabled and the FILTER_EXEMPT_POOL_IDS
+ * exemption hack that had to be bolted on when the filter ate the
+ * meta pool — used to drop pools from the board whenever their
+ * OpenCode config door sat in disabled_providers. That hid live,
+ * measured pools whose traffic runs through model routes rather than
+ * the disabled direct door: at removal time the deployed board was
+ * missing anthropic:claude-pro, commandcode, deepseek and BOTH
+ * Antigravity pools even though the OpenCode quota read reported
+ * them. Pool assembly no longer consults disabled_providers at all;
+ * extractQuotaPools returns every pool it knows, and the serve-time
+ * overlay renders every pool the read reports (see
+ * overlayQuotaCurrent's unmapped-pool synthesis in quota-current.ts).
  */
-const POOL_DOOR_PROVIDER_ID: Record<string, string> = {
-  "anthropic:claude-pro": "claude-code",
-};
-
-/**
- * The opencode provider id whose disablement filters a pool: the pool's
- * door provider. Since the 2026-11-03 config-name alignment the pool id
- * IS the door provider id for every single-door pool ("openai",
- * "meta", "cline-pass", "opendesign", "opencode-go.personal", ...);
- * the one exception is "anthropic:claude-pro", whose door is
- * "claude-code" (there is no `anthropic` provider in the config).
- */
-export function poolProviderId(poolId: string): string {
-  return POOL_DOOR_PROVIDER_ID[poolId] ?? poolId.split(":")[0];
-}
-
-/**
- * Pools consumed through SEVERAL door providers, none of which is the
- * pool-id prefix: there is no `antigravity` provider in the deployed
- * config — the two Antigravity pools are burned through the
- * `antigravity-ls`, `antigravity-agy` and `google` providers (the same
- * three doors `poolFor` in scripts/collect-fleet-feed.ts attributes to
- * them). Such a pool is filtered only when EVERY door is disabled; one
- * usable door remaining keeps it, because sessions can still burn it.
- */
-const POOL_DOOR_PROVIDER_IDS: Record<string, string[]> = {
-  "antigravity:gemini": ["antigravity-ls", "antigravity-agy", "google"],
-  "antigravity:claude-gpt": ["antigravity-ls", "antigravity-agy", "google"],
-};
-
-/** Every opencode provider id that can burn a pool (its doors). */
-export function poolProviderIds(poolId: string): string[] {
-  return POOL_DOOR_PROVIDER_IDS[poolId] ?? [poolProviderId(poolId)];
-}
-
-/**
- * True when a pool must be filtered for the given disabled set: single-
- * door pools when their door is disabled, multi-door pools only when
- * every door is disabled.
- */
-export function poolFilteredByDisabled(poolId: string, disabledProviderIds: ReadonlySet<string>): boolean {
-  return poolProviderIds(poolId).every((id) => disabledProviderIds.has(id));
-}
-
-/**
- * Pools that stay on the board even when every door provider is
- * disabled — #1114's filter yields to this list. The filter exists so
- * the board never presents a pool nobody can burn; an exempt pool IS
- * burned (through the route layer, not the disabled direct door) and
- * its quota is measured through OpenCode's credential machinery, so
- * hiding it would leave a live pool unreported. Drew, 2026-11-03:
- * meta and opendesign are standard report members and must show real
- * quotas gathered by asking OpenCode. Today the list holds only
- * meta: the deployed config disables the `meta` provider
- * as a direct session door, which otherwise filtered the pool at
- * assembly and left the board with no Meta row at all, while the
- * gatherer's module read (serviceId meta) had no pool to
- * land on.
- */
-export const FILTER_EXEMPT_POOL_IDS: ReadonlySet<string> = new Set(["meta"]);
-
-/** True when the disabled-door filter must not drop this pool. */
-export function poolFilterExempt(poolId: string): boolean {
-  return FILTER_EXEMPT_POOL_IDS.has(poolId);
-}
 
 /**
  * Extract every pool's freshest dated read from the quota view text.
  *
- * #1114: a pool whose provider id is in the deployed opencode config's
- * disabled_providers set is filtered out HERE, at pool assembly — never
- * at render time — so quota.json and the guidance derived from these
- * pools can never name a disabled provider. Matching is exact provider-id
- * equality against the pool's DOOR provider(s) (poolProviderIds): "openai" is
- * not "openai-codex", "opendesign" is not "open-design", "opencode-go" is
- * not "opencode" — "anthropic:claude-pro" answers to "claude-code",
- * its only door, and the antigravity pools answer to antigravity-ls /
- * antigravity-agy / google jointly (filtered only when all three are
- * disabled). A filtered pool is
- * reported through onFiltered (visibly noted, never silently dropped).
+ * PASS-THROUGH (Drew, 2026-11-03): every spec pool and shell pool is
+ * returned, unconditionally. The dated reads here are only the
+ * FAIL-SOFT FALLBACK for pools the live OpenCode quota read cannot
+ * currently measure (console-only pools, a read in error); the live
+ * read overlays them at serve time (overlayQuotaCurrent) and wins
+ * wherever it reports. No disabled_providers filter applies — a
+ * disabled direct door says nothing about whether the pool is burned
+ * through model routes or measured by OpenCode, and filtering on it
+ * is what made live pools vanish from the board (#1114, reversed).
  */
-export function extractQuotaPools(
-  quotaViewText: string,
-  now = new Date(),
-  disabledProviderIds: ReadonlySet<string> = new Set(),
-  onFiltered?: (poolId: string, providerId: string) => void,
-): QuotaPool[] {
+export function extractQuotaPools(quotaViewText: string, now = new Date()): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
-    if (!poolFilterExempt(spec.id) && poolFilteredByDisabled(spec.id, disabledProviderIds)) {
-      onFiltered?.(spec.id, poolProviderIds(spec.id).join(","));
-      continue;
-    }
     const section = sectionOf(quotaViewText, spec.heading);
     let raw: Raw | null = null;
     try {
@@ -720,10 +655,5 @@ export function extractQuotaPools(
     }
     pools.push(pool);
   }
-  const shells = SHELL_POOLS.filter((p) => {
-    if (poolFilterExempt(p.id) || !poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
-    onFiltered?.(p.id, poolProviderIds(p.id).join(","));
-    return false;
-  });
-  return [...pools, ...shells.map((p) => ({ ...p }))];
+  return [...pools, ...SHELL_POOLS.map((p) => ({ ...p }))];
 }

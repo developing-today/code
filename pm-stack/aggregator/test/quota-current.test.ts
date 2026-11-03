@@ -726,8 +726,8 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     view.pools.push(
       pool("opencode-go.drewrypope", []),
       pool("opencode-go.popesdrew", []),
-      pool("antigravity:gemini", []),
-      pool("antigravity:claude-gpt", []),
+      pool("antigravity-direct.gemini", []),
+      pool("antigravity-direct.claude-gpt", []),
     );
     const out = overlayQuotaCurrent(
       view,
@@ -748,12 +748,12 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity:gemini",
+          serviceId: "antigravity-direct.gemini",
           windows: [win("weekly", 40, iso(5 * 60_000))],
         }),
         entry({
           providerId: "antigravity",
-          serviceId: "antigravity:claude-gpt",
+          serviceId: "antigravity-direct.claude-gpt",
           windows: [win("weekly", 90, iso(5 * 60_000))],
         }),
       ]),
@@ -762,15 +762,96 @@ describe("overlay: split gatherer rows land on the four split hub pools (#1331)"
     const byId = new Map(out.pools.map((p) => [p.id, p]));
     expect(byId.get("opencode-go.drewrypope")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
     expect(byId.get("opencode-go.popesdrew")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
-    expect(byId.get("antigravity:gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
-    expect(byId.get("antigravity:claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
-    for (const id of ["opencode-go.drewrypope", "opencode-go.popesdrew", "antigravity:gemini", "antigravity:claude-gpt"]) {
+    expect(byId.get("antigravity-direct.gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("antigravity-direct.claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
+    for (const id of ["opencode-go.drewrypope", "opencode-go.popesdrew", "antigravity-direct.gemini", "antigravity-direct.claude-gpt"]) {
       expect(byId.get(id)!.freshness).toEqual({
         measuredAt: iso(5 * 60_000),
         source: "openchamber-quota",
         state: "ok",
       });
     }
+  });
+});
+
+describe("overlay: pass-through of the read itself (Drew, 2026-11-03)", () => {
+  test("a fresh ok read clears the base pool's dated-prose note", () => {
+    const view = baseView();
+    const meta = view.pools.find((p) => p.id === "meta")!;
+    meta.note = "BLOCKED 2026-10-26 — API returns 402 billing_not_configured (stale steward prose).";
+    const out = overlayQuotaCurrent(
+      view,
+      file([entry({ serviceId: "meta", windows: [win("weekly", 98, iso(5 * 60_000))] })]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "meta")!;
+    expect(p.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 98]]);
+    expect(p.note).toBeUndefined();
+  });
+
+  test("an error read keeps the dated note — it still describes the dated values on display", () => {
+    const view = baseView();
+    const meta = view.pools.find((p) => p.id === "meta")!;
+    meta.note = "Dated read context.";
+    const out = overlayQuotaCurrent(
+      view,
+      file([entry({ serviceId: "meta", state: "error", error: "HTTP 402", windows: [] })]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "meta")!;
+    expect(p.state).toBe("error");
+    expect(p.note).toBe("Dated read context.");
+  });
+
+  test("an entry with no matching pool synthesizes one under the reported id", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "brand-new-pool",
+          providerId: "brand-new",
+          providerName: "Brand New",
+          planLabel: "Pro",
+          windows: [win("weekly", 42, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "brand-new-pool")!;
+    expect(p).toBeDefined();
+    expect(p.provider).toBe("Brand New");
+    expect(p.plan).toBe("Pro");
+    expect(p.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 42]]);
+    expect(p.freshness).toEqual({ measuredAt: iso(5 * 60_000), source: "openchamber-quota", state: "ok" });
+  });
+
+  test("an unmatched entry in error still renders — as an errored pool, not a vanished one", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ serviceId: "flaky-pool", state: "error", error: "HTTP 503", windows: [] })]),
+      NOW,
+    );
+    const p = out.pools.find((x) => x.id === "flaky-pool")!;
+    expect(p).toBeDefined();
+    expect(p.state).toBe("error");
+    expect(p.freshness?.state).toBe("error");
+  });
+
+  test("combined/non-pool rows never synthesize pools (turso, antigravity, opencode-go)", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({ serviceId: "turso", windows: [win("databases", 3, iso(5 * 60_000))] }),
+        entry({ serviceId: "antigravity", windows: [win("weekly", 26, iso(5 * 60_000))] }),
+        entry({ serviceId: "opencode-go", windows: [win("monthly", 10, iso(5 * 60_000))] }),
+      ]),
+      NOW,
+    );
+    const ids = out.pools.map((p) => p.id);
+    expect(ids).not.toContain("turso");
+    expect(ids).not.toContain("antigravity");
+    expect(ids).not.toContain("opencode-go");
+    expect(out.pools).toHaveLength(baseView().pools.length);
   });
 });
 

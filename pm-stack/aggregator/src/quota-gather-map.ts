@@ -75,6 +75,8 @@ export function serviceIdFor(providerId: string): string {
       return "openai";
     case "cline-pass":
       return "cline-pass";
+    case "command-code":
+      return "commandcode";
     case "deepseek":
       return "deepseek";
     case "meta":
@@ -101,8 +103,8 @@ export const GATHERER_SOURCE = "openchamber-quota";
  */
 export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
 export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
-export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity:gemini";
-export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity:claude-gpt";
+export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
+export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
