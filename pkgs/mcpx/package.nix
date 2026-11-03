@@ -125,6 +125,19 @@ buildGo127Module {
     python3
     git
   ];
+  # ops.gen.ts is generated from the /v1 table (internal/api's
+  # PluginTS) but checked in, because the TypeScript plugin consumes
+  # it from the source tree. Regenerate it here, in the build tree,
+  # before the check phase compares it: a nix build then never fails
+  # on a stale checked-in copy (code#4806), while the freshness test
+  # still guards the checked-in file where that matters — plain
+  # `go test` runs outside nix.
+  preCheck = ''
+    export HOME=$TMPDIR/home MCPX_STATE_DIR=$TMPDIR/state MCPX_CACHE_DIR=$TMPDIR/cache
+    mkdir -p "$HOME"
+    go test ./internal/api -run TestPluginOpsAreGenerated -update
+  '';
+
   checkPhase =
     let
       checkExclude = [
