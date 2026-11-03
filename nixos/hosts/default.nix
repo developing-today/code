@@ -108,7 +108,8 @@ in
         # on its default branch.
         home-manager.users.user = {
           imports = [ ../home/laptop-repo-keeper.nix ];
-          services.laptop-repo-keeper.enable = true;
+          # STOPPED by Drew (2026-11-02): the keeper auto-committed, pulled and pushed the primaries hourly and its snapshots kept recreating repo state he ordered removed. Module + script stay defined; re-enable only on his word.
+          services.laptop-repo-keeper.enable = false;
         };
       }
       {
