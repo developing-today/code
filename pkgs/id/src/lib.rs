@@ -182,6 +182,7 @@ pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
 pub use id_core::discovery;
+pub mod didit;
 mod peer_announcement;
 pub mod documents;
 #[cfg(feature = "world")]

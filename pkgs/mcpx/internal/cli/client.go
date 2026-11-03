@@ -854,19 +854,33 @@ type BatchResultItem struct {
 	Error      string          `json:"error,omitempty"`
 	IsError    bool            `json:"isError,omitempty"`
 	DurationMs int64           `json:"durationMs,omitempty"`
+	// Skipped marks an item a safe-prefix batch did not run, with
+	// the reason it stopped (#1927).
+	Skipped bool   `json:"skipped,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // BatchResponse is the response to /v1/batch.
 type BatchResponse struct {
 	Results []BatchResultItem `json:"results"`
+	// SafePrefix is present when a safe-prefix batch stopped:
+	// where, and why (#1927).
+	SafePrefix *BatchSafePrefix `json:"safePrefix,omitempty"`
+}
+
+// BatchSafePrefix reports a safe-prefix stop.
+type BatchSafePrefix struct {
+	StoppedAt int    `json:"stoppedAt"`
+	Reason    string `json:"reason"`
 }
 
 // Batch invokes multiple tools in a single turn.
-func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, cc config.CallContext) (*BatchResponse, error) {
+func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, safePrefix bool, cc config.CallContext) (*BatchResponse, error) {
 	b, err := c.do(ctx, http.MethodPost, "/v1/batch", map[string]any{
 		"calls":       calls,
 		"stopOnError": stopOnError,
 		"parallel":    parallel,
+		"safePrefix":  safePrefix,
 		"context":     cc,
 	})
 	if err != nil {

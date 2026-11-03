@@ -2,39 +2,921 @@
   "version": 1,
   "events": [
     {
-      "at": "2026-11-03T12:34:27.260Z",
-      "actor": "orch-fixture-1",
-      "kind": "action-applied",
-      "ref": "orch:http-item",
-      "summary": "triage/acknowledge applied by orch-fixture-1 — ack carried in the next published tier entry"
-    },
-    {
-      "at": "2026-11-03T12:34:28.190Z",
-      "actor": "orchestrator",
-      "kind": "orchestration-published",
-      "ref": "orchestration:orch-health-test",
-      "summary": "orchestration run orch-health-test published: 0 needs-user, 0 needs-orchestrator"
-    },
-    {
-      "at": "2026-11-03T12:34:28.191Z",
+      "at": "2026-11-03T09:43:29.307Z",
       "actor": "aggregator",
       "kind": "session-outcome",
-      "ref": "session:opencode-sandbox:ses-health-1",
-      "summary": "session Health probe session (undefined) merged into the registry"
+      "ref": "session:opencode-laptop:ses_e5e5f3b0664ffeGcxzVVPKLJsb",
+      "summary": "session repo-health-nix-pilot task 2678 issue #1001: git-discover-repos: basename subshell replaced by parameter expansion (Bolt PR #1000 ledger) (OpenCode · build (laptop)) merged into the registry"
     },
     {
-      "at": "2026-11-03T12:34:39.102Z",
-      "actor": "orchestrator",
-      "kind": "orchestration-published",
-      "ref": "orchestration:orch-api-health-comments-test",
-      "summary": "orchestration run orch-api-health-comments-test published: 0 needs-user, 0 needs-orchestrator"
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f407bb4ffeno1QyHmOtgBY",
+      "summary": "session repo-health-code-pilot task 3831 issue #2579: aggregator: Phase 3 of #2576 — extractor and mapper boundaries on the shared primitives (OpenCode · build (laptop)) merged into the registry"
     },
     {
-      "at": "2026-11-03T12:34:39.639Z",
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3855e9ffekFpKc9KuDfSs",
+      "summary": "session Queue lane (scheduled) - opencode 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f38596dffeN5dz9YQOuwrP",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f367ccaffeZnbiFccTFAWy",
+      "summary": "session Inspect aggregator comment auth flow (OpenCode · explore (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3855edffesjB4H1V8UAva",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f384098ffep6RDn0Cws2jN",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f36a3eeffefCEVsX45268l",
+      "summary": "session Verify current upload race (OpenCode · explore (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f385a86ffe3FON7hIzjkOH",
+      "summary": "session Queue lane (scheduled) - openchamber 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f384e3effexa9vZbhlNJGs",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f385168ffeWN18ZW3kCpiV",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f4aabcfffe5J8M3sLpvl3w",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:20 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f384b09ffepKV9QiWs63O0",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f385ccaffeHoRCIRAE7rmY",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3859f4ffeG5OTjF02nNsA",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3c28f0ffeEha5lOA2CVvU",
+      "summary": "session Split markdown production module (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3ba520ffeurYOunMDK15Q",
+      "summary": "session repo-health-code-pilot task 5814 issue #3808: id: implement hosted account + ID binding ceremony (from #2046/#2852 slice 1) (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f384947ffePzM6uAfS0b7z",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f384e6fffe93LBzWJpCpgG",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3abc1bffeUQmlPRLv1htk",
+      "summary": "session repo-health-code-pilot task 2013 issue #163: Phase 2: group action codec does not cover friendship or policy (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f4aaa3affeLOIo78Ta47fQ",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 03:20 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f38510effekabQ0o53p7aF",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f38556fffeNqRGr8ppcUkd",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3b4060ffeVDstK6KnuaEn",
+      "summary": "session repo-health-code-pilot task 5816 issue #3810: id: implement signed-object export/import for hosted ID stores (from #2046/#2852 slice 4) (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f385daaffeGtRomK6oy78T",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f385b93ffenI7IxNmAB3ag",
+      "summary": "session Queue lane (scheduled) - nix 2026-11-03 03:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f3a7eceffeCmWGe1YlMoTq",
+      "summary": "session repo-health-code-pilot task 2017 issue #170: Phase 2: transfer with no successor drops grants (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f418172ffeUwy7PIF0eiaU",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 03:30 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f402149ffed9rlYheEb6Kx",
+      "summary": "session repo-health-code-pilot task 3230 issue #1933: mcpx: tool views and composed tool sets — rename/pin/hide, cross-server namespaces, script-backed tools, and generators that emit declarations (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f415bc4ffetcEbAk8UTNN2",
+      "summary": "session Map multiplayer revision code (OpenCode · explore (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.310Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f4f86e7ffehxwDqPTkoDs3",
+      "summary": "session repo-health-code-pilot task 6599 issue #1438: id: enforce F11.10 — split markdown.rs under 2,500 prod lines and add fast-lane file-size check (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f40e72cffe3wACUIoZfBi4",
+      "summary": "session repo-health-code-pilot task 2946 issue #1677: mcpx: Phase 2 of #1675 — broker retention bound + summary-only elicitation events (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f463034ffeURyHrdnlKNUP",
+      "summary": "session Assess current F11.10 state (OpenCode · explore (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5e1654ffebYMwOOpF0ZJd",
+      "summary": "session repo-health-code-pilot task 6565 issue #1002: id(web): saving a blockquote that starts with a code block, table or rule inserts two stray blank li (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f4ff12dffeNyEjmAttpkVm",
+      "summary": "session repo-health-code-pilot task 6577 issue #1331: Split gatherer rows per pool: OpenCode Go per-workspace + Antigravity pool grouping (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f45f61bffeyla3vtooZdov",
+      "summary": "session Fixing codedb.status script failure (OpenCode · main (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f507bf1ffe0j9bJD6o0dbD",
+      "summary": "session repo-health-code-pilot task 6566 issue #1319: Sandbox posture remainder: stale sandbox units + undocumented alignment step (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5ef11dffeiQxtSJNKw9NI",
+      "summary": "session repo-health-code-pilot task 6183 issue #3714: id(repl): find/peek value-flags consume the next flag as their value — '--dir --all' saves to a dire (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f4e8ea5ffeb5flOK6LqxuK",
+      "summary": "session repo-health-openchamber-pilot task 6799 issue #1418: Fix #1418: stop GraphQL check summaries reporting success on truncated contexts (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f53cdc9ffeKyaherHJvGAk",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 03:10 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5e7d57ffeo10QlK9a9QQJ",
+      "summary": "session repo-health-opencode-pilot task 6809 issue #1503: fix(ci): check:workflows does not require permissions: — the #118 GITHUB_TOKEN fallback class has no (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf5f3ffe37dUXuA0tFfY",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5ec245ffe38jSfRYx4ahf",
+      "summary": "session repo-health-opencode-pilot task 6805 issue #994: refactor(core): collapse the three expiresInSeconds duplicates onto serverSeconds (design #992, phas (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.311Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf766ffeInDwI16N43pw",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.312Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5e48bfffe0tKBqAJui2Hx",
+      "summary": "session repo-health-code-pilot task 6561 issue #1171: feat(quota-plane): aggregator lazy refresh — pull on page load when data >5 min old (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.312Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf9a6fferpTwhMlpLNBa",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.312Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f6624fbffe53ztz7C357cA",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 02:50 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.312Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf866ffe0Tnwk3aoOvwR",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f6f4896ffeLL6M2nEh5OfN",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 02:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cfb6affeS8c7hFNBLCKR",
+      "summary": "session Queue lane (scheduled) - openchamber 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cfc2cffejW3IqaF1Z5qy",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cfa37ffeTACWkTqHOQ0J",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cfc05ffeH5xGc310PXUL",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf6acffewxEVvxqvqbkf",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf5bfffeKtpj9mmDl8EW",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf9a7ffet8j1tR1126mU",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f6f47ccffeYIxza2baMuYO",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 02:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf71bffef74Isdxnn817",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5cf5c5ffeKv1ksVrurICL",
+      "summary": "session Queue lane (scheduled) - nix 2026-11-03 03:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T09:43:29.313Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5f5f273effeYqwIfF4nGflU",
+      "summary": "session repo-health-code-pilot task 5797 issue #3805: id: lease protocol phase 3 — spill handoff both ways + failure-walkthrough tests (#2819) (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9f1cffeBDa2tShMU6AQ",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e6ef0edffeBxv4P1lShUH7",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 07:20 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca34affeP0UCreNCKBZt",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9d39ffePEww0Urhws32",
+      "summary": "session Queue lane (scheduled) - opencode 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca336ffeFT6Sgm9STtDJ",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca283ffewAJkaaBNt5YX",
+      "summary": "session Queue lane (scheduled) - openchamber 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e66f6ebffeSqd63dJZVAYK",
+      "summary": "session repo-health-code-pilot task 5588 issue #2691 — Small fix #2691: implement the mcpx feature-coverage guard (runtime ledger, Approach C) — follow-up to #1978 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca1f8ffeBagDXVY8GdNh",
+      "summary": "session Queue lane (scheduled) - nix 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.025Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9e67ffee5RyeUtEwlzb",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca070ffevrqdgtunkn1c",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca17cffezBaZCtbAe1eP",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9fc3ffeNIOHIuGOmP0N",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9cdcffefAI4Vmh5rcYG",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e6eed70ffeXiYNb3kYnn6R",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:20 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e6819b1ffeMpZCFrRJWF6l",
+      "summary": "session repo-health-code-pilot task 7491 issue #3601 — Fix #3601: cherry-pick preserved stale-feed threshold change (branch queue/4298-2990-stale-feed, commit 8b87c3f) for #2990 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9e5cffePJrmKyzprfHY",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e67a60cffetrlaUXWGOPQk",
+      "summary": "session repo-health-code-pilot task 7796 issue #1372 — id(ci) #1372: make the nixos-integration VM test fail fast and name what it waits on (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9dabffeRqYg05RmVHay",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5c9f17ffe2JuIJtTCwC4v",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca3dcffejnSuXhDjXJOm",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e5ca097ffegRgLZMe2ABXK",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e66c8b7ffewwNHc27DUele",
+      "summary": "session repo-health-code-pilot task 5774 issue #3788 — Fix #3788: didit schema types + pure evaluator in pkgs/id/src/didit/ (Phase 1 of #2031) — path re-verified (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e68546effeeCgySsrpvL3t",
+      "summary": "session repo-health-code-pilot task 7334 issue #3535 — Triage #3535: Preserved branch: queue/1487-1420-edge-whitespace-normalize — decision needed (m (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e67311affeJm9ogReAwd1O",
+      "summary": "session repo-health-code-pilot task 2005 issue #24 — Triage #24: Dependency Dashboard (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e6759adffeVlFtY8N4FIoo",
+      "summary": "session repo-health-code-pilot task 7817 issue #1964 — Triage #1964: mcpx: Roc as a script language, and whether mcpx should be a Roc platform (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e65ca25ffeq3dZYRvFIqGZ",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 07:30 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813d65ffen7uit7sSDJyr",
+      "summary": "session Queue lane (scheduled) - opencode 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813fd3ffe6v7VXC5eg83l",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813bbcffeF1Lunm39bfhv",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813fd2ffexO6yQd1kAkTW",
+      "summary": "session Queue lane (scheduled) - nix 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e81433bffeZ2fwZEsOEvJY",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.026Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e814145ffeLXvE7OEi0ArC",
+      "summary": "session Queue lane (scheduled) - openchamber 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813fa7ffek6OI96DqUrtb",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e8140ceffeFTXUOPnxEa4D",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813e79ffej8pv15cGjqT1",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813dd8ffeHyPzoncALAXm",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e78152affeSl0c51w5b8zz",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 07:10 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e814087ffep5xmrZ3AuXM1",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e81417dffe36xLwbN96HM9",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e814257ffeGY0gr6c4a40L",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e93895fffeCZP3MC3zbEJi",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e813ba7ffeqTMYLAWfnKms",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e8141cfffe6n6UfNwOxyBq",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 07:00 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e93909effecqIJw7yI3uPs",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.027Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938e57ffe1NsreY2ABcy6",
+      "summary": "session Queue lane (scheduled) - nix 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e9385d1ffeX2dQ7U3JIAwJ",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938b21ffeNQgnaal1wTLU",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938791ffe8FretQw4Ylp2",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938608ffe4eeubTjLAP2u",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938f03ffeaZAmJ2copsry",
+      "summary": "session Queue lane (scheduled) - openchamber 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e8a63c3ffeiExuZ6DZj4D7",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 06:50 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e9392b6ffe80jbxcJOxCSj",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938af8ffeBPxteNJkn5f3",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e93896bffe8HbiqfYqIdoZ",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e939170ffeDnnfNlaU71Sw",
+      "summary": "session Queue lane (scheduled) - opencode 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e9387bffferuLinAHW1EhF",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e93906cffePFfJviNiS5uT",
+      "summary": "session Opencode lane claimant/executor - #3026 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938e39ffe4uz547NWgFGH",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5e938e58ffeSSLLN1UQ8AnP",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:40 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T13:44:09.028Z",
+      "actor": "aggregator",
+      "kind": "session-outcome",
+      "ref": "session:opencode-laptop:ses_e5e5ea5dcc5ffeMnCqFmxxZ1s7",
+      "summary": "session Queue lane (scheduled) - code 2026-11-03 06:20 (OpenCode · build (laptop)) merged into the registry"
+    },
+    {
+      "at": "2026-11-03T14:17:48Z",
+      "actor": "orchestrator",
+      "kind": "wall",
+      "ref": "orchestration-section-dependencies-shape",
+      "summary": "Previous publish (orch-2026-11-03T13:14:03Z) rejected by the aggregator: meta.orchestration status=error 'dependencies (per-dependency shape)' in the 14:13Z fleet feed — dependency/blockedBy statuses were free text instead of the feed.ts enum. Fixed this run by normalizing all statuses to in-progress|queued|stalled|done|unknown (detail preserved in task labels); collector acceptance to be verified next pass."
+    },
+    {
+      "at": "2026-11-03T14:17:48Z",
+      "actor": "orchestrator",
+      "kind": "classification",
+      "ref": "developing-today/code#1258",
+      "summary": "New NEEDS DREW (gate-complete): lane code-i task 7677 escalated #1258 with the design's 7 questions, options and a recommendation on the issue; gates implementation #3989. Backup issues #1514/#3869 explicitly not gated."
+    },
+    {
+      "at": "2026-11-03T14:17:48Z",
+      "actor": "orchestrator",
+      "kind": "classification",
+      "ref": "developing-today/code#1943",
+      "summary": "NEEDS-DREW REVIEW: #1943 gh-verified OPEN, updatedAt moved to 2026-11-03T14:05:01Z (new activity) but substance unchanged — hostnames decided, remaining step is Drew's DNS records; kept, not re-escalated as new."
+    },
+    {
+      "at": "2026-11-03T14:17:48Z",
+      "actor": "orchestrator",
+      "kind": "classification",
+      "ref": "fleet-sessions",
+      "summary": "Attention feed: 61 sessions, 0 stopped-for-question (nothing to answer this run), 4 carrying lastTurnError of which 2 still active — keeper-owned supervision, no orchestrator retry/failover."
+    },
+    {
+      "at": "2026-11-03T15:13:47.243Z",
       "actor": "orchestrator",
       "kind": "orchestration-published",
-      "ref": "orchestration:orch-watchdog-test",
-      "summary": "orchestration run orch-watchdog-test published: 0 needs-user, 0 needs-orchestrator"
+      "ref": "orchestration:orch-2026-11-03T14:17:48Z",
+      "summary": "orchestration run orch-2026-11-03T14:17:48Z published: 2 needs-user, 29 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T15:14:44Z",
+      "actor": "orchestrator",
+      "kind": "dashboard-action",
+      "ref": "goal_b647ff5c92f5",
+      "summary": "Snooze expired (dashboard action da-mvqv1xti-5zso46, until 2026-11-03T15:00:00Z): Second Porkbun item publishes normally again — restored to NEEDS DREW and to the goals section this run."
+    },
+    {
+      "at": "2026-11-03T15:14:44Z",
+      "actor": "orchestrator",
+      "kind": "wall",
+      "ref": "opencode-laptop-1200-lanes-timeout-cluster",
+      "summary": "Lane error cluster worsened 4 -> 22 errored at 15:13Z (19x 'No response output within 10000ms' in the ~14:49Z wave); keeper-owned supervision, no orchestrator retry/failover."
+    },
+    {
+      "at": "2026-11-03T15:14:44Z",
+      "actor": "orchestrator",
+      "kind": "classification",
+      "ref": "fleet-feed-orchestration-section",
+      "summary": "Verified the previous dependencies-shape fix held: 15:13Z fleet feed reports meta.orchestration status=ok."
+    },
+    {
+      "at": "2026-11-03T15:14:44Z",
+      "actor": "orchestrator",
+      "kind": "classification",
+      "ref": "developing-today/code#1258",
+      "summary": "NEEDS-DREW REVIEW: #1258 + #1943 gh-verified OPEN and re-checked; neither self-resolvable or stale; published order is now #1258 (gates #3989) > Porkbun (resurfaced) > #1943 (Drew said not now)."
+    },
+    {
+      "at": "2026-11-03T16:49:16.362Z",
+      "actor": "orchestrator",
+      "kind": "orchestration-published",
+      "ref": "orchestration:orch-2026-11-03T15:14:44Z",
+      "summary": "orchestration run orch-2026-11-03T15:14:44Z published: 3 needs-user, 29 needs-orchestrator"
+    },
+    {
+      "at": "2026-11-03T16:49:16.362Z",
+      "actor": "orchestrator",
+      "kind": "tier-change",
+      "ref": "goal_b647ff5c92f5",
+      "summary": "tier — → needs-user (run orch-2026-11-03T15:14:44Z)"
     }
   ]
 }

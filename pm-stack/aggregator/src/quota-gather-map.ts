@@ -74,6 +74,10 @@ export function serviceIdFor(providerId: string): string {
       return "cline-pass:cline-pass";
     case "deepseek":
       return "deepseek:api";
+    case "meta":
+      return "meta:high-usage";
+    case "opendesign":
+      return "opendesign:go";
     default:
       return providerId;
   }
@@ -227,11 +231,15 @@ export interface FileExportDoc {
 const FILE_EXPORT_WINDOW_SECONDS: Record<string, number> = { "5h": 18_000, weekly: 604_800 };
 
 /**
- * Map one file-export document onto a quota-current entry (v1
- * producer: Meta, service meta:high-usage, ~/atlas/meta-quota-export/
- * latest.json on the laptop). `doc` null = the file could not be
- * read or parsed; `stale` = its mtime is past the staleness bound.
- * Both are error entries — never zeros.
+ * Map one file-export document onto a quota-current entry. The v1
+ * producer was Meta (service meta:high-usage, ~/atlas/meta-quota-
+ * export/latest.json on the laptop) — retired 2026-11-03 when the
+ * gatherer began asking the OpenCode quota module for Meta
+ * directly (PR #5040); the mapper stays as the #1301 convention's
+ * tested shape for the next producer the module cannot reach.
+ * `doc` null = the file could not be read or parsed; `stale` = its
+ * mtime is past the staleness bound. Both are error entries — never
+ * zeros.
  */
 export function entryFromFileExport(
   doc: FileExportDoc | null,
