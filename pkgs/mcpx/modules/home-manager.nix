@@ -61,13 +61,19 @@ in
         systemd.user.services.mcpx = {
           Unit.Description = "mcpx daemon";
           Install.WantedBy = [ "default.target" ];
-          # Via the service-level `environment` attribute, not
-          # Service.Environment: home-manager injects its own
-          # Service.Environment (session variables) and the two
-          # definitions do not merge.
-          inherit (cfg) environment;
           Service = {
             ExecStart = "${cfg.package}/bin/mcpx daemon --config ${cfg.configFile}";
+            # The daemon environment, as [Service] Environment=
+            # entries through home-manager's typed list option.
+            # List definitions merge in the module system, so other
+            # contributors' entries concatenate with these; and
+            # session variables never compete here — home-manager
+            # delivers those to the user manager via environment.d,
+            # not as per-service Environment= lines. (A service-level
+            # `environment` attribute, by contrast, falls through
+            # the unit type's freeform and is serialized as a literal
+            # [environment] section — code#5088.)
+            Environment = lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
             Restart = "always";
             TimeoutStopSec = 20;
             WorkingDirectory = "%h";
