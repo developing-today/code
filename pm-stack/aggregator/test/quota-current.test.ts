@@ -610,7 +610,7 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
     const pool = out.pools.find((p) => p.id === "openai:codex")!;
     expect(pool.credentials).toHaveLength(2);
     expect(pool.credentials!.map((c) => c.credentialId).sort()).toEqual(["cred-a", "cred-b"]);
-    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => a - b)).toEqual([30, 80]);
+    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([30, 80]);
   });
 
   test("reset drift under the tolerance does not split a shared read", () => {
@@ -717,6 +717,60 @@ describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
     // The main account's pool keeps its own read, untouched.
     const main = out.pools.find((p) => p.id === "openai:codex")!;
     expect(main.windows[0].percent).toBe(11);
+  });
+});
+
+describe("overlay: split gatherer rows land on the four split hub pools (#1331)", () => {
+  test("Go per-workspace + Antigravity per-pool rows map with freshness and values", () => {
+    const view = baseView();
+    view.pools.push(
+      pool("opencode-go:personal", []),
+      pool("opencode-go:lab", []),
+      pool("antigravity:gemini", []),
+      pool("antigravity:claude-gpt", []),
+    );
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:personal",
+          credentialId: "cred_personal",
+          credentialLabel: "Personal",
+          windows: [win("monthly", 62.5, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "opencode-go",
+          serviceId: "opencode-go:lab",
+          credentialId: "cred_lab",
+          credentialLabel: "Lab",
+          windows: [win("monthly", 50, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:gemini",
+          windows: [win("weekly", 40, iso(5 * 60_000))],
+        }),
+        entry({
+          providerId: "antigravity",
+          serviceId: "antigravity:claude-gpt",
+          windows: [win("weekly", 90, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const byId = new Map(out.pools.map((p) => [p.id, p]));
+    expect(byId.get("opencode-go:personal")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 62.5]]);
+    expect(byId.get("opencode-go:lab")!.windows.map((w) => [w.name, w.percent])).toEqual([["monthly", 50]]);
+    expect(byId.get("antigravity:gemini")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 40]]);
+    expect(byId.get("antigravity:claude-gpt")!.windows.map((w) => [w.name, w.percent])).toEqual([["weekly", 90]]);
+    for (const id of ["opencode-go:personal", "opencode-go:lab", "antigravity:gemini", "antigravity:claude-gpt"]) {
+      expect(byId.get(id)!.freshness).toEqual({
+        measuredAt: iso(5 * 60_000),
+        source: "openchamber-quota",
+        state: "ok",
+      });
+    }
   });
 });
 
@@ -837,5 +891,54 @@ describe("out-of-range pctOfLimit drops, never clamps (#2582)", () => {
       expect(tursoPct(0).percent).toBe(0);
       expect(tursoPct(100).percent).toBe(100);
     });
+  });
+});
+
+describe("parseQuotaCurrent measuredAt gates (#4987)", () => {
+  test("an entry whose measuredAt is impossible or non-ISO is dropped; valid siblings survive", () => {
+    for (const bad of ["2026-02-30T07:00:00.000Z", "2026-04-31T07:00:00.000Z", "March 2, 2026"]) {
+      const doc = JSON.parse(
+        JSON.stringify(
+          file([
+            entry({ serviceId: "meta:high-usage", measuredAt: bad, windows: [win("weekly", 42, iso(5 * 60_000))] }),
+            entry({ serviceId: "openai:codex", windows: [win("7-day", 17, iso(5 * 60_000))] }),
+          ]),
+        ),
+      );
+      const parsed = parseQuotaCurrent(doc);
+      expect(parsed?.sanitized.droppedProviders).toBe(1);
+      expect(parsed?.providers.map((p) => p.serviceId)).toEqual(["openai:codex"]);
+    }
+  });
+
+  test("a window whose measuredAt is impossible or non-ISO is dropped without dropping valid sibling windows", () => {
+    for (const bad of ["2026-02-30T07:00:00.000Z", "2026-04-31T07:00:00.000Z", "March 2, 2026"]) {
+      const doc = JSON.parse(
+        JSON.stringify(
+          file([
+            entry({
+              serviceId: "openai:codex",
+              windows: [win("7-day", 17, iso(5 * 60_000)), win("weekly", 42, bad)],
+            }),
+          ]),
+        ),
+      );
+      const parsed = parseQuotaCurrent(doc);
+      expect(parsed?.sanitized.droppedWindows).toBe(1);
+      expect(parsed?.providers[0].windows.map((w) => w.name)).toEqual(["7-day"]);
+    }
+  });
+
+  test("leap-date and normal measuredAt stamps still validate", () => {
+    const leap = "2024-02-29T07:00:00.000Z";
+    const doc = JSON.parse(
+      JSON.stringify(
+        file([entry({ serviceId: "openai:codex", measuredAt: leap, windows: [win("7-day", 17, leap)] })]),
+      ),
+    );
+    const parsed = parseQuotaCurrent(doc);
+    expect(parsed?.sanitized).toEqual({ droppedProviders: 0, droppedWindows: 0 });
+    expect(parsed?.providers).toHaveLength(1);
+    expect(parsed?.providers[0].windows).toHaveLength(1);
   });
 });

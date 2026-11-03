@@ -44,6 +44,25 @@ describe("dns register parser", () => {
     expect(entries.find((e) => e.domain === "noprice.example")?.priceUsd).toBeNull();
   });
 
+  test("rejects impossible calendar renewal dates, keeps the leap date (#2199)", () => {
+    const md = [
+      "# DNS / Domain Register",
+      "",
+      "| Domain | Registrar | DNS hosted at | Next renewal | Auto-renew | Renewal price (list) | Prior-year cost | Where used | Plan / status | Review? |",
+      "|---|---|---|---|---|---|---|---|---|---|",
+      "| feb30.example | Porkbun | Porkbun | 2026-02-30 | ON | $20.00 | unknown | Parked | Parked | REVIEW |",
+      "| month13.example | Porkbun | Porkbun | 2026-13-01 | ON | $30.00 | unknown | Parked | Parked | REVIEW |",
+      "| month00.example | Porkbun | Porkbun | 2026-00-10 | ON | $40.00 | unknown | Parked | Parked | REVIEW |",
+      "| apr31.example | Porkbun | Porkbun | 2026-04-31 | ON | $50.00 | unknown | Parked | Parked | REVIEW |",
+      "| leap.example | Porkbun | Porkbun | 2024-02-29 | ON | $5.00 | unknown | Parked | Parked | REVIEW |",
+      "| real.example | Porkbun | Porkbun | 2027-01-15 | ON | $10.00 | unknown | Parked | Parked | REVIEW |",
+    ].join("\n");
+    const entries = parseDnsRegister(md);
+    expect(entries.map((e) => e.domain)).toEqual(["leap.example", "real.example"]);
+    const section = dnsSectionFromRegister(md, "2026-10-25T00:00:00Z", "test");
+    expect(section?.totalAnnualListUsd).toBe(15);
+  });
+
   test("classifies active / earmarked / unused from the plan cell", () => {
     const entries = parseDnsRegister(REGISTER_MD);
     const byStatus = (s: string) => entries.filter((e) => e.status === s).map((e) => e.domain);
@@ -470,6 +489,43 @@ describe("dashboard comments", () => {
     expect(landed?.githubState).toBe("posted");
   });
 
+  test("github result urls outside https://github.com/ are refused with state unchanged (#950)", async () => {
+    const dir3 = mkdtempSync(join(tmpdir(), "agg-comments-url-"));
+    const store = new CommentsStore(join(dir3, "comments.json"));
+    const addGh = () =>
+      store.add({
+        objectRef: "gh:developing-today/code#950",
+        kind: "github",
+        author: agent,
+        body: "posting this",
+        githubRef: "developing-today/code#950",
+      });
+
+    // Every non-github.com scheme/host is refused on a pending
+    // comment, with no githubUrl stored and state unchanged.
+    const pending = await addGh();
+    for (const bad of [
+      "javascript:alert(document.domain)",
+      "data:text/html,<script>alert(1)</script>",
+      "http://github.com/developing-today/code/issues/950#issuecomment-1",
+      "https://evil-github.com/developing-today/code#1",
+      "https://github.com.evil.com/#1",
+    ]) {
+      await expect(store.markGithubResult(pending.id, { url: bad })).rejects.toThrow("https://github.com/");
+      const row = (await store.all()).find((c) => c.id === pending.id);
+      expect(row?.githubState).toBe("pending");
+      expect(row?.githubUrl).toBeUndefined();
+    }
+
+    // The real flow still works: an https://github.com/ result URL
+    // is recorded and the comment posts.
+    const ok = await store.markGithubResult(pending.id, {
+      url: "https://github.com/developing-today/code/issues/950#issuecomment-1",
+    });
+    expect(ok?.githubState).toBe("posted");
+    expect(ok?.githubUrl).toBe("https://github.com/developing-today/code/issues/950#issuecomment-1");
+  });
+
   test("a repeat report after a failed persist still lands the result on disk (#1686)", async () => {
     // Codex P2 on PR 3062: markGithubResult flips the in-memory state
     // before persist() runs. If that write fails, a repeat report hit
@@ -761,6 +817,32 @@ describe("slice-3 routes", () => {
     expect(discuss).toContain("a plain note");
     expect(discuss).toContain("message to Muse");
     expect(discuss).toContain("Post as GitHub comment");
+  });
+
+  test("github-result endpoint refuses non-github.com urls with a 400 (#950)", async () => {
+    const post = (body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/comments/github-result`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const author = { kind: "drew", id: "drew", label: "Drew" };
+    const ref = "gh:developing-today/code#950";
+    const created = (await (
+      await fetch(`http://127.0.0.1:${port}/api/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          objectRef: ref,
+          kind: "github",
+          author,
+          body: "for the issue",
+          githubRef: "developing-today/code#950",
+        }),
+      })
+    ).json()) as { comment: { id: string } };
+    const bad = await post({ id: created.comment.id, url: "javascript:alert(document.domain)" });
+    expect(bad.status).toBe(400);
   });
 
   test("item page carries the dashboard comments form + kinds explainer", async () => {

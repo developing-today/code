@@ -59,8 +59,8 @@ describe("parseRegistryQuery", () => {
     // Non-decimal spellings fall back to the defaults (limit 100, offset 0),
     // exactly as window=1e2 falls back to the default window.
     for (const bad of ["1e2", "5.9", "10junk", "0x10"]) {
-      expect(q().limit).toBe(100);
-      expect(q().offset).toBe(0);
+      expect(q(`limit=${bad}&offset=${bad}`).limit).toBe(100);
+      expect(q(`limit=${bad}&offset=${bad}`).offset).toBe(0);
     }
     // Plain unsigned decimals still parse, including the boundary values.
     expect(q("limit=42").limit).toBe(42);

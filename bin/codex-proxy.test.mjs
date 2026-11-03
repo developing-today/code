@@ -704,6 +704,17 @@ test('token sync updates only the active base openai row (#2533)', async (t) => 
   assert.match(started.log(), /codex-token-sync: updated 1 credential row\(s\)/);
 });
 
+test('token sync stays off when CODEX_PROXY_TOKEN_SYNC=0 (opencode#1154 cutover)', async (t) => {
+  let dbPath;
+  const started = await startProxy(null, { CODEX_PROXY_TOKEN_SYNC: '0' }, (home) => { dbPath = seedSyncHome(home); });
+  t.after(started.stop);
+  const rows = JSON.parse(runPy(READ_SYNC_DB, { SYNC_TEST_DB: dbPath }));
+  assert.equal(rows['cred-active'].value.access, 'OLD-ACCESS', 'sync off must leave the active row untouched');
+  assert.equal(rows['cred-active'].time_updated, 111);
+  assert.match(started.log(), /codex-token-sync: disabled by CODEX_PROXY_TOKEN_SYNC=0/);
+  assert.doesNotMatch(started.log(), /codex-token-sync: updated/);
+});
+
 test('token sync failure is logged, not swallowed (#2533)', async (t) => {
   const started = await startProxy(null, {}, (home) => { seedSyncHome(home, { corruptDb: true }); });
   t.after(started.stop);

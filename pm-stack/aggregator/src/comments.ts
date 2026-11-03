@@ -41,6 +41,10 @@ export interface CommentsFile {
 }
 
 const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
+// Result URLs are rendered as link hrefs on the dashboard (#950):
+// only https://github.com/ result links are storable — a stored
+// javascript:/data: URL would render as a clickable script link.
+const GH_RESULT_URL = /^https:\/\/github\.com\//;
 const COMMENT_KINDS = new Set<DashCommentKind>(["message", "note", "github"]);
 
 function commentRecordProblem(value: unknown): string | null {
@@ -352,6 +356,13 @@ export class CommentsStore {
       throw new Error("github result cannot carry both a url and an error");
     }
     if (result.url) {
+      // #950: the stored githubUrl is rendered as a link href, so only
+      // https://github.com/ result URLs are accepted — anything else
+      // (javascript:, data:, http:, other hosts) is refused with the
+      // state unchanged (the endpoint maps the throw to a 400).
+      if (!GH_RESULT_URL.test(result.url)) {
+        throw new Error("github result url must start with https://github.com/");
+      }
       if (c.githubState === "posted") {
         // Posted is terminal. A repeat of the same url is an
         // idempotent no-op; a different url is a conflicting

@@ -89,5 +89,32 @@ class TestExactTitleFilter(unittest.TestCase):
         self.assertEqual([h["number"] for h in hits], [3])
 
 
+class TestGenericCommandArgs(unittest.TestCase):
+    """The generic commands must not be able to act by accident: `api`
+    requires an explicit --method for every call (no default to hide a
+    write behind), and both new commands require --repo so a token is
+    never minted without a scope-checked target. Argparse failures raise
+    SystemExit before any command runs, so these need no network."""
+
+    def test_api_requires_method(self):
+        with self.assertRaises(SystemExit):
+            fp.main(["api", "--repo", "developing-today/code",
+                     "--path", "/repos/developing-today/code"])
+
+    def test_api_requires_path(self):
+        with self.assertRaises(SystemExit):
+            fp.main(["api", "--repo", "developing-today/code",
+                     "--method", "GET"])
+
+    def test_api_requires_repo(self):
+        with self.assertRaises(SystemExit):
+            fp.main(["api", "--method", "GET",
+                     "--path", "/repos/developing-today/code"])
+
+    def test_token_requires_repo(self):
+        with self.assertRaises(SystemExit):
+            fp.main(["token"])
+
+
 if __name__ == "__main__":
     unittest.main()

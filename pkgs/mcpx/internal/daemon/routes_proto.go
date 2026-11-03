@@ -308,7 +308,7 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	defer r.endAsk(id)
 	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
 
-	return p.Call(ctx, rs, effTool, effArgs)
+	return r.callWithLedger(ctx, p, server, effTool, effArgs, rs, "ask")
 
 }
 

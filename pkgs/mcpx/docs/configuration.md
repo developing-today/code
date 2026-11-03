@@ -125,6 +125,202 @@ configuration file _and_ apply at once where the setting allows it -- a change
 written to a file but not applied would leave `mcpx settings get` answering
 with the old value, which reads as the write having failed.
 
+<a id="common-config"></a>
+
+## Common config
+
+Start with `mcpx init`: it writes a starter configuration whose
+every key is one the loader reads, comments included, and
+`mcpx ls` will tell you immediately whether it took. The file is
+JSON. Its two halves are the `mcpServers` object — the servers, next
+section — and settings, carried in nested blocks named for each
+setting's first segment (a `logging` block, a `pool` block), the
+same grouping the inventory at the bottom of this page uses.
+
+There is rarely one file. mcpx merges every configuration file on
+its search path, so a project can add its servers in a file of its
+own without anybody copying the user-level file to edit it. The
+search path, in the order the files are consulted:
+
+1. If `MCPX_CONFIG` is set, that one file, alone.
+2. Otherwise, at each directory from the working directory up to
+   the root: .config/mcpx/config.json, then .mcpx.json, then
+   .mcpx/config.json, then .mcp.json.
+3. Then the user level: $XDG_CONFIG_HOME/mcpx/config.json,
+   ~/.config/mcpx/config.json, ~/.mcpx.json.
+4. Finally /etc/mcpx/config.json.
+
+Files nearer the working directory win: merging is per key and per
+server name, so a nearer file overrides what it names and inherits
+the rest, and a server it does not want it can drop with
+`"disabled": true`. One honest surprise in that list: .mcp.json is
+Claude Code's project file, and mcpx reads it on purpose — a
+project already configured for Claude Code is already configured
+here, its `mcpServers` included. An explicit `--config <file>`
+stands outside all of this and is used alone, because naming a file
+means meaning it.
+
+(`paths.config` can redirect the search itself, in two passes —
+discovery, then load. That machinery is [Where a value can come
+from](#where-a-value-can-come-from), above; the list here is the
+default it starts from.)
+
+Whatever the file, a value in it is one layer of five — defaults,
+file, environment, flag, runtime override, in that order — and the
+file layer is the only one most people ever touch. When a value is
+not what the file says, do not guess: `mcpx config --sources` lists
+the files that were actually read, and `mcpx settings get <path>`
+names the winning value, where it came from, and what it displaced.
+
+<a id="server-config"></a>
+
+## Server config
+
+A server is one entry in `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "chrome-devtools-mcp",
+      "args": ["--headless", "--isolated"],
+      "mcpx": { "sharing": "exclusive", "scope": "session", "max": 4 }
+    },
+    "internal-docs": { "url": "http://docs.internal:8080/mcp" }
+  }
+}
+```
+
+Two names for this, and they are not interchangeable: the file key
+is `mcpServers` — the same object other MCP hosts use, so an
+existing configuration pastes in unchanged — while `servers` is the
+CLI command (`mcpx servers list`) and the `/v1` resource
+(`GET /v1/servers`). A file that says `servers` configures nothing.
+
+A block with a `command` is a stdio server: the command and its
+`args`, an `env` map for the child, nothing more needed. A block
+with a `url` is a remote server, reached over Streamable HTTP; it
+may carry `headers` and an `auth` block, and `transport` is filled
+in as `http` when left blank. What the transports actually mean —
+including the legacy-SSE fallback — is
+[Transport options](./modes.md#transport-options).
+
+The `mcpx` block is mcpx's own, ignored by other hosts, and it is
+where a server stops being a line in a file and starts being a
+process policy:
+
+- `sharing`: `shared` (default) lets any number of callers use one
+  process at once; `exclusive` gives one caller at a time and
+  queues the rest. Stateful servers want exclusive.
+- `scope`: what a live process is keyed by — `global` (default),
+  `repo`, `worktree`, `cwd`, `session`, `parent-session`, `pid`,
+  `call`. One process per distinct key. `session` and
+  `parent-session` are resolved by the caller, through
+  `MCPX_SESSION_ID` / `MCPX_PARENT_SESSION_ID`; a scope that cannot
+  resolve degrades to per-call isolation and says so in the log.
+- `profiles` and `default`: which profile selections see the
+  server at all; a server is default-on unless it says otherwise.
+- `tools` / `excludeTools`: the allowlist and denylist of tool
+  names callers may see — [Hiding tools](#hiding-tools), below.
+- `max` and `idleTimeout`: how many processes a scope may hold,
+  and how long an idle one is kept.
+
+An **alias** is a second entry pointing at the first:
+`"aliasOf": "<name>"`, with its own `mcpx` block giving a different
+namespace, tool subset, or description over the same server —
+aliases of aliases are refused. Whether an alias shares its
+target's *process* depends on whether its pooling fields match;
+change its `scope` and it is a separate process.
+
+Adding and removing servers does not require editing by hand — the
+CLI, `/v1`, and MCP surfaces for it are the [Servers](#servers)
+table above, the entry is written to a configuration file, and the
+daemon reloads and makes it callable immediately.
+
+<a id="client-config"></a>
+
+## Client config
+
+Client configuration is the settings whose reader is the process
+you ran — or the single call you are making — as opposed to the
+daemon's settings, which were fixed when the daemon started. The
+distinction is the [Scope](#scope-who-reads-it) section above; this
+is what it means when you go to set something.
+
+
+
+**Client-scoped** settings govern how the CLI finds and treats a
+daemon: `daemon.endpoint` (a daemon somewhere else instead of the
+local socket), `daemon.autostart` and the `autostart.*` family
+(how a started daemon is launched and waited for), `daemon.inline`
+(the last-resort in-process mode). Setting one of these *on the
+daemon* — recording it as a value the daemon holds — does nothing
+at all: the process that acts on it is the next client, not the
+running daemon. Set them in a file, the environment, or a flag,
+where a client will read them.
+
+**Call-scoped** settings travel with a request, so they work
+against any daemon however it was started: the CLI sends its
+effective value in a header and the daemon honours it for that
+request only. `mcpx search --limit 3` is `search.limit` arriving
+this way; `catalog.budget`, the `artifacts.*` delivery settings,
+and `diagnose.preflight` behave the same. Only call-scoped settings
+are honoured from that header — widening it would let any client
+reconfigure a shared daemon.
+
+A **host** configuring mcpx for its users — an editor plugin, a
+harness, a script's launcher — mostly sets client configuration:
+the endpoint if it runs its own daemon, the profile if it exposes a
+subset, the session identifiers if it multiplexes agents. The
+opencode plugin is the worked example: it reads its settings from
+the environment directly (the plugin scope), which is why the
+variable names it uses are a contract a test pins. What a host does
+*not* configure per user is the daemon's behaviour — that is
+[Common config](#common-config) and the daemon's own settings, set
+once, on purpose.
+
+<a id="env-vars"></a>
+
+## Env vars
+
+Every setting has an environment variable, derived from its path —
+`daemon.endpoint` is `MCPX_DAEMON_ENDPOINT`, `search.limit` is
+`MCPX_SEARCH_LIMIT` — and the inventory below lists each one beside
+its setting, so there is no separate list to keep current. As a
+layer, the environment sits above files and below flags: export a
+variable to change one value for one shell without editing any
+file, and expect a flag on the command line to beat it.
+
+Two spellings of one setting at the same level — two variables
+that mean the same setting, carrying different values — are an
+error, not a race. The environment has no order, so there is
+nothing to prefer, and picking one silently is how a configuration
+becomes unexplainable.
+
+Three cautions about what the variables are *for*:
+
+- **Setting a variable is not the same as the script environment.**
+  Everything above is input: a person telling mcpx something. The
+  names mcpx and the plugin hand *to* a script — its session, its
+  endpoint, its socket — are output, a different list with a
+  different owner, generated on [The script
+  environment](./environment.md) page. Names appear on both sides
+  (`MCPX_SESSION_ID` is how a caller tells mcpx its session *and*
+  how a script learns it); that page is the authority for the
+  script-facing direction.
+- **A few names act before any setting exists.** `MCPX_CONFIG`
+  selects the configuration file itself, and `MCPX_PATHS_CONFIG`
+  (or `--paths-config`) seeds the discovery pass; neither could be
+  a setting, because a setting's value is read from the very files
+  these choose. They are the whole hand-written remainder: if a
+  name is not a setting's derived variable, not in the script
+  environment, and not one of these, mcpx does not read it.
+- **A variable only reaches the process that reads it.** Exporting
+  a daemon-scoped variable after the daemon has started changes
+  nothing until it restarts — scope again, not a special property
+  of the environment. `mcpx settings list --daemon` shows what the
+  daemon actually resolved.
+
 ## Local-model controls by surface
 
 These are independent controls, not one fleet-wide Qwen switch. In particular,
@@ -156,8 +352,16 @@ provider or model, or a non-`none` `model.provider`, also opts in even when
 `prompt.sample` is `never`. `model.provider` selects the newer
 model layer (`none`, `auto`, `sampling`, `plugin`, `openai`, `anthropic`, or
 `google`), with `model.baseURL` and `model.default` for a configured endpoint
-and model. An OpenAI-compatible local endpoint can serve Qwen, but it must be
-configured separately. `model.provider: none` alone is not a universal veto:
+and model. `model.providers` is a JSON object keyed by provider name, with
+per-provider `baseURL` and explicitly named `apiKeyEnv` entries;
+`model.profiles` is a JSON object of named, ordered `provider/model` fallback
+chains, optionally bounded by a token budget and per-attempt timeout. Either
+`model.default` or a per-operation model override may name a profile or a
+provider/model id. mcpx never scans the environment for key names. An
+OpenAI-compatible local endpoint can serve Qwen when explicitly configured.
+The singular `model.baseURL` and `model.apiKeyEnv` remain the fallback for
+`model.provider` and keep single-provider configurations working.
+`model.provider: none` alone is not a universal veto:
 the legacy scripting provider can resolve an explicit request, environment or
 installed CLI when generation is allowed. The legacy `repair.provider` and
 `repair.model` keys in the fleet file are not registered settings in this
@@ -625,7 +829,9 @@ skipped launcher phases).
 | `model.baseURL` | string | *(empty)* | daemon | no | `--model-base-url` | `MCPX_MODEL_BASE_URL` | the OpenAI-compatible endpoint the configured provider calls |
 | `model.budget` | int | `0` | daemon | no | `--model-budget` | `MCPX_MODEL_BUDGET` | hard ceiling on the tokens one generation through the layer may ask for; 0 is no ceiling |
 | `model.default` | string | *(empty)* | daemon | no | `--model-default` | `MCPX_MODEL_DEFAULT` | the model id used when an operation names none, as provider/model |
+| `model.profiles` | string | `{}` | daemon | no | `--model-profiles` | `MCPX_MODEL_PROFILES` | JSON object of named ordered provider/model fallback chains |
 | `model.provider` | enum | `none` | daemon | no | `--model-provider` | `MCPX_MODEL_PROVIDER` | where mcpx's own generation gets a model: a configured provider, sampling through the caller, or none |
+| `model.providers` | string | `{}` | daemon | no | `--model-providers` | `MCPX_MODEL_PROVIDERS` | JSON object mapping provider names to baseURL and apiKeyEnv |
 | `model.timeout` | duration | `1m30s` | daemon | no | `--model-timeout` | `MCPX_MODEL_TIMEOUT` | how long one generation through the layer may take |
 
 ### output
@@ -786,6 +992,12 @@ skipped launcher phases).
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `retention.maxTools` | int | `24` | daemon | no | `--retention-max-tools` | `MCPX_RETENTION_MAX_TOOLS` | maximum active tools in reactive working set |
 | `retention.stickyWindow` | duration | `2h` | daemon | no | `--retention-sticky-window` | `MCPX_RETENTION_STICKY_WINDOW` | duration explicitly requested tools remain retained |
+
+### sampling
+
+| setting | kind | default | scope | hot | flag | variable | governs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `sampling.answerLocally` | bool | `false` | daemon | no | `--sampling-answer-locally` | `MCPX_SAMPLING_ANSWER_LOCALLY` | answer upstream sampling requests with mcpx's configured model provider instead of relaying them to the caller |
 
 ### script
 

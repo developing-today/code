@@ -95,6 +95,7 @@ jobs:
     # test job so drift is caught before it reaches main.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -322,6 +323,11 @@ jobs:
               echo "$unformatted"
               exit 1
             fi
+            # OpenAPI SDK-generation proof (#1851): generate one client
+            # from the current /v1 spec and compile it, so spec drift
+            # that breaks generated SDK consumers fails here instead of
+            # silently. See pkgs/mcpx/scripts/openapi-sdk-check.sh.
+            bash scripts/openapi-sdk-check.sh
             cd ../..
             shellcheck -x -P SCRIPTDIR --severity=warning pkgs/mcpx/scripts/*.sh
             # actionlint is scoped to the mcpx workflows: #1996 assigns it
