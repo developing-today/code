@@ -369,16 +369,25 @@ describe("live source orchestration states (#1140)", () => {
   test("departed orchestration items emit a tier-change event", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-orch-events-"));
     const feedFile = join(dir, "fleet-feed.json");
-    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
     const events: Array<{ kind: string; ref: string; summary: string }> = [];
     const src = liveSource(cfg, { onEvent: (event) => events.push(event) });
-    const writeSection = async (section: any) => writeFile(feedFile, JSON.stringify({
-      version: 1,
-      generatedAt: new Date().toISOString(),
-      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
-      attention: [],
-      orchestration: section,
-    }));
+    const writeSection = async (section: any) =>
+      writeFile(
+        feedFile,
+        JSON.stringify({
+          version: 1,
+          generatedAt: new Date().toISOString(),
+          quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+          attention: [],
+          orchestration: section,
+        }),
+      );
     await writeSection(LIVE_SHAPE);
     await src.orchestration();
     const next = {
@@ -390,23 +399,32 @@ describe("live source orchestration states (#1140)", () => {
     };
     await writeSection(next);
     await src.orchestration();
-    expect(events.find((event) => event.kind === "tier-change" && event.ref === "developing-today/code#812")?.summary)
-      .toContain("needs-user → —");
+    expect(
+      events.find((event) => event.kind === "tier-change" && event.ref === "developing-today/code#812")?.summary,
+    ).toContain("needs-user → —");
   });
 
   test("an orchestration action with a free-text target is preserved as a valid event (#4489 Codex P2)", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-orch-action-ref-"));
     const feedFile = join(dir, "fleet-feed.json");
-    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
     const events: Array<{ at?: string; actor: string; kind: string; ref: string; summary: string }> = [];
     const src = liveSource(cfg, { onEvent: (event) => events.push(event) });
-    await writeFile(feedFile, JSON.stringify({
-      version: 1,
-      generatedAt: new Date().toISOString(),
-      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
-      attention: [],
-      orchestration: LIVE_SHAPE,
-    }));
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        orchestration: LIVE_SHAPE,
+      }),
+    );
     await src.orchestration();
     // LIVE_SHAPE's published action targets "fleet queues" (free text
     // with a space). Its event must survive validation with a
@@ -420,14 +438,22 @@ describe("live source orchestration states (#1140)", () => {
   test("a durable publication identity prevents replay after source restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-orch-restart-"));
     const feedFile = join(dir, "fleet-feed.json");
-    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
-    await writeFile(feedFile, JSON.stringify({
-      version: 1,
-      generatedAt: new Date().toISOString(),
-      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
-      attention: [],
-      orchestration: LIVE_SHAPE,
-    }));
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        orchestration: LIVE_SHAPE,
+      }),
+    );
     const persisted = new Set<string>();
     const events: Array<{ kind: string; ref: string }> = [];
     const opts = {
@@ -447,16 +473,31 @@ describe("live source orchestration states (#1140)", () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-registry-events-"));
     const feedFile = join(dir, "fleet-feed.json");
     const registry = Array.from({ length: 60 }, (_, i) => ({
-      id: `session-${i}`, source: "opencode-sandbox", label: `Session ${i}`,
-      agentId: "opencode:test", agentLabel: "test", parentId: null, status: "complete", taskRefs: [],
+      id: `session-${i}`,
+      source: "opencode-sandbox",
+      label: `Session ${i}`,
+      agentId: "opencode:test",
+      agentLabel: "test",
+      parentId: null,
+      status: "complete",
+      taskRefs: [],
     }));
-    await writeFile(feedFile, JSON.stringify({
-      version: 1,
-      generatedAt: new Date().toISOString(),
-      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
-      attention: [], registry,
-    }));
-    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        registry,
+      }),
+    );
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_PROJECTOR_URL: "off",
+    });
     const events: unknown[] = [];
     await liveSource(cfg, { onEvent: (event) => events.push(event) }).registry();
     expect(events).toHaveLength(60);
@@ -592,17 +633,7 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
   test("registry facet counts the MERGED total, with its noun (#1138)", async () => {
     const src = await sourceWithFeed({
       orchestration: liveSection(),
-      registry: [
-        {
-          id: "ses-diag-1",
-          source: "opencode-sandbox",
-          label: "Diag session",
-          status: "in-progress",
-          agentId: "opencode:main",
-          agentLabel: "OpenCode · main (laptop)",
-          taskRefs: [],
-        },
-      ],
+      registry: [{ id: "ses-diag-1", source: "opencode-sandbox", label: "Diag session", taskRefs: [] }],
     });
     const records = await src.registry();
     expect(records.length).toBe(1);
@@ -628,24 +659,8 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
 
     const clean = await sourceWithFeed({
       registry: [
-        {
-          id: "ses-muse-1",
-          source: "claude-code",
-          label: "Muse launch",
-          status: "succeeded",
-          agentId: "claude-code",
-          agentLabel: "Muse",
-          taskRefs: [],
-        },
-        {
-          id: "ses-opencode-1",
-          source: "opencode-sandbox",
-          label: "OpenCode session",
-          status: "in-progress",
-          agentId: "opencode:main",
-          agentLabel: "OpenCode · main (sandbox)",
-          taskRefs: [],
-        },
+        { id: "ses-muse-1", source: "claude-code", label: "Muse launch", taskRefs: [] },
+        { id: "ses-opencode-1", source: "opencode-sandbox", label: "OpenCode session", taskRefs: [] },
       ],
     });
     expect(await clean.registry()).toHaveLength(2);

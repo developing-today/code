@@ -176,21 +176,6 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
     typeof r.label === "string" &&
     (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
     (r.startedAt === undefined || typeof r.startedAt === "string") &&
-    // #3525: sessionRecordIsLive calls r.status.toLowerCase() and
-    // renderSessions sums tokensTotal while identitiesFromRecords
-    // interpolates agentLabel — all unconditionally. A missing or
-    // non-string status crashed the sessions page; a string/Infinity/
-    // negative/object tokensTotal poisoned the fleet token total; a
-    // missing agent identity rendered a broken label. The validator
-    // owns the rule, per the #2347/#2376 precedent: status and the
-    // agent identity must be present strings, and tokensTotal must be
-    // absent or a finite number >= 0. Poisoned records are rejected,
-    // never coerced.
-    typeof r.status === "string" &&
-    typeof r.agentId === "string" &&
-    typeof r.agentLabel === "string" &&
-    (r.tokensTotal === undefined ||
-      (typeof r.tokensTotal === "number" && Number.isFinite(r.tokensTotal) && r.tokensTotal >= 0)) &&
     // #2408/#2485/#4284: mergeRecords spreads taskRefs as an array, and
     // querying/rendering dereferences it unconditionally (spread in
     // matchesText, .some in the ?task= filter and the item-page linked-

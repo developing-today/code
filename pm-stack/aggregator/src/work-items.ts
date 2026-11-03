@@ -34,19 +34,9 @@
 // incoming) and, within a horizon, in-progress → blocked → queued →
 // done-recently. Lower sorts first; ties keep section order.
 
-import type {
-  DependencyRef,
-  Horizon,
-  LinedUpTask,
-  OrchestrationSection,
-  RefKey,
-  TierItem,
-} from "./model.ts";
+import type { DependencyRef, Horizon, LinedUpTask, OrchestrationSection, RefKey, TierItem } from "./model.ts";
 
-export type WorkItemStatus =
-  | "needs-drew"
-  | "needs-orchestrator"
-  | LinedUpTask["status"];
+export type WorkItemStatus = "needs-drew" | "needs-orchestrator" | LinedUpTask["status"];
 
 export type WorkItemTier = "needs-drew" | "needs-orchestrator";
 
@@ -135,9 +125,11 @@ function asBlockers(value: unknown): DependencyRef[] {
   return value.filter((d): d is DependencyRef => {
     if (typeof d !== "object" || d === null) return false;
     const blocker = d as Record<string, unknown>;
-    return typeof blocker.task === "string" &&
+    return (
+      typeof blocker.task === "string" &&
       ["in-progress", "queued", "stalled", "done", "unknown"].includes(String(blocker.status)) &&
-      (blocker.ref === undefined || typeof blocker.ref === "string");
+      (blocker.ref === undefined || typeof blocker.ref === "string")
+    );
   });
 }
 
