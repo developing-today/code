@@ -101,6 +101,15 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "conflicts",
+    title: "Source conflicts",
+    route: "/conflicts",
+    api: "/api/conflicts.json",
+    blurb: "One read-only queue of every live source disagreement, with both values and its age.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "quota",
     title: "Usage & billing",
     route: "/quota",
