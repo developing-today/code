@@ -189,6 +189,7 @@ async fn main() -> Result<()> {
         Some(Command::Repl { node }) => run_repl(node).await,
         Some(Command::Serve {
             ephemeral,
+            server_config,
             no_relay,
             no_gossip,
             web,
@@ -234,6 +235,7 @@ async fn main() -> Result<()> {
         }) => {
             cmd_serve(ServeOptions {
                 ephemeral,
+                server_config,
                 groups_log: cli.groups_log,
                 no_relay,
                 no_gossip,

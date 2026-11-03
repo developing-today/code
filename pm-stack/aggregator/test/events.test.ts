@@ -160,6 +160,22 @@ describe("events store (#1739)", () => {
     expect(recorded.actor).toBe("orchestrator (retry 2)");
   });
 
+  test("validateStreamEvent refuses impossible calendar dates (#5154)", () => {
+    // Date.parse rolls these over to a neighbouring month instead of
+    // returning NaN; the ingest boundary must refuse them outright.
+    expect(validateStreamEvent({ ...base, at: "2026-02-30" }).ok).toBe(false);
+    expect(validateStreamEvent({ ...base, at: "2026-02-30T10:00:00Z" }).ok).toBe(false);
+    expect(validateStreamEvent({ ...base, at: "2026-04-31T10:00:00Z" }).ok).toBe(false);
+    expect(validateStreamEvent({ ...base, at: "2026-13-01T00:00:00Z" }).ok).toBe(false);
+    expect(validateStreamEvent({ ...base, at: "2026-02-29T10:00:00Z" }).ok).toBe(false);
+    // Controls: real timestamps still validate — leap date, offset,
+    // fractional seconds, date-only.
+    expect(validateStreamEvent({ ...base, at: "2024-02-29T10:00:00Z" }).ok).toBe(true);
+    expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00+02:00" }).ok).toBe(true);
+    expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00.500Z" }).ok).toBe(true);
+    expect(validateStreamEvent({ ...base, at: "2026-02-28" }).ok).toBe(true);
+  });
+
   test("validateStreamEvent rejects malformed records", () => {
     expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00.000Z" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "not a date" }).ok).toBe(false);

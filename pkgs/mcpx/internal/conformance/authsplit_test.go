@@ -21,13 +21,19 @@ func TestAuthSplit(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := conformance.CountAuthSplit(reqs, sp)
-	if c.Rows != 61 || c.Sides != 82 {
-		t.Errorf("split covers %d rows / %d row-sides, want 61 rows / 82 row-sides", c.Rows, c.Sides)
+	// Only catalogue-bound sides are judged. #2619 honoured each row's
+	// not-implemented-by-choice note (the #1950 decision: client OAuth
+	// deferred, /mcp resource server planned at #1975), which marked most
+	// authorization sides n/a -- including every validation side. The split
+	// therefore covers just the 8 bound sides, all permissive, and #1972's
+	// validation target lives with the #1975 work, not here (#2695).
+	if c.Rows != 7 || c.Sides != 8 {
+		t.Errorf("split covers %d rows / %d row-sides, want 7 rows / 8 row-sides", c.Rows, c.Sides)
 	}
-	if c.Permissive != 69 || c.Validation != 13 {
-		t.Errorf("split is %d permissive / %d validation, want 69 / 13", c.Permissive, c.Validation)
+	if c.Permissive != 8 || c.Validation != 0 {
+		t.Errorf("split is %d permissive / %d validation, want 8 / 0", c.Permissive, c.Validation)
 	}
-	for check, want := range map[string]int{"invalid": 6, "expired": 5, "wrong-resource": 3, "scope": 5} {
+	for check, want := range map[string]int{"invalid": 0, "expired": 0, "wrong-resource": 0, "scope": 0} {
 		if c.PerCheck[check] != want {
 			t.Errorf("%d validation row-sides need %q, want %d", c.PerCheck[check], check, want)
 		}

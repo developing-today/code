@@ -287,7 +287,7 @@ const CHAT_HISTORY_BOUNDS: &[ProviderBound] = &[
 /// Bounds for `records.read`: argument bytes plus the page byte cap.
 const RECORDS_READ_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
-    ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES),
+    ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES),
 ];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
@@ -532,8 +532,30 @@ pub const MAX_SCHEDULE_HORIZON_DAYS: u64 = 30;
 pub const MAX_SCHEDULE_HORIZON_MS: u64 = MAX_SCHEDULE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 /// Most schedules delivered in one wakeup. Any left due fire on the next.
 pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
-/// Largest page of records returned by `records.read`, in bytes.
+/// Largest page of records served over the session protocol and the
+/// host view, in bytes. Cap results are not served this way: a
+/// `records.read` result is delivered through `result_event` and is
+/// bounded by [`MAX_RECORDS_RESULT_PAGE_BYTES`] instead (#4888).
 pub const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+
+/// Bytes of [`MAX_EVENT_BYTES`] reserved for the `result_event`
+/// envelope around a `records.read` value: the outer
+/// `{"cap":"result","id":...,"ok":true,"value":...}` object (request
+/// ids are at most [`MAX_NAME_BYTES`] long), the value's own
+/// `{"records":[...],"next_after":...}` wrapper, and a serialized
+/// `next_after` key (record keys are at most 256 bytes, and JSON
+/// escaping at most doubles that, plus the quotes). The fixed parts
+/// measure under 200 bytes and the escaped key under 514, so 1024
+/// leaves slack rather than sitting on the edge.
+pub const RESULT_EVENT_ENVELOPE_BYTES: usize = 1024;
+
+/// Largest page of records a `records.read` cap result may carry, in
+/// bytes of serialized `{"key":...,"value":...}` entries (plus one
+/// array comma each). Derived from the event limit minus the envelope
+/// allowance, so a page admitted under this bound always fits the
+/// `result_event` that delivers it: it can never be replaced by a
+/// `result_too_large` error (#4888).
+pub const MAX_RECORDS_RESULT_PAGE_BYTES: usize = MAX_EVENT_BYTES - RESULT_EVENT_ENVELOPE_BYTES;
 
 /// Check a schedule id: 1 to [`MAX_SCHEDULE_ID_BYTES`] bytes, all printable
 /// ASCII (space through `~`), so no control characters reach the journal.
@@ -1321,6 +1343,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn records_result_pages_always_fit_the_result_event() {
+        // A page admitted at the cap-result bound, delivered with the
+        // longest request id and a longest, escape-heavy next_after key,
+        // stays a records result — never result_too_large (#4888).
+        let entry = serde_json::json!({"key": "k", "value": "x".repeat(1024)});
+        let entry_bytes = serde_json::to_vec(&entry).unwrap().len() + 1;
+        let mut records = Vec::new();
+        let mut used = 0;
+        while used + entry_bytes <= MAX_RECORDS_RESULT_PAGE_BYTES {
+            records.push(entry.clone());
+            used += entry_bytes;
+        }
+        assert!(!records.is_empty());
+        // 256 raw key bytes (128 backslash+quote pairs), the longest a
+        // record key may be, and the worst case for JSON escaping.
+        let next_after: String = (0..128)
+            .flat_map(|_| [char::from_u32(92).unwrap(), '"'])
+            .collect();
+        assert_eq!(next_after.len(), 256);
+        let value = serde_json::json!({
+            "records": records,
+            "next_after": next_after,
+        });
+        let event = result_event(&"i".repeat(MAX_NAME_BYTES), Ok(value));
+        assert!(event.len() <= MAX_EVENT_BYTES, "event is {}", event.len());
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["ok"], true, "{event}");
+        assert!(event["value"]["records"].is_array());
+        // The registry reports the cap-result bound for records.read.
+        assert!(
+            RECORDS_READ_BOUNDS
+                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
+        );
+        // The session-protocol page budget is a separate, larger bound.
+        assert_eq!(MAX_RECORDS_PAGE_BYTES, 768 * 1024);
+    }
+
     fn names(list: &[&str]) -> BTreeSet<String> {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
@@ -1402,7 +1462,7 @@ mod tests {
                 .get("records.read")
                 .unwrap()
                 .bounds
-                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES))
+                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
         );
         // Every provider registered today opted in explicitly, so the
         // default ceiling is still the whole catalog — naming the choice

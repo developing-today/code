@@ -98,7 +98,10 @@ All secrets live in [`../secrets/pm-stack.sops.yaml`](../secrets/pm-stack.sops.y
 `cloudflare_tunnel_token` — plus the Phase 2 additions:
 `pad_api_key`, `pad_admin_email`, `pad_admin_password`,
 `pad_api_token`, `grist_session_secret`, `grist_admin_password`,
-`grist_api_key`, `grist_boot_key`. The same values are also filed in
+`grist_api_key`, `grist_boot_key` — plus the pm-dispatch Supabase
+additions: `supabase_url`, `supabase_service_role_key` (fleet
+Supabase is muse-dev2; Bitwarden source:
+`supabase.muse-dev2.service-role-key`). The same values are also filed in
 Bitwarden and 1Password under the names recorded in the design
 record (Bitwarden/1Password names use dots, e.g. `pad.api-token`,
 `grist.boot-key`).

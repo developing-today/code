@@ -1898,6 +1898,11 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
         )
             .into_response(),
         Err(FileOpError::NotFound(_)) => (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(FileOpError::InvalidName(_)) => (
+            StatusCode::BAD_REQUEST,
+            "New name must be a safe relative path without padding",
+        )
+            .into_response(),
         Err(err) => {
             tracing::error!("[routes] rename failed: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to rename file").into_response()
@@ -1942,6 +1947,11 @@ async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest
         Err(FileOpError::NotFound(_)) => {
             (StatusCode::NOT_FOUND, "Source file not found").into_response()
         }
+        Err(FileOpError::InvalidName(_)) => (
+            StatusCode::BAD_REQUEST,
+            "New name must be a safe relative path without padding",
+        )
+            .into_response(),
         Err(err) => {
             tracing::error!("[routes] copy failed: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to copy file").into_response()

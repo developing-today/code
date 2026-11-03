@@ -348,6 +348,13 @@ alerts-intake-token`, resolved by name at runtime
   `notification_sends` row per attempt. An unacked critical older
   than `ALERT_ACK_WINDOW_MIN` (default 15) escalates with exactly
   one more push (`escalated_at`). Warnings never push in v1.
+- **Measurement**: `/notifications` (#3319) is the read-only weekly
+  sent-vs-acted-on roll-up over `notification_sends`: per class and
+  rolling week, only `outcome = sent` rows count as sends, and a send
+  counts as acted-on when its `acted_on_at` (stamped by Ack) falls
+  within 24 hours. A class under 10% acted-on over the rolling
+  four-week window renders as a default-off *proposal* — display
+  only; the page never changes a preference or a default.
 - **Ack surface**: `/alerts` lists open incidents with Ack/Close.
   Ack is exactly-once: only the open→acked transition writes an
   event (and stamps the sends' `acted_on_at`); a repeat ack returns
