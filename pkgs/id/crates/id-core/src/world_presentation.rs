@@ -268,9 +268,8 @@ impl ScreenSurface {
 /// A patch carries only the cells that changed, grouped into maximal runs of
 /// consecutive row-major indices. It is transport-neutral: the same patch can
 /// ride any shell transport, and a client that applies it to the previous
-/// screen holds exactly the next full frame. Binary encoding, compression,
-/// and resume tokens are later F12.11 slices; this type is the delta they
-/// will encode.
+/// screen holds exactly the next full frame. Binary encoding and compression
+/// are later F12.11 slices; this type is the delta they will encode.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenPatch {
