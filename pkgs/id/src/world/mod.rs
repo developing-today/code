@@ -62,6 +62,7 @@ pub use replication_receiver::{
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
     constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
+    is_pre_fix_mint_display_name, pre_fix_sanitize_display_name,
     sanitize_display_name, token_digest,
 };
 
