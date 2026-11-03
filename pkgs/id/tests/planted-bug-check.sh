@@ -22,7 +22,7 @@ REPO_ROOT="$(git -C "$ID_DIR" rev-parse --show-toplevel)"
 
 # Files the mutations touch, relative to the repo root.
 MUTATED_FILES=(
-  "pkgs/id/src/groups/delegation.rs"
+  "pkgs/id/crates/id-core/src/membership/layer.rs"
   "pkgs/id/crates/id-core/src/membership/frontier.rs"
 )
 
@@ -75,17 +75,17 @@ check_mutation() {
   restore
 }
 
-# voiding-authority: the strong-removal gate in Engine::void is inverted,
-# so a settled strong removal concurrent with a grant no longer voids it.
-# STATUS 2026-11-02 (task 6582): this mutation SURVIVES the voiding suites,
-# and so did a causal-past inversion at the same site. Root cause found:
-# voiding_scenarios / voiding_properties exercise authority voiding through
-# the event store (src/event_store ingest/resolve, membership adds and
-# content) and contain no delegation-grant coverage at all, so nothing in
-# them reaches Engine::void. The check therefore exits 1 today — that is
-# the #1395 gap made executable. Next step: plant the voiding mutation in
-# the event-store authority path the S2 suites do exercise, and/or add
-# delegation-grant voiding scenarios that reach Engine::void.
+# voiding-authority: the resolver-filter verdict in
+# Membership::is_effective is inverted, so the concurrent operations of a
+# removed member take effect instead of being voided — the authority
+# voiding the event-store resolve path (pass two) actually runs for the
+# S2 suites. Plant history (task 6582): two mutations at Engine::void in
+# src/groups/delegation.rs (strong-removal gate, causal-past) SURVIVED
+# these suites, because voiding_scenarios / voiding_properties exercise
+# authority voiding through the event store and contain no
+# delegation-grant coverage, so nothing in them reaches Engine::void.
+# The plant therefore lives here, in the exercised path; grant-voiding
+# scenarios reaching Engine::void remain a separate, still-open gap.
 check_mutation "voiding-authority" "$PATCH_DIR/voiding-authority.patch" "$SUITES_voiding_authority"
 # frontier-mapping: a group operation no longer contributes itself to the
 # auth frontier (the mapping test in CausalIndex::combine is inverted).

@@ -39,16 +39,18 @@ suites cannot silently pass a broken implementation.
 - The script first requires the unmutated baseline to pass, then applies
   each named mutation from `tests/planted/` one at a time and requires the
   relevant suites to FAIL, restoring the mutated files after every run:
-  - `voiding-authority.patch`: the strong-removal gate in `Engine::void`
-    (`src/groups/delegation.rs`) is inverted, so a settled strong removal
-    concurrent with a grant no longer voids it. STATUS 2026-11-02
-    (task 6582): this mutation SURVIVES `voiding_scenarios` /
-    `voiding_properties` — those suites exercise authority voiding through
-    the event store (membership adds and content) and have no
-    delegation-grant coverage, so they never reach `Engine::void`. The
-    check exits 1 until the voiding mutation is planted in the
-    event-store authority path, or delegation-grant voiding scenarios
-    exist. That survival is the #1395 gap, made executable.
+  - `voiding-authority.patch`: the resolver-filter verdict in
+    `Membership::is_effective`
+    (`crates/id-core/src/membership/layer.rs`) is inverted, so the
+    concurrent operations of a removed member take effect instead of
+    being voided. Caught by `voiding_scenarios` (seven S2 tests fail
+    with it planted). Plant history (task 6582): mutations at
+    `Engine::void` in `src/groups/delegation.rs` SURVIVED these suites —
+    they exercise authority voiding through the event store (membership
+    adds and content) and have no delegation-grant coverage, so they
+    never reach `Engine::void`; the plant moved to the exercised path.
+    Delegation-grant voiding scenarios remain an open gap, separate
+    from this check.
   - `frontier-mapping.patch`: a group operation no longer contributes
     itself to the auth frontier (the mapping test in
     `CausalIndex::combine`, `crates/id-core/src/membership/frontier.rs`).

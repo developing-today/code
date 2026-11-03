@@ -1,13 +1,13 @@
-diff --git a/pkgs/id/src/groups/delegation.rs b/pkgs/id/src/groups/delegation.rs
-index 2773b7007..ccfbbc238 100644
---- a/pkgs/id/src/groups/delegation.rs
-+++ b/pkgs/id/src/groups/delegation.rs
-@@ -382,7 +382,7 @@ impl Engine {
-     /// (design §6.3). The removals are read from the events, not from the round's state: a
-     /// concurrent removal may be judged after the grant in canonical order.
-     fn void(&self, by_id: &BTreeMap<Hash, &Event>, grant: &Grant) -> bool {
--        if !self.strong_removal(grant.group) {
-+        if self.strong_removal(grant.group) {
-             return false;
+diff --git a/pkgs/id/crates/id-core/src/membership/layer.rs b/pkgs/id/crates/id-core/src/membership/layer.rs
+index fe30bd38c..88caa96af 100644
+--- a/pkgs/id/crates/id-core/src/membership/layer.rs
++++ b/pkgs/id/crates/id-core/src/membership/layer.rs
+@@ -382,7 +382,7 @@ impl Membership {
+         let filtered =
+             self.state.inner.ignore.contains(id) && !self.state.inner.mutual_removes.contains(id);
+         if filtered {
+-            return false;
++            return true;
          }
-         let past_grant = causal_past(by_id, &[grant.id]);
+         let Some(op) = self.state.inner.operations.get(id) else {
+             return false;
