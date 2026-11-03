@@ -192,8 +192,22 @@ export function resolveStore({ candidates, previousPath = null, now = Date.now()
 /** Read the export window out of an open store DB. Sessions come from
  * session_v2 (authoritative per-session cost/token totals); the
  * per-model breakdown is aggregated from session_message assistant
- * rows, whose data.model carries { id, providerID }. */
+ * rows, whose data.model carries { id, providerID }.
+ * All reads run inside a single read transaction so the session totals
+ * and the per-message breakdown come from one consistent snapshot even
+ * while the live instance is writing (Codex finding on PR #4680). */
 export function readUsage(db, { sinceMs }) {
+  db.exec("BEGIN");
+  try {
+    return readUsageSnapshot(db, { sinceMs });
+  } finally {
+    // COMMIT releases the snapshot; if the snapshot read threw, this
+    // still ends the transaction (nothing was written — query_only).
+    try { db.exec("COMMIT"); } catch { /* already ended */ }
+  }
+}
+
+function readUsageSnapshot(db, { sinceMs }) {
   const sessionRows = db
     .prepare(
       `SELECT id, parent_id, agent, directory, model, cost,
