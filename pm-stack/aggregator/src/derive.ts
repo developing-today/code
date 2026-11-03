@@ -546,7 +546,7 @@ export function ymdLabel(ymd: string): string {
   // Defensive: an impossible date is echoed verbatim instead of
   // throwing on MONTH_NAMES[NaN] or rolling over into the next month.
   if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return ymd;
-  const d = new Date(`${ymd}T12:00:00Z`);
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00Z`);
   return `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()}`;
 }
 
