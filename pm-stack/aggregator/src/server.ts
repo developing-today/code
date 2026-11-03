@@ -18,7 +18,13 @@ import {
   findTierItem,
   questionIdForOption,
 } from "./tier-items.ts";
-import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import {
+  authorizeCommentAuthor,
+  commentKindCounts,
+  CommentsStore,
+  queuedComments,
+  validateNewComment,
+} from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, fragBoardUrl, ghItemLike, linkedLike } from "./board-view.ts";
@@ -143,7 +149,7 @@ import {
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
-import { resolveBwsSecret } from "./secrets.ts";
+import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
 import {
@@ -1327,11 +1333,22 @@ async function handler(req: Request): Promise<Response> {
       const commentAccess = await enforceAccessAuthor(req, parsed.value.author);
       if (!commentAccess.ok) return json({ error: commentAccess.error }, commentAccess.status);
       parsed.value.author = commentAccess.author;
+      // #941: a privileged author additionally requires the operator
+      // token when one is configured (fail closed on a secret-store
+      // outage); with no secret configured the write stays unverified.
+      // Runs on the Access-derived author above, so the two gates
+      // compose: identity first, privilege second.
+      const authorization = authorizeCommentAuthor(
+        parsed.value.author,
+        req.headers.get("authorization"),
+        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+      );
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value);
+        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }

@@ -224,12 +224,22 @@ if (!window.__dashAuthorPickerHook) {
  * posts to the issue (the aggregator holds no GitHub credentials).
  */
 const COMMENT_SCRIPT = `<script>${DASH_AFTER_JS}
+const commentOperatorTokenKey = "pm-aggregator.operator-token";
+const savedCommentOperatorToken = () => {
+  try { return localStorage.getItem(commentOperatorTokenKey) || ""; } catch { return ""; }
+};
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
   if (!(form instanceof HTMLFormElement) || !form.classList.contains("cform")) return;
   ev.preventDefault();
   const err = form.querySelector(".err");
   const data = new FormData(form);
+  let operatorToken = String(data.get("operatorToken") || "").trim();
+  if (operatorToken) {
+    try { localStorage.setItem(commentOperatorTokenKey, operatorToken); } catch { /* send this request even if storage is unavailable */ }
+  } else {
+    operatorToken = savedCommentOperatorToken();
+  }
   const kind = String(data.get("kind") || "note");
   const [akind, aid, asession] = String(data.get("author") || "drew|drew|").split("|");
   const labelEl = form.querySelector('option[value="' + CSS.escape(String(data.get("author"))) + '"]');
@@ -242,7 +252,8 @@ document.addEventListener("submit", async (ev) => {
     ...(kind === "github" ? { githubRef: String(data.get("githubRef") || "") } : {}),
   };
   const post = async (p) => {
-    const res = await fetch("/api/comments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p) });
+    const headers = { "content-type": "application/json", ...(operatorToken ? { authorization: "Bearer " + operatorToken } : {}) };
+    const res = await fetch("/api/comments", { method: "POST", headers, body: JSON.stringify(p) });
     if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
   };
   try {
@@ -253,6 +264,13 @@ document.addEventListener("submit", async (ev) => {
     }
     window.__dashAfter(form, "✓ sent · pending — the orchestrator picks it up on its next pass");
   } catch (e) { if (err) err.textContent = "Not posted: " + e.message; }
+});
+document.addEventListener("click", (ev) => {
+  const button = ev.target;
+  if (!(button instanceof HTMLButtonElement) || !button.matches("[data-forget-operator-token]")) return;
+  try { localStorage.removeItem(commentOperatorTokenKey); } catch { /* storage may be disabled */ }
+  const input = button.closest(".cform")?.querySelector('input[name="operatorToken"]');
+  if (input instanceof HTMLInputElement) input.value = "";
 });
 document.addEventListener("change", (ev) => {
   const t = ev.target;
@@ -590,6 +608,9 @@ export function authorBadge(a: DashAuthor): string {
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
+  const verificationChip = c.authorVerified === true
+    ? `<span class="badge">verified</span>`
+    : `<span class="badge">unverified</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -603,7 +624,7 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
           }</span>`
         : `<span class="badge">note</span>`;
   const obj = showObject ? ` <span class="muted">on <code>${esc(c.objectRef)}</code></span>` : "";
-  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
+  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
 }
 
 export interface CommentFormOpts {
@@ -645,6 +666,8 @@ export function commentFormHtml(objectRef: string, opts: CommentFormOpts): strin
     : "";
   return `<form class="cform" data-object="${esc(objectRef)}">
 <label>Comment as</label><select name="author" data-author-picker>${authorOptions}</select>
+<label>Operator token <span class="muted">(needed for verified Drew/Muse posts after setup; saved only in this browser)</span></label><input type="password" name="operatorToken" autocomplete="off" placeholder="Paste operator token when issued">
+<button type="button" data-forget-operator-token>Forget saved token</button>
 <label>Kind</label><div class="kinds">
 <label><input type="radio" name="kind" value="note" checked> Note — read when this is next picked up</label>
 <label><input type="radio" name="kind" value="message"> ✉ Message to Muse — the orchestrator triages it on its next pass</label>

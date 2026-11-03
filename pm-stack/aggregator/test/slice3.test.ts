@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CommentsStore, validateNewComment } from "../src/comments.ts";
+import { authorizeCommentAuthor, CommentsStore, validateNewComment } from "../src/comments.ts";
 import {
   dnsSectionFromRegister,
   dnsSectionFromRegisterJson,
@@ -762,6 +762,42 @@ describe("opencode session-identity tool", () => {
 
 // --- Boot: slice-3 routes over HTTP ----------------------------------------------
 
+describe("comment operator-token authorization", () => {
+  const drew = { kind: "drew", id: "drew", label: "Drew" } as const;
+  const muse = { kind: "muse", id: "muse", label: "Muse" } as const;
+  const agent = { kind: "agent", id: "claude-code", label: "Claude Code" } as const;
+  const missing = { status: "missing" } as const;
+  const configured = { status: "found", value: "test-only-operator-token" } as const;
+
+  test("preserves the no-lockout rollout while marking legacy privileged authors unverified", () => {
+    expect(authorizeCommentAuthor(drew, null, missing)).toEqual({ ok: true, authorVerified: false });
+  });
+
+  test("requires the configured token for Drew/Muse and verifies valid bearer posts", () => {
+    expect(authorizeCommentAuthor(drew, null, configured)).toMatchObject({ ok: false, status: 401 });
+    expect(authorizeCommentAuthor(muse, "Bearer wrong", configured)).toMatchObject({ ok: false, status: 401 });
+    expect(authorizeCommentAuthor(drew, "Bearer test-only-operator-token", configured)).toEqual({
+      ok: true,
+      authorVerified: true,
+    });
+    expect(authorizeCommentAuthor(muse, "Bearer test-only-operator-token", configured)).toEqual({
+      ok: true,
+      authorVerified: true,
+    });
+  });
+
+  test("keeps agent identities available, but fails closed if secret lookup is unavailable", () => {
+    expect(authorizeCommentAuthor(agent, null, { status: "unavailable" })).toEqual({
+      ok: true,
+      authorVerified: false,
+    });
+    expect(authorizeCommentAuthor(drew, null, { status: "unavailable" })).toMatchObject({
+      ok: false,
+      status: 503,
+    });
+  });
+});
+
 let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
 const tmp = mkdtempSync(join(tmpdir(), "agg-slice3-"));
@@ -770,6 +806,11 @@ const annotationsFile = join(tmp, "roadmap-annotations.json");
 beforeAll(async () => {
   port = 5200 + Math.floor(Math.random() * 800);
   const commentsFile = join(tmp, "comments.json");
+  const bwsStub = join(tmp, "bws-empty");
+  const bwsAccessToken = join(tmp, "bws-access-token");
+  writeFileSync(bwsStub, '#!/bin/sh\n[ "$1" = secret ] && [ "$2" = list ] && { printf "[]\\n"; exit 0; }\nexit 1\n');
+  chmodSync(bwsStub, 0o700);
+  writeFileSync(bwsAccessToken, "test-only-bws-access-token\n");
   writeFileSync(commentsFile, JSON.stringify({ version: 1, comments: [] }));
   proc = spawn({
     cmd: ["bun", "run", "src/server.ts"],
@@ -781,6 +822,8 @@ beforeAll(async () => {
       PM_AGG_COMMENTS_FILE: commentsFile,
       PM_AGG_ROADMAP_ANNOTATIONS_FILE: annotationsFile,
       PM_AGG_REGISTRY_FILE: join(tmp, "registry.json"),
+      BWS_BIN: bwsStub,
+      BWS_ACCESS_TOKEN_FILE: bwsAccessToken,
     },
     stdout: "pipe",
     stderr: "inherit",
@@ -857,6 +900,7 @@ describe("slice-3 routes", () => {
     const ref = "gh:developing-today/code#906";
     const note = await post({ objectRef: ref, kind: "note", author, body: "a plain note" });
     expect(note.status).toBe(201);
+    expect(((await note.json()) as { comment: { authorVerified: boolean } }).comment.authorVerified).toBe(false);
     const msg = await post({ objectRef: ref, kind: "message", author, body: "Muse: please check X" });
     const msgBody = (await msg.json()) as { comment: { id: string } };
     const ghRes = await post({
@@ -942,6 +986,72 @@ describe("slice-3 routes", () => {
     const html = await (await fetch(`http://127.0.0.1:${port}/item/${id}`)).text();
     expect(html).toContain("Dashboard comments");
     expect(html).toContain("cform");
+    expect(html).toContain('name="operatorToken"');
+    expect(html).toContain("data-forget-operator-token");
+  });
+
+  test("comment API rejects forged Drew and accepts the operator token when configured", async () => {
+    const tokenPort = 6100 + Math.floor(Math.random() * 800);
+    const tokenComments = join(tmp, "comments-token.json");
+    const tokenBwsStub = join(tmp, "bws-token");
+    writeFileSync(tokenComments, JSON.stringify({ version: 1, comments: [] }));
+    writeFileSync(
+      tokenBwsStub,
+      '#!/bin/sh\nif [ "$1" = secret ] && [ "$2" = list ]; then printf \'[{"id":"test-token-id","key":"pm-aggregator.comments-operator-token"}]\\n\'; exit 0; fi\nif [ "$1" = secret ] && [ "$2" = get ]; then printf \'{"value":"test-only-operator-token"}\\n\'; exit 0; fi\nexit 1\n',
+    );
+    chmodSync(tokenBwsStub, 0o700);
+    const tokenProc = spawn({
+      cmd: ["bun", "run", "src/server.ts"],
+      cwd: import.meta.dir + "/..",
+      env: {
+        ...Bun.env,
+        PM_AGG_PORT: String(tokenPort),
+        PM_AGG_SOURCE: "fixtures",
+        PM_AGG_COMMENTS_FILE: tokenComments,
+        PM_AGG_ROADMAP_ANNOTATIONS_FILE: join(tmp, "roadmap-token.json"),
+        PM_AGG_REGISTRY_FILE: join(tmp, "registry-token.json"),
+        BWS_BIN: tokenBwsStub,
+        BWS_ACCESS_TOKEN_FILE: join(tmp, "bws-token-access"),
+      },
+      stdout: "pipe",
+      stderr: "inherit",
+    });
+    writeFileSync(join(tmp, "bws-token-access"), "test-only-bws-access-token\n");
+    try {
+      const deadline = Date.now() + 8000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        try {
+          if ((await fetch(`http://127.0.0.1:${tokenPort}/api/health`)).ok) {
+            ready = true;
+            break;
+          }
+        } catch { /* not up yet */ }
+        await Bun.sleep(120);
+      }
+      expect(ready).toBe(true);
+      const payload = {
+        objectRef: "gh:developing-today/code#941",
+        kind: "message",
+        author: { kind: "drew", id: "drew", label: "Drew" },
+        body: "test message",
+      };
+      const forged = await fetch(`http://127.0.0.1:${tokenPort}/api/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      expect(forged.status).toBe(401);
+      const verified = await fetch(`http://127.0.0.1:${tokenPort}/api/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer test-only-operator-token" },
+        body: JSON.stringify(payload),
+      });
+      expect(verified.status).toBe(201);
+      expect(((await verified.json()) as { comment: { authorVerified: boolean } }).comment.authorVerified).toBe(true);
+    } finally {
+      tokenProc.kill();
+    }
   });
 
   test("roadmap annotations round-trip through API, timeline, drill-down, and JSON; aliases survive reshuffles", async () => {
