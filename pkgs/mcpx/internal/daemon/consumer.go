@@ -53,6 +53,8 @@ type ConsumerPolicy struct {
 	ModelProvider       string
 	ModelBaseURL        string
 	ModelAPIKeyEnv      string
+	ModelProviders      string
+	ModelProfiles       string
 	ModelDefault        string
 	ModelBudget         int
 	ModelTimeout        time.Duration
@@ -156,6 +158,8 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.ModelProvider = set.String("model.provider")
 	p.ModelBaseURL = set.String("model.baseURL")
 	p.ModelAPIKeyEnv = set.String("model.apiKeyEnv")
+	p.ModelProviders = set.String("model.providers")
+	p.ModelProfiles = set.String("model.profiles")
 	p.ModelDefault = set.String("model.default")
 	p.ModelBudget = set.Int("model.budget")
 	p.ModelTimeout = set.Duration("model.timeout")
@@ -1056,17 +1060,35 @@ func (s *Server) modelLayerWanted(ctx context.Context, session string, wanted bo
 
 func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider, error) {
 	pol := s.policyFor(ctx)
-	if pol.ModelProvider == "" || pol.ModelProvider == "none" {
+	if !modelLayerConfigured(pol) {
 		return nil, nil
 	}
 	return model.Resolve(model.Config{
-		Provider:     pol.ModelProvider,
-		BaseURL:      pol.ModelBaseURL,
-		APIKeyEnv:    pol.ModelAPIKeyEnv,
-		DefaultModel: pol.ModelDefault,
-		Timeout:      pol.ModelTimeout,
-		Sampler:      s.brokerSampler(session),
+		Provider:             pol.ModelProvider,
+		BaseURL:              pol.ModelBaseURL,
+		APIKeyEnv:            pol.ModelAPIKeyEnv,
+		ProviderSettingsJSON: pol.ModelProviders,
+		ProfilesJSON:         pol.ModelProfiles,
+		DefaultModel:         pol.ModelDefault,
+		Timeout:              pol.ModelTimeout,
+		Sampler:              s.brokerSampler(session),
 	})
+}
+
+func modelLayerConfigured(pol ConsumerPolicy) bool {
+	if pol.ModelProvider != "" && pol.ModelProvider != "none" {
+		return true
+	}
+	if strings.TrimSpace(pol.ModelDefault) != "" {
+		return true
+	}
+	for _, raw := range []string{pol.ModelProviders, pol.ModelProfiles} {
+		raw = strings.TrimSpace(raw)
+		if raw != "" && raw != "{}" && raw != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // generateViaModel is generate's model-layer path: the same system prompt
@@ -1087,7 +1109,11 @@ func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, syst
 	if err != nil || strings.TrimSpace(resp.Text) == "" {
 		return "", "", errNoModel
 	}
-	used := "provider:" + prov.Name()
+	providerName := resp.Provider
+	if providerName == "" {
+		providerName = prov.Name()
+	}
+	used := "provider:" + providerName
 	answered := resp.Model
 	if answered == "" {
 		answered = model.ModelID(modelID)
