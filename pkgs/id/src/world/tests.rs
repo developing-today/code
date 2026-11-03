@@ -1107,10 +1107,16 @@ mod tests {
         // result_too_large error above 64 KiB, so the program never saw
         // a single record. The page must now stop at the cap-result
         // bound and deliver records, with next_after naming the rest.
+        // Captured results are shared with the test through a handle, not
+        // republished as records: a full page result is ~64 KiB, and
+        // parse_records caps one record value at MAX_RECORD_VALUE_BYTES
+        // (8 KiB), so a records readout makes deliver() refuse the
+        // publication and the test would read an empty channel (#5128).
+        // The delivery under test is the result event reaching update().
         #[derive(Debug, Default)]
         struct PageProbe {
             answered: BTreeSet<String>,
-            results: BTreeMap<String, serde_json::Value>,
+            results: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>>,
         }
 
         impl WorldProgram for PageProbe {
@@ -1122,7 +1128,10 @@ mod tests {
                         && let Some(id) = value["id"].as_str()
                     {
                         self.answered.insert(id.to_owned());
-                        self.results.insert(id.to_owned(), value);
+                        self.results
+                            .lock()
+                            .unwrap()
+                            .insert(id.to_owned(), value);
                     }
                 }
                 Ok(())
@@ -1143,17 +1152,18 @@ mod tests {
                 ))
             }
 
-            fn records(&mut self) -> Result<Option<String>> {
-                Ok(Some(
-                    serde_json::json!({"results": self.results}).to_string(),
-                ))
-            }
         }
 
         let mut core = world(128);
         core.ledger
             .set_granted(BTreeSet::from(["records.read".to_owned()]));
-        let mut actor = WorldActor::for_test(core, Box::new(PageProbe::default()), None);
+        let captured: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let probe = PageProbe {
+            results: captured.clone(),
+            ..Default::default()
+        };
+        let mut actor = WorldActor::for_test(core, Box::new(probe), None);
         let mut injected = Records::new();
         for index in 0..16 {
             injected.insert(
@@ -1165,8 +1175,8 @@ mod tests {
 
         actor.after_change().await;
 
-        let records = actor.records_sender.borrow().1.clone();
-        let page = &records["results"]["records-page"];
+        let captured = captured.lock().unwrap();
+        let page = &captured["records-page"];
         assert_eq!(page["ok"], true, "{page}");
         let delivered = page["value"]["records"].as_array().unwrap();
         // Each serialized entry is 8025 bytes with its comma; the
