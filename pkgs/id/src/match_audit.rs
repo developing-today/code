@@ -9,6 +9,8 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use p2panda_core::{Hash, SigningKey as IdSigningKey};
 use serde::{Deserialize, Serialize};
 
+use crate::world::signed::MoveChain;
+
 const HEADER_DOMAIN: &[u8] = b"id.match-audit.v0/header\0";
 const ENTRY_DOMAIN: &[u8] = b"id.match-audit.v0/entry\0";
 const FOOTER_DOMAIN: &[u8] = b"id.match-audit.v0/footer\0";
@@ -35,6 +37,8 @@ pub struct HeaderV0 {
     pub version: u8,
     /// Stable identifier for this match.
     pub match_id: String,
+    /// World identifier used by the player-signed move events.
+    pub world_id: String,
     /// World/program identifier and immutable build digest.
     pub program_id: String,
     /// Hash of the exact world program build.
@@ -73,6 +77,8 @@ pub struct InputRecordV0 {
     pub player_slot: u16,
     /// Game-defined input bytes.
     pub payload: Vec<u8>,
+    /// The player's already-signed `world.move` event from #2814.
+    pub signed_move: Vec<u8>,
 }
 
 /// Inputs grouped into one hash-chained block to amortize hash overhead.
@@ -201,20 +207,29 @@ pub struct MatchLogV0 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TechnicalVerdictV0 {
     /// The log failed parsing, provenance, signature, or chain validation.
-    InvalidRecord { reason: IntegrityFailureV0 },
+    InvalidRecord {
+        /// Closed reason code for the rejected record.
+        reason: IntegrityFailureV0,
+    },
     /// Full-history replay reproduced the claimed final state.
     ResultConfirmed { runtime: RuntimeScopeV0 },
     /// Replay diverged; interval endpoints name checkpoints, not exact ticks.
     ReplayDiverges {
+        /// The first checkpoint interval whose state hashes differ.
         first_mismatching_interval: CheckpointIntervalV0,
     },
     /// Only the listed sampled intervals were replayed successfully.
     PartiallyVerified {
+        /// Intervals replayed successfully; this does not confirm the result.
         intervals: Vec<CheckpointIntervalV0>,
+        /// Runtime scope for the sampled replays.
         runtime: RuntimeScopeV0,
     },
     /// Verification could not make a claim because a required input was absent.
-    Inconclusive { reason: InconclusiveReasonV0 },
+    Inconclusive {
+        /// Closed reason code for the missing verification input.
+        reason: InconclusiveReasonV0,
+    },
 }
 
 /// Whether replay validity applies only to a pinned build/runtime or more broadly.
@@ -252,9 +267,15 @@ pub enum ActualValidityV0 {
     /// No observed metadata was available to assess play plausibility.
     InconclusiveNoObservedMetadata,
     /// Screening ran to the stated depth and found no flags.
-    NoFlags { depth: ScreeningDepthV0 },
+    NoFlags {
+        /// Screening depth at which no flags were found.
+        depth: ScreeningDepthV0,
+    },
     /// Screening found named signals; this is not a finding of cheating.
-    Flagged { signals: Vec<CheatingSignalV0> },
+    Flagged {
+        /// Signals found; each is probabilistic and may have false positives.
+        signals: Vec<CheatingSignalV0>,
+    },
 }
 
 /// Stakes-appropriate depth of probabilistic screening.
@@ -305,6 +326,10 @@ pub enum IntegrityFailureV0 {
     BrokenChainLink,
     /// An entry body does not match its committed hash.
     EntryHashMismatch,
+    /// An input does not contain a valid signed move by its roster player.
+    SignedInput,
+    /// The footer's final tick does not match the ordered event stream.
+    FooterTickMismatch,
     /// The revealed seed does not match the signed commitment.
     SeedCommitmentMismatch,
     /// Footer signatures are invalid or incomplete.
@@ -406,6 +431,7 @@ impl MatchLogV0 {
 
         let mut previous = header_digest;
         let mut previous_tick = self.header.start_tick;
+        let mut move_chains = vec![MoveChain::new(); self.header.players.len()];
         for entry in &self.entries {
             if entry.previous_hash != previous {
                 return Err(AuditErrorV0::Integrity(IntegrityFailureV0::BrokenChainLink));
@@ -414,23 +440,36 @@ impl MatchLogV0 {
             if first_tick < previous_tick {
                 return Err(AuditErrorV0::EntryOrder);
             }
-            if let EntryBodyV0::InputBlock(block) = &entry.body {
-                if block
-                    .records
-                    .iter()
-                    .any(|input| usize::from(input.player_slot) >= self.header.players.len())
-                {
-                    return Err(AuditErrorV0::PlayerSlot);
-                }
-            }
             let expected = chain_entry(previous, entry.body.clone())?.hash;
             if entry.hash != expected {
                 return Err(AuditErrorV0::Integrity(
                     IntegrityFailureV0::EntryHashMismatch,
                 ));
             }
+            if let EntryBodyV0::InputBlock(block) = &entry.body {
+                for input in &block.records {
+                    let slot = usize::from(input.player_slot);
+                    let Some(player) = self.header.players.get(slot) else {
+                        return Err(AuditErrorV0::PlayerSlot);
+                    };
+                    move_chains[slot]
+                        .verify_and_accept(
+                            &input.signed_move,
+                            &self.header.world_id,
+                            &input.payload,
+                            &player.id,
+                        )
+                        .map_err(|_| AuditErrorV0::Integrity(IntegrityFailureV0::SignedInput))?;
+                }
+            }
             previous = entry.hash;
             previous_tick = last_tick;
+        }
+
+        if self.footer.final_tick != previous_tick {
+            return Err(AuditErrorV0::Integrity(
+                IntegrityFailureV0::FooterTickMismatch,
+            ));
         }
 
         if Hash::digest(&self.footer.seed_reveal) != self.header.seed_commitment {
@@ -554,6 +593,7 @@ mod tests {
         let header = HeaderV0 {
             version: FORMAT_VERSION_V0,
             match_id: "fixture-1".to_owned(),
+            world_id: "fixture-world".to_owned(),
             program_id: "tic-tac-toe".to_owned(),
             program_hash: Hash::digest(b"program"),
             rules_hash: Hash::digest(b"rules"),
@@ -575,6 +615,10 @@ mod tests {
             .iter()
             .map(|key| sign_header(key, &header).unwrap())
             .collect();
+        let signed_move =
+            crate::world::signed::sign_move(&players[0], &header.world_id, 0, None, b"place:0")
+                .unwrap()
+                .bytes;
         let first = chain_entry(
             header_hash(&header).unwrap(),
             EntryBodyV0::InputBlock(InputBlockV0 {
@@ -583,6 +627,7 @@ mod tests {
                     tick_delta: 0,
                     player_slot: 0,
                     payload: b"place:0".to_vec(),
+                    signed_move,
                 }],
             }),
         )
@@ -624,6 +669,20 @@ mod tests {
         }
     }
 
+    fn reseal(log: &mut MatchLogV0, players: &[IdSigningKey; 2]) {
+        let mut previous = header_hash(&log.header).unwrap();
+        for entry in &mut log.entries {
+            *entry = chain_entry(previous, entry.body.clone()).unwrap();
+            previous = entry.hash;
+        }
+        let mut footer = log.footer.clone();
+        footer.signatures = players
+            .iter()
+            .map(|key| sign_footer(key, &log.header, previous, &log.metadata, &footer).unwrap())
+            .collect();
+        log.footer = footer;
+    }
+
     #[test]
     fn signed_log_round_trips_and_verifies() {
         let log = fixture();
@@ -659,6 +718,37 @@ mod tests {
             log.verify_integrity(),
             Err(AuditErrorV0::Integrity(
                 IntegrityFailureV0::EntryHashMismatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn input_must_match_its_players_signed_move() {
+        let players = [key(1), key(2)];
+        let mut log = fixture();
+        let EntryBodyV0::InputBlock(block) = &mut log.entries[0].body else {
+            panic!("fixture starts with input")
+        };
+        block.records[0].player_slot = 1;
+        reseal(&mut log, &players);
+
+        assert!(matches!(
+            log.verify_integrity(),
+            Err(AuditErrorV0::Integrity(IntegrityFailureV0::SignedInput))
+        ));
+    }
+
+    #[test]
+    fn footer_tick_must_match_the_stream() {
+        let players = [key(1), key(2)];
+        let mut log = fixture();
+        log.footer.final_tick = 2;
+        reseal(&mut log, &players);
+
+        assert!(matches!(
+            log.verify_integrity(),
+            Err(AuditErrorV0::Integrity(
+                IntegrityFailureV0::FooterTickMismatch
             ))
         ));
     }
