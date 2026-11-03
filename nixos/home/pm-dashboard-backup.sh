@@ -274,12 +274,16 @@ ledger_set credentials ok
 
 # --- optional pm-stack DB dumps (code#1514) --------------------------------
 # The #1514 dump job (Kaneo Postgres + Grist + Pad) publishes its script at
-# ~/tools/pm-stack-db-backup.sh and writes dumps to ~/Backups/db-dumps/<date>/
-# (here: ~/backups/db-dumps/<date>/). When present it runs first and its
-# output rides this archive to all three destinations; until it lands, the
-# archive carries the dashboard state set only and says so in the log.
+# ~/tools/pm-stack-db-backup.sh (a bridge to pm-stack-backup.sh) and writes
+# dumps to ~/backups/pm-stack/<date>/ (here: $DUMP_DIR). When present it runs
+# first and its output rides this archive to all three destinations; until
+# it lands, the archive carries the dashboard state set only and says so in
+# the log. (nix#1365: DUMP_DIR previously pointed at ~/backups/db-dumps,
+# which the dump script never writes — every run with DUMP_RAN=1 then failed
+# verify as required-member-missing. The staged tree keeps its historic
+# db-dumps name; only the source dir changed.)
 DUMP_SCRIPT="${PM_DB_DUMP_SCRIPT:-$HOME/tools/pm-stack-db-backup.sh}"
-DUMP_DIR="$HOME/backups/db-dumps/$DATE"
+DUMP_DIR="$HOME/backups/pm-stack/$DATE"
 DUMP_RAN=0
 if [ -x "$DUMP_SCRIPT" ]; then
   ledger_begin db-dump

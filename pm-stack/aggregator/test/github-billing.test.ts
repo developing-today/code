@@ -158,7 +158,7 @@ describe("aggregateBillingUsage validation (#2493)", () => {
     );
     expect(records.length).toBeGreaterThan(0);
     for (const r of records) expect(isSnapshotRecord(r)).toBe(true);
-    expect(records.every((r) => r.value > 0)).toBe(true);
+    expect(records.every((r) => (typeof r.value === "number" ? r.value > 0 : r.value.low > 0))).toBe(true);
   });
 });
 

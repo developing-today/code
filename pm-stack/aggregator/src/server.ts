@@ -14,6 +14,7 @@ import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, fin
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
+import { EventsStore, emitEvent } from "./events.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
@@ -25,6 +26,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import { shouldFetchNeedsDrewCensus, type NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -93,13 +95,14 @@ import {
   getAlertsStore,
   sendTestPush,
   startAlertEngine,
+  toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts } from "./render.ts";
+import { renderAlerts, esc } from "./render.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
@@ -138,6 +141,17 @@ async function coverageSnapshot(
 }
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
+const eventsStore = new EventsStore(cfg.eventsFile);
+
+/** #1739: the event log's fire-and-forget sink for source-side
+ *  writers (orchestration publishes, registry merges). Never awaited,
+ *  never throws: a failed event write loses the event, nothing else. */
+function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
+  void emitEvent(eventsStore, event);
+}
+async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
+  return eventsStore.has(kind, ref);
+}
 
 function pickSource(): Source {
   // #1290: the live source reads the standing delegation default from
@@ -146,6 +160,8 @@ function pickSource(): Source {
   return cfg.source === "live"
     ? liveSource(cfg, {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+        onEvent: recordStreamEvent,
+        hasEvent: hasStreamEvent,
       })
     : fixtureSource();
 }
@@ -423,11 +439,22 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   });
 }
 
-async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([
+async function attentionContext(opts: { census?: boolean } = {}) {
+  // #1226/#3970: the Needs-Drew census costs up to eight sequential
+  // GitHub search calls (up to ~64 s when the API is unreachable). Only
+  // the attention page render consumes it, so it opts in; the overview,
+  // Today, /api/attention.json and /api/coverage.json must not inherit
+  // that external dependency (Codex P2 on PR #3970).
+  const wantsCensus = shouldFetchNeedsDrewCensus(opts);
+  const [feed, summary, coverage, census] = await Promise.all([
     source.attention().catch(() => []),
     source.orchestration().catch(() => null),
     source.coverage().catch(() => []),
+    // A source without the census (or a failed sweep) yields null and
+    // the view renders it as unavailable, never as an empty queue.
+    wantsCensus
+      ? ((source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>)
+      : Promise.resolve<NeedsDrewCensus | null>(null),
   ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
@@ -438,6 +465,7 @@ async function attentionContext() {
     coverage,
     orchestration: summary,
     diagnosis,
+    census,
   };
 }
 
@@ -490,7 +518,7 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage, orchestration, diagnosis } = await attentionContext();
+  const { view, coverage, orchestration, diagnosis, census } = await attentionContext({ census: true });
   const [pool, formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
     source.projects().catch(() => []),
     commentFormOpts(),
@@ -513,7 +541,7 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act, briefs };
+  return { view, coverage, counts, act, briefs, census };
 }
 
 async function todaySignals() {
@@ -910,15 +938,66 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: 'outcome must be "applied" | "rejected"' }, 400);
       }
       if (typeof body.byRun !== "string" || body.byRun.trim() === "") return json({ error: "byRun required" }, 400);
-      const updated = await actionsStore.markResult(body.id, {
+      const result = await actionsStore.markResultTransition(body.id, {
         outcome: body.outcome,
         byRun: body.byRun,
         note: typeof body.note === "string" ? body.note : undefined,
       });
+      if (result?.transitioned) {
+        const updated = result.action;
+        // #1739: the action-result route is one of the event log's
+        // writers — the outcome lands in the cross-stack stream.
+        // Fire-and-forget: the response never waits on, and is never
+        // failed by, the event append.
+        recordStreamEvent({
+          actor: updated.appliedByRun ?? body.byRun.slice(0, 200),
+          kind: body.outcome === "applied" ? "action-applied" : "action-rejected",
+          ref: updated.objectRef,
+          summary: (
+            `${updated.kind}/${updated.verb} ${body.outcome} by ${body.byRun}` +
+            (typeof body.note === "string" && body.note ? ` — ${body.note}` : "")
+          ).slice(0, 500),
+        });
+      }
+      const updated = result?.action;
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
     }
+  }
+  if (path === "/api/events.json") {
+    // #1739: the cross-stack event stream, newest first, with
+    // kind/ref/actor filters — the machine twin of /events below.
+    const events = await eventsStore.list({
+      kind: url.searchParams.get("kind") ?? undefined,
+      ref: url.searchParams.get("ref") ?? undefined,
+      actor: url.searchParams.get("actor") ?? undefined,
+    });
+    return json({ events });
+  }
+  if (path === "/events") {
+    // #1739: the human page over the same stream /api/events.json
+    // serves — same records, same filters (?kind=&ref=&actor=).
+    const filter = {
+      kind: url.searchParams.get("kind") ?? undefined,
+      ref: url.searchParams.get("ref") ?? undefined,
+      actor: url.searchParams.get("actor") ?? undefined,
+    };
+    const events = await eventsStore.list(filter);
+    const rows = events
+      .map(
+        (e) =>
+          `<tr><td>${esc(e.at)}</td><td>${esc(e.actor)}</td><td>${esc(e.kind)}</td>` +
+          `<td>${esc(e.ref)}</td><td>${esc(e.summary)}</td></tr>`,
+      )
+      .join("\n");
+    return html(
+      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title></head><body>` +
+        `<h1>Events</h1><p>${events.length} event(s), newest first. ` +
+        `Machine twin: <a href="/api/events.json">/api/events.json</a> (filters: kind, ref, actor).</p>` +
+        `<table><thead><tr><th>at</th><th>actor</th><th>kind</th><th>ref</th><th>summary</th></tr></thead>` +
+        `<tbody>${rows}</tbody></table></body></html>`,
+    );
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.
@@ -1121,7 +1200,7 @@ async function handler(req: Request): Promise<Response> {
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
     if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
-      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${esc(serviceMatch[1])}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
       404,
     );
   }
@@ -1132,20 +1211,29 @@ async function handler(req: Request): Promise<Response> {
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail()));
     }
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs));
+    const { view, coverage, counts, act, briefs, census } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, briefs, census));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act, briefs } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act, briefs);
+    const { view, coverage, counts, act, briefs, census } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act, briefs, census);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
   if (path === "/assets/datastar.js") {
     // The vendored Datastar bundle (#1444) — a static asset, never a
     // service worker; /sw.js keeps serving the kill switch.
     const file = Bun.file(new URL("./assets/datastar.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/assets/aa-explorer-computations.js") {
+    // Shared with Bun tests so the browser and regression suite exercise the
+    // same Cost Explorer calculations.
+    const file = Bun.file(new URL("./assets/aa-explorer-computations.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
     return new Response(file, {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
@@ -1304,7 +1392,7 @@ async function handler(req: Request): Promise<Response> {
     const config = projectConfigById(programProjectMatch[1]);
     if (!config) {
       return html(
-        `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        `<h1>Not found</h1><p class="muted">no project with id <code>${esc(programProjectMatch[1])}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
         404,
       );
     }
@@ -1441,6 +1529,15 @@ async function handler(req: Request): Promise<Response> {
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
   }
+  if (path === "/api/needs-drew.json") {
+    // #1226: the Needs-Drew label census as data — open user/review +
+    // user/escalated items across the four repos with per-source
+    // status and freshness. 503 when this source cannot census, so a
+    // consumer never mistakes "unavailable" for "nothing waiting".
+    const census = (await source.needsDrew?.().catch(() => null)) ?? null;
+    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    return json(census);
+  }
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
     // (expired dropped) and tier-annotated (tier/drewReason/
@@ -1519,12 +1616,13 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/push/subscriptions") {
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
-    if (req.method === "GET") return json({ subscriptions: await store.listSubscriptions() });
+    if (req.method === "GET")
+      return json({ subscriptions: (await store.listSubscriptions()).map(toPublicSubscription) });
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: await store.upsertSubscription(parsed.value) }, 201);
+        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
@@ -1639,6 +1737,10 @@ async function handler(req: Request): Promise<Response> {
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
+    // #1203: the ready-for-agent harness facet — backend readiness,
+    // repository settings, work-item counts and GraphQL errors reach the
+    // machine surface too, not only the rendered page.
+    body.rfa = view.rfa;
     body.degraded = view.degraded;
     return json(body);
   }
@@ -1707,7 +1809,7 @@ async function handler(req: Request): Promise<Response> {
       return html(renderItem(title, id, links, items, comments, prov(), extras));
     }
     return html(
-      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`,
+      `<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${esc(id)}</code></p>`,
       404,
     );
   }

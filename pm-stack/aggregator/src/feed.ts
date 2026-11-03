@@ -32,7 +32,9 @@ import type {
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
+  PoolFreshness,
   ProjectPoolItem,
+  QuotaCredentialRow,
   QuotaPool,
   QuotaView,
   QuotaWindow,
@@ -41,6 +43,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import { isCredentialLifecycleRow, safeProviderReason } from "./credential-lifecycle.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -51,9 +54,19 @@ export interface FleetFeed {
    *  in feeds written before the drift check existed. */
   checkout?: CheckoutDrift;
   quota: QuotaView;
-  /** Element drops loadFeed's quota sanitization made (#2429), set
+  /** Element and optional-field drops loadFeed's quota sanitization made
+   * (#2429/#3921/#4546), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
-  quotaDropped?: { pools: number; windows: number; burn: number };
+  quotaDropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+    credentialLifecycle?: number;
+  };
   /** Element drops loadFeed's chargesAttention sanitization made
    * (#2439), set only when at least one entry dropped; absent on raw
    * parsed feeds and on feeds whose entries all survived. */
@@ -320,6 +333,12 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
+// The collector is scheduled every five minutes. No grace is possible if a
+// stop just after a write must be visible by the next interval: slow runs,
+// scheduler jitter and transport delays can therefore cause transient alarms.
+// This is evaluated on request, not pushed to an already-open browser.
+export const FEED_STALE_MS = 5 * 60_000;
+
 /** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
 export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;
 
@@ -463,21 +482,50 @@ const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
  * (#2429): an object with a `windows` ARRAY — a non-array windows value
  * must never be iterated as a collection of windows (it fabricated
  * attention flags). Window ELEMENTS are filtered by sanitizeQuotaView,
- * so a pool survives one bad window. Credential rows, when present,
- * must at least be records holding a windows array; their elements are
- * filtered the same way. */
+ * so a pool survives one bad window. Optional credential containers
+ * must be arrays; malformed credential rows and active-session entries
+ * are dropped individually by sanitizeQuotaView. */
 export function isQuotaPool(v: unknown): v is QuotaPool {
   if (!isRecord(v)) return false;
   if (typeof v.id !== "string" || typeof v.provider !== "string" || typeof v.plan !== "string") return false;
   if (typeof v.state !== "string" || !QUOTA_STATES.includes(v.state)) return false;
   if (!Array.isArray(v.windows)) return false;
-  if (v.credentials !== undefined) {
-    if (!Array.isArray(v.credentials)) return false;
-    for (const row of v.credentials) {
-      if (!isRecord(row) || !Array.isArray(row.windows)) return false;
-    }
-  }
+  if (v.credentials !== undefined && !Array.isArray(v.credentials)) return false;
   return true;
+}
+
+const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
+
+function isQuotaFreshness(v: unknown): v is PoolFreshness {
+  return (
+    isRecord(v) &&
+    isIsoDate(v.measuredAt) &&
+    typeof v.source === "string" &&
+    typeof v.state === "string" &&
+    QUOTA_FRESHNESS_STATES.includes(v.state) &&
+    (v.error === undefined || typeof v.error === "string")
+  );
+}
+
+function isQuotaCredentialRow(v: unknown): v is QuotaCredentialRow {
+  return (
+    isRecord(v) &&
+    typeof v.label === "string" &&
+    typeof v.providerId === "string" &&
+    Array.isArray(v.windows) &&
+    isQuotaFreshness(v.freshness)
+  );
+}
+
+type QuotaActiveSession = NonNullable<QuotaPool["activeSessions"]>[number];
+
+function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
+  return (
+    isRecord(v) &&
+    typeof v.session === "string" &&
+    typeof v.model === "string" &&
+    isNonNegative(v.tokens)
+  );
 }
 
 /** One historical burn segment as renderQuota maps it (#2429).
@@ -502,22 +550,33 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
  * with toFixed and used as a severity, so those three must be a
  * string, a finite number, and a string. normalized/source are not
  * gate-required: the consumer tolerates any source value and never
- * dereferences normalized. */
+ * dereferences normalized. (#3458): amountUsd must be positive and at
+ * must be a real ISO calendar date — impossible rows alter charge
+ * totals and attention severity. */
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
-  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+  return (
+    typeof v.merchant === "string" &&
+    isFiniteNumber(v.amountUsd) &&
+    v.amountUsd > 0 &&
+    isIsoDate(v.at)
+  );
 }
 
 /** One charges-evidence row as the /quota charges strip renders it
  * (#2445): a record with string at/label/method/source and a
  * finite-number amountUsd (ChargeRow, model.ts). Built on the shared
- * validate.ts primitives, like the quota element validators above. */
+ * validate.ts primitives, like the quota element validators above.
+ * (#3458): amountUsd must be positive and at must be a real ISO
+ * calendar date — impossible rows alter charge totals and attention
+ * severity. */
 export function isChargeRow(v: unknown): v is ChargeRow {
   if (!isRecord(v)) return false;
   return (
-    typeof v.at === "string" &&
+    isIsoDate(v.at) &&
     typeof v.label === "string" &&
     isFiniteNumber(v.amountUsd) &&
+    v.amountUsd > 0 &&
     typeof v.method === "string" &&
     typeof v.source === "string"
   );
@@ -532,30 +591,64 @@ function isQuotaChoices(v: unknown): boolean {
 export interface QuotaSanitization {
   view: QuotaView;
   droppedPools: number;
+  droppedCredentials: number;
   droppedWindows: number;
+  droppedActiveSessions: number;
   droppedBurn: number;
+  droppedPoolFreshness: number;
+  droppedBurnTokensPerMin: number;
+  droppedCredentialLifecycle: number;
 }
 
-/** Drop-and-count sanitization of a gate-passed quota section (#2429,
+/** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921/#4546,
  * following poolFromFeed's per-element pattern, built on the shared
  * arrayOf primitive from #2577): malformed pools and burn segments
- * drop individually, malformed windows drop out of their pool, and the
- * well-formed remainder renders. The counts ride out on the result so
- * the caller surfaces them, never swallows them. */
+ * drop individually, malformed windows/credential rows/active sessions
+ * drop out of their pool, and the well-formed remainder renders. The
+ * counts ride out on the result so the caller surfaces them, never
+ * swallows them. */
 export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   const pools = arrayOf(isQuotaPool)(quota.pools);
+  let droppedCredentials = 0;
   let droppedWindows = 0;
+  let droppedActiveSessions = 0;
+  let droppedPoolFreshness = 0;
+  let droppedBurnTokensPerMin = 0;
+  const lifecycleRows = quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
+  const droppedCredentialLifecycle = lifecycleRows?.dropped ?? (quota.credentialLifecycle === undefined ? 0 : 1);
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
     droppedWindows += windows?.dropped ?? 0;
     let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
+    if (pool.freshness !== undefined && !isQuotaFreshness(pool.freshness)) {
+      delete out.freshness;
+      droppedPoolFreshness += 1;
+    }
+    if (pool.burnTokensPerMin !== undefined && !isNonNegative(pool.burnTokensPerMin)) {
+      delete out.burnTokensPerMin;
+      droppedBurnTokensPerMin += 1;
+    }
     if (pool.credentials !== undefined) {
-      const rows = pool.credentials.map((row) => {
+      const rows = arrayOf(isQuotaCredentialRow)(pool.credentials);
+      droppedCredentials += rows?.dropped ?? 0;
+      const credentials = (rows?.values ?? []).map((row) => {
         const rowWindows = arrayOf(isQuotaWindow)(row.windows);
         droppedWindows += rowWindows?.dropped ?? 0;
         return { ...row, windows: rowWindows?.values ?? [] };
       });
-      out = { ...out, credentials: rows };
+      out = { ...out, credentials };
+    }
+    if (pool.activeSessions !== undefined) {
+      if (Array.isArray(pool.activeSessions)) {
+        const sessions = arrayOf(isQuotaActiveSession)(pool.activeSessions);
+        droppedActiveSessions += sessions?.dropped ?? 0;
+        out = { ...out, activeSessions: sessions?.values ?? [] };
+      } else {
+        // A present malformed section is one dropped section, not a pool
+        // failure; the renderer treats an empty list as no active sessions.
+        droppedActiveSessions += 1;
+        out = { ...out, activeSessions: [] };
+      }
     }
     return out;
   });
@@ -574,17 +667,57 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
     doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
   };
-  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  const view: QuotaView = {
+    ...quota,
+    pools: keptPools,
+    burn: burn?.values ?? [],
+    choices,
+    ...(lifecycleRows
+      ? {
+          credentialLifecycle: lifecycleRows.values.map((row) => ({
+            ...row,
+            providerName: safeProviderReason(row.providerName),
+            label: safeProviderReason(row.label),
+            ...(row.reason ? { reason: safeProviderReason(row.reason) } : {}),
+            ...(row.userAction ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } } : {}),
+          })),
+        }
+      : {}),
+  };
   // Surface the loss on the view itself (its consumers project the
   // view, e.g. /api/quota.json), not only on the feed wrapper.
-  if (droppedPools + droppedWindows + droppedBurn > 0) {
-    view.dropped = { pools: droppedPools, windows: droppedWindows, burn: droppedBurn };
+  if (
+    droppedPools +
+      droppedCredentials +
+      droppedWindows +
+      droppedActiveSessions +
+      droppedBurn +
+      droppedPoolFreshness +
+      droppedBurnTokensPerMin +
+      droppedCredentialLifecycle >
+    0
+  ) {
+    view.dropped = {
+      pools: droppedPools,
+      credentials: droppedCredentials,
+      windows: droppedWindows,
+      activeSessions: droppedActiveSessions,
+      burn: droppedBurn,
+      poolFreshness: droppedPoolFreshness,
+      burnTokensPerMin: droppedBurnTokensPerMin,
+      ...(droppedCredentialLifecycle > 0 ? { credentialLifecycle: droppedCredentialLifecycle } : {}),
+    };
   }
   return {
     view,
     droppedPools,
+    droppedCredentials,
     droppedWindows,
+    droppedActiveSessions,
     droppedBurn,
+    droppedPoolFreshness,
+    droppedBurnTokensPerMin,
+    droppedCredentialLifecycle,
   };
 }
 
@@ -625,11 +758,13 @@ export interface SubscriptionSanitization {
 /** One subscription row safe to hand to the renderers (#2446): the
  * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
  * a null row or a non-string field 500s /quota and is served verbatim
- * by /api/quota.json. */
+ * by /api/quota.json. renewsAt must be null or a real ISO calendar
+ * date (#3513): invalid strings survive sanitization otherwise and
+ * render verbatim as renewal dates. */
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
   return (
-    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
+    typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt))
   );
 }
 
@@ -666,13 +801,15 @@ export function sanitizeRegistry(v: unknown): RegistrySanitization {
 /** A PAYG line safe for both the attention derivation and the quota renderer. */
 export function isPaygLine(v: unknown): v is PaygLine {
   if (!isRecord(v)) return false;
-  const nullableFinite = (value: unknown) => value === null || isFiniteNumber(value);
+  const nullableNonNegative = (value: unknown) => value === null || isNonNegative(value);
   const isEstimate = (value: unknown) => {
     if (value === null) return true;
+    if (!isRecord(value)) return false;
+    const { low, high } = value;
     return (
-      isRecord(value) &&
-      isFiniteNumber(value.low) &&
-      isFiniteNumber(value.high) &&
+      isNonNegative(low) &&
+      isNonNegative(high) &&
+      low <= high &&
       typeof value.period === "string" &&
       (value.note === undefined || typeof value.note === "string")
     );
@@ -680,12 +817,12 @@ export function isPaygLine(v: unknown): v is PaygLine {
   return (
     typeof v.id === "string" &&
     typeof v.label === "string" &&
-    nullableFinite(v.accruedUsd) &&
-    (v.collectedUsd === undefined || nullableFinite(v.collectedUsd)) &&
+    nullableNonNegative(v.accruedUsd) &&
+    (v.collectedUsd === undefined || nullableNonNegative(v.collectedUsd)) &&
     (v.estimate === undefined || isEstimate(v.estimate)) &&
-    nullableFinite(v.unbilledUsd) &&
+    nullableNonNegative(v.unbilledUsd) &&
     typeof v.note === "string" &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     (v.sourceClass === "api" ||
       v.sourceClass === "console" ||
       v.sourceClass === "manual" ||
@@ -754,7 +891,16 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...feed,
       meta,
       quota: san.view,
-      quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      quotaDropped: {
+        pools: san.droppedPools,
+        credentials: san.droppedCredentials,
+        windows: san.droppedWindows,
+        activeSessions: san.droppedActiveSessions,
+        burn: san.droppedBurn,
+        poolFreshness: san.droppedPoolFreshness,
+        burnTokensPerMin: san.droppedBurnTokensPerMin,
+        ...(san.droppedCredentialLifecycle > 0 ? { credentialLifecycle: san.droppedCredentialLifecycle } : {}),
+      },
       ...(charges ? { chargesAttention: charges.values } : {}),
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,

@@ -41,6 +41,8 @@ export interface Config {
   actionsFile: string;
   /** Saved-views store (#1276) — named per-person filter sets. */
   viewsFile: string;
+  /** Cross-stack event log store (#1739) — one chronological stream. */
+  eventsFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
@@ -67,6 +69,9 @@ export interface Config {
     origin: string;
     email: string | null;
     password: string | null;
+    /** Authoritative project slug -> repo registry (#1201):
+     * pm-stack/kaneo-projects.json. Unknown slugs stay unmapped. */
+    projectsFile: string;
   };
   grist: {
     baseUrl: string;
@@ -107,6 +112,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
+    eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     quotaViewFile: s(
@@ -134,6 +140,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       origin: s(env.KANEO_ORIGIN, s(env.KANEO_CLIENT_URL, "https://kaneo.security.cab")),
       email: env.KANEO_ADMIN_EMAIL ?? null,
       password: env.KANEO_ADMIN_PASSWORD ?? null,
+      // The registry is authoritative for slug -> repo (#1201); the reader
+      // runs with cwd=pm-stack/aggregator, hence the sibling path.
+      projectsFile: s(env.PM_KANEO_PROJECTS_FILE, join(process.cwd(), "..", "kaneo-projects.json")),
     },
     grist: {
       baseUrl: s(env.GRIST_URL, "http://127.0.0.1:8484"),

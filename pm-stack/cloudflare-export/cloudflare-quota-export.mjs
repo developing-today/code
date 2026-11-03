@@ -366,7 +366,7 @@ export function classifyBilling(probes) {
   };
 }
 
-export function successDocument({ measuredAt, cycleStart, accountId, billing, parsed, r2Buckets }) {
+export function successDocument({ measuredAt, cycleStart, accountId, billing, parsed, r2Buckets, r2BucketsDetail }) {
   return {
     service: "cloudflare",
     source: SOURCE,
@@ -376,6 +376,9 @@ export function successDocument({ measuredAt, cycleStart, accountId, billing, pa
     accountId,
     billing,
     r2Buckets,
+    // Present ONLY when enumeration failed: the list is explicitly
+    // unknown, never a silent [] or a truncated page (#2574).
+    ...(r2BucketsDetail ? { r2BucketsDetail } : {}),
     ...(parsed.r2Unclassified?.length ? { r2UnclassifiedActions: parsed.r2Unclassified } : {}),
     // #2287: the alerts array is present ONLY when a day is firing, so
     // consumers can key on its presence; saturation of the grouped
@@ -499,9 +502,11 @@ export async function run({ token, accountId, now = new Date() } = {}) {
 
   // R2 bucket enumeration directly (names only) — the storage figure
   // itself comes from the analytics dataset, not the tracker prose.
-  const buckets = await apiJson(`/accounts/${acct}/r2/buckets?per_page=100`, token);
-  if (buckets.status === 401 || buckets.status === 403) throw scopeError("GET r2/buckets", buckets.status);
-  const r2Buckets = (buckets.body?.result?.buckets ?? []).map((b) => b.name).filter(Boolean);
+  // Enumeration is informational beside the independent GraphQL total:
+  // when it is unavailable or cannot be proven complete it is encoded
+  // as explicitly unknown (null + r2BucketsDetail), never published as
+  // an empty or partial list (#2574).
+  const { buckets: r2Buckets, detail: r2BucketsDetail } = await listR2Buckets(acct, token);
 
   const start = cycleStartUtc(now);
   const gql = await apiJson("/graphql", token, {
@@ -546,7 +551,56 @@ export async function run({ token, accountId, now = new Date() } = {}) {
     billing,
     parsed,
     r2Buckets,
+    r2BucketsDetail,
   });
+}
+
+// R2 bucket enumeration with honest pagination (#2574). Returns
+// { buckets, detail }: buckets is the complete name list, or null when
+// enumeration is unavailable or cannot be proven complete — with detail
+// saying which page failed and why. 401/403 still throw scopeError (the
+// token-scope contract); every other failure degrades to unknown while
+// the GraphQL metrics continue, because the list is informational
+// beside the independent storage total.
+const R2_BUCKETS_PER_PAGE = 100;
+
+export async function listR2Buckets(acct, token) {
+  const names = [];
+  let page = 1;
+  for (;;) {
+    const res = await apiJson(`/accounts/${acct}/r2/buckets?per_page=${R2_BUCKETS_PER_PAGE}&page=${page}`, token);
+    if (res.status === 401 || res.status === 403) throw scopeError("GET r2/buckets", res.status);
+    if (res.status !== 200) {
+      return {
+        buckets: null,
+        detail: `GET r2/buckets page ${page}: HTTP ${res.status} — enumeration unavailable, GraphQL storage total unaffected`,
+      };
+    }
+    const list = res.body?.result?.buckets;
+    if (!Array.isArray(list)) {
+      return {
+        buckets: null,
+        detail: `GET r2/buckets page ${page}: result.buckets missing or malformed — enumeration unknown`,
+      };
+    }
+    for (const b of list) {
+      if (typeof b?.name === "string" && b.name) names.push(b.name);
+    }
+    const totalPages = res.body?.result_info?.total_pages;
+    if (Number.isInteger(totalPages) && totalPages >= 1) {
+      if (page >= totalPages) return { buckets: names, detail: null };
+      page += 1;
+      continue;
+    }
+    // No usable pagination metadata: a short page proves nothing more
+    // follows, but a full page may hide further buckets — report unknown
+    // rather than a possibly truncated list.
+    if (list.length < R2_BUCKETS_PER_PAGE) return { buckets: names, detail: null };
+    return {
+      buckets: null,
+      detail: `GET r2/buckets page ${page}: full page with no result_info.total_pages — list may be truncated, enumeration unknown`,
+    };
+  }
 }
 
 async function writeOutputs(outDir, doc) {

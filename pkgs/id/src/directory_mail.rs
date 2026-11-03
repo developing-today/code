@@ -293,8 +293,19 @@ impl MailSink for SmtpSink {
 }
 
 /// A bare address with no spaces, control characters or SMTP syntax in it.
+///
+/// Deliberately narrower than `directory::normalize_email`: this gate only
+/// shapes an address for the local relay — it does not trim, lowercase, or
+/// require a dotted domain — but it does require exactly one `@` with
+/// non-empty local and domain sides, so `@`, `a@`, `@b` and `a@@b.c` are
+/// refused here, before any connection is attempted.
 fn plain_address(text: &str) -> bool {
-    text.contains('@')
+    let Some((local, domain)) = text.split_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && !domain.contains('@')
         && text
             .chars()
             .all(|c| c.is_ascii_graphic() && !matches!(c, '<' | '>' | ',' | ';' | '"' | '\\'))
@@ -339,13 +350,15 @@ fn expect(reader: &mut BufReader<TcpStream>, code: u16, deadline: Instant) -> Re
         let Some(line) = read_reply_line(reader, deadline)? else {
             bail!("the mail relay closed the connection");
         };
-        let line = line.trim_end();
+        let line = line.trim_end_matches(['\r', '\n']);
         ensure!(
             line.get(..3).and_then(|c| c.parse::<u16>().ok()) == Some(code),
             "the mail relay replied: {line}"
         );
-        if line.as_bytes().get(3) != Some(&b'-') {
-            return Ok(());
+        match line.as_bytes().get(3) {
+            Some(b'-') => {}
+            Some(b' ') | None => return Ok(()),
+            _ => bail!("the mail relay replied: {line}"),
         }
         continuations += 1;
         ensure!(
@@ -574,6 +587,14 @@ mod tests {
 
     /// A relay that records every line it is sent, refusing the recipient if asked.
     fn fake_relay(refuse_recipient: bool) -> (SocketAddr, JoinHandle<Vec<String>>) {
+        fake_relay_with_ehlo_reply(b"250-fake\r\n250 OK\r\n", refuse_recipient)
+    }
+
+    /// A relay whose EHLO response can be varied to exercise reply parsing.
+    fn fake_relay_with_ehlo_reply(
+        ehlo_reply: &'static [u8],
+        refuse_recipient: bool,
+    ) -> (SocketAddr, JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = thread::spawn(move || {
@@ -607,7 +628,7 @@ mod tests {
                     continue;
                 }
                 let reply: &[u8] = match command.split(' ').next().unwrap_or_default() {
-                    "EHLO" => b"250-fake\r\n250 OK\r\n",
+                    "EHLO" => ehlo_reply,
                     "RCPT" if refuse_recipient => b"550 no such user\r\n",
                     "QUIT" => {
                         writer.write_all(b"221 bye\r\n").unwrap();
@@ -620,6 +641,56 @@ mod tests {
             seen
         });
         (addr, handle)
+    }
+
+    #[test]
+    fn malformed_reply_terminators_are_refused() {
+        for (reply, reply_line) in [
+            (&b"2500 bogus code\r\n"[..], "2500 bogus code"),
+            (&b"250OK no separator\r\n"[..], "250OK no separator"),
+            (&b"250\tbad separator\r\n"[..], "250\tbad separator"),
+            (
+                &b"250-first line\r\n2500 final line\r\n"[..],
+                "2500 final line",
+            ),
+        ] {
+            let (relay, server) = fake_relay_with_ehlo_reply(reply, false);
+            let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+            let error = sink.send(&sample()).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("the mail relay replied: {reply_line}"),
+                "unexpected error for {reply:?}"
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn valid_single_line_bare_and_multiline_replies_are_accepted() {
+        for reply in [
+            &b"250 ok\r\n"[..],
+            &b"250\r\n"[..],
+            &b"250-first line\r\n250 final line\r\n"[..],
+        ] {
+            let (relay, server) = fake_relay_with_ehlo_reply(reply, false);
+            let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+            sink.send(&sample()).unwrap();
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_wrong_reply_code_is_still_refused() {
+        let (relay, server) = fake_relay_with_ehlo_reply(b"251 not 250\r\n", false);
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        let error = sink.send(&sample()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the mail relay replied: 251 not 250",
+            "unexpected error: {error:#}"
+        );
+        server.join().unwrap();
     }
 
     #[test]
@@ -660,6 +731,35 @@ mod tests {
         assert!(!plain_address("john@bücher.example"));
         assert!(!plain_address("john@example.test "));
         assert!(!plain_address("no-at-sign"));
+        assert!(!plain_address("@"));
+        assert!(!plain_address("a@"));
+        assert!(!plain_address("@b"));
+        assert!(!plain_address("a@@b.c"));
+        assert!(!plain_address("a@b@c.d"));
+    }
+
+    #[test]
+    fn a_malformed_sender_or_recipient_is_refused_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        for from in ["@", "a@", "@b", "a@@b.c", "a@b@c.d"] {
+            let error = SmtpSink::new(relay, from.to_owned())
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("sender"), "{error}");
+        }
+        let sink = SmtpSink::new(relay, "id@example.test".to_owned()).unwrap();
+        for to in ["@", "a@", "@b", "a@@b.c", "a@b@c.d"] {
+            let mut mail = sample();
+            mail.to = to.to_owned();
+            let error = sink.send(&mail).unwrap_err().to_string();
+            assert!(error.contains("recipient"), "{error}");
+        }
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "a refused message opened a connection to the relay"
+        );
     }
 
     #[test]

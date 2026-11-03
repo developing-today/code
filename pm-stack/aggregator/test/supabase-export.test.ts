@@ -171,6 +171,28 @@ describe("applySupabaseExport", () => {
     expect(metricOf(out, "db-size")).toEqual(recordedDb);
   });
 
+  test("an impossible or non-ISO measuredAt changes nothing — no Date.parse rollover (#5018)", () => {
+    // now is 2026-03-02T12:05Z: Date.parse rolls 2026-02-30 over to
+    // Mar 2 12:00, inside the freshness window; the real-calendar gate
+    // refuses it, and non-ISO stamps are refused the same way.
+    const now = Date.parse("2026-03-02T12:05:00Z");
+    for (const bad of ["2026-02-30T12:00:00.000Z", "2026-04-31T12:00:00.000Z", "March 2, 2026 12:00 UTC"]) {
+      const base = extractSaasServices(VIEW);
+      const out = applySupabaseExport(base, freshDoc({ measuredAt: bad }), now);
+      expect(out).toEqual(base);
+      expect(supabaseCard(out).sourceClass).toBe("manual");
+    }
+  });
+
+  test("a leap-date measuredAt still overlays (#5018)", () => {
+    const now = Date.parse("2024-02-29T12:05:00Z");
+    const base = extractSaasServices(VIEW);
+    const out = applySupabaseExport(base, freshDoc({ measuredAt: "2024-02-29T12:00:00.000Z" }), now);
+    expect(metricOf(out, "db-size").used).toBe(1.154);
+    expect(supabaseCard(out).sourceClass).toBe("api");
+    expect(supabaseCard(out).measuredAt).toBe("2024-02-29");
+  });
+
   test("a stale export falls back to exactly today's card", () => {
     const base = extractSaasServices(VIEW);
     const out = applySupabaseExport(base, freshDoc({ measuredAt: "2026-10-29T12:00:00Z" }), NOW);

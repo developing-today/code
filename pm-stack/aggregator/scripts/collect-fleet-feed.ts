@@ -121,8 +121,34 @@ const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
-const outArg = process.argv.indexOf("--out");
-const outPath = outArg >= 0 ? process.argv[outArg + 1] : (process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json"));
+// Strict operator-argument contract (#3352, #3509): the only accepted
+// forms are no arguments or one documented separated `--out <path>`.
+// Every other token — a trailing/empty/flag-like --out value, an
+// --out=<path> join, a duplicate --out, or any unknown or positional
+// token — is a usage error (exit 2) raised here, before any collection,
+// network, subprocess, lock, or file-write side effect.
+function usageError(message: string): never {
+  console.error(`collect-fleet-feed: ${message}; usage: bun run scripts/collect-fleet-feed.ts [--out <path>]`);
+  process.exit(2);
+}
+
+function resolveOutPath(): string {
+  const fallback = process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json");
+  const args = process.argv.slice(2);
+  if (args.length === 0) return fallback;
+  if (args.filter((a) => a === "--out").length > 1)
+    usageError(`duplicate --out (got ${JSON.stringify(args)}); the documented form is a single --out <path>`);
+  if (args[0] === "--out") {
+    const value: string | undefined = args[1];
+    if (value === undefined || value === "" || value.startsWith("--"))
+      usageError(`--out requires a path value (got ${value === undefined ? "no value" : JSON.stringify(value)})`);
+    if (args.length > 2) usageError(`unexpected argument ${JSON.stringify(args[2])}`);
+    return value;
+  }
+  usageError(`unknown argument ${JSON.stringify(args[0])}`);
+}
+
+const outPath = resolveOutPath();
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(
@@ -143,6 +169,8 @@ const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
+const opencodeRuntimeConfigPath =
+  process.env.AA_OPENCODE_RUNTIME_CONFIG_PATH ?? join(HOME, ".local", "state", "opencode", "opencode-runtime.jsonc");
 const serverUrl = process.env.OPENCODE_SERVER_URL ?? process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 /** Session source label for the scraped server: the collector's home host
  * decides — the laptop collector labels its local server
@@ -479,7 +507,15 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     console.error("collector: opencode.jsonc unreadable; AA coverage omitted this run");
   }
-  const section = aaSectionFromSupabase(raw, configText, generatedAt);
+  // #4544: the sync-models-owned provider catalogs live in the runtime
+  // overlay; read it when present so AA coverage sees the effective config.
+  let runtimeText: string | null = null;
+  try {
+    runtimeText = await readFile(opencodeRuntimeConfigPath, "utf8");
+  } catch {
+    runtimeText = null;
+  }
+  const section = aaSectionFromSupabase(raw, configText, generatedAt, runtimeText);
   if (!section) return degrade("Supabase payload failed its structural check");
   await writeAaLastGood({ batch: section.batch, configFingerprint: fingerprint, section });
   return section;

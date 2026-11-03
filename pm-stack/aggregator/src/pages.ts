@@ -138,6 +138,15 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "events",
+    title: "Events",
+    route: "/events",
+    api: "/api/events.json",
+    blurb: "The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "comments-queue",
     title: "Comments queue",
     route: "/comments",

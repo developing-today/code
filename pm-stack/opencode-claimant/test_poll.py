@@ -121,7 +121,8 @@ class TestSummarizeCap(unittest.TestCase):
 
 class TestIsCandidate(unittest.TestCase):
     def row(self, **over):
-        r = {"progress": {"lane": "opencode"}, "lane_id": "code-a"}
+        r = {"progress": {"lane": "opencode", "stage": "handed_off"},
+             "lane_id": "code-a"}
         r.update(over)
         return r
 
@@ -142,6 +143,12 @@ class TestIsCandidate(unittest.TestCase):
     def test_bound_session_is_not_candidate(self):
         self.assertFalse(poll.is_candidate(
             self.row(progress={"lane": "opencode", "session_id": "ses_1"})))
+
+    def test_assigned_but_not_handed_off_is_not_candidate(self):
+        self.assertFalse(poll.is_candidate(
+            self.row(progress={"lane": "opencode", "stage": "verified"})))
+        self.assertFalse(poll.is_candidate(
+            self.row(progress={"lane": "opencode"})))
 
     def test_unassigned_task_is_not_candidate(self):
         self.assertFalse(poll.is_candidate(self.row(progress={})))

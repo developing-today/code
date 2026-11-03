@@ -9,9 +9,10 @@
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
 
+use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -27,9 +28,10 @@ use tokio::{
 };
 
 use crate::abuse::{
-    AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, Counters, Direction,
-    EndpointId as AbuseEndpointId, NodeId,
+    AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, ConnectionId, Counters, Direction,
+    EndpointId as AbuseEndpointId, NodeId, RefusalReason,
 };
+use crate::event_store::BlockList;
 use crate::frames::{read_frame_body, read_frame_len};
 use crate::world_hub::WorldHub;
 use crate::world_session::{
@@ -75,6 +77,8 @@ pub struct WorldProtocol {
     /// endpoint opens, plus the counter registry operators read via
     /// [`WorldProtocol::abuse_counters`].
     abuse: Arc<Mutex<AbuseEvaluator>>,
+    /// Lifetime count of peers refused by the per-peer connection cap.
+    connection_cap_refusals: Arc<AtomicU64>,
 }
 
 /// Monotonic milliseconds for the abuse evaluator, from a process-wide
@@ -116,14 +120,47 @@ impl WorldProtocol {
         local_node: NodeId,
         budgets: BudgetPolicy,
     ) -> Self {
+        Self::build(hub, local_node, budgets, None)
+    }
+
+    /// Like [`WorldProtocol::with_local_node`], with the operator block
+    /// list (#2245) attached to the shared evaluator: a connection from
+    /// an endpoint blocked by key is refused at admission, before any
+    /// session starts, with the evaluator's
+    /// [`RefusalReason::BlockedByOperator`] refusal. The list is
+    /// consulted live, so a block lands on the next connection.
+    #[must_use]
+    pub fn with_blocks(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        blocks: Arc<dyn BlockList>,
+    ) -> Self {
+        Self::build(hub, local_node, BudgetPolicy::default(), Some(blocks))
+    }
+
+    fn build(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        budgets: BudgetPolicy,
+        blocks: Option<Arc<dyn BlockList>>,
+    ) -> Self {
+        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        if let Some(blocks) = blocks {
+            evaluator = evaluator.with_block_list(blocks);
+        }
         Self {
             hub: hub.into(),
-            abuse: Arc::new(Mutex::new(AbuseEvaluator::with_budgets(
-                AbusePolicy::default(),
-                local_node,
-                budgets,
-            ))),
+            abuse: Arc::new(Mutex::new(evaluator)),
+            connection_cap_refusals: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Number of connections refused by the per-peer cap since this
+    /// protocol instance was created. Refusal details, including the
+    /// peer identity, are also emitted at `WARN` level.
+    #[must_use]
+    pub fn connection_cap_refusals(&self) -> u64 {
+        self.connection_cap_refusals.load(Ordering::Relaxed)
     }
 
     /// Snapshot of the per-(local node, remote endpoint) frame/byte
@@ -158,6 +195,41 @@ impl WorldProtocol {
     }
 }
 
+/// Owns one evaluator registration for a live QUIC connection. Keeping
+/// this guard in `accept` ties the per-peer slot to the transport's full
+/// lifetime, including every early return and unwinding path.
+struct PeerConnectionRegistration {
+    abuse: Arc<Mutex<AbuseEvaluator>>,
+    endpoint: AbuseEndpointId,
+    connection: ConnectionId,
+}
+
+impl Drop for PeerConnectionRegistration {
+    fn drop(&mut self) {
+        let mut abuse = self
+            .abuse
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        abuse.close_connection(&self.endpoint, self.connection);
+    }
+}
+
+/// The remote IP of the connection's selected path, when that path
+/// is a direct IP path (#2245). A connection whose selected path is
+/// a relay or a custom transport has no peer IP an operator block
+/// could name: it yields `None`, and IP blocks never apply to it.
+/// Best-effort by construction — a direct path that opens after
+/// admission is not re-judged, exactly as the issue scopes IP
+/// enforcement to the listener.
+fn direct_ip_of(conn: &Connection) -> Option<std::net::IpAddr> {
+    let paths = conn.paths();
+    let selected = paths.iter().find(|path| path.is_selected())?;
+    match selected.remote_addr() {
+        iroh::TransportAddr::Ip(addr) => Some(addr.ip()),
+        _ => None,
+    }
+}
+
 impl ProtocolHandler for WorldProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // Bound stale endpoint and counter state as new connections arrive;
@@ -166,6 +238,52 @@ impl ProtocolHandler for WorldProtocol {
         self.prune_abuse_state();
         let remote = conn.remote_id();
         tracing::debug!("world: connection from node {remote}");
+        let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
+        let direct_ip = direct_ip_of(&conn);
+        let connection_id = match self.abuse.lock() {
+            Ok(mut abuse) => match abuse
+                .open_connection_with_direct_ip(remote_endpoint, direct_ip, abuse_now_ms())
+            {
+                Ok(connection_id) => connection_id,
+                Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
+                    // #2245: an operator block is not a cap refusal — it
+                    // is not counted as one, and it offers no retry.
+                    tracing::warn!(
+                        remote = %remote,
+                        "world: operator block; refusing connection"
+                    );
+                    conn.close(0_u32.into(), b"blocked by operator");
+                    return Ok(());
+                }
+                Err(refusal) => {
+                    let refusal_count = self
+                        .connection_cap_refusals
+                        .fetch_add(1, Ordering::Relaxed)
+                        .saturating_add(1);
+                    tracing::warn!(
+                        remote = %remote,
+                        refusal_count,
+                        retry_after_ms = ?refusal.retry_after_ms,
+                        "world: per-peer connection cap reached; refusing connection"
+                    );
+                    conn.close(0_u32.into(), b"per-peer connection cap reached");
+                    return Ok(());
+                }
+            },
+            Err(_) => {
+                tracing::error!(
+                    remote = %remote,
+                    "world: abuse evaluator lock poisoned; refusing connection"
+                );
+                conn.close(0_u32.into(), b"abuse evaluator unavailable");
+                return Ok(());
+            }
+        };
+        let _registration = PeerConnectionRegistration {
+            abuse: Arc::clone(&self.abuse),
+            endpoint: remote_endpoint,
+            connection: connection_id,
+        };
         let permits = Arc::new(Semaphore::new(MAX_SESSIONS_PER_CONNECTION));
         let mut sessions = JoinSet::new();
         while let Ok((mut send, recv)) = conn.accept_bi().await {
@@ -176,7 +294,6 @@ impl ProtocolHandler for WorldProtocol {
             };
             let hub = self.hub.clone();
             let abuse = Arc::clone(&self.abuse);
-            let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
             sessions.spawn(async move {
                 let _permit = permit;
                 let mut io = StreamIo::new(send, recv, abuse, remote_endpoint);
@@ -391,6 +508,93 @@ pub fn route_frame(frame: &serde_json::Value, world: Option<&str>) -> String {
             serde_json::Value::Object(routed).to_string()
         }
         _ => frame.to_string(),
+    }
+}
+
+const MAX_ADMIN_HISTORY_RECORD_BYTES: usize = crate::world::MAX_RECORDS
+    * (crate::world::MAX_RECORD_KEY_BYTES + crate::world::MAX_RECORD_VALUE_BYTES + 8);
+// Bound the entire transfer, not just the decoded `event` and `records`
+// values. The allowance covers top-level framing, per-event/per-page JSON
+// wrappers, and worst-case quote/backslash escaping in record keys.
+const MAX_ADMIN_HISTORY_RESPONSE_BYTES: usize = crate::world::MAX_ADMIN_HISTORY_BYTES
+    + MAX_ADMIN_HISTORY_RECORD_BYTES
+    + crate::world::MAX_RECORDS * crate::world::MAX_RECORD_KEY_BYTES
+    + (crate::world::MAX_ADMIN_HISTORY_EVENTS + crate::world::MAX_RECORDS + 1) * 256;
+
+#[derive(Default)]
+struct AdminHistoryBudget {
+    event_bytes: usize,
+    record_bytes: usize,
+    record_count: usize,
+    response_bytes: usize,
+}
+
+impl AdminHistoryBudget {
+    fn add_frame(&mut self, bytes: usize) -> Result<()> {
+        self.response_bytes = self
+            .response_bytes
+            .checked_add(bytes)
+            .context("admin history response byte count overflow")?;
+        anyhow::ensure!(
+            self.response_bytes <= MAX_ADMIN_HISTORY_RESPONSE_BYTES,
+            "admin history response exceeds {MAX_ADMIN_HISTORY_RESPONSE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    fn add_event(&mut self, bytes: usize) -> Result<()> {
+        self.event_bytes = self
+            .event_bytes
+            .checked_add(bytes)
+            .context("admin event byte count overflow")?;
+        anyhow::ensure!(
+            self.event_bytes <= crate::world::MAX_ADMIN_HISTORY_BYTES,
+            "admin history events exceed {} bytes",
+            crate::world::MAX_ADMIN_HISTORY_BYTES
+        );
+        Ok(())
+    }
+
+    fn add_record(&mut self, key: &str, value: &serde_json::Value) -> Result<()> {
+        anyhow::ensure!(
+            !key.is_empty() && key.len() <= crate::world::MAX_RECORD_KEY_BYTES,
+            "admin history contains an invalid record key"
+        );
+        anyhow::ensure!(
+            !key.chars().any(char::is_control),
+            "admin history contains a control character in a record key"
+        );
+        let value_bytes = serde_json::to_vec(value)
+            .context("measure an admin history record")?
+            .len();
+        anyhow::ensure!(
+            value_bytes <= crate::world::MAX_RECORD_VALUE_BYTES,
+            "admin history record value exceeds {} bytes",
+            crate::world::MAX_RECORD_VALUE_BYTES
+        );
+        self.record_count = self
+            .record_count
+            .checked_add(1)
+            .context("admin record count overflow")?;
+        anyhow::ensure!(
+            self.record_count <= crate::world::MAX_RECORDS,
+            "admin history contains more than {} records",
+            crate::world::MAX_RECORDS
+        );
+        let entry_bytes = key
+            .len()
+            .checked_add(value_bytes)
+            .and_then(|bytes| bytes.checked_add(8))
+            .context("admin record byte count overflow")?;
+        self.record_bytes = self
+            .record_bytes
+            .checked_add(entry_bytes)
+            .context("admin record byte count overflow")?;
+        anyhow::ensure!(
+            self.record_bytes <= MAX_ADMIN_HISTORY_RECORD_BYTES,
+            "admin history records exceed {MAX_ADMIN_HISTORY_RECORD_BYTES} bytes"
+        );
+        Ok(())
     }
 }
 
@@ -886,7 +1090,8 @@ impl WorldClient {
             .context("host sent no isolation")
     }
 
-    /// List the host's worlds as `(default, [(name, open)])`.
+    /// List the host's worlds as `(default, [(name, open, presence)])`,
+    /// where `presence` is the count of sessions live on the world.
     ///
     /// # Errors
     ///
@@ -894,12 +1099,35 @@ impl WorldClient {
     pub async fn list_worlds(
         &mut self,
         admin_token: &str,
-    ) -> Result<(String, Vec<(String, bool)>)> {
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         self.send_json(&serde_json::json!({
             "type": "list_worlds",
             "admin_token": admin_token,
         }))
         .await?;
+        self.read_worlds_reply("host refused to list worlds").await
+    }
+
+    /// Read the host's public world directory (#812) as
+    /// `(default, [(name, open, presence)])`. No admin token: the
+    /// directory is public metadata — names, loaded state, and
+    /// presence counts, never identities.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the directory is refused.
+    pub async fn directory(&mut self) -> Result<(String, Vec<(String, bool, usize)>)> {
+        self.send_json(&serde_json::json!({
+            "type": "directory",
+        }))
+        .await?;
+        self.read_worlds_reply("host refused the directory").await
+    }
+
+    async fn read_worlds_reply(
+        &mut self,
+        refuse_message: &str,
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         let reply = self
             .recv_json()
             .await?
@@ -907,9 +1135,7 @@ impl WorldClient {
         if reply["type"] != "worlds" {
             bail!(
                 "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused to list worlds")
+                reply["message"].as_str().unwrap_or(refuse_message)
             );
         }
         let default = reply["default"].as_str().unwrap_or_default().to_owned();
@@ -917,7 +1143,13 @@ impl WorldClient {
             .as_array()
             .context("worlds reply had no list")?
             .iter()
-            .filter_map(|w| Some((w["name"].as_str()?.to_owned(), w["open"].as_bool()?)))
+            .filter_map(|w| {
+                Some((
+                    w["name"].as_str()?.to_owned(),
+                    w["open"].as_bool()?,
+                    w["presence"].as_u64().unwrap_or(0) as usize,
+                ))
+            })
             .collect();
         Ok((default, worlds))
     }
@@ -955,8 +1187,24 @@ impl WorldClient {
     ///
     /// Fails on a malformed frame or stream error.
     pub async fn recv_json(&mut self) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .recv_json_with_frame_bytes()
+            .await?
+            .map(|(frame, _)| frame))
+    }
+
+    /// Receive one JSON frame and report its complete serialized wire size,
+    /// including the four-byte length prefix.
+    async fn recv_json_with_frame_bytes(&mut self) -> Result<Option<(serde_json::Value, usize)>> {
         match read_frame(&mut self.recv).await? {
-            Some(body) => Ok(Some(serde_json::from_slice(&body).context("decode frame")?)),
+            Some(body) => {
+                let bytes = body
+                    .len()
+                    .checked_add(4)
+                    .context("frame byte count overflow")?;
+                let frame = serde_json::from_slice(&body).context("decode frame")?;
+                Ok(Some((frame, bytes)))
+            }
             None => Ok(None),
         }
     }
@@ -1266,6 +1514,131 @@ impl WorldClient {
         }
     }
 
+    /// Export the retained journal-order event window and its records as an
+    /// administrator. Join capabilities cannot request this frame.
+    ///
+    /// # Errors
+    ///
+    /// Host refusal, malformed/out-of-order frames, or an invalid admin token.
+    pub(crate) async fn admin_event_history(
+        &mut self,
+        admin_token: &str,
+    ) -> Result<crate::world::AdminEventHistory> {
+        self.send_json(&serde_json::json!({
+            "type": "event_history_admin",
+            "admin_token": admin_token,
+        }))
+        .await?;
+        let mut budget = AdminHistoryBudget::default();
+        let (begin, frame_bytes) = self
+            .recv_json_with_frame_bytes()
+            .await?
+            .context("host closed before admin history export")?;
+        budget.add_frame(frame_bytes)?;
+        if begin["type"] != "event_history_begin" {
+            bail!(
+                "{}",
+                begin["message"]
+                    .as_str()
+                    .unwrap_or("host refused admin history export")
+            );
+        }
+        let world_id = begin["world_id"]
+            .as_str()
+            .context("history reply has no world ID")?
+            .to_owned();
+        let module_hash = begin["module_hash"].as_str().map(str::to_owned);
+        let current_sequence = begin["current_sequence"]
+            .as_u64()
+            .context("history reply has no sequence")?;
+        let complete = begin["complete"]
+            .as_bool()
+            .context("history reply has no completeness flag")?;
+        let event_count = begin["event_count"]
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
+            .context("history reply has an invalid event count")?;
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let (frame, frame_bytes) = self
+                .recv_json_with_frame_bytes()
+                .await?
+                .context("host closed during admin history export")?;
+            budget.add_frame(frame_bytes)?;
+            if frame["type"] != "event_history_event" {
+                bail!(
+                    "{}",
+                    frame["message"]
+                        .as_str()
+                        .unwrap_or("unexpected frame during admin history export")
+                );
+            }
+            let event_bytes = serde_json::to_vec(&frame["event"])
+                .context("measure an admin history event")?
+                .len();
+            budget.add_event(event_bytes)?;
+            events.push(
+                serde_json::from_value(frame["event"].clone())
+                    .context("decode an admin history event")?,
+            );
+        }
+        let mut records = crate::world::Records::new();
+        let mut after: Option<String> = None;
+        loop {
+            let (frame, frame_bytes) = self
+                .recv_json_with_frame_bytes()
+                .await?
+                .context("host closed before admin history records")?;
+            budget.add_frame(frame_bytes)?;
+            if frame["type"] != "records" {
+                bail!(
+                    "{}",
+                    frame["message"]
+                        .as_str()
+                        .unwrap_or("unexpected frame during admin history records")
+                );
+            }
+            anyhow::ensure!(
+                frame["sequence"].as_u64() == Some(current_sequence),
+                "admin history records do not match its event sequence"
+            );
+            let page: crate::world::Records = serde_json::from_value(frame["records"].clone())
+                .context("decode admin history records")?;
+            let page_cursor = after.clone();
+            for (key, value) in page {
+                anyhow::ensure!(
+                    after.as_deref().is_none_or(|cursor| key.as_str() > cursor),
+                    "admin history record pages are out of order"
+                );
+                budget.add_record(&key, &value)?;
+                after = Some(key.clone());
+                records.insert(key, value);
+            }
+            match frame["next_after"].as_str() {
+                Some(next) => {
+                    anyhow::ensure!(
+                        after.as_deref() == Some(next),
+                        "invalid admin history cursor"
+                    );
+                    anyhow::ensure!(
+                        page_cursor.as_deref().is_none_or(|cursor| next > cursor),
+                        "admin history record cursor did not advance"
+                    );
+                }
+                None => break,
+            }
+        }
+        Ok(crate::world::AdminEventHistory {
+            world_id,
+            module_hash,
+            current_sequence,
+            complete,
+            events,
+            records,
+        })
+    }
+
     /// Ask for a read-only ticket for the world's records document.
     ///
     /// # Errors
@@ -1423,6 +1796,138 @@ impl WorldClient {
     pub fn close(self) {
         self.conn.close(0_u32.into(), b"done");
     }
+
+    /// Whether this client's connection has closed, locally or by the
+    /// peer: a closed connection can never serve another stream.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.conn.close_reason().is_some()
+    }
+}
+
+/// Client-side coordinator for concurrent world sessions (F13.8, #3845).
+///
+/// [`WorldClient`] is the transport primitive for one server endpoint: one
+/// connection, and sessions as streams on it, each bound to one world for
+/// its lifetime. `WorldSessions` is the client-side owner above it: it
+/// keeps one root connection per distinct server endpoint and retains
+/// independently opened session handles keyed by (endpoint, world), so a
+/// single client can hold live sessions to several worlds — on one server
+/// or across servers — at once.
+///
+/// Boundaries (per the F13.8 design record): a connection never spans
+/// distinct servers (one root [`WorldClient`] per endpoint); hosting is
+/// never started implicitly; every session is opened through the existing
+/// capability-bearing `open_session` path, so per-world capability checks
+/// are unchanged; the sequential `open_session` and one-shot CLI paths are
+/// untouched.
+#[derive(Debug)]
+pub struct WorldSessions {
+    endpoint: Endpoint,
+    /// Root connections, keyed by endpoint id.
+    roots: HashMap<String, WorldClient>,
+    /// Live sessions, keyed by (endpoint id, world name; `""` = host default).
+    sessions: HashMap<(String, String), WorldClient>,
+}
+
+impl WorldSessions {
+    /// A coordinator dialing from `endpoint`.
+    #[must_use]
+    pub fn new(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            roots: HashMap::new(),
+            sessions: HashMap::new(),
+        }
+    }
+
+    fn key(addr: &EndpointAddr, world: Option<&str>) -> (String, String) {
+        (addr.id.to_string(), world.unwrap_or_default().to_owned())
+    }
+
+    /// Open the session for (`addr`, `world`), or return the live one.
+    ///
+    /// The first session to an endpoint dials its root connection; later
+    /// sessions to the same endpoint reuse it via
+    /// [`WorldClient::open_session`]. A session to a different endpoint
+    /// always dials a separate connection.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the endpoint is unreachable or the host refuses a session.
+    pub async fn open_session(
+        &mut self,
+        addr: EndpointAddr,
+        world: Option<&str>,
+    ) -> Result<&mut WorldClient> {
+        let key = Self::key(&addr, world);
+        // A root whose connection has closed (server disconnect or
+        // restart) can never serve another stream, and every session
+        // keyed to it rides that dead connection: evict both so this
+        // endpoint redials on its own, instead of staying wedged until
+        // `close_all` also drops healthy sessions on other servers.
+        if self.roots.get(&key.0).is_some_and(WorldClient::is_closed) {
+            self.roots.remove(&key.0);
+            self.sessions
+                .retain(|(endpoint_id, _), _| endpoint_id != &key.0);
+        }
+        if !self.sessions.contains_key(&key) {
+            if !self.roots.contains_key(&key.0) {
+                let root = WorldClient::connect(&self.endpoint, addr).await?;
+                self.roots.insert(key.0.clone(), root);
+            }
+            let session = self
+                .roots
+                .get(&key.0)
+                .expect("root inserted above")
+                .open_session(world)
+                .await?;
+            self.sessions.insert(key.clone(), session);
+        }
+        Ok(self.sessions.get_mut(&key).expect("session inserted above"))
+    }
+
+    /// The live session for (`addr`, `world`), if one is open.
+    pub fn session(
+        &mut self,
+        addr: &EndpointAddr,
+        world: Option<&str>,
+    ) -> Option<&mut WorldClient> {
+        self.sessions.get_mut(&Self::key(addr, world))
+    }
+
+    /// Whether a session for (`addr`, `world`) is currently open.
+    #[must_use]
+    pub fn has_session(&self, addr: &EndpointAddr, world: Option<&str>) -> bool {
+        self.sessions.contains_key(&Self::key(addr, world))
+    }
+
+    /// Number of distinct server endpoints with a root connection.
+    #[must_use]
+    pub fn endpoint_count(&self) -> usize {
+        self.roots.len()
+    }
+
+    /// Number of live sessions across all endpoints.
+    #[must_use]
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// Drop one session. Its stream closes; sibling sessions on the same
+    /// connection are unaffected (unlike [`WorldClient::close`], which
+    /// closes the whole connection).
+    pub fn close_session(&mut self, addr: &EndpointAddr, world: Option<&str>) -> bool {
+        self.sessions.remove(&Self::key(addr, world)).is_some()
+    }
+
+    /// Drop every session and close every root connection.
+    pub fn close_all(&mut self) {
+        self.sessions.clear();
+        for (_, root) in self.roots.drain() {
+            root.close();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1449,14 +1954,16 @@ mod tests {
         router: Router,
         addr: EndpointAddr,
         world: WorldHandle,
+        protocol: WorldProtocol,
     }
 
     async fn host(admin: Option<&str>) -> Host {
         let ep = endpoint().await;
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world.clone(), admin.map(str::to_owned));
+        let protocol = WorldProtocol::new(service);
         let router = Router::builder(ep.clone())
-            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .accept(WORLD_ALPN, protocol.clone())
             .spawn();
         // Loopback sockets only: the test endpoints use no relay or discovery.
         let addr = EndpointAddr::from_parts(
@@ -1474,7 +1981,39 @@ mod tests {
             router,
             addr,
             world,
+            protocol,
         }
+    }
+
+    async fn endpoint_with_key(key: [u8; 32]) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(iroh_base::SecretKey::from_bytes(&key))
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn wait_for_connection_count(
+        protocol: &WorldProtocol,
+        endpoint: AbuseEndpointId,
+        expected: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count = protocol
+                    .abuse
+                    .lock()
+                    .unwrap()
+                    .active_connection_count(&endpoint);
+                if count == expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for registered peer connections");
     }
 
     async fn next(client: &mut WorldClient) -> Option<serde_json::Value> {
@@ -1482,6 +2021,83 @@ mod tests {
             .await
             .expect("timed out waiting for a world frame")
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn accept_enforces_per_peer_connection_cap_and_releases_slots() {
+        let host = host(Some("admin")).await;
+        let peer_key = [71; 32];
+        let peer_id: AbuseEndpointId = *iroh_base::SecretKey::from_bytes(&peer_key)
+            .public()
+            .as_bytes();
+        let mut clients = Vec::new();
+
+        // Separate endpoint instances with the same identity model distinct
+        // concurrent QUIC connections from one peer.
+        for _ in 0..4 {
+            let client_endpoint = endpoint_with_key(peer_key).await;
+            let client = WorldClient::connect(&client_endpoint, host.addr.clone())
+                .await
+                .unwrap();
+            clients.push((client_endpoint, client));
+        }
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+
+        let fifth_endpoint = endpoint_with_key(peer_key).await;
+        let fifth = WorldClient::connect(&fifth_endpoint, host.addr.clone()).await;
+        if let Ok(client) = fifth {
+            client.close();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.protocol.connection_cap_refusals() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fifth peer connection was not refused");
+        assert_eq!(host.protocol.connection_cap_refusals(), 1);
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+
+        // The same cap is independent per peer, not a server-wide limit.
+        let other_endpoint = endpoint_with_key([72; 32]).await;
+        let other_id: AbuseEndpointId = *other_endpoint.id().as_bytes();
+        let mut other = WorldClient::connect(&other_endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        wait_for_connection_count(&host.protocol, other_id, 1).await;
+        assert_eq!(host.protocol.connection_cap_refusals(), 1);
+        other
+            .invite("admin", "Other peer", None, None)
+            .await
+            .unwrap();
+
+        // Closing one transport releases its registration and admits a new
+        // connection from the peer that had reached the cap.
+        let (closed_endpoint, closed_client) = clients.remove(0);
+        closed_client.close();
+        closed_endpoint.close().await;
+        wait_for_connection_count(&host.protocol, peer_id, 3).await;
+
+        let retry_endpoint = endpoint_with_key(peer_key).await;
+        let mut retry = WorldClient::connect(&retry_endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+        retry
+            .invite("admin", "Replacement peer", None, None)
+            .await
+            .unwrap();
+
+        retry.close();
+        retry_endpoint.close().await;
+        other.close();
+        other_endpoint.close().await;
+        fifth_endpoint.close().await;
+        for (client_endpoint, client) in clients {
+            client.close();
+            client_endpoint.close().await;
+        }
+        host.router.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1624,6 +2240,59 @@ mod tests {
 
     fn join(capability: &str, after: Option<u64>) -> serde_json::Value {
         serde_json::json!({"type": "join", "capability": capability, "after": after})
+    }
+
+    #[test]
+    fn admin_history_client_rejects_over_limit_payload() {
+        let mut event_budget = AdminHistoryBudget::default();
+        assert!(
+            event_budget
+                .add_event(crate::world::MAX_ADMIN_HISTORY_BYTES)
+                .is_ok()
+        );
+        assert!(event_budget.add_event(1).is_err());
+
+        let mut record_budget = AdminHistoryBudget::default();
+        for _ in 0..crate::world::MAX_RECORDS {
+            assert!(
+                record_budget
+                    .add_record("key", &serde_json::Value::Null)
+                    .is_ok()
+            );
+        }
+        assert!(
+            record_budget
+                .add_record("extra", &serde_json::Value::Null)
+                .is_err()
+        );
+        assert!(
+            record_budget
+                .add_record(
+                    "key",
+                    &serde_json::Value::String(
+                        "x".repeat(crate::world::MAX_RECORD_VALUE_BYTES + 1)
+                    )
+                )
+                .is_err()
+        );
+
+        let frame = serde_json::json!({
+            "type": "event_history_begin",
+            "world_id": "lobby",
+            "current_sequence": 0,
+            "complete": true,
+            "event_count": 0,
+            "ignored": "x".repeat(4096),
+        });
+        let wire_bytes = serde_json::to_vec(&frame).unwrap().len() + 4;
+        let mut padded_budget = AdminHistoryBudget {
+            response_bytes: MAX_ADMIN_HISTORY_RESPONSE_BYTES - wire_bytes + 1,
+            ..AdminHistoryBudget::default()
+        };
+        assert!(
+            padded_budget.add_frame(wire_bytes).is_err(),
+            "ignored top-level JSON fields count toward the transfer limit"
+        );
     }
 
     #[tokio::test]
@@ -2337,6 +3006,236 @@ mod tests {
         assert_eq!(accepted, MAX_SESSIONS_PER_CONNECTION);
         assert_eq!(reset, total - MAX_SESSIONS_PER_CONNECTION);
 
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    /// Host a multi-world hub (MemoryOpener) on one endpoint; returns the
+    /// router, the hub, and the loopback address peers should dial.
+    async fn hub_host() -> (Router, WorldHub, EndpointAddr, Endpoint) {
+        let ep = endpoint().await;
+        let opener = crate::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: Arc<dyn crate::world_hub::WorldOpener> = opener;
+        let hub = WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "lobby",
+            crate::world_hub::HubLimits::default(),
+        );
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(hub.clone()))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        (router, hub, addr, ep)
+    }
+
+    /// Mint a capability for `world` on `addr` through a throwaway client.
+    async fn invite_for(
+        client_ep: &Endpoint,
+        addr: &EndpointAddr,
+        world: Option<&str>,
+        name: &str,
+    ) -> String {
+        let root = WorldClient::connect(client_ep, addr.clone()).await.unwrap();
+        let mut inviter = root.open_session(world).await.unwrap();
+        let capability = inviter.invite("admin", name, None, None).await.unwrap();
+        drop(inviter);
+        root.close();
+        capability
+    }
+
+    #[tokio::test]
+    async fn coordinator_holds_two_worlds_on_one_endpoint_concurrently() {
+        let (router, hub, addr, host_ep) = hub_host().await;
+        let client_ep = endpoint().await;
+        let cap_alpha = invite_for(&client_ep, &addr, Some("alpha"), "ann").await;
+        let cap_beta = invite_for(&client_ep, &addr, Some("beta"), "bob").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        // Join both worlds and keep both sessions live at once.
+        for (world, cap) in [("alpha", &cap_alpha), ("beta", &cap_beta)] {
+            let s = sessions
+                .open_session(addr.clone(), Some(world))
+                .await
+                .unwrap();
+            s.send_json(&join(cap, None)).await.unwrap();
+            assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        }
+        assert_eq!(sessions.endpoint_count(), 1);
+        assert_eq!(sessions.session_count(), 2);
+        assert_eq!(hub.open_count(), 2);
+
+        // Chat in alpha is delivered to the alpha session only: the beta
+        // session stays silent, proving the two live sessions do not
+        // cross-talk on the shared connection.
+        let alpha = sessions.session(&addr, Some("alpha")).unwrap();
+        alpha
+            .send_json(&serde_json::json!({"type": "chat", "text": "alpha only"}))
+            .await
+            .unwrap();
+        let frame = next(alpha).await.unwrap();
+        assert_eq!(frame["type"], "event");
+        assert!(frame.to_string().contains("alpha only"));
+        let beta = sessions.session(&addr, Some("beta")).unwrap();
+        let silent =
+            tokio::time::timeout(std::time::Duration::from_millis(500), beta.recv_json()).await;
+        assert!(
+            silent.is_err(),
+            "beta session received alpha's chat: {silent:?}"
+        );
+
+        // Re-opening an already-live session returns it, not a new stream:
+        // the same joined session still chats and receives its own event.
+        let again = sessions
+            .open_session(addr.clone(), Some("alpha"))
+            .await
+            .unwrap();
+        again
+            .send_json(&serde_json::json!({"type": "chat", "text": "still alpha"}))
+            .await
+            .unwrap();
+        let frame = next(again).await.unwrap();
+        assert!(frame.to_string().contains("still alpha"));
+        assert_eq!(sessions.session_count(), 2);
+
+        sessions.close_all();
+        client_ep.close().await;
+        router.shutdown().await.unwrap();
+        host_ep.close().await;
+    }
+
+    #[tokio::test]
+    async fn coordinator_spans_distinct_server_endpoints() {
+        let host_a = host(Some("admin")).await;
+        let host_b = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        for host in [&host_a, &host_b] {
+            let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+            let s = sessions
+                .open_session(host.addr.clone(), None)
+                .await
+                .unwrap();
+            s.send_json(&join(&cap, None)).await.unwrap();
+            assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        }
+        // Distinct servers: two root connections, never one shared.
+        assert_eq!(sessions.endpoint_count(), 2);
+        assert_eq!(sessions.session_count(), 2);
+
+        // A chat on server A reaches only server A's session.
+        let a = sessions.session(&host_a.addr, None).unwrap();
+        a.send_json(&serde_json::json!({"type": "chat", "text": "on a"}))
+            .await
+            .unwrap();
+        let frame = next(a).await.unwrap();
+        assert!(frame.to_string().contains("on a"));
+
+        sessions.close_all();
+        client_ep.close().await;
+        host_a.router.shutdown().await.unwrap();
+        host_b.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn second_join_through_coordinator_does_not_mutate_the_journal() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+
+        // Journal state before any join: the world's committed sequence and
+        // its records generation.
+        let mut probe = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let (_, _, seq_before) = probe.info(&cap).await.unwrap();
+        probe.close();
+        let (records_gen_before, _) = host.world.records();
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let first = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        first.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(first).await.unwrap()["type"], "snapshot");
+
+        // A second, independent client joins the same world while the first
+        // session stays live.
+        let mut second = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        second.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(&mut second).await.unwrap()["type"], "snapshot");
+        second.close();
+
+        let mut probe = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let (_, _, seq_after) = probe.info(&cap).await.unwrap();
+        probe.close();
+        let (records_gen_after, _) = host.world.records();
+        assert_eq!(
+            seq_after, seq_before,
+            "a join must not append to the journal"
+        );
+        assert_eq!(records_gen_after, records_gen_before);
+
+        sessions.close_all();
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn coordinator_replaces_a_closed_root_connection_on_reopen() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let cap = invite_for(&client_ep, &host.addr, None, "ann").await;
+
+        let mut sessions = WorldSessions::new(client_ep.clone());
+        let s = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        s.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+
+        // The root connection dies, as on a server restart: close it and
+        // wait until the close has landed.
+        let conn = sessions
+            .roots
+            .get(&host.addr.id.to_string())
+            .unwrap()
+            .conn
+            .clone();
+        conn.close(0_u32.into(), b"root connection died");
+        conn.closed().await;
+
+        // The caller drops the failed session and reopens: the coordinator
+        // must redial a fresh root for this endpoint, not reuse the closed
+        // connection (which would wedge this endpoint until close_all).
+        assert!(sessions.close_session(&host.addr, None));
+        let s = sessions
+            .open_session(host.addr.clone(), None)
+            .await
+            .unwrap();
+        s.send_json(&join(&cap, None)).await.unwrap();
+        assert_eq!(next(s).await.unwrap()["type"], "snapshot");
+        assert_eq!(sessions.endpoint_count(), 1);
+        assert_eq!(sessions.session_count(), 1);
+
+        sessions.close_all();
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
     }

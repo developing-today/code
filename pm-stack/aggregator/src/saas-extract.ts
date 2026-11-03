@@ -808,17 +808,22 @@ export function applyCloudflareExport(
   nowMs: number = Date.now(),
 ): SaasService[] {
   if (!doc || doc.status !== "ok" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
-  const measuredMs = Date.parse(doc.measuredAt);
-  if (!Number.isFinite(measuredMs)) return services;
+  // Real-calendar ISO only (#5018): Date.parse rolls impossible dates
+  // over (2026-02-30 -> Mar 2) and accepts non-ISO strings, so the
+  // freshness window must be computed from parseIsoDate's verdict.
+  const measured = parseIsoDate(doc.measuredAt);
+  if (!measured) return services;
+  const measuredMs = measured.getTime();
   if (nowMs - measuredMs > CLOUDFLARE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   // A tick that ran just before a UTC month rollover carries the
   // previous cycle's totals; overlaying them would compare a full month
   // against a fresh one's limits. Documents without cycleStart (older
   // producers) stay backwards compatible.
   if (doc.cycleStart) {
-    const cycleMs = Date.parse(doc.cycleStart);
-    if (!Number.isFinite(cycleMs)) return services;
-    const cycle = new Date(cycleMs);
+    // Same real-calendar rule (#5018): an impossible cycleStart must not
+    // roll into a neighbouring month and evade the same-month check.
+    const cycle = parseIsoDate(doc.cycleStart);
+    if (!cycle) return services;
     const current = new Date(nowMs);
     if (cycle.getUTCFullYear() !== current.getUTCFullYear() || cycle.getUTCMonth() !== current.getUTCMonth()) {
       return services;
@@ -930,8 +935,10 @@ export function applySupabaseExport(
 ): SaasService[] {
   if (!doc || (doc.status !== "ok" && doc.status !== "partial")) return services;
   if (typeof doc.measuredAt !== "string" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
-  const measuredMs = Date.parse(doc.measuredAt);
-  if (!Number.isFinite(measuredMs)) return services;
+  // Real-calendar ISO only (#5018): see the Cloudflare gate above.
+  const measured = parseIsoDate(doc.measuredAt);
+  if (!measured) return services;
+  const measuredMs = measured.getTime();
   if (nowMs - measuredMs > SUPABASE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   const supabase = services.find((s) => s.id === "supabase");
   if (!supabase) return services;

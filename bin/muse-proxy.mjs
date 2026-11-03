@@ -1432,6 +1432,25 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
       writeJsonBody(res, 502, { error: { message: 'Direct Meta route returned an unreadable response body' } });
       return true;
     }
+    const failedMessage = respBody && respBody.status === 'failed'
+      ? ((respBody.error && respBody.error.message) || 'Direct Meta Responses request failed')
+      : null;
+    if (failedMessage) {
+      // A failed upstream body must surface as an error even when output
+      // carries partial text (#2780): never report it as a 200 completion.
+      writeJsonBody(res, 500, { error: { message: failedMessage } });
+      return true;
+    }
+    const incompleteReason = respBody && respBody.status === 'incomplete' &&
+      (!respBody.incomplete_details || respBody.incomplete_details.reason !== 'max_output_tokens')
+      ? ((respBody.incomplete_details && respBody.incomplete_details.reason) || 'unknown')
+      : null;
+    if (incompleteReason) {
+      // An incomplete body that was not cut off by max_output_tokens is an
+      // upstream failure, not a finish_reason stop (#2780).
+      writeJsonBody(res, 500, { error: { message: `Direct Meta response incomplete: ${incompleteReason}` } });
+      return true;
+    }
     writeJsonBody(res, 200, responsesToChatCompletion(respBody, { chatId, created, fullName }));
     return true;
   }

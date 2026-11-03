@@ -97,7 +97,7 @@ pub fn check_note_link_op(kind: &str, op: &NoteLinkOp) -> Result<(), NoteLinkErr
         (LINK_KIND, NoteLinkOp::Assert { surface, .. }) => {
             if surface.is_empty() {
                 return Err(NoteLinkError::Field(
-                    "a link's authored surface is not empty".to_owned(),
+                    "a link's authored surface is empty".to_owned(),
                 ));
             }
             if surface.len() > MAX_SURFACE_BYTES {
@@ -108,7 +108,7 @@ pub fn check_note_link_op(kind: &str, op: &NoteLinkOp) -> Result<(), NoteLinkErr
             }
             if !is_nfc(surface) {
                 return Err(NoteLinkError::Field(
-                    "a link's authored surface is NFC".to_owned(),
+                    "a link's authored surface is not NFC".to_owned(),
                 ));
             }
             Ok(())
@@ -481,6 +481,44 @@ mod tests {
                 ),
                 "surface {surface:?} must be refused"
             );
+        }
+    }
+
+    #[test]
+    fn test_check_names_the_surface_fault_in_its_message() {
+        let base = NoteLinkOp::Assert {
+            source: hash(10),
+            revision: hash(10),
+            target: hash(20),
+            surface: "fine".to_owned(),
+            pin: None,
+        };
+        // The refusal message must state the fault that caused it: an empty
+        // surface is empty, and a non-NFC surface is not NFC (#4372).
+        for (surface, expected) in [
+            ("", "a link's authored surface is empty"),
+            ("e\u{301}", "a link's authored surface is not NFC"),
+        ] {
+            let NoteLinkOp::Assert {
+                source,
+                revision,
+                target,
+                pin,
+                ..
+            } = base.clone();
+            let bad = NoteLinkOp::Assert {
+                source,
+                revision,
+                target,
+                surface: surface.to_owned(),
+                pin,
+            };
+            match check_note_link_op(LINK_KIND, &bad) {
+                Err(NoteLinkError::Field(message)) => {
+                    assert_eq!(message, expected, "surface {surface:?}");
+                }
+                other => panic!("surface {surface:?} must be refused, got {other:?}"),
+            }
         }
     }
 
