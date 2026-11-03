@@ -73,7 +73,7 @@ describe("quota extractors", () => {
   });
 
   test("codex 7-day read", () => {
-    const p = byId.get("openai")!;
+    const p = byId.get("openai.main")!;
     expect(p.windows[0].percent).toBe(11);
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
@@ -81,7 +81,7 @@ describe("quota extractors", () => {
   test("month-based resets normalize month case and preserve reads for invalid dates across extractors", () => {
     const consumers = [
       {
-        id: "openai",
+        id: "openai.main",
         view: (reset: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, 18:01 UTC.\n`,
         window: { name: "7-day", percent: 42 },
         extraWindows: 0,
@@ -126,7 +126,7 @@ describe("quota extractors", () => {
     const pastDate = "Sep 24";
     const cases = [
       {
-        id: "openai",
+        id: "openai.main",
         view: `\n### ChatGPT — main account plans\n7-day 42% used; resets ${pastDate}, 18:01 UTC.\n`,
       },
       {
@@ -349,7 +349,7 @@ describe("windowPercent + guidance", () => {
     const pools = extractQuotaPools(VIEW, NOW);
     const choices = computeChoices(pools, NOW.getTime());
     expect(choices.doNotStart).toContain("meta");
-    expect(choices.hasHeadroom).toContain("openai");
+    expect(choices.hasHeadroom).toContain("openai.main");
     expect(choices.hasHeadroom).not.toContain("meta");
     // Claude resets in >24h; nothing in this fixture resets within a day
     // with headroom, so burn-before-reset is empty.
@@ -387,7 +387,7 @@ describe("pass-through pool assembly (Drew, 2026-11-03)", () => {
     expect(extractQuotaPools(VIEW, NOW).map((p) => p.id)).toEqual([
       "meta",
       "anthropic:claude-pro",
-      "openai",
+      "openai.main",
       "openai.alternate",
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",

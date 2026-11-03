@@ -560,7 +560,7 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
 
 describe("serviceIdFor", () => {
   test("known pools map to hub ids; others pass through", () => {
-    expect(serviceIdFor("codex")).toBe("openai");
+    expect(serviceIdFor("codex")).toBe("openai.main");
     expect(serviceIdFor("deepseek")).toBe("deepseek");
     expect(serviceIdFor("meta")).toBe("meta");
     expect(serviceIdFor("opendesign")).toBe("opendesign");
