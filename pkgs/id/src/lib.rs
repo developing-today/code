@@ -128,7 +128,7 @@
 //!
 //! Two protocols are used:
 //! - **Blobs Protocol** (`/iroh-blobs/1`): For blob data transfer
-//! - **Meta Protocol** (`/iroh-meta/2`): For metadata operations (list, find, delete, etc.)
+//! - **Meta Protocol** (`/iroh-meta/3`): For metadata operations (list, find, delete, etc.)
 //!
 //! ## Features
 //!
@@ -344,10 +344,15 @@ pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 /// and `Error`. It is not wire-compatible with `/iroh-meta/1`; the ALPN bump
 /// makes old and new nodes fail the handshake cleanly instead of mis-decoding.
 ///
+/// **Version 3** changes the `List` response item from `(hash, name)` pairs
+/// to `ListEntry` records carrying the file's origin node and upload time
+/// (#4973). That payload change is not wire-compatible with `/iroh-meta/2`
+/// under postcard, so it takes this ALPN bump per the rule below.
+///
 /// Compatibility rule: within a version, only **append** enum variants. Any
 /// other change to [`protocol::MetaRequest`] / [`protocol::MetaResponse`]
 /// requires a new ALPN. `protocol::tests` pins every discriminant.
-pub const META_ALPN: &[u8] = b"/iroh-meta/2";
+pub const META_ALPN: &[u8] = b"/iroh-meta/3";
 
 // ============================================================================
 // Utility Functions
@@ -731,7 +736,7 @@ mod tests {
         assert_eq!(CLIENT_KEY_FILE, ".iroh-key-client");
         assert_eq!(STORE_PATH, ".iroh-store");
         assert_eq!(SERVE_LOCK, ".iroh-serve.lock");
-        assert_eq!(META_ALPN, b"/iroh-meta/2");
+        assert_eq!(META_ALPN, b"/iroh-meta/3");
     }
 
     #[tokio::test]

@@ -174,7 +174,22 @@ pub fn render_file_list(page: &FileListPage) -> String {
         .map(html_escape)
         .unwrap_or_default();
     html.push_str("<form method=\"get\" action=\"/files\" class=\"flex items-center gap-1\">");
-    html.push_str("<select name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
+    // Preserve the current search + show-deleted state across this GET
+    // submit (Codex review, PR #5191): without these hidden fields,
+    // applying a sort/origin silently cleared the other constraints.
+    if !search_value.is_empty() {
+        let _ = write!(
+            html,
+            "<input type=\"hidden\" name=\"search\" value=\"{}\" />",
+            search_value
+        );
+    }
+    if page.show_deleted {
+        html.push_str(
+            "<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />",
+        );
+    }
+    html.push_str("<select id=\"file-sort\" name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
     for (value, label) in [
         ("", "sort: default"),
         ("uploaded", "sort: upload time"),
@@ -194,7 +209,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
     html.push_str("</select>");
     let _ = write!(
         html,
-        "<input type=\"text\" name=\"origin\" aria-label=\"Filter by origin node\" class=\"input input-bordered input-xs w-28 bg-base-100\" placeholder=\"origin / unknown\" value=\"{}\" />",
+        "<input type=\"text\" id=\"file-origin\" name=\"origin\" aria-label=\"Filter by origin node\" class=\"input input-bordered input-xs w-28 bg-base-100\" placeholder=\"origin / unknown\" value=\"{}\" />",
         origin_value
     );
     html.push_str(

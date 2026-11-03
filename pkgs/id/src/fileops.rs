@@ -318,8 +318,11 @@ impl<'a> FileOps<'a> {
     /// Name `hash` as `name`, after verifying the blob is complete in the store.
     ///
     /// Sets the `created` tag only if absent and always refreshes `modified`,
-    /// stamps the `origin` node if one is configured and none is recorded
-    /// yet, then auto-tags `name`/`file`.
+    /// stamps the `origin` node on a genuine first write (no `created` tag
+    /// recorded yet) if one is configured, then auto-tags `name`/`file`.
+    /// A legacy file that predates origin stamping keeps an unknown origin
+    /// when it is overwritten: absence of an `origin` tag alone does not
+    /// prove this write is the file's first.
     pub async fn put(&self, name: &str, hash: Hash) -> Result<(), FileOpError> {
         Self::validate_name(name)?;
         if !self.blob_present(hash).await? {
@@ -342,6 +345,15 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         let now = now_unix().to_string();
         let subject = name.as_bytes();
+        // Origin is stamped only for a genuine first write: a name with a
+        // `created` tag but no `origin` tag is a legacy file whose true
+        // origin is unknown and must stay unknown (Codex review, PR #5191).
+        let first_write = self
+            .tags
+            .get_by_key(ns, subject, b"created")
+            .await
+            .map(|existing| existing.is_empty())
+            .unwrap_or(false);
         let created = if reset_created {
             self.tags
                 .set_singleton(ns, subject, b"created", Some(now.as_bytes()), b"")
@@ -362,7 +374,8 @@ impl<'a> FileOps<'a> {
         {
             tracing::warn!("failed to set modified tag for {name}: {e:#}");
         }
-        if let Some(origin) = &self.origin
+        if first_write
+            && let Some(origin) = &self.origin
             && let Err(e) = self
                 .tags
                 .set_if_absent(ns, subject, b"origin", Some(origin.as_bytes()), b"")

@@ -1467,7 +1467,11 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
 
     // Update metadata tags: set created (if first save) and modified
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1478,21 +1482,27 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
-    }
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
 
-    // Stamp this node as the file's origin (#4973), set-if-absent like
-    // `created`: the first writer stays the origin.
-    if let Err(err) = state
-        .tag_store
-        .set_if_absent(
-            &state.tag_store.global,
-            req.name.as_bytes(),
-            b"origin",
-            Some(state.node_id.as_bytes()),
-            b"",
-        )
-        .await
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                req.name.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
     {
         tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
@@ -1596,7 +1606,11 @@ async fn new_file_handler(
 
     // Set metadata tags: created + modified
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1607,21 +1621,27 @@ async fn new_file_handler(
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
-    }
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
 
-    // Stamp this node as the file's origin (#4973), set-if-absent like
-    // `created`: the first writer stays the origin.
-    if let Err(err) = state
-        .tag_store
-        .set_if_absent(
-            &state.tag_store.global,
-            req.name.as_bytes(),
-            b"origin",
-            Some(state.node_id.as_bytes()),
-            b"",
-        )
-        .await
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                req.name.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
     {
         tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
@@ -1857,7 +1877,11 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
 
     // Set metadata tags (created, modified, content-type)
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1868,21 +1892,27 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
-    }
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
 
-    // Stamp this node as the file's origin (#4973), set-if-absent like
-    // `created`: the first writer stays the origin.
-    if let Err(err) = state
-        .tag_store
-        .set_if_absent(
-            &state.tag_store.global,
-            filename.as_bytes(),
-            b"origin",
-            Some(state.node_id.as_bytes()),
-            b"",
-        )
-        .await
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                filename.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
     {
         tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }

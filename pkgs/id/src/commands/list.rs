@@ -111,22 +111,34 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
         return result;
     }
 
-    let store = open_store(false).await?;
-    let store_handle = store.as_store();
-
-    let mut list = store_handle.tags().list().await?;
-    let mut count = 0;
-    while let Some(item) = list.next().await {
-        let item = item?;
-        let name = String::from_utf8_lossy(item.name.as_ref());
-        println!("{}", list_tsv_row(item.hash, &name, None, None));
-        count += 1;
-    }
-    if count == 0 {
-        println!("(no files stored)");
-    }
-    store.shutdown().await?;
-    Ok(())
+    // Offline: run the same in-process meta handler the REPL uses, so the
+    // listing is enriched with the recorded origin + upload time from the
+    // metadata tags instead of reporting `unknown` for files whose
+    // metadata exists locally (Codex review, PR #5191).
+    let node = crate::local::LocalNode::open(false).await?;
+    let result = match node.request(MetaRequest::List).await {
+        MetaResponse::List { items } => {
+            if items.is_empty() {
+                println!("(no files stored)");
+            } else {
+                for entry in &items {
+                    println!(
+                        "{}",
+                        list_tsv_row(
+                            entry.hash,
+                            &entry.name,
+                            entry.origin.as_deref(),
+                            entry.uploaded_at
+                        )
+                    );
+                }
+            }
+            Ok(())
+        }
+        _ => Err(anyhow::anyhow!("unexpected response")),
+    };
+    node.shutdown().await?;
+    result
 }
 
 /// Lists files on a remote node.

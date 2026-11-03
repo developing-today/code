@@ -29,7 +29,7 @@
 //! # Protocol Identifier
 //!
 //! The meta protocol uses the ALPN identifier defined in [`crate::META_ALPN`]:
-//! `b"/iroh-meta/2"`. This allows nodes to negotiate the correct protocol handler.
+//! `b"/iroh-meta/3"`. This allows nodes to negotiate the correct protocol handler.
 //!
 //! # Usage Example
 //!
@@ -252,7 +252,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// `Put` naming it is refused.
 pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Requests to a remote node via the meta protocol (`/iroh-meta/2`).
+/// Requests to a remote node via the meta protocol (`/iroh-meta/3`).
 ///
 /// **Compatibility rule:** postcard encodes enum variants by position. Within
 /// a protocol version, new variants may only be *appended*; reordering,
@@ -1285,7 +1285,7 @@ mod tests {
     #[test]
     fn wire_format_is_pinned() {
         // postcard encodes the enum variant index as the first byte. These
-        // indices are the wire format of `/iroh-meta/2`: within a version only
+        // indices are the wire format of `/iroh-meta/3`: within a version only
         // append new variants; anything else needs a new ALPN.
         let h = Hash::from_bytes([0u8; 32]);
         let s = String::from("x");
