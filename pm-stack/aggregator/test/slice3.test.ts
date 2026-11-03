@@ -44,6 +44,25 @@ describe("dns register parser", () => {
     expect(entries.find((e) => e.domain === "noprice.example")?.priceUsd).toBeNull();
   });
 
+  test("rejects impossible calendar renewal dates, keeps the leap date (#2199)", () => {
+    const md = [
+      "# DNS / Domain Register",
+      "",
+      "| Domain | Registrar | DNS hosted at | Next renewal | Auto-renew | Renewal price (list) | Prior-year cost | Where used | Plan / status | Review? |",
+      "|---|---|---|---|---|---|---|---|---|---|",
+      "| feb30.example | Porkbun | Porkbun | 2026-02-30 | ON | $20.00 | unknown | Parked | Parked | REVIEW |",
+      "| month13.example | Porkbun | Porkbun | 2026-13-01 | ON | $30.00 | unknown | Parked | Parked | REVIEW |",
+      "| month00.example | Porkbun | Porkbun | 2026-00-10 | ON | $40.00 | unknown | Parked | Parked | REVIEW |",
+      "| apr31.example | Porkbun | Porkbun | 2026-04-31 | ON | $50.00 | unknown | Parked | Parked | REVIEW |",
+      "| leap.example | Porkbun | Porkbun | 2024-02-29 | ON | $5.00 | unknown | Parked | Parked | REVIEW |",
+      "| real.example | Porkbun | Porkbun | 2027-01-15 | ON | $10.00 | unknown | Parked | Parked | REVIEW |",
+    ].join("\n");
+    const entries = parseDnsRegister(md);
+    expect(entries.map((e) => e.domain)).toEqual(["leap.example", "real.example"]);
+    const section = dnsSectionFromRegister(md, "2026-10-25T00:00:00Z", "test");
+    expect(section?.totalAnnualListUsd).toBe(15);
+  });
+
   test("classifies active / earmarked / unused from the plan cell", () => {
     const entries = parseDnsRegister(REGISTER_MD);
     const byStatus = (s: string) => entries.filter((e) => e.status === s).map((e) => e.domain);
