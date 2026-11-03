@@ -759,6 +759,9 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             },
         )
         .unwrap();

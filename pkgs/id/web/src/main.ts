@@ -8,7 +8,7 @@ import { initHome } from "./home";
 import "./world";
 import "./world";
 import { AutoSaveManager, type SaveResult } from "./auto-save";
-import { type CollabConnection, initCollab } from "./collab";
+import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
@@ -954,7 +954,7 @@ async function init(): Promise<void> {
         // Connect to collab server - editor will be initialized after receiving server doc
         updateStatus("connecting");
         const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws/collab/${docId}`;
+        const wsUrl = buildCollabWsUrl(wsProtocol, window.location.host, docId);
         console.log("[id] Connecting to WebSocket:", wsUrl);
 
         this.collab = initCollab(

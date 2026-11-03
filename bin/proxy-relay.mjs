@@ -34,7 +34,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { parseProxyPort } from './proxy-port.mjs';
+import { parseProxyPort, parseProxyPortList } from './proxy-port.mjs';
 
 const LISTEN_PORT = parseProxyPort('RELAY_LISTEN_PORT', 0);
 if (!LISTEN_PORT) {
@@ -43,14 +43,7 @@ if (!LISTEN_PORT) {
 }
 const LISTEN_HOST = process.env.RELAY_LISTEN_HOST || '127.0.0.1';
 const TARGET_HOST = process.env.RELAY_TARGET_HOST || '100.99.113.103';
-const TARGET_PORTS = (process.env.RELAY_TARGET_PORTS || '')
-  .split(',')
-  .map((s) => Number(s.trim()))
-  .filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535);
-if (TARGET_PORTS.length === 0) {
-  console.error('RELAY_TARGET_PORTS is required (comma list)');
-  process.exit(1);
-}
+const TARGET_PORTS = parseProxyPortList('RELAY_TARGET_PORTS');
 const PROXY_HOST = process.env.RELAY_PROXY_HOST || 'hatch-egress-proxy';
 const PROXY_PORT = parseProxyPort('RELAY_PROXY_PORT', 3130);
 const NAME = process.env.RELAY_NAME || `relay-${LISTEN_PORT}`;
@@ -143,16 +136,20 @@ const tryTargets = async (ports) => {
 // take the local listener down with it. So GET /health is answered
 // locally; everything else is forwarded untouched.
 const LOCAL_HEALTH = (reqLine) => /^GET \/health(\?\S*)? HTTP\//.test(reqLine);
+const FIRST_LINE_TIMEOUT_MS = 10_000;
 
 const server = net.createServer((client) => {
   client.on('error', () => client.destroy());
   // Peek at the first request line before connecting upstream.
   let buf = Buffer.alloc(0);
+  const firstLineTimer = setTimeout(() => client.destroy(), FIRST_LINE_TIMEOUT_MS);
+  client.once('close', () => clearTimeout(firstLineTimer));
   const onData = (chunk) => {
     buf = Buffer.concat([buf, chunk]);
     const headEnd = buf.indexOf('\r\n');
     if (headEnd === -1 && buf.length < 8192) return;
     client.removeListener('data', onData);
+    clearTimeout(firstLineTimer);
     const firstLine = buf.slice(0, headEnd === -1 ? buf.length : headEnd).toString('latin1');
     if (LOCAL_HEALTH(firstLine)) {
       client.end(
@@ -168,11 +165,22 @@ const server = net.createServer((client) => {
       );
       return;
     }
+    // Pause the client across the async target selection / tunnel
+    // CONNECT window (#2847): the peek listener is already removed, so a
+    // socket left flowing here silently drops every byte that arrives
+    // before the pipe below is set up. pipe() resumes the client once
+    // the peeked buffer has been handed to the upstream, so buffered
+    // bytes follow it in order; if every target fails, the catch below
+    // destroys the still-paused client.
+    client.pause();
     const order = [preferred, ...TARGET_PORTS.filter((p) => p !== preferred)];
     tryTargets(order)
       .then((upstream) => {
         upstream.on('error', () => { client.destroy(); upstream.destroy(); });
         upstream.write(buf);
+        // This is now a transparent TCP pipe, not a first-line peek. Forwarded
+        // flows may be legitimately long-lived or idle; tunnel/upstream
+        // endpoints own their timeouts, so do not add a post-pipe idle timeout.
         client.pipe(upstream);
         upstream.pipe(client);
       })

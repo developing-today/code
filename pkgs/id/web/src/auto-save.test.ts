@@ -183,3 +183,121 @@ describe("AutoSaveManager serialization (#1440)", () => {
     expect(save.calls).toBe(1);
   });
 });
+
+describe("AutoSaveManager.onNewVersion vs a pending rate-limit retry (#2466)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not cancel a pending rate-limit retry — the broadcast version cannot contain the rejected snapshot", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.onContentChange();
+    mgr.saveNow();
+    await flush();
+    expect(save.calls).toBe(1);
+
+    // Refused: another client's save was in flight on the server (#2466).
+    save.resolveNext({ ok: false, retryAfterMs: 5000 });
+    await flush();
+    expect(mgr.state).toBe("rate-limited");
+
+    // The winning save now broadcasts NewVersion. The retry must survive:
+    // this client's snapshot is not in that broadcast version.
+    mgr.onNewVersion();
+    expect(mgr.state).toBe("rate-limited");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(save.calls).toBe(2);
+    save.resolveNext({ ok: true });
+    await flush();
+    expect(mgr.state).toBe("saved");
+  });
+
+  it("still marks the document saved on NewVersion when no retry is pending", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.onContentChange();
+    expect(mgr.state).toBe("unsaved");
+
+    mgr.onNewVersion();
+    expect(mgr.state).toBe("saved");
+
+    // The pending debounce was cancelled — no save of the superseded doc.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(0);
+    expect(mgr.state).toBe("idle");
+  });
+});
+
+describe("AutoSaveManager cancel during an in-flight save (#2437)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("schedules no retry when a rate-limited save completes after cancel()", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.saveNow();
+    await flush();
+    expect(save.calls).toBe(1);
+    expect(mgr.state).toBe("saving");
+
+    mgr.cancel();
+    expect(mgr.state).toBe("idle");
+    const indicatorWrites = vi.spyOn(mgr, "updateIndicator");
+
+    save.resolveNext({ ok: false, retryAfterMs: 200 });
+    await flush();
+    expect(mgr.state).toBe("idle"); // not "rate-limited" — the completion was dropped
+    expect(indicatorWrites).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(1); // the retry never fired a save for the closed editor
+  });
+
+  it("runs no follow-up when an ok save with an edit during flight completes after cancel()", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.saveNow();
+    await flush();
+    expect(save.calls).toBe(1);
+
+    mgr.onContentChange(); // edit during the flight — would normally coalesce a follow-up
+    mgr.cancel();
+
+    save.resolveNext({ ok: true });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(1); // no follow-up save after cancel
+    expect(mgr.state).toBe("idle");
+  });
+
+  it("runs no follow-up when a generically failing save with a coalesced edit completes after cancel()", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.saveNow();
+    await flush();
+    expect(save.calls).toBe(1);
+
+    mgr.onContentChange();
+    mgr.cancel();
+
+    save.resolveNext({ ok: false });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(1); // the #1616 follow-up must not run for a cancelled manager
+    expect(mgr.state).toBe("idle"); // not "error"/"unsaved" — no state churn after cancel
+  });
+});

@@ -178,6 +178,7 @@ impl Sandbox {
                 matches!(
                     export.name(),
                     "memory"
+                        | "plaza_abi_version"
                         | "plaza_alloc"
                         | "plaza_init"
                         | "plaza_update"
@@ -936,6 +937,26 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_roc_examples_export_abi_version_one() {
+        for wasm in [
+            include_bytes!("../examples/roc-counter/counter.wasm").as_slice(),
+            include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm").as_slice(),
+        ] {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let mut store = Store::new(&runner.engine, ());
+            store.set_fuel(runner.limits.fuel).unwrap();
+            let instance = Instance::new(&mut store, &runner.module, &[]).unwrap();
+            let abi_version = instance
+                .get_typed_func::<(), i32>(&mut store, "plaza_abi_version")
+                .unwrap()
+                .call(&mut store, ())
+                .unwrap();
+
+            assert_eq!(abi_version, 1);
+        }
+    }
+
+    #[test]
     fn checked_in_roc_counter_compiles_and_initializes_in_the_import_free_sandbox() {
         let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
@@ -1026,7 +1047,7 @@ mod tests {
 
     #[test]
     fn checked_in_tic_tac_toe_plays_a_full_game() {
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut world = runner.instantiate(7).unwrap();
         let records = |world: &mut WorldInstance| {
@@ -1105,7 +1126,7 @@ mod tests {
         );
 
         // Tic-tac-toe: the board alone carries the ply count and the winner.
-        let wasm = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
         for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
@@ -1326,7 +1347,7 @@ mod tests {
             ),
             (
                 "tic-tac-toe",
-                include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
             ),
         ];
         println!("| example | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |");
@@ -1987,7 +2008,7 @@ mod tests {
             },
             Example {
                 name: "tic-tac-toe",
-                wasm: include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                wasm: include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm"),
                 drive: drive_tic_tac_toe,
             },
             Example {
