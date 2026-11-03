@@ -17,6 +17,7 @@
 //! counts are local to the hosting node and need not converge across partitions.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::Read;
 
 use anyhow::{Context, Result, bail, ensure};
 use rand::RngExt as _;
@@ -1037,6 +1038,15 @@ pub trait WorldJournal: Send + 'static {
         bail!("this journal cannot provide a replication snapshot")
     }
 
+    /// Capture a lightweight, readable source for the initial replication
+    /// feed. Durable file journals should pin the file and its current length
+    /// here, then defer reading the bytes until the network layer requests it.
+    /// Journals that cannot provide a deferred source should leave this
+    /// unsupported rather than materializing the full image in the actor.
+    fn replication_snapshot_source(&mut self) -> Result<JournalSnapshotSource> {
+        bail!("this journal cannot provide a deferred replication snapshot source")
+    }
+
     /// Current journal header version, when the implementation can report it.
     fn replication_header_version(&self) -> Option<u32> {
         None
@@ -1062,6 +1072,68 @@ pub struct JournalSnapshot {
     pub header_version: u32,
     /// Exact JSONL bytes, including every entry's newline.
     pub bytes: Vec<u8>,
+}
+
+/// A captured snapshot reader. File-backed journals keep only a pinned file
+/// handle and the captured byte length in the actor; the network layer reads
+/// the bytes after the actor has resumed handling commands.
+pub struct JournalSnapshotSource {
+    /// Version in the journal's `Created` header.
+    pub header_version: u32,
+    /// Number of bytes belonging to this captured image.
+    pub byte_len: u64,
+    reader: Box<dyn Read + Send>,
+}
+
+impl std::fmt::Debug for JournalSnapshotSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JournalSnapshotSource")
+            .field("header_version", &self.header_version)
+            .field("byte_len", &self.byte_len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl JournalSnapshotSource {
+    pub(crate) fn from_reader<R>(header_version: u32, byte_len: u64, reader: R) -> Self
+    where
+        R: Read + Send + 'static,
+    {
+        Self {
+            header_version,
+            byte_len,
+            reader: Box::new(reader),
+        }
+    }
+
+    /// Read exactly the captured image. This consumes the source, so its file
+    /// handle and the resulting byte buffer have one clear owner at a time.
+    ///
+    /// # Errors
+    ///
+    /// If the source cannot be read completely, is too large for this target,
+    /// or does not end at a journal-entry boundary.
+    pub fn read(self) -> Result<JournalSnapshot> {
+        let capacity = usize::try_from(self.byte_len).context("journal snapshot is too large")?;
+        let mut bytes = Vec::with_capacity(capacity);
+        self.reader
+            .take(self.byte_len)
+            .read_to_end(&mut bytes)
+            .context("read captured journal snapshot")?;
+        ensure!(
+            bytes.len() == capacity,
+            "captured journal snapshot changed while reading"
+        );
+        ensure!(
+            bytes.is_empty() || bytes.ends_with(b"\n"),
+            "captured journal snapshot has an unterminated final entry"
+        );
+        Ok(JournalSnapshot {
+            header_version: self.header_version,
+            bytes,
+        })
+    }
 }
 
 /// A durable change delivered to replication subscribers.
