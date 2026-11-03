@@ -3024,7 +3024,7 @@
           }
     }
   },
-  "agent": {
+  "agents": {
     "build": {
       "mode": "all",
       "permissions": [
@@ -3515,7 +3515,7 @@
     "provider": "random"
   },
   "warming": true,
-  "plugin": [
+  "plugins": [
     // "@pieliesdie/opencode-antigravity-auth@2.0.0", -- disabled 2026-10-24: direct-auth/API-key agy route off; plan agy runs via the antigravity-ls proxy only
     "opencode-working-memory@latest",
     "opencode-scheduler@latest",
@@ -3549,6 +3549,129 @@
       // Per-model pools join every plan provider serving a model; tier pools nest them.
       // Plan routes only. (The DeepSeek PAYG reserve that used to tail the
       // deepseek-flash route was removed 2026-10-27 — see that route.)
+      // Design-code personas (2026-11-02, opencode#1413): the 11 virtual
+      // personas of bin/design-code-proxy.mjs (:18746) carried as routes —
+      // each persona id is the route name, its recipe (primary then
+      // fallback, ordered) is the target list, and the door's injected
+      // design system prompt is the route's `system` (fork support:
+      // opencode#1413 persona-routes PR; the prompt leads any caller
+      // system text, exactly as the door composed it). Antigravity legs
+      // sit on antigravity-direct (:18751) per the #1409 repoint
+      // (code#4626); codex legs on openai-codex (:18744). The door's
+      // keyword fallback for unknown gpt/codex-shaped ids has no route
+      // equivalent and is not carried: unknown ids fail selection
+      // cleanly, as they did at the door (400) via the façade envelope.
+
+      "claude-haiku-5.5": {
+        "name": "Claude Haiku 5.5 (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/claude-sonnet-5-5",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "gpt-6-luna": {
+        "name": "GPT-6 Luna (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6-luna",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "gpt-6.1-sol": {
+        "name": "GPT-6.1 Sol (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6.1-sol",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "deepseek-v4.1-flash": {
+        "name": "DeepSeek V4.1 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "glm-5.3-flash": {
+        "name": "GLM 5.3 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "glm-5.3-flashx": {
+        "name": "GLM 5.3 FlashX (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "mimo-v2.6-flash": {
+        "name": "MIMO v2.6 Flash (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "mimo-v2.6-pro": {
+        "name": "MIMO v2.6 Pro (Design Code)",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-6.1-sol"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "design-code-pro": {
+        "name": "Design Code Pro",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-6.1-sol"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "design-code-flash": {
+        "name": "Design Code Flash",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "antigravity-direct/gemini-3.8-flash",
+          "openai-codex/gpt-5.6-luna"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "open-design-pro": {
+        "name": "Open Design Pro",
+        "system": "You are an elite Code & Systems Design Architect.\nYour core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.",
+        "targets": [
+          "openai-codex/gpt-6.1-sol",
+          "antigravity-direct/gemini-3.8-flash"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "deepseek-flash-plan": {
         "name": "DeepSeek Flash - plan providers",
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
@@ -3573,6 +3696,7 @@
         // Code joins as a minor leaf (weight 0.5; $1 Go tier, $10
         // credits/mo — its boosted Flash allowance is small, the free
         // routes are its durable value; issue #1328 D4).
+        // 2026-11-03 (Drew): opendesign/deepseek-v4-flash leaf REMOVED from this pool — the dotted deepseek-v4.1-flash leaf exists in the same opendesign catalog, so the older v4 leaf is dead weight.
         "targets": [
           {
             "model": "opencode-go.personal/deepseek-v4.1-flash",
@@ -3592,10 +3716,6 @@
           },
           {
             "model": "opendesign/deepseek-v4.1-flash",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "opendesign/deepseek-v4-flash",
             "variants": { "xhigh": "high", "max": "high" }
           },
           "commandcode/deepseek/deepseek-v4.1-flash"
@@ -4103,8 +4223,22 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      "workhorse-ordered": {
+        "name": "Workhorse ordered - DeepSeek Flash plan first, strictly ordered",
+        // 2026-11-03 (Drew): a dedicated ordered pool in FRONT of
+        // workhorse-primary inside the workhorse chain, seating ONLY
+        // deepseek-flash-plan#high. Workhorse traffic tries this pool
+        // first; the pool yields nothing ready when every Flash door is
+        // walled or demoted, and the chain falls through to
+        // workhorse-primary unchanged. deepseek-flash-plan KEEPS its
+        // workhorse-primary seat (weight 2) in the same edit - this is
+        // an addition, not a move.
+        "targets": ["opencode-route/deepseek-flash-plan#high"],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor)",
+        "name": "Workhorse primary - Codex (Luna) + Meta (Spark contributor) + DeepSeek Flash plan + Sonnet plan (Antigravity)",
         // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
@@ -4216,15 +4350,34 @@
         // rule - Luna only from the OpenAI plans, the doors with no
         // DeepSeek - belongs to this seat, not to the shared plan
         // route. luna-plan keeps its full pool (see its own note).
+        // 2026-11-02 (Drew): DeepSeek Flash plan moves INTO primary
+        // from workhorse-weighted: opencode-route/deepseek-flash-plan#high
+        // takes a primary seat at weight 2, equal with Luna and Spark -
+        // three-way round-robin. Its weighted-pool seat is removed in
+        // the same edit (a move, not an addition); workhorse-weighted
+        // keeps haiku-plan#high w2 and spark-plan#xhigh w1. Side
+        // benefit: a third of primary picks leave the Meta pool, which
+        // is pacing to exhaust days before its Nov 9 reset; quota
+        // demotion sheds any walled Flash door on its own.
+        // 2026-11-03 (Drew): sonnet-plan#medium joins primary. This seats
+        // the Antigravity Claude/GPT bucket (0% used at the order, resets
+        // Nov 9 09:00Z) in the workhorse rotation — it is the Claude/GPT
+        // bucket, NOT the Gemini bucket pulled from the primary path on
+        // 2026-10-31. Medium effort: workhorse is the volume tier;
+        // sonnet-plan#high stays specialist's head seat.
         "targets": [
           "openai-plan/gpt-6-luna#xhigh",
-          "muse-direct/muse-spark-1.3-contributor#xhigh"
+          "muse-direct/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/deepseek-flash-plan#high",
+          "opencode-route/sonnet-plan#medium"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "openai-plan/gpt-6-luna": 2,
-          "muse-direct/muse-spark-1.3-contributor": 2
+          "muse-direct/muse-spark-1.3-contributor": 2,
+          "opencode-route/deepseek-flash-plan": 2,
+          "opencode-route/sonnet-plan": 2
         }
       },
       "workhorse": {
@@ -4252,7 +4405,11 @@
         // deepseek-flash#high, meta/muse-spark-1.3, and
         // antigravity-agy/gemini-4-argon#high) — see that route's
         // comment for the revert steps.
+        // 2026-11-03 (Drew): workhorse-ordered (deepseek-flash-plan
+        // only, ordered) joins the chain IN FRONT of workhorse-primary.
+        // deepseek-flash-plan is NOT removed from workhorse-primary.
         "targets": [
+          "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted"
         ],
@@ -4280,6 +4437,12 @@
         // routes themselves are untouched (switchboard rule): Gemini
         // Flash and Sonnet stay seated in the deliberate tiers
         // (specialist, summit, speed) exactly as before.
+        // 2026-11-02 (Drew): DeepSeek Flash plan leaves this pool -
+        // it moves up into workhorse-primary at weight 2 (see that
+        // route's note). Haiku and Spark keep their seats and weights.
+        // 2026-11-03 (Drew): deepseek-flash-plan#high rejoins this
+        // pool at weight 2 (it also keeps its workhorse-primary seat
+        // and its new workhorse-ordered seat - additions only).
         "targets": [
           "opencode-route/haiku-plan#high",
           "opencode-route/spark-plan#xhigh",
@@ -4290,7 +4453,7 @@
         "weights": {
           "opencode-route/haiku-plan": 2,
           "opencode-route/spark-plan": 1,
-          "opencode-route/deepseek-flash-plan": 1
+          "opencode-route/deepseek-flash-plan": 2
         }
       },
       "specialist": {

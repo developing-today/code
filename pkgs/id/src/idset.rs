@@ -761,6 +761,7 @@ mod tests {
                 removes: None,
                 note: None,
                 link: None,
+                checkpoint: None,
             },
         )
         .unwrap();

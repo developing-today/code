@@ -11,6 +11,7 @@
 // first), GET /api/permission/request -> { data: PermissionRequest[] },
 // GET /api/session/{id}/form -> { data: Form[] }.
 import type { SessionFeedEntry, SessionSource } from "../model.ts";
+import { GENERATED_AT_FUTURE_SKEW_MS } from "../feed.ts";
 
 export interface OpenCodeTarget {
   baseUrl: string;
@@ -114,6 +115,14 @@ const validMs = (ms: number | undefined): boolean =>
 
 const iso = (ms: number | undefined): string | null => (validMs(ms) ? new Date(ms as number).toISOString() : null);
 
+// A stamp more than the aggregator-wide skew tolerance ahead of now is
+// "future" (#4180): it earns no freshness inclusion and maps to a null
+// lastActivityAt, the same treatment as an invalid stamp, so a
+// clock-skewed server cannot pin the attention feed or poison
+// lastActivityAt-sorted consumers. Within-skew stamps keep their value.
+const beyondSkew = (ms: number | undefined, now: number): boolean =>
+  typeof ms === "number" && Number.isFinite(ms) && ms - now > GENERATED_AT_FUTURE_SKEW_MS;
+
 function errText(e: unknown): string | null {
   if (!e) return null;
   if (typeof e === "string") return e;
@@ -139,7 +148,8 @@ export interface MappedSessions {
 /**
  * Map one server's sessions to feed entries. Inclusion (per #890):
  * sessions in the active set, sessions with a pending permission
- * request, and sessions updated within 12 h.
+ * request, and sessions updated within 12 h — but a stamp more than
+ * the skew tolerance ahead of now earns no freshness inclusion (#4180).
  */
 export async function mapServerSessions(
   target: OpenCodeTarget,
@@ -173,14 +183,18 @@ export async function mapServerSessions(
       (s) =>
         activeIds.has(s.id) ||
         pendingBySession.has(s.id) ||
-        (validMs(s.time?.updated) && now - (s.time?.updated as number) <= ATTENTION_WINDOW_MS),
+        (validMs(s.time?.updated) &&
+          now - (s.time?.updated as number) <= ATTENTION_WINDOW_MS &&
+          !beyondSkew(s.time?.updated, now)),
     )
     .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
     .slice(0, opts.maxDetailed ?? 60);
 
   const entries: SessionFeedEntry[] = [];
   for (const s of included) {
-    entries.push(await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40, opts.source));
+    entries.push(
+      await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40, opts.source, now),
+    );
   }
   return { entries, tokensBySession, activeIds };
 }
@@ -191,7 +205,8 @@ async function mapOne(
   activeIds: Set<string>,
   pending: V2PermissionRequest | undefined,
   messageLimit: number,
-  source?: SessionSource,
+  source: SessionSource | undefined,
+  now: number,
 ): Promise<SessionFeedEntry> {
   const entry: SessionFeedEntry = {
     sessionId: s.id,
@@ -206,7 +221,7 @@ async function mapOne(
     directory: s.location?.directory,
     model: s.model?.id,
     provider: s.model?.providerID,
-    lastActivityAt: iso(s.time?.updated),
+    lastActivityAt: beyondSkew(s.time?.updated, now) ? null : iso(s.time?.updated),
     activeToolCalls: 0,
   };
 

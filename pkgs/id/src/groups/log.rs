@@ -356,8 +356,9 @@ pub(crate) mod wire {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::groups::policy::{Policy, Template};
-    use crate::groups::{Create, MemberOp, Role};
+    use crate::groups::actions::NewGroup;
+    use crate::groups::policy::{Policy, RemoveMode, RemoveModeKind, RemovePolicy, Template};
+    use crate::groups::{Create, MemberOp, Outcome, Refusal, Role};
     use tempfile::TempDir;
 
     const OWNER: Key = [1; 32];
@@ -400,6 +401,110 @@ mod tests {
 
         assert!(matches!(refused.outcome, Outcome::Refused(_)));
         assert_eq!(GroupLog::open(&path).unwrap().events().len(), 2);
+    }
+
+    #[test]
+    fn test_remove_resolves_server_default_and_validates_before_recording() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        let group = log
+            .create(
+                OWNER,
+                NewGroup::Normal {
+                    max: None,
+                    admins_on_create: false,
+                },
+            )
+            .unwrap()
+            .group;
+        log.add(OWNER, group, ANN, Role::Read).unwrap();
+        let policy = Policy {
+            remove_policy: RemovePolicy {
+                allowed_modes: vec![RemoveModeKind::Revoke],
+                allowed_successors: Vec::new(),
+                default_mode: RemoveMode::Revoke,
+            },
+            ..Policy::default()
+        };
+        log.record(OWNER, Some(group), Body::Policy(policy))
+            .unwrap();
+
+        let action = log
+            .remove(OWNER, group, ANN, RemoveMode::ServerDefault)
+            .unwrap();
+        assert_eq!(action.outcome, Outcome::Applied);
+        assert!(matches!(
+            &log.events().last().unwrap().body,
+            Body::Member(MemberOp::Remove {
+                mode: RemoveMode::Revoke,
+                ..
+            })
+        ));
+
+        let before = log.events().len();
+        assert!(
+            log.remove(OWNER, group, OWNER, RemoveMode::KeepPrior)
+                .is_err()
+        );
+        assert_eq!(
+            log.events().len(),
+            before,
+            "a disallowed mode is not recorded"
+        );
+
+        let refused = log
+            .record(
+                OWNER,
+                Some(group),
+                Body::Member(MemberOp::Remove {
+                    member: OWNER,
+                    mode: RemoveMode::KeepPrior,
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            refused.outcome,
+            Outcome::Refused(Refusal::RemoveModeNotAllowed(RemoveModeKind::KeepPrior))
+        );
+    }
+
+    #[test]
+    fn test_legacy_remove_events_map_successor_to_a_deterministic_mode() {
+        let member = Hash::from_bytes(ANN).to_hex();
+        let successor = Hash::from_bytes([3; 32]).to_hex();
+        let legacy_revoke = serde_json::json!({
+            "Remove": { "member": member, "successor": null }
+        });
+        let legacy_transfer = serde_json::json!({
+            "Remove": { "member": member, "successor": successor }
+        });
+
+        assert_eq!(
+            serde_json::from_value::<MemberOp>(legacy_revoke).unwrap(),
+            MemberOp::Remove {
+                member: ANN,
+                mode: RemoveMode::Revoke,
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<MemberOp>(legacy_transfer).unwrap(),
+            MemberOp::Remove {
+                member: ANN,
+                mode: RemoveMode::Transfer(crate::groups::TransferOpts {
+                    successor: crate::groups::RemoveSuccessor::Member([3; 32]),
+                }),
+            }
+        );
+
+        let encoded = serde_json::to_value(MemberOp::Remove {
+            member: ANN,
+            mode: RemoveMode::Revoke,
+        })
+        .unwrap();
+        let remove = &encoded["Remove"];
+        assert_eq!(remove["mode"], serde_json::json!("Revoke"));
+        assert!(remove.get("successor").is_none());
     }
 
     #[test]

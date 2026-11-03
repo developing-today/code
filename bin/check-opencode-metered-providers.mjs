@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -356,6 +357,22 @@ async function main() {
   console.log(`Metered-provider config guard passed: ${configPath}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Entry-point check: compare realpaths, not the raw strings (#4694;
+// same pattern as proxy-supervise.mjs / #2083 and
+// provider-catalog-sync.mjs / #2235). process.argv[1] keeps the path
+// exactly as invoked (e.g. through a file or directory symlink) while
+// import.meta.url is the resolved module URL, so a resolve() string
+// compare silently never matches and main() never runs via a symlink --
+// the guard exited 0 without checking anything.
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   await main();
 }

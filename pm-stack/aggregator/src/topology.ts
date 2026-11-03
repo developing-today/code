@@ -143,7 +143,7 @@ export function buildServices(cfg: Config): ServiceDef[] {
       id: "ready-for-agent",
       name: "ready-for-agent",
       port: configuredPort(cfg.readyForAgent.baseUrl, 6056),
-      bind: "0.0.0.0 — every interface, incl. LAN (bind scope tracked in #1181)",
+      bind: "loopback + tailnet — app on 127.0.0.1 only; tailnet address via ready-for-agent-tailnet socket proxy (aligned in #1181)",
       runsAs: "ready-for-agent.service",
       probe: "http",
       loopbackUrl: cfg.readyForAgent.baseUrl,

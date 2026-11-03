@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+  ANTIGRAVITY_GEMINI_SERVICE_ID,
+  GO_LAB_SERVICE_ID,
+  GO_PERSONAL_SERVICE_ID,
+  entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
+  goPoolServiceId,
   lastKnownEntries,
   mapWithConcurrency,
   markRetained,
@@ -68,6 +74,18 @@ describe("entryFromResult", () => {
     const balance = entry.windows.find((w) => w.name === "credits_balance");
     expect(balance?.pctOfLimit).toBeNull();
     expect(balance?.valueLabel).toBe("12.50");
+    expect(entry.credentialWatch).toBe(true);
+  });
+  test("maps only authoritative expiry metadata and separates unconfigured credentials", () => {
+    const entry = entryFromResult(
+      { ...OK_RESULT, providerId: "claude", credentialExpiresAt: 1793438427299, credentialSource: "claude-code" },
+      "2026-10-27T05:00:00.000Z",
+    );
+    expect(entry.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
+    expect(entry.credentialSource).toBe("claude-code");
+    const absent = entryFromResult({ ...OK_RESULT, configured: false, ok: false }, "2026-10-27T05:00:00.000Z");
+    expect(absent.state).toBe("unconfigured");
+    expect(absent.credentialWatch).toBe(true);
   });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
@@ -648,6 +666,199 @@ describe("entryFromTurso negative usage (#2553)", () => {
     for (const r of records) {
       expect(r.value).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe("pool splits (#1331)", () => {
+  const TICK = "2026-11-03T05:00:00.000Z";
+  const goResult = (label: string | undefined, id: string): QuotaProviderResult => ({
+    providerId: "opencode-go",
+    providerName: "OpenCode Go",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    credentialId: id,
+    ...(label === undefined ? {} : { credentialLabel: label }),
+    usage: {
+      windows: {
+        "5h": { usedPercent: 12, windowSeconds: 18_000, resetAt: Date.parse(TICK) + 18_000_000 },
+        monthly: { usedPercent: 60, windowSeconds: null, resetAt: Date.parse("2026-12-03T03:02:00.000Z") },
+      },
+    },
+  });
+
+  test("Go per-workspace entries yield personal/lab split rows alongside the combined rows", () => {
+    const entries = [
+      entryFromResult(goResult("Personal", "cred_personal"), TICK),
+      entryFromResult(goResult("Lab", "cred_lab"), TICK),
+    ];
+    expect(entries.map((e) => e.serviceId)).toEqual(["opencode-go", "opencode-go"]);
+    const split = entriesWithPoolSplits(entries);
+    expect(split.map((e) => e.serviceId).sort()).toEqual([
+      "opencode-go",
+      "opencode-go",
+      GO_LAB_SERVICE_ID,
+      GO_PERSONAL_SERVICE_ID,
+    ]);
+    const personal = split.find((e) => e.serviceId === GO_PERSONAL_SERVICE_ID)!;
+    expect(personal.providerId).toBe("opencode-go");
+    expect(personal.credentialId).toBe("cred_personal");
+    expect(personal.credentialLabel).toBe("Personal");
+    expect(personal.state).toBe("ok");
+    expect(personal.measuredAt).toBe(entries[0].measuredAt);
+    expect(personal.windows).toEqual(entries[0].windows);
+    const lab = split.find((e) => e.serviceId === GO_LAB_SERVICE_ID)!;
+    expect(lab.credentialId).toBe("cred_lab");
+    // ...and the pool-level series continue in the snapshot records.
+    const { records } = recordsFromEntries(split, new Map(), "quota-gatherer");
+    expect(records.map((r) => `${r.serviceId}|${r.metricId}`).sort()).toEqual([
+      "opencode-go:lab|5h",
+      "opencode-go:lab|monthly",
+      "opencode-go:personal|5h",
+      "opencode-go:personal|monthly",
+      "opencode-go|5h",
+      "opencode-go|monthly",
+    ]);
+  });
+
+  test("Go lapse: an errored Personal row splits as a pool error; unconfigured rows never split", () => {
+    const lapsed: QuotaProviderResult = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: true,
+      fetchedAt: Date.parse(TICK),
+      credentialId: "cred_personal",
+      credentialLabel: "Personal",
+      error: "No active OpenCode Go subscription on the selected Console account",
+      usage: null,
+    };
+    const unconfigured: QuotaProviderResult = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: false,
+      credentialId: "cred_lab",
+      credentialLabel: "Lab",
+      error: "Not configured",
+      usage: null,
+    };
+    const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
+    expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_PERSONAL_SERVICE_ID]);
+    const personal = split.find((e) => e.serviceId === GO_PERSONAL_SERVICE_ID)!;
+    expect(personal.state).toBe("error");
+    expect(personal.error).toContain("No active OpenCode Go subscription");
+  });
+
+  test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {
+    expect(goPoolServiceId(entryFromResult(goResult("Home", "cred_home"), TICK))).toBeNull();
+    expect(goPoolServiceId(entryFromResult(goResult(undefined, "cred_x"), TICK))).toBeNull();
+    expect(goPoolServiceId(entryFromResult(goResult("  PERSONAL ", "cred_p"), TICK))).toBe(GO_PERSONAL_SERVICE_ID);
+    expect(goPoolServiceId(entryFromResult(goResult("lab", "cred_l"), TICK))).toBe(GO_LAB_SERVICE_ID);
+    const split = entriesWithPoolSplits([entryFromResult(goResult("Home", "cred_home"), TICK)]);
+    expect(split.map((e) => e.serviceId)).toEqual(["opencode-go"]);
+  });
+
+  const antigravityResult = (models: Record<string, Record<string, number>>): QuotaProviderResult => ({
+    providerId: "antigravity",
+    providerName: "Antigravity",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    usage: {
+      models: Object.fromEntries(
+        Object.entries(models).map(([model, wins]) => [
+          model,
+          {
+            windows: Object.fromEntries(
+              Object.entries(wins).map(([name, pct]) => [
+                name,
+                { usedPercent: pct, windowSeconds: 604_800, resetAt: Date.parse("2026-11-10T05:00:00.000Z") },
+              ]),
+            ),
+          },
+        ]),
+      ),
+    },
+  });
+
+  test("Antigravity models group into gemini + claude-gpt pool rows; hottest window wins", () => {
+    const entry = entryFromResult(
+      antigravityResult({
+        "gemini-2.5-pro": { "5h": 70, weekly: 40 },
+        "gemini-flash": { weekly: 55 },
+        "claude-sonnet": { "5h": 20, weekly: 90 },
+        "gpt-5": { weekly: 10 },
+      }),
+      TICK,
+    );
+    expect(entry.serviceId).toBe("antigravity");
+    expect(entry.windows).toHaveLength(6);
+    const split = entriesWithPoolSplits([entry]);
+    expect(split).toHaveLength(3);
+    expect(split[0].serviceId).toBe("antigravity");
+    const gemini = split.find((e) => e.serviceId === ANTIGRAVITY_GEMINI_SERVICE_ID)!;
+    expect(gemini.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["5h", 70],
+      ["weekly", 55],
+    ]);
+    const claudeGpt = split.find((e) => e.serviceId === ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID)!;
+    expect(claudeGpt.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["5h", 20],
+      ["weekly", 90],
+    ]);
+    expect(gemini.measuredAt).toBe(entry.measuredAt);
+    expect(gemini.source).toBe(entry.source);
+  });
+
+  test("Antigravity grouping is order-independent and omits empty pools", () => {
+    const models = {
+      "gemini-2.5-pro": { weekly: 40 },
+      "claude-sonnet": { weekly: 90 },
+    };
+    const fwd = entriesWithPoolSplits([entryFromResult(antigravityResult(models), TICK)]);
+    const rev = entriesWithPoolSplits([
+      entryFromResult(antigravityResult({ "claude-sonnet": { weekly: 90 }, "gemini-2.5-pro": { weekly: 40 } }), TICK),
+    ]);
+    // The combined entry preserves module order by design; the derived
+    // pool rows must not depend on it.
+    const rowsOf = (split: ReturnType<typeof entriesWithPoolSplits>) =>
+      split.slice(1).map((e) => [e.serviceId, e.windows.map((w) => [w.name, w.pctOfLimit])]);
+    expect(rowsOf(fwd)).toEqual(rowsOf(rev));
+    const geminiOnly = entriesWithPoolSplits([
+      entryFromResult(antigravityResult({ "gemini-flash": { weekly: 55 } }), TICK),
+    ]);
+    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
+  });
+
+  test("Antigravity error lapses both pools; unconfigured splits nothing", () => {
+    const err = entryFromResult(
+      {
+        providerId: "antigravity",
+        ok: false,
+        configured: true,
+        error: "Failed to refresh Antigravity token",
+        usage: null,
+      },
+      TICK,
+    );
+    const split = entriesWithPoolSplits([err]);
+    expect(split.map((e) => e.serviceId).sort()).toEqual([
+      "antigravity",
+      ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+      ANTIGRAVITY_GEMINI_SERVICE_ID,
+    ]);
+    for (const row of split.slice(1)) {
+      expect(row.state).toBe("error");
+      expect(row.error).toContain("Failed to refresh");
+    }
+    const unconfigured = entriesWithPoolSplits([
+      entryFromResult(
+        { providerId: "antigravity", ok: false, configured: false, error: "Not configured", usage: null },
+        TICK,
+      ),
+    ]);
+    expect(unconfigured.map((e) => e.serviceId)).toEqual(["antigravity"]);
   });
 });
 

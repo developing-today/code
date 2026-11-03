@@ -43,6 +43,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import { isCredentialLifecycleRow, safeProviderReason } from "./credential-lifecycle.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -53,9 +54,19 @@ export interface FleetFeed {
    *  in feeds written before the drift check existed. */
   checkout?: CheckoutDrift;
   quota: QuotaView;
-  /** Element drops loadFeed's quota sanitization made (#2429/#3921), set
+  /** Element and optional-field drops loadFeed's quota sanitization made
+   * (#2429/#3921/#4546), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
-  quotaDropped?: { pools: number; credentials: number; windows: number; activeSessions: number; burn: number };
+  quotaDropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+    credentialLifecycle?: number;
+  };
   /** Element drops loadFeed's chargesAttention sanitization made
    * (#2439), set only when at least one entry dropped; absent on raw
    * parsed feeds and on feeds whose entries all survived. */
@@ -322,6 +333,12 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
+// The collector is scheduled every five minutes. No grace is possible if a
+// stop just after a write must be visible by the next interval: slow runs,
+// scheduler jitter and transport delays can therefore cause transient alarms.
+// This is evaluated on request, not pushed to an already-open browser.
+export const FEED_STALE_MS = 5 * 60_000;
+
 /** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
 export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;
 
@@ -482,7 +499,7 @@ const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (
     isRecord(v) &&
-    typeof v.measuredAt === "string" &&
+    isIsoDate(v.measuredAt) &&
     typeof v.source === "string" &&
     typeof v.state === "string" &&
     QUOTA_FRESHNESS_STATES.includes(v.state) &&
@@ -507,7 +524,7 @@ function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
     isRecord(v) &&
     typeof v.session === "string" &&
     typeof v.model === "string" &&
-    isFiniteNumber(v.tokens)
+    isNonNegative(v.tokens)
   );
 }
 
@@ -578,9 +595,12 @@ export interface QuotaSanitization {
   droppedWindows: number;
   droppedActiveSessions: number;
   droppedBurn: number;
+  droppedPoolFreshness: number;
+  droppedBurnTokensPerMin: number;
+  droppedCredentialLifecycle: number;
 }
 
-/** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921,
+/** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921/#4546,
  * following poolFromFeed's per-element pattern, built on the shared
  * arrayOf primitive from #2577): malformed pools and burn segments
  * drop individually, malformed windows/credential rows/active sessions
@@ -592,10 +612,22 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   let droppedCredentials = 0;
   let droppedWindows = 0;
   let droppedActiveSessions = 0;
+  let droppedPoolFreshness = 0;
+  let droppedBurnTokensPerMin = 0;
+  const lifecycleRows = quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
+  const droppedCredentialLifecycle = lifecycleRows?.dropped ?? (quota.credentialLifecycle === undefined ? 0 : 1);
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
     droppedWindows += windows?.dropped ?? 0;
     let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
+    if (pool.freshness !== undefined && !isQuotaFreshness(pool.freshness)) {
+      delete out.freshness;
+      droppedPoolFreshness += 1;
+    }
+    if (pool.burnTokensPerMin !== undefined && !isNonNegative(pool.burnTokensPerMin)) {
+      delete out.burnTokensPerMin;
+      droppedBurnTokensPerMin += 1;
+    }
     if (pool.credentials !== undefined) {
       const rows = arrayOf(isQuotaCredentialRow)(pool.credentials);
       droppedCredentials += rows?.dropped ?? 0;
@@ -635,16 +667,45 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
     doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
   };
-  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  const view: QuotaView = {
+    ...quota,
+    pools: keptPools,
+    burn: burn?.values ?? [],
+    choices,
+    ...(lifecycleRows
+      ? {
+          credentialLifecycle: lifecycleRows.values.map((row) => ({
+            ...row,
+            providerName: safeProviderReason(row.providerName),
+            label: safeProviderReason(row.label),
+            ...(row.reason ? { reason: safeProviderReason(row.reason) } : {}),
+            ...(row.userAction ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } } : {}),
+          })),
+        }
+      : {}),
+  };
   // Surface the loss on the view itself (its consumers project the
   // view, e.g. /api/quota.json), not only on the feed wrapper.
-  if (droppedPools + droppedCredentials + droppedWindows + droppedActiveSessions + droppedBurn > 0) {
+  if (
+    droppedPools +
+      droppedCredentials +
+      droppedWindows +
+      droppedActiveSessions +
+      droppedBurn +
+      droppedPoolFreshness +
+      droppedBurnTokensPerMin +
+      droppedCredentialLifecycle >
+    0
+  ) {
     view.dropped = {
       pools: droppedPools,
       credentials: droppedCredentials,
       windows: droppedWindows,
       activeSessions: droppedActiveSessions,
       burn: droppedBurn,
+      poolFreshness: droppedPoolFreshness,
+      burnTokensPerMin: droppedBurnTokensPerMin,
+      ...(droppedCredentialLifecycle > 0 ? { credentialLifecycle: droppedCredentialLifecycle } : {}),
     };
   }
   return {
@@ -654,6 +715,9 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     droppedWindows,
     droppedActiveSessions,
     droppedBurn,
+    droppedPoolFreshness,
+    droppedBurnTokensPerMin,
+    droppedCredentialLifecycle,
   };
 }
 
@@ -694,11 +758,13 @@ export interface SubscriptionSanitization {
 /** One subscription row safe to hand to the renderers (#2446): the
  * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
  * a null row or a non-string field 500s /quota and is served verbatim
- * by /api/quota.json. */
+ * by /api/quota.json. renewsAt must be null or a real ISO calendar
+ * date (#3513): invalid strings survive sanitization otherwise and
+ * render verbatim as renewal dates. */
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
   return (
-    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
+    typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt))
   );
 }
 
@@ -831,6 +897,9 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
         windows: san.droppedWindows,
         activeSessions: san.droppedActiveSessions,
         burn: san.droppedBurn,
+        poolFreshness: san.droppedPoolFreshness,
+        burnTokensPerMin: san.droppedBurnTokensPerMin,
+        ...(san.droppedCredentialLifecycle > 0 ? { credentialLifecycle: san.droppedCredentialLifecycle } : {}),
       },
       ...(charges ? { chargesAttention: charges.values } : {}),
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),

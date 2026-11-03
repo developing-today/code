@@ -11,6 +11,7 @@
 // the live source so the wire shape is parsed exactly once.
 import type { GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { refKey } from "./model.ts";
+import { workItemRefSet } from "./work-items.ts";
 
 export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
 export const PROJECT_URL = "https://github.com/orgs/developing-today/projects/4";
@@ -147,7 +148,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       // number: null becomes absent, so a valid item is never dropped by
       // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
       databaseId: item.databaseId ?? undefined,
-      url: projectItemUrl(item.databaseId, projectUrl),
+      url: projectItemUrl(item.databaseId ?? undefined, projectUrl),
       projectUrl,
       ref: refKey({ repo, number: c.number }),
       repo,
@@ -321,16 +322,10 @@ export function derivedProjectState(
 }
 
 function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean {
-  for (const t of [...section.tiers.needsDrew, ...section.tiers.needsOrchestrator]) {
-    if (t.ref === ref) return true;
-  }
-  for (const g of section.goals) {
-    for (const t of g.linedUp) if (t.ref === ref) return true;
-  }
-  for (const d of section.dependencies) {
-    if (d.ref === ref || d.taskRef === ref) return true;
-  }
-  return false;
+  // #1206: the canonical projection's ref set — one assembly answers
+  // "does this ref appear in the section" for every page, instead of
+  // this module rescanning tiers, goals, and dependencies itself.
+  return workItemRefSet(section).has(ref);
 }
 
 /** The disagreement to display, or null when both sides agree (or the

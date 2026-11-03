@@ -298,3 +298,60 @@ fn out_of_domain_claim_from_a_player_does_not_create_a_fork() {
         MatchState::Agreed,
     );
 }
+
+#[test]
+fn same_position_claims_with_different_frontiers_still_agree() {
+    let x = key(0);
+    let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
+    let (genesis, claims) = decoded_objects(&played);
+    let x_claim = claims
+        .iter()
+        .find(|(author, _)| author == &player_id(&x))
+        .expect("X's claim is present")
+        .1
+        .clone();
+
+    let mut extended_frontiers = x_claim.frontiers.clone();
+    extended_frontiers.push(Hash::digest(b"additional observed frontier"));
+    let reordered_frontiers = x_claim.frontiers.iter().rev().cloned().collect();
+
+    for frontiers in [extended_frontiers, reordered_frontiers] {
+        let mut duplicate = x_claim.clone();
+        duplicate.frontiers = frontiers;
+        let mut claims_with_duplicate = claims.clone();
+        claims_with_duplicate.push((player_id(&x), duplicate));
+
+        assert_eq!(
+            compute_state(&played.agreement, &genesis, &claims_with_duplicate),
+            MatchState::Agreed,
+        );
+    }
+}
+
+#[test]
+fn same_player_claims_with_different_position_fields_are_disputed() {
+    let x = key(0);
+    let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
+    let (genesis, claims) = decoded_objects(&played);
+    let x_claim = claims
+        .iter()
+        .find(|(author, _)| author == &player_id(&x))
+        .expect("X's claim is present")
+        .1
+        .clone();
+
+    let mut different_outcome = x_claim.clone();
+    different_outcome.outcome = "draw".to_owned();
+    let mut different_final_state_hash = x_claim;
+    different_final_state_hash.final_state_hash = Hash::digest(b"different final state");
+
+    for duplicate in [different_outcome, different_final_state_hash] {
+        let mut claims_with_duplicate = claims.clone();
+        claims_with_duplicate.push((player_id(&x), duplicate));
+
+        assert_eq!(
+            compute_state(&played.agreement, &genesis, &claims_with_duplicate),
+            MatchState::Disputed,
+        );
+    }
+}
