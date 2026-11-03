@@ -63,20 +63,7 @@ stale store.
   "storeNewestAt": "2026-11-02T17:59:41Z",
   "windowHours": 24,
   "moved": null,
-  "sessions": [
-    { "id": "ses_...", "parentId": null, "agent": "build",
-      "directory": "/home/user/git/code",
-      "model": { "id": "workhorse", "providerID": "opencode-route" },
-      "cost": 0.0,
-      "tokens": { "input": 5937987, "output": 15558, "reasoning": 30432,
-                  "cacheRead": 1542479, "cacheWrite": 0 },
-      "messages": { "total": 89, "assistant": 85,
-                    "byModel": [ { "model": "workhorse",
-                                   "providerID": "opencode-route",
-                                   "count": 85, "cost": 0.0,
-                                   "tokens": { "...": "..." } } ] },
-      "timeCreated": "...", "timeUpdated": "..." }
-  ],
+  "sessions": [{ "id": "ses_...", "parentId": null, "agent": "build", "directory": "/home/user/git/code", "model": { "id": "workhorse", "providerID": "opencode-route" }, "cost": 0.0, "tokens": { "input": 5937987, "output": 15558, "reasoning": 30432, "cacheRead": 1542479, "cacheWrite": 0 }, "messages": { "total": 89, "assistant": 85, "byModel": [{ "model": "workhorse", "providerID": "opencode-route", "count": 85, "cost": 0.0, "tokens": { "...": "..." } }] }, "timeCreated": "...", "timeUpdated": "..." }],
   "totals": { "sessions": 0, "childSessions": 0, "cost": 0.0, "tokens": { "...": "..." } }
 }
 ```
@@ -88,12 +75,12 @@ Sessions are those with `time_updated` inside the trailing
 Failure documents carry `status` + `attemptedAt` + `detail` and **no**
 sessions — a failed tick can never look like a reading:
 
-| Status | Exit | Meaning |
-|---|---|---|
-| `store-missing` | 3 | no candidate DB file exists |
-| `store-stale` | 4 | candidates exist, none fresh — the store moved somewhere unknown, or OpenCode has been down past the window |
-| `schema-drift` | 5 | a candidate DB lacks the v2 tables |
-| `read-failed` | 6 | any other read error |
+| Status          | Exit | Meaning                                                                                                     |
+| --------------- | ---- | ----------------------------------------------------------------------------------------------------------- |
+| `store-missing` | 3    | no candidate DB file exists                                                                                 |
+| `store-stale`   | 4    | candidates exist, none fresh — the store moved somewhere unknown, or OpenCode has been down past the window |
+| `schema-drift`  | 5    | a candidate DB lacks the v2 tables                                                                          |
+| `read-failed`   | 6    | any other read error                                                                                        |
 
 ## Run
 

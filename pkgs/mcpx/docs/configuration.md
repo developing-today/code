@@ -156,8 +156,16 @@ provider or model, or a non-`none` `model.provider`, also opts in even when
 `prompt.sample` is `never`. `model.provider` selects the newer
 model layer (`none`, `auto`, `sampling`, `plugin`, `openai`, `anthropic`, or
 `google`), with `model.baseURL` and `model.default` for a configured endpoint
-and model. An OpenAI-compatible local endpoint can serve Qwen, but it must be
-configured separately. `model.provider: none` alone is not a universal veto:
+and model. `model.providers` is a JSON object keyed by provider name, with
+per-provider `baseURL` and explicitly named `apiKeyEnv` entries;
+`model.profiles` is a JSON object of named, ordered `provider/model` fallback
+chains, optionally bounded by a token budget and per-attempt timeout. Either
+`model.default` or a per-operation model override may name a profile or a
+provider/model id. mcpx never scans the environment for key names. An
+OpenAI-compatible local endpoint can serve Qwen when explicitly configured.
+The singular `model.baseURL` and `model.apiKeyEnv` remain the fallback for
+`model.provider` and keep single-provider configurations working.
+`model.provider: none` alone is not a universal veto:
 the legacy scripting provider can resolve an explicit request, environment or
 installed CLI when generation is allowed. The legacy `repair.provider` and
 `repair.model` keys in the fleet file are not registered settings in this
@@ -625,7 +633,9 @@ skipped launcher phases).
 | `model.baseURL` | string | *(empty)* | daemon | no | `--model-base-url` | `MCPX_MODEL_BASE_URL` | the OpenAI-compatible endpoint the configured provider calls |
 | `model.budget` | int | `0` | daemon | no | `--model-budget` | `MCPX_MODEL_BUDGET` | hard ceiling on the tokens one generation through the layer may ask for; 0 is no ceiling |
 | `model.default` | string | *(empty)* | daemon | no | `--model-default` | `MCPX_MODEL_DEFAULT` | the model id used when an operation names none, as provider/model |
+| `model.profiles` | string | `{}` | daemon | no | `--model-profiles` | `MCPX_MODEL_PROFILES` | JSON object of named ordered provider/model fallback chains |
 | `model.provider` | enum | `none` | daemon | no | `--model-provider` | `MCPX_MODEL_PROVIDER` | where mcpx's own generation gets a model: a configured provider, sampling through the caller, or none |
+| `model.providers` | string | `{}` | daemon | no | `--model-providers` | `MCPX_MODEL_PROVIDERS` | JSON object mapping provider names to baseURL and apiKeyEnv |
 | `model.timeout` | duration | `1m30s` | daemon | no | `--model-timeout` | `MCPX_MODEL_TIMEOUT` | how long one generation through the layer may take |
 
 ### output

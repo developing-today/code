@@ -229,7 +229,15 @@ export function attentionSorted(feed: SessionFeedEntry[], now = Date.now()): Att
 // ORCHESTRATOR tiering, session hierarchy, roadmap grains, today view.
 // ---------------------------------------------------------------------------
 
-import type { AttentionTier, BoardItem, DependencyRef, OrchestrationSection, SessionSource, TierItem, TieredEntry } from "./model.ts";
+import type {
+  AttentionTier,
+  BoardItem,
+  DependencyRef,
+  OrchestrationSection,
+  SessionSource,
+  TierItem,
+  TieredEntry,
+} from "./model.ts";
 import { assembleWorkItems, formatBlockers } from "./work-items.ts";
 
 export function sourceOf(e: SessionFeedEntry): SessionSource {
@@ -538,7 +546,7 @@ export function ymdLabel(ymd: string): string {
   // Defensive: an impossible date is echoed verbatim instead of
   // throwing on MONTH_NAMES[NaN] or rolling over into the next month.
   if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return ymd;
-  const d = new Date(`${ymd}T12:00:00Z`);
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00Z`);
   return `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()}`;
 }
 
@@ -634,10 +642,7 @@ export function monthTimeline(rows: RoadmapRow[]): Timeline {
       // after its start month (+0.5), so lanes interleave chronologically.
       // laneFor/quarterLane stay untouched for timeline() (#3952).
       const q = /^(\d{4})-Q([1-4])$/.exec(lane.key);
-      put(
-        row,
-        q ? { ...lane, order: Number(q[1]) * 12 + 3 * (Number(q[2]) - 1) + 1 + 0.5 } : lane,
-      );
+      put(row, q ? { ...lane, order: Number(q[1]) * 12 + 3 * (Number(q[2]) - 1) + 1 + 0.5 } : lane);
     }
   }
   return {
@@ -712,9 +717,8 @@ export function todayFromSection(section: OrchestrationSection): TodayView {
       id: item.id,
       title: item.title,
       detail:
-        [item.linedUpStatus, item.horizonWhy, blocked && `blocked by ${blocked}`]
-          .filter(Boolean)
-          .join(" \u2014 ") || undefined,
+        [item.linedUpStatus, item.horizonWhy, blocked && `blocked by ${blocked}`].filter(Boolean).join(" \u2014 ") ||
+        undefined,
       chip: `orchestrator \u00b7 today \u00b7 ${item.goal}`,
       ref: item.ref,
     });

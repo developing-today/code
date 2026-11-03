@@ -313,7 +313,6 @@ EOF
 check plugins-merge "$tmp/plugins-merge.fixture" \
   '{"$schema":"https://opencode.ai/config.json","plugins":["opencode-plugin-a","opencode-plugin-b",["opencode-plugin-c",{"opt":1}]]}' 0
 
-
 # Case 14 (#4612, probe B): `agents` inline empty object with a
 # standard v1 `agent` block — the old regex splice demanded a
 # newline + two-space closing brace, so this exited 1 forever.

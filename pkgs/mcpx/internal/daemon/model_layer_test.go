@@ -71,6 +71,31 @@ func TestGenerateModelLayerAloneAnswers(t *testing.T) {
 	}
 }
 
+func TestGenerateUsesNamedProfileWithProviderNone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"test-model","choices":[{"message":{"content":"return 'profile';"}}]}`)
+	}))
+	defer srv.Close()
+	s := intentTestServer()
+	pol := defaultConsumerPolicy()
+	pol.ModelProvider = "none"
+	pol.ModelDefault = "fast"
+	pol.ModelProviders = `{"openai":{"baseURL":"` + srv.URL + `"}}`
+	pol.ModelProfiles = `{"fast":{"models":["openai/test-model"]}}`
+	ctx := withPolicy(context.Background(), pol)
+	source, used, err := s.generate(ctx, "write a tiny script", nil, "", "", "")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !strings.Contains(source, "return 'profile'") {
+		t.Errorf("source = %q", source)
+	}
+	if used != "provider:openai/test-model" {
+		t.Errorf("used = %q, want provider:openai/test-model", used)
+	}
+}
+
 // Codex P2s (PR #2592): the sampling question carries the intent session
 // (so Pending's session filter can find it) and model.timeout bounds the
 // wait itself, not only the question's initial TTL.

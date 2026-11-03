@@ -320,6 +320,14 @@ pub fn check_profile(inputs: &DoctorInputs) -> Finding {
     if profile.native_call_deadline_ms == Some(0) {
         problems.push("native_call_deadline_ms is zero");
     }
+    // This list mirrors WorldExecutionProfile::validate (the single
+    // source of truth for the bound checks, world_limits.rs) bound for
+    // bound — keep it in sync when a bound is added there (#4785: the
+    // doctor missed total_memory_bytes, added by #557 Phase 1, and
+    // reported a profile validate() refuses as valid).
+    if profile.total_memory_bytes == Some(0) {
+        problems.push("total_memory_bytes is zero");
+    }
     if problems.is_empty() {
         return ok("profile", "execution profile bounds are valid");
     }
@@ -590,6 +598,27 @@ mod tests {
         assert!(finding.detail.contains("wasm_fuel"), "{}", finding.detail);
 
         assert_eq!(check_profile(&inputs()).severity, Severity::Ok);
+    }
+
+    #[test]
+    fn a_zero_total_memory_bound_fails() {
+        // #4785: total_memory_bytes is a bound validate() refuses at zero;
+        // the doctor must refuse the same profile, not certify it valid.
+        let profile = WorldExecutionProfile {
+            total_memory_bytes: Some(0),
+            ..WorldExecutionProfile::default()
+        };
+        assert!(profile.validate().is_err());
+        let finding = check_profile(&DoctorInputs {
+            profile: Some(profile),
+            ..inputs()
+        });
+        assert_eq!(finding.severity, Severity::Fail);
+        assert!(
+            finding.detail.contains("total_memory_bytes"),
+            "{}",
+            finding.detail
+        );
     }
 
     #[test]
