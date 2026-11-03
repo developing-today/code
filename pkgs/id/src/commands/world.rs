@@ -63,6 +63,26 @@ async fn client_endpoint(addrs: &[SocketAddr], no_relay: bool) -> Result<Endpoin
     Ok(endpoint)
 }
 
+/// Renders one row of the plain (non-JSON) `id world list` output.
+///
+/// World names are host-supplied and reach this printer verbatim
+/// (`WorldClient::list_worlds` copies them from the host reply with no
+/// validation), so the name goes through [`plain_field`]: a name holding
+/// LF/CR/TAB or another structure-breaking character is quoted and escaped
+/// instead of forging a row or a column (#3089, Phase 3a of #3455). The
+/// default marker is selected by comparing the RAW name to the raw
+/// default name, before any rendering. Ordinary names render
+/// byte-identically; `--json` output does not use this function and is
+/// unchanged.
+fn world_list_plain_row(name: &str, default: &str, open: bool) -> String {
+    let default_marker = if name == default { " (default)" } else { "" };
+    format!(
+        "{}{default_marker}\t{}",
+        super::text::plain_field(name),
+        if open { "open" } else { "closed" }
+    )
+}
+
 /// Run an `id world` subcommand.
 ///
 /// # Errors
@@ -317,6 +337,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     native_memory_bytes,
                     native_cpu_seconds,
                     native_call_deadline_ms,
+                    total_memory_bytes: None,
                 };
                 client.set_execution_profile(&admin_token, profile).await
             } else {
@@ -621,7 +642,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
         }
         WorldCommand::Record {
             node,
-            capability,
+            admin_token,
             out,
             world,
             addrs,
@@ -631,7 +652,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             // grow by the recording's futures.
             Box::pin(record_command(
                 &node,
-                &capability,
+                &admin_token,
                 out.as_deref(),
                 world.as_deref(),
                 &addrs,
@@ -661,14 +682,23 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             no_relay,
         } => {
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, None).await?;
-            let result = client.list_worlds(&admin_token).await;
+            // With an admin token this is the admin listing; without one
+            // it is the host's public directory (#812) — same reply shape.
+            let result = match &admin_token {
+                Some(token) => client.list_worlds(token).await,
+                None => client.directory().await,
+            };
             client.close();
             endpoint.close().await;
             let (default, worlds) = result?;
             if json {
                 let worlds: Vec<crate::world_hub::WorldInfo> = worlds
                     .into_iter()
-                    .map(|(name, open)| crate::world_hub::WorldInfo { name, open })
+                    .map(|(name, open, presence)| crate::world_hub::WorldInfo {
+                        name,
+                        open,
+                        presence,
+                    })
                     .collect();
                 println!(
                     "{}",
@@ -677,12 +707,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     ))?
                 );
             } else {
-                for (name, open) in worlds {
-                    let default_marker = if name == default { " (default)" } else { "" };
-                    println!(
-                        "{name}{default_marker}\t{}",
-                        if open { "open" } else { "closed" }
-                    );
+                for (name, open, _presence) in worlds {
+                    println!("{}", world_list_plain_row(&name, &default, open));
                 }
             }
             Ok(())
@@ -706,6 +732,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             capability,
             after,
             command_mode,
+            json,
             world,
             addrs,
             no_relay,
@@ -727,7 +754,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     let (endpoint, client) =
                         connect(&node, &addrs, no_relay, world.as_deref()).await?;
                     let (conn, send, recv) = client.into_parts();
-                    let result = pump(recv, send, &first, command_mode, &capability).await;
+                    let result = pump(recv, send, &first, command_mode, json, &capability).await;
                     conn.close(0_u32.into(), b"done");
                     endpoint.close().await;
                     result
@@ -736,7 +763,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     if !addrs.is_empty() || no_relay {
                         bail!("--addr and --no-relay apply to --via iroh only");
                     }
-                    join_over_ssh(&node, ssh_host_key, &first, command_mode, &capability).await
+                    join_over_ssh(&node, ssh_host_key, &first, command_mode, json, &capability)
+                        .await
                 }
             }
         }
@@ -906,6 +934,7 @@ async fn join_over_ssh(
     ssh_host_key: Option<String>,
     first: &str,
     command_mode: bool,
+    json: bool,
     capability: &str,
 ) -> Result<()> {
     use crate::world_ssh::{HostKeyCheck, SshTarget, connect_frames};
@@ -920,7 +949,7 @@ async fn join_over_ssh(
     };
     let (_connection, stream) = connect_frames(&target, check).await?;
     let (recv, send) = tokio::io::split(stream);
-    pump(recv, send, first, command_mode, capability).await
+    pump(recv, send, first, command_mode, json, capability).await
 }
 
 /// `id world ssh-tunnel`: forward a local TCP listener (or stdio, as an SSH
@@ -1001,6 +1030,7 @@ async fn join_over_ssh(
     _ssh_host_key: Option<String>,
     _first: &str,
     _command_mode: bool,
+    _json: bool,
     _capability: &str,
 ) -> Result<()> {
     bail!("this build of id has no SSH support (cargo feature `ssh`)")
@@ -1043,10 +1073,11 @@ async fn current_world_state(
             .await?,
     )
     .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; an unrestricted
-    // ceiling is the whole catalog, which we fold back to "no ceiling".
+    // The report carries the world's own ceiling as a list; a ceiling equal
+    // to the default ceiling folds back to "no ceiling" (an apply then
+    // restores the default ceiling, #838).
     let ceiling = if caps.ceiling
-        == crate::world_caps::catalog_names()
+        == crate::world_caps::default_ceiling_names()
             .into_iter()
             .collect::<Vec<_>>()
     {
@@ -1166,9 +1197,11 @@ async fn apply_steps(
                 }
             }
             ApplyStep::SetCeiling { ceiling } => {
-                // `None` means "no ceiling": restore the whole catalog.
+                // `None` means "no ceiling": restore the default ceiling —
+                // providers with an `Excluded` manifest default stay out
+                // until a ceiling names them (#838).
                 let names = ceiling.clone().unwrap_or_else(|| {
-                    crate::world_caps::catalog_names()
+                    crate::world_caps::default_ceiling_names()
                         .into_iter()
                         .collect::<Vec<_>>()
                 });
@@ -1288,14 +1321,14 @@ fn read_compile_sources(source: &std::path::Path) -> Result<Vec<(String, String)
 /// be written.
 async fn record_command(
     node: &str,
-    capability: &str,
+    admin_token: &str,
     out: Option<&std::path::Path>,
     world: Option<&str>,
     addrs: &[SocketAddr],
     no_relay: bool,
 ) -> Result<()> {
     let (endpoint, mut client) = connect(node, addrs, no_relay, world).await?;
-    let result = crate::world_fixture::record(&mut client, capability).await;
+    let result = crate::world_fixture::record(&mut client, admin_token).await;
     client.close();
     endpoint.close().await;
     let fixture = result?;
@@ -1384,12 +1417,17 @@ fn replay_fixture(
 ///
 /// The verdict line comes first. When the two replays diverge, the first
 /// diverging record is printed and the command fails, after the first
-/// replay's records and view are printed.
+/// replay's records and view are printed. The first replay's verdict
+/// against the fixture header is printed too (#1539), rendered as
+/// `replay_fixture` renders it; when the two replays agree with each
+/// other but mismatch the header, that case is named explicitly and the
+/// command fails, exactly as `replay` fails on a header mismatch.
 ///
 /// # Errors
 ///
 /// An unreadable or oversized file, a module the fixture was not recorded
-/// under, a refused replay, or two replays that diverge.
+/// under, a refused replay, two replays that diverge, or replays that
+/// mismatch the fixture header.
 #[cfg(feature = "sandbox")]
 fn verify_fixture(
     module: &std::path::Path,
@@ -1419,6 +1457,15 @@ fn verify_fixture(
         ),
         Some(divergence) => println!("records diverge ({divergence})"),
     }
+    println!(
+        "header verdict: {}",
+        header_verdict_line(&verification.first.verdict)
+    );
+    if verification.divergence.is_none()
+        && verification.first.verdict == crate::world_fixture::Verdict::Mismatch
+    {
+        println!("the two replays agree with each other but mismatch the fixture header");
+    }
     if let Some(records) = &verification.first.records {
         let value: serde_json::Value =
             serde_json::from_str(records).context("the replayed records")?;
@@ -1430,7 +1477,22 @@ fn verify_fixture(
     if let Some(divergence) = &verification.divergence {
         bail!("the two replays diverge: {divergence}");
     }
+    if verification.first.verdict == crate::world_fixture::Verdict::Mismatch {
+        bail!("the replayed records differ from the fixture's");
+    }
     Ok(())
+}
+
+/// Render a replay's verdict against the fixture header exactly as
+/// `replay_fixture` renders it (#1539).
+#[cfg(feature = "sandbox")]
+fn header_verdict_line(verdict: &crate::world_fixture::Verdict) -> String {
+    use crate::world_fixture::Verdict;
+    match verdict {
+        Verdict::Match => "records match".to_owned(),
+        Verdict::Mismatch => "records differ".to_owned(),
+        Verdict::NotCompared(reason) => format!("records not compared ({reason})"),
+    }
 }
 
 /// Read a file no larger than `limit` bytes.
@@ -1736,7 +1798,7 @@ impl Replica {
 }
 
 /// Print server frames as JSON lines while sending stdin lines as chat.
-/// Notes for the user go to stderr, so stdout stays a stream of frames.
+/// Local command responses go to stderr unless JSON transcript mode is enabled.
 ///
 /// The transport is any byte stream carrying the length-prefixed envelope
 /// (an iroh stream or an SSH exec channel); `first` is the join frame.
@@ -1745,6 +1807,7 @@ async fn pump<R, W>(
     mut send: W,
     first: &str,
     command_mode: bool,
+    json: bool,
     capability: &str,
 ) -> Result<()>
 where
@@ -1759,33 +1822,38 @@ where
         anyhow::Ok(())
     });
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut stdin_open = true;
     let result = loop {
         tokio::select! {
-            line = lines.next_line(), if stdin_open => match line? {
+            line = lines.next_line() => match line? {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    let frame = if command_mode {
-                        match pump_command(line, capability) {
-                            PumpLine::Send(frame) => frame,
-                            PumpLine::Say(text) => {
-                                eprintln!("{text}");
-                                continue;
-                            }
-                            PumpLine::Quit => break Ok(()),
-                        }
+                    let action = if command_mode {
+                        pump_command(line, capability)
                     } else {
-                        match line.strip_prefix("/input ") {
-                            Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
-                            None => serde_json::json!({"type": "chat", "text": line}),
+                        pump_plain(line)
+                    };
+                    let frame = match action {
+                        PumpLine::Send(frame) => frame,
+                        PumpLine::Say { level, message } => {
+                            if json {
+                                println!("{}", local_transcript_record(level, &message));
+                            } else {
+                                eprintln!("{message}");
+                            }
+                            continue;
                         }
+                        PumpLine::Quit => break Ok(()),
                     };
                     if let Err(e) = write_frame_to(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
                     }
                 }
-                None => stdin_open = false,
+                // Stdin EOF ends the session: a scripted client leaves by
+                // closing stdin (interactive users have Ctrl-C). Keeping
+                // the pump alive past EOF hung every scripted join until
+                // the server happened to close the connection first.
+                None => break Ok(()),
             },
             ended = &mut reader => {
                 break ended.context("reader task")?;
@@ -1822,18 +1890,26 @@ fn check_contract(text: &str) -> Result<String> {
     )
 }
 
-/// What one stdin line does in the `id world join --command-mode` pump.
+/// What one stdin line does in the `id world join` pump.
 #[derive(Debug, PartialEq, Eq)]
 enum PumpLine {
     /// Send this session frame.
     Send(serde_json::Value),
     /// Answer the user locally; nothing is sent.
-    Say(String),
+    Say {
+        level: &'static str,
+        message: String,
+    },
     /// End the session.
     Quit,
 }
 
 const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines.";
+
+/// Stable JSONL record for a response that the join client handles locally.
+fn local_transcript_record(level: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({"type": "local", "level": level, "message": message})
+}
 
 /// Map one line of the shared grammar ([`crate::world_line`]) to what the
 /// pump does. Every frame it sends is in the shell contract's joined phase;
@@ -1853,25 +1929,115 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
         WorldLine::Stats => serde_json::json!({"type": "info", "capability": capability}),
         WorldLine::Caps => serde_json::json!({"type": "caps", "capability": capability}),
         WorldLine::Documents { .. } | WorldLine::Document(_) => {
-            return PumpLine::Say(
-                "documents are read from the host's own store over SSH (`ssh cmd:<world>@host`); `id world join` has no document reader".to_owned(),
-            );
+            return PumpLine::Say {
+                level: "error",
+                message: "documents are read from the host's own store over SSH (`ssh cmd:<world>@host`); `id world join` has no document reader".to_owned(),
+            };
         }
         WorldLine::Logs { .. } => {
-            return PumpLine::Say(
-                "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
-            );
+            return PumpLine::Say {
+                level: "info",
+                message: "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
+            };
         }
-        WorldLine::Help => return PumpLine::Say(PUMP_HELP.to_owned()),
+        WorldLine::Help => {
+            return PumpLine::Say {
+                level: "info",
+                message: PUMP_HELP.to_owned(),
+            };
+        }
         WorldLine::Quit => return PumpLine::Quit,
-        WorldLine::Message(message) => return PumpLine::Say(message),
+        WorldLine::Message(message) => {
+            return PumpLine::Say {
+                level: "error",
+                message,
+            };
+        }
     })
+}
+
+/// Map the plain `id world join` input line, validating `/input` while
+/// leaving every other line as chat.
+fn pump_plain(line: &str) -> PumpLine {
+    use crate::world_line::{WorldLine, parse_line};
+
+    if line != "/input" && !line.starts_with("/input ") {
+        return PumpLine::Send(serde_json::json!({"type": "chat", "text": line}));
+    }
+    match parse_line(line) {
+        Some(WorldLine::Input(hex)) => {
+            PumpLine::Send(serde_json::json!({"type": "input", "data_hex": hex}))
+        }
+        Some(WorldLine::Message(message)) => PumpLine::Say {
+            level: "error",
+            message,
+        },
+        _ => PumpLine::Say {
+            level: "info",
+            message: "usage: /input <hex>".to_owned(),
+        },
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{PumpLine, check_contract, pump_command, scaffold_world, step_is_applied};
+    use super::{
+        PumpLine, check_contract, local_transcript_record, pump_command, scaffold_world,
+        step_is_applied, world_list_plain_row,
+    };
+
+    /// #3089: a world name containing LF must not forge an extra row in
+    /// plain output — the rendered row is one physical line with exactly
+    /// two tab-separated fields.
+    #[test]
+    fn world_list_plain_row_quotes_newline_forged_row() {
+        let row = world_list_plain_row("alpha\nforged\topen", "other", true);
+        assert_eq!(
+            row.lines().count(),
+            1,
+            "row must be one physical line: {row:?}"
+        );
+        assert_eq!(row.matches('\n').count(), 0);
+        assert_eq!(
+            row.split('\t').count(),
+            2,
+            "exactly two tab fields: {row:?}"
+        );
+        assert!(row.ends_with("\topen"), "{row:?}");
+    }
+
+    /// #3089: a tabbed world name must not forge an extra column.
+    #[test]
+    fn world_list_plain_row_quotes_tabbed_name() {
+        let row = world_list_plain_row("a\tb", "other", false);
+        assert_eq!(
+            row.split('\t').count(),
+            2,
+            "exactly two tab fields: {row:?}"
+        );
+        assert_eq!(row.lines().count(), 1);
+        assert!(row.ends_with("\tclosed"), "{row:?}");
+    }
+
+    /// #3089: the default marker is chosen by comparing the RAW name to
+    /// the raw default name, and ordinary names render byte-identically.
+    #[test]
+    fn world_list_plain_row_default_marker_uses_raw_name() {
+        assert_eq!(
+            world_list_plain_row("home", "home", true),
+            "home (default)\topen"
+        );
+        assert_eq!(world_list_plain_row("home", "away", true), "home\topen");
+        assert_eq!(
+            world_list_plain_row("my world", "x", false),
+            "my world\tclosed"
+        );
+        // A default name that itself needs quoting still gets its marker.
+        let row = world_list_plain_row("a\nb", "a\nb", true);
+        assert!(row.contains(" (default)\t"), "{row:?}");
+        assert_eq!(row.split('\t').count(), 2, "{row:?}");
+    }
 
     /// #818, updated for #807: every step kind is applied by `apply_steps`
     /// over the wire — module install and schedules included — so every
@@ -2014,11 +2180,61 @@ mod tests {
         }
         for line in ["/logs", "/help", "/documents", "/document a.md", "/nope"] {
             assert!(
-                matches!(pump_command(line, "cap"), PumpLine::Say(_)),
+                matches!(pump_command(line, "cap"), PumpLine::Say { .. }),
                 "{line}"
             );
         }
         assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
+    }
+
+    #[test]
+    fn local_transcript_records_have_stable_shape_and_error_level() {
+        assert_eq!(
+            local_transcript_record("info", "help"),
+            serde_json::json!({"type": "local", "level": "info", "message": "help"})
+        );
+        assert_eq!(
+            local_transcript_record("error", "unknown command"),
+            serde_json::json!({"type": "local", "level": "error", "message": "unknown command"})
+        );
+        assert!(matches!(
+            pump_command("/help", "cap"),
+            PumpLine::Say { level: "info", .. }
+        ));
+        assert!(matches!(
+            pump_command("/unknown", "cap"),
+            PumpLine::Say { level: "error", .. }
+        ));
+    }
+
+    #[test]
+    fn the_plain_pump_validates_input_and_preserves_chat() {
+        use super::pump_plain;
+        use serde_json::json;
+
+        for hex in ["00af", "00AF"] {
+            assert_eq!(
+                pump_plain(&format!("/input {hex}")),
+                PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+            );
+        }
+        assert_eq!(
+            pump_plain("/input  00AF"),
+            PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+        );
+        for line in ["/input ZZ", "/input 0", "/input"] {
+            assert_eq!(
+                pump_plain(line),
+                PumpLine::Say {
+                    level: "error",
+                    message: "usage: /input <hex>".to_owned()
+                }
+            );
+        }
+        assert_eq!(
+            pump_plain("hello world"),
+            PumpLine::Send(json!({"type": "chat", "text": "hello world"}))
+        );
     }
 
     #[test]
@@ -2031,7 +2247,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.3"
+            "3 frames conform to shell contract v1.4"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

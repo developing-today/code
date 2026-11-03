@@ -43,6 +43,9 @@ import (
 // socket is not portable across Deno, Bun and Node).
 type Server struct {
 	reg *Registry
+	// completeLimiter holds the completion/complete admission windows
+	// (#2387). The zero value is ready; every Server gets its own.
+	completeLimiter rateLimiter
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths
@@ -261,7 +264,11 @@ func NewServer(opts Options) (*Server, error) {
 			opts.Settings.Duration("elicit.maxAge"))
 	}
 	reg.UseSettings(opts.Settings)
-	reg.InstallHooks(srv.Events, broker, nil)
+	roots, err := rootsFromPaths(opts.Settings.List("daemon.roots"))
+	if err != nil {
+		return nil, err
+	}
+	reg.InstallHooks(srv.Events, broker, roots)
 	if raw := opts.Settings.String("hooks"); raw != "" {
 		declared, herr := hooks.Parse(raw, opts.Settings.Duration("hooks.timeout"))
 		if herr != nil {
@@ -771,6 +778,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST "+takeoverRoute, s.handleTakeover)
 	s.route(mux, "POST "+upgradeRoute, s.handleUpgrade)
 	s.route(mux, "GET /v1/status", s.handleStatus)
+	// The permissive authorisation funnel's decision report (#1972
+	// step 2): counts by operation and principal, and the clear.
+	s.route(mux, "GET /v1/authz/decisions", s.handleAuthzDecisions)
+	s.route(mux, "DELETE /v1/authz/decisions", s.handleAuthzDecisionsClear)
 	// Server-sent events, because they are plain HTTP: they go through every
 	// proxy that HTTP goes through, reconnect themselves in a browser, and
 	// need nothing but a GET to consume. A WebSocket would buy
@@ -938,7 +949,10 @@ func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit, ok := parseOptionalIntQuery(w, r.URL.Query(), "limit")
+	if !ok {
+		return
+	}
 	if limit <= 0 {
 		cs := s.callSettings(r)
 		if cs != nil {
@@ -985,7 +999,10 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cs := s.callSettings(r)
-	budget, _ := strconv.Atoi(r.URL.Query().Get("budget"))
+	budget, ok := parseOptionalIntQuery(w, r.URL.Query(), "budget")
+	if !ok {
+		return
+	}
 	if budget <= 0 {
 		budget = cs.Int("catalog.budget")
 	}
@@ -1004,24 +1021,50 @@ func splitWords(s string) []string {
 }
 
 func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
+	language, ok := s.scriptLanguage(w, r)
+	if !ok {
+		return
+	}
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
 	session := r.URL.Query().Get("session")
-	w.Header().Set("Content-Type", "application/typescript")
-	_, _ = w.Write([]byte(codegen.Module(nss, s.endpoint, session)))
+	w.Header().Set("Content-Type", language.ContentType)
+	_, _ = w.Write([]byte(language.EmitModule(nss, s.endpoint, session)))
 }
 
 func (s *Server) handleGlobals(w http.ResponseWriter, r *http.Request) {
+	language, ok := s.scriptLanguage(w, r)
+	if !ok {
+		return
+	}
 	nss, err := s.reg.CodegenNamespaces(splitCSV(r.URL.Query().Get("ns")), profileOf(r))
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	w.Header().Set("Content-Type", "application/typescript")
-	_, _ = w.Write([]byte(codegen.GlobalDeclarations(nss)))
+	w.Header().Set("Content-Type", language.ContentType)
+	_, _ = w.Write([]byte(language.EmitGlobals(nss)))
+}
+
+// scriptLanguage resolves the ?language= a generated-client request names.
+// Absent means the default target, so every existing caller keeps the
+// TypeScript module byte for byte; a name selects that codegen target
+// (#1917 Phase 2). An unknown name is a 400, not a silent fallback: a caller
+// that asked for Python and got TypeScript would run the wrong imports.
+func (s *Server) scriptLanguage(w http.ResponseWriter, r *http.Request) (codegen.Language, bool) {
+	name := r.URL.Query().Get("language")
+	if name == "" {
+		return codegen.Default(), true
+	}
+	lang, ok := codegen.Lookup(name)
+	if !ok {
+		writeErr(w, 400, fmt.Errorf("unknown script language %q", name))
+		return codegen.Language{}, false
+	}
+	return lang, true
 }
 
 type callReq struct {

@@ -11,7 +11,7 @@
 // host-installed codex can never shadow it, #694.)
 // partial output.
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -23,6 +23,13 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
+# The proxy runs this through execFile before accepting chat turns. Handle it
+# before reading stdin: execFile leaves the child's stdin open, so cat would
+# otherwise wait for the 30-second command timeout on every request.
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  printf '%s\\n' '{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"default_reasoning_level":"medium"},{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"},{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"}]}'
+  exit 0
+fi
 prompt="$(cat)"
 resume=0
 for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
@@ -77,6 +84,27 @@ case "$prompt" in
     exit 0 ;;
 esac
 `;
+
+test('Codex stub answers live model lookup without blocking on stdin', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-stub-test-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const stubPath = path.join(tmp, 'codex');
+  fs.writeFileSync(stubPath, STUB, { mode: 0o755 });
+
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(stubPath, ['debug', 'models'], { timeout: 1000 }, (err, out, stderr) => {
+      if (err) {
+        reject(new Error(`codex debug models stub failed: ${err.message}; stderr=${stderr}`));
+      } else {
+        resolve(out);
+      }
+    });
+  });
+  const catalog = JSON.parse(stdout);
+  assert.ok(Array.isArray(catalog.models));
+  assert.ok(catalog.models.length >= 3);
+  assert.ok(catalog.models.some((model) => model.slug === 'gpt-6.1-sol'));
+});
 
 
 // ---------------------------------------------------------------------------
@@ -676,8 +704,36 @@ test('token sync updates only the active base openai row (#2533)', async (t) => 
   assert.match(started.log(), /codex-token-sync: updated 1 credential row\(s\)/);
 });
 
+test('token sync stays off when CODEX_PROXY_TOKEN_SYNC=0 (opencode#1154 cutover)', async (t) => {
+  let dbPath;
+  const started = await startProxy(null, { CODEX_PROXY_TOKEN_SYNC: '0' }, (home) => { dbPath = seedSyncHome(home); });
+  t.after(started.stop);
+  const rows = JSON.parse(runPy(READ_SYNC_DB, { SYNC_TEST_DB: dbPath }));
+  assert.equal(rows['cred-active'].value.access, 'OLD-ACCESS', 'sync off must leave the active row untouched');
+  assert.equal(rows['cred-active'].time_updated, 111);
+  assert.match(started.log(), /codex-token-sync: disabled by CODEX_PROXY_TOKEN_SYNC=0/);
+  assert.doesNotMatch(started.log(), /codex-token-sync: updated/);
+});
+
 test('token sync failure is logged, not swallowed (#2533)', async (t) => {
   const started = await startProxy(null, {}, (home) => { seedSyncHome(home, { corruptDb: true }); });
   t.after(started.stop);
   assert.match(started.log(), /codex-token-sync FAILED:/);
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
 });

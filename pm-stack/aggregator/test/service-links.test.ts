@@ -12,8 +12,17 @@ import {
 import { FIXTURE_ROADMAP } from "../src/sources/fixtures.ts";
 
 const PROV: Provenance = {
-  board: "x", roadmap: "x", items: "x", comments: "x", quota: "x", usage: "x",
-  attention: "x", orchestration: "x", dns: "x", registry: "x", aa: "x",
+  board: "x",
+  roadmap: "x",
+  items: "x",
+  comments: "x",
+  quota: "x",
+  usage: "x",
+  attention: "x",
+  orchestration: "x",
+  dns: "x",
+  registry: "x",
+  aa: "x",
 };
 
 describe("service-link registry (#1136)", () => {
@@ -31,9 +40,7 @@ describe("service-link registry (#1136)", () => {
     expect(kaneoTaskUrl("ws1", "proj1", "task1")).toBe(
       "https://kaneo.security.cab/dashboard/workspace/ws1/project/proj1/task/task1",
     );
-    expect(kaneoProjectUrl("ws1", "proj1")).toBe(
-      "https://kaneo.security.cab/dashboard/workspace/ws1/project/proj1",
-    );
+    expect(kaneoProjectUrl("ws1", "proj1")).toBe("https://kaneo.security.cab/dashboard/workspace/ws1/project/proj1");
   });
 
   test("grist doc link targets the roadmap document on the tailnet host", () => {
@@ -44,15 +51,28 @@ describe("service-link registry (#1136)", () => {
 
   test("itemServiceLinks reads the URLs the sources set", () => {
     const item: BoardItem = {
-      id: "kaneo:code/t1", title: "t", repo: "developing-today/code", source: "kaneo",
-      status: "in-progress", kaneoUrl: kaneoTaskUrl("w", "p", "t1"), links: [],
+      id: "kaneo:code/t1",
+      title: "t",
+      repo: "developing-today/code",
+      source: "kaneo",
+      status: "in-progress",
+      kaneoUrl: kaneoTaskUrl("w", "p", "t1"),
+      links: [],
     };
     expect(itemServiceLinks(item)).toEqual([
       { service: "kaneo", label: "Kaneo card", url: kaneoTaskUrl("w", "p", "t1") },
     ]);
     const row: RoadmapRow = {
-      id: 1, subject: "grist:doc/Roadmap/1", title: "r", area: "a", status: "s",
-      horizon: "h", source: "", notes: "", links: [], gristUrl: gristDocUrl("doc"),
+      id: 1,
+      subject: "grist:doc/Roadmap/1",
+      title: "r",
+      area: "a",
+      status: "s",
+      horizon: "h",
+      source: "",
+      notes: "",
+      links: [],
+      gristUrl: gristDocUrl("doc"),
     };
     expect(itemServiceLinks(row).map((l) => l.service)).toEqual(["grist"]);
     expect(serviceHomeLinks().map((l) => l.service)).toEqual(["kaneo", "grist", "pad", "ready-for-agent"]);
@@ -63,8 +83,13 @@ describe("service links render (#1136)", () => {
   test("board cards link out to the Kaneo card", () => {
     const url = kaneoTaskUrl("w", "p", "t1");
     const item: BoardItem = {
-      id: "kaneo:code/t1", title: "Card title", repo: "developing-today/code", source: "kaneo",
-      status: "in-progress", kaneoUrl: url, links: [],
+      id: "kaneo:code/t1",
+      title: "Card title",
+      repo: "developing-today/code",
+      source: "kaneo",
+      status: "in-progress",
+      kaneoUrl: url,
+      links: [],
     };
     const html = renderBoardBody([item], new Map());
     expect(html).toContain(`href="${url}"`);
@@ -77,9 +102,30 @@ describe("service links render (#1136)", () => {
     expect(html).toContain("Grist ↗");
   });
 
+  test("roadmap grain links preserve the active view query (#1276, Codex P2 on PR #4013)", () => {
+    const q = "view=vw-1&vf.repo=developing-today%2Fcode";
+    const html = renderRoadmap(
+      FIXTURE_ROADMAP,
+      new Map(),
+      PROV,
+      "quarter",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      q,
+    );
+    expect(html).toContain(`href="/roadmap?h=month&${q}"`);
+    expect(html).toContain(`href="/roadmap?h=quarter&${q}"`);
+    const plain = renderRoadmap(FIXTURE_ROADMAP, new Map(), PROV);
+    expect(plain).toContain('href="/roadmap?h=month"');
+    expect(plain).not.toContain("vf.repo");
+  });
+
   test("item pages carry a Live services line", () => {
     const url = kaneoTaskUrl("w", "p", "t1");
-    const html = renderItem("Card title", "kaneo:code/t1", [], [], new Map(), [], PROV, {
+    const html = renderItem("Card title", "kaneo:code/t1", [], new Map(), [], PROV, {
       dashComments: [],
       formRef: "kaneo:code/t1",
       formOpts: { identities: [] },

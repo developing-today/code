@@ -1,5 +1,6 @@
 //! Delegation (P2.5, design §7): grants between accounts inside a group, the chain search that
-//! decides whether an account may act at a causal position, the three removal modes, and vetoes.
+//! decides whether an account may act at a causal position, explicit per-removal grant disposition,
+//! and vetoes.
 //!
 //! A grant is an event by a grantor who holds the scope there. An account may exercise a scope
 //! through a chain of grants that starts at a root. The roots are the owners and managers at the
@@ -9,18 +10,19 @@
 //! Each link attenuates: a grantor passes on no more than it holds. A link carries authority at a
 //! position when its grantor was valid where it was made, the grant is not voided by a concurrent
 //! removal of its grantor (strong remove only; weak remove stands it, design §6.3), no veto in the
-//! position's past cuts it, and the group's mode lets it stand there (design §7.3).
+//! position's past cuts it, and the removal's mode lets it stand there (design §7.3).
 //!
-//! The mode decides a removed member's grants. Under `keep_prior` they stand. Under `cascade` they
-//! stand only while the grantor still holds the scope. Under `transfer` the removal's successor
-//! reissues them, from the removal on, if it holds the scope then and now.
+//! Each removal's `RemoveMode` decides its grantor's earlier grants. `Revoke` ends them;
+//! `Transfer` reissues them from a permitted successor; `KeepPrior` retains the original grantor;
+//! and `ReassignToGroup` makes the group the root. Strong/weak removal still decides what happens
+//! to grants concurrent with the removal.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use p2panda_core::Hash;
 
 use super::fold::{Decision, Effect, Engine, FoldError, Judged, Refusal, access_role, causal_past};
-use super::policy::Delegation;
+use super::policy::{Delegation, RemoveMode, RemoveSuccessor};
 use super::{Body, Delegate, Event, Key, MemberOp, Role};
 
 /// A grant that took effect: `from` gave `to` the scope `scope` in `group`, as event `id`.
@@ -33,26 +35,28 @@ pub struct Grant {
     pub id: Hash,
     /// The group the grant is made in.
     pub group: Hash,
-    /// The grantor.
-    pub from: Key,
+    /// The grantor, or `None` when a removal re-anchored the grant at the group.
+    pub from: Option<Key>,
     /// The grantee.
     pub to: Key,
     /// The scope granted.
     pub scope: Role,
     /// Whether the grantee may grant the scope on.
     pub redelegate: bool,
+    /// Whether the grant remains under its original grantor after that grantor was removed.
+    pub retained: bool,
     /// The world the grant names, if it is a crossing.
     pub target: Option<String>,
 }
 
-/// A removal that took effect. Its successor takes over the removed member's grants under
-/// `transfer`.
+/// A removal that took effect and the disposition selected for the removed member's grants.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Removal {
     pub(super) id: Hash,
     pub(super) group: Hash,
     pub(super) member: Key,
-    pub(super) successor: Option<Key>,
+    pub(super) mode: RemoveMode,
+    pub(super) actor: Key,
     /// The removal's `after`. A successor is judged there, not at the removal itself: the removal's
     /// own position already contains the reissue, so judging it there would recurse.
     pub(super) after: Vec<Hash>,
@@ -66,17 +70,25 @@ pub(super) const fn removed_member(event: &Event) -> Option<Key> {
     }
 }
 
-/// One link of a chain at a position: `from` may give `scope` to `to`. A reissued link is a grant
-/// from a successor. It stands for the removed member's grant `origin`.
+/// One link of a chain at a position: `from` may give `scope` to `to`. `None` is the group root. A
+/// reissued link is a grant from a successor. It stands for the removed member's grant `origin`.
 #[derive(Clone, Debug)]
 struct Link {
     origin: Hash,
-    from: Key,
+    from: Option<Key>,
     to: Key,
     scope: Role,
     redelegate: bool,
     reissued: bool,
+    retained: bool,
     crossing: bool,
+}
+
+/// How a grant that remains in force is exposed to callers.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct GrantVisibility {
+    pub(super) from: Option<Key>,
+    pub(super) retained: bool,
 }
 
 impl Engine {
@@ -205,14 +217,20 @@ impl Engine {
     pub(super) fn in_force(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
-    ) -> Result<BTreeSet<Hash>, FoldError> {
+    ) -> Result<BTreeMap<Hash, GrantVisibility>, FoldError> {
         let head: Vec<Hash> = by_id.keys().copied().collect();
         let groups: Vec<Hash> = self.groups.keys().copied().collect();
-        let mut in_force = BTreeSet::new();
+        let mut in_force = BTreeMap::new();
         for group in groups {
             for link in self.links(by_id, group, &head)? {
                 if !link.reissued {
-                    in_force.insert(link.origin);
+                    in_force.insert(
+                        link.origin,
+                        GrantVisibility {
+                            from: link.from,
+                            retained: link.retained,
+                        },
+                    );
                 }
             }
         }
@@ -254,10 +272,23 @@ impl Engine {
         let links = self.links(by_id, group, after)?;
         let mut reached: BTreeSet<Key> = roots.iter().copied().collect();
         let mut stack: Vec<Key> = reached.iter().copied().collect();
+        // A re-anchored grant is a group root, not a synthetic member or account. It reaches its
+        // grantee, and only a redelegatable grant extends the chain.
+        for link in links
+            .iter()
+            .filter(|link| link.from.is_none() && !link.crossing)
+        {
+            if link.scope >= scope && link.to == actor && (!need_redelegate || link.redelegate) {
+                return Ok(true);
+            }
+            if link.scope >= scope && link.redelegate && reached.insert(link.to) {
+                stack.push(link.to);
+            }
+        }
         while let Some(holder) = stack.pop() {
             for link in links
                 .iter()
-                .filter(|link| !link.crossing && link.from == holder && link.scope >= scope)
+                .filter(|link| !link.crossing && link.from == Some(holder) && link.scope >= scope)
             {
                 if link.to == actor && (!need_redelegate || link.redelegate) {
                     return Ok(true);
@@ -282,20 +313,16 @@ impl Engine {
         Ok(access.is_some_and(|access| access_role(&access) >= scope))
     }
 
-    /// The links that carry authority at `after`, in the group's mode (design §7.3).
+    /// The links that carry authority at `after`, applying each settled removal's explicit mode.
     fn links(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
         group: Hash,
         after: &[Hash],
     ) -> Result<Vec<Link>, FoldError> {
-        let Some(mode) = self
-            .groups
-            .get(&group)
-            .map(|record| record.policy.delegation_mode())
-        else {
+        if !self.groups.contains_key(&group) {
             return Ok(Vec::new());
-        };
+        }
         let past = causal_past(by_id, after);
         let grants: Vec<Grant> = self
             .grants
@@ -325,42 +352,123 @@ impl Engine {
             let superseding: Vec<&Removal> = removals
                 .iter()
                 .filter(|removal| {
-                    removal.member == grant.from
+                    Some(removal.member) == grant.from
                         && causal_past(by_id, &[removal.id]).contains(&grant.id)
                 })
                 .collect();
-            if mode == Delegation::Transfer && !superseding.is_empty() {
-                // The removed grantor's own link is superseded. Each successor the removals name
-                // reissues it from the removal on, if it held the scope then and holds it here.
-                for removal in superseding {
-                    let Some(successor) = removal.successor else {
-                        continue;
+            if superseding.is_empty() {
+                // A non-removal role change (a demotion) carries no RemoveMode: under
+                // Cascade delegation the link stands only while the grantor still holds
+                // the scope at `after`, so demoting the grantor below the grant's scope
+                // withdraws the delegated authority (the pre-RemoveMode Cascade check,
+                // including for cross-world crossings). Under Transfer delegation the
+                // link stands until a removal disposes of it. A group-anchored grant
+                // (from: None) has no grantor to demote.
+                if self.groups[&group].policy.delegation_mode() == Delegation::Cascade
+                    && let Some(grantor) = grant.from
+                    && !self.holds(group, grantor, grant.scope, after)?
+                {
+                    continue;
+                }
+                links.push(Link {
+                    origin: grant.id,
+                    from: grant.from,
+                    to: grant.to,
+                    scope: grant.scope,
+                    redelegate: grant.redelegate,
+                    reissued: false,
+                    retained: false,
+                    crossing: grant.target.is_some(),
+                });
+                continue;
+            }
+
+            // Revocation wins if several removals of a re-added grantor apply to the same old
+            // grant. Otherwise transfers replace it, group reassignment exposes it as a group
+            // root, and keep-prior preserves the original grantor.
+            if superseding
+                .iter()
+                .any(|removal| removal.mode == RemoveMode::Revoke)
+            {
+                continue;
+            }
+            let transfers: Vec<(&Removal, RemoveSuccessor)> = superseding
+                .iter()
+                .filter_map(|removal| match removal.mode {
+                    RemoveMode::Transfer(opts) => Some((*removal, opts.successor)),
+                    _ => None,
+                })
+                .collect();
+            if !transfers.is_empty() {
+                for (removal, successor) in transfers {
+                    let successors: Vec<Key> = match successor {
+                        RemoveSuccessor::Member(key) | RemoveSuccessor::Designated(key) => {
+                            vec![key]
+                        }
+                        RemoveSuccessor::Admin => self
+                            .admins_at_position(by_id, &group, &removal.after)
+                            .into_iter()
+                            .collect(),
+                        RemoveSuccessor::Actor => {
+                            // `removal.actor` is the removing event's author key, which
+                            // may be an authorized device key rather than the account
+                            // itself: membership and `holds` are account-level, so
+                            // resolve the device to its account at the removal's
+                            // position, or the reissue check fails and the grants are
+                            // silently revoked instead of transferred.
+                            let actor = self
+                                .authorized_device_account(
+                                    by_id,
+                                    group,
+                                    removal.actor,
+                                    &removal.after,
+                                )
+                                .map(|(account, _)| account)
+                                .unwrap_or(removal.actor);
+                            vec![actor]
+                        }
                     };
-                    let holds_now = self.holds(group, successor, grant.scope, after)?;
-                    if holds_now
-                        && self.authorized(
-                            by_id,
-                            group,
-                            successor,
-                            grant.scope,
-                            &removal.after,
-                            true,
-                        )?
-                    {
-                        links.push(Link {
-                            origin: grant.id,
-                            from: successor,
-                            to: grant.to,
-                            scope: grant.scope,
-                            redelegate: grant.redelegate,
-                            reissued: true,
-                            crossing: grant.target.is_some(),
-                        });
+                    for successor in successors {
+                        let holds_now = self.holds(group, successor, grant.scope, after)?;
+                        if holds_now
+                            && self.authorized(
+                                by_id,
+                                group,
+                                successor,
+                                grant.scope,
+                                &removal.after,
+                                true,
+                            )?
+                        {
+                            links.push(Link {
+                                origin: grant.id,
+                                from: Some(successor),
+                                to: grant.to,
+                                scope: grant.scope,
+                                redelegate: grant.redelegate,
+                                reissued: true,
+                                retained: false,
+                                crossing: grant.target.is_some(),
+                            });
+                        }
                     }
                 }
                 continue;
             }
-            if mode == Delegation::Cascade && !self.holds(group, grant.from, grant.scope, after)? {
+            if superseding
+                .iter()
+                .any(|removal| removal.mode == RemoveMode::ReassignToGroup)
+            {
+                links.push(Link {
+                    origin: grant.id,
+                    from: None,
+                    to: grant.to,
+                    scope: grant.scope,
+                    redelegate: grant.redelegate,
+                    reissued: false,
+                    retained: false,
+                    crossing: grant.target.is_some(),
+                });
                 continue;
             }
             links.push(Link {
@@ -370,6 +478,7 @@ impl Engine {
                 scope: grant.scope,
                 redelegate: grant.redelegate,
                 reissued: false,
+                retained: true,
                 crossing: grant.target.is_some(),
             });
         }
@@ -389,9 +498,7 @@ impl Engine {
         self.settled
             .iter()
             .filter_map(|id| by_id.get(id).copied())
-            .filter(|event| {
-                event.group == Some(grant.group) && removed_member(event) == Some(grant.from)
-            })
+            .filter(|event| event.group == Some(grant.group) && removed_member(event) == grant.from)
             .any(|removal| {
                 !past_grant.contains(&removal.id)
                     && !causal_past(by_id, &[removal.id]).contains(&grant.id)

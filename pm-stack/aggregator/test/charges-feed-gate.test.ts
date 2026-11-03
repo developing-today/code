@@ -86,6 +86,17 @@ describe("live source usage(): feed charges outside the saas gate (#3124)", () =
     expect(flags[0]!.label).toContain("Mystery AI Inc");
   });
 
+  test("malformed chargesAttention entries drop at load; the well-formed flag still renders (#2439)", async () => {
+    const src = await sourceWith({
+      feedOver: { chargesAttention: [null, { ...FEED_UNMATCHED, amountUsd: "42.50" }, FEED_UNMATCHED] },
+      quotaView: VIEW,
+    });
+    const usage = await src.usage();
+    const flags = usage.attention.filter((a) => a.kind === "unmatched-charge");
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.label).toContain("Mystery AI Inc");
+  });
+
   test("fixtures fallback: feed charges are kept when the quota view is unreadable", async () => {
     const src = await sourceWith({
       feedOver: { charges: [FEED_CHARGE], chargesAttention: [FEED_UNMATCHED] },

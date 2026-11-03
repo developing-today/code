@@ -22,8 +22,8 @@ const iso = (ms: number) => new Date(ms).toISOString();
 function healthy(over: Partial<WatchdogInputs> = {}): WatchdogInputs {
   return {
     now: NOW,
-    feedAgeMs: 5 * 60_000,
-    feedGeneratedAt: iso(NOW - 5 * 60_000),
+    feedAgeMs: 4 * 60_000,
+    feedGeneratedAt: iso(NOW - 4 * 60_000),
     orchestration: { state: "live", generatedAt: iso(NOW - 30 * 60_000), ageMs: 30 * 60_000, runId: "orch-1" },
     registryAgeMs: 5 * 60_000,
     probes: [

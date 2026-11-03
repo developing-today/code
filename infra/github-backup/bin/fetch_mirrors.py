@@ -8,7 +8,9 @@
 - Repos named on the command line are fetched unconditionally (used by the
   webhook drainer); no args = the daily full pass.
 """
+
 import json, os, subprocess, sys, time
+from datetime import date, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghb_common import load_config, backup_root, mirror_path, valid_mirror
@@ -17,13 +19,54 @@ import manifest as manifest_mod
 COALESCE_S = 12 * 3600
 
 
+def record_failure_day(days, today):
+    """Keep only the trailing consecutive calendar-day failure streak."""
+    today_date = date.fromisoformat(today)
+    start = len(days) - 1
+    try:
+        date.fromisoformat(days[start])
+        while start > 0:
+            current = date.fromisoformat(days[start])
+            previous = date.fromisoformat(days[start - 1])
+            if previous + timedelta(days=1) != current:
+                break
+            start -= 1
+        streak = days[start:]
+    except (TypeError, ValueError, IndexError):
+        streak = []
+
+    if streak:
+        last_date = date.fromisoformat(streak[-1])
+        if last_date == today_date:
+            days[:] = streak
+            return
+        if last_date + timedelta(days=1) == today_date:
+            days[:] = streak + [today]
+            return
+
+    days[:] = [today]
+
+
 def fetch_repo(root, repo, state):
     path = mirror_path(root, repo)
     if not valid_mirror(path):
         return "missing"
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    r = subprocess.run(["git", "-C", path, "fetch", "--all", "--prune"],
-                       capture_output=True, text=True, timeout=3600, env=env)
+    try:
+        r = subprocess.run(
+            ["git", "-C", path, "fetch", "--all", "--prune"],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as e:
+        st = state.setdefault(repo, {})
+        today = time.strftime("%Y-%m-%d")
+        days = st.setdefault("fail_days", [])
+        record_failure_day(days, today)
+        st["last_error"] = f"fetch timed out after {e.timeout} seconds"
+        return "fail"
     now = time.time()
     st = state.setdefault(repo, {})
     if r.returncode == 0:
@@ -32,8 +75,7 @@ def fetch_repo(root, repo, state):
         return "ok"
     today = time.strftime("%Y-%m-%d")
     days = st.setdefault("fail_days", [])
-    if today not in days:
-        days.append(today)
+    record_failure_day(days, today)
     st["last_error"] = (r.stderr or r.stdout)[-300:]
     return "fail"
 
@@ -64,13 +106,14 @@ def main(argv):
         if res != "ok":
             failed.append((repo, res))
             with open(log_path, "a") as f:
-                f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {repo} {res} "
-                        f"{(state.get(repo) or {}).get('last_error', '')}\n")
+                f.write(
+                    f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {repo} {res} "
+                    f"{(state.get(repo) or {}).get('last_error', '')}\n"
+                )
     with open(state_path, "w") as f:
         json.dump(state, f, indent=0)
     manifest_mod.build(root)
-    chronic = [r for r in repos
-               if len((state.get(r) or {}).get("fail_days", [])) >= 3]
+    chronic = [r for r in repos if len((state.get(r) or {}).get("fail_days", [])) >= 3]
     print(json.dumps({"results": results, "chronic_failures": chronic}))
     return 1 if chronic else 0
 

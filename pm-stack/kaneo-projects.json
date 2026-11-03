@@ -14,19 +14,19 @@
       "slug": "opencode",
       "projectId": "f16a7r9g54df44z055dirvr3",
       "repository": "developing-today/opencode",
-      "installationId": null
+      "installationId": 174792676
     },
     {
       "slug": "openchamber",
       "projectId": "z5qb6tmgo5idx7o8bnv7rqyv",
       "repository": "developing-today/openchamber",
-      "installationId": null
+      "installationId": 174792676
     },
     {
       "slug": "nix",
       "projectId": "kslqc1uhul68zaepdpcpsdml",
       "repository": "dezren39/nix",
-      "installationId": null
+      "installationId": 175747567
     }
   ]
 }

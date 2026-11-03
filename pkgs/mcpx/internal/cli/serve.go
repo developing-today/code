@@ -522,6 +522,11 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// below reads -- so neither surface's cadence changes.
 	if a.daemonStore != nil {
 		srv.TaskStore = a.daemonStore
+	} else {
+		// A standalone server (mcpx serve) keeps a private store;
+		// wire its audit seam to the durable log or its task
+		// lifecycle records are silently dropped (#2500).
+		srv.TaskAudit = a.standaloneTaskAudit()
 	}
 	srv.PageSize = a.Settings().Int("mcp.pageSize")
 	srv.Passthrough = a.passNS()
@@ -552,6 +557,7 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 		TaskMaxTTL:          a.Settings().Duration("protoTasks.maxTTL"),
 		TaskMaxPerRequestor: a.Settings().Int("protoTasks.maxPerRequestor"),
 		TaskWindowPerMinute: perMinuteSetting(a.Settings().Int("protoTasks.perMinute")),
+		TaskCancelGrace:     a.Settings().Duration("protoTasks.cancelGrace"),
 	}
 	srv.Cache = mcpserver.Cache{
 		List: a.Settings().Duration("protoMessages.listMaxAge"),
@@ -1081,7 +1087,7 @@ func upstreamInvalid(err error) bool {
 // Complete forwards completion/complete to the server that owns the ref,
 // through /v1/complete, so the two surfaces give the same answer to the same
 // question (conflict #9).
-func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]string, error) {
+func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) (mcpserver.Completion, error) {
 	var p struct {
 		Ref struct {
 			Type string `json:"type"`
@@ -1094,11 +1100,11 @@ func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]str
 		} `json:"context"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, fmt.Errorf("%w: %v", mcpserver.ErrInvalidParams, err)
+		return mcpserver.Completion{}, fmt.Errorf("%w: %v", mcpserver.ErrInvalidParams, err)
 	}
 	c, err := b.app.ensure(ctx)
 	if err != nil {
-		return nil, err
+		return mcpserver.Completion{}, err
 	}
 	ref := map[string]any{"type": p.Ref.Type}
 	var server string
@@ -1106,22 +1112,22 @@ func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]str
 	case "ref/prompt":
 		ns, inner, err := b.app.resolvePrompt(ctx, c, p.Ref.Name)
 		if err != nil {
-			return nil, err
+			return mcpserver.Completion{}, err
 		}
 		server, ref["name"] = ns, inner
 	case "ref/resource":
 		if _, ok := artifacts.IDFromURI(p.Ref.URI); ok || p.Ref.URI == artifactTemplate {
 			// mcpx's own template. Its ids are unguessable by design, so
 			// there is nothing to offer.
-			return nil, nil
+			return mcpserver.Completion{}, nil
 		}
 		ns, inner, ok := b.app.resolveURI(ctx, p.Ref.URI)
 		visible, err := b.app.visibleNamespaces(ctx, c)
 		if err != nil {
-			return nil, err
+			return mcpserver.Completion{}, err
 		}
 		if !ok || !visible(ns) {
-			return nil, fmt.Errorf("%w: no resource template %q", mcpserver.ErrInvalidParams, p.Ref.URI)
+			return mcpserver.Completion{}, fmt.Errorf("%w: no resource template %q", mcpserver.ErrInvalidParams, p.Ref.URI)
 		}
 		server, ref["uri"] = ns, inner
 	}
@@ -1135,17 +1141,26 @@ func (b mcpBackend) Complete(ctx context.Context, params json.RawMessage) ([]str
 	}
 	raw, err := c.do(ctx, http.MethodPost, "/v1/complete", body)
 	if err != nil {
-		return nil, err
+		return mcpserver.Completion{}, err
 	}
+	// The daemon's reply carries total alongside values; keep it, or
+	// the MCP surface recomputes the count from values the daemon may
+	// already have capped (#2878).
 	var out struct {
 		Completion struct {
 			Values []string `json:"values"`
+			Total  *int     `json:"total"`
 		} `json:"completion"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
+		return mcpserver.Completion{}, err
 	}
-	return out.Completion.Values, nil
+	res := mcpserver.Completion{Values: out.Completion.Values}
+	if out.Completion.Total != nil {
+		res.Total = *out.Completion.Total
+		res.TotalKnown = true
+	}
+	return res, nil
 }
 
 // visibleNamespaces is the profile applied as a boundary, not only a view.
