@@ -598,12 +598,15 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
-/// The server's capability ceiling: the named capabilities, or the whole catalog
-/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+/// The server's capability ceiling: the named capabilities, or the default
+/// ceiling ([`crate::world_caps::default_ceiling_names`]) when no list is
+/// given — providers whose manifest default is `Excluded` do not join a
+/// server by registration alone (#838). Like a world ceiling, it names
+/// capabilities; `*` is refused.
 #[cfg(feature = "world")]
 fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
     match names {
-        None => Ok(crate::world_caps::catalog_names()),
+        None => Ok(crate::world_caps::default_ceiling_names()),
         Some(names) => {
             crate::world_caps::validate_ceiling_names(names)?;
             Ok(names.iter().cloned().collect())
@@ -887,6 +890,20 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         allow_node,
         open_writes,
     } = opts;
+    // A web request on a binary built without the `web` feature must
+    // fail loudly: the web startup block is compiled out in that build,
+    // so without this guard --web was accepted and silently served
+    // nothing (no listener bound, no `web:` status line) - the failure
+    // mode that left web-waiting integration tests to die on a startup
+    // timeout instead of hearing the real reason.
+    #[cfg(not(feature = "web"))]
+    if web || !web_listen.is_empty() || port_explicit || bind_explicit {
+        anyhow::bail!(
+            "the web interface was requested (--web/--web-listen/--port/--bind), \
+             but this id binary was built without the `web` feature; \
+             rebuild with `--features web` to serve it"
+        );
+    }
     validate_world_options(
         world,
         world_admin_token.as_deref(),
@@ -2399,10 +2416,10 @@ mod tests {
 
     #[cfg(feature = "world")]
     #[test]
-    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+    fn test_the_server_ceiling_is_the_named_list_or_the_default_ceiling() {
         assert_eq!(
             allowed_caps(None).unwrap(),
-            crate::world_caps::catalog_names()
+            crate::world_caps::default_ceiling_names()
         );
         let named = ["time.now".to_owned(), "chat.say".to_owned()];
         assert_eq!(

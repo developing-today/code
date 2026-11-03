@@ -1850,7 +1850,11 @@ mod serve_tests {
         assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
     }
 
+    /// The world web presentation only exists when the binary is built
+    /// with the `web` feature; without it the server never prints the
+    /// `web:` line this test waits for.
     #[test]
+    #[cfg(feature = "web")]
     fn test_world_module_shared_over_iroh_and_web_presentations() {
         let server_dir = TempDir::new().unwrap();
         let client_dir = TempDir::new().unwrap();

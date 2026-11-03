@@ -23,6 +23,7 @@ import {
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import type { NewStreamEvent } from "../events.ts";
 import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
@@ -542,6 +543,26 @@ export function titleRefs(title: string): RefKey[] {
   return out;
 }
 
+/**
+ * Event refs must be whitespace-free (validateStreamEvent in
+ * events.ts), but an orchestration action's target is free text the
+ * publisher chooses — "fleet queues" is a real published target
+ * (#4489 Codex P2). Forwarding it verbatim made emitEvent reject and
+ * permanently drop the action's event. Whitespace-free targets pass
+ * through unchanged; free-text targets are slugified so the action is
+ * preserved in the log instead of dropped.
+ */
+export const orchestrationActionRef = (target: string): string => {
+  const trimmed = target.trim();
+  return /\s/.test(trimmed) ? slugify(trimmed) : trimmed;
+};
+
+const slugify = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "task";
 const normTitle = (s: string): string =>
   s
     .toLowerCase()
@@ -643,7 +664,14 @@ export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
   return isRecord(v) && typeof v.sessionId === "string" && v.sessionId.length > 0;
 }
 
-export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
+export function liveSource(
+  cfg: Config,
+  opts?: {
+    standingAuto?: () => Promise<boolean>;
+    onEvent?: (event: NewStreamEvent) => void;
+    hasEvent?: (kind: string, ref: string) => Promise<boolean>;
+  },
+): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
     board: "fixtures",
@@ -664,6 +692,12 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   // surfaces (Source.diagnostics) read it from here, never from a
   // null section, so absent/invalid/stale stay distinguishable.
   let lastOrchestrationDiagnosis: SectionDiagnosis = { state: "absent" };
+  // #1739: the last orchestration run whose publish was recorded in
+  // the event log, plus its tier membership — a new runId is a publish
+  // step, and the tier diff between successive publishes is the
+  // tier-change stream.
+  let lastOrchEventRunId: string | null = null;
+  let lastOrchTierById = new Map<string, string>();
   // #1138: the merged registry total from the last registry() read —
   // the freshness chip counts THIS (the same number /sessions renders
   // in its header), never the per-read incoming batch.
@@ -752,6 +786,26 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     const current = await loadRegistryStore();
     const merged = mergeRecords(current, incoming);
     const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
+    // #1739: the session registry merge is one of the event log's
+    // writers — a session entering the registry is a session outcome
+    // in the cross-stack stream. Fire-and-forget: the callback the
+    // server injects never throws into the merge (emitEvent swallows),
+    // and the merge itself never waits on the event write.
+    if (opts?.onEvent && changed) {
+      const known = new Set(current.map((r) => `${r.source}:${r.id}`));
+      for (const r of merged.filter((x) => !known.has(`${x.source}:${x.id}`))) {
+        try {
+          opts.onEvent({
+            actor: "aggregator",
+            kind: "session-outcome",
+            ref: `session:${r.source}:${r.id}`,
+            summary: `session ${r.label} (${r.agentLabel}) merged into the registry`.slice(0, 500),
+          });
+        } catch (err) {
+          console.error(`[events] WARNING: session event callback failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
     registryStore = merged;
     if (changed) {
       // Serialized writes + unique temp path per write (#1509): the
@@ -1159,6 +1213,59 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
             collection?.status === "error"
               ? `error — collector error: ${collection.error ?? "collection failed"}; serving embedded section ${section.runId}`
               : `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          // #1739: the orchestration publish step is an event-log
+          // writer. A new runId = a new publish: record the publish
+          // itself, the run's own published actions, and every item
+          // whose tier changed since the previous publish.
+          // Fire-and-forget — the injected callback never throws into
+          // this read and nothing here awaits an event write.
+          const tierById = new Map<string, string>();
+          for (const item of section.tiers.needsDrew) tierById.set(item.id, "needs-user");
+          for (const item of section.tiers.needsOrchestrator) tierById.set(item.id, "needs-orchestrator");
+          const publishRef = `orchestration:${section.runId}`;
+          const alreadyRecorded = opts?.hasEvent
+            ? await opts.hasEvent("orchestration-published", publishRef).catch(() => false)
+            : false;
+          if (opts?.onEvent && section.runId !== lastOrchEventRunId && !alreadyRecorded) {
+            opts.onEvent({
+              actor: "orchestrator",
+              kind: "orchestration-published",
+              ref: `orchestration:${section.runId}`,
+              summary:
+                `orchestration run ${section.runId} published: ` +
+                `${section.tiers.needsDrew.length} needs-user, ${section.tiers.needsOrchestrator.length} needs-orchestrator`,
+            });
+            for (const action of section.actions) {
+              opts.onEvent({
+                at: action.at,
+                actor: "orchestrator",
+                kind: action.kind,
+                ref: orchestrationActionRef(action.target),
+                summary: action.summary.slice(0, 500),
+              });
+            }
+            if (lastOrchEventRunId !== null) {
+              const allIds = new Set([...lastOrchTierById.keys(), ...tierById.keys()]);
+              for (const id of allIds) {
+                const prev = lastOrchTierById.get(id);
+                const tier = tierById.get(id);
+                if (prev !== tier) {
+                  opts.onEvent({
+                    actor: "orchestrator",
+                    kind: "tier-change",
+                    ref: id,
+                    summary: `tier ${prev ?? "—"} → ${tier ?? "—"} (run ${section.runId})`.slice(0, 500),
+                  });
+                }
+              }
+            }
+            lastOrchEventRunId = section.runId;
+            lastOrchTierById = tierById;
+          } else if (alreadyRecorded) {
+            // The durable publication event proves this run was already emitted.
+            lastOrchEventRunId = section.runId;
+            lastOrchTierById = tierById;
+          }
           // #1290: the per-item extension seam. The section gate above
           // never learns the extension fields; each tier item's
           // extensions are validated here, fail-soft (a malformed
