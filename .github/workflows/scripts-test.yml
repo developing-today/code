@@ -1,6 +1,11 @@
 name: scripts-test
 
 on:
+  pull_request:
+    paths:
+      - "scripts/worker-preflight.sh"
+      - "scripts/tests/test_worker_preflight.py"
+      - ".github/workflows/scripts-test.yml"
   push:
     branches: [main]
     paths:
