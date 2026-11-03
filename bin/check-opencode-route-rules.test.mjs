@@ -87,6 +87,15 @@ test('provider-route expansion skips members whose tracked catalogs lack the tar
   assert.deepEqual(result.tiers.scout.coverage.map(({ provider }) => provider), ['good']);
 });
 
+test('a built-in concrete provider takes precedence over a same-named provider route', () => {
+  const config = configWith({ scout: ['openai/model#low'] });
+  config.experimental.provider_routes.openai = { providers: ['good'] };
+  const result = inspectRouteRules(config);
+  assert.equal(result.tiers.scout.coverage.length, 0);
+  assert.equal(result.tiers.scout.members[0].provider, 'openai');
+  assert.ok(result.issues.some((issue) => issue.startsWith('scout: no enabled, tracked, existing, non-funds model')));
+});
+
 test('disabled and funds-only candidates cannot satisfy tier coverage', () => {
   const config = configWith(Object.fromEntries(
     ['scout', 'workhorse', 'specialist', 'summit'].map((tier) => [

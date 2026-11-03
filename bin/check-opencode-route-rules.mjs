@@ -14,6 +14,9 @@ import { isMeteredModel } from './check-opencode-metered-providers.mjs';
 
 export const DEFAULT_CONFIG = '.opencode/opencode.jsonc';
 export const REQUIRED_TIERS = ['scout', 'workhorse', 'specialist', 'summit'];
+// Keep aligned with bin/opencode-route-proxy.mjs BUILTIN_PROVIDERS. These
+// concrete provider ids take precedence over a same-named provider route.
+const BUILTIN_PROVIDER_IDS = new Set(['opencode-go', 'openai', 'deepseek', 'groq', 'openrouter', 'meta']);
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -109,7 +112,8 @@ export function inspectRouteRules(config) {
 
     // Configured concrete providers take precedence over a same-named group,
     // matching providerRouteDef in the route proxy.
-    const providerRoute = isObject(config.provider?.[parsed.provider]) ? null : providerRoutes?.[parsed.provider];
+    const concreteProvider = isObject(config.provider?.[parsed.provider]) || BUILTIN_PROVIDER_IDS.has(parsed.provider);
+    const providerRoute = concreteProvider ? null : providerRoutes?.[parsed.provider];
     if (isObject(providerRoute)) {
       // The runtime disables a provider-route group before expanding any
       // member. Keep a disabled placeholder for the audit report, but do not
