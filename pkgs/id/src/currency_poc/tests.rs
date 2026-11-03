@@ -525,6 +525,84 @@ fn duplicate_t1_and_t3_transfer_ids_fail_preflight_before_persisting_intent() {
 }
 
 #[test]
+fn fee_without_account_fails_preflight_before_persisting_intent() {
+    let mut executor = executor();
+    let mut no_fee_account = request();
+    no_fee_account.fee_account = None;
+
+    let error = executor
+        .prepare(&no_fee_account)
+        .expect_err("a fee with no fee account must fail preflight");
+    assert!(error.to_string().contains("requires a fee_account"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn too_few_transfer_ids_fail_preflight_before_persisting_intent() {
+    let mut executor = executor();
+    let mut short = request();
+    short.transfer_ids = vec![601, 602];
+
+    let error = executor
+        .prepare(&short)
+        .expect_err("two IDs cannot cover T1, the fee leg, and T3");
+    assert!(error.to_string().contains("expected 3 IDs, got 2"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn extra_transfer_ids_fail_preflight_before_persisting_intent() {
+    let mut executor = executor();
+    let mut long = request();
+    long.transfer_ids = vec![601, 602, 603, 604];
+
+    let error = executor
+        .prepare(&long)
+        .expect_err("extra transfer IDs must not be silently dropped");
+    assert!(error.to_string().contains("expected 3 IDs, got 4"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
+fn extra_transfer_ids_without_fee_fail_preflight_before_persisting_intent() {
+    let mut executor = executor();
+    let mut long = request();
+    long.fee_amount = 0;
+    long.fee_account = None;
+    long.transfer_ids = vec![601, 602, 603];
+
+    let error = executor
+        .prepare(&long)
+        .expect_err("a no-fee conversion has only two legs, so a third ID is extra");
+    assert!(error.to_string().contains("expected 2 IDs, got 3"));
+    assert!(executor.store.get(777).unwrap().is_none());
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+}
+
+#[test]
 fn file_intent_store_write_ahead_survives_reopen() {
     // The write-ahead record is the crash-recovery contract: prepare
     // with a file store, drop everything, reopen, and reconcile.
