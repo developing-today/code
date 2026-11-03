@@ -96,6 +96,16 @@ test('provider-route members use concrete-provider precedence over same-named gr
   assert.deepEqual(result.tiers.scout.coverage.map(({ provider }) => provider), ['good']);
 });
 
+test('unconfigured provider-route members are excluded from membership and effort checks', () => {
+  const config = configWith({ scout: ['good/model', 'plan/model#low'] });
+  config.experimental.provider_routes.plan.providers = ['typo'];
+  const result = inspectRouteRules(config);
+  assert.deepEqual(result.tiers.scout.members.map(({ provider }) => provider), ['good']);
+  assert.equal(result.tiers.scout.effort_pinned, 0);
+  assert.ok(result.issues.some((issue) => issue.includes('non-concrete member "typo"')));
+  assert.ok(result.issues.some((issue) => issue.includes('good/model has no effort selected')));
+});
+
 test('a built-in concrete provider takes precedence over a same-named provider route', () => {
   const config = configWith({ scout: ['openai/model#low'] });
   config.experimental.provider_routes.openai = { providers: ['good'] };
@@ -161,6 +171,16 @@ test('unknown non-inverted window gates are rejected and excluded from coverage'
   const result = inspectRouteRules(config);
   assert.equal(result.tiers.scout.coverage.length, 0);
   assert.ok(result.issues.some((issue) => issue.includes('unknown model-route window "typo-window"')));
+});
+
+test('permanently closed window gates are rejected and excluded from coverage', () => {
+  const config = configWith({ scout: [{ model: 'good/model#low', window: 'closed' }] });
+  config.experimental.model_route_windows = {
+    closed: { start: '25:00', end: '02:00', timezone: 'UTC' },
+  };
+  const result = inspectRouteRules(config);
+  assert.equal(result.tiers.scout.coverage.length, 0);
+  assert.ok(result.issues.some((issue) => issue.includes('permanently closed model-route window "closed"')));
 });
 
 test('canonical OpenCode config satisfies the route rules', () => {

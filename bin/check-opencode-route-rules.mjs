@@ -37,6 +37,34 @@ function normalizeWindowGate(window) {
   return null;
 }
 
+function windowIsPermanentlyClosed(window) {
+  if (!isObject(window)) return true;
+  const parseTime = (value) => {
+    const match = /^([0-9]{1,2}):([0-9]{2})$/.exec(typeof value === 'string' ? value.trim() : '');
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (hour > 23 || minute > 59) return null;
+    return hour * 60 + minute;
+  };
+  const start = parseTime(window.start);
+  const end = parseTime(window.end);
+  if (start === null || end === null || start === end) return true;
+
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: window.timezone || 'UTC' }).format(new Date(0));
+  } catch {
+    return true;
+  }
+
+  if (Array.isArray(window.daysOfWeek) && window.daysOfWeek.length > 0) {
+    const weekdays = new Set(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
+    const days = window.daysOfWeek.map((day) => String(day).slice(0, 3).toLowerCase());
+    if (!days.some((day) => weekdays.has(day))) return true;
+  }
+  return false;
+}
+
 function splitModelReference(reference) {
   if (typeof reference !== 'string') return null;
   const slash = reference.indexOf('/');
@@ -141,7 +169,10 @@ export function inspectRouteRules(config) {
           return [];
         }
         const concreteProvider = isObject(config.provider?.[provider]) || BUILTIN_PROVIDER_IDS.has(provider);
-        if (provider === 'opencode-route' || (!concreteProvider && isObject(providerRoutes?.[provider]))) return [];
+        if (provider === 'opencode-route' || !concreteProvider) {
+          addIssue(`${tier}: provider route "${parsed.provider}" has non-concrete member "${provider}" at ${trace}`);
+          return [];
+        }
         if (disabled.has(provider)) {
           return appendLeaf(provider, parsed.model, selectedEffort, tier, `${trace} -> ${parsed.provider}`);
         }
@@ -185,6 +216,9 @@ export function inspectRouteRules(config) {
       if (windowGate && (!isObject(modelRouteWindows) || !Object.hasOwn(modelRouteWindows, windowGate.name))) {
         addIssue(`${tier}: target at ${targetTrace} names unknown model-route window "${windowGate.name}"`);
         // An unknown non-inverted gate is permanently closed in the router.
+        if (!windowGate.invert) return [];
+      } else if (windowGate && windowIsPermanentlyClosed(modelRouteWindows[windowGate.name])) {
+        addIssue(`${tier}: target at ${targetTrace} uses permanently closed model-route window "${windowGate.name}"`);
         if (!windowGate.invert) return [];
       }
       let effort = incomingEffort;
