@@ -41,7 +41,18 @@ const older = rec({
 describe("isSessionRecord timestamp hygiene (#2376)", () => {
   test("accepts string or absent timestamps", () => {
     expect(isSessionRecord(valid)).toBe(true);
-    expect(isSessionRecord({ id: "a", source: "s", label: "l", taskRefs: [] })).toBe(true);
+    expect(isSessionRecord({ id: "a", source: "s", label: "l", taskRefs: [] })).toBe(false); // #3525: status/agent identity now required
+    expect(
+      isSessionRecord({
+        id: "a",
+        source: "s",
+        label: "l",
+        status: "idle",
+        agentId: "opencode:main",
+        agentLabel: "OpenCode · main",
+        taskRefs: [],
+      }),
+    ).toBe(true);
     expect(isSessionRecord(older)).toBe(true);
   });
 
@@ -64,10 +75,11 @@ describe("poisoned records cannot reach the mergeRecords sort (#2376)", () => {
   test("store/feed path: poisoned records are dropped, survivors merge and sort", () => {
     const raw: unknown[] = [
       valid,
-      { id: "ses_poison_num", source: "claude-code", label: "Poison", lastSeenAt: 1730000000 },
-      { id: "ses_poison_bool", source: "claude-code", label: "Poison", lastSeenAt: true },
+      { ...valid, id: "ses_poison_num", lastSeenAt: 1730000000 },
+      { ...valid, id: "ses_poison_bool", lastSeenAt: true },
       older,
-      { id: "ses_no_ts", source: "claude-code", label: "No timestamps", taskRefs: [] },
+      // #3525: the no-timestamp survivor carries the full required contract.
+      rec({ id: "ses_no_ts", label: "No timestamps" }),
     ];
     const admitted = raw.filter(isSessionRecord);
     expect(admitted.map((r) => r.id)).toEqual(["ses_valid", "ses_older", "ses_no_ts"]);

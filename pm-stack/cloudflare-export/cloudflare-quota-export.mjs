@@ -361,7 +361,13 @@ export function classifyBilling(probes) {
   };
 }
 
-export function successDocument({ measuredAt, cycleStart, accountId, billing, parsed, r2Buckets }) {
+export function successDocument({ measuredAt, cycleStart, accountId, billing, parsed, r2Buckets, r2BucketsDetail = null }) {
+  // r2Buckets is optional metadata beside the independent GraphQL
+  // storage total (#2574): a known enumeration (including a genuine
+  // empty account, []) is published as-is, while an unavailable or
+  // malformed enumeration arrives as null and is published explicitly
+  // as unknown — never as a misleading empty list.
+  const bucketsKnown = Array.isArray(r2Buckets);
   return {
     service: "cloudflare",
     source: SOURCE,
@@ -370,7 +376,13 @@ export function successDocument({ measuredAt, cycleStart, accountId, billing, pa
     cycleStart: cycleStart.toISOString(),
     accountId,
     billing,
-    r2Buckets,
+    ...(bucketsKnown
+      ? { r2Buckets }
+      : {
+        r2Buckets: null,
+        r2BucketsUnknown: true,
+        ...(r2BucketsDetail ? { r2BucketsDetail } : {}),
+      }),
     ...(parsed.r2Unclassified?.length ? { r2UnclassifiedActions: parsed.r2Unclassified } : {}),
     // #2287: the alerts array is present ONLY when a day is firing, so
     // consumers can key on its presence; saturation of the grouped
@@ -429,6 +441,81 @@ function scopeError(what, status) {
 // GraphQL Analytics API's maximum limit; parseGraphqlUsage flags the
 // total as a lower bound if a result ever saturates it.
 export const R2_STORAGE_GROUP_LIMIT = 10000;
+
+/** Page size for GET /accounts/{id}/r2/buckets (List Buckets caps
+ * per_page at 1000). Pages are followed via the documented
+ * result_info.cursor continuation token until it is absent (#2574). */
+export const R2_BUCKETS_PER_PAGE = 100;
+/** Safety cap so a lying cursor can never loop forever: past this many
+ * pages the enumeration is reported unknown rather than partial. */
+export const R2_BUCKETS_MAX_PAGES = 1000;
+
+/** Enumerate R2 bucket names, following pagination to completion.
+ * Returns `{ buckets, detail }` where buckets is the complete
+ * string[] on success, or null when the enumeration is unavailable
+ * or malformed (non-200, missing/non-list result.buckets, nameless
+ * entry, explicit success:false, transport failure, page cap).
+ * A null result must be published as explicitly unknown, never as
+ * [] (a genuine zero-bucket account returns a known []). A later
+ * page failing yields null too — a partial list is never published
+ * as complete. 401/403 still throws token-scope (caller handles). */
+export async function listR2Buckets(acct, token) {
+  const names = [];
+  let cursor = "";
+  let usePages = false;
+  for (let page = 1; ; page++) {
+    if (page > R2_BUCKETS_MAX_PAGES) {
+      return { buckets: null, detail: `GET r2/buckets: exceeded ${R2_BUCKETS_MAX_PAGES} pages; bucket enumeration unknown, GraphQL metrics retained` };
+    }
+    let query = `?per_page=${R2_BUCKETS_PER_PAGE}`;
+    if (cursor) query += `&cursor=${encodeURIComponent(cursor)}`;
+    else if (usePages) query += `&page=${page}`;
+    let res;
+    try {
+      res = await apiJson(`/accounts/${acct}/r2/buckets${query}`, token);
+    } catch (e) {
+      if (e instanceof ExportError && e.status === "token-scope") throw e;
+      return { buckets: null, detail: `GET r2/buckets: page ${page} request failed (${e?.message ?? String(e)}); bucket enumeration unknown, GraphQL metrics retained` };
+    }
+    if (res.status === 401 || res.status === 403) throw scopeError("GET r2/buckets", res.status);
+    if (res.status !== 200) {
+      return { buckets: null, detail: `GET r2/buckets: HTTP ${res.status} on page ${page}; bucket enumeration unknown, GraphQL metrics retained` };
+    }
+    if (res.body?.success === false) {
+      const msg = Array.isArray(res.body?.errors)
+        ? res.body.errors.map((e) => e?.message).filter(Boolean).join(" ; ")
+        : "";
+      return { buckets: null, detail: `GET r2/buckets: page ${page} answered success:false${msg ? ` (${msg})` : ""}; bucket enumeration unknown, GraphQL metrics retained` };
+    }
+    const buckets = res.body?.result?.buckets;
+    if (!Array.isArray(buckets)) {
+      return { buckets: null, detail: `GET r2/buckets: page ${page} result.buckets missing or not a list; bucket enumeration unknown, GraphQL metrics retained` };
+    }
+    for (const b of buckets) {
+      if (typeof b?.name !== "string" || b.name === "") {
+        return { buckets: null, detail: `GET r2/buckets: page ${page} has a bucket entry without a name; bucket enumeration unknown, GraphQL metrics retained` };
+      }
+      names.push(b.name);
+    }
+    // Cursor pagination is the documented List Buckets mechanism; a
+    // page-based result_info (total_pages) is honoured too if ever
+    // returned, so neither shape silently truncates the list.
+    const info = res.body?.result_info;
+    const nextCursor = typeof info?.cursor === "string" && info.cursor !== "" ? info.cursor : "";
+    const totalPages = Number.isInteger(info?.total_pages) && info.total_pages > 0 ? info.total_pages : 0;
+    if (nextCursor && nextCursor !== cursor) {
+      cursor = nextCursor;
+      usePages = false;
+      continue;
+    }
+    if (!cursor && totalPages > page) {
+      usePages = true;
+      continue;
+    }
+    break;
+  }
+  return { buckets: names, detail: `enumerated ${names.length} R2 bucket(s) across all reported pages` };
+}
 
 const GRAPHQL_QUERY = `query($a: string!, $s: Time!, $e: Time!) {
   viewer {
@@ -494,9 +581,10 @@ export async function run({ token, accountId, now = new Date() } = {}) {
 
   // R2 bucket enumeration directly (names only) — the storage figure
   // itself comes from the analytics dataset, not the tracker prose.
-  const buckets = await apiJson(`/accounts/${acct}/r2/buckets?per_page=100`, token);
-  if (buckets.status === 401 || buckets.status === 403) throw scopeError("GET r2/buckets", buckets.status);
-  const r2Buckets = (buckets.body?.result?.buckets ?? []).map((b) => b.name).filter(Boolean);
+  // Enumeration is optional metadata: when it is unavailable or
+  // malformed it is recorded as explicitly unknown (#2574) while the
+  // GraphQL usage metrics below are still collected.
+  const { buckets: r2Buckets, detail: r2BucketsDetail } = await listR2Buckets(acct, token);
 
   const start = cycleStartUtc(now);
   const gql = await apiJson("/graphql", token, {
@@ -541,6 +629,7 @@ export async function run({ token, accountId, now = new Date() } = {}) {
     billing,
     parsed,
     r2Buckets,
+    r2BucketsDetail,
   });
 }
 

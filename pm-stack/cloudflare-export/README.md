@@ -110,6 +110,27 @@ append-only `history.jsonl`:
 }
 ```
 
+`r2Buckets` is optional metadata beside the independent GraphQL
+`r2-storage` total. Enumeration follows List Buckets pagination
+(`per_page=100`, `result_info.cursor`) through every reported page, so
+a successful list is complete. When enumeration is unavailable or
+malformed — a non-200 response, a missing/non-list `result.buckets`,
+a nameless entry, an explicit `success:false`, or a later page failing
+— the document keeps the valid GraphQL metrics and records the list
+as explicitly unknown instead of a misleading `[]`:
+
+```json
+"r2Buckets": null,
+"r2BucketsUnknown": true,
+"r2BucketsDetail": "GET r2/buckets: HTTP 500 on page 1; bucket enumeration unknown, GraphQL metrics retained"
+```
+
+A genuine zero-bucket account still publishes a known `[]` (no
+`r2BucketsUnknown` key). A partial list is never published as
+complete: if any later page fails or is malformed, the whole
+enumeration goes unknown. 401/403 on the buckets endpoint keeps the
+existing `token-scope` failure (missing-scope exit), unchanged.
+
 ## Failure states (fail-closed)
 
 A failed tick writes a failure document with `status`,

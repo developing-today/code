@@ -1238,7 +1238,9 @@ pub fn run(
         DirectoryAction::AddEmail { address } => {
             let me = signed_in(&viewer)?;
             let address = normalize_email(&address)?;
-            if directory.account_for_email(&address).is_some() {
+            if let Some(holder) = directory.account_for_email(&address)
+                && holder != me
+            {
                 return Err(Refusal::Conflict(
                     "that address already belongs to an account".to_owned(),
                 )

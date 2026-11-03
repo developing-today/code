@@ -1555,7 +1555,8 @@ impl Directory {
             }
             DirectoryEntry::AccountEmailConfirmed { id, email } => {
                 refuse_unless!(
-                    self.account_for_email(email).is_none(),
+                    self.account_for_email(email)
+                        .is_none_or(|holder| holder == *id),
                     Conflict,
                     "that address already belongs to an account"
                 );
@@ -3005,6 +3006,40 @@ mod tests {
             .unwrap_err();
         assert!(matches!(refusal(&error), Refusal::Conflict(_)));
         assert!(!directory.is_verified(&bo));
+    }
+
+    #[test]
+    fn reconfirming_the_same_address_is_idempotent() {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        directory
+            .confirm_email(Actor::Server, &ann, "ann@example.com")
+            .unwrap();
+        let before = directory.clone();
+        directory
+            .confirm_email(Actor::Server, &ann, "  ANN@example.com ")
+            .unwrap();
+        assert_eq!(directory, before);
+        assert_eq!(
+            directory.account_for_email("ann@example.com"),
+            Some(ann.clone())
+        );
+    }
+
+    #[test]
+    fn a_different_account_cannot_confirm_a_held_address() {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        directory
+            .confirm_email(Actor::Server, &ann, "ann@example.com")
+            .unwrap();
+        let before = directory.clone();
+        let error = directory
+            .confirm_email(Actor::Server, &bo, "ann@example.com")
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Conflict(_)));
+        assert_eq!(directory, before);
     }
 
     #[test]

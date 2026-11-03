@@ -248,6 +248,190 @@ test("documents: success carries the spec fields; failure carries no values", ()
   assert.deepEqual(bad.missingScopes, ["Account Analytics Read"]);
 });
 
+// #2574: bucket-enumeration tests. bucketImpl answers /r2/buckets calls;
+// billing probes answer 403 (invoice-only) and /graphql answers ACCOUNT,
+// so each test isolates exactly the buckets behaviour under study.
+function stubFetchBuckets(bucketImpl) {
+  const seen = [];
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    seen.push(u);
+    if (u.includes("/r2/buckets")) return bucketImpl(u, seen);
+    if (u.includes("/graphql")) {
+      return { status: 200, json: async () => ({ data: { viewer: { accounts: [ACCOUNT] } } }) };
+    }
+    return { status: 403, json: async () => ({}) };
+  };
+  return { fetchImpl, seen };
+}
+
+async function runWithFetchImpl(fetchImpl) {
+  const prev = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
+  try {
+    return await run({ token: "tok", accountId: "acct", now: NOW });
+  } finally {
+    globalThis.fetch = prev;
+  }
+}
+
+function assertBucketsUnknown(doc, detailPattern) {
+  // The enumeration must never surface as a misleading empty list:
+  // unknown is explicit null plus the marker flag and a detail string.
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.r2Buckets, null);
+  assert.equal(doc.r2BucketsUnknown, true);
+  assert.equal(typeof doc.r2BucketsDetail, "string");
+  if (detailPattern) assert.match(doc.r2BucketsDetail, detailPattern);
+}
+
+function assertMetricsIntact(doc) {
+  // GraphQL usage metrics are independent of bucket-name enumeration
+  // and must survive every buckets failure mode.
+  assert.equal(doc.metrics.length, 11);
+  const byId = Object.fromEntries(doc.metrics.map((m) => [m.id, m]));
+  assert.equal(byId["r2-storage"].used, 25.14);
+  assert.equal(byId["workers-requests"].used, 75225);
+}
+
+test("run: bucket-list HTTP 500 keeps GraphQL metrics but marks enumeration unknown (#2574)", async () => {
+  const { fetchImpl } = stubFetchBuckets(async () => ({ status: 500, json: async () => ({}) }));
+  const doc = await runWithFetchImpl(fetchImpl);
+  assertMetricsIntact(doc);
+  assertBucketsUnknown(doc, /HTTP 500/);
+});
+
+test("run: missing or malformed result.buckets is unknown, never [] (#2574)", async () => {
+  const bodies = [
+    {},
+    { result: {} },
+    { result: null },
+    { result: { buckets: "nope" } },
+    { result: { buckets: [{ }] } },
+    { result: { buckets: [{ name: 123 }] } },
+    { result: { buckets: [{ name: "" }] } },
+  ];
+  for (const body of bodies) {
+    const { fetchImpl } = stubFetchBuckets(async () => ({ status: 200, json: async () => body }));
+    const doc = await runWithFetchImpl(fetchImpl);
+    assertMetricsIntact(doc);
+    assertBucketsUnknown(doc, undefined);
+  }
+});
+
+test("run: success:false and transport failures are unknown, metrics survive (#2574)", async () => {
+  const denied = stubFetchBuckets(async () => ({
+    status: 200,
+    json: async () => ({ success: false, errors: [{ message: "access denied" }], result: { buckets: [] } }),
+  }));
+  assertBucketsUnknown(await runWithFetchImpl(denied.fetchImpl), /success:false/);
+
+  const hanging = stubFetchBuckets(async () => { throw new Error("socket hang up"); });
+  const doc = await runWithFetchImpl(hanging.fetchImpl);
+  assertMetricsIntact(doc);
+  assertBucketsUnknown(doc, /request failed/);
+});
+
+test("run: cursor pagination collects every reported page (#2574)", async () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ name: `b${i}` }));
+  const page2 = Array.from({ length: 50 }, (_, i) => ({ name: `c${i}` }));
+  const { fetchImpl, seen } = stubFetchBuckets(async (u) => {
+    if (u.includes("cursor=")) {
+      assert.match(u, /cursor=cursor-2/);
+      return {
+        status: 200,
+        json: async () => ({ success: true, result: { buckets: page2 }, result_info: { total_count: 150, per_page: 100 } }),
+      };
+    }
+    return {
+      status: 200,
+      json: async () => ({ success: true, result: { buckets: page1 }, result_info: { total_count: 150, per_page: 100, cursor: "cursor-2" } }),
+    };
+  });
+  const doc = await runWithFetchImpl(fetchImpl);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.r2Buckets.length, 150);
+  assert.equal("r2BucketsUnknown" in doc, false);
+  assert.equal(doc.r2Buckets[0], "b0");
+  assert.equal(doc.r2Buckets[99], "b99");
+  assert.equal(doc.r2Buckets[149], "c49");
+  assert.equal(seen.filter((u) => u.includes("/r2/buckets")).length, 2);
+});
+
+test("run: page-based result_info is followed to completion (#2574)", async () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ name: `b${i}` }));
+  const page2 = Array.from({ length: 50 }, (_, i) => ({ name: `c${i}` }));
+  const { fetchImpl, seen } = stubFetchBuckets(async (u) => {
+    if (u.includes("page=2")) {
+      return {
+        status: 200,
+        json: async () => ({ success: true, result: { buckets: page2 }, result_info: { total_pages: 2 } }),
+      };
+    }
+    return {
+      status: 200,
+      json: async () => ({ success: true, result: { buckets: page1 }, result_info: { total_pages: 2 } }),
+    };
+  });
+  const doc = await runWithFetchImpl(fetchImpl);
+  assert.equal(doc.r2Buckets.length, 150);
+  assert.equal("r2BucketsUnknown" in doc, false);
+  assert.equal(seen.filter((u) => u.includes("/r2/buckets")).length, 2);
+});
+
+test("run: a later-page failure publishes unknown, never a partial list (#2574)", async () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ name: `b${i}` }));
+  const { fetchImpl } = stubFetchBuckets(async (u) => {
+    if (u.includes("cursor=")) return { status: 500, json: async () => ({}) };
+    return {
+      status: 200,
+      json: async () => ({ success: true, result: { buckets: page1 }, result_info: { cursor: "cursor-2" } }),
+    };
+  });
+  const doc = await runWithFetchImpl(fetchImpl);
+  assertMetricsIntact(doc);
+  // The 100 names from page one must not leak out as a complete list.
+  assertBucketsUnknown(doc, /page 2/);
+});
+
+test("run: a later-page malformed payload publishes unknown, never partial (#2574)", async () => {
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ name: `b${i}` }));
+  const { fetchImpl } = stubFetchBuckets(async (u) => {
+    if (u.includes("cursor=")) {
+      return { status: 200, json: async () => ({ success: true, result: {}, result_info: {} }) };
+    }
+    return {
+      status: 200,
+      json: async () => ({ success: true, result: { buckets: page1 }, result_info: { cursor: "cursor-2" } }),
+    };
+  });
+  const doc = await runWithFetchImpl(fetchImpl);
+  assertMetricsIntact(doc);
+  assertBucketsUnknown(doc, /page 2/);
+});
+
+test("run: a genuine zero-bucket account stays a known [], not unknown (#2574)", async () => {
+  const { fetchImpl } = stubFetchBuckets(async () => ({
+    status: 200,
+    json: async () => ({ success: true, result: { buckets: [] }, result_info: { total_count: 0 } }),
+  }));
+  const doc = await runWithFetchImpl(fetchImpl);
+  assert.equal(doc.status, "ok");
+  assert.deepEqual(doc.r2Buckets, []);
+  assert.equal("r2BucketsUnknown" in doc, false);
+});
+
+test("run: bucket-list 401/403 still surfaces token-scope (#2574)", async () => {
+  for (const status of [401, 403]) {
+    const { fetchImpl } = stubFetchBuckets(async () => ({ status, json: async () => ({}) }));
+    await assert.rejects(runWithFetchImpl(fetchImpl), (e) => {
+      assert.ok(e instanceof ExportError, `expected ExportError, got ${e}`);
+      assert.equal(e.status, "token-scope");
+      assert.equal(e.exitCode, 3);
+      return true;
+    });
+  }
+});
 // #2608: GraphQL errors shape handling in run(). The stub answers the
 // billing probes and R2 enumeration with benign bodies and returns the
 // given body for /graphql; ACCOUNT is a valid parsed account node.
