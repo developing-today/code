@@ -3,7 +3,9 @@
  *
  * Setup wires the whole core: the remembered-daemon read (ctx.storage),
  * the idempotent system-prompt paragraph (session context hook), the
- * once-per-session full-environment send, execute.after timing records,
+ * per-session filtering of disabled mcpx tools from the model-visible
+ * set (tool-filter.ts, #5122), the once-per-session full-environment
+ * send, execute.after timing records,
  * the permission gate (permission.ts: evaluate hook + daemon_select
  * assert), and tool registration (tools.ts: tool.transform under the mcpx
  * namespace, so the model sees the v1 names — mcpx_exec and friends).
@@ -18,6 +20,7 @@ import {
 } from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { createSessionEnv } from "./session-env.ts";
+import { createToolFilter, type ToolFilterInput } from "./tool-filter.ts";
 import {
   createTimingLog,
   type ExecuteAfterInput,
@@ -37,7 +40,10 @@ export type McpxV2Context = {
   serverUrl?: string;
   directory?: string;
   session: {
-    hook(name: "context", fn: (input: ContextHookInput) => void): void;
+    hook(
+      name: "context",
+      fn: (input: ContextHookInput & ToolFilterInput) => void,
+    ): void;
   };
   tool: ToolDomainLike & {
     hook(name: "execute.after", fn: (input: ExecuteAfterInput) => void): void;
@@ -67,6 +73,11 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   // decides where a newly started daemon binds (v1's reasoning,
   // mcpx-session.ts). Sessions are tracked so a daemon_select later in
   // the session can refresh the ones already sent.
+  // The per-session mcpx tool filter (#5122): its snapshots refresh
+  // asynchronously from ctx.storage, and the context hook below applies
+  // the latest snapshot synchronously — the hook never waits on storage
+  // and never queries the daemon.
+  const toolFilter = createToolFilter(ctx.storage);
   const envSessions = new Set<string>();
   let activeEndpoint: string | undefined;
   const sessionVars = (sessionID: string): Record<string, string> => {
@@ -131,6 +142,12 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     // with the full environment (session-env.ts explains why full).
     envSessions.add(input.sessionID);
     void sessionEnv.ensure(input.sessionID, sessionVars(input.sessionID)).catch(() => false);
+    // Hide this session's disabled mcpx tools from the model-visible
+    // set (tool-filter.ts), then refresh the snapshot for the next
+    // turn: a policy recorded since the last firing applies from the
+    // following turn.
+    toolFilter.apply(input);
+    void toolFilter.refresh(input.sessionID).catch(() => undefined);
   });
 
   if (toolTiming) {
