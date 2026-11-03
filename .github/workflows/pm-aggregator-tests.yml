@@ -38,7 +38,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  contract:
+    name: contract corpus
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -53,6 +54,19 @@ jobs:
         run: bun test test/contract-corpus.test.ts test/contract-collector.test.ts
       - name: Run contract pre-publish check over the corpus
         run: bun run scripts/check-contract-corpus.ts
+
+  test:
+    name: aggregator tests and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: pm-stack/aggregator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
       - name: Run aggregator tests
         run: bun test
       - name: Typecheck
