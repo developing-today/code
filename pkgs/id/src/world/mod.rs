@@ -69,6 +69,17 @@ pub(crate) use util::{
 /// A chat participant may send at most this many lines during the rolling window.
 pub(crate) const CHAT_RATE_BURST: u8 = 50;
 pub(crate) const CHAT_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// Maximum host-authorized event history kept for fixture export.
+pub(crate) const MAX_ADMIN_HISTORY_EVENTS: usize = 4096;
+/// Maximum encoded history bytes kept in memory or a checkpoint.
+pub(crate) const MAX_ADMIN_HISTORY_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum distinct participant IDs represented as open in a checkpoint.
+///
+/// This is a stable journal-format bound, not the current world's participant
+/// quota. If a live world exceeds it (for example, while revoked sessions are
+/// still closing), compaction is skipped and the complete append-only journal
+/// is retained. Restore enforces the same bound regardless of current config.
+pub(crate) const MAX_CHECKPOINT_OPEN_PRESENCE: usize = 4096;
 
 /// Bounded limits for one world.
 #[derive(Clone, Debug)]
@@ -362,8 +373,9 @@ pub enum WorldEventKind {
         input: Vec<u8>,
     },
     /// An event the host originated for the program: capability results,
-    /// ticks, presence. Delivered with `participant_id` 0; never sequenced,
-    /// never broadcast to sessions.
+    /// ticks, presence. Delivered with `participant_id` 0; never sequenced
+    /// or broadcast to participant sessions. Admins may export these events
+    /// through the history protocol.
     System {
         /// The event's JSON.
         event: String,
@@ -912,26 +924,41 @@ pub enum JournalEntry {
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
         events: Vec<WorldEvent>,
+        /// Ordered sequenced and host-originated events retained for the
+        /// admin-only fixture export. Absent in older checkpoints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admin_history: Option<JournalAdminHistory>,
+        /// Participants whose join the program has seen without a later leave.
+        /// `Some(empty)` records a known-empty set; `None` is reserved for
+        /// legacy checkpoints and triggers the documented migration fallback.
+        /// See the journal-version contract.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open_presence: Option<Vec<u64>>,
     },
+}
+
+/// The bounded ordered event window carried across journal compaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct JournalAdminHistory {
+    pub(crate) events: Vec<WorldEvent>,
+    pub(crate) complete: bool,
 }
 
 /// Version written in a new journal's [`JournalEntry::Created`] header.
 ///
 /// Journal upgrade/rollback contract (issue #227): a journal is created at
 /// version 1 and stays at version 1 until it contains an entry kind a
-/// version-1 binary cannot read. The first such entry — an
-/// [`JournalEntry::ExecutionProfile`], a region-handoff entry, or an entry
-/// carrying a per-world total memory budget — bumps the header to the
-/// version that entry requires *before* the entry is appended, by
-/// atomically rewriting the journal (sibling temp file, fsync, rename), so
-/// a failed bump leaves the old journal untouched. A binary refuses any
-/// journal newer than [`MAX_JOURNAL_VERSION`] at the header check in
-/// [`WorldCore::restore`], never mid-read: an older binary opening a newer
-/// journal therefore fails early and clearly instead of dying on the entry
-/// it cannot deserialize. New binaries accept versions
-/// 1..=[`MAX_JOURNAL_VERSION`], so existing journals stay readable
-/// (forward compatibility), and a journal that never writes a profile
-/// entry is never migrated at all.
+/// version-1 binary cannot read. New entry kinds raise the header to the
+/// highest required version *before* the entry is appended, by atomically
+/// rewriting the journal (sibling temp file, fsync, rename), so a failed bump
+/// leaves the old journal untouched. The first such entries were an
+/// [`JournalEntry::ExecutionProfile`], a region-handoff entry, an entry
+/// carrying a per-world total memory budget, and a checkpoint carrying
+/// open program-visible presence. A binary refuses any journal newer than
+/// [`MAX_JOURNAL_VERSION`] at the header check in [`WorldCore::restore`],
+/// never mid-read. New binaries accept versions 1..=[`MAX_JOURNAL_VERSION`],
+/// so existing journals stay readable and a journal that never needs a newer
+/// entry kind is never migrated.
 pub const JOURNAL_VERSION: u32 = 1;
 
 /// Header version of a journal that contains a
@@ -956,18 +983,24 @@ pub const JOURNAL_VERSION_REGION_HANDOFF: u32 = 3;
 /// Profiles and checkpoints without a budget keep their existing version.
 pub const JOURNAL_VERSION_WORLD_BUDGET: u32 = 4;
 
+/// Header version of a checkpoint that carries open program-visible presence.
+/// Version-4 binaries would ignore the field and fail to close those joins on
+/// restart, so such checkpoints must be refused by them. This follows the
+/// world-budget journal version so both features retain distinct contracts.
+/// (Renumbered from 4 to 5 when this branch merged main: main had already
+/// assigned version 4 to the world-budget contract above.)
+pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 5;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_WORLD_BUDGET;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_OPEN_PRESENCE;
 
-/// The header version a journal must carry once it contains `entry`:
-/// [`JOURNAL_VERSION_WORLD_BUDGET`] for entries that persist a per-world
-/// total memory budget (an older binary would silently ignore the budget),
-/// [`JOURNAL_VERSION_REGION_HANDOFF`] for the handoff entry kinds a
-/// version-2 binary cannot read, [`JOURNAL_VERSION_EXECUTION_PROFILE`]
-/// for the entry kinds a version-1 binary cannot read,
-/// [`JOURNAL_VERSION`] for everything else.
+/// The header version a journal must carry once it contains `entry`: version 2
+/// for execution-profile entries, version 3 for region-handoff entries,
+/// version 4 for entries persisting a per-world total memory budget, and
+/// version 5 for checkpoints with open-presence metadata. Checkpoints combine
+/// the requirements of their transfers, retained events, profile and presence field.
 #[must_use]
 pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
     // A persisted budget always requires the budget version, on top of any
@@ -995,10 +1028,13 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::Checkpoint {
             transfers,
             events,
+            open_presence,
             execution_profile,
             ..
         } => {
-            let base = if transfers.is_some()
+            let base = if open_presence.is_some() {
+                JOURNAL_VERSION_OPEN_PRESENCE
+            } else if transfers.is_some()
                 || events
                     .iter()
                     .any(|event| matches!(event.kind, WorldEventKind::EntityInput { .. }))
@@ -1324,6 +1360,18 @@ pub struct WorldSnapshot {
     pub participants: Vec<Participant>,
 }
 
+/// One actor-consistent snapshot for an admin-authorized fixture export.
+/// This type is crate-private so history cannot become a participant API.
+#[derive(Clone, Debug)]
+pub(crate) struct AdminEventHistory {
+    pub(crate) world_id: String,
+    pub(crate) module_hash: Option<String>,
+    pub(crate) current_sequence: u64,
+    pub(crate) complete: bool,
+    pub(crate) events: Vec<WorldEvent>,
+    pub(crate) records: Records,
+}
+
 /// The one projection of an event onto a viewer holding `scopes`.
 ///
 /// Every path that hands an event to a participant — the snapshot, catch-up
@@ -1335,6 +1383,7 @@ pub struct WorldSnapshot {
 ///   fetch the module — but its install seed is zeroed (#240), because a
 ///   program whose hidden state derives from `init(seed)` must not leak that
 ///   state to every participant.
+/// - A host-originated `System` event is never part of a participant stream.
 /// - Anything else is returned as is.
 ///
 /// The journal, the core's retained events and the admin paths keep the real
@@ -1344,6 +1393,7 @@ pub struct WorldSnapshot {
 pub fn project_event_for(scopes: WorldScopes, event: &WorldEvent) -> Option<WorldEvent> {
     match &event.kind {
         WorldEventKind::Chat(_) if !scopes.reads_chat() => None,
+        WorldEventKind::System { .. } => None,
         WorldEventKind::ProgramInstalled { .. } => {
             // Mutate in place so every other field, including the observed
             // build provenance, is kept as it is.
