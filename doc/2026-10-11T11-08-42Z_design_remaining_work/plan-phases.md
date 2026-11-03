@@ -196,7 +196,7 @@ Goal: invites and links that work, pull, fork recovery, and the CLI that exposes
 
 **Phase 8** (each becomes a phase document when it starts):
 
-- P8.1 Time and witnesses (task 09, deferred).
+- P8.1 Time and witnesses (task 09): not reopened. Owner ruling 2026-11-03 on issue #802 made causal-validity-only the permanent Phase 8 scope; time/witness features are not part of Phase 8 (ruling: https://github.com/developing-today/code/issues/802#issuecomment-6599887845).
 - P8.2 Retention and pruning (task 10, item 1). Needed before large groups run for a long time.
 - P8.3 Multi-device (task 10, item 2).
 - P8.4 Views: explorer and web (task 10, item 7).

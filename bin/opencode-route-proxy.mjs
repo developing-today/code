@@ -37,6 +37,12 @@
 //                                    ~/.local/share/opencode/opencode.jsonc,
 //                                    else ../.opencode/opencode.jsonc
 //                                    relative to this file)
+//   OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG
+//                                    runtime overlay jsonc whose provider
+//                                    catalogs are deep-merged over the
+//                                    config's (default:
+//                                    ~/.local/state/opencode/opencode-runtime.jsonc;
+//                                    absent = no overlay) (#4544)
 //   OPENCODE_ROUTE_PROXY_DB          opencode.db path (default:
 //                                    ~/.local/share/opencode/opencode.db)
 //   OPENCODE_ROUTE_PROXY_NOW_MS      pin the clock (epoch ms) used for
@@ -59,6 +65,9 @@ const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
   join(homedir(), ".local/share/opencode/opencode.jsonc");
 const CONFIG_FALLBACK = join(HERE, "..", ".opencode", "opencode.jsonc");
+const RUNTIME_CONFIG_PATH =
+  process.env.OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG ||
+  join(homedir(), ".local/state/opencode/opencode-runtime.jsonc");
 const DB_PATH =
   process.env.OPENCODE_ROUTE_PROXY_DB ||
   join(homedir(), ".local/share/opencode/opencode.db");
@@ -152,6 +161,18 @@ const parseJsonc = (text) => {
   }
 };
 
+const isPlainObj = (v) =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+// Deep-merge plain objects (overlay wins on scalars): mirrors the fork
+// server's config layering for the runtime overlay (#4544), so the proxy
+// resolves the same effective provider catalog the server does.
+const deepMergePlain = (base, over) => {
+  if (!isPlainObj(base) || !isPlainObj(over)) return over;
+  const out = { ...base };
+  for (const k of Object.keys(over)) out[k] = deepMergePlain(base[k], over[k]);
+  return out;
+};
+
 let cfgCache = null;
 const loadConfig = () => {
   let path = CONFIG_PATH;
@@ -162,17 +183,42 @@ const loadConfig = () => {
     path = CONFIG_FALLBACK;
     st = statSync(path);
   }
-  if (cfgCache && cfgCache.path === path && cfgCache.mtimeMs === st.mtimeMs)
+  let rtSt = null;
+  try {
+    rtSt = statSync(RUNTIME_CONFIG_PATH);
+  } catch {
+    rtSt = null;
+  }
+  const rtMtimeMs = rtSt ? rtSt.mtimeMs : null;
+  if (
+    cfgCache &&
+    cfgCache.path === path &&
+    cfgCache.mtimeMs === st.mtimeMs &&
+    cfgCache.rtMtimeMs === rtMtimeMs
+  )
     return cfgCache;
   const raw = parseJsonc(readFileSync(path, "utf8"));
+  if (rtSt) {
+    try {
+      const rt = parseJsonc(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+      if (rt && typeof rt === "object" && rt.provider)
+        raw.provider = deepMergePlain(raw.provider || {}, rt.provider);
+    } catch {
+      // Overlay unreadable: serve the tracked default alone rather than fail.
+    }
+  }
+  const windows =
+    raw.experimental?.model_route_windows || raw.model_route_windows || {};
+  warnInvalidWindows(windows);
   cfgCache = {
     path,
     mtimeMs: st.mtimeMs,
+    rtMtimeMs,
     providers: raw.provider || {},
     providerRoutes:
       raw.experimental?.provider_routes || raw.provider_routes || {},
     routes: raw.experimental?.model_routes || raw.model_routes || {},
-    windows: raw.experimental?.model_route_windows || raw.model_route_windows || {},
+    windows,
     disabled: new Set(raw.disabled_providers || []),
   };
   return cfgCache;
@@ -397,7 +443,31 @@ const nowMs = () => {
 
 const parseHHMM = (s) => {
   const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(typeof s === "string" ? s.trim() : "");
-  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+};
+
+// At config load, name any model_route_windows entry whose start/end
+// is not a valid HH:MM (hour 00-23, minute 00-59) instead of silently
+// evaluating it (#4259). windowActive fails closed (never active) for
+// these entries, so a typo'd window surfaces as a loud no-match rather
+// than flipping a route gate to always-on/always-off/end-less.
+const warnInvalidWindows = (windows) => {
+  if (!windows || typeof windows !== "object") return;
+  for (const [name, win] of Object.entries(windows)) {
+    const start = parseHHMM(win?.start);
+    const end = parseHHMM(win?.end);
+    if (start === null || end === null) {
+      console.error(
+        `opencode-route-proxy: invalid model_route_windows["${name}"]: ` +
+          `start=${JSON.stringify(win?.start)} end=${JSON.stringify(win?.end)} ` +
+          `(expected HH:MM with hour 00-23, minute 00-59); window will never match`,
+      );
+    }
+  }
 };
 
 // Is window `win` active at `now` (epoch ms)? Day and wall time are

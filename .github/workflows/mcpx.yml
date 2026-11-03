@@ -61,18 +61,6 @@ on:
       # also marks its commits [skip ci] — both addendum fixes).
       - "!pkgs/mcpx/testdata/seeds/**"
       - ".opencode/plugin/**"
-  # Pull requests run the same test job, so the full-suite check
-  # TESTING.md rule 3 tells agents to read before merging actually
-  # exists (#1966); the trigger also carries the flake-policy jobs
-  # (#1973): the PR stress job runs on pull requests, the full-suite
-  # stress job nightly. The original jobs keep their original event
-  # coverage via their own `if:` conditions.
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".opencode/plugin/**"
-      - ".github/workflows/mcpx.yml"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"
@@ -100,6 +88,26 @@ permissions:
   pull-requests: read
 
 jobs:
+  plugin-sync:
+    name: "plugin: sync check"
+    # The workflow-level pull_request paths include pkgs/mcpx/** and
+    # .opencode/plugin/**. Keep this cheap check separate from the push-only
+    # test job so drift is caught before it reaches main.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check the dogfood plugin copy is in sync
+        run: |
+          diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
+
   test:
     name: "basic: test"
     # Original coverage was push-only; the pull_request/schedule
@@ -183,6 +191,7 @@ jobs:
           RUN: ${{ github.run_id }}/${{ github.run_attempt }}
         run: |
           rc=0
+          python3 scripts/test_gotest_report.py || rc=1
           go test ./... -count=1 -json >"$RUNNER_TEMP/gotest.json" || rc=$?
           # Readable output for the log, from the same run. Package-level
           # output first, then the full output of every failing test, so a
@@ -215,7 +224,7 @@ jobs:
           python3 scripts/gotest-report.py "$RUNNER_TEMP/gotest.json" \
             "$(jq -r '.MCPX_GO_TESTS // ""' <<<"$VARS")" "$RUN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             "$GITHUB_STEP_SUMMARY" "$RUNNER_TEMP/gotest-record.json" || rc=1
-          if [ -f "$RUNNER_TEMP/gotest-record.json" ] && [ "$ON_MAIN" = true ]; then
+          if [ -f "$RUNNER_TEMP/gotest-record.json" ] && [ "$ON_MAIN" = true ] && [ "$rc" -eq 0 ]; then
             if [ -n "$GH_TOKEN" ]; then
               gh variable set MCPX_GO_TESTS --repo "$GITHUB_REPOSITORY" --body "$(cat "$RUNNER_TEMP/gotest-record.json")"
               echo "- saved \`MCPX_GO_TESTS\`" >>"$GITHUB_STEP_SUMMARY"

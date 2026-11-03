@@ -245,7 +245,9 @@ describe("richSchema list tight attrs (#1469)", () => {
       content: [{ type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] }],
     };
     const out = richSchema.nodeFromJSON(json).toJSON();
-    expect(out.content[0].attrs).toEqual({ order: 3, tight });
+    // #1380: the schema fills the delimiter default ("period") when the
+    // input omits it, so the round-tripped attrs carry it explicitly.
+    expect(out.content[0].attrs).toEqual({ order: 3, tight, delimiter: "period" });
     expect(out.content[0].content).toEqual([item("a"), item("b")]);
   });
 });

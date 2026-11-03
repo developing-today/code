@@ -298,14 +298,18 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// the table before the upstream request goes out, so it is registered
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
-	rs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
 	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
 	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
-	return p.Call(ctx, rs, tool, args)
+
+	return r.callWithLedger(ctx, p, server, effTool, effArgs, rs, "ask")
+
 }
 
 // ReadResourceAsk is resources/read, interruptibly.

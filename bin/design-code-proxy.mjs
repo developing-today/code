@@ -2,11 +2,18 @@
 import http from 'node:http';
 import https from 'node:https';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('DESIGN_CODE_PROXY_PORT', 18746);
 const HOST = process.env.DESIGN_CODE_PROXY_HOST || '127.0.0.1';
 
-const ANTIGRAVITY_LS_PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
+// Repointed 2026-11-02 (#1413, unblocks #1409): the antigravity-ls door
+// (:18745) is retired; every recipe leg that used it now targets
+// antigravity-direct (:18751), which serves the same backend model ids
+// (gemini-3.8-flash, claude-sonnet-5-5) — verified live against its
+// /v1/models before this change.
+const ANTIGRAVITY_DIRECT_PORT = parseProxyPort('ANTIGRAVITY_DIRECT_PORT', 18751);
 const CODEX_PROXY_PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const AMR_UPSTREAM_URL = process.env.AMR_UPSTREAM_URL || 'https://amr-link.open-design.ai/v1';
 
@@ -43,17 +50,17 @@ Your core expertise is in software architecture, clean code design, UI/UX design
 // refreshBackendCatalogs below), and an unknown requested id now gets a
 // clean 400 instead of the old silent remap onto gemini-3.8-flash.
 const MODELS = [
-  { id: 'claude-haiku-5.5', name: 'Claude Haiku 5.5 (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'claude-sonnet-5-5' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
-  { id: 'gpt-6-luna', name: 'GPT-6 Luna (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6-luna' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
-  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
-  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'glm-5.3-flashx', name: 'GLM 5.3 FlashX (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'mimo-v2.6-flash', name: 'MIMO v2.6 Flash (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'mimo-v2.6-pro', name: 'MIMO v2.6 Pro (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
-  { id: 'design-code-pro', name: 'Design Code Pro', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
-  { id: 'design-code-flash', name: 'Design Code Flash', primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
-  { id: 'open-design-pro', name: 'Open Design Pro', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } }
+  { id: 'claude-haiku-5.5', name: 'Claude Haiku 5.5 (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'claude-sonnet-5-5' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } },
+  { id: 'gpt-6-luna', name: 'GPT-6 Luna (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6-luna' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } },
+  { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'glm-5.3-flash', name: 'GLM 5.3 Flash (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'glm-5.3-flashx', name: 'GLM 5.3 FlashX (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'mimo-v2.6-flash', name: 'MIMO v2.6 Flash (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'mimo-v2.6-pro', name: 'MIMO v2.6 Pro (Design Code)', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
+  { id: 'design-code-pro', name: 'Design Code Pro', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' } },
+  { id: 'design-code-flash', name: 'Design Code Flash', primary: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }, fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' } },
+  { id: 'open-design-pro', name: 'Open Design Pro', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6.1-sol' }, fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' } }
 ];
 
 const resolveModelConfig = (requestedModel) => {
@@ -71,7 +78,7 @@ const resolveModelConfig = (requestedModel) => {
       modelId: clean,
       config: {
         primary: { port: CODEX_PROXY_PORT, model: clean },
-        fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' }
+        fallback: { port: ANTIGRAVITY_DIRECT_PORT, model: 'gemini-3.8-flash' }
       }
     };
   }
@@ -88,7 +95,7 @@ const resolveModelConfig = (requestedModel) => {
 // non-fleet backend overrides are never probed. Dispatch uses the
 // last-known-good result: a target proven absent upstream is skipped, and
 // if every target is proven absent the request gets a clean 400.
-const FLEET_BACKEND_PORTS = new Set([18744, 19744, 18745, 19745]);
+const FLEET_BACKEND_PORTS = new Set([18744, 19744, 18751, 19751]);
 const BACKEND_CATALOG_TTL_MS = 60 * 1000;
 let backendCatalogCache = { at: 0, byPort: new Map() };
 let backendCatalogRefresh = null;
@@ -189,10 +196,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Payload too large' } }));
         req.destroy();
@@ -200,6 +207,8 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
@@ -405,8 +414,9 @@ const dispatchWithFallback = (body, clientRes) => {
       if (stream) {
         writeHead();
         let buffer = '';
+        const streamDecoder = createStreamDecoder();
         localRes.on('data', chunk => {
-          buffer += chunk.toString('utf-8');
+          buffer += streamDecoder.push(chunk);
           const lines = buffer.split('\n');
           buffer = lines.pop();
           for (const line of lines) {
@@ -429,11 +439,12 @@ const dispatchWithFallback = (body, clientRes) => {
           clientRes.end();
         });
       } else {
-        let fullBody = '';
+        const fullBodyChunks = [];
         localRes.on('data', chunk => {
-          fullBody += chunk.toString('utf-8');
+          fullBodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         });
         localRes.on('end', () => {
+          const fullBody = Buffer.concat(fullBodyChunks).toString('utf-8');
           try {
             const json = JSON.parse(fullBody);
             if (json.error && (json.error.code === 429 || json.error.type === 'insufficient_quota')) {
@@ -507,5 +518,5 @@ const dispatchWithFallback = (body, clientRes) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[design-code-proxy] Listening on http://${HOST}:${PORT}`);
-  console.log(`[design-code-proxy] Backends: Antigravity LS (${ANTIGRAVITY_LS_PORT}), Codex (${CODEX_PROXY_PORT}), AMR Upstream (${AMR_UPSTREAM_URL})`);
+  console.log(`[design-code-proxy] Backends: Antigravity Direct (${ANTIGRAVITY_DIRECT_PORT}), Codex (${CODEX_PROXY_PORT}), AMR Upstream (${AMR_UPSTREAM_URL})`);
 });

@@ -18,6 +18,7 @@
 import type { GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { refUrl } from "./model.ts";
 import { PROJECT_URL } from "./projects.ts";
+import { assembleWorkItems, type WorkItem } from "./work-items.ts";
 
 export interface ProgramLink {
   label: string;
@@ -88,7 +89,8 @@ export const PROGRAM: ProgramDoc = {
     },
     {
       title: "Pad — planning",
-      detail: "The planning layer; board cards and roadmap rows link out to Pad notes.",
+      detail:
+        "The standalone planning layer for shared plans and docs; no board-card or roadmap-row Pad links are currently wired.",
     },
     {
       title: "Grist — roadmap & registers",
@@ -237,6 +239,10 @@ export interface ProgramLive {
   tracked: TrackedIssue[];
   pool: PoolSummary;
   orchestration: OrchestrationFreshness | null;
+  /** The canonical work-item projection (#1206) of the section: the
+   *  same items, ids, statuses, ranks, and blockers every other page
+   *  shows, exposed on the /api/program.json twin. */
+  workItems: WorkItem[];
 }
 
 function counts(values: (string | null)[]): { name: string; count: number }[] {
@@ -267,6 +273,7 @@ export function buildProgramLive(
       byArea: counts(pool.map((p) => p.area)),
     },
     orchestration: orchestration ? { generatedAt: orchestration.generatedAt, runId: orchestration.runId } : null,
+    workItems: orchestration ? assembleWorkItems(orchestration) : [],
   };
 }
 

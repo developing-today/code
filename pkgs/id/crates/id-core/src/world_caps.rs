@@ -2,9 +2,11 @@
 //!
 //! A program stays a pure function. What it needs from the server is **data
 //! it returns** (`wants`, a pure projection of its model) and **events it
-//! receives** (delivered through `update` with participant id `0`, every one
-//! journaled once the program accepts it, so replay feeds the program exactly
-//! what it saw the first time).
+//! receives** (delivered through `update` with participant id `0`; accepted
+//! live events are journaled so replay feeds the program what it saw). Restore
+//! may also synthesize presence-cleanup `left` events for legacy checkpoints
+//! whose open-presence set cannot be recovered; those cleanup events can be
+//! redundant and are not evidence that a participant was online.
 //!
 //! ```json
 //! {"v":1,
@@ -18,6 +20,10 @@
 //! `"error"`), and each subscription with its own events
 //! (`{"cap":"time.tick","interval":5000,"now":<unix ms>}`,
 //! `{"cap":"players","event":"joined"|"left","participant":{"id":1,"name":"ann"}}`).
+//! A `players.left` event removes that participant from the program's online
+//! set if present. Legacy checkpoint migration may send it for every known
+//! capability because the original online set is unknowable; programs should
+//! therefore make this removal idempotent.
 //!
 //! This module holds the pure parts: the schema and its bounds, the catalog of
 //! capability names, and the grant policy with its usage accounting. The
@@ -66,6 +72,18 @@ pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// Most distinct tick intervals one program may subscribe to.
 pub const MAX_TICK_INTERVALS: usize = 4;
 
+/// Usage key that aggregates every unknown capability name.
+///
+/// A guest program controls requested capability names, so recording each
+/// distinct unknown name would let it mint one [`CapUsage`] entry (and one
+/// [`CapsReport`] entry) per name, forever.
+/// Unknown names — including unknown subscription specs, which reach the
+/// ledger as their full spec — aggregate here instead, so `usage` holds at
+/// most the catalog names plus this one bucket. [`is_known`] decides the
+/// split: anything outside [`CATALOG`] lands in this bucket, even a literal
+/// request for this key.
+pub const UNKNOWN_CAP_USAGE_KEY: &str = "<unknown>";
+
 /// Capabilities the server knows how to provide. New providers add names;
 /// existing names never change meaning. Platform modules are gated when source
 /// that imports them is compiled, not at run time.
@@ -88,6 +106,80 @@ pub const CATALOG: &[&str] = &[
     "RocCap",
     "RocText",
 ];
+
+/// Whether a provider joins the default ceiling — the ceiling a world or a
+/// server starts with before anyone narrows or widens it (#838).
+///
+/// This is the per-provider manifest default the F12.4 registry (#534)
+/// carries: registering a provider is not enough to widen any world's
+/// authority. A provider joins default ceilings only when its entry says
+/// [`DefaultCeiling::Included`] explicitly; a sensitive provider registers
+/// as [`DefaultCeiling::Excluded`] and reaches a world only through an
+/// explicit ceiling that names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultCeiling {
+    /// The provider is in every default ceiling.
+    Included,
+    /// The provider is in no default ceiling; an explicit ceiling must
+    /// name it before any world may use it.
+    Excluded,
+}
+
+/// One catalog provider and its manifest defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CatalogEntry {
+    /// The capability name, as in [`CATALOG`].
+    pub name: &'static str,
+    /// Whether the provider joins default ceilings.
+    pub default_ceiling: DefaultCeiling,
+}
+
+/// The catalog as manifest entries: every provider carries an explicit
+/// default-ceiling value, so a newly registered provider's effect on
+/// existing worlds is a stated choice, never a side effect of registering
+/// (#838). Every provider registered today is `Included` — they are the
+/// default ceiling worlds already run with, so naming them changes no
+/// world's effective ceiling. New entries must pick a value; sensitive
+/// providers (F12.5 `http.fetch`, F13.7 client providers) pick `Excluded`.
+pub const CATALOG_ENTRIES: &[CatalogEntry] = &[
+    CatalogEntry { name: "time.now", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "time.tick", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "random.u64", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "players", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "players.list", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "chat.say", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "chat.history", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "records.read", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "schedule.at", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "schedule.cancel", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "world.info", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "Key", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "Screen", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "RocJson", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "RocGrid", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "RocCap", default_ceiling: DefaultCeiling::Included },
+    CatalogEntry { name: "RocText", default_ceiling: DefaultCeiling::Included },
+];
+
+/// The default ceiling a set of catalog entries produces: exactly the
+/// entries whose manifest default is [`DefaultCeiling::Included`].
+#[must_use]
+pub fn default_ceiling_from(entries: &[CatalogEntry]) -> BTreeSet<String> {
+    entries
+        .iter()
+        .filter(|entry| entry.default_ceiling == DefaultCeiling::Included)
+        .map(|entry| entry.name.to_owned())
+        .collect()
+}
+
+/// The default ceiling for worlds and servers: the providers whose
+/// manifest default includes them. A provider registered later joins this
+/// set only by an explicit `Included` default — never by registration
+/// alone (#838).
+#[must_use]
+pub fn default_ceiling_names() -> BTreeSet<String> {
+    default_ceiling_from(CATALOG_ENTRIES)
+}
 
 /// Most chat lines one `chat.history` request may return.
 pub const MAX_CHAT_HISTORY_LINES: usize = 64;
@@ -127,7 +219,9 @@ pub fn is_known(name: &str) -> bool {
     CATALOG.contains(&name)
 }
 
-/// Every catalog capability, as a set: the default server and world ceiling.
+/// Every catalog capability, as a set. This is the widest ceiling a
+/// world or server can be given explicitly; the *default* ceiling is the
+/// narrower [`default_ceiling_names`].
 #[must_use]
 pub fn catalog_names() -> BTreeSet<String> {
     CATALOG.iter().map(|name| (*name).to_owned()).collect()
@@ -504,13 +598,15 @@ pub enum Decision {
 }
 
 impl CapLedger {
-    /// A ledger with `granted` capabilities and the given policy. Every catalog
-    /// capability is allowed until a ceiling narrows the set.
+    /// A ledger with `granted` capabilities and the given policy. The
+    /// default ceiling ([`default_ceiling_names`]) is allowed until a
+    /// ceiling narrows the set: providers whose manifest default is
+    /// `Excluded` are not allowed until a ceiling names them (#838).
     #[must_use]
     pub fn new(granted: BTreeSet<String>, grant_on_use: bool) -> Self {
         Self {
             granted,
-            allowed: catalog_names(),
+            allowed: default_ceiling_names(),
             usage: BTreeMap::new(),
             grant_on_use,
         }
@@ -542,11 +638,17 @@ impl CapLedger {
     /// whether the participant that caused the use may cause `cap`. A refused
     /// actor is counted as a denial and never triggers a grant.
     pub fn decide_for(&mut self, cap: &str, actor_permits: bool) -> Decision {
-        let entry = self.usage.entry(cap.to_owned()).or_default();
+        // Unknown names aggregate into one shared bucket: a guest program
+        // controls requested names, so one map entry per distinct unknown
+        // name would be unbounded host memory (and CapsReport size).
         if !is_known(cap) {
-            entry.denied += 1;
+            self.usage
+                .entry(UNKNOWN_CAP_USAGE_KEY.to_owned())
+                .or_default()
+                .denied += 1;
             return Decision::Deny(CapError::unknown());
         }
+        let entry = self.usage.entry(cap.to_owned()).or_default();
         // A ceiling is checked before anything else, so grant-on-use can
         // never add a name the server or the world excludes.
         if !self.allowed.contains(cap) {
@@ -884,9 +986,59 @@ mod tests {
     }
 
     #[test]
+    fn test_catalog_entries_match_the_catalog_and_carry_explicit_defaults() {
+        let entry_names: Vec<&str> = CATALOG_ENTRIES.iter().map(|entry| entry.name).collect();
+        assert_eq!(entry_names, CATALOG, "every provider names its default ceiling");
+        // Every provider registered today opted in explicitly, so the
+        // default ceiling is still the whole catalog — naming the choice
+        // changed no world's effective ceiling.
+        assert_eq!(default_ceiling_names(), catalog_names());
+    }
+
+    #[test]
+    fn test_a_newly_registered_excluded_provider_does_not_join_existing_ceilings() {
+        // An existing world's ceiling, snapshotted before the upgrade.
+        let existing_world_ceiling = default_ceiling_names();
+        // The upgrade registers two new providers: a sensitive one whose
+        // manifest default is Excluded, and one that explicitly opts in.
+        let mut upgraded: Vec<CatalogEntry> = CATALOG_ENTRIES.to_vec();
+        upgraded.push(CatalogEntry {
+            name: "http.fetch",
+            default_ceiling: DefaultCeiling::Excluded,
+        });
+        upgraded.push(CatalogEntry {
+            name: "time.rfc3339",
+            default_ceiling: DefaultCeiling::Included,
+        });
+        let new_default = default_ceiling_from(&upgraded);
+        assert!(
+            !new_default.contains("http.fetch"),
+            "an excluded provider joins no default ceiling by registration alone"
+        );
+        assert!(
+            new_default.contains("time.rfc3339"),
+            "an explicit Included default is the one way in"
+        );
+        assert!(
+            existing_world_ceiling.is_subset(&new_default)
+                && new_default.difference(&existing_world_ceiling).count() == 1,
+            "existing worlds gain nothing but the opted-in provider: {new_default:?}"
+        );
+        // And a fresh ledger starts from the default ceiling, so an
+        // excluded provider is outside it until a ceiling names it.
+        let ledger = CapLedger::new(BTreeSet::new(), false);
+        assert_eq!(ledger.allowed(), &default_ceiling_names());
+        for entry in CATALOG_ENTRIES {
+            if entry.default_ceiling == DefaultCeiling::Excluded {
+                assert!(!ledger.allowed().contains(entry.name));
+            }
+        }
+    }
+
+    #[test]
     fn the_default_ceiling_is_the_whole_catalog() {
         let mut ledger = CapLedger::new(names(&["time.now"]), false);
-        assert_eq!(ledger.allowed(), &catalog_names());
+        assert_eq!(ledger.allowed(), &default_ceiling_names());
         assert!(ledger.is_granted("time.now"));
         assert_eq!(ledger.decide("time.now"), Decision::Allow);
         assert_eq!(
@@ -955,6 +1107,57 @@ mod tests {
             "a name the catalog lacks is never allowed, even if a ceiling lists it"
         );
         assert_eq!(ledger.allowed(), &names(&["time.now"]));
+    }
+
+    #[test]
+    fn unknown_names_and_specs_share_one_bounded_usage_bucket() {
+        let mut ledger = CapLedger::new(BTreeSet::new(), false);
+        for i in 0..10_000 {
+            let name = format!("evil.cap.{i}");
+            assert_eq!(ledger.decide(&name), Decision::Deny(CapError::unknown()));
+            // Unknown subscription specs reach the ledger as their full spec.
+            let spec = format!("evil.spec:{i}");
+            let cap = Subscription::parse(&spec).cap().to_owned();
+            assert_eq!(ledger.decide(&cap), Decision::Deny(CapError::unknown()));
+        }
+        assert_eq!(
+            ledger.usage().len(),
+            1,
+            "20,000 distinct unknown names must not mint 20,000 entries"
+        );
+        assert_eq!(
+            ledger.usage()[UNKNOWN_CAP_USAGE_KEY],
+            CapUsage {
+                allowed: 0,
+                denied: 20_000
+            }
+        );
+
+        // Known capabilities keep per-name accounting beside the bucket.
+        ledger.set_granted(BTreeSet::from(["time.now".to_owned()]));
+        assert_eq!(ledger.decide("time.now"), Decision::Allow);
+        assert_eq!(
+            ledger.decide("chat.say"),
+            Decision::Deny(CapError::denied())
+        );
+        assert_eq!(
+            ledger.usage()["time.now"],
+            CapUsage {
+                allowed: 1,
+                denied: 0
+            }
+        );
+        assert_eq!(
+            ledger.usage()["chat.say"],
+            CapUsage {
+                allowed: 0,
+                denied: 1
+            }
+        );
+        assert!(
+            ledger.usage().len() <= CATALOG.len() + 1,
+            "usage stays bounded by the catalog plus the unknown bucket"
+        );
     }
 
     #[test]
