@@ -198,7 +198,10 @@ def main():
                 if (
                     ref
                     and state.get(ref) is None
-                    and any(q["repo"] == ref for q in pending)
+                    and (
+                        any(q["repo"] == ref for q in pending)
+                        or any(q["repo"] == ref for q in inflight.values())
+                    )
                 ):
                     continue
                 if len(inflight) >= PAR:
