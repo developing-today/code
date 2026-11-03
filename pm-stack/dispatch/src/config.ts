@@ -1,5 +1,8 @@
 // Environment configuration. Secrets are read by NAME from the environment
-// only — never committed, never printed. Everything has a fixture-safe default.
+// only — never committed, never printed. Everything has a fixture-safe
+// default except SUPABASE_URL, which is required: its previous default
+// pointed at the deleted legacy muse-dev project (#5120), so a missing
+// value now fails loudly at startup instead of silently queueing nowhere.
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -70,6 +73,20 @@ export interface Config {
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const portValue = s(env.DISPATCH_PORT, "4879");
+  if (!/^\d+$/.test(portValue) || Number(portValue) < 1 || Number(portValue) > 65535) {
+    throw new Error(`Invalid DISPATCH_PORT "${portValue}": expected a decimal integer from 1 to 65535`);
+  }
+  const port = Number(portValue);
+  const rawHosts = env.DISPATCH_HOSTS && env.DISPATCH_HOSTS.trim() !== "" ? env.DISPATCH_HOSTS : "127.0.0.1";
+  const hosts = rawHosts
+    .split(",")
+    .map((h) => h.trim())
+    .filter(Boolean);
+  if (hosts.length === 0) {
+    throw new Error(`Invalid DISPATCH_HOSTS "${rawHosts}": expected at least one host`);
+  }
+
   const allowlist = s(env.DISPATCH_REPO_ALLOWLIST, FLEET_REPOS.join(","))
     .split(",")
     .map((r) => r.trim())
@@ -83,23 +100,23 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       appPem = null;
     }
   }
+  const supabaseUrl = env.SUPABASE_URL?.trim();
+  if (!supabaseUrl) {
+    throw new Error(
+      "SUPABASE_URL is not set: pm-dispatch requires the fleet Supabase (muse-dev2) project URL. There is no default — the previous one pointed at the deleted legacy muse-dev project (#5120). The laptop deployment renders it from the pm-stack SOPS file (pm-stack/dispatch/install.sh).",
+    );
+  }
   return {
-    port: Number(s(env.DISPATCH_PORT, "4879")),
-    hosts: s(env.DISPATCH_HOSTS, "127.0.0.1")
-      .split(",")
-      .map((h) => h.trim())
-      .filter(Boolean),
+    port,
+    hosts,
     buildVersion: s(env.DISPATCH_BUILD_VERSION, "dev"),
     apiToken: env.DISPATCH_API_TOKEN?.trim() ? env.DISPATCH_API_TOKEN.trim() : null,
     oidcAudience: s(env.DISPATCH_OIDC_AUDIENCE, "pm-dispatch"),
     repoAllowlist: allowlist,
-    supabaseUrl: s(env.SUPABASE_URL, "https://nltgxorqwxhgfzseiirt.supabase.co").replace(/\/$/, ""),
+    supabaseUrl: supabaseUrl.replace(/\/$/, ""),
     supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY?.trim() ? env.SUPABASE_SERVICE_ROLE_KEY.trim() : null,
     opencodeUrl: s(env.OPENCODE_URL, "http://127.0.0.1:13420").replace(/\/$/, ""),
-    opencodeAuthFile: s(
-      env.OPENCODE_AUTH_FILE,
-      join(homedir(), ".local", "state", "opencode", "service-prod.json"),
-    ),
+    opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),
     githubAppId: env.GITHUB_APP_ID?.trim() ? env.GITHUB_APP_ID.trim() : null,
     githubAppPrivateKeyPem: appPem,
   };

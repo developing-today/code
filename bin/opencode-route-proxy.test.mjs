@@ -142,6 +142,11 @@ const startProxy = async (arg = {}) => {
   db.prepare(
     "INSERT INTO credential (integration_id, label, value, active) VALUES (?,?,?,1)",
   ).run("leafB", "test", JSON.stringify({ key: "key-b", type: "api_key" }));
+  // leafNoCred's only credential row is INACTIVE (active = 0), so its
+  // credential lookup comes back empty (#3228 fixture).
+  db.prepare(
+    "INSERT INTO credential (integration_id, label, value, active) VALUES (?,?,?,0)",
+  ).run("leafNoCred", "test-inactive", JSON.stringify({ key: "key-a", type: "api_key" }));
   db.close();
 
   const configPath = path.join(tmp, "opencode.jsonc");
@@ -164,6 +169,11 @@ const startProxy = async (arg = {}) => {
     "openai": {
       "models": { "m-gpt": {} },
     },
+    "leafNoCred": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1" },
+      "models": { "m-nc": {}, "m-b": {} },
+    },
     "leafOff": {
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1", "apiKey": "key-b" },
@@ -179,16 +189,32 @@ const startProxy = async (arg = {}) => {
     "model_route_windows": {
       "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
       "overnight": { "daysOfWeek": ["fri"], "start": "22:00", "end": "02:00", "timezone": "UTC" },
+      "bad-start-2400": { "start": "24:00", "end": "12:00", "timezone": "UTC" },
+      "bad-end-2460": { "start": "09:00", "end": "24:60", "timezone": "UTC" },
+      "bad-wrap-99": { "start": "99:99", "end": "99:98", "timezone": "UTC" },
+      "bad-start-2500": { "start": "25:00", "end": "12:00", "timezone": "UTC" },
+      "bad-end-2500": { "start": "09:00", "end": "25:00", "timezone": "UTC" },
+      "edge-early": { "start": "00:00", "end": "00:02", "timezone": "UTC" },
+      "edge-late": { "start": "23:58", "end": "23:59", "timezone": "UTC" },
     },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
       "t-variant": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "variants": { "medium": "high" } } ] },
       "t-nested": { "selection": "ordered", "targets": ["opencode-route/t-ordered"] },
       "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
+      "t-nocred-first": { "selection": "ordered", "targets": ["leafNoCred/m-nc", "leafB/m-b"] },
+      "t-nocred-only": { "selection": "ordered", "targets": ["leafNoCred/m-nc"] },
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
       "t-window-overnight": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "overnight" }, "leafB/m-b" ] },
+      "t-window-bad-start": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-start-2400" }, "leafB/m-b" ] },
+      "t-window-bad-end": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-end-2460" }, "leafB/m-b" ] },
+      "t-window-bad-wrap": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-wrap-99" }, "leafB/m-b" ] },
+      "t-window-bad-start2500": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-start-2500" }, "leafB/m-b" ] },
+      "t-window-bad-end2500": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "bad-end-2500" }, "leafB/m-b" ] },
+      "t-window-edge-early": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "edge-early" }, "leafB/m-b" ] },
+      "t-window-edge-late": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "edge-late" }, "leafB/m-b" ] },
       "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
       "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
       "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
@@ -249,7 +275,7 @@ const startProxy = async (arg = {}) => {
     leafA.server.close();
     leafB.server.close();
   };
-  return { base, post, attempts, leafA, leafB, cleanup };
+  return { base, post, attempts, leafA, leafB, cleanup, log: () => log };
 };
 
 const MSGS = [
@@ -614,18 +640,132 @@ test("empty-shell openai block resolves the built-in endpoint default", async ()
   const p = await startProxy();
   try {
     // The fixture openai block is an empty shell (models only, no
-    // npm/options/baseURL) and no credential is stored for it, so a
-    // resolved endpoint surfaces as a credential failure — while an
-    // unresolved one would surface as UnknownProvider (#3256). The
-    // check order in callLeaf (endpoint first, credential second)
-    // makes this a network-free proof the default resolved.
+    // npm/options/baseURL) and no credential is stored for it. Since
+    // #3228, a credential-less leaf is skipped before any attempt, so
+    // this route — whose only leaf is credential-less — fails with
+    // the no-credentialed-members error and records NO attempt (the
+    // pre-#3228 shape, one Authentication attempt, is superseded).
     const res = await p.post({ model: "opencode-route/t-openai-default", messages: MSGS });
     assert.equal(res.status, 502);
-    const rows = p.attempts();
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].provider_id, "openai");
-    assert.equal(rows[0].error_tag, "Authentication");
-    assert.notEqual(rows[0].error_tag, "UnknownProvider");
+    const json = await res.json();
+    assert.match(json.error.message, /no credentialed members/);
+    assert.equal(p.attempts().length, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("credential-less leaves are skipped in a walk (#3228)", async () => {
+  const p = await startProxy();
+  try {
+    // leafNoCred's credential row is inactive; the walk must complete
+    // via the healthy leafB and record no attempt against leafNoCred.
+    const res = await p.post({ model: "opencode-route/t-nocred-first", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafB"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a walk of only credential-less leaves fails without an Authentication error (#3228)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-nocred-only", messages: MSGS });
+    assert.equal(res.status, 502);
+    const json = await res.json();
+    assert.match(json.error.message, /no credentialed members/);
+    assert.equal(p.attempts().length, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// Range checks (#4259): out-of-range window times fail closed (never
+// active) as a window start and as a window end. Each case pins `now`
+// where the old shape-only parseHHMM misread the window as active:
+// 24:00-12:00 and 25:00-12:00 wrap into the after-midnight leg at
+// 02:30, 09:00-24:60 / 09:00-25:00 cover 23:30 and 12:00, and
+// 99:99-99:98 was always-on.
+test("out-of-range window times fail closed as start and as end", async () => {
+  const AT_0230 = Date.UTC(2026, 10, 4, 2, 30);
+  const AT_1200 = Date.UTC(2026, 10, 4, 12, 0);
+  const AT_2330 = Date.UTC(2026, 10, 4, 23, 30);
+  const cases = [
+    ["t-window-bad-start", AT_0230],
+    ["t-window-bad-start2500", AT_0230],
+    ["t-window-bad-wrap", AT_0230],
+    ["t-window-bad-wrap", AT_1200],
+    ["t-window-bad-wrap", AT_2330],
+    ["t-window-bad-end", AT_2330],
+    ["t-window-bad-end", AT_1200],
+    ["t-window-bad-end2500", AT_1200],
+    ["t-window-bad-end2500", AT_2330],
+  ];
+  for (const [route, nowMs] of cases) {
+    const p = await startProxy({ nowMs });
+    try {
+      const res = await p.post({ model: `opencode-route/${route}`, messages: MSGS });
+      assert.equal(res.status, 200, route);
+      assert.equal((await res.json()).choices[0].message.content, "LEAF-B", `${route} at ${new Date(nowMs).toISOString()}`);
+      assert.deepEqual(
+        p.attempts().map((r) => r.provider_id),
+        ["leafB"],
+        route,
+      );
+    } finally {
+      await p.cleanup();
+    }
+  }
+});
+
+test("boundary times 00:00 and 23:59 remain valid windows", async () => {
+  const AT_0001 = Date.UTC(2026, 10, 4, 0, 1);
+  const AT_2358 = Date.UTC(2026, 10, 4, 23, 58);
+  const AT_1200 = Date.UTC(2026, 10, 4, 12, 0);
+  const early = await startProxy({ nowMs: AT_0001 });
+  try {
+    const res = await early.post({ model: "opencode-route/t-window-edge-early", messages: MSGS });
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await early.cleanup();
+  }
+  const late = await startProxy({ nowMs: AT_2358 });
+  try {
+    const res = await late.post({ model: "opencode-route/t-window-edge-late", messages: MSGS });
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await late.cleanup();
+  }
+  const mid = await startProxy({ nowMs: AT_1200 });
+  try {
+    for (const route of ["t-window-edge-early", "t-window-edge-late"]) {
+      const res = await mid.post({ model: `opencode-route/${route}`, messages: MSGS });
+      assert.equal((await res.json()).choices[0].message.content, "LEAF-B", route);
+    }
+  } finally {
+    await mid.cleanup();
+  }
+});
+
+test("config load names invalid windows instead of silently evaluating them", async () => {
+  const p = await startProxy({ nowMs: Date.UTC(2026, 10, 4, 2, 30) });
+  try {
+    await p.post({ model: "opencode-route/t-window-bad-wrap", messages: MSGS });
+    let log = "";
+    for (let i = 0; i < 20; i++) {
+      log = p.log();
+      if (log.includes("bad-wrap-99") && log.includes("99:99")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(log.includes("bad-wrap-99"), `log names the window:\n${log}`);
+    assert.ok(log.includes("99:99"), `log names the bad value:\n${log}`);
+    assert.ok(log.includes("bad-start-2400"), `log names each bad window:\n${log}`);
   } finally {
     await p.cleanup();
   }

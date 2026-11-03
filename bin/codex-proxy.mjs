@@ -8,17 +8,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
+import { listenTarget } from './socket-activation.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const HOST = process.env.CODEX_PROXY_HOST || '127.0.0.1';
 const DEFAULT_EXEC_TURN_TIMEOUT_MS = 300 * 1000;
 const EXEC_TURN_KILL_GRACE_MS = 3000;
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 const EXEC_TURN_TIMEOUT_MS = (() => {
   const raw = process.env.CODEX_PROXY_EXEC_TURN_TIMEOUT_MS;
   if (raw === undefined) return DEFAULT_EXEC_TURN_TIMEOUT_MS;
 
   const parsed = Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(parsed) || parsed <= 0) {
+  if (
+    !/^\d+$/.test(raw) ||
+    !Number.isSafeInteger(parsed) ||
+    parsed <= 0 ||
+    parsed > MAX_TIMER_DELAY_MS
+  ) {
     console.warn(
       `[codex-proxy] invalid CODEX_PROXY_EXEC_TURN_TIMEOUT_MS; using ${DEFAULT_EXEC_TURN_TIMEOUT_MS}ms`
     );
@@ -77,6 +86,12 @@ const publishEndpoint = () => {
 // row, never `openai.alternate`), and both outcomes are logged: a failed sync
 // must never again be indistinguishable from a successful one.
 const syncCodexTokensToOpenCode = () => {
+  // Cutover switch for opencode#1154: the fork's in-server credential sync
+  // (credential/codex-sync) replaces this sync as the credential store's
+  // writer. CODEX_PROXY_TOKEN_SYNC=0 turns this door's sync off so the two
+  // never write the openai credential row in alternation; the listen callback
+  // logs the disabled state once at startup.
+  if (process.env.CODEX_PROXY_TOKEN_SYNC === '0') return;
   let db = null;
   try {
     const codexAuthPath = `${process.env.HOME}/.codex/auth.json`;
@@ -920,11 +935,9 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
 
     console.log(`[codex-proxy] Spawning: ${CODEX_BIN} ${args.join(' ')}`);
 
-    // Write prompt to stdin and close stdin
-    child.stdin.write(prompt);
-    child.stdin.end();
-
     let lineBuffer = '';
+    const stdoutDecoder = createStreamDecoder();
+    const stderrDecoder = createStreamDecoder();
     let fullContent = '';
     let promptTokens = Math.max(1, Math.ceil(prompt.length / 4));
     let completionTokens = 0;
@@ -937,6 +950,21 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     // ('' when the event carried none).
     let turnFailedMessage = null;
     let sessionId = null;
+
+    // A child killed at the deadline may have stopped reading a large
+    // prompt. Consume the resulting EPIPE as this request's child failure
+    // instead of allowing an unhandled stream error to crash the proxy.
+    child.stdin.on('error', (err) => {
+      spawnError = err;
+    });
+
+    // Write prompt to stdin and close stdin
+    try {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    } catch (err) {
+      spawnError = err;
+    }
 
     const processJsonLine = (line) => {
       const trimmed = line.trim();
@@ -998,7 +1026,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     };
 
     child.stdout.on('data', (chunk) => {
-      lineBuffer += chunk.toString('utf-8');
+      lineBuffer += stdoutDecoder.push(chunk);
       const lines = lineBuffer.split('\n');
       lineBuffer = lines.pop(); // remainder
       for (const line of lines) {
@@ -1007,7 +1035,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     });
 
     child.stderr.on('data', (chunk) => {
-      const msg = chunk.toString('utf-8');
+      const msg = stderrDecoder.push(chunk);
       stderrTail = (stderrTail + msg).slice(-2000);
       if (msg.trim().length > 0) {
         console.warn(`[codex-proxy stderr] ${msg.trim()}`);
@@ -1141,10 +1169,10 @@ const server = http.createServer(async (req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -1152,6 +1180,8 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
@@ -1352,6 +1382,7 @@ const server = http.createServer(async (req, res) => {
             return;
           }
           if (attempt.timedOut) {
+            forgetSession(plan.key);
             sendFailure(attempt.detail);
             return;
           }
@@ -1389,10 +1420,16 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: { message: `Route not found: ${req.method} ${pathname}` } }));
 });
 
-server.listen(PORT, HOST, () => {
+// Socket activation (#1821): under systemd the listener arrives as fd 3
+// and systemd owns the bind; a manual launch binds PORT/HOST directly.
+server.listen(listenTarget({ port: PORT, host: HOST }), () => {
   publishEndpoint();
   console.log(`[codex-proxy] OpenAI-compatible bridge listening on http://${HOST}:${PORT}`);
   console.log(`[codex-proxy] Resolved codex binary: ${CODEX_BIN}`);
-  syncCodexTokensToOpenCode();
+  if (process.env.CODEX_PROXY_TOKEN_SYNC === '0') {
+    console.log('[codex-proxy] codex-token-sync: disabled by CODEX_PROXY_TOKEN_SYNC=0 (in-fork sync owns the credential store)');
+  } else {
+    syncCodexTokensToOpenCode();
+  }
   setInterval(syncCodexTokensToOpenCode, 5 * 60 * 1000);
 });

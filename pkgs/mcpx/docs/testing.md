@@ -38,6 +38,22 @@ state bug gets the transitions either side of it. Skip the test only when
 writing it is genuinely expensive, and say so in the PR body.
 (Decided in #1969.)
 
+**Enforcement (#1969, option C):** the basic-tier check
+`basic: mcpx fix carries a test (#1969)` (workflow
+`.github/workflows/mcpx-fix-test-guard.yml`, script
+`.github/scripts/check-mcpx-fix-test.sh`, contract tests in
+`.github/scripts/check-mcpx-fix-test.test.sh`) runs on pull requests
+touching `pkgs/mcpx/**`. A PR counts as a fix when its title starts with
+`fix` (`fix:`, `fix(mcpx):`, …) or its body has a `Fixes`/`Closes`/
+`Resolves` link to an issue labelled `bug`/`kind/bug`. A fix PR passes
+when it changes a `*_test.go` or `*.test.ts` file under `pkgs/mcpx/`, or
+when its body contains `No test: <reason>` with a non-empty reason — the
+reason is printed in the check output and the job summary, so the skip
+is attested, not silent. The check proves presence only: whether the
+test actually fails without the fix stays a review item. Non-fix PRs
+and PRs that touch no mcpx file are unaffected (the workflow's path
+filter means no check fires for them at all).
+
 ## Guards, not instances
 
 When the bug is one member of a class — a declaration and its use that live

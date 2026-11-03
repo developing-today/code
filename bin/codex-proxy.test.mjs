@@ -11,7 +11,7 @@
 // host-installed codex can never shadow it, #694.)
 // partial output.
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -23,9 +23,15 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
+# The proxy runs this through execFile before accepting chat turns. Handle it
+# before reading stdin: execFile leaves the child's stdin open, so cat would
+# otherwise wait for the 30-second command timeout on every request.
 if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
-  printf '%s\\n' '{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","supported_reasoning_levels":[{"effort":"low"}],"default_reasoning_level":"low"},{"slug":"gpt-6-astra","display_name":"GPT-6 Astra","supported_reasoning_levels":[{"effort":"low"}],"default_reasoning_level":"low"},{"slug":"gpt-6-sol","display_name":"GPT-6 Sol","supported_reasoning_levels":[{"effort":"low"}],"default_reasoning_level":"low"}]}'
+  printf '%s\\n' '{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"default_reasoning_level":"medium"},{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"},{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}],"default_reasoning_level":"low"}]}'
   exit 0
+fi
+if [ -n "$CODEX_PROXY_TEST_STDIN_DELAY_MS" ]; then
+  exec node -e 'setTimeout(() => { process.stdin.on("data", () => {}); process.stdin.resume(); }, Number(process.env.CODEX_PROXY_TEST_STDIN_DELAY_MS))'
 fi
 prompt="$(cat)"
 resume=0
@@ -87,6 +93,27 @@ case "$prompt" in
     exit 0 ;;
 esac
 `;
+
+test('Codex stub answers live model lookup without blocking on stdin', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-stub-test-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const stubPath = path.join(tmp, 'codex');
+  fs.writeFileSync(stubPath, STUB, { mode: 0o755 });
+
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(stubPath, ['debug', 'models'], { timeout: 1000 }, (err, out, stderr) => {
+      if (err) {
+        reject(new Error(`codex debug models stub failed: ${err.message}; stderr=${stderr}`));
+      } else {
+        resolve(out);
+      }
+    });
+  });
+  const catalog = JSON.parse(stdout);
+  assert.ok(Array.isArray(catalog.models));
+  assert.ok(catalog.models.length >= 3);
+  assert.ok(catalog.models.some((model) => model.slug === 'gpt-6.1-sol'));
+});
 
 
 // ---------------------------------------------------------------------------
@@ -413,8 +440,8 @@ test('exec turn deadline terminates a hung child and reports timeout', async (t)
   await waitFor(() => !isProcessAlive(pid));
 });
 
-test('warm-resume timeout fails the request instead of launching a cold fallback', async (t) => {
-  const { port, home, stop } = await startProxy(null, {
+test('warm-resume timeout invalidates its cached session without launching a cold fallback', async (t) => {
+  const { port, home, stateHome, stop } = await startProxy(null, {
     CODEX_PROXY_TRANSPORT: 'exec-resume',
     CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '1000'
   });
@@ -433,6 +460,8 @@ test('warm-resume timeout fails the request instead of launching a cold fallback
   assert.equal(second.status, 500);
   assert.match((await second.json()).error.message, /codex exec timed out after 1000ms/);
   assert.equal(readInvocations(home).length, 2, 'timed-out resume must not start a third cold run');
+  const sessionsPath = path.join(stateHome, 'codex-proxy', 'sessions.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(sessionsPath, 'utf-8')), {}, 'timed-out resume must invalidate the cached session');
 });
 
 test('exec turn timeout escalates from SIGTERM to SIGKILL', async (t) => {
@@ -504,6 +533,34 @@ test('invalid exec timeout override warns once and uses the default', async (t) 
   const res = await post(port, { messages: [{ role: 'user', content: 'normal run' }] });
   assert.equal(res.status, 200);
   assert.equal((log().match(/invalid CODEX_PROXY_EXEC_TURN_TIMEOUT_MS/g) || []).length, 1);
+});
+
+test('exec timeout override beyond Node timer range warns and uses the default', async (t) => {
+  const { port, stop, log } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '2147483648'
+  });
+  t.after(stop);
+
+  const res = await post(port, { messages: [{ role: 'user', content: 'normal run' }] });
+  assert.equal(res.status, 200);
+  assert.equal((log().match(/invalid CODEX_PROXY_EXEC_TURN_TIMEOUT_MS/g) || []).length, 1);
+  assert.doesNotMatch(log(), /TimeoutOverflowWarning/);
+});
+
+test('timed-out child with a pending large stdin write does not crash the proxy', async (t) => {
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec',
+    CODEX_PROXY_EXEC_TURN_TIMEOUT_MS: '100',
+    CODEX_PROXY_TEST_STDIN_DELAY_MS: '500'
+  });
+  t.after(stop);
+
+  const content = `please wait ${'x'.repeat(5 * 1024 * 1024)}`;
+  const res = await post(port, { messages: [{ role: 'user', content }] });
+  assert.equal(res.status, 500);
+  assert.match((await res.json()).error.message, /codex exec timed out after 100ms/);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
 });
 
 const readInvocations = (home) => {
@@ -818,6 +875,17 @@ test('token sync updates only the active base openai row (#2533)', async (t) => 
   assert.equal(rows['cred-alt'].value.access, 'ALT-ACCESS', 'openai.alternate row must not be touched');
   assert.equal(rows['cred-alt'].time_updated, 333);
   assert.match(started.log(), /codex-token-sync: updated 1 credential row\(s\)/);
+});
+
+test('token sync stays off when CODEX_PROXY_TOKEN_SYNC=0 (opencode#1154 cutover)', async (t) => {
+  let dbPath;
+  const started = await startProxy(null, { CODEX_PROXY_TOKEN_SYNC: '0' }, (home) => { dbPath = seedSyncHome(home); });
+  t.after(started.stop);
+  const rows = JSON.parse(runPy(READ_SYNC_DB, { SYNC_TEST_DB: dbPath }));
+  assert.equal(rows['cred-active'].value.access, 'OLD-ACCESS', 'sync off must leave the active row untouched');
+  assert.equal(rows['cred-active'].time_updated, 111);
+  assert.match(started.log(), /codex-token-sync: disabled by CODEX_PROXY_TOKEN_SYNC=0/);
+  assert.doesNotMatch(started.log(), /codex-token-sync: updated/);
 });
 
 test('token sync failure is logged, not swallowed (#2533)', async (t) => {

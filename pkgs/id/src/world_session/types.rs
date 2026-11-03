@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use iroh_blobs::api::{Store, TempTag};
@@ -8,8 +9,8 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, WorldEvent, WorldHandle, WorldMetrics,
-    WorldPolicy, WorldSnapshot,
+    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, SessionId, WorldEvent, WorldHandle,
+    WorldMetrics, WorldPolicy, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
@@ -57,6 +58,9 @@ pub trait SessionIo: Send {
     fn recv(&mut self) -> impl Future<Output = Inbound> + Send;
     /// Send one frame. Returns `false` when the peer is gone.
     fn send(&mut self, frame: String) -> impl Future<Output = bool> + Send;
+    /// Mark this session authorized after its application-level
+    /// capability or admin credential has been validated.
+    fn mark_authorized(&mut self) {}
 }
 
 /// Tunables for [`run_session_with`].
@@ -119,6 +123,10 @@ pub(crate) enum ClientFrame {
         admin_token: String,
         module_hash: String,
     },
+    /// Admin: export the bounded ordered history, including host events.
+    EventHistoryAdmin {
+        admin_token: String,
+    },
     Invite {
         admin_token: String,
         display_name: String,
@@ -131,6 +139,14 @@ pub(crate) enum ClientFrame {
         #[serde(default)]
         role: Option<String>,
     },
+    /// Public: list the worlds this server hosts, as the browsable
+    /// directory (#812). No admin token: the reply carries directory
+    /// metadata only — world names, loaded state, the default, and a
+    /// per-world presence *count*. It never names who is present, and
+    /// it neither creates nor opens any world. The admin `ListWorlds`
+    /// frame remains for operators; this is the deliberate public
+    /// boundary for the directory feed.
+    Directory {},
     /// Admin: list the worlds this server hosts.
     ListWorlds {
         admin_token: String,
@@ -262,6 +278,9 @@ pub(crate) enum ClientFrame {
         /// Expected BLAKE3 hash. Optional for browser uploads, whose `WebCrypto`
         /// API does not provide BLAKE3; the host still computes and returns it.
         module_hash: Option<String>,
+        /// Optional Ed25519 signature over the domain-separated module digest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<ModuleSignature>,
         seed: u64,
     },
     InstallChunk {
@@ -269,6 +288,16 @@ pub(crate) enum ClientFrame {
         data_hex: String,
     },
     InstallEnd,
+}
+
+/// Signer metadata supplied with an uploaded module. Public keys and
+/// signatures are lower- or upper-case hexadecimal Ed25519 encodings. The
+/// signed message is `b"developing-today/id-world-module/v1\\0"` followed by
+/// the 32-byte BLAKE3 digest of the exact uploaded module bytes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ModuleSignature {
+    pub public_key: String,
+    pub signature: String,
 }
 
 // Install frames are only produced/consumed with the `sandbox` feature.
@@ -330,6 +359,18 @@ pub(crate) enum ServerFrame<'a> {
     },
     ModuleEnd {
         module_hash: String,
+    },
+    /// Starts an admin-only ordered event-history transfer.
+    EventHistoryBegin {
+        world_id: String,
+        module_hash: Option<String>,
+        current_sequence: u64,
+        complete: bool,
+        event_count: usize,
+    },
+    /// One sequenced or host-originated event in journal order.
+    EventHistoryEvent {
+        event: &'a WorldEvent,
     },
     Invite(&'a InviteResponse),
     /// The worlds this server hosts.
@@ -474,6 +515,9 @@ pub enum InstallError {
     RawModuleDisabled,
     /// Wasmtime rejected or could not instantiate the module.
     InvalidModule,
+    /// The server has a module trust list and the artifact is unsigned,
+    /// signed by an untrusted key, or has an invalid signature.
+    UntrustedModule,
     /// The blob could not be pinned or the world actor refused activation.
     Unavailable,
 }
@@ -501,6 +545,9 @@ pub struct WorldService {
     pub(crate) native: bool,
     /// Raw artifact installs are refused; compiled source remains permitted.
     pub(crate) source_only: bool,
+    /// Ed25519 public keys authorized to sign module artifacts. Empty keeps
+    /// legacy behavior and accepts unsigned modules.
+    pub(crate) trusted_module_keys: Vec<[u8; 32]>,
     pub(crate) runtime: crate::world_limits::RuntimeLimits,
     pub(crate) mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     pub(crate) outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
@@ -508,6 +555,8 @@ pub struct WorldService {
     /// The world's host metrics registry (F11.7), shared with the actor:
     /// the session layer records the frame bytes it sends into it.
     pub(crate) metrics: WorldMetrics,
+    /// Monotonic, process-local IDs for live connections to this service.
+    pub(crate) next_session_id: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for WorldService {

@@ -22,7 +22,7 @@ export function openDb(env: DbEnv): Client {
   return createClient({ url, authToken: env.TURSO_AUTH_TOKEN });
 }
 
-/** Run schema.sql. Idempotent — every statement is CREATE ... IF NOT EXISTS. */
+/** Run schema.sql. DDL is idempotent and data migrations use INSERT OR IGNORE. */
 export async function migrate(db: Client, schemaPath?: string): Promise<void> {
   const path = schemaPath ?? new URL("../schema.sql", import.meta.url).pathname;
   const sql = await Bun.file(path).text();
@@ -54,8 +54,11 @@ export interface ItemRow {
   title: string;
   state: "open" | "closed";
   state_reason: string | null;
-  draft: number;
-  merged: number;
+  // draft / merged are null when the source payload's shape does not carry
+  // merge fields at all (issue-shaped payloads, #4158): an upsert then
+  // preserves the stored values instead of resetting them to defaults.
+  draft: number | null;
+  merged: number | null;
   author: string | null;
   labels: string;
   assignees: string;
@@ -104,33 +107,18 @@ const now = () => new Date().toISOString();
 
 /** Upsert an item. Monotonic: a stale source (older updated_at) never overwrites. */
 export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Promise<void> {
+  // Two steps, so "the payload shape does not carry merge fields" (null
+  // draft/merged, #4158) stays distinguishable from an explicit 0 on the
+  // update path: the INSERT materializes defaults for a brand-new row, the
+  // UPDATE preserves the stored merge fields whenever the incoming row
+  // does not carry them. (A single INSERT ... ON CONFLICT cannot do this:
+  // excluded.draft would already be the COALESCE'd insert value.)
   await db.execute({
-    sql: `INSERT INTO pmp_items (
+    sql: `INSERT OR IGNORE INTO pmp_items (
             ref, repo, number, kind, url, api_url, title, state, state_reason,
             draft, merged, author, labels, assignees, created_at, updated_at,
             closed_at, merged_at, source_updated_at, fetched_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(ref) DO UPDATE SET
-            repo = excluded.repo,
-            number = excluded.number,
-            kind = excluded.kind,
-            url = excluded.url,
-            api_url = excluded.api_url,
-            title = excluded.title,
-            state = excluded.state,
-            state_reason = excluded.state_reason,
-            draft = excluded.draft,
-            merged = excluded.merged,
-            author = excluded.author,
-            labels = excluded.labels,
-            assignees = excluded.assignees,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            closed_at = excluded.closed_at,
-            merged_at = excluded.merged_at,
-            source_updated_at = excluded.source_updated_at,
-            fetched_at = excluded.fetched_at
-          WHERE excluded.source_updated_at >= pmp_items.source_updated_at`,
+          ) VALUES (?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?)`,
     args: [
       i.ref,
       i.repo,
@@ -152,6 +140,42 @@ export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Pr
       i.merged_at,
       i.source_updated_at,
       now(),
+    ],
+  });
+  await db.execute({
+    sql: `UPDATE pmp_items SET
+            repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
+            state = ?, state_reason = ?,
+            draft = COALESCE(?, draft),
+            merged = COALESCE(?, merged),
+            author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
+            closed_at = ?,
+            merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
+            source_updated_at = ?, fetched_at = ?
+          WHERE ref = ? AND ? >= source_updated_at`,
+    args: [
+      i.repo,
+      i.number,
+      i.kind,
+      i.url,
+      i.api_url,
+      i.title,
+      i.state,
+      i.state_reason,
+      i.draft,
+      i.merged,
+      i.author,
+      i.labels,
+      i.assignees,
+      i.created_at,
+      i.updated_at,
+      i.closed_at,
+      i.merged,
+      i.merged_at,
+      i.source_updated_at,
+      now(),
+      i.ref,
+      i.source_updated_at,
     ],
   });
 }
@@ -221,7 +245,8 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
             deleted = excluded.deleted,
             source_updated_at = excluded.source_updated_at,
             fetched_at = excluded.fetched_at
-          WHERE excluded.source_updated_at >= pmp_comments.source_updated_at`,
+          WHERE pmp_comments.deleted = 0
+            AND excluded.source_updated_at >= pmp_comments.source_updated_at`,
     args: [
       c.id,
       c.ref,
@@ -244,10 +269,36 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
   });
 }
 
-export async function markCommentDeleted(db: Client, id: string): Promise<void> {
+/** Persist a delete tombstone, even when the delete arrives before the first upsert. */
+export async function markCommentDeleted(db: Client, c: Omit<CommentRow, "fetched_at">): Promise<void> {
   await db.execute({
-    sql: `UPDATE pmp_comments SET deleted = 1, fetched_at = ? WHERE id = ?`,
-    args: [now(), id],
+    sql: `INSERT INTO pmp_comments (
+            id, ref, kind, author, body, created_at, updated_at, url, path,
+            line, diff_hunk, review_state, submitted_at, commit_id, deleted,
+            source_updated_at, fetched_at
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET
+            deleted = 1,
+            fetched_at = excluded.fetched_at`,
+    args: [
+      c.id,
+      c.ref,
+      c.kind,
+      c.author,
+      c.body,
+      c.created_at,
+      c.updated_at,
+      c.url,
+      c.path,
+      c.line,
+      c.diff_hunk,
+      c.review_state,
+      c.submitted_at,
+      c.commit_id,
+      1,
+      c.source_updated_at,
+      now(),
+    ],
   });
 }
 
@@ -336,7 +387,8 @@ export async function getLinks(db: Client, opts: { subject?: string; ref?: strin
 
 export async function deliveryApplied(db: Client, deliveryId: string): Promise<boolean> {
   const r = await db.execute({
-    sql: `SELECT 1 AS x FROM pmp_deliveries WHERE delivery_id = ?`,
+    sql: `SELECT 1 AS x FROM pmp_deliveries
+          WHERE delivery_id = ? AND outcome IN ('applied', 'ignored')`,
     args: [deliveryId],
   });
   return r.rows.length > 0;
@@ -353,9 +405,24 @@ export async function recordDelivery(
     detail?: string | null;
   },
 ): Promise<void> {
+  if (d.outcome === "error") {
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO pmp_delivery_errors (delivery_id, event, received_at, outcome, detail)
+            VALUES (?,?,?,'error',?)`,
+      args: [d.deliveryId, d.event, now(), d.detail ?? null],
+    });
+  }
   await db.execute({
     sql: `INSERT INTO pmp_deliveries (delivery_id, event, action, ref, received_at, outcome, detail)
-          VALUES (?,?,?,?,?,?,?)`,
+          VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(delivery_id) DO UPDATE SET
+            event = excluded.event,
+            action = excluded.action,
+            ref = excluded.ref,
+            received_at = excluded.received_at,
+            outcome = excluded.outcome,
+            detail = excluded.detail
+          WHERE pmp_deliveries.outcome NOT IN ('applied', 'ignored')`,
     args: [d.deliveryId, d.event, d.action ?? null, d.ref ?? null, now(), d.outcome, d.detail ?? null],
   });
 }

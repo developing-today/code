@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-// One-shot backfill for the usage snapshot store (hub design §4): seed
-// history from the dated observations already recorded in
-// quota-view.md and provider-quota-registry.md (2026-10-20 → today).
+// One-shot recovery/seed for the usage snapshot store (hub design §4):
+// normal live history lands via the server's background feed-ingest
+// writer tick. This script seeds history from dated observations already
+// recorded in quota-view.md and provider-quota-registry.md (2026-10-20 → today).
 // Each record keeps its ORIGINAL date and source class; the prose
 // stays the citation, snapshots are derived data. Fail-soft per fact:
 // a pattern that no longer matches is skipped with a warning, never
@@ -15,6 +16,13 @@
 // the v1 deviation avoided. Issue #1052 also quotes a 2026-10-24 read
 // of CNY 44.64; that is a different observation with no dated source
 // line here, so no record is invented for it.
+//
+// NOTE (2026-11-03 config-name alignment): the service ids below are
+// the pool ids in use on these records' 2026-10-20..25 observation
+// dates (meta:high-usage, openai:codex, opencode-go:personal, ...).
+// They are kept verbatim on purpose: this seed writes HISTORY, and
+// the live rename starts new snapshot series under the config
+// provider ids rather than rewriting the old series.
 //
 // Usage: bun run scripts/backfill-usage-snapshots.ts [--dir <storeDir>]
 // Env: PM_AGG_SNAPSHOTS_DIR, QUOTA_VIEW_PATH, QUOTA_REGISTRY_PATH.
@@ -30,7 +38,12 @@ import type { SnapshotRecord } from "../src/model.ts";
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const dirArg = process.argv.indexOf("--dir");
-const storeDir = dirArg >= 0 ? process.argv[dirArg + 1] : (process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots"));
+const dirValue = dirArg >= 0 ? process.argv[dirArg + 1] : undefined;
+if (dirArg >= 0 && (!dirValue?.trim() || dirValue.trimStart().startsWith("--"))) {
+  console.error("backfill-usage-snapshots: --dir requires a directory value (not another option)");
+  process.exit(2);
+}
+const storeDir = dirValue ?? process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(

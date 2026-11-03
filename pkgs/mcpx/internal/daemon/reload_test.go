@@ -16,7 +16,7 @@ import (
 // childPID starts (or finds) the global instance of p and reports its pid.
 func childPID(t *testing.T, p *pool.Pool) int {
 	t.Helper()
-	lease, err := p.Acquire(context.Background(), "global")
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
 	if err != nil {
 		t.Fatalf("acquire %s: %v", p.Name(), err)
 	}

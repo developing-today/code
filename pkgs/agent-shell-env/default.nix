@@ -6,7 +6,7 @@
   gnugrep,
 }:
 
-# agent-shell-env -- makes bws, 1Password and Jules auth part of every hidden shell.
+# agent-shell-env -- makes bws and 1Password auth part of every hidden shell.
 #
 #   share/agent-shell-env/env.sh  hook; BASH_ENV points here (nixos/agent-auth,
 #                                 home/common) and ~/.bashrc sources it
@@ -63,10 +63,10 @@ stdenvNoCC.mkDerivation {
     # Hook must be silent, must not fail under `set -eu`, and must not leak helpers.
     out_text="$(HOME="$TMPDIR" ${bash}/bin/bash -euc '. "$0"; declare -F __ase_load && exit 1; echo "$BASH_ENV"' "$out/share/agent-shell-env/env.sh")"
     [ "$out_text" = "$out/share/agent-shell-env/env.sh" ]
-    mkdir -p "$TMPDIR/.config/jules"
-    printf 'k123\n' > "$TMPDIR/.config/jules/api-key"
-    [ "$(HOME="$TMPDIR" BASH_ENV="$out/share/agent-shell-env/env.sh" ${bash}/bin/bash -c 'echo "$JULES_API_KEY"')" = k123 ]
-    [ "$(HOME="$TMPDIR" JULES_API_KEY=pre BASH_ENV="$out/share/agent-shell-env/env.sh" ${bash}/bin/bash -c 'echo "$JULES_API_KEY"')" = pre ]
+    mkdir -p "$TMPDIR/.config/cloudflare"
+    printf 'k123\n' > "$TMPDIR/.config/cloudflare/ai-inference-token"
+    [ "$(HOME="$TMPDIR" BASH_ENV="$out/share/agent-shell-env/env.sh" ${bash}/bin/bash -c 'echo "$CLOUDFLARE_API_TOKEN"')" = k123 ]
+    [ "$(HOME="$TMPDIR" CLOUDFLARE_API_TOKEN=pre BASH_ENV="$out/share/agent-shell-env/env.sh" ${bash}/bin/bash -c 'echo "$CLOUDFLARE_API_TOKEN"')" = pre ]
     mkdir -p "$TMPDIR/.config/bws"
     printf 'bws-tok\n' > "$TMPDIR/.config/bws/access-token"
     [ "$(HOME="$TMPDIR" BASH_ENV="$out/share/agent-shell-env/env.sh" ${bash}/bin/bash -c 'echo "$BWS_ACCESS_TOKEN"')" = bws-tok ]
@@ -74,7 +74,7 @@ stdenvNoCC.mkDerivation {
   '';
 
   meta = {
-    description = "Auth environment (bws, 1Password service account, Jules) for every non-interactive shell";
+    description = "Auth environment (bws, 1Password service account) for every non-interactive shell";
     license = lib.licenses.mit;
     platforms = lib.platforms.linux;
     mainProgram = "agent-auth";

@@ -28,6 +28,7 @@ on:
       - "pkgs/cf-container-hello/**"
       - "pkgs/lab-ops-hub/container/app.py"
       - ".github/workflows/cf-container-hello.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
