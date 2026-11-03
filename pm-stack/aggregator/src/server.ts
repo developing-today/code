@@ -138,6 +138,7 @@ import { liveSource } from "./sources/live.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
 import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
+import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -736,7 +737,7 @@ async function attentionRender() {
   return { view, coverage, counts, act, briefs, census };
 }
 
-async function todaySignals() {
+async function loadTodaySignals() {
   const [health, quotaResult] = await Promise.all([
     healthContext(false).catch(() => null),
     source
@@ -747,7 +748,17 @@ async function todaySignals() {
   return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
 }
 
-async function todayContext() {
+// #1179: the shell (/today) and the fragment (/frag/today) both need
+// the health+quota strip, seconds apart on every page view. Bound the
+// repeated live reads with a short TTL; concurrent cold requests share
+// the in-flight load. Provenance stays truthful: prov()/provDetail()
+// are still read live per request at the call sites below.
+const todaySignalsCache = new TodayCache<Awaited<ReturnType<typeof loadTodaySignals>>>(TODAY_CACHE_TTL_MS);
+async function todaySignals(): Promise<Awaited<ReturnType<typeof loadTodaySignals>>> {
+  return todaySignalsCache.get(loadTodaySignals);
+}
+
+async function loadTodayContext() {
   const [{ board, items }, { rows, pool }, { view, coverage, orchestration }, signals] = await Promise.all([
     boardContext(),
     roadmapContext(),
@@ -764,6 +775,15 @@ async function todayContext() {
     queue,
     queueStale: queueInputsStale(signals.health),
   };
+}
+
+// #1179: /today?full=1, /frag/today, and /api/today.json all render
+// from this one assembly. Same short-TTL + coalescing contract as the
+// signals cache above; a throwing load is never cached (the fetch
+// error boundary still 500s) and expiry triggers a fresh read.
+const todayContextCache = new TodayCache<Awaited<ReturnType<typeof loadTodayContext>>>(TODAY_CACHE_TTL_MS);
+async function todayContext(): Promise<Awaited<ReturnType<typeof loadTodayContext>>> {
+  return todayContextCache.get(loadTodayContext);
 }
 
 async function queueContext() {
