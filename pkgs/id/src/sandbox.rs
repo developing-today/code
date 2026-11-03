@@ -940,7 +940,7 @@ mod tests {
     fn checked_in_roc_examples_export_abi_version_one() {
         for wasm in [
             include_bytes!("../examples/roc-counter/counter.wasm").as_slice(),
-            include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm").as_slice(),
+            include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm").as_slice(),
         ] {
             let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
             let mut store = Store::new(&runner.engine, ());
