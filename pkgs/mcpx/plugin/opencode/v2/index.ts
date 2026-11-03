@@ -22,7 +22,7 @@ import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { createSessionEnv } from "./session-env.ts";
 import {
   createToolFilter,
-  readDisabledTools,
+  readDisabledToolsPolicy,
   setDisabledTools,
   type ToolFilterInput,
 } from "./tool-filter.ts";
@@ -90,10 +90,17 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   // write is async (the hook never waits) and the refresh that follows
   // it puts the seeded policy in force from the session's next turn.
   const seedSessionPolicy = async (sessionID: string): Promise<void> => {
-    const existing = await readDisabledTools(ctx.storage, sessionID).catch(
-      () => undefined,
+    // Seed only when the session has NO policy of its own: the
+    // presence-aware read returns undefined for absence, while an
+    // explicitly empty policy ({ disabled: [] } — the session's
+    // opt-out of global filtering) returns an empty set and wins,
+    // exactly like a nonempty one (#5122 Codex re-review, PR #5170).
+    // A failed read (null here) also leaves the session untouched:
+    // absence was not proven.
+    const existing = await readDisabledToolsPolicy(ctx.storage, sessionID).catch(
+      () => null,
     );
-    if (existing !== undefined && existing.size === 0) {
+    if (existing === undefined) {
       await setDisabledTools(
         ctx.storage,
         sessionID,

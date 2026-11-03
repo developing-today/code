@@ -13,6 +13,7 @@ import {
   createToolFilter,
   filterContextTools,
   readDisabledTools,
+  readDisabledToolsPolicy,
   setDisabledTools,
 } from "./tool-filter.ts";
 
@@ -188,6 +189,37 @@ describe("setup: the disabledTools option is the production policy writer", () =
     expect(second.tools.mcpx_exec).toBeUndefined();
     expect(second.tools.mcpx_daemon_status).toBeDefined();
     expect(second.tools.read).toBeDefined();
+  });
+
+  test("an explicitly empty session policy is never overwritten by the option", async () => {
+    // #5122 Codex re-review (PR #5170): { disabled: [] } is a policy
+    // the session owns — its opt-out of global filtering. Seeding
+    // must distinguish it from absence, or the option overwrites it.
+    const storage = stubStorage();
+    await setDisabledTools(storage, "s1", []);
+    const { ctx, fireContext } = stubCtx(storage);
+    await setupMcpxV2(ctx, {
+      tools: false,
+      daemonTools: false,
+      disabledTools: ["mcpx_exec"],
+    });
+    fireContext("s1");
+    await flush();
+    expect([...(await readDisabledTools(storage, "s1"))]).toEqual([]);
+    const second = fireContext("s1");
+    expect(second.tools.mcpx_exec).toBeDefined();
+    expect(second.tools.mcpx_daemon_status).toBeDefined();
+  });
+
+  test("the policy read distinguishes absence from an explicitly empty policy", async () => {
+    const storage = stubStorage();
+    expect(await readDisabledToolsPolicy(storage, "absent")).toBeUndefined();
+    await setDisabledTools(storage, "empty", []);
+    expect(await readDisabledToolsPolicy(storage, "empty")).toEqual(new Set());
+    await setDisabledTools(storage, "own", ["mcpx_exec"]);
+    expect(await readDisabledToolsPolicy(storage, "own")).toEqual(new Set(["mcpx_exec"]));
+    await storage.set("tool-filter:malformed", { nope: true });
+    expect(await readDisabledToolsPolicy(storage, "malformed")).toBeUndefined();
   });
 
   test("a session policy of its own is never overwritten by the option", async () => {

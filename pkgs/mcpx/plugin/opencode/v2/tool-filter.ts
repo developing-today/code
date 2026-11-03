@@ -87,10 +87,27 @@ export async function readDisabledTools(
   storage: StorageLike,
   sessionID: string,
 ): Promise<Set<string>> {
+  return (await readDisabledToolsPolicy(storage, sessionID)) ?? new Set();
+}
+
+/**
+ * Read a session's policy, distinguishing ABSENCE from an explicitly
+ * empty policy (#5122 Codex re-review, PR #5170): `undefined` means
+ * the session has no policy record of its own (nothing stored, or a
+ * malformed record that does not carry a `disabled` array); any Set —
+ * including the empty set from a stored `{ disabled: [] }` — is a
+ * policy the session owns, and seeding defaults must never overwrite
+ * it: `{ disabled: [] }` is how a session opts out of global
+ * filtering. Entry filtering matches readDisabledTools.
+ */
+export async function readDisabledToolsPolicy(
+  storage: StorageLike,
+  sessionID: string,
+): Promise<Set<string> | undefined> {
   const raw = await storage.get(keyFor(sessionID));
-  if (raw === undefined || raw === null || typeof raw !== "object") return new Set();
+  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
   const list = (raw as { disabled?: unknown }).disabled;
-  if (!Array.isArray(list)) return new Set();
+  if (!Array.isArray(list)) return undefined;
   return new Set(
     list.filter(
       (name): name is string =>
