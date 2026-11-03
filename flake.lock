@@ -1496,11 +1496,11 @@
         "qmd": "qmd"
       },
       "locked": {
-        "lastModified": 1793728024,
-        "narHash": "sha256-2DupeUDzRqD3JCBGhq80YqzfTgU281RekabvaUXXGoQ=",
+        "lastModified": 1793739339,
+        "narHash": "sha256-cXKrJx4SCSGAVc9YnLHoQsd8Q6J4o99lGsoltxs9Qsw=",
         "owner": "developing-today",
         "repo": "nix-openclaw",
-        "rev": "da8a7633db52ce92ff28542ffc618e705a0e34e0",
+        "rev": "b4f1c9d0101b9e4c2715a8d2c5f4a74fbf67409c",
         "type": "github"
       },
       "original": {
