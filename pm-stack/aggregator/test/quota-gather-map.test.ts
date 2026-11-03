@@ -59,6 +59,26 @@ describe("normalizeResetAt", () => {
     expect(normalizeResetAt(null)).toBeNull();
     expect(normalizeResetAt(0)).toBeNull();
   });
+  test("impossible dates are null, not rolled over (#4968)", () => {
+    expect(normalizeResetAt("2026-02-30")).toBeNull();
+    expect(normalizeResetAt("2026-04-31")).toBeNull();
+    expect(normalizeResetAt("2026-02-29")).toBeNull();
+    expect(normalizeResetAt("2026-02-30T00:00:00.000Z")).toBeNull();
+  });
+  test("non-ISO strings are null (#4968)", () => {
+    expect(normalizeResetAt("March 2, 2026")).toBeNull();
+    expect(normalizeResetAt("2026/03/02")).toBeNull();
+    expect(normalizeResetAt("03-02-2026")).toBeNull();
+  });
+  test("leap-day and ISO date/datetime shapes pass; epochs unchanged (#4968)", () => {
+    expect(normalizeResetAt("2024-02-29")).toBe("2024-02-29T00:00:00.000Z");
+    expect(normalizeResetAt("2026-03-02")).toBe("2026-03-02T00:00:00.000Z");
+    expect(normalizeResetAt("2026-11-01T04:00:00+00:00")).toBe("2026-11-01T04:00:00.000Z");
+    expect(normalizeResetAt("2026-03-02T10:30:00.000Z")).toBe("2026-03-02T10:30:00.000Z");
+    expect(normalizeResetAt(1793438427299)).toBe("2026-10-31T09:20:27.299Z");
+    expect(normalizeResetAt(1793438427)).toBe("2026-10-31T09:20:27.000Z");
+    expect(normalizeResetAt("not-a-date")).toBeNull();
+  });
 });
 
 describe("entryFromResult", () => {
@@ -86,6 +106,16 @@ describe("entryFromResult", () => {
     const absent = entryFromResult({ ...OK_RESULT, configured: false, ok: false }, "2026-10-27T05:00:00.000Z");
     expect(absent.state).toBe("unconfigured");
     expect(absent.credentialWatch).toBe(true);
+  });
+  test("credentialExpiresAt refuses impossible and non-ISO stamps (#4968)", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    expect(entryFromResult({ ...OK_RESULT, credentialExpiresAt: "2026-02-30" }, tick).credentialExpiresAt).toBeUndefined();
+    expect(
+      entryFromResult({ ...OK_RESULT, credentialExpiresAt: "March 2, 2026" }, tick).credentialExpiresAt,
+    ).toBeUndefined();
+    expect(
+      entryFromResult({ ...OK_RESULT, credentialExpiresAt: "2026-03-02T00:00:00.000Z" }, tick).credentialExpiresAt,
+    ).toBe("2026-03-02T00:00:00.000Z");
   });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
@@ -608,6 +638,25 @@ describe("entryFromTurso (#1049)", () => {
     expect(entry.state).toBe("ok");
     expect(entry.windows.map((w) => w.name)).toEqual(["databases"]);
     expect(entry.windows[0].resetsAt).toBeNull();
+  });
+  test("an impossible period end yields null resetsAt/windowSeconds, not a rolled-over date (#4968)", () => {
+    const entry = entryFromTurso(
+      usageDoc,
+      {
+        subscription: {
+          plan: "starter",
+          current_billing_period_start: "2026-10-01T04:00:00+00:00",
+          current_billing_period_end: "2026-02-30T04:00:00+00:00",
+        },
+      },
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.length).toBeGreaterThan(0);
+    for (const w of entry.windows) {
+      expect(w.resetsAt).toBeNull();
+      expect(w.windowSeconds).toBeNull();
+    }
   });
   test("failed or empty reads are error entries with no windows and no records", () => {
     const failed = entryFromTurso(null, null, { measuredAt: at, error: "turso /usage HTTP 401" });
