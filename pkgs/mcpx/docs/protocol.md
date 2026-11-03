@@ -55,6 +55,38 @@ the corrections are why this is increment 3.
 | `2025-11-25` | legacy | `initialize` | once                   | yes                                                                              | offered on every `initialize`                                  |
 | `2026-07-28` | modern | none         | `_meta`, every request | yes                                                                              | **probed first**                                               |
 
+Which revision defines which feature, generated from the same
+`FeatureMatrix()` table `GET /v1/protocol` reports:
+
+<!-- BEGIN GENERATED: protocol-features -->
+
+| feature | `2026-07-28` | `2025-11-25` | `2025-06-18` | `2025-03-26` | `2024-11-05` |
+| --- | --- | --- | --- | --- | --- |
+| `initialize` | — | ✓ | ✓ | ✓ | ✓ |
+| `discover` | ✓ | — | — | — | — |
+| `resultType` | ✓ | — | — | — | — |
+| `inputRequired` | ✓ | — | — | — | — |
+| `structuredContent` | ✓ | ✓ | ✓ | — | — |
+| `resource_link` | ✓ | ✓ | ✓ | — | — |
+| `audio` | ✓ | ✓ | ✓ | ✓ | — |
+| `toolAnnotations` | ✓ | ✓ | ✓ | ✓ | — |
+| `completions` | ✓ | ✓ | ✓ | ✓ | — |
+| `title` | ✓ | ✓ | ✓ | — | — |
+| `icons` | ✓ | ✓ | — | — | — |
+| `elicitation` | ✓ | ✓ | ✓ | — | — |
+| `elicitationURL` | ✓ | ✓ | — | — | — |
+| `elicitationComplete` | — | ✓ | — | — | — |
+| `tasks` | — | ✓ | — | — | — |
+| `tasksExtension` | ✓ | — | — | — | — |
+| `extensions` | ✓ | — | — | — | — |
+| `cacheable` | ✓ | — | — | — | — |
+| `resourceSubscribe` | — | ✓ | ✓ | ✓ | ✓ |
+| `subscriptionsListen` | ✓ | — | — | — | — |
+| `loggingSetLevel` | — | ✓ | ✓ | ✓ | ✓ |
+| `batch` | — | — | — | ✓ | — |
+
+<!-- END GENERATED: protocol-features -->
+
 The split is the thing everything else follows from. A legacy implementation
 negotiates once and can send its peer a request at any time afterwards. A
 modern one has no handshake, restates its version and capabilities on every
@@ -213,16 +245,21 @@ that could never work (#284).
 
 ### 2.2 Capabilities mcpx declares
 
-| capability                                     | 2024-11-05                                                             | 2025-03-26 | 2025-06-18 | 2025-11-25 | 2026-07-28                                      |
-| ---------------------------------------------- | ---------------------------------------------------------------------- | ---------- | ---------- | ---------- | ----------------------------------------------- |
-| `tools.listChanged`                            | true in pass-through mode when the connection can push, else false     | same       | same       | same       | same                                            |
-| `resources.subscribe`, `.listChanged`          | when the connection can push                                           | same       | same       | same       | same                                            |
-| `prompts.listChanged`                          | when the connection can push                                           | same       | same       | same       | same                                            |
-| `completions`                                  | — (the revision has no such capability; the method is answered anyway) | ✓          | ✓          | ✓          | ✓                                               |
-| `logging`                                      | ✓                                                                      | ✓          | ✓          | ✓          | — (the level travels in each request's `_meta`) |
-| `tasks` (core)                                 | —                                                                      | —          | —          | ✓          | —                                               |
-| `extensions["io.modelcontextprotocol/tasks"]`  | —                                                                      | —          | —          | —          | ✓                                               |
-| `extensions["io.modelcontextprotocol/skills"]` | —                                                                      | —          | —          | —          | `{"directoryRead": true}`                       |
+<!-- BEGIN GENERATED: protocol-capabilities -->
+
+| capability | `2026-07-28` | `2025-11-25` | `2025-06-18` | `2025-03-26` | `2024-11-05` |
+| --- | --- | --- | --- | --- | --- |
+| `tools.listChanged` | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push | false for mcpx's own list (fixed when the server is built); true in pass-through mode when the connection can push |
+| `resources.subscribe` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
+| `resources.listChanged` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
+| `prompts.listChanged` | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push | true when the connection can push |
+| `completions` | ✓ | ✓ | ✓ | ✓ | — (the revision has no such capability; the method is answered anyway) |
+| `logging` | — (the level travels in each request's `_meta`) | ✓ | ✓ | ✓ | ✓ |
+| `tasks` (core) | — | ✓ | — | — | — |
+| `extensions["io.modelcontextprotocol/tasks"]` | ✓ | — | — | — | — |
+| `extensions["io.modelcontextprotocol/skills"]` | `{"directoryRead": true}`, where skills are served | — (declared where skills are served) | — (declared where skills are served) | — (declared where skills are served) | — (declared where skills are served) |
+
+<!-- END GENERATED: protocol-capabilities -->
 
 - **`tools.listChanged` is false unless mcpx passes tools through.** mcpx's
   own tool list is fixed when its server is built. It used to be declared and
