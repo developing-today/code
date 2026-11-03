@@ -51,6 +51,9 @@ pub enum FileOpError {
     /// The name is rooted or contains a traversal component.
     #[error("name must be a safe relative path: {0}")]
     InvalidName(String),
+    /// The name collides with the namespace used for system archives.
+    #[error("name is reserved for archives: {0}")]
+    ReservedArchiveName(String),
     /// Source and destination are the same name.
     #[error("new name must differ from the current name")]
     SameName,
@@ -233,6 +236,9 @@ impl<'a> FileOps<'a> {
                 .any(|component| matches!(component, "." | ".."))
         {
             return Err(FileOpError::InvalidName(name.to_owned()));
+        }
+        if is_archive_tag_name(name) {
+            return Err(FileOpError::ReservedArchiveName(name.to_owned()));
         }
         Ok(())
     }
@@ -596,6 +602,24 @@ mod archive_name_tests {
 
     fn hash(byte: u8) -> Hash {
         Hash::from([byte; 32])
+    }
+
+    #[test]
+    fn fileops_rejects_archive_shaped_names_but_allows_lookalikes() {
+        for name in [
+            "report.archive.0",
+            "report.archive.1700000000",
+            "report.archive.18446744073709551616",
+        ] {
+            assert!(matches!(
+                FileOps::validate_name(name),
+                Err(FileOpError::ReservedArchiveName(found)) if found == name
+            ));
+        }
+
+        for name in ["a.archive.notes", "a.archive.+1", "a.archive.١"] {
+            assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
+        }
     }
 
     /// Two replaces of one name within the same second must not share an

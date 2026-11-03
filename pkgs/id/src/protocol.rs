@@ -1564,6 +1564,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fileops_rejects_archive_names_without_overwriting_existing_archives() {
+        let node = LocalNode::open(true).await.unwrap();
+        let archive_hash = put(&node, "report.txt", b"original").await;
+        assert!(matches!(
+            node.request(MetaRequest::Rename {
+                from: "report.txt".to_owned(),
+                to: "renamed.txt".to_owned(),
+            })
+            .await,
+            MetaResponse::Rename { success: true }
+        ));
+        let archive_name = names(&node)
+            .await
+            .into_iter()
+            .find(|name| name.starts_with("report.txt.archive."))
+            .expect("rename should create an archive");
+        let replacement_hash = put(&node, "source.txt", b"replacement").await;
+
+        let put_response = node
+            .request(MetaRequest::Put {
+                filename: archive_name.clone(),
+                hash: replacement_hash,
+            })
+            .await;
+        assert!(
+            put_response
+                .error_message()
+                .is_some_and(|message| message.contains("reserved for archives")),
+            "put accepted archive-shaped name: {put_response:?}"
+        );
+
+        let rename_response = node
+            .request(MetaRequest::Rename {
+                from: "source.txt".to_owned(),
+                to: archive_name.clone(),
+            })
+            .await;
+        assert!(
+            rename_response
+                .error_message()
+                .is_some_and(|message| message.contains("reserved for archives")),
+            "rename accepted archive-shaped name: {rename_response:?}"
+        );
+
+        let copy_response = node
+            .request(MetaRequest::Copy {
+                from: "source.txt".to_owned(),
+                to: archive_name.clone(),
+            })
+            .await;
+        assert!(
+            copy_response
+                .error_message()
+                .is_some_and(|message| message.contains("reserved for archives")),
+            "copy accepted archive-shaped name: {copy_response:?}"
+        );
+
+        assert!(matches!(
+            node.request(MetaRequest::Get {
+                filename: archive_name.clone(),
+            })
+            .await,
+            MetaResponse::Get { hash: Some(hash) } if hash == archive_hash
+        ));
+        assert!(names(&node).await.contains(&archive_name));
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn fileops_accept_safe_nested_names_for_rename_and_copy() {
         let node = LocalNode::open(true).await.unwrap();
         let hash = put(&node, "dir/a.txt", b"hello").await;
