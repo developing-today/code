@@ -16,7 +16,6 @@ let
   # defaults when the env var is absent.
   clefProxyPort = 18742;
   codexProxyPort = 18744;
-  designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
   opencodeRouteProxyPort = 18750;
@@ -394,9 +393,10 @@ in
   # converting back to v1 — that conversion is what made the keys flap on
   # every OpenChamber launch.
   #
-  # Watch the file and normalise any v1 spelling that lands in it (hand
-  # edits, older tools) to v2. The script is idempotent and refuses to
-  # write anything it cannot re-parse.
+  # Normalise any v1 spelling that lands in the file (hand edits, older
+  # tools) to v2. The script is idempotent and refuses to write anything
+  # it cannot re-parse. It is deliberately NOT watched by a path unit
+  # right now — see the note under the service.
   systemd.user.services.opencode-config-normalize = {
     Unit = {
       Description = "Normalise opencode config to v2 plugin/agent keys";
@@ -418,14 +418,25 @@ in
       ];
     };
   };
-  systemd.user.paths.opencode-config-normalize = {
-    Unit.Description = "Watch opencode config for v1 plugin/agent keys";
-    Path = {
-      PathChanged = "%h/.config/opencode/opencode.jsonc";
-      Unit = "opencode-config-normalize.service";
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # No systemd.user.paths.opencode-config-normalize until the fleet
+  # switch lands the v2 normaliser (2026-11-03): the normaliser in the
+  # RUNNING generation (built 2026-11-01, before #4594 taught
+  # pkgs/opencode-config-normalize to emit only v2) still writes the v1
+  # spellings, and a declared path unit re-arms on every home-manager
+  # activation — the runtime stops applied during the #5094 adoption
+  # were silently undone and the tracked config flapped back to v1.
+  # Until the switch, the service above runs only when started
+  # deliberately (systemctl --user start opencode-config-normalize).
+  # Restore the path unit in the same change that verifies the switched
+  # generation carries the v2 normaliser:
+  #   systemd.user.paths.opencode-config-normalize = {
+  #     Unit.Description = "Watch opencode config for v1 plugin/agent keys";
+  #     Path = {
+  #       PathChanged = "%h/.config/opencode/opencode.jsonc";
+  #       Unit = "opencode-config-normalize.service";
+  #     };
+  #     Install.WantedBy = [ "default.target" ];
+  #   };
 
   # Dated, on-change snapshots of agent credentials and config.
   #
@@ -653,34 +664,18 @@ in
   # history, drop the session-variable removals below, and re-point the
   # plan seats in opencode.jsonc back from antigravity-direct.
 
-  systemd.user.services.design-code-proxy = {
-    Unit = {
-      Description = "Code Design / Design Code Local Proxy Bridge for OpenCode";
-      After = [
-        "network-online.target"
-        "codex-proxy.service"
-      ];
-      Wants = [
-        "network-online.target"
-        "codex-proxy.service"
-      ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "design-code-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/design-code-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "DESIGN_CODE_PROXY_PORT=${toString designCodeProxyPort}"
-        "DESIGN_CODE_PROXY_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Design Code proxy removed (2026-11-03, Drew): its unit definition
+  # stood here. Drew removed the design persona routes and the whole
+  # design-code machinery — "the only design thing I have is opendesign"
+  # — so the :18746 door has no consumers left: the persona routes are
+  # removed from opencode.jsonc in the same pass, and the opendesign
+  # provider/pool (a different thing, kept) never used this door. The
+  # definition is removed, not commented out, so the switch stops the
+  # service and it stays off; bin/design-code-proxy.mjs remains in the
+  # repo as history, uninvoked, and its port let and session variable
+  # are removed with it. To undo: restore this unit block, the
+  # designCodeProxyPort let, and the DESIGN_CODE_PROXY_PORT session
+  # variable from git history, and re-add the config-side machinery.
 
   # Proxy supervisor retired (#2104, 2026-10-28): the proxy-supervisor
   # oneshot service, its 2-minute timer, and the supervisor config that
@@ -857,7 +852,7 @@ in
 
   systemd.user.services.sync-models = {
     Unit = {
-      Description = "Sync AI models for OpenCode providers from models.dev, agy, and Codex";
+      Description = "Sync AI models for OpenCode providers from models.dev and agy";
       After = [ "network-online.target" ];
     };
     Service = {
@@ -1526,7 +1521,6 @@ in
       CLEF_PROXY_PORT = toString clefProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
       ANTIGRAVITY_DIRECT_PORT = toString antigravityDirectProxyPort;
-      DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
       # The three below were missing: their {env:...} templates in
       # opencode.jsonc resolved to an empty port in the OpenChamber serve
       # (2026-10-25 audit) because the variables never reached its
@@ -1579,21 +1573,13 @@ in
         (pkgs.writeShellScriptBin "clef-proxy" ''
           exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
         '')
-        (pkgs.writeShellScriptBin "agy-proxy" ''
-          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs "$@"
-        '')
+        # No "agy-proxy" / "antigravity-ls-proxy" launchers here: both
+        # doors were retired 2026-10-30 and their units removed above.
+        # The .mjs files remain in bin/ as history, uninvoked — a PATH
+        # launcher would resurrect a retired door on its canonical port.
         (pkgs.writeShellScriptBin "codex-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "antigravity-ls-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "design-code-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
