@@ -29,14 +29,14 @@ declare -A GRANDFATHERED=(
   # https://github.com/developing-today/code/issues/4704
   ["pkgs/id/src/web/markdown.rs"]="https://github.com/developing-today/code/issues/4704"
   # 2,598 production lines; the F11.10 file itself, regrown. Split:
-  # https://github.com/developing-today/code/issues/4712
-  ["pkgs/id/src/cli.rs"]="https://github.com/developing-today/code/issues/4712"
+  # https://github.com/developing-today/code/issues/4715
+  ["pkgs/id/src/cli.rs"]="https://github.com/developing-today/code/issues/4715"
   # 2,573 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4713
-  ["pkgs/id/src/web/routes.rs"]="https://github.com/developing-today/code/issues/4713"
+  # https://github.com/developing-today/code/issues/4716
+  ["pkgs/id/src/web/routes.rs"]="https://github.com/developing-today/code/issues/4716"
   # 2,821 production lines; split tracked by
-  # https://github.com/developing-today/code/issues/4714
-  ["pkgs/id/src/world_session/mod.rs"]="https://github.com/developing-today/code/issues/4714"
+  # https://github.com/developing-today/code/issues/4717
+  ["pkgs/id/src/world_session/mod.rs"]="https://github.com/developing-today/code/issues/4717"
 )
 
 # Count production lines of one file: every line that is not part of
