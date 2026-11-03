@@ -845,6 +845,13 @@
       "note": "docs-history change fragment for #3064 (artifact copy semantics); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
+      "path": "docs/changes/prototasks-cancel-grace.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #2499 (protoTasks.cancelGrace); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
       "path": "docs/cli.md",
       "chapter": "designs",
       "role": "chapter-source",

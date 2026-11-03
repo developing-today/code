@@ -67,10 +67,26 @@ async function importRsaKey(der: Uint8Array): Promise<CryptoKey> {
   }
 }
 
+function parsePositiveDecimalId(raw: string, envName: string): number {
+  if (!/^[0-9]+$/.test(raw)) {
+    throw new Error(`Invalid ${envName} ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${envName} ${JSON.stringify(raw)}; expected a positive decimal integer`);
+  }
+  return value;
+}
+
 export async function appJwt(env: Record<string, string | undefined>): Promise<string> {
   const appId = env.GITHUB_APP_ID;
   const rawKey = env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !rawKey) throw new Error("github_app_credentials_missing");
+  // Validate the app id's shape before signing: a mistyped id otherwise
+  // produces a correctly signed JWT that GitHub rejects downstream, and the
+  // failure surfaces as a misleading credentials problem. Same rule as
+  // GITHUB_APP_INSTALL_ID (parseConfiguredInstallId).
+  parsePositiveDecimalId(appId, "GITHUB_APP_ID");
   const b64 = decodePem(rawKey);
   const der = Uint8Array.from(Buffer.from(b64, "base64"));
   const key = await importRsaKey(der);
@@ -88,6 +104,11 @@ export interface GitHubAuth {
 }
 
 const discoveredInstallations = new Map<string, number>();
+
+function parseConfiguredInstallId(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  return parsePositiveDecimalId(raw, "GITHUB_APP_INSTALL_ID");
+}
 
 /**
  * Resolve the installation id for one repo via GET /repos/{repo}/installation
@@ -122,11 +143,12 @@ export async function apiTokenFor(
   fetchFn: typeof fetch = fetch,
   installationIds?: Record<string, number>,
 ): Promise<GitHubAuth> {
+  const configuredInstallId = parseConfiguredInstallId(env.GITHUB_APP_INSTALL_ID);
   let installId = installationIds?.[repo];
   if (!installId && env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
     installId = await discoverInstallationId(env, repo, fetchFn);
   }
-  if (!installId && env.GITHUB_APP_INSTALL_ID) installId = Number(env.GITHUB_APP_INSTALL_ID);
+  if (!installId) installId = configuredInstallId;
   if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && installId) {
     const jwt = await appJwt(env);
     const res = await fetchFn(`https://api.github.com/app/installations/${installId}/access_tokens`, {

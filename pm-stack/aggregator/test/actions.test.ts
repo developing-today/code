@@ -77,6 +77,17 @@ describe("dashboard actions store", () => {
     expect((await store.pendingCounts()).triage).toBe(1); // only the first test's ack remains new… see below
   });
 
+  test("markResultTransition distinguishes a first result from a retry", async () => {
+    const store = new ActionsStore(file);
+    const { action } = await store.add(newAction({ objectRef: "orch:item-transition" }));
+    const first = await store.markResultTransition(action.id, { outcome: "applied", byRun: "orch-test" });
+    const retry = await store.markResultTransition(action.id, { outcome: "rejected", byRun: "retry" });
+    expect(first?.transitioned).toBe(true);
+    expect(first?.action.state).toBe("applied");
+    expect(retry?.transitioned).toBe(false);
+    expect(retry?.action.state).toBe("applied");
+  });
+
   test("supersede transitions a still-new action; applied history stands", async () => {
     const store = new ActionsStore(file);
     const snooze = await store.add(
@@ -343,6 +354,7 @@ describe("attention action controls (#1152/#1156)", () => {
     expect(html).toContain('data-object="orch:goal_plaid"');
     expect(html).toContain("Review batch");
     expect(html).toContain("/api/actions/batch"); // BULK_SCRIPT is on the page
+    expect(html).toContain("encoder.encode(JSON.stringify(a)).byteLength"); // pack by UTF-8 bytes, matching the request cap
     // Without identities there is no action surface \u2014 and no bulk bar.
     const anon = renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
       actionsByObject: new Map(),

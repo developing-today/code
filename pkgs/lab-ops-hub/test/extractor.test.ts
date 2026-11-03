@@ -15,9 +15,7 @@ interface Fixture {
   text: string;
 }
 
-const fixtures = JSON.parse(
-  readFileSync(new URL("./extractor-fixtures.json", import.meta.url), "utf8"),
-) as Fixture[];
+const fixtures = JSON.parse(readFileSync(new URL("./extractor-fixtures.json", import.meta.url), "utf8")) as Fixture[];
 
 for (const f of fixtures) {
   test(`extractHtml parity: ${f.name}`, () => {

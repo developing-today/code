@@ -88,7 +88,7 @@ describe("epic rollups", () => {
     expect(programHtml).toContain("2/4 done");
     expect(programHtml).toContain("Blocked: 1");
 
-    const itemHtml = renderItem("Epic one", R(1), [], [], new Map(), [], PROV, {
+    const itemHtml = renderItem("Epic one", R(1), [], new Map(), [], PROV, {
       dashComments: [],
       formRef: R(1),
       formOpts: { identities: [] },

@@ -163,6 +163,122 @@ func TestShallowByDefaultAndRecursiveWhenAsked(t *testing.T) {
 	}
 }
 
+func TestDirectoryReadsSymlinkToRegularFileUsingLinkPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.data")
+	link := filepath.Join(dir, "alias.ts")
+	if err := os.WriteFile(target, []byte("from target"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	o := opts(dir)
+	o.Extensions = []string{".ts"}
+	got, err := source.Resolve("@dir:"+dir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Files) != 1 || got.Files[0] != link {
+		t.Fatalf("files should contain the matching link path %q, got %v", link, got.Files)
+	}
+	if !strings.Contains(got.Text, "from target") {
+		t.Errorf("symlink target contents were not read: %q", got.Text)
+	}
+}
+
+func TestDirectorySymlinkTraversalIsRecursiveAndCycleSafe(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, contents string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	top := filepath.Join(dir, "top.ts")
+	sub := filepath.Join(dir, "sub")
+	inside := filepath.Join(sub, "inside.ts")
+	alias := filepath.Join(dir, "alias")
+	back := filepath.Join(sub, "back-to-root")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(top, "top")
+	write(inside, "inside")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if err := os.Symlink(dir, back); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+
+	shallow, err := source.Resolve("@dir:"+dir, opts(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shallow.Files) != 1 || shallow.Files[0] != top {
+		t.Errorf("shallow traversal should skip real and linked directories, got %v", shallow.Files)
+	}
+
+	o := opts(dir)
+	o.Recursive = true
+	deep, err := source.Resolve("@dir:"+dir, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		top:                               true,
+		inside:                            true,
+		filepath.Join(alias, "inside.ts"): true,
+	}
+	if len(deep.Files) != len(want) {
+		t.Fatalf("recursive aliases should be traversed once per path, got %v", deep.Files)
+	}
+	for _, file := range deep.Files {
+		if !want[file] {
+			t.Errorf("unexpected file from recursive traversal: %q", file)
+		}
+	}
+}
+
+func TestDirectorySkipsDanglingLinkAndFollowsLinkOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	regular := filepath.Join(root, "regular.ts")
+	dangling := filepath.Join(root, "dangling.ts")
+	linkedDir := filepath.Join(root, "external")
+	externalFile := filepath.Join(external, "linked.ts")
+	if err := os.WriteFile(regular, []byte("regular"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(externalFile, []byte("external"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing.ts"), dangling); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if err := os.Symlink(external, linkedDir); err != nil {
+		t.Skipf("directory symlinks are unavailable: %v", err)
+	}
+
+	o := opts(root)
+	o.Recursive = true
+	got, err := source.Resolve("@dir:"+root, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{regular: true, filepath.Join(linkedDir, "linked.ts"): true}
+	if len(got.Files) != len(want) {
+		t.Fatalf("got files %v, want exactly the regular and external-link paths", got.Files)
+	}
+	for _, file := range got.Files {
+		if !want[file] {
+			t.Errorf("unexpected file %q", file)
+		}
+	}
+}
+
 func TestResolveAllJoinsInOrder(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "second.ts"), []byte("SECOND"), 0o644)
@@ -191,5 +307,36 @@ func TestTextAndFileAtTheSameLevelIsAConflict(t *testing.T) {
 	}
 	if err := source.Conflict("script.prefix", "inline", ""); err != nil {
 		t.Errorf("one form alone is fine: %v", err)
+	}
+}
+
+func TestResolveFileWithTildeNameReadsLiteralDirUnderDir(t *testing.T) {
+	// End to end for #2988: @file:~alice/... must read the literal
+	// ~alice directory under Dir, never $HOME/alice.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "alice"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "alice", "note.txt"), []byte("from home"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	literal := filepath.Join(dir, "~alice")
+	if err := os.MkdirAll(literal, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(literal, "note.txt"), []byte("from literal dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := source.Resolve("@file:~alice/note.txt", source.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "from literal dir" {
+		t.Errorf("Resolve(@file:~alice/note.txt) text = %q, want %q", got.Text, "from literal dir")
+	}
+	if len(got.Files) != 1 || got.Files[0] != filepath.Join(literal, "note.txt") {
+		t.Errorf("Resolve(@file:~alice/note.txt) files = %v, want [%s]", got.Files, filepath.Join(literal, "note.txt"))
 	}
 }

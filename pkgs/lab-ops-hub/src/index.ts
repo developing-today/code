@@ -14,6 +14,7 @@ import {
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
+  fileResponseForKey,
 } from "./lib";
 
 // ---------------------------------------------------------------------------
@@ -388,11 +389,7 @@ export default {
       }
       const fileMatch = p.match(/^\/api\/files\/(.+)$/);
       if (fileMatch && req.method === "GET") {
-        const obj = await env.FILES.get(decodeURIComponent(fileMatch[1]));
-        if (!obj) return json({ error: "not found in R2" }, 404);
-        return new Response(obj.body, {
-          headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
-        });
+        return fileResponseForKey(fileMatch[1], (key) => env.FILES.get(key));
       }
 
       // Live board (Durable Object, one global room)

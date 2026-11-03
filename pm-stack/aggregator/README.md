@@ -42,6 +42,11 @@ is a live index — last-rendered time + status per page from the render registr
 | `/discuss/<ref>`  | **Comment thread** for one object ref (a `gh:` ref, an `orch:` tier item, a `session:` id, a board item, a roadmap subject) — dashboard comments + the post form.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `/api/comments.json?object=<ref>`                                                                                              |
 | `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream, plus its dashboard comments and the sessions that worked it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | —                                                                                                                              |
 
+Pad is a standalone planning surface; the aggregator has no live Pad-to-item
+association, so item pages do not show or imply Pad planning notes. Pad's
+existing health probe and browser-safe service-home link remain registered in
+`src/topology.ts` and `src/service-links.ts`.
+
 All views are mobile-first (single-column stacking, scrollable tables,
 touch-sized switchers) — verify at phone width, not by resizing a desktop
 window. The canonical tailnet URL is
@@ -87,6 +92,14 @@ manifest, so a new page never touches the chrome. To add one:
    twin when the page has data worth polling.
 4. Wire any new data through `Source` (with its fixture twin), and
    through the fleet feed when the data originates on the sandbox.
+5. Pass the mobile checklist (#1180, 390x844 audit): no page-level
+   horizontal scroll (wide tables live inside `.tblwrap`, `pre` blocks
+   scroll inside themselves); every control-class tap target (nav
+   links, chips, buttons, form controls, checkbox labels) is at least
+   40px tall; the sticky nav never permanently covers content
+   (anchored elements carry `scroll-margin-top`). Inline text links
+   inside prose and table cells are exempt from the 40px floor.
+   Re-run the per-page audit when a page's layout changes materially.
 
 `/dns` is the worked example: the register file lives on the sandbox
 (#902 owns it), the collector parses it into a `dns` feed section
@@ -407,43 +420,87 @@ bun test
 
 Everything defaults to **fixtures** and works with no configuration:
 
-| Env var                    | Default                                             | Purpose                                                                                                                                              |
-| -------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PM_AGG_SOURCE`            | `fixtures`                                          | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                                                                               |
-| `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                            |
-| `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                     |
-| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                          |
-| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by writer jobs + `scripts/backfill-usage-snapshots.ts` |
-| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                              |
-| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback                                                                         |
-| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                                                                               |
-| `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                                                                                        |
-| `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                      |
-| `KANEO_ADMIN_PASSWORD`     | —                                                   | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                              |
-| `GRIST_URL`                | `http://127.0.0.1:8484`                             | Grist base URL                                                                                                                                       |
-| `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                                                                                            |
-| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                                                                                     |
-| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                              |
-| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                          |
-| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                               |
-| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                    |
+| Env var                    | Default                                             | Purpose                                                                                                                                                               |
+| -------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PM_AGG_SOURCE`            | `fixtures`                                          | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                                                                                                |
+| `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                                             |
+| `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                                      |
+| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                                           |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill |
+| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                                               |
+| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback                                                                                          |
+| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                                                                                                |
+| `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                                                                                                         |
+| `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                                       |
+| `KANEO_ADMIN_PASSWORD`     | —                                                   | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                                               |
+| `GRIST_URL`                | `http://127.0.0.1:8484`                             | Grist base URL                                                                                                                                                        |
+| `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                                                                                                             |
+| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                                                                                                      |
+| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                               |
+| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                           |
+| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                |
+| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                                     |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
-## What each facet reads
+## Capability provenance matrix (#1200)
 
-| Facet            | Live reader (when `PM_AGG_SOURCE=live`)                                                                                                | Fallback                            |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| Board            | Kaneo REST (`/api/task/tasks/<project>`, all four projects) + registry links                                                           | fixtures                            |
-| Roadmap          | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`) + registry links                                                                 | fixtures (the real Grist seed rows) |
-| Registry links   | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows                                                            | Kaneo external links / text refs    |
-| Items (refs)     | Projector `GET /items?refs=…`                                                                                                          | fixtures                            |
-| Comments         | Projector `GET /comments?refs=…`                                                                                                       | fixtures                            |
-| Quota (#851)     | Fleet feed file (`fleet-feed.json`; see "The fleet feed" below)                                                                        | fixtures when no feed exists        |
-| Attention (#852) | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed                                                           | fixtures when neither is reachable  |
-| DNS (#906)       | Fleet feed `dns` section, parsed collector-side from the #902 register                                                                 | fixtures when no section exists     |
-| Registry (#906)  | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file | fixtures when the feed is absent    |
+The single source of truth for what the aggregator reads, facet by
+facet. **Live source** is what the facet reads in the deployed
+configuration (`PM_AGG_SOURCE=live`, rendered by `install.sh`;
+`PM_PROJECTOR_URL` pinned by the NixOS module). **Deployment** states
+what the stack definition declares — configuration, not observed
+runtime; the one observed check on record is dated in the notes under
+the table. Everything else in this README and in `program.ts` must
+agree with this table; `scripts/check-provenance-matrix.ts` verifies
+the load-bearing claims against the code and configuration (see
+"Keeping the matrix honest" below).
+
+| Facet                        | Live source (provenance)                                                                                                                                                | Fallback                                                   | Deployment                                                                                                                                                                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Board                        | Kaneo REST (`/api/task/tasks/<project>`, all four projects), enriched with projector registry links                                                                     | fixtures                                                   | Kaneo container (compose, `pm-stack/`)                                                                                                                                                                                        |
+| Roadmap                      | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`), enriched with projector registry links                                                                           | fixtures (the real Grist seed rows)                        | Grist container (compose, `pm-stack/`)                                                                                                                                                                                        |
+| Registry links               | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows                                                                                             | Kaneo external links / text refs                           | projector (below)                                                                                                                                                                                                             |
+| Items (refs)                 | Fleet feed's GitHub Project pool FIRST (#910 stage 5); refs outside the pool resolve via projector `GET /items?refs=…`                                                  | fixtures, per ref                                          | feed collector (sandbox) + projector                                                                                                                                                                                          |
+| Comments (GitHub projection) | Projector `GET /comments?refs=…`                                                                                                                                        | fixtures                                                   | projector (below)                                                                                                                                                                                                             |
+| Dashboard comments           | Aggregator-local store (`PM_AGG_COMMENTS_FILE`, default `./comments.json`) — written by the dashboard itself, never projected                                           | none (local file)                                          | aggregator unit                                                                                                                                                                                                               |
+| Quota (#851)                 | Fleet feed file (`fleet-feed.json`), overlaid by the quota gatherer's `quota-current.json`                                                                              | fixtures when no feed exists                               | collector (sandbox) + gatherer timer                                                                                                                                                                                          |
+| Attention (#852)             | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed                                                                                            | fixtures when neither is reachable                         | OpenCode servers (both hosts)                                                                                                                                                                                                 |
+| DNS (#906)                   | Fleet feed `dns` section, parsed collector-side from the #902 register                                                                                                  | fixtures when no section exists                            | collector (sandbox)                                                                                                                                                                                                           |
+| Registry (#906)              | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file                                  | fixtures when the feed is absent                           | aggregator unit + collector                                                                                                                                                                                                   |
+| **Projector** (service)      | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it                                                                        |
+| **Pad** (service)            | — (the aggregator reads no Pad data; Pad is not a facet source)                                                                                                         | —                                                          | **Deployed as the planning layer only**: NixOS OCI container `pm-pad`, declared by `services.pm-apps` (`nixos/services/pm-apps/default.nix`); named here so its absence from the facet rows is a stated fact, not an omission |
+
+Observed runtime (checked 2026-11-02 by task 6104 via the stack's status
+surfaces): at `06:04:56.726Z`, the aggregator briefly reported the
+projector `down` (1.5s probe timeout) and Comments `fixtures`, while Pad
+was `up` (HTTP 200). At `06:07:46.665Z`, its `/api/health` recheck showed
+Pad and projector `up` (HTTP 200), Comments `live (projector)`, and
+`degraded=false`. Direct checks during the same pass found `pm-pad`
+running/healthy with `/api/v1/health` version `0.18.1`; projector `/health`
+returned 8,189 items and 41,961 comments, and a direct `/comments` read
+returned a projected issue comment. This later read supersedes the brief
+timeout and the earlier task 4902 successful read (8,134 items, 41,169
+comments). These are point-in-time observations, not standing health
+claims. The deployment cells above describe declared configuration; they
+do not imply that a service is currently healthy or that its live data is
+reaching the aggregator.
+
+### Keeping the matrix honest
+
+```bash
+bun run scripts/check-provenance-matrix.ts
+```
+
+The check derives the load-bearing facts from the configuration and
+code — the `PM_PROJECTOR_URL` pin and the `pm-projector` unit in
+`nixos/services/pm-stack/default.nix`, `PM_AGG_SOURCE=live` in
+`install.sh`, the reader wiring in `src/sources/live.ts` (pool-first
+items, projector comments) — and fails if this matrix, the pm-stack
+README pointer, or `/program` (`src/program.ts`) contradicts them.
+Run it after changing any facet's source, the projector's deployment,
+or the matrix itself.
 
 The projector's wire schema is its `schema.sql` (Session J, PR #859):
 snake_case fields, `state` is only `open|closed` with `merged` as a
@@ -485,8 +542,11 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   billing incidents supply the gateway accrual + card-alert charges).
   The aggregator's `Source.usage()` serves them with snapshot history
   from the §4 store; older feeds without the sections fall back to a
-  direct read of the two source documents. Seed the store once with
-  `bun run scripts/backfill-usage-snapshots.ts` (idempotent).
+  direct read of the two source documents. A five-minute background
+  writer tick lands feed snapshots into the local store; `Source.usage()`
+  and its GET routes are read-only. Seed historical observations once
+  with `bun run scripts/backfill-usage-snapshots.ts` (idempotent one-shot
+  recovery, not normal history startup).
 - **Snapshot writers (hub §4)** — history accumulates three ways, all
   riding the feed: the collector derives records from its own hub
   sections (`src/snapshot-records.ts`) and embeds them in the feed's
@@ -496,9 +556,9 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   `bun run scripts/append-usage-snapshots.ts` (add
   `--from-provider-usage` for the keeper snapshot) or, for
   check-usage, from Python directly — and the collector drains the
-  outbox into the same field. `Source.usage()` ingests feed records
-  into the local store; dedupe on (service, metric, timestamp, value)
-  makes every writer safe to re-run.
+  outbox into the same field. The server's background feed-ingest tick
+  copies feed records into the local store; dedupe on (service, metric,
+  timestamp, value) makes every writer safe to re-run.
 
 ## The quota gatherer (Stage 2 — #1151)
 
@@ -507,10 +567,8 @@ runs on the **laptop** (nothing executes on the sandbox), as the
 `quota-gatherer` systemd **user** timer (units in this package's
 `systemd/`, installed by `install.sh`; linger keeps it
 boot-persistent). The unit runs the script from the laptop's repo
-clone (`~/git/code`) — package re-deploys replace the deployed
-`scripts/` wholesale and must not be able to vanish the gatherer —
-with its outputs pinned by env to the deployed aggregator dir
-`~/pm-stack/aggregator`.
+clone (`~/git/code`) and writes its outputs under
+`~/.local/state/pm-aggregator`, outside the checkout.
 
 Each tick:
 
@@ -530,7 +588,7 @@ Each tick:
   windows carrying value, % of limit, reset, measured-at, source,
   state) — and `quota-gatherer-heartbeat.json` (tick time,
   per-provider state/duration; the heartbeat also rides inside
-  quota-current.json), both in the deployed aggregator dir beside
+  quota-current.json), both in the aggregator state directory beside
   `fleet-feed.json`.
 - appends §4 snapshot records for windows whose value **moved**
   since the last appended record, directly to the snapshot store
@@ -583,7 +641,7 @@ tick visible on /quota.
 The collector runs on the laptop: the `fleet-feed-collector` user
 timer (declared in the pm-stack NixOS module, #3363/#3368) runs
 `scripts/collect-fleet-feed.ts` every ~5 minutes and writes the feed
-straight to the aggregator's state dir. The aggregator states the
+straight to `~/.local/state/pm-aggregator`. The aggregator states the
 feed's age in the page provenance; a stale feed keeps rendering.
 The collector originally ran on the sandbox and pushed the feed
 over the tailnet proxy route (`scripts/push-fleet-feed.sh`); that
@@ -592,33 +650,43 @@ overwriting the laptop feed (its AA section 403'd against the
 retired muse-dev project). The push script remains for manual use
 only.
 
-**Deployment (laptop):** `install.sh` copies the package to
-`~/pm-stack/aggregator`, renders `.env` from
-`~/secrets/pm-stack.sops.yaml` (keys by name), installs
-`../systemd/pm-aggregator.service` as a user unit, and health-checks
-loopback + tailnet. Slice 2 (per #890) replaces the feed with
-projector-ized live per-source feeds.
+**Deployment (laptop):** run `install.sh` from the `~/git/code`
+checkout. The service runs directly from
+`~/git/code/pm-stack/aggregator`; `install.sh` renders the mode-600
+environment file and runtime paths under `~/.local/state/pm-aggregator`
+from `~/secrets/pm-stack.sops.yaml` (keys by name), installs the
+repository-owned systemd units, and health-checks loopback + tailnet.
+The legacy `~/pm-stack/aggregator` symlink to that state directory is a
+compatibility bridge for sandbox feed pushes and must remain until the
+sandbox has pulled the updated push script and delivery is verified.
+Slice 2 (per #890) replaces the feed with projector-ized live
+per-source feeds.
 
 ## What is fixture-backed vs live
 
-- **Fixture-backed today:** nothing, when the stack is up — board,
-  roadmap, items, comments, quota, and attention all read live
-  sources, each falling back to fixtures independently when its
-  source is unreachable (the fixtures are shaped like the live
-  readers' output and sit behind the same `Source` interface,
-  `src/source.ts`). Roadmap fixtures are
-  the real Grist seed rows; the design record's known refs (#752, #754,
-  #762, #763, nix #501–#508, opencode #365) are real; the rest are
-  illustrative.
-- **Live-capable today:** board (Kaneo), roadmap (Grist), and — since
-  Session J's projector landed (PR #859) — registry links, live item
-  state, and the comment projection via `PM_PROJECTOR_URL`
-  (default `http://127.0.0.1:7801`). Each facet falls back to fixtures
-  independently when its service is unreachable. The live board is the
-  curated in-flight set (in-progress / in-review / recent done columns;
-  the to-do backlog is excluded). Kaneo project slugs map to repos as
-  in `pm-stack/kaneo-projects.json` (Session H): `code`, `opencode`,
-  `openchamber` under `developing-today/`, `nix` under `dezren39/`.
+Per the capability provenance matrix above: in the deployed
+configuration nothing is fixture-backed by default — every facet
+reads its live source, and each falls back to fixtures independently
+when its source is unreachable (the fixtures are shaped like the
+live readers' output and sit behind the same `Source` interface,
+`src/source.ts`). Two facets deserve the explicit sentence the
+matrix's brevity drops:
+
+- **Items** resolve pool-first: the fleet feed's GitHub Project pool
+  is the primary source (#910 stage 5), the projector serves refs
+  outside the pool, and fixtures are the last resort per ref.
+- **Comments** (the GitHub projection) read live from the projector,
+  which is a deployed service of this stack — see the matrix's
+  Projector row for the deployment evidence and the dated observed
+  check. Roadmap fixtures are the real Grist seed rows; the design
+  record's known refs (#752, #754, #762, #763, nix #501–#508,
+  opencode #365) are real; the rest are illustrative.
+
+The live board is the curated in-flight set (in-progress / in-review
+/ recent done columns; the to-do backlog is excluded). Kaneo project
+slugs map to repos as in `pm-stack/kaneo-projects.json` (Session H):
+`code`, `opencode`, `openchamber` under `developing-today/`, `nix`
+under `dezren39/`.
 
 ## Honesty + freshness (#1139, #1267, #1138)
 
