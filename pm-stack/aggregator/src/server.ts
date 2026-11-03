@@ -11,7 +11,13 @@ import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
-import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import {
+  authorizeCommentAuthor,
+  commentKindCounts,
+  CommentsStore,
+  queuedComments,
+  validateNewComment,
+} from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { EventsStore, emitEvent } from "./events.ts";
@@ -99,7 +105,7 @@ import {
   validateNewSubscription,
 } from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
-import { resolveBwsSecret } from "./secrets.ts";
+import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, esc } from "./render.ts";
 import { readJsonBody } from "./request-body.ts";
@@ -746,11 +752,17 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const authorization = authorizeCommentAuthor(
+        parsed.value.author,
+        req.headers.get("authorization"),
+        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+      );
+      if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value);
+        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
