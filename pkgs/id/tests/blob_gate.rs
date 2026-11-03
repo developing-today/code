@@ -92,6 +92,18 @@ fn server_store() -> Store {
 
 /// A provider that serves `store` through the gate. Pushes are refused for everyone.
 async fn provider(store: &Store, graph: Graph, policy: BlobPolicy) -> (Router, EndpointAddr) {
+    provider_with_access(store, Arc::new(graph), policy).await
+}
+
+/// A provider for access implementations whose state changes during a test.
+async fn provider_with_access<A>(
+    store: &Store,
+    access: Arc<A>,
+    policy: BlobPolicy,
+) -> (Router, EndpointAddr)
+where
+    A: WorldAccess + Send + Sync + 'static,
+{
     let endpoint = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
         .secret_key(SecretKey::from_bytes(&[200; 32]))
@@ -99,7 +111,7 @@ async fn provider(store: &Store, graph: Graph, policy: BlobPolicy) -> (Router, E
         .await
         .unwrap();
     let addr = endpoint.addr();
-    let events = blob_events(Arc::new(graph), policy, AccessPolicy::restricted([]));
+    let events = blob_events(access, policy, AccessPolicy::restricted([]));
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))
         .spawn();
@@ -192,6 +204,76 @@ async fn a_member_of_the_referencing_world_fetches_the_bytes() {
         .await
         .expect("a member may fetch");
     assert_eq!(got, DOCS_BODY);
+
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_removed_member_is_refused_after_membership_refresh() {
+    let server = server_store();
+    let (docs, _tag) = put(&server, DOCS_BODY).await;
+    let member = peer(4).await;
+    let graph = Arc::new(std::sync::RwLock::new(Graph {
+        members: vec![("docs", member.id)],
+        refs: vec![(docs, "docs")],
+    }));
+    let access = Arc::new(MutableGraph(graph.clone()));
+    let policy = BlobPolicy::default().with_observe();
+    let (router, addr) = provider_with_access(&server, access, policy).await;
+
+    assert_eq!(fetch(&member, &addr, docs).await.unwrap(), DOCS_BODY);
+    graph.write().unwrap().members.clear();
+    assert_eq!(fetch_refusal_code(&member, &addr, docs).await, Some(DENIED));
+    assert!(observe(&member, &addr, docs).await.is_err());
+
+    router.shutdown().await.unwrap();
+}
+
+/// Membership that a refresh can replace while the provider is serving peers.
+struct MutableGraph(Arc<std::sync::RwLock<Graph>>);
+
+impl WorldAccess for MutableGraph {
+    fn is_current_member(&self, world: &str, requester: &EndpointId) -> bool {
+        self.0
+            .read()
+            .unwrap()
+            .members
+            .iter()
+            .any(|(candidate, member)| *candidate == world && member == requester)
+    }
+
+    fn worlds_referencing(&self, hash: &Hash) -> Vec<String> {
+        self.0
+            .read()
+            .unwrap()
+            .refs
+            .iter()
+            .filter(|(candidate, _)| candidate == hash)
+            .map(|(_, world)| (*world).to_owned())
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn a_member_can_fetch_a_hashseq_child_but_a_non_member_cannot() {
+    let server = server_store();
+    let (child, _child_tag) = put(&server, DOCS_BODY).await;
+    let (hashseq, _hashseq_tag) = put(&server, child.as_bytes()).await;
+    let member = peer(5).await;
+    let stranger = peer(6).await;
+    // The sequence itself and its child are both attributed to the same world; the index
+    // builder's transitive attribution is separately exercised by blob_gate unit tests.
+    let graph = Graph {
+        members: vec![("docs", member.id)],
+        refs: vec![(hashseq, "docs"), (child, "docs")],
+    };
+    let (router, addr) = provider(&server, graph, BlobPolicy::default()).await;
+
+    assert_eq!(fetch(&member, &addr, child).await.unwrap(), DOCS_BODY);
+    assert_eq!(
+        fetch_refusal_code(&stranger, &addr, child).await,
+        Some(DENIED)
+    );
 
     router.shutdown().await.unwrap();
 }
