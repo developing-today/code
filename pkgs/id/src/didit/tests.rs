@@ -220,12 +220,23 @@ fn worked_example_outside_every_two_to_four_hours() {
         );
     }
 
-    // With the last gap inside the maximum, the same span is satisfied.
-    let fixed = record(
+    // With every gap inside the window, the same span is satisfied. The
+    // record set above cannot be repaired by moving only the last record:
+    // 12:10 to 16:45 is itself a 16500s gap. This set keeps 07:05, 09:30,
+    // 12:10, 16:45 and 21:00 and inserts 14:30 and 19:00, so every
+    // consecutive gap is inside 7200..=14400 (8700, 9600, 8400, 8100,
+    // 8100, 7200) and the span-end gap (22:00 - 21:00) is 3600.
+    let at_14_30 = record(
         0x26,
         vec![dog_a(), dog_b()],
         "outside",
-        chicago(2026, 6, 15, 20, 0),
+        chicago(2026, 6, 15, 14, 30),
+    );
+    let at_19_00 = record(
+        0x27,
+        vec![dog_a(), dog_b()],
+        "outside",
+        chicago(2026, 6, 15, 19, 0),
     );
     let verdicts = evaluate(
         &[outside],
@@ -233,8 +244,10 @@ fn worked_example_outside_every_two_to_four_hours() {
             records[0].clone(),
             records[1].clone(),
             records[2].clone(),
+            at_14_30,
             records[3].clone(),
-            fixed,
+            at_19_00,
+            records[4].clone(),
         ],
         now,
     )
