@@ -184,7 +184,7 @@ pub fn restore_replica_entries_with_runtime(
         restored
             .core
             .directory_mut()
-            .apply(&fact)
+            .apply_replica_fact(&fact)
             .with_context(|| format!("replica directory fact {fact:?} is refused"))?;
     }
     Ok(ReplicaRestore {

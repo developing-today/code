@@ -1209,6 +1209,11 @@ impl Directory {
                 scopes: group.scopes.bits(),
                 founder: founders[id].clone(),
             });
+        }
+        // All groups exist before any nested `MemberSet` references them.
+        // Directory replay refuses a membership naming a not-yet-created
+        // group, even when both IDs belong to one contiguous replica prefix.
+        for id in &ordered {
             // Subject memberships reproduce subject ceilings; nested links
             // reproduce the paths levels flow through. Other accounts stay
             // out: the founder above already keeps an admin in place.
@@ -1728,6 +1733,14 @@ impl Directory {
         self.apply_mode(entry, false)
     }
 
+    /// Apply a fact projected from the writer's already-admitted directory
+    /// to a read-only replica. It must use the same historical validation
+    /// as replay, not new-write validation: an old group name containing a
+    /// format character was valid when written and must remain loadable.
+    pub(crate) fn apply_replica_fact(&mut self, entry: &DirectoryEntry) -> Result<()> {
+        self.apply_replay(entry)
+    }
+
     fn apply_mode(&mut self, entry: &DirectoryEntry, refuse_format: bool) -> Result<()> {
         let next = self.checked_mode(entry, refuse_format)?;
         if let Some(path) = &self.journal {
@@ -2181,6 +2194,63 @@ mod tests {
         let (credential, _) = directory.sign_up(name).unwrap();
         let id = directory.account_for(&credential).unwrap();
         (id, credential)
+    }
+
+    #[test]
+    fn replica_facts_create_nested_groups_before_memberships_and_replay_old_names() {
+        let mut writer = Directory::new();
+        let (ann, _) = account(&mut writer, "Ann");
+        let (bo, _) = account(&mut writer, "Bo");
+        let (outer, _) = writer
+            .create_group(&ann, "Outer", "nested", WorldScopes::JOIN)
+            .unwrap();
+        let (inner, _) = writer
+            .create_group(&ann, "Inner", "nested", WorldScopes::DELEGATE)
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                outer,
+                Member::Group { id: inner },
+                Some(Level::Read),
+            )
+            .unwrap();
+        writer
+            .set_member(
+                Actor::Server,
+                inner,
+                Member::Account { id: bo.clone() },
+                Some(Level::Read),
+            )
+            .unwrap();
+
+        // Historical directories may contain a format character accepted
+        // before #1778. Replay admits it; a replica projection must preserve
+        // it rather than passing it through the stricter new-write check.
+        writer
+            .apply_replay(&DirectoryEntry::GroupUpdated {
+                id: inner,
+                name: "Inner\u{200B}".to_owned(),
+                description: "nested".to_owned(),
+                scopes: WorldScopes::DELEGATE.bits(),
+            })
+            .unwrap();
+        let subjects = BTreeSet::from([bo.clone()]);
+        let facts = writer.replica_facts_for(&subjects).unwrap();
+        let group_creates: Vec<u64> = facts
+            .iter()
+            .filter_map(|entry| match entry {
+                DirectoryEntry::GroupCreated { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(group_creates, [outer, inner]);
+        let mut replica = Directory::new();
+        for fact in &facts {
+            replica.apply_replica_fact(fact).unwrap();
+        }
+        assert_eq!(replica.ceiling(&bo), writer.ceiling(&bo));
+        assert_eq!(replica.group(inner).unwrap().name, "Inner\u{200B}");
     }
 
     #[test]
