@@ -875,7 +875,12 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	// and never fails the run -- a daemon without the route leaves clients
 	// empty and the run as it was.
 	clients := map[string]runner.Client{}
-	if py, pyerr := c.ClientModuleLanguage(ctx, codegen.Python.Name, ns, "", a.Profile); pyerr == nil {
+	if py, pyerr := c.ClientModuleLanguage(ctx, codegen.Python.Name, ns, "", a.Profile); pyerr == nil && py != clientSrc {
+		// A daemon from before #1917 Phase 2 ignores ?language and answers
+		// with the TypeScript module; installing that as mcpx_client.py
+		// would be worse than no client at all, so an identical body means
+		// "this daemon has no Python client" and the run keeps the raw
+		// notice instead.
 		pyGlobals, _ := c.GlobalsLanguage(ctx, codegen.Python.Name, ns, a.Profile)
 		clients[codegen.Python.Name] = runner.Client{Module: py, Globals: pyGlobals}
 	}
