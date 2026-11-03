@@ -52,7 +52,7 @@ beforeAll(async () => {
       goals: [],
       actions: [],
     },
-    registry: [{ id: "ses-health-1", source: "opencode-sandbox", label: "Health probe session" }],
+    registry: [{ id: "ses-health-1", source: "opencode-sandbox", label: "Health probe session", taskRefs: [] }],
   };
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));
