@@ -18,7 +18,6 @@ package pool
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1868,7 +1867,7 @@ func (p *Pool) closeDrained(drain time.Duration, stopReason, callErr string) {
 // does not depend on the logging package.
 func newTraceID(prefix string) string {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		return prefix + "-0000000000000000"
 	}
 	return prefix + "-" + hex.EncodeToString(b[:])

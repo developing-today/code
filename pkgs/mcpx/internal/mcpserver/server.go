@@ -17,7 +17,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -2378,7 +2377,7 @@ func (s *Server) reapSessionsLocked() {
 
 func newSessionID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		return "sess-0"
 	}
 	return "sess-" + hex.EncodeToString(b[:])
