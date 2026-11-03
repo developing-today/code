@@ -225,17 +225,21 @@ macro_rules! define_provider_registry {
     };
 }
 
+/// Argument schema for providers that take no arguments.
 const NO_ARGUMENTS: &[ProviderArgument] = &[];
+/// Argument schema for `chat.say`: one required `text` string.
 const CHAT_SAY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
     name: "text",
     value_type: ArgumentType::String,
     required: true,
 }];
+/// Argument schema for `chat.history`: an optional `count`.
 const CHAT_HISTORY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
     name: "count",
     value_type: ArgumentType::UnsignedInteger,
     required: false,
 }];
+/// Argument schema for `records.read`: optional `prefix` and `after`.
 const RECORDS_READ_ARGUMENTS: &[ProviderArgument] = &[
     ProviderArgument {
         name: "prefix",
@@ -248,6 +252,7 @@ const RECORDS_READ_ARGUMENTS: &[ProviderArgument] = &[
         required: false,
     },
 ];
+/// Argument schema for `schedule.at`: a required `id` and `at`.
 const SCHEDULE_AT_ARGUMENTS: &[ProviderArgument] = &[
     ProviderArgument {
         name: "id",
@@ -260,35 +265,43 @@ const SCHEDULE_AT_ARGUMENTS: &[ProviderArgument] = &[
         required: true,
     },
 ];
+/// Argument schema for `schedule.cancel`: one required `id` string.
 const SCHEDULE_CANCEL_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
     name: "id",
     value_type: ArgumentType::String,
     required: true,
 }];
 
+/// Bounds shared by simple request providers: the argument byte cap.
 const COMMON_REQUEST_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARGS_BYTES)];
+/// Bounds for `chat.say`: argument bytes plus the world chat byte limit.
 const CHAT_SAY_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::WorldLimit("chat_bytes"),
 ];
+/// Bounds for `chat.history`: argument bytes plus the history line cap.
 const CHAT_HISTORY_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::Items(MAX_CHAT_HISTORY_LINES),
 ];
+/// Bounds for `records.read`: argument bytes plus the page byte cap.
 const RECORDS_READ_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES),
 ];
+/// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::IdentifierBytes(MAX_SCHEDULE_ID_BYTES),
     ProviderBound::Items(MAX_PENDING_SCHEDULES),
     ProviderBound::HorizonMillis(MAX_SCHEDULE_HORIZON_MS),
 ];
+/// Bounds for `schedule.cancel`: argument bytes plus the id byte cap.
 const SCHEDULE_CANCEL_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
     ProviderBound::IdentifierBytes(MAX_SCHEDULE_ID_BYTES),
 ];
+/// Bounds for tick providers: the interval cap plus the world tick floor.
 const TICK_BOUNDS: &[ProviderBound] = &[
     ProviderBound::Items(MAX_TICK_INTERVALS),
     ProviderBound::WorldLimit("min_tick_ms"),
