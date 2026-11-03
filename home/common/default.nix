@@ -916,9 +916,12 @@ in
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
-    # This repo's own mcpx build — the package the hand-rolled unit
-    # ran (pkgs/mcpx) — rather than the fork's re-export default.
-    package = mcpx;
+    # package: deliberately unset. There is one mcpx — the
+    # cascade's (the fork's build, via the module wrapper's
+    # mkDefault) — and this config takes that one (Drew's ruling,
+    # 2026-11-03; code#5027). The former pin to this repo's own
+    # pkgs/mcpx build made two mcpx builds coexist and collided
+    # with the fork package's bin/mcpx in the home profile.
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).
     environment = mcpxEnvironment;
