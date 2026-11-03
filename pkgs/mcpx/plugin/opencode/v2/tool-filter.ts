@@ -27,7 +27,12 @@
  *
  * Policy source: the plugin's per-session state in ctx.storage, key
  * `tool-filter:<sessionID>`, record `{ disabled: string[] }` — full
- * model-facing names (`mcpx_exec`). The context hook is synchronous
+ * model-facing names (`mcpx_exec`). The production writer is the
+ * plugin's user-facing `disabledTools` option (options.ts; env
+ * MCPX_PLUGIN_DISABLED_TOOLS): index.ts records it as a session's
+ * policy on the session's first sighting, unless the session already
+ * has a policy of its own; `setDisabledTools` below is the write API
+ * any other surface uses for a session-specific policy. The context hook is synchronous
  * and must never query the daemon (or storage) synchronously, so the
  * filter closes over an asynchronously refreshed snapshot, the
  * permission.ts pattern: setup refreshes a session's snapshot when the

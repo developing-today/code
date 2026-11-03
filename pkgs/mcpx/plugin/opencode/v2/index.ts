@@ -20,7 +20,12 @@ import {
 } from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { createSessionEnv } from "./session-env.ts";
-import { createToolFilter, type ToolFilterInput } from "./tool-filter.ts";
+import {
+  createToolFilter,
+  readDisabledTools,
+  setDisabledTools,
+  type ToolFilterInput,
+} from "./tool-filter.ts";
 import {
   createTimingLog,
   type ExecuteAfterInput,
@@ -78,6 +83,25 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   // the latest snapshot synchronously — the hook never waits on storage
   // and never queries the daemon.
   const toolFilter = createToolFilter(ctx.storage);
+  // The production writer for the filter's policy (#5122): the user's
+  // disabledTools plugin option is recorded as a session's policy in
+  // ctx.storage the first time the session is seen — unless the
+  // session already has a policy of its own, which always wins. The
+  // write is async (the hook never waits) and the refresh that follows
+  // it puts the seeded policy in force from the session's next turn.
+  const seedSessionPolicy = async (sessionID: string): Promise<void> => {
+    const existing = await readDisabledTools(ctx.storage, sessionID).catch(
+      () => undefined,
+    );
+    if (existing !== undefined && existing.size === 0) {
+      await setDisabledTools(
+        ctx.storage,
+        sessionID,
+        options.disabledTools ?? [],
+      ).catch(() => undefined);
+    }
+    await toolFilter.refresh(sessionID).catch(() => undefined);
+  };
   const envSessions = new Set<string>();
   let activeEndpoint: string | undefined;
   const sessionVars = (sessionID: string): Record<string, string> => {
@@ -140,14 +164,21 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     if (options.instructions) appendContextOnce(input);
     // First sighting of a session is when its environment is sent — once,
     // with the full environment (session-env.ts explains why full).
+    const firstSighting = !envSessions.has(input.sessionID);
     envSessions.add(input.sessionID);
     void sessionEnv.ensure(input.sessionID, sessionVars(input.sessionID)).catch(() => false);
     // Hide this session's disabled mcpx tools from the model-visible
     // set (tool-filter.ts), then refresh the snapshot for the next
     // turn: a policy recorded since the last firing applies from the
-    // following turn.
+    // following turn. On first sighting, seed the session's policy
+    // from the disabledTools option first (seedSessionPolicy above
+    // refreshes as its last step, so no second refresh is owed).
     toolFilter.apply(input);
-    void toolFilter.refresh(input.sessionID).catch(() => undefined);
+    if (firstSighting && options.disabledTools && options.disabledTools.length > 0) {
+      void seedSessionPolicy(input.sessionID);
+    } else {
+      void toolFilter.refresh(input.sessionID).catch(() => undefined);
+    }
   });
 
   if (toolTiming) {

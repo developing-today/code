@@ -6,6 +6,8 @@
  *   bun test plugin/opencode/v2/tool-filter.test.ts
  */
 import { describe, expect, test } from "bun:test";
+import { setupMcpxV2, type McpxV2Context } from "./index.ts";
+import { resolveOptions } from "./options.ts";
 import type { StorageLike } from "./remember.ts";
 import {
   createToolFilter,
@@ -134,5 +136,85 @@ describe("createToolFilter", () => {
     await filter.refresh("s1");
     const tools = requestTools();
     expect(filter.apply({ sessionID: "s1", tools })).toEqual(["mcpx_exec"]);
+  });
+});
+
+describe("setup: the disabledTools option is the production policy writer", () => {
+  // The Codex finding on PR #5170: the filter read a storage record
+  // nothing in production wrote. The stub context below is the
+  // tools.test.ts shape, extended so a fired context input carries a
+  // tools record the hook can filter.
+  const stubCtx = (storage: StorageLike) => {
+    let contextFn: ((input: never) => void) | undefined;
+    const ctx: McpxV2Context = {
+      storage,
+      directory: "/work",
+      session: {
+        hook: (_name, fn) => {
+          contextFn = fn as (input: never) => void;
+        },
+      },
+      tool: {
+        hook: () => {},
+        transform: async () => ({}),
+      },
+    };
+    const fireContext = (sessionID: string) => {
+      const input = { sessionID, system: [] as unknown[], tools: requestTools() };
+      contextFn!(input as never);
+      return input;
+    };
+    return { ctx, fireContext };
+  };
+
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  test("setup records the option as the session policy; the next turn hides the tool", async () => {
+    const storage = stubStorage();
+    const { ctx, fireContext } = stubCtx(storage);
+    await setupMcpxV2(ctx, {
+      tools: false,
+      daemonTools: false,
+      disabledTools: ["mcpx_exec"],
+    });
+    // First turn: no snapshot exists yet, so nothing is hidden — the
+    // seeding write the hook just started is what the refresh loads.
+    expect(fireContext("s1").tools.mcpx_exec).toBeDefined();
+    await flush();
+    expect([...(await readDisabledTools(storage, "s1"))]).toEqual(["mcpx_exec"]);
+    const second = fireContext("s1");
+    expect(second.tools.mcpx_exec).toBeUndefined();
+    expect(second.tools.mcpx_daemon_status).toBeDefined();
+    expect(second.tools.read).toBeDefined();
+  });
+
+  test("a session policy of its own is never overwritten by the option", async () => {
+    const storage = stubStorage();
+    await setDisabledTools(storage, "s1", ["mcpx_daemon_status"]);
+    const { ctx, fireContext } = stubCtx(storage);
+    await setupMcpxV2(ctx, {
+      tools: false,
+      daemonTools: false,
+      disabledTools: ["mcpx_exec"],
+    });
+    fireContext("s1");
+    await flush();
+    expect([...(await readDisabledTools(storage, "s1"))]).toEqual(["mcpx_daemon_status"]);
+    const second = fireContext("s1");
+    expect(second.tools.mcpx_daemon_status).toBeUndefined();
+    expect(second.tools.mcpx_exec).toBeDefined();
+  });
+
+  test("the option resolves from the array, then the env string", () => {
+    expect(resolveOptions({ disabledTools: ["mcpx_exec"] }, {}).disabledTools).toEqual([
+      "mcpx_exec",
+    ]);
+    expect(
+      resolveOptions({}, { MCPX_PLUGIN_DISABLED_TOOLS: "mcpx_exec, mcpx_daemon_status" })
+        .disabledTools,
+    ).toEqual(["mcpx_exec", "mcpx_daemon_status"]);
+    expect(resolveOptions({}, {}).disabledTools).toBeUndefined();
   });
 });
