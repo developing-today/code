@@ -63,7 +63,7 @@ use serde::{Deserialize, Serialize};
 /// with a fresher list can pass their own — this constant is the
 /// fallback for the boot path, which runs before any router exists.
 pub const KNOWN_EXPLORER_ROUTES: &[&str] = &[
-    "/", "/api", "/blob", "/edit", "/explore", "/files", "/hash", "/invite", "/peers", "/settings",
+    "/", "/api", "/assets", "/blob", "/edit", "/explore", "/files", "/hash", "/invite", "/peers", "/settings",
     "/view", "/world", "/ws",
 ];
 
@@ -295,11 +295,22 @@ impl Registry {
     ///
     /// Fails when the file exists but cannot be read or parsed.
     pub fn load(path: &Path) -> Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading publications from {}", path.display()))?;
+        // Read directly and treat only NotFound as an empty registry:
+        // probing with `exists()` first would collapse permission and
+        // metadata failures into "no registry", silently restoring
+        // nothing — the fail-loud contract above (the same pattern
+        // `GroupLog::open` uses).
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("reading publications from {}", path.display())
+                });
+            }
+        };
         serde_json::from_str(&text)
             .with_context(|| format!("parsing publications from {}", path.display()))
     }
@@ -368,6 +379,14 @@ mod tests {
         assert_eq!(
             shadowed_explorer_route("/api", routes).as_deref(),
             Some("/api")
+        );
+        assert_eq!(
+            shadowed_explorer_route("/assets", routes).as_deref(),
+            Some("/assets")
+        );
+        assert_eq!(
+            shadowed_explorer_route("/assets/app.js", routes).as_deref(),
+            Some("/assets")
         );
         assert_eq!(shadowed_explorer_route("/worlds", routes), None);
         assert_eq!(shadowed_explorer_route("/arena", routes), None);
@@ -468,6 +487,14 @@ mod tests {
         let loaded = Registry::load(&file).unwrap();
         assert_eq!(loaded, registry);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_fails_loud_on_unreadable_path_not_just_missing() {
+        // A directory is not a missing file: load must error, not
+        // silently restore an empty registry.
+        let dir = std::env::temp_dir();
+        assert!(Registry::load(&dir).is_err());
     }
 
     #[test]
