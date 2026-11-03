@@ -251,6 +251,80 @@ mod tests {
         }
     }
 
+    fn export_transfer(handoff_id: &str) -> HandoffTransferState {
+        HandoffTransferState {
+            handoff_id: handoff_id.to_owned(),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            direction: HandoffDirection::Export,
+            prior_owner_epoch: 4,
+            new_owner_epoch: None,
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            payload_digest: "digest".to_owned(),
+            payload: Some(vec![1, 2, 3]),
+            event: handoff_event(),
+        }
+    }
+
+    fn import_transfer(
+        handoff_id: &str,
+        prior_owner_epoch: u64,
+        new_owner_epoch: u64,
+    ) -> HandoffTransferState {
+        HandoffTransferState {
+            handoff_id: handoff_id.to_owned(),
+            entity_ref: "entity-2".to_owned(),
+            source_region: "region-b".to_owned(),
+            target_region: "region-a".to_owned(),
+            direction: HandoffDirection::Import,
+            prior_owner_epoch,
+            new_owner_epoch: Some(new_owner_epoch),
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            payload_digest: "digest-2".to_owned(),
+            payload: None,
+            event: handoff_event(),
+        }
+    }
+
+    fn checkpoint_with_transfers(transfers: Vec<HandoffTransferState>) -> Vec<JournalEntry> {
+        vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            JournalEntry::Checkpoint {
+                sequence: 0,
+                module_hash: "module".to_owned(),
+                seed: 1,
+                provenance: None,
+                execution_profile: None,
+                caps_ceiling: None,
+                schedules: None,
+                transfers: Some(transfers),
+                snapshot: "state".to_owned(),
+                events: Vec::new(),
+            },
+        ]
+    }
+
+    fn assert_checkpoint_transfer_refused(
+        transfer_list: Vec<HandoffTransferState>,
+        handoff_id: &str,
+    ) -> String {
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            checkpoint_with_transfers(transfer_list),
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains(handoff_id), "{error}");
+        error
+    }
+
     #[test]
     fn handoff_entries_require_journal_version_3() {
         // #3870 phase 1: handoff kinds are the first entries a version-2
@@ -371,6 +445,69 @@ mod tests {
         assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
     }
 
+    #[test]
+    fn checkpoint_handoff_transfers_validate_duplicates_epochs_and_events() {
+        for (first, second) in [
+            (
+                export_transfer("duplicate-export"),
+                export_transfer("duplicate-export"),
+            ),
+            (
+                import_transfer("duplicate-import", 4, 5),
+                import_transfer("duplicate-import", 4, 5),
+            ),
+        ] {
+            let handoff_id = first.handoff_id.clone();
+            let error = assert_checkpoint_transfer_refused(vec![first, second], &handoff_id);
+            assert!(error.contains("twice"), "{error}");
+        }
+
+        let invalid_import = import_transfer("bad-epoch", 5, 5);
+        let error = assert_checkpoint_transfer_refused(vec![invalid_import], "bad-epoch");
+        assert!(
+            error.contains("does not advance the owner epoch"),
+            "{error}"
+        );
+
+        let mut import_without_epoch = import_transfer("missing-epoch", 4, 5);
+        import_without_epoch.new_owner_epoch = None;
+        let error = assert_checkpoint_transfer_refused(vec![import_without_epoch], "missing-epoch");
+        assert!(
+            error.contains("does not advance the owner epoch"),
+            "{error}"
+        );
+
+        let mut invalid_export_epoch = export_transfer("export-epoch");
+        invalid_export_epoch.new_owner_epoch = Some(5);
+        let error = assert_checkpoint_transfer_refused(vec![invalid_export_epoch], "export-epoch");
+        assert!(error.contains("carries a new owner epoch"), "{error}");
+
+        for (mut invalid_event, sequence, participant_id) in [
+            (export_transfer("bad-export-event"), 1, 0),
+            (import_transfer("bad-import-event", 4, 5), 0, 7),
+        ] {
+            invalid_event.event.sequence = sequence;
+            invalid_event.event.participant_id = participant_id;
+            let handoff_id = invalid_event.handoff_id.clone();
+            let error = assert_checkpoint_transfer_refused(vec![invalid_event], &handoff_id);
+            assert!(error.contains("event claims a sequence"), "{error}");
+        }
+    }
+
+    #[test]
+    fn checkpoint_accepts_valid_export_and_import_transfers() {
+        let transfers = vec![
+            export_transfer("valid-export"),
+            import_transfer("valid-import", 4, 5),
+        ];
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            checkpoint_with_transfers(transfers.clone()),
+        )
+        .unwrap();
+        assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
+    }
 
     #[test]
     fn handoff_import_at_max_owner_epoch_is_refused() {
