@@ -266,10 +266,13 @@ rec {
     opencode = {
       url = "github:developing-today/opencode";
     };
-    # OpenChamber, built from its own flake against the opencode input above.
+    # OpenChamber. Its opencode input deliberately does NOT follow
+    # this flake's `opencode` above: the service cascade's module
+    # chain (openchamber -> opencode fork -> mcpx) is governed by
+    # OpenChamber's own lock file, so the modules and the packages
+    # they manage always come from the same, upstream-paired pins.
     openchamber = {
       url = "github:developing-today/openchamber";
-      inputs.opencode.follows = "opencode";
     };
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer
     # intelligence source on the laptop). Home Manager module + overlay;
