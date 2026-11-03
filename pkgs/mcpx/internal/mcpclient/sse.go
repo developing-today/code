@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // LegacySSETransport speaks the HTTP+SSE transport of 2024-11-05: one GET
@@ -212,6 +212,7 @@ func (t *LegacySSETransport) Send(ctx context.Context, msg []byte) error {
 	if err != nil {
 		return err
 	}
+	req = req.WithContext(httpDispatchContext(req.Context(), msg))
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range t.headers {
 		req.Header.Set(k, v)

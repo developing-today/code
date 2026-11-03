@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // scriptedServer is a fake whose replies are chosen per test, recording every
@@ -494,4 +494,59 @@ func TestModernSamplingShape(t *testing.T) {
 			t.Errorf("handler lost the rest of the request: %v", got)
 		}
 	})
+}
+
+func TestExtensionsDeclaredOnModernOnly(t *testing.T) {
+	// Register CAP-11 (#1918): a 2026-07-28 connection declares the
+	// extensions map, and an identifier is added only with its
+	// implementation -- since #1556 that is exactly the tasks
+	// extension, which CallTool now drives for taskSupport-"required"
+	// tools. A legacy initialize has no extensions key at all: the map
+	// has no counterpart in that era's shape.
+	s := newScripted(func(method string, params map[string]any) any {
+		switch method {
+		case "server/discover":
+			return modernDiscover(params)
+		case "tools/list":
+			return map[string]any{"resultType": "complete", "tools": []any{}}
+		}
+		return nil
+	})
+	c := dialModern(t, s, mcpclient.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.ListTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range s.requests() {
+		params, _ := r["params"].(map[string]any)
+		meta, _ := params["_meta"].(map[string]any)
+		caps, _ := meta[mcpclient.MetaClientCapabilities].(map[string]any)
+		ext, ok := caps["extensions"].(map[string]any)
+		if !ok {
+			t.Errorf("%s: modern capabilities carry no extensions map: %v", r["method"], caps)
+			continue
+		}
+		if len(ext) != 1 {
+			t.Errorf("%s: extensions declares %v; only the implemented tasks extension may be declared", r["method"], ext)
+		}
+		if _, ok := ext["io.modelcontextprotocol/tasks"]; !ok {
+			t.Errorf("%s: extensions %v does not declare io.modelcontextprotocol/tasks", r["method"], ext)
+		}
+	}
+
+	var lcaps map[string]any
+	ls := legacyServer(&lcaps)
+	lctx, lcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer lcancel()
+	lc, err := mcpclient.NewWithOptions(lctx, ls, mcpclient.Options{
+		ClientName: "mcpx", ClientVersion: "t", Preference: mcpclient.ForceLegacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lc.Close()
+	if _, ok := lcaps["extensions"]; ok {
+		t.Errorf("legacy initialize must not carry extensions: %v", lcaps)
+	}
 }

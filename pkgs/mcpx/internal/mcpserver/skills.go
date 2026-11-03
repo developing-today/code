@@ -19,7 +19,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/dezren39/mcpx/plugin/opencode/skills"
+	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 )
 
 // The skills extension (SEP-2640): mcpx serves its own skills.
@@ -171,10 +171,10 @@ func frontmatter(md []byte) (map[string]any, error) {
 
 // UpstreamSkill represents a skill contributed by an upstream server.
 type UpstreamSkill struct {
-	Namespace   string         `json:"namespace"`
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Frontmatter map[string]any `json:"frontmatter,omitempty"`
+	Namespace   string              `json:"namespace"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Frontmatter map[string]any      `json:"frontmatter,omitempty"`
 	Files       []UpstreamSkillFile `json:"files,omitempty"`
 }
 

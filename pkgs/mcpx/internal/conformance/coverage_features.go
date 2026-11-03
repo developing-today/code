@@ -19,6 +19,11 @@ func init() {
 		C("tools-aggregator-disambiguate", "e2e.TestDuplicateNamespaceIsRejected@2026-07-28",
 			"e2e.TestAliasExposesASubsetOfTheSameServer@2026-07-28"),
 		C("tools-aggregator-not-by-servername", "e2e.TestDuplicateNamespaceIsRejected@2026-07-28"),
+		// Annotation trust (#2191): the confirmDestructive gate takes
+		// annotations at face value only from a locally declared (stdio)
+		// server; a remote upstream's hints never clear a call.
+		C("tools-annotations-untrusted", "daemon.TestAnnotationClearsCallOnlyForLocallyDeclaredServers@2024-11-05,2025-03-26,2025-06-18,2025-11-25,2026-07-28"),
+		C("tools-annotations-hints-no-decisions", "daemon.TestAnnotationClearsCallOnlyForLocallyDeclaredServers@2024-11-05,2025-03-26,2025-06-18,2025-11-25,2026-07-28"),
 		SReq("conformance.TestFeaturesServer",
 			"resources-sec-binary-encoded",
 			"tools-declare-capability",
@@ -98,12 +103,10 @@ func init() {
 			"prompts-client-paginate",
 			"prompts-respect-capability-negotiation",
 		),
+		C("prompts-validate-io", "mcpclient.TestValidatePromptResult@all"),
 	)
 	registerGaps(
 		Gap{ID: "resources-annotations-defs", Side: Client, Issue: "#207", Why: "mcpclient.Resource has no annotations field; they are dropped on parse"},
 		Gap{ID: "tools-display-name-precedence", Side: Client, Issue: "#207", Why: "tool title and annotations.title are carried but nothing that displays a tool uses them"},
-		Gap{ID: "tools-annotations-untrusted", Side: Client, Issue: "#257", Why: "destructiveHint from any upstream decides whether a call is confirmed; a false hint (or readOnlyHint true) is trusted"},
-		Gap{ID: "tools-annotations-hints-no-decisions", Side: Client, Issue: "#257", Why: "the consumer confirmDestructive gate is decided by an untrusted upstream annotation"},
-		Gap{ID: "prompts-validate-io", Side: Client, Issue: "#257", Why: "an upstream prompts/get result is passed on unvalidated"},
 	)
 }

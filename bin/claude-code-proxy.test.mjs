@@ -196,3 +196,58 @@ test('failed turn surfaces an error and the session is retryable', async (t) => 
   const j = await r.json();
   assert.ok(j.error.message.includes('stub failure') || j.error.message.length > 0);
 });
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { base, child } = await startProxy();
+  t.after(() => { child.kill('SIGKILL'); });
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`${base}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
+});
+
+test('chain map self-deletes settled entries; same-key turns stay ordered (#2407)', async (t) => {
+  const { base, child, logPath } = await startProxy();
+  t.after(() => child.kill('SIGKILL'));
+  const chainsNow = async () => (await (await fetch(base + '/health')).json()).sessions.chains;
+  const waitChainsEmpty = async () => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const n = await chainsNow();
+      if (n === 0) return;
+      if (Date.now() > deadline) assert.fail('chains map must be empty after settle, got ' + n);
+      await new Promise(r => setTimeout(r, 50));
+    }
+  };
+
+  // Two distinct keys through enqueue: both settle, map must empty.
+  for (const id of ['leak-a', 'leak-b']) {
+    const r = await chat(base, { model: 'claude-haiku-5-5', messages: [{ role: 'user', content: 'hello ' + id }] }, { 'x-session-id': id });
+    assert.equal(r.status, 200);
+    await r.json();
+  }
+  await waitChainsEmpty();
+
+  // Same key: second turn enqueued while the first is in flight must run
+  // after it, in order, and the map must empty afterwards.
+  const headers = { 'x-session-id': 'order-key' };
+  const p1 = chat(base, { model: 'claude-haiku-5-5', messages: [{ role: 'user', content: 'order first' }] }, headers);
+  await new Promise(r => setTimeout(r, 100));
+  const p2 = chat(base, { model: 'claude-haiku-5-5', messages: [{ role: 'user', content: 'order second' }] }, headers);
+  const [r1, r2] = await Promise.all([p1, p2]);
+  assert.equal(r1.status, 200); await r1.json();
+  assert.equal(r2.status, 200); await r2.json();
+  const received = fs.readFileSync(logPath, 'utf-8');
+  const i1 = received.indexOf('order first');
+  const i2 = received.indexOf('order second');
+  assert.ok(i1 !== -1 && i2 !== -1 && i1 < i2, 'same-key turns must reach the engine in enqueue order');
+  await waitChainsEmpty();
+});

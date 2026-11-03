@@ -64,14 +64,30 @@ describe("server boots from fixtures", () => {
     expect(Array.isArray(api.projects)).toBe(true);
   });
 
-  test("sw.js serves the self-unregistering kill switch", async () => {
+  test("sw.js serves the real worker (#3676; design §6 step 2)", async () => {
+    // The kill switch was replaced by the real push worker under the
+    // design's §6 fallback (no probe data existed): the eviction job
+    // lives on in the worker's activate cache purge + the page-side
+    // probe script, so no release serves a /sw.js that neither
+    // evicts the stranded worker nor is the real worker.
     const res = await fetch(`http://127.0.0.1:${port}/sw.js`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect(res.headers.get("cache-control")).toBe("no-cache");
     const body = await res.text();
     expect(body).toContain("skipWaiting");
-    expect(body).toContain("registration.unregister()");
+    expect(body).toContain("addEventListener('push'");
+    expect(body).toContain("addEventListener('notificationclick'");
+    expect(body).toContain("caches.keys()");
+    expect(body).toContain("clients.claim()");
+  });
+
+  test("manifest serves the PWA manifest (#3676/#3315)", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { start_url: string; display: string };
+    expect(body.start_url).toBe("/attention");
+    expect(body.display).toBe("standalone");
   });
 
   test("roadmap page renders", async () => {
@@ -143,9 +159,31 @@ describe("server boots from fixtures", () => {
     expect(week.includes("Next 3 days")).toBe(true);
   });
 
+  test("queue page, fragment, and API expose the same four lists (#1160)", async () => {
+    const shell = await (await fetch(`http://127.0.0.1:${port}/queue`)).text();
+    expect(shell).toContain("Queue visibility");
+    expect(shell).toContain("/frag/queue");
+    const full = await (await fetch(`http://127.0.0.1:${port}/queue?full=1`)).text();
+    for (const heading of ["In progress", "Blocked", "Done recently", "Next up"]) expect(full).toContain(heading);
+    const fragment = await (await fetch(`http://127.0.0.1:${port}/frag/queue`)).text();
+    expect(fragment).toContain("datastar-patch-elements");
+    expect(fragment).toContain('id="queue-main"');
+    const api = (await (await fetch(`http://127.0.0.1:${port}/api/queue.json`)).json()) as {
+      inProgress: unknown[];
+      blocked: unknown[];
+      doneRecently: unknown[];
+      nextUp: unknown[];
+    };
+    for (const key of ["inProgress", "blocked", "doneRecently", "nextUp"] as const)
+      expect(Array.isArray(api[key])).toBe(true);
+  });
+
   test("machine-first JSON endpoints", async () => {
-    const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as { board: unknown[] };
+    const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
+      board: Record<string, unknown>[];
+    };
     expect(board.board.length).toBeGreaterThan(0);
+    expect(board.board.every((item) => !("notes" in item))).toBe(true);
     const quota = (await (await fetch(`http://127.0.0.1:${port}/api/quota.json`)).json()) as { pools: unknown[] };
     expect(quota.pools.length).toBeGreaterThan(0);
     const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as unknown[];
@@ -170,6 +208,8 @@ describe("server boots from fixtures", () => {
     const id = encodeURIComponent(board.board[0].id);
     const res = await fetch(`http://127.0.0.1:${port}/item/${id}`);
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Linked issues / PRs");
+    const html = await res.text();
+    expect(html).toContain("Linked issues / PRs");
+    expect(html).not.toContain("Planning notes");
   });
 });

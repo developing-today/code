@@ -21,7 +21,9 @@ use proptest::test_runner::TestCaseResult;
 
 use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
 use super::ordering::MAX_PARENTS;
-use super::welcome::{CHUNK_HEADER_BYTES, Reassembly, WelcomeError, split};
+use super::welcome::{
+    CHUNK_HEADER_BYTES, CHUNK_PAYLOAD_BYTES, MAX_WELCOME_BYTES, Reassembly, WelcomeError, split,
+};
 use super::*;
 use crate::groups::{
     Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
@@ -223,7 +225,7 @@ impl Cast {
             by,
             Body::Member(MemberOp::Remove {
                 member: id(who),
-                successor: None,
+                mode: crate::groups::RemoveMode::Revoke,
             }),
         );
         let messages = self
@@ -969,6 +971,132 @@ fn test_an_altered_welcome_with_consistent_checks_is_refused_before_decoding() {
     assert_eq!(outcome.err(), Some(WelcomeError::AlteredWelcome));
 }
 
+/// A chunk carrying more than the chunk payload cap is refused before it is buffered, even
+/// when its own check is consistent: it could not have come from the splitter.
+#[test]
+fn test_an_oversized_chunk_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    let mut oversized = chunks.remove(0);
+    oversized.bytes = vec![0_u8; CHUNK_PAYLOAD_BYTES + 1];
+    oversized.check = Hash::digest(&oversized.bytes);
+
+    let mut joiner = Reassembly::default();
+    assert_eq!(
+        joiner.push(&oversized).err(),
+        Some(WelcomeError::ChunkTooLarge {
+            index: 0,
+            size: CHUNK_PAYLOAD_BYTES + 1
+        })
+    );
+}
+
+/// A first chunk declaring an absurd total is refused with its own error, and the refusal
+/// keeps nothing: a genuine first chunk is still accepted afterwards. The bound assumes at
+/// least one payload byte a chunk, so it holds whatever frame size the sender used.
+#[test]
+fn test_an_over_max_declared_total_is_refused_at_the_first_chunk() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let chunks = split(&add, SMALL_FRAME).expect("split");
+    let mut forged = chunks[0].clone();
+    forged.total = u32::MAX;
+
+    let mut joiner = Reassembly::default();
+    assert_eq!(
+        joiner.push(&forged).err(),
+        Some(WelcomeError::WelcomeTooLarge { total: u32::MAX })
+    );
+    assert!(
+        joiner.push(&chunks[0]).expect("genuine chunk 0").is_none(),
+        "the refusal kept no state"
+    );
+}
+
+/// A modest declared total is not refused for size: the declared-total refusal fires only over
+/// the byte bound.
+#[test]
+fn test_a_modest_declared_total_is_accepted() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let chunks = split(&add, SMALL_FRAME).expect("split");
+    let mut modest = chunks[0].clone();
+    modest.total = u32::try_from(MAX_WELCOME_BYTES / CHUNK_PAYLOAD_BYTES).expect("fits");
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&modest).expect("a modest total").is_none());
+}
+
+/// A chunk stream with a plausible total is still bounded: whatever would push the buffered
+/// payload over the maximum is refused, so the joiner never holds more than the bound.
+#[test]
+fn test_buffering_past_the_bound_is_refused() {
+    let digest = Hash::digest(b"a welcome that never completes");
+    let total = 100_u32;
+    let chunk = |index: u32| super::welcome::Chunk {
+        index,
+        total,
+        digest,
+        check: Hash::digest(&vec![0xAB_u8; CHUNK_PAYLOAD_BYTES]),
+        bytes: vec![0xAB_u8; CHUNK_PAYLOAD_BYTES],
+    };
+
+    let mut joiner = Reassembly::default();
+    let mut accepted = 0_usize;
+    for index in 0..total {
+        match joiner.push(&chunk(index)) {
+            Ok(None) => accepted += 1,
+            other => {
+                assert_eq!(other.err(), Some(WelcomeError::WelcomeTooLarge { total }));
+                break;
+            }
+        }
+    }
+    assert!(accepted > 0, "plausible chunks buffer until the bound");
+    assert!(
+        accepted * CHUNK_PAYLOAD_BYTES <= MAX_WELCOME_BYTES
+            && (accepted + 1) * CHUNK_PAYLOAD_BYTES > MAX_WELCOME_BYTES,
+        "the joiner holds as much as fits and refuses the chunk that goes over"
+    );
+}
+
+/// A genuine welcome split into more chunks than the per-chunk budget allows still reassembles:
+/// the size bound caps buffered bytes, not the chunk count, so small frames stay supported.
+#[test]
+fn test_a_small_frame_welcome_with_many_chunks_reassembles() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 800);
+
+    let chunks = split(&add, SMALL_FRAME).expect("split");
+    assert!(
+        chunks.len() as u64 > MAX_WELCOME_BYTES as u64 / CHUNK_PAYLOAD_BYTES as u64,
+        "this welcome needs more chunks than the per-chunk budget allows"
+    );
+
+    let mut joiner = Reassembly::default();
+    let mut whole = None;
+    for chunk in chunks {
+        if let Some(envelope) = joiner.push(&chunk).expect("in order and intact") {
+            whole = Some(envelope);
+        }
+    }
+    let whole = whole.expect("the last chunk completes the welcome");
+    joiner.finish().expect("complete");
+    assert_eq!(
+        cast.sessions
+            .get_mut(&id(4))
+            .expect("session")
+            .process(&whole)
+            .expect("welcome"),
+        Vec::new()
+    );
+    assert!(
+        cast.session(4).is_welcomed(),
+        "the reassembled welcome welcomes"
+    );
+}
+
 /// A chunk of another welcome does not join this one.
 #[test]
 fn test_a_chunk_of_another_welcome_is_refused() {
@@ -1129,7 +1257,7 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
         1,
         Body::Member(MemberOp::Remove {
             member: id(3),
-            successor: None,
+            mode: crate::groups::RemoveMode::Revoke,
         }),
     );
     let with = cast.log(
@@ -1284,7 +1412,7 @@ fn test_fork_recovery_removes_the_forked_key_and_reenrols_a_new_one() {
         1,
         Body::Member(MemberOp::Remove {
             member: id(3),
-            successor: None,
+            mode: crate::groups::RemoveMode::Revoke,
         }),
     );
     let with = cast.log(
@@ -2535,7 +2663,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
     // so CBOR encodes it as an integer array at ~1.9 bytes per byte - roughly
     // 12 MiB encoded: over half the 16 MiB cap, under the cap itself.
     let big = vec![7_u8; 6 * 1024 * 1024];
-    let first = cast.session_mut(1).send(&big, &rng).expect("send");
+    let first = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&first).expect("process"),
         vec![Received::Withheld(first.id())]
@@ -2545,7 +2673,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
         cast.session_mut(3).process(&first).expect("process"),
         vec![Received::Withheld(first.id())]
     );
-    let second = cast.session_mut(1).send(&big, &rng).expect("send");
+    let second = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     match cast.session_mut(3).process(&second) {
         Err(SchemeError::HeldFull {
             count,
@@ -2570,7 +2698,7 @@ fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
     let mut cast = removed_member_cast();
     let rng = Rng::default();
     let big = vec![9_u8; 6 * 1024 * 1024];
-    let held = cast.session_mut(1).send(&big, &rng).expect("send");
+    let held = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&held).expect("process"),
         vec![Received::Withheld(held.id())]
@@ -2598,7 +2726,7 @@ fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
     // tracked count and byte totals.
     let remove = cast.remove(1, 3);
     cast.deliver(&remove, &[2, 3]);
-    let again = cast.session_mut(1).send(&big, &rng).expect("send");
+    let again = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&again).expect("process"),
         vec![Received::Withheld(again.id())]

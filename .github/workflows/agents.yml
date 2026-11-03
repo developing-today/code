@@ -1,0 +1,51 @@
+# agents.yml -- the single home for this repo's dispatch-scheduled
+# agents (Bolt / Palette / Suggestions, replacing the retired Jules
+# scheduled tasks + Suggestions).
+#
+# This file is a THIN CALLER: it contains no task logic of its own.
+# The task list, the slot table, and the prompts live centrally in
+# developing-today/code -- the reusable workflow
+# .github/workflows/pm-scheduled.yml and the prompt library inside
+# the pm-dispatch-task action (prompts/<task>.md). Edit them there,
+# not here.
+#
+# Schedule times are UTC, converted from America/Chicago (CDT):
+# the tasks cron (0 1 * * *) fires at 20:00 CDT and the suggestions
+# cron (0 13 * * *) fires at 08:00 CDT. During CST the local fire
+# time shifts one hour earlier (19:00 / 07:00).
+
+name: agents
+
+on:
+  schedule:
+    - cron: "0 1 * * *"
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Which scheduled agent task to run"
+        type: choice
+        options:
+          - all
+          - bolt
+          - palette
+          - suggestions
+        default: all
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  scheduled:
+    uses: developing-today/code/.github/workflows/pm-scheduled.yml@main
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      schedule: ${{ github.event.schedule }}
+      # Empty on schedule events (inputs are empty there, and the
+      # central workflow runs the tasks due for the cron slot) and
+      # when the manual selector is 'all'; the selector value itself
+      # (bolt | palette | suggestions) on a specific manual pick.
+      tasks: ${{ github.event_name == 'workflow_dispatch' && inputs.task != 'all' && inputs.task || '' }}

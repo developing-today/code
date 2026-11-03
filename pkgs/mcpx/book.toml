@@ -1,0 +1,17 @@
+# mdBook configuration for the mcpx book (#1939, Approach C).
+# The book root is pkgs/mcpx itself so the sources stay where they have
+# always lived: plain markdown under docs/, rendered on GitHub exactly
+# as before, and now also as a book via the .#mcpx-docs flake output.
+[book]
+title = "mcpx"
+authors = ["developing-today"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+# Every chapter in SUMMARY.md must exist on disk; never invent stubs.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/developing-today/code"

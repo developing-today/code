@@ -7,11 +7,7 @@
     "claude-haiku": "^claude-haiku-(\\d+(?:-\\d+)?)$"
   },
   "providers": {
-    "antigravity-agy": {
-      "keep": ["gemini-flash", "gemini-argon", "claude-opus", "claude-sonnet", "claude-haiku"],
-      "exclude": []
-    },
-    "antigravity-ls": {
+    "antigravity-direct": {
       "keep": ["gemini-flash", "gemini-argon", "claude-opus", "claude-sonnet", "claude-haiku"],
       "exclude": []
     }

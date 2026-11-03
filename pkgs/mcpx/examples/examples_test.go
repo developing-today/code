@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // paramDecl is the head of a recipe declaration, the same shape
@@ -161,6 +161,10 @@ func isolatedEnv(dir, cfgPath string) []string {
 		// A daemon left behind by a crashed run clears itself instead of
 		// holding a fixture server for hours.
 		"MCPX_AUTOSTART_IDLE_EXIT=60s",
+		// The write policy gate (#1979) defaults to ask; an example that
+		// calls an unannotated tool would otherwise wait out the ask
+		// timeout and print a refusal instead of its own output.
+		"MCPX_POLICY_WRITE=allow",
 	)
 }
 

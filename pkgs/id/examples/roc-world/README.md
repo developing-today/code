@@ -1,16 +1,19 @@
 # Roc world platform
 
 The platform (`platform.roc` + the freestanding Zig host adapter) that turns a
-pure Roc program into a `id` world module. Every example app in this directory
-references this one copy:
+pure Roc program into a `id` world module. Roc world apps reference this one
+copy:
 
 ```
 examples/roc-world/       platform + host adapter (this directory)
 examples/roc-counter/     app: a big red button
-examples/tic-tac-toe/     app: a two-player game
+apps/tic-tac-toe/         packaged app: a two-player game
 ```
 
 ## The module ABI
+
+The host/guest boundary is specified in [ABI v1](ABI.md), including the
+`plaza_*` exports, buffer ownership, and capability protocol.
 
 A world program provides these functions:
 

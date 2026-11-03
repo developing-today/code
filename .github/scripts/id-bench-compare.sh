@@ -13,14 +13,27 @@
 # A benchmark is flagged when its current median is more than
 # BENCH_REGRESSION_THRESHOLD_PCT percent (default 20) above baseline.
 # The report goes to stdout; the caller appends it to the GitHub job
-# summary. This script ALWAYS exits 0 — slice 3 is non-blocking by
-# design: the report informs, it never gates a PR.
+# summary. This script exits 0 whenever it produces a report — slice 3
+# is non-blocking by design: the report informs, it never gates a PR.
+# The only non-zero exits are usage errors and a non-numeric
+# BENCH_REGRESSION_THRESHOLD_PCT (both exit 2, before any report):
+# a broken configuration must be loud, never silently read as
+# "flag nothing" (#1619).
+#
+# Rows that cannot be compared — the unit changed between baseline
+# and current, or the baseline median is zero — are reported as
+# incomparable: no percent change, no ok/regression verdict (#1619).
 set -euo pipefail
 
 threshold="${BENCH_REGRESSION_THRESHOLD_PCT:-20}"
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
   echo "usage: id-bench-compare.sh <bench-output-file> [baseline-file]" >&2
+  exit 2
+fi
+
+if ! [[ "$threshold" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "id-bench-compare.sh: error: BENCH_REGRESSION_THRESHOLD_PCT must be a non-negative number, got '$threshold'" >&2
   exit 2
 fi
 
@@ -70,18 +83,29 @@ awk -v threshold="$threshold" '
     print "| benchmark | unit | baseline median | current median | change | status |"
     print "| --- | --- | ---: | ---: | ---: | --- |"
     regressions = 0
+    incomparable = 0
     for (i = 1; i <= base_n; i++) {
       name = base_order[i]
       if (name in cur_median) {
-        pct = (cur_median[name] - base_median[name]) / base_median[name] * 100
-        if (pct > threshold) {
-          status = "⚠️ regression"
-          regressions++
-          reg_list[++reg_n] = sprintf("%s (+%.1f%%)", name, pct)
+        if (base_unit[name] != cur_unit[name]) {
+          incomparable++
+          inc_list[++inc_n] = sprintf("%s (unit changed: %s → %s)", name, base_unit[name], cur_unit[name])
+          printf "| %s | %s → %s | %.3f | %.3f | — | incomparable (unit changed) |\n", name, base_unit[name], cur_unit[name], base_median[name], cur_median[name]
+        } else if (base_median[name] == 0) {
+          incomparable++
+          inc_list[++inc_n] = sprintf("%s (zero baseline median)", name)
+          printf "| %s | %s | %.3f | %.3f | — | incomparable (zero baseline) |\n", name, base_unit[name], base_median[name], cur_median[name]
         } else {
-          status = "ok"
+          pct = (cur_median[name] - base_median[name]) / base_median[name] * 100
+          if (pct > threshold) {
+            status = "⚠️ regression"
+            regressions++
+            reg_list[++reg_n] = sprintf("%s (+%.1f%%)", name, pct)
+          } else {
+            status = "ok"
+          }
+          printf "| %s | %s | %.3f | %.3f | %+.1f%% | %s |\n", name, base_unit[name], base_median[name], cur_median[name], pct, status
         }
-        printf "| %s | %s | %.3f | %.3f | %+.1f%% | %s |\n", name, base_unit[name], base_median[name], cur_median[name], pct, status
       } else {
         printf "| %s | %s | %.3f | — | — | not run |\n", name, base_unit[name], base_median[name]
       }
@@ -99,6 +123,12 @@ awk -v threshold="$threshold" '
       print ""
     } else {
       printf "✅ No benchmark regressed more than %s%% against the committed baselines.\n", threshold
+    }
+    if (incomparable > 0) {
+      printf "⚠️ **%d benchmark(s) could not be compared:** ", incomparable
+      for (i = 1; i <= inc_n; i++) printf "%s%s", inc_list[i], (i < inc_n ? ", " : "")
+      print ""
+      print "Incomparable rows carry no percent change and no verdict: a unit change means the two medians measure different things, and a zero baseline has no meaningful ratio. Re-baseline (see `pkgs/id/benches/BASELINES.md`) to make them comparable again."
     }
   }
 ' "$baseline_file" "$current_file"

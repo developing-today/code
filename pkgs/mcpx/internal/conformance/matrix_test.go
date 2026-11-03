@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/conformance"
+	"github.com/developing-today/code/pkgs/mcpx/internal/conformance"
 )
 
 // update rewrites the generated files instead of comparing them.
@@ -143,5 +143,9 @@ func TestMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	golden(t, conformance.MatrixPath, []byte(conformance.Render(reqs, st, inputs)))
+	auth, err := conformance.LoadAuthSplit(filepath.Join(root(t), conformance.AuthSplitPath), reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, conformance.MatrixPath, []byte(conformance.Render(reqs, st, inputs, auth)))
 }

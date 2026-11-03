@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+  ANTIGRAVITY_GEMINI_SERVICE_ID,
+  GO_LAB_SERVICE_ID,
+  GO_PERSONAL_SERVICE_ID,
+  entriesWithPoolSplits,
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
+  goPoolServiceId,
+  lastKnownEntries,
+  mapWithConcurrency,
+  markRetained,
   normalizeResetAt,
   recordsFromEntries,
   serviceIdFor,
@@ -65,6 +74,41 @@ describe("entryFromResult", () => {
     const balance = entry.windows.find((w) => w.name === "credits_balance");
     expect(balance?.pctOfLimit).toBeNull();
     expect(balance?.valueLabel).toBe("12.50");
+    expect(entry.credentialWatch).toBe(true);
+  });
+  test("maps only authoritative expiry metadata and separates unconfigured credentials", () => {
+    const entry = entryFromResult(
+      { ...OK_RESULT, providerId: "claude", credentialExpiresAt: 1793438427299, credentialSource: "claude-code" },
+      "2026-10-27T05:00:00.000Z",
+    );
+    expect(entry.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
+    expect(entry.credentialSource).toBe("claude-code");
+    const absent = entryFromResult({ ...OK_RESULT, configured: false, ok: false }, "2026-10-27T05:00:00.000Z");
+    expect(absent.state).toBe("unconfigured");
+    expect(absent.credentialWatch).toBe(true);
+  });
+  test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
+    const tickIso = "2026-11-02T03:00:00.000Z";
+    const fetchedAts = [1e16, -1e16, 0, -1, NaN, Infinity, -Infinity, undefined, 1793075143879];
+    const results = fetchedAts.map((fetchedAt) => ({ ...OK_RESULT, fetchedAt }));
+    const entries = results.map((result) => entryFromResult(result, tickIso));
+
+    expect(entries).toHaveLength(results.length);
+    expect(entries.map((entry) => entry.measuredAt)).toEqual([
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      tickIso,
+      new Date(1793075143879).toISOString(),
+    ]);
+    for (const entry of entries) {
+      expect(entry.windows).toHaveLength(2);
+      expect(entry.windows.every((window) => window.measuredAt === entry.measuredAt)).toBe(true);
+    }
   });
   test("per-model usage flattens to <model>:<window>", () => {
     const entry = entryFromResult(
@@ -89,6 +133,40 @@ describe("entryFromResult", () => {
     expect(entry.windows[0].pctOfLimit).toBe(2);
     expect(entry.windows[0].resetsAt).toBe("2026-10-31T13:11:00.000Z");
   });
+  test("out-of-range percentages are omitted while null and valid sibling windows survive", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "claude",
+        ok: true,
+        configured: true,
+        usage: {
+          windows: {
+            below: { usedPercent: -20 },
+            above: { usedPercent: 150 },
+            huge: { usedPercent: 1e9 },
+            zero: { usedPercent: 0 },
+            full: { usedPercent: 100 },
+            valid: { usedPercent: 42 },
+            balance: { usedPercent: null, valueLabel: "$12.50" },
+          },
+        },
+      },
+      "2026-10-27T05:00:00.000Z",
+    );
+
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["zero", 0],
+      ["full", 100],
+      ["valid", 42],
+      ["balance", null],
+    ]);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => [r.metricId, r.value])).toEqual([
+      ["full", 100],
+      ["valid", 42],
+      ["zero", 0],
+    ]);
+  });
   test("error and unconfigured states stay distinct", () => {
     const err = entryFromResult(
       { providerId: "claude", ok: false, configured: true, error: "session expired", usage: null },
@@ -102,6 +180,75 @@ describe("entryFromResult", () => {
       "2026-10-27T05:00:00.000Z",
     );
     expect(un.state).toBe("unconfigured");
+  });
+});
+
+describe("mapWithConcurrency (#1268)", () => {
+  test("preserves order and never exceeds the in-flight bound", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const out = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(n % 3);
+      inFlight--;
+      return n * 10;
+    });
+    expect(out).toEqual([10, 20, 30, 40, 50, 60, 70]);
+    expect(maxInFlight).toBe(3);
+  });
+  test("a limit above the item count still completes; empty input maps to empty", async () => {
+    expect(await mapWithConcurrency([1, 2], 6, async (n) => n + 1)).toEqual([2, 3]);
+    expect(await mapWithConcurrency([], 6, async (n: number) => n)).toEqual([]);
+  });
+  test("a non-positive limit degrades to sequential, never unbounded", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const out = await mapWithConcurrency([1, 2, 3], 0, async (n) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(1);
+      inFlight--;
+      return n;
+    });
+    expect(out).toEqual([1, 2, 3]);
+    expect(maxInFlight).toBe(1);
+  });
+  test("a worker rejection rejects the map", async () => {
+    await expect(
+      mapWithConcurrency([1, 2], 2, async (n) => {
+        if (n === 2) throw new Error("boom");
+        return n;
+      }),
+    ).rejects.toThrow("boom");
+  });
+});
+
+describe("lastKnownEntries (#1268)", () => {
+  const tick = "2026-10-27T05:00:00.000Z";
+  const okEntry = entryFromResult(OK_RESULT, tick);
+  const errEntry = entryFromResult(
+    { providerId: "cline-pass", ok: false, configured: true, error: "timed out", usage: null },
+    tick,
+  );
+  const otherOk = entryFromResult({ ...OK_RESULT, providerId: "claude" }, tick);
+  test("returns the provider's ok entries verbatim, original measuredAt kept", () => {
+    const kept = lastKnownEntries([okEntry, errEntry, otherOk], "cline-pass");
+    expect(kept).toEqual([okEntry]);
+    expect(kept[0].measuredAt).toBe(okEntry.measuredAt);
+  });
+  test("error-only history retains nothing; unknown providers retain nothing", () => {
+    expect(lastKnownEntries([errEntry], "cline-pass")).toEqual([]);
+    expect(lastKnownEntries([okEntry], "nope")).toEqual([]);
+    expect(lastKnownEntries([], "cline-pass")).toEqual([]);
+  });
+  test("markRetained stamps copies with the failed tick; originals and measuredAt untouched", () => {
+    const stamped = markRetained([okEntry], "2026-10-27T05:15:00.000Z");
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0].retainedFromFailedTick).toBe("2026-10-27T05:15:00.000Z");
+    expect(stamped[0].measuredAt).toBe(okEntry.measuredAt);
+    expect(stamped[0]).not.toBe(okEntry);
+    expect(okEntry.retainedFromFailedTick).toBeUndefined();
   });
 });
 
@@ -219,7 +366,11 @@ describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
     const ticks = [T1, T2, T3, T4];
     const counts: number[] = [];
     for (const tick of ticks) {
-      const { records, appended } = recordsFromEntries([cred("cred_a", 10, tick), cred("cred_b", 20, tick)], state, "quota-gatherer");
+      const { records, appended } = recordsFromEntries(
+        [cred("cred_a", 10, tick), cred("cred_b", 20, tick)],
+        state,
+        "quota-gatherer",
+      );
       counts.push(records.length);
       if (tick === T1) {
         expect(records).toHaveLength(1);
@@ -266,7 +417,9 @@ describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
     expect(moved.records).toHaveLength(1);
     expect(moved.records[0].value).toBe(25);
     const settled = new Map([...state, ...moved.appended]);
-    expect(recordsFromEntries([cred("cred_a", 10, T3), cred("cred_b", 25, T3)], settled, "quota-gatherer").records).toHaveLength(0);
+    expect(
+      recordsFromEntries([cred("cred_a", 10, T3), cred("cred_b", 25, T3)], settled, "quota-gatherer").records,
+    ).toHaveLength(0);
   });
 
   test("non-max credential moving 10->15 with the max unchanged appends zero", () => {
@@ -277,7 +430,11 @@ describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
   });
 
   test("one recordsFromEntries call never emits two records for the same serviceId|window key", () => {
-    const { records } = recordsFromEntries([cred("cred_a", 10, T1), cred("cred_b", 20, T1)], new Map(), "quota-gatherer");
+    const { records } = recordsFromEntries(
+      [cred("cred_a", 10, T1), cred("cred_b", 20, T1)],
+      new Map(),
+      "quota-gatherer",
+    );
     const keys = records.map((r) => `${r.serviceId}|${r.metricId}`);
     expect(new Set(keys).size).toBe(keys.length);
   });
@@ -312,6 +469,45 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
     const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
     expect(records.map((r) => r.metricId).sort()).toEqual(["5h", "weekly"]);
     expect(records.every((r) => r.source === "console")).toBe(true);
+  });
+  test("out-of-range percentages and negative dollar labels are omitted", () => {
+    const doc = {
+      source: "file-export/test",
+      status: "ok",
+      measuredAt: "2026-10-27T05:30:00.000Z",
+      windows: [
+        { name: "below", usedPct: -20 },
+        { name: "above", usedPct: 150 },
+        { name: "huge", usedPct: 1e9 },
+        { name: "null", usedPct: null },
+        { name: "zero", usedPct: 0 },
+        { name: "full", usedPct: 100 },
+        { name: "valid", usedPct: 42 },
+      ],
+      freeCreditsUsd: -42.5,
+      paygBalanceUsd: -1,
+    };
+    const entry = entryFromFileExport(doc, { fileMtimeIso: doc.measuredAt, stale: false });
+    expect(entry.windows.map((w) => [w.name, w.pctOfLimit, w.valueLabel])).toEqual([
+      ["zero", 0, null],
+      ["full", 100, null],
+      ["valid", 42, null],
+    ]);
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => [r.metricId, r.value])).toEqual([
+      ["full", 100],
+      ["valid", 42],
+      ["zero", 0],
+    ]);
+
+    const nonnegativeLabels = entryFromFileExport(
+      { ...doc, windows: [], freeCreditsUsd: 0, paygBalanceUsd: 12.5 },
+      { fileMtimeIso: doc.measuredAt, stale: false },
+    );
+    expect(nonnegativeLabels.windows.map((w) => [w.name, w.valueLabel])).toEqual([
+      ["free_credits", "$0.00"],
+      ["payg_balance", "$12.50"],
+    ]);
   });
   test("failure status documents are error entries, never zeros", () => {
     const entry = entryFromFileExport(
@@ -358,7 +554,12 @@ describe("entryFromTurso (#1049)", () => {
     },
   };
   const subDoc = {
-    subscription: { plan: "starter", name: "starter", current_billing_period_start: "2026-10-01T04:00:00+00:00", current_billing_period_end: "2026-11-01T04:00:00+00:00" },
+    subscription: {
+      plan: "starter",
+      name: "starter",
+      current_billing_period_start: "2026-10-01T04:00:00+00:00",
+      current_billing_period_end: "2026-11-01T04:00:00+00:00",
+    },
   };
   const at = "2026-10-29T02:30:00.000Z";
   test("maps org usage onto the turso entry vs Starter limits, period end as cycle end", () => {
@@ -410,5 +611,321 @@ describe("entryFromTurso (#1049)", () => {
     const empty = entryFromTurso({ organization: { usage: {} } }, subDoc, { measuredAt: at });
     expect(empty.state).toBe("error");
     expect(empty.windows).toEqual([]);
+  });
+});
+
+describe("entryFromTurso negative usage (#2553)", () => {
+  const subDoc = {
+    subscription: {
+      plan: "starter",
+      name: "starter",
+      current_billing_period_start: "2026-10-01T04:00:00+00:00",
+      current_billing_period_end: "2026-11-01T04:00:00+00:00",
+    },
+  };
+  const at = "2026-10-29T02:30:00.000Z";
+  test("all-negative usage read is an error entry with no windows and no records", () => {
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: { databases: -3, storage_bytes: -2, rows_read: -5, rows_written: -1, bytes_synced: -1 },
+        },
+      },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("error");
+    expect(entry.error).toContain("no known metrics");
+    expect(entry.windows).toEqual([]);
+    expect(recordsFromEntries([entry], new Map(), "quota-gatherer").records).toEqual([]);
+  });
+  test("one negative metric is omitted; the valid metrics publish unchanged and no record is negative", () => {
+    const entry = entryFromTurso(
+      {
+        organization: {
+          usage: {
+            databases: -3,
+            storage_bytes: 1_053_323_264,
+            rows_read: 1_905_385,
+            rows_written: 30_026,
+            bytes_synced: -1,
+          },
+        },
+      },
+      subDoc,
+      { measuredAt: at },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.map((w) => w.name).sort()).toEqual(["rows-read", "rows-written", "storage"]);
+    for (const w of entry.windows) {
+      expect(w.value).toBeGreaterThanOrEqual(0);
+      expect(w.pctOfLimit).toBeGreaterThanOrEqual(0);
+    }
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(records.map((r) => r.metricId).sort()).toEqual(["rows-read", "rows-written", "storage"]);
+    for (const r of records) {
+      expect(r.value).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
+describe("pool splits (#1331)", () => {
+  const TICK = "2026-11-03T05:00:00.000Z";
+  const goResult = (label: string | undefined, id: string): QuotaProviderResult => ({
+    providerId: "opencode-go",
+    providerName: "OpenCode Go",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    credentialId: id,
+    ...(label === undefined ? {} : { credentialLabel: label }),
+    usage: {
+      windows: {
+        "5h": { usedPercent: 12, windowSeconds: 18_000, resetAt: Date.parse(TICK) + 18_000_000 },
+        monthly: { usedPercent: 60, windowSeconds: null, resetAt: Date.parse("2026-12-03T03:02:00.000Z") },
+      },
+    },
+  });
+
+  test("Go per-workspace entries yield personal/lab split rows alongside the combined rows", () => {
+    const entries = [
+      entryFromResult(goResult("Personal", "cred_personal"), TICK),
+      entryFromResult(goResult("Lab", "cred_lab"), TICK),
+    ];
+    expect(entries.map((e) => e.serviceId)).toEqual(["opencode-go", "opencode-go"]);
+    const split = entriesWithPoolSplits(entries);
+    expect(split.map((e) => e.serviceId).sort()).toEqual([
+      "opencode-go",
+      "opencode-go",
+      GO_LAB_SERVICE_ID,
+      GO_PERSONAL_SERVICE_ID,
+    ]);
+    const personal = split.find((e) => e.serviceId === GO_PERSONAL_SERVICE_ID)!;
+    expect(personal.providerId).toBe("opencode-go");
+    expect(personal.credentialId).toBe("cred_personal");
+    expect(personal.credentialLabel).toBe("Personal");
+    expect(personal.state).toBe("ok");
+    expect(personal.measuredAt).toBe(entries[0].measuredAt);
+    expect(personal.windows).toEqual(entries[0].windows);
+    const lab = split.find((e) => e.serviceId === GO_LAB_SERVICE_ID)!;
+    expect(lab.credentialId).toBe("cred_lab");
+    // ...and the pool-level series continue in the snapshot records.
+    const { records } = recordsFromEntries(split, new Map(), "quota-gatherer");
+    expect(records.map((r) => `${r.serviceId}|${r.metricId}`).sort()).toEqual([
+      "opencode-go:lab|5h",
+      "opencode-go:lab|monthly",
+      "opencode-go:personal|5h",
+      "opencode-go:personal|monthly",
+      "opencode-go|5h",
+      "opencode-go|monthly",
+    ]);
+  });
+
+  test("Go lapse: an errored Personal row splits as a pool error; unconfigured rows never split", () => {
+    const lapsed: QuotaProviderResult = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: true,
+      fetchedAt: Date.parse(TICK),
+      credentialId: "cred_personal",
+      credentialLabel: "Personal",
+      error: "No active OpenCode Go subscription on the selected Console account",
+      usage: null,
+    };
+    const unconfigured: QuotaProviderResult = {
+      providerId: "opencode-go",
+      providerName: "OpenCode Go",
+      ok: false,
+      configured: false,
+      credentialId: "cred_lab",
+      credentialLabel: "Lab",
+      error: "Not configured",
+      usage: null,
+    };
+    const split = entriesWithPoolSplits([entryFromResult(lapsed, TICK), entryFromResult(unconfigured, TICK)]);
+    expect(split.map((e) => e.serviceId).sort()).toEqual(["opencode-go", "opencode-go", GO_PERSONAL_SERVICE_ID]);
+    const personal = split.find((e) => e.serviceId === GO_PERSONAL_SERVICE_ID)!;
+    expect(personal.state).toBe("error");
+    expect(personal.error).toContain("No active OpenCode Go subscription");
+  });
+
+  test("Go workspaces without a hub pool stay combined-only; labels match case-insensitively", () => {
+    expect(goPoolServiceId(entryFromResult(goResult("Home", "cred_home"), TICK))).toBeNull();
+    expect(goPoolServiceId(entryFromResult(goResult(undefined, "cred_x"), TICK))).toBeNull();
+    expect(goPoolServiceId(entryFromResult(goResult("  PERSONAL ", "cred_p"), TICK))).toBe(GO_PERSONAL_SERVICE_ID);
+    expect(goPoolServiceId(entryFromResult(goResult("lab", "cred_l"), TICK))).toBe(GO_LAB_SERVICE_ID);
+    const split = entriesWithPoolSplits([entryFromResult(goResult("Home", "cred_home"), TICK)]);
+    expect(split.map((e) => e.serviceId)).toEqual(["opencode-go"]);
+  });
+
+  const antigravityResult = (models: Record<string, Record<string, number>>): QuotaProviderResult => ({
+    providerId: "antigravity",
+    providerName: "Antigravity",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse(TICK),
+    usage: {
+      models: Object.fromEntries(
+        Object.entries(models).map(([model, wins]) => [
+          model,
+          {
+            windows: Object.fromEntries(
+              Object.entries(wins).map(([name, pct]) => [
+                name,
+                { usedPercent: pct, windowSeconds: 604_800, resetAt: Date.parse("2026-11-10T05:00:00.000Z") },
+              ]),
+            ),
+          },
+        ]),
+      ),
+    },
+  });
+
+  test("Antigravity models group into gemini + claude-gpt pool rows; hottest window wins", () => {
+    const entry = entryFromResult(
+      antigravityResult({
+        "gemini-2.5-pro": { "5h": 70, weekly: 40 },
+        "gemini-flash": { weekly: 55 },
+        "claude-sonnet": { "5h": 20, weekly: 90 },
+        "gpt-5": { weekly: 10 },
+      }),
+      TICK,
+    );
+    expect(entry.serviceId).toBe("antigravity");
+    expect(entry.windows).toHaveLength(6);
+    const split = entriesWithPoolSplits([entry]);
+    expect(split).toHaveLength(3);
+    expect(split[0].serviceId).toBe("antigravity");
+    const gemini = split.find((e) => e.serviceId === ANTIGRAVITY_GEMINI_SERVICE_ID)!;
+    expect(gemini.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["5h", 70],
+      ["weekly", 55],
+    ]);
+    const claudeGpt = split.find((e) => e.serviceId === ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID)!;
+    expect(claudeGpt.windows.map((w) => [w.name, w.pctOfLimit])).toEqual([
+      ["5h", 20],
+      ["weekly", 90],
+    ]);
+    expect(gemini.measuredAt).toBe(entry.measuredAt);
+    expect(gemini.source).toBe(entry.source);
+  });
+
+  test("Antigravity grouping is order-independent and omits empty pools", () => {
+    const models = {
+      "gemini-2.5-pro": { weekly: 40 },
+      "claude-sonnet": { weekly: 90 },
+    };
+    const fwd = entriesWithPoolSplits([entryFromResult(antigravityResult(models), TICK)]);
+    const rev = entriesWithPoolSplits([
+      entryFromResult(antigravityResult({ "claude-sonnet": { weekly: 90 }, "gemini-2.5-pro": { weekly: 40 } }), TICK),
+    ]);
+    // The combined entry preserves module order by design; the derived
+    // pool rows must not depend on it.
+    const rowsOf = (split: ReturnType<typeof entriesWithPoolSplits>) =>
+      split.slice(1).map((e) => [e.serviceId, e.windows.map((w) => [w.name, w.pctOfLimit])]);
+    expect(rowsOf(fwd)).toEqual(rowsOf(rev));
+    const geminiOnly = entriesWithPoolSplits([
+      entryFromResult(antigravityResult({ "gemini-flash": { weekly: 55 } }), TICK),
+    ]);
+    expect(geminiOnly.map((e) => e.serviceId).sort()).toEqual(["antigravity", ANTIGRAVITY_GEMINI_SERVICE_ID]);
+  });
+
+  test("Antigravity error lapses both pools; unconfigured splits nothing", () => {
+    const err = entryFromResult(
+      {
+        providerId: "antigravity",
+        ok: false,
+        configured: true,
+        error: "Failed to refresh Antigravity token",
+        usage: null,
+      },
+      TICK,
+    );
+    const split = entriesWithPoolSplits([err]);
+    expect(split.map((e) => e.serviceId).sort()).toEqual([
+      "antigravity",
+      ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
+      ANTIGRAVITY_GEMINI_SERVICE_ID,
+    ]);
+    for (const row of split.slice(1)) {
+      expect(row.state).toBe("error");
+      expect(row.error).toContain("Failed to refresh");
+    }
+    const unconfigured = entriesWithPoolSplits([
+      entryFromResult(
+        { providerId: "antigravity", ok: false, configured: false, error: "Not configured", usage: null },
+        TICK,
+      ),
+    ]);
+    expect(unconfigured.map((e) => e.serviceId)).toEqual(["antigravity"]);
+  });
+});
+
+describe("own-key guards on quota-gather-map lookups (#2781)", () => {
+  const at = "2026-10-27T05:30:00.000Z";
+  test("entryFromFileExport: prototype spellings get windowSeconds null; known names unchanged", () => {
+    const doc = {
+      service: "meta",
+      source: "file-export/meta-laptop",
+      status: "ok",
+      measuredAt: at,
+      windows: [
+        { name: "5h", usedPct: 12 },
+        { name: "weekly", usedPct: 46 },
+        { name: "storage", usedPct: 3 },
+        { name: "constructor", usedPct: 10 },
+        { name: "__proto__", usedPct: 20 },
+        { name: "toString", usedPct: 30 },
+        { name: "hasOwnProperty", usedPct: 40 },
+      ],
+    };
+    const entry = entryFromFileExport(doc, { fileMtimeIso: at, stale: false });
+    const byName = new Map(entry.windows.map((w) => [w.name, w.windowSeconds]));
+    expect(byName.get("5h")).toBe(18000);
+    expect(byName.get("weekly")).toBe(604800);
+    // "storage" is a genuinely unknown file-export window: null, like the
+    // prototype spellings must be after the guard.
+    expect(byName.get("storage")).toBeNull();
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect(byName.get(name)).toBeNull();
+    }
+    // The published shape: every windowSeconds is a number or null — no
+    // function/object prototype member survives serialization.
+    const published = JSON.parse(JSON.stringify(entry)) as typeof entry;
+    for (const w of published.windows) {
+      expect(w.windowSeconds === null || typeof w.windowSeconds === "number").toBe(true);
+    }
+  });
+
+  test("recordsFromEntries: prototype-spelled Turso windows take the pct path; storage control stays native", () => {
+    // Windows arrive via JSON.parse in production, which is what makes
+    // "__proto__" an own key of the windows record — build the fixture
+    // the same way so the probe is truthful.
+    const usage = JSON.parse(
+      '{"windows":{"storage":{"usedPercent":40},"constructor":{"usedPercent":42},"__proto__":{"usedPercent":7},"toString":{"usedPercent":9}}}',
+    ) as QuotaProviderResult["usage"];
+    const entry = entryFromResult(
+      { providerId: "turso", providerName: "Turso", ok: true, configured: true, fetchedAt: 1793076600000, usage },
+      at,
+    );
+    expect(entry.serviceId).toBe("turso");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    // Control: storage keeps its native-unit record.
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 5, value: 40 });
+    // Prototype spellings: ordinary pct records, never fabricated
+    // native records with undefined unit/limit.
+    for (const [name, value] of [
+      ["constructor", 42],
+      ["__proto__", 7],
+      ["toString", 9],
+    ] as const) {
+      expect(byMetric.get(name)).toMatchObject({ unit: "pct", limit: 100, value });
+    }
+    for (const r of records) {
+      expect(typeof r.unit).toBe("string");
+      expect(Number.isFinite(r.limit)).toBe(true);
+    }
   });
 });

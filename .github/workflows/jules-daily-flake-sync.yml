@@ -1,7 +1,8 @@
-name: Jules Daily Flake Sync & Config Optimization
+name: Daily Flake Sync & Config Optimization
 
 # Daily NixOS configuration optimization and dependency auditing for
-# developing-today/code using Google Jules. The `opencode` and `openchamber`
+# developing-today/code using an OpenCode session launched via pm-dispatch
+# (the pm-dispatch-start reusable action). The `opencode` and `openchamber`
 # flake inputs are NOT maintained here: they are owned by the deterministic
 # flake-inputs-update workflow (.github/workflows/flake-inputs-update.yml).
 
@@ -22,8 +23,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-  queue: max
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -34,17 +34,37 @@ jobs:
   daily-flake-sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Run Jules Flake Sync & Config Agent
-        uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Verify every declared dispatch input is wired (#2681)
+        run: |
+          python3 - <<'PYEOF2'
+          import re, sys
+          path = ".github/workflows/jules-daily-flake-sync.yml"
+          text = open(path).read()
+          block = re.search(r"workflow_dispatch:\n    inputs:\n((?:      .*\n|        .*\n|          .*\n)+)", text)
+          names = re.findall(r"^      (\w+):", block.group(1), re.M) if block else []
+          ignored = set(re.findall(r"^      (\w+):\n        description: \"[^\"]*[Ii]gnored", block.group(1), re.M)) if block else set()
+          missing = [n for n in names if n not in ignored and ("inputs." + n) not in text]
+          if missing:
+              sys.exit("declared workflow_dispatch inputs never referenced: " + ", ".join(missing))
+          print("all declared dispatch inputs are wired or explicitly ignored:", ", ".join(names) or "none")
+          PYEOF2
+
+      - name: Run Flake Sync & Config Agent via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          include_commit_log: true
+          title: "Daily flake sync & config optimization"
           prompt: >-
             Perform the daily configuration review for developing-today/code. Do NOT update the `opencode` or `openchamber` flake inputs — the flake-inputs-update workflow owns them.
 
@@ -72,6 +92,8 @@ jobs:
             - Verify that all system and host configurations evaluate cleanly without errors:
               `nix eval --raw .#nixosConfigurations.nixos.config.system.build.toplevel.drvPath`
             - Ensure git hooks, commit messages, and treefmt formatting pass cleanly.
+
+            ${{ github.event_name == 'workflow_dispatch' && !inputs.auto_merge && 'OPERATOR DIRECTIVE: auto_merge is false for this manually dispatched run — open the Pull Request if warranted, but do NOT merge it. Leave it open for a human and say in the PR description that auto_merge was off for this run.' || '' }}
 
             ### 4. PULL REQUEST & MERGE
             - If updates or improvements are present:

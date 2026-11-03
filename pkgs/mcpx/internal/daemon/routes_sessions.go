@@ -3,7 +3,7 @@ package daemon
 import (
 	"net/http"
 
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // routesSessions registers the session inventory (#1931 slice 1).
@@ -14,7 +14,7 @@ import (
 // sessions without the rest of the status document. Nothing here kills,
 // detaches or resumes; those are later slices of #1931.
 func (s *Server) routesSessions(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/sessions", s.handleSessions)
+	s.route(mux, "GET /v1/sessions", s.handleSessions)
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, _ *http.Request) {

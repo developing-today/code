@@ -157,6 +157,7 @@ type Defaults struct {
 		Disambiguate        string `json:"disambiguate"`
 		DisambiguateDefault string `json:"disambiguateDefault"`
 		ConfirmDestructive  bool   `json:"confirmDestructive"`
+		WritePolicy         string `json:"writePolicy"`
 		AskTimeout          string `json:"askTimeout"`
 		DiagnosePreflight   bool   `json:"diagnosePreflight"`
 		HistoryPerTool      int    `json:"historyPerTool"`
@@ -173,17 +174,30 @@ type Defaults struct {
 		PromptMaxTokens     int    `json:"promptMaxTokens"`
 		RunTimeout          string `json:"runTimeout"`
 	} `json:"consumer"`
+	// Model governs mcpx's own provider layer (#1925): the knobs a user
+	// can change live in the settings registry as model.*; this section
+	// carries only the layer's built-in deadline, so no package
+	// redeclares it.
+	Model struct {
+		Timeout string `json:"timeout"`
+	} `json:"model"`
 	// Exec governs running a script, whether the CLI does it or the daemon
 	// does it on a caller's behalf.
 	Exec struct {
-		Timeout      string `json:"timeout"`
-		WorkDirs     int    `json:"workDirs"`
-		Programs     int    `json:"programs"`
-		Entries      int    `json:"entries"`
-		StderrLimit  int    `json:"stderrLimit"`
-		Output       string `json:"output"`
-		RemoteOutput string `json:"remoteOutput"`
-		Delivery     string `json:"delivery"`
+		Timeout     string `json:"timeout"`
+		HookTimeout string `json:"hookTimeout"`
+		// ResolveTimeout bounds one nix resolution in progspec; a first
+		// build of a large flake can legitimately take minutes.
+		ResolveTimeout   string `json:"resolveTimeout"`
+		ResolveWaitDelay string `json:"resolveWaitDelay"`
+		WorkDirs         int    `json:"workDirs"`
+		Programs         int    `json:"programs"`
+		Entries          int    `json:"entries"`
+		StderrLimit      int    `json:"stderrLimit"`
+		StdoutLimit      int    `json:"stdoutLimit"`
+		Output           string `json:"output"`
+		RemoteOutput     string `json:"remoteOutput"`
+		Delivery         string `json:"delivery"`
 	} `json:"exec"`
 	// Cache governs the one content-addressed cache mechanism (#1908):
 	// the byte and age bounds every kind is evicted against, and how old
@@ -197,6 +211,8 @@ type Defaults struct {
 	// caller to fetch rather than printed into its context.
 	Artifacts struct {
 		TTL                string `json:"ttl"`
+		IdleTTL            string `json:"idleTtl"`
+		MaxAge             string `json:"maxAge"`
 		MaxBytes           string `json:"maxBytes"`
 		Quota              string `json:"quota"`
 		InlineMaxBytes     string `json:"inlineMaxBytes"`
@@ -317,7 +333,12 @@ type Defaults struct {
 	// ProtoTasks governs the tasks mcpx hands out, on MCP and on /v1.
 	ProtoTasks struct {
 		PollInterval string `json:"pollInterval"`
+		CancelGrace  string `json:"cancelGrace"`
 	} `json:"protoTasks"`
+	// Wasm governs the in-process WASM tool host (internal/wasmtools).
+	Wasm struct {
+		LogLineSize string `json:"logLineSize"`
+	} `json:"wasm"`
 	// StdioShutdown is how mcpx ends a stdio server, per every revision's
 	// stdio shutdown SHOULD: close stdin and wait StdinGrace for it to exit
 	// by itself, then SIGTERM and wait TermGrace, then SIGKILL and wait at
@@ -600,6 +621,12 @@ var (
 	// TaskPollInterval is the pollInterval every task carries: how often a
 	// client is told it may usefully ask after one.
 	TaskPollInterval = mustDur(builtin.ProtoTasks.PollInterval, "protoTasks.pollInterval")
+	// TaskCancelGrace is how long a task store waits for a cancelled
+	// task's worker to stop before it stops waiting.
+	TaskCancelGrace = mustDur(builtin.ProtoTasks.CancelGrace, "protoTasks.cancelGrace")
+
+	// WasmLogLineSize bounds one log line a WASM tool may hand the host.
+	WasmLogLineSize = mustBytes(builtin.Wasm.LogLineSize, "wasm.logLineSize")
 
 	StdioStdinGrace = mustDur(builtin.StdioShutdown.StdinGrace, "stdioShutdown.stdinGrace")
 	StdioTermGrace  = mustDur(builtin.StdioShutdown.TermGrace, "stdioShutdown.termGrace")
@@ -648,6 +675,7 @@ var (
 	Disambiguate        = builtin.Consumer.Disambiguate
 	DisambiguateDefault = builtin.Consumer.DisambiguateDefault
 	ConfirmDestructive  = builtin.Consumer.ConfirmDestructive
+	WritePolicy         = builtin.Consumer.WritePolicy
 	AskTimeout          = mustDur(builtin.Consumer.AskTimeout, "consumer.askTimeout")
 	DiagnosePreflight   = builtin.Consumer.DiagnosePreflight
 	HistoryPerTool      = builtin.Consumer.HistoryPerTool
@@ -663,12 +691,26 @@ var (
 	PromptSampleTimeout = mustDur(builtin.Consumer.PromptSampleTimeout, "consumer.promptSampleTimeout")
 	PromptMaxTokens     = builtin.Consumer.PromptMaxTokens
 	RunTimeout          = mustDur(builtin.Consumer.RunTimeout, "consumer.runTimeout")
+	ModelTimeout        = mustDur(builtin.Model.Timeout, "model.timeout")
 	ExecTimeout         = mustDur(builtin.Exec.Timeout, "exec.timeout")
-	ExecOutput          = builtin.Exec.Output
+	// ExecHookTimeout is a hook's own budget in execsvc: a slow hook must
+	// not eat the budget of the script it wraps.
+	ExecHookTimeout = mustDur(builtin.Exec.HookTimeout, "exec.hookTimeout")
+	// ExecResolveTimeout bounds one nix resolution (progspec).
+	ExecResolveTimeout = mustDur(builtin.Exec.ResolveTimeout, "exec.resolveTimeout")
+	// ExecResolveWaitDelay bounds how long a timed-out resolution's Run
+	// waits for the child's output pipes to close (progspec cmd.WaitDelay).
+	ExecResolveWaitDelay = mustDur(builtin.Exec.ResolveWaitDelay, "exec.resolveWaitDelay")
+	ExecOutput           = builtin.Exec.Output
 	// ExecStderrLimit bounds how much of a failed script's stderr is kept to
 	// explain the failure. Unbounded, a script looping on stderr would be
 	// held in memory in full, by the daemon, on someone else's behalf.
 	ExecStderrLimit = builtin.Exec.StderrLimit
+	// ExecStdoutLimit bounds how much of a run's stdout the returned
+	// Result carries (CODE-16, #1937). The full output still exists in
+	// the run record/artifacts where one is kept; this bounds only what
+	// is handed back into a caller's context.
+	ExecStdoutLimit = builtin.Exec.StdoutLimit
 	// ExecWorkDirs bounds how many content-addressed client directories are
 	// kept. One per distinct catalogue; without a bound it grows forever.
 	ExecWorkDirs = builtin.Exec.WorkDirs
@@ -693,6 +735,12 @@ var (
 	ExecDelivery       = builtin.Exec.Delivery
 
 	ArtifactTTL = mustDur(builtin.Artifacts.TTL, "artifacts.ttl")
+	// ArtifactIdleTTL is the opt-in touch-on-read window for artifacts
+	// (decision 0006): zero, the builtin, keeps absolute expiry.
+	ArtifactIdleTTL = mustDur(builtin.Artifacts.IdleTTL, "artifacts.idleTtl")
+	// ArtifactMaxAge is the ceiling touch-on-read renewal can never
+	// push an artifact's deadline past, from its creation.
+	ArtifactMaxAge = mustDur(builtin.Artifacts.MaxAge, "artifacts.maxAge")
 	// ArtifactMaxBytes is the ceiling for one artifact. A screenshot is
 	// under a megabyte; the headroom is for the video and the core dump
 	// somebody will eventually want to hand back.

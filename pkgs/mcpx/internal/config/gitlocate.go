@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // locateGit answers from disk, and asks git only when discovery is unsure.

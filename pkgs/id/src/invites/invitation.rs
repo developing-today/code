@@ -94,9 +94,18 @@ fn parse_link(query: &str) -> Result<Invitation> {
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (field, value) = pair.split_once('=').context("a link field needs =")?;
         match field {
-            "group" => group = Some(value),
-            "by" => by = Some(value),
-            "ticket" => ticket = Some(value),
+            "group" => {
+                ensure!(group.is_none(), "duplicate group field in link");
+                group = Some(value);
+            }
+            "by" => {
+                ensure!(by.is_none(), "duplicate by field in link");
+                by = Some(value);
+            }
+            "ticket" => {
+                ensure!(ticket.is_none(), "duplicate ticket field in link");
+                ticket = Some(value);
+            }
             _ => {}
         }
     }

@@ -2,12 +2,28 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Conformance, checkClientFrame, checkServerFrame, type ShellContract } from "./shell-contract";
+import {
+  Conformance,
+  checkClientFrame,
+  checkServerFrame,
+  parseShellContract,
+  type ShellContract,
+} from "./shell-contract";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const contract = JSON.parse(
+const contractDocument: unknown = JSON.parse(
   readFileSync(resolve(here, "../../contract/shell-contract.v1.json"), "utf8"),
-) as ShellContract;
+);
+const contract = parseShellContract(contractDocument);
+
+function withFieldType(side: "client" | "server", frameName: string, fieldName: string, type: string): ShellContract {
+  const malformed = structuredClone(contract);
+  const frames = side === "client" ? malformed.client_frames : malformed.server_frames;
+  const frame = frames[frameName];
+  if (!frame) throw new Error(`missing ${side} frame ${frameName}`);
+  (frame.fields as Record<string, unknown>)[fieldName] = type;
+  return malformed;
+}
 
 /** The world page markup, read from the Rust template so the test cannot drift from it. */
 function worldPageMarkup(): string {
@@ -22,6 +38,56 @@ function worldPageMarkup(): string {
 describe("shell contract validator", () => {
   const cap = "cap";
 
+  it("validates every client and server field spec when loading a contract", () => {
+    expect(parseShellContract(contractDocument)).toEqual(contract);
+
+    const malformedClient = withFieldType("client", "chat", "text", "u65");
+    expect(() => parseShellContract(malformedClient)).toThrow("chat.text: unknown field type `u65`");
+
+    const malformedServer = withFieldType("server", "view", "sequence", "u65");
+    expect(() => parseShellContract(malformedServer)).toThrow("view.sequence: unknown field type `u65`");
+  });
+
+  it("rejects malformed constraint values when loading a contract", () => {
+    const badEnum = structuredClone(contract);
+    (badEnum.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", enum: 7 };
+    expect(() => parseShellContract(badEnum)).toThrow("chat.text: enum must be an array of strings");
+
+    const badBound = structuredClone(contract);
+    (badBound.client_frames.chat!.fields as Record<string, unknown>).text = { type: "string", max_bytes: "9" };
+    expect(() => parseShellContract(badBound)).toThrow("chat.text: max_bytes must be a finite number");
+  });
+
+  it("returns violations instead of throwing for malformed field specs", () => {
+    const malformedClient = withFieldType("client", "chat", "text", "u65");
+    const clientCheck = checkClientFrame(malformedClient, { type: "chat", text: "hi" }, "joined");
+    expect(clientCheck).toEqual({
+      ok: false,
+      error: expect.stringContaining("chat.text"),
+    });
+    if (!clientCheck.ok) expect(clientCheck.error).toContain("unknown field type `u65`");
+
+    const malformedServer = withFieldType("server", "view", "sequence", "u65");
+    const serverCheck = checkServerFrame(malformedServer, {
+      type: "view",
+      sequence: 1,
+      data: "x",
+      surface: null,
+      view_revision: 1,
+    });
+    expect(serverCheck).toEqual({
+      ok: false,
+      error: expect.stringContaining("view.sequence"),
+    });
+    if (!serverCheck.ok) expect(serverCheck.error).toContain("unknown field type `u65`");
+
+    const session = new Conformance(malformedClient);
+    session.client({ type: "join", capability: cap, after: null, world: null });
+    expect(session.phase).toBe("joined");
+    expect(() => session.client({ type: "chat", text: "hi" })).not.toThrow();
+    expect(session.violations).toEqual([{ index: 1, side: "client", message: expect.stringContaining("chat.text") }]);
+  });
+
   it("accepts the frames a joined shell sends", () => {
     expect(checkClientFrame(contract, { type: "join", capability: cap, after: null, world: null }, "opening")).toEqual({
       ok: true,
@@ -30,7 +96,9 @@ describe("shell contract validator", () => {
     expect(checkClientFrame(contract, { type: "resize", width: 500, height: 200 }, "joined").ok).toBe(true);
     expect(checkClientFrame(contract, { type: "input", data_hex: "1b5b41" }, "joined").ok).toBe(true);
     expect(checkClientFrame(contract, { type: "records", capability: cap, after: "k" }, "joined").ok).toBe(true);
-    expect(checkServerFrame(contract, { type: "view", sequence: 1, data: "x", surface: null }).ok).toBe(true);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 1, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(true);
   });
 
   it.each([
@@ -59,6 +127,50 @@ describe("shell contract validator", () => {
     const check = checkClientFrame(contract, frame, phase);
     expect(check.ok).toBe(false);
     if (!check.ok) expect(check.error).toContain(error);
+  });
+
+  it("accepts u64 values at and above 2^53, like the Rust checker (#1441)", () => {
+    const seed = (value: number) =>
+      checkClientFrame(contract, { type: "install_begin", admin_token: "a", total_bytes: 1, seed: value }, "opening");
+    expect(seed(2 ** 53).ok).toBe(true);
+    // u64::MAX as it arrives from wire JSON: already rounded by the parser.
+    expect(seed(JSON.parse("18446744073709551615") as number).ok).toBe(true);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 2 ** 53, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(true);
+    expect(checkServerFrame(contract, { type: "records", sequence: 2 ** 53, records: {} }).ok).toBe(true);
+  });
+
+  it("rejects u64 values provably above u64::MAX, like the Rust checker (#1441)", () => {
+    const seed = (value: number) =>
+      checkClientFrame(contract, { type: "install_begin", admin_token: "a", total_bytes: 1, seed: value }, "opening");
+    // 2^64 is the rounded wire form of u64::MAX itself: ambiguous, accepted.
+    expect(seed(2 ** 64).ok).toBe(true);
+    const over64 = seed(2 ** 65);
+    expect(over64.ok).toBe(false);
+    if (!over64.ok) expect(over64.error).toContain("18446744073709551615");
+    expect(seed(1e100).ok).toBe(false);
+    expect(
+      checkServerFrame(contract, { type: "view", sequence: 2 ** 65, data: "x", surface: null, view_revision: 1 }).ok,
+    ).toBe(false);
+  });
+
+  it("still enforces the u64 bounds JS can check exactly (#1441)", () => {
+    const begin = (patch: Record<string, unknown>) =>
+      checkClientFrame(
+        contract,
+        { type: "install_begin", admin_token: "a", total_bytes: 1, seed: 1, ...patch },
+        "opening",
+      );
+    expect(begin({ seed: -1 }).ok).toBe(false);
+    expect(begin({ seed: 1.5 }).ok).toBe(false);
+    expect(begin({ total_bytes: 0 }).ok).toBe(false);
+    const over = begin({ total_bytes: 16777217 });
+    expect(over.ok).toBe(false);
+    if (!over.ok) {
+      expect(over.error).toContain("16777216");
+      expect(over.error).not.toContain("9007199254740991");
+    }
   });
 
   it("rejects a seed leaked at any depth of a server frame", () => {
@@ -207,7 +319,7 @@ describe("web shell conformance", () => {
       type: "snapshot",
       snapshot: { world_id: "lobby", current_sequence: 4, participants: [{ id: 1, display_name: "ada" }], seed: 0 },
     });
-    session.deliver({ type: "view", sequence: 4, data: "hello", surface: null });
+    session.deliver({ type: "view", sequence: 4, data: "hello", surface: null, view_revision: 1 });
     expect(q("[data-world-view]").textContent).toBe("hello");
     expect(session.sent("records")).toEqual([{ type: "records", capability: "guest-capability" }]);
     session.deliver({ type: "records", sequence: 4, records: { a: 1 }, next_after: "a" });

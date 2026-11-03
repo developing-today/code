@@ -7,7 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // resumeProbeTimeout bounds the check that a handed-on upstream session is
@@ -19,18 +20,27 @@ const resumeProbeTimeout = 5 * time.Second
 // pipes travel beside it as file descriptors, not in the JSON. A streamable
 // HTTP instance carries only its upstream session.
 type InstanceHandoff struct {
-	ID         string                  `json:"id"`
-	Trace      string                  `json:"trace"`
-	Key        string                  `json:"key"`
-	StartedAt  time.Time               `json:"startedAt"`
-	LastUsed   time.Time               `json:"lastUsed"`
-	Calls      int64                   `json:"calls"`
-	EraSource  string                  `json:"eraSource,omitempty"`
-	LegacyLane bool                    `json:"legacyLane,omitempty"`
-	Subscribed []string                `json:"subscribed,omitempty"`
-	Stdio      *mcpclient.StdioHandoff `json:"stdio"`
-	HTTP       *mcpclient.HTTPHandoff  `json:"http,omitempty"`
-	Session    mcpclient.Session       `json:"session"`
+	ID    string `json:"id"`
+	Trace string `json:"trace"`
+	Key   string `json:"key"`
+	Root  string `json:"root,omitempty"`
+	// ExecStamp and ExecIdentity are the executable identity the instance
+	// was started with, resolved from its effective spawn cwd. They travel
+	// with the handoff so a successor's exec watch compares the adopted
+	// child against the executable it is actually running: without them a
+	// resumed instance reads as zero-valued, and the first check treats
+	// its unchanged executable as newly changed and restarts it.
+	ExecStamp    config.ExecStamp        `json:"execStamp"`
+	ExecIdentity string                  `json:"execIdentity,omitempty"`
+	StartedAt    time.Time               `json:"startedAt"`
+	LastUsed     time.Time               `json:"lastUsed"`
+	Calls        int64                   `json:"calls"`
+	EraSource    string                  `json:"eraSource,omitempty"`
+	LegacyLane   bool                    `json:"legacyLane,omitempty"`
+	Subscribed   []string                `json:"subscribed,omitempty"`
+	Stdio        *mcpclient.StdioHandoff `json:"stdio"`
+	HTTP         *mcpclient.HTTPHandoff  `json:"http,omitempty"`
+	Session      mcpclient.Session       `json:"session"`
 }
 
 // PoolHandoff is one pool's children in transit. PoolID names the process
@@ -74,7 +84,7 @@ func (p *Pool) Detach() (*PoolHandoff, error) {
 	seq := p.seq
 	metas := make([]InstanceHandoff, len(parked))
 	for i, in := range parked {
-		metas[i] = in.describe()
+		metas[i] = in.describe(p)
 	}
 	p.cond.Broadcast()
 	p.mu.Unlock()
@@ -161,24 +171,32 @@ func (p *Pool) restore(handed []*Instance) {
 	p.mu.Unlock()
 }
 
-// describe is the instance's record without its pipes. p.mu is held.
-func (in *Instance) describe() InstanceHandoff {
+// describe is the instance's record without its pipes. p.mu is held; the
+// executable identity is read under p.execMu, which guards it everywhere
+// else (see Pool).
+func (in *Instance) describe(p *Pool) InstanceHandoff {
 	in.subMu.Lock()
 	subs := make([]string, 0, len(in.subscribed))
 	for uri := range in.subscribed {
 		subs = append(subs, uri)
 	}
 	in.subMu.Unlock()
+	p.execMu.Lock()
+	execStamp, execIdentity := in.execStamp, in.execIdentity
+	p.execMu.Unlock()
 	return InstanceHandoff{
-		ID:         in.ID,
-		Trace:      in.trace,
-		Key:        in.key,
-		StartedAt:  in.startedAt,
-		LastUsed:   in.lastUsed,
-		Calls:      in.calls.Load(),
-		EraSource:  in.eraSource,
-		LegacyLane: in.legacyLane,
-		Subscribed: subs,
+		ID:           in.ID,
+		Trace:        in.trace,
+		Key:          in.key,
+		Root:         in.root,
+		ExecStamp:    execStamp,
+		ExecIdentity: execIdentity,
+		StartedAt:    in.startedAt,
+		LastUsed:     in.lastUsed,
+		Calls:        in.calls.Load(),
+		EraSource:    in.eraSource,
+		LegacyLane:   in.legacyLane,
+		Subscribed:   subs,
 	}
 }
 
@@ -224,7 +242,7 @@ func (p *Pool) AdoptSessions(hs []InstanceHandoff) ([]*Adopted, error) {
 		if h.HTTP == nil {
 			continue
 		}
-		tr, err := p.dial()
+		tr, err := p.dial(context.Background(), "")
 		if err != nil {
 			abortAll(out)
 			return nil, fmt.Errorf("instance %s: %w", h.ID, err)
@@ -298,8 +316,11 @@ func (p *Pool) Attach(ads []*Adopted, seq int) {
 			continue
 		}
 		in := p.resumeInstance(a)
-		p.instances = append(p.instances, in)
 		in.Client.Activate()
+		if !p.guardAdopted(in) {
+			continue
+		}
+		p.instances = append(p.instances, in)
 	}
 	if seq > p.seq {
 		p.seq = seq
@@ -326,16 +347,19 @@ func (p *Pool) resumeInstance(a *Adopted) *Instance {
 	cl := mcpclient.Resume(a.tr, h.Session, opts)
 	p.subscribeServerEvents(cl)
 	in := &Instance{
-		ID:         h.ID,
-		Client:     cl,
-		transport:  a.tr,
-		key:        h.Key,
-		trace:      h.Trace,
-		startedAt:  h.StartedAt,
-		lastUsed:   h.LastUsed,
-		eraSource:  h.EraSource,
-		legacyLane: h.LegacyLane,
-		subscribed: make(map[string]bool, len(h.Subscribed)),
+		ID:           h.ID,
+		Client:       cl,
+		transport:    a.tr,
+		key:          h.Key,
+		root:         h.Root,
+		execStamp:    h.ExecStamp,
+		execIdentity: h.ExecIdentity,
+		trace:        h.Trace,
+		startedAt:    h.StartedAt,
+		lastUsed:     h.LastUsed,
+		eraSource:    h.EraSource,
+		legacyLane:   h.LegacyLane,
+		subscribed:   make(map[string]bool, len(h.Subscribed)),
 	}
 	in.calls.Store(h.Calls)
 	for _, uri := range h.Subscribed {
@@ -363,6 +387,9 @@ func (p *Pool) attachSession(a *Adopted) {
 		})
 		return
 	}
+	if !p.guardAdopted(in) {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -371,6 +398,24 @@ func (p *Pool) attachSession(a *Adopted) {
 	}
 	p.instances = append(p.instances, in)
 	p.cond.Broadcast()
+}
+
+// guardAdopted runs the self-connection guard (#1877) over a resumed
+// session before Attach publishes it. Adoption bypasses startLane --
+// the session was handshaken by a predecessor, possibly one predating
+// the guard -- so an aggregate self upstream adopted across an
+// upgrade would otherwise keep serving and re-caching its proxied
+// catalogue without ever being checked (Codex review on PR 2975).
+// It reports whether the instance may be served; a refusal has
+// already closed the client and dropped the cached schemas.
+func (p *Pool) guardAdopted(in *Instance) bool {
+	cl := in.Client
+	if cl.ServerInfo.Name != ownServerName {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), resumeProbeTimeout)
+	defer cancel()
+	return p.guardSelfConnection(ctx, cl, in.transport) == nil
 }
 
 // PoolID is the identity this pool's process definition shares with others:

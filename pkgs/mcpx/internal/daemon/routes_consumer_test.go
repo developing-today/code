@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
 )
 
 func TestHandleDiagnose_Validation(t *testing.T) {
@@ -71,9 +71,9 @@ func TestHandleDiagnose_RepairSafety(t *testing.T) {
 	reg := &Registry{
 		testTools: []ToolInfo{
 			{
-				Namespace: "calc",
-				Tool:      "add",
-				Function:  "calc.add",
+				Namespace:   "calc",
+				Tool:        "add",
+				Function:    "calc.add",
 				InputSchema: []byte(`{"type":"object","required":["a","b"]}`),
 			},
 		},

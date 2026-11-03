@@ -2,20 +2,23 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // daemonAsker runs a request the upstream server may interrupt.
@@ -42,29 +45,52 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 
 	switch kind {
 	case "tools/call":
+		// Decode only the name and the opaque arguments first. The
+		// gateway-specific argument fields (mcpx_call's namespace /
+		// tool strings) are decoded in the gateway branch below, and
+		// only there: a raw or pass-through tool's own arguments are
+		// the upstream's, and an upstream argument that happens to be
+		// named namespace or tool with a non-string value must not
+		// fail this decode and cost the call its ask attribution.
 		var p struct {
-			Name      string `json:"name"`
-			Arguments struct {
-				Namespace string          `json:"namespace"`
-				Tool      string          `json:"tool"`
-				Arguments json.RawMessage `json:"arguments"`
-			} `json:"arguments"`
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
 		}
 		if err := json.Unmarshal(params, &p); err != nil {
 			return "", mcpserver.ErrNotInterruptible
 		}
+		// A raw tool (codemode=false) is an upstream call under a
+		// namespaced name -- <namespace>_<tool> -- and is just as likely
+		// to ask as a pass-through one. The request's own raw lookup
+		// resolves it to the namespace and the upstream's own name;
+		// without this the name fell to ErrNotInterruptible below and the
+		// call ran with no ask attribution. Known-and-unclaimed means
+		// the request asked for the raw surface and this name is not on
+		// it: not interruptible here either, and the ordinary path
+		// answers for the name. Checked before pass-through, as invoke
+		// checks the raw surface first on a raw request.
+		if ns, tool, known := mcpserver.RawToolOf(ctx, p.Name); known {
+			if ns == "" {
+				return "", mcpserver.ErrNotInterruptible
+			}
+			body["server"], body["tool"] = ns, tool
+			if len(p.Arguments) > 0 {
+				body["args"] = p.Arguments
+			}
+			// The upstream judges what the client can answer, as on the
+			// direct path (mcpBackend.Call).
+			ctx = mcpclient.WithClientCapabilities(ctx, mcpserver.DeclaredCapabilities(ctx))
+			break
+		}
 		// A pass-through tool is an upstream call under its own name, and
 		// the one most likely to ask: it was left to the broker, where no
-		// client could answer and the request hung. Checked first, because
-		// on a collision the upstream's tool is the one the name means.
+		// client could answer and the request hung. Checked before the
+		// gateway tools, because on a collision the upstream's tool is
+		// the one the name means.
 		if ns := d.passTool(ctx, p.Name); ns != "" {
-			var raw struct {
-				Arguments json.RawMessage `json:"arguments"`
-			}
-			_ = json.Unmarshal(params, &raw)
 			body["server"], body["tool"] = ns, p.Name
-			if len(raw.Arguments) > 0 {
-				body["args"] = raw.Arguments
+			if len(p.Arguments) > 0 {
+				body["args"] = p.Arguments
 			}
 			// The upstream judges what the client can answer, as on the
 			// direct path (mcpBackend.Call).
@@ -75,12 +101,10 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			// A script is one call making many; the daemon correlates its
 			// questions through the run id rather than a single (server, key).
 			var e struct {
-				Arguments struct {
-					Source     string `json:"source"`
-					TimeoutSec int    `json:"timeoutSec"`
-				} `json:"arguments"`
+				Source     string `json:"source"`
+				TimeoutSec int    `json:"timeoutSec"`
 			}
-			if json.Unmarshal(params, &e) != nil || e.Arguments.Source == "" {
+			if json.Unmarshal(p.Arguments, &e) != nil || e.Source == "" {
 				return "", mcpserver.ErrNotInterruptible
 			}
 			c, err := d.client(ctx)
@@ -92,14 +116,25 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 				return "", err
 			}
 			body["kind"] = "exec"
-			body["source"] = e.Arguments.Source
-			body["options"] = mcpBackend{app: d.app}.execOptions(ctx, e.Arguments.TimeoutSec)
+			body["source"] = e.Source
+			body["options"] = mcpBackend{app: d.app}.execOptions(ctx, e.TimeoutSec)
 			break
 		}
 		if p.Name != "mcpx_call" {
 			return "", mcpserver.ErrNotInterruptible
 		}
-		ns, tool := p.Arguments.Namespace, p.Arguments.Tool
+		// The gateway branch: only now are mcpx_call's own argument
+		// fields decoded, so only a malformed mcpx_call -- not a raw
+		// tool with upstream-shaped arguments -- fails on them.
+		var g struct {
+			Namespace string          `json:"namespace"`
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal(p.Arguments, &g); err != nil {
+			return "", mcpserver.ErrNotInterruptible
+		}
+		ns, tool := g.Namespace, g.Tool
 		if tool == "" {
 			// A dotted name in the namespace field is what somebody sends,
 			// because that is how the tools are written everywhere else.
@@ -111,8 +146,8 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			return "", mcpserver.ErrNotInterruptible
 		}
 		body["server"], body["tool"] = ns, tool
-		if len(p.Arguments.Arguments) > 0 {
-			body["args"] = p.Arguments.Arguments
+		if len(g.Arguments) > 0 {
+			body["args"] = g.Arguments
 		}
 
 	case "prompts/get":
@@ -276,7 +311,11 @@ func (d daemonAsker) renderAsk(result map[string]json.RawMessage) (text string, 
 	inner := result["result"]
 	switch kind {
 	case "resources/read":
-		return "", d.app.resourceContents(inner, server), false
+		contents, err := d.app.resourceContents(inner, server)
+		if err != nil {
+			return err.Error(), nil, true
+		}
+		return "", contents, false
 	default:
 		// tools/call and prompts/get: verbatim, as the direct path sends
 		// them (#206).
@@ -304,23 +343,101 @@ func (d daemonAsker) Abandon(callID string) {
 	}
 }
 
-// lazyMCP builds mcpx's MCP server the first time something asks for it.
+// lazyMCP builds mcpx's MCP server the first time something asks for it,
+// and rebuilds it when its declared inputs change (PM-13, #1942).
 //
 // Built lazily because constructing it reads adapter declarations and may
 // fetch a declared OpenAPI document over the network. The daemon auto-starts
 // on the first command anybody runs, and a remote document that is slow to
 // answer would become a daemon that is slow to start -- for a surface that
 // particular invocation is not using.
+//
+// The old build used a sync.Once: the surface could never change for the
+// daemon's life (adapters added later were invisible) and a failed first
+// build -- even one caused by the first request's cancelled context -- was
+// cached forever. Now the build is keyed by a fingerprint of the adapter
+// and API declaration files: unchanged inputs reuse the built surface, a
+// change rebuilds it (live MCP sessions on the old surface end with it,
+// which is still strictly better than the restart this used to require),
+// and a failure is returned without being cached, so the next request
+// retries.
 type lazyMCP struct {
-	app  *App
-	once sync.Once
-	srv  *mcpserver.Server
-	err  error
+	app *App
+	// build and inputs are seams for tests; nil means the App's own.
+	build  func(ctx context.Context) (*mcpserver.Server, error)
+	inputs func() string
+	retire func(*mcpserver.Server)
+
+	mu      sync.Mutex
+	srv     *mcpserver.Server
+	builtFP string
+}
+
+// fingerprint hashes the declared file inputs the surface is built
+// from -- the adapter files and the API declaration files -- so a
+// changed, added, or newly-created declaration changes the value and
+// the surface is rebuilt. A file that cannot be read contributes its
+// error to the hash: present-but-broken and absent are different
+// states, and a file appearing later must not match a fingerprint
+// taken while it was missing.
+func (l *lazyMCP) fingerprint() string {
+	if l.inputs != nil {
+		return l.inputs()
+	}
+	h := sha256.New()
+	for _, key := range []string{"paths.adapters", "paths.apis"} {
+		for _, p := range splitPathList(l.app.Settings().String(key)) {
+			b, err := os.ReadFile(p)
+			fmt.Fprintf(h, "%s\x00", p)
+			if err != nil {
+				fmt.Fprintf(h, "err:%v\x00", err)
+				continue
+			}
+			h.Write(b)
+			h.Write([]byte("\x00"))
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (l *lazyMCP) get(ctx context.Context) (*mcpserver.Server, error) {
-	l.once.Do(func() { l.srv, l.err = l.app.MCPServer(ctx) })
-	return l.srv, l.err
+	fp := l.fingerprint()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.srv != nil && fp == l.builtFP {
+		return l.srv, nil
+	}
+	build := l.build
+	if build == nil {
+		build = l.app.MCPServer
+	}
+	srv, err := build(ctx)
+	if err != nil {
+		// PM-13 (#1942): a failed build is NOT cached. The old
+		// sync.Once stored the first error for the daemon's life --
+		// including a first request whose context was cancelled --
+		// so one transient failure took /mcp down until a restart.
+		// The fingerprint stays unbuilt, and the next request
+		// retries. (A previously built surface is likewise not
+		// served stale past a known input change: the caller gets
+		// the error, not a surface that no longer matches config.)
+		return nil, err
+	}
+	old := l.srv
+	l.srv, l.builtFP = srv, fp
+	if old != nil && old != srv {
+		// PM-13 follow-up (#1942): the replaced surface is retired, not
+		// abandoned. Its legacy sessions would otherwise keep their GET
+		// streams, notification subscriptions, and listen streams open
+		// against a server nothing routes to, accumulating with every
+		// rebuild. Clients re-initialize against the new surface.
+		retire := l.retire
+		if retire == nil {
+			retire = (*mcpserver.Server).CloseSessions
+		}
+		retire(old)
+	}
+	return srv, nil
 }
 
 func (l *lazyMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // Retention (#1677): opening the broker prunes terminal rows past the

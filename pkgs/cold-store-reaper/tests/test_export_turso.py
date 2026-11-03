@@ -162,6 +162,29 @@ class TestExportTursoArgv(unittest.TestCase):
         lines = self.dump_argv_lines()
         self.assertEqual(lines[lines.index("--max-time") + 1], "42")
 
+    def test_dump_max_time_zero_is_rejected(self):
+        # 0 is all digits but not positive: curl --max-time 0 disables
+        # the timeout, so the dump could hang forever (#1428).
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "0"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a positive integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_dump_max_time_all_zeros_is_rejected(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "00"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a positive integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+    def test_dump_max_time_leading_zero_positive_is_honored(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "0300"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "0300")
+
     def test_skip_when_token_unset(self):
         env = {k: v for k, v in self.env.items() if k != "TURSO_PLATFORM_API_TOKEN"}
         result = self.run_script(env=env)

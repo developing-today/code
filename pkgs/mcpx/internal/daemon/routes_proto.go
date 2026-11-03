@@ -10,33 +10,32 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/spec"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // routesProto registers the operations that let a client of mcpx answer a
 // question an upstream server asked, and say what mcpx speaks.
 func (s *Server) routesProto(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/ask", s.handleAskBegin)
-	mux.HandleFunc("GET /v1/ask/{id}", s.handleAskPoll)
-	mux.HandleFunc("POST /v1/ask/{id}/answers", s.handleAskAnswers)
-	mux.HandleFunc("POST /v1/ask/{id}/abandon", s.handleAskAbandon)
-	mux.HandleFunc("GET /v1/protocol", s.handleProtocol)
-	mux.HandleFunc("POST /v1/tools/{tool}", s.handleToolInvoke)
-	mux.HandleFunc("POST /v1/call/{server}/{tool}", s.handleCallPath)
+	s.route(mux, "POST /v1/ask", s.handleAskBegin)
+	s.route(mux, "GET /v1/ask/{id}", s.handleAskPoll)
+	s.route(mux, "POST /v1/ask/{id}/answers", s.handleAskAnswers)
+	s.route(mux, "POST /v1/ask/{id}/abandon", s.handleAskAbandon)
+	s.route(mux, "GET /v1/protocol", s.handleProtocol)
+	s.route(mux, "POST /v1/tools/{tool}", s.handleToolInvoke)
+	s.route(mux, "POST /v1/call/{server}/{tool}", s.handleCallPath)
 }
 
 // ---- a call that can be interrupted ----
@@ -299,14 +298,18 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// the table before the upstream request goes out, so it is registered
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
-	r.beginAsk(id, server, key, cc.SessionID)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
-	return p.Call(ctx, key, tool, args)
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+
+	return r.callWithLedger(ctx, p, server, effTool, effArgs, rs, "ask")
+
 }
 
 // ReadResourceAsk is resources/read, interruptibly.
@@ -315,11 +318,11 @@ func (r *Registry) ReadResourceAsk(ctx context.Context, id, server, uri string, 
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
 	}
-	key := r.keyFor(p, cc)
-	r.beginAsk(id, server, key, cc.SessionID)
+	rs := r.resolvedFor(p, cc)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
-	return p.ReadResource(ctx, key, upstreamResourceURI(ctx, p, uri))
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+	return p.ReadResource(ctx, rs, upstreamResourceURI(ctx, p, uri))
 }
 
 // GetPromptAsk is prompts/get, interruptibly.
@@ -328,11 +331,11 @@ func (r *Registry) GetPromptAsk(ctx context.Context, id, server, name string, ar
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
 	}
-	key := r.keyFor(p, cc)
-	r.beginAsk(id, server, key, cc.SessionID)
+	rs := r.resolvedFor(p, cc)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
-	return p.GetPrompt(ctx, key, name, args)
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+	return p.GetPrompt(ctx, rs, name, args)
 }
 
 // runKey carries the exec run a /v1/call was made from.
@@ -395,6 +398,14 @@ type askReq struct {
 	Relay *CallRelay `json:"relay,omitempty"`
 }
 
+// askRequestor names who an ask-seam task counts against: the caller's
+// session in the ASK role — not the caller role the MCP wrapper
+// charges, for the two-ledgers reason recorded on tasks.Requestor.
+// An anonymous caller's empty identity is the anonymous ask bucket.
+func askRequestor(cc config.CallContext) tasks.Requestor {
+	return tasks.Ask(cc.SessionID)
+}
+
 func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	var req askReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, defaults.HTTPCallBodyLimit)).Decode(&req); err != nil {
@@ -431,13 +442,25 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	// arrives for a call nothing has heard of.
 	ready := make(chan string, 1)
 	caps := withClientCaps(context.Background(), r)
-	t := s.taskStore().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+	// The ask funnels read the request's call settings off the task
+	// context (withRequestedCallTimeout), and the task outlives this
+	// request, so capture them by value now and attach them inside the
+	// callback -- the same treatment the client caps get (#1864 item 4:
+	// a caller's shorter pool.callTimeout applies to ask calls too).
+	cs := s.callSettings(r)
+	// The /v1/ask ttl is the interruptible call's lifetime (proto.askTTL
+	// by default), not just retention: it bounds the work itself, which
+	// internal/pool's budget treats as the outer bound while upstream
+	// working time pauses for questions. StartWithDeadline keeps that
+	// bound explicit now that Start's ttl is retention-only (#1653).
+	t, terr := s.taskStore().StartWithDeadline(askRequestor(cc), ttl, time.Duration(ttl)*time.Millisecond, func(ctx context.Context) (any, *tasks.Fault) {
 		id := <-ready
 		start := time.Now()
 		// The task outlives this request, so the header is carried over
 		// by value rather than through r.Context().
 		ctx = mcpclient.WithClientCapabilities(ctx, mcpclient.ClientCapabilitiesFrom(caps))
 		ctx = mcpclient.WithCallerVersion(ctx, mcpclient.CallerVersionFrom(caps))
+		ctx = withCallSettings(ctx, cs)
 		var (
 			raw json.RawMessage
 			err error
@@ -473,6 +496,11 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 		return map[string]any{"result": raw, "kind": req.Kind, "server": req.Server,
 			"durationMs": time.Since(start).Milliseconds()}, nil
 	})
+	if terr != nil {
+		// The store's per-requestor cap (protoTasks.maxPerRequestor).
+		writeErr(w, http.StatusTooManyRequests, terr)
+		return
+	}
 	ready <- t.TaskID
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"callId": t.TaskID, "task": t})
@@ -493,7 +521,7 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 	s.reg.asks.beginRun(id, run, opts.Session)
 	defer s.reg.endAsk(id)
 	start := time.Now()
-	res, err := s.ExecService().Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run}, nil)
+	res, err := s.ExecService().Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
 	if err != nil && res == nil {
 		return nil, &tasks.Fault{Code: http.StatusBadRequest, Message: err.Error()}
 	}
@@ -512,9 +540,10 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 // or a delay somebody notices, and this is neither.
 func (s *Server) handleAskPoll(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	wait := defaults.ProtoAskPoll
-	if ms, err := strconv.Atoi(r.URL.Query().Get("waitMs")); err == nil && ms > 0 {
-		wait = time.Duration(ms) * time.Millisecond
+	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("proto.askPoll"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	t, known := s.taskStore().Get(id)
 	if !known {
@@ -848,7 +877,9 @@ func (s *Server) handleCallPath(w http.ResponseWriter, r *http.Request) {
 	}
 	cc := callContext(r, config.CallContext{}, r.URL.Query().Get("session"))
 	start := time.Now()
-	res, err := s.reg.Call(withRun(withCallSettings(r.Context(), s.callSettings(r)), r.Header.Get("X-Mcpx-Run")), r.PathValue("server"), r.PathValue("tool"), cc, args)
+	callCtx := withRun(withCallSettings(r.Context(), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	res, err := s.reg.Call(callCtx, r.PathValue("server"), r.PathValue("tool"), cc, args)
+	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), args, start, res, err)
 	if err != nil {
 		writeJSON(w, failureStatus(err), map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -898,6 +929,14 @@ func (r *Registry) upstreamHooks(h *pool.Hooks) {
 		h.Protocol = mcpclient.Preference(r.set.String("upstream.protocol"))
 		h.ProbeTimeout = r.set.Duration("upstream.probeTimeout")
 		cache = r.set.Bool("upstream.eraCache")
+		h.RequestLimits = mcpclient.RequestLimits{
+			SamplingPerServer:    r.set.Int("proto.samplingPerMinute"),
+			SamplingPerSession:   r.set.Int("proto.samplingSessionPerMinute"),
+			ElicitationPerServer: r.set.Int("proto.elicitationPerMinute"),
+		}
+		// Read from settings, so the values are the operator's --
+		// an all-zero set is a deliberate "disabled", not an omission.
+		h.RequestLimitsSet = true
 	}
 	if cache && r.paths.State != "" {
 		h.Eras = pool.OpenEraFile(filepath.Join(r.paths.State, defaults.UpstreamEraFile))
@@ -967,7 +1006,7 @@ func (s *Server) watchResources(ctx context.Context, server string, uris []strin
 		}
 		upstream = upstreamResourceURI(ctx, p, upstream)
 		match = append(match, upstream)
-		release, err := p.Watch(ctx, s.reg.keyFor(p, config.CallContext{}), upstream)
+		release, err := p.Watch(ctx, s.reg.resolvedFor(p, config.CallContext{}), upstream)
 		if err != nil {
 			w.refuse(u, err.Error())
 			s.warnUnwatched(owner, u, err.Error())

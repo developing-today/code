@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // A takeover moves the running daemon's listening sockets and its stdio
@@ -575,7 +575,27 @@ func (in *takeoverIn) close() {
 // It returns once the predecessor has committed and the HTTP listeners are
 // serving. Until then the predecessor is unchanged, and a failure leaves it
 // running while this process reports the reason.
+// takeoverRequest renders the raw HTTP takeover request the successor
+// writes to the predecessor's socket. #1975: with bearer auth on, the
+// predecessor's gate protects /v1/takeover too, so the successor must
+// present the configured token or the handover is refused 401. Unset,
+// the request is byte-for-byte what it always was.
+func takeoverRequest(tok string) string {
+	req := "POST " + takeoverRoute + " HTTP/1.1\r\nHost: mcpx\r\nContent-Length: 0\r\n"
+	if tok != "" {
+		req += "Authorization: Bearer " + tok + "\r\n"
+	}
+	return req + "\r\n"
+}
+
 func (s *Server) TakeOver() (*Handover, error) {
+	// Takeover is a bind-side lifecycle too (#1886, Codex on PR
+	// #2561): a successor started with MCPX_SOCKET takes over the
+	// daemon listening on that socket, not the computed default.
+	// Resolve the bind socket first and retain it in s.paths, so the
+	// dial, and publication and cleanup after the handover, all name
+	// the socket actually served.
+	s.paths.Socket = s.paths.BindSocket()
 	timeout := s.set.Duration("daemon.takeoverTimeout")
 	conn, err := net.DialTimeout("unix", s.paths.Socket, timeout)
 	if err != nil {
@@ -587,7 +607,7 @@ func (s *Server) TakeOver() (*Handover, error) {
 		return nil, err
 	}
 	_ = uc.SetDeadline(time.Now().Add(timeout))
-	if _, err := io.WriteString(uc, "POST "+takeoverRoute+" HTTP/1.1\r\nHost: mcpx\r\nContent-Length: 0\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(uc, takeoverRequest(BearerToken(s.set))); err != nil {
 		return fail(err)
 	}
 	// The predecessor sends nothing after its headers until it has our hello,

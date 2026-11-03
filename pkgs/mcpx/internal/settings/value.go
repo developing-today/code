@@ -3,6 +3,7 @@ package settings
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -446,12 +447,19 @@ func dedupe(in []string) []string {
 
 // ParseBytes reads 16MB, 1GiB, 1024. Decimal and binary suffixes both work
 // because both appear in the wild and arguing about which is correct helps
-// nobody configure a log file.
+// nobody configure a log file. Negative sizes and magnitudes that do not
+// fit in an int64 are refused (#1697): a size is spent as a byte count or a
+// slice capacity downstream, where a negative is a panic and an overflowed
+// one silently becomes the most negative int64 there is. Non-finite spellings
+// (NaN, Inf, bare or suffixed) are refused explicitly (#3521): without the
+// guard they are caught only incidentally, by float-to-int conversion for
+// NaN and by the magnitude check for infinities.
 func ParseBytes(v string) (int64, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0, nil
 	}
+	orig := v
 	mult := int64(1)
 	upper := strings.ToUpper(v)
 	for _, suf := range []struct {
@@ -474,7 +482,29 @@ func ParseBytes(v string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("not a size: %q", v)
 	}
-	return int64(f * float64(mult)), nil
+	scaled := f * float64(mult)
+	if math.IsNaN(scaled) || math.IsInf(scaled, 0) {
+		return 0, fmt.Errorf("size must be finite: %q", orig)
+	}
+	if scaled >= 9223372036854775808.0 { // 2^63: the first magnitude int64 cannot hold
+		return 0, fmt.Errorf("size too large: %q", orig)
+	}
+	n := int64(scaled)
+	if n < 0 {
+		return 0, fmt.Errorf("size must not be negative: %q", orig)
+	}
+	return n, nil
+}
+
+// tickerIntervalSettings are the KindDuration settings whose values are
+// passed directly to time.NewTicker (daemon/server.go: the reap and save
+// tickers and the SSE ping ticker). time.NewTicker panics on a
+// non-positive period, so Validate refuses zero and negative values for
+// exactly these paths (#3467).
+var tickerIntervalSettings = map[string]bool{
+	"daemon.reapInterval": true,
+	"daemon.saveInterval": true,
+	"http.ssePing":        true,
 }
 
 // Validate checks one raw value against its declaration.
@@ -496,9 +526,36 @@ func Validate(set Setting, raw string) error {
 		if set.Floor > 0 && n < set.Floor {
 			return fmt.Errorf("want a whole number of at least %d, got %q", set.Floor, raw)
 		}
+		if set.Ceiling > 0 && (n < set.Floor || n > set.Ceiling) {
+			// A declared ceiling is a range whose lower bound is the
+			// setting's Floor (0 when unset): daemon.port accepts
+			// 0-65535 and refuses -1 as firmly as 65536, here at the
+			// shared choke point, instead of dying later at net.Listen
+			// with an error naming neither the setting nor its
+			// source (#3648). The error names the setting and the
+			// refused value.
+			return fmt.Errorf("%s must be a whole number between %d and %d, got %q", set.Path, set.Floor, set.Ceiling, raw)
+		}
 	case KindDuration:
-		if _, err := time.ParseDuration(raw); err != nil {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
 			return fmt.Errorf("want a duration like 30s or 5m, got %q", raw)
+		}
+		if d <= 0 && tickerIntervalSettings[set.Path] {
+			// These three settings are passed directly to time.NewTicker,
+			// which panics on a non-positive period, so a zero or negative
+			// value must be refused here rather than crash the daemon at
+			// startup or an SSE handler later (#3467). Positivity is
+			// per-setting, not blanket: daemon.idleExit=0s means "never",
+			// and artifacts.gcInterval / transport.sseKeepAlive fall back
+			// to a default when non-positive, so they keep accepting it.
+			return fmt.Errorf("%s must be a positive duration, got %q", set.Path, raw)
+		}
+		if set.Path == "protoTasks.maxTTL" && d > 0 && d < time.Millisecond {
+			// Store.Start clamps in whole milliseconds; a positive
+			// sub-millisecond max would truncate to 0 and delete every
+			// new task at once (#2498).
+			return fmt.Errorf("protoTasks.maxTTL must be at least 1ms, got %q", raw)
 		}
 	case KindBytes:
 		if _, err := ParseBytes(raw); err != nil {

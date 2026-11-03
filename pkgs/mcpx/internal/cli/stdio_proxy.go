@@ -7,8 +7,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // CmdStdioProxy serves the daemon's API on stdin/stdout: it dials the
@@ -46,7 +46,10 @@ func (a *App) CmdStdioProxy(ctx context.Context, args []string) error {
 		if cfg, err := config.Load(*cfgPath); err == nil && len(cfg.Sources) > 0 {
 			paths = paths.ForConfig(daemon.FingerprintConfig(cfg.Sources))
 		}
-		path = paths.Socket
+		// A connect call site (#1886): resolve through the daemon's
+		// record (and MCPX_SOCKET) rather than trusting the computed
+		// path, which a long state path silently relocates.
+		path = paths.ClientSocket()
 	}
 
 	var d net.Dialer

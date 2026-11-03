@@ -34,12 +34,13 @@ func TestGitParityTmpAndPrivateTmp(t *testing.T) {
 }
 
 func TestGitCaseOfAWrongCaseCwdIsKept(t *testing.T) {
-	// On a case-insensitive volume git answers with the on-disk spelling,
-	// because it starts from getcwd(). Native starts from the path it was
-	// given, as the cwd scope always has; getting the on-disk spelling
-	// means F_GETPATH on macOS, which Go reaches only through unsafe calls.
-	// Two spellings of one checkout therefore get two instances -- the
-	// over-isolating direction -- and nothing else differs.
+	// Inverted by the #1912 fix; this test used to pin the bug. Native
+	// discovery still keeps the caller's spelling -- getting the on-disk
+	// spelling means F_GETPATH on macOS, which Go reaches only through
+	// unsafe calls -- but that no longer splits the instance: scope keys
+	// key on directory identity (dev, inode), so the two spellings of one
+	// checkout resolve to one key on the cwd, repo and worktree scopes
+	// alike, where before they got two instances.
 	f := newGitFix(t)
 	r := f.repo("CaseRepo")
 	lower := filepath.Join(filepath.Dir(r), "caserepo")
@@ -56,5 +57,12 @@ func TestGitCaseOfAWrongCaseCwdIsKept(t *testing.T) {
 	}
 	if w.worktree != lower || !strings.EqualFold(w.worktree, top) {
 		t.Errorf("native should keep the given spelling and differ only in case: %s vs %s", w.worktree, top)
+	}
+	for _, sc := range []Scope{ScopeCwd, ScopeRepo, ScopeWorktree} {
+		a, _ := sc.Key(CallContext{Cwd: r})
+		b, _ := sc.Key(CallContext{Cwd: lower})
+		if a != b {
+			t.Errorf("scope %s: two spellings of one directory must key together: %q vs %q", sc, a, b)
+		}
 	}
 }

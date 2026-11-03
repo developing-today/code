@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
 // sessionUpstream is a legacy streamable HTTP server: it issues Mcp-Session-Id
@@ -117,7 +117,7 @@ func upstreamPool(t *testing.T, url string) *pool.Pool {
 
 func pingThrough(t *testing.T, p *pool.Pool, key string) {
 	t.Helper()
-	lease, err := p.Acquire(context.Background(), key)
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: key})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,19 +18,18 @@
 # into ~/.openclaw/workspace) for the knowledge pack it runs with.
 #
 # Secrets: referenced by path/name only, never values. The gateway token
-# lives in ~/.secrets/openclaw/gateway-token (0600, created on the machine,
-# not in git, not in the Nix store) and is read at service start.
+# lives in /run/secrets/openclaw/gateway-token (decrypted by sops-nix at
+# activation from secrets/sops/common/bws.yaml; never in git or the Nix
+# store) and is read at service start.
 let
   homeDir = "/home/user";
   # Local provider-proxy ports. The canonical definitions live in
   # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
-  commandcodeProxyPort = 18748;
   opencodeRouteProxyPort = 18750;
-  designCodeProxyPort = 18746;
-  agyProxyPort = 18743;
-  codexProxyPort = 18744;
+  # Fixed loopback port of the dedicated embedding server below (#1300).
+  embeddingPort = 18791;
   localProvider = port: models: {
     baseUrl = "http://127.0.0.1:${toString port}/v1";
     # The laptop proxies are loopback-only and do not check an API key;
@@ -45,13 +44,19 @@ in
   imports = [ inputs.nix-openclaw.homeManagerModules.openclaw ];
 
   # Point acpx's harnesses at this laptop's pinned binaries instead of
-  # acpx's default `npx -y ...` upstream downloads: opencode is the pinned
-  # OpenCode fork (the build OpenChamber uses); claude/codex run the local
-  # wrappers in ~/.openclaw/acpx (bundled adapters, no npx fetch); agy is
-  # the system antigravity-acp server.
+  # acpx's default `npx -y ...` upstream downloads: opencode runs through
+  # the ACP-to-HTTP adapter in this repo (bin/opencode-acp-adapter.mjs,
+  # #1243) so OpenClaw sessions land on the standing shared
+  # `opencode serve` at 127.0.0.1:13420 instead of a private per-process
+  # server; claude/codex run the local wrappers in ~/.openclaw/acpx
+  # (bundled adapters, no npx fetch); agy is the system
+  # antigravity-acp server.
+  # FALLBACK (#1243): to revert opencode to the private-server path,
+  # restore opencode.command below (and agents.opencode in the embedded
+  # acpx override) to "/etc/profiles/per-user/user/bin/opencode acp".
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
-      opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
+      opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
       claude.command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
       codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
@@ -65,9 +70,31 @@ in
   # commandcode-proxy unit crash-loops on its already-taken port (#883).
   # The gateway reaches the proxies by port, not by unit; only mcpx and
   # the opencode-route proxy are real unit dependencies.
+  # Stable local embedding endpoint for memory-lancedb (#1300 phase 1):
+  # a dedicated llama-server on a FIXED loopback port, reusing the
+  # llama.cpp build and the Qwen3-Embedding-0.6B GGUF that OpenCode's
+  # messaging embeddings already keep in ~/.cache/opencode (OpenCode's
+  # own per-process embedding servers use dynamic ports, which a static
+  # gateway config cannot point at). If that cache is ever cleared, the
+  # ConditionPathExists below fails this unit loudly instead of the
+  # gateway silently losing vector recall.
+  systemd.user.services.openclaw-embedding = {
+    Unit = {
+      Description = "Local embedding server for OpenClaw memory (llama.cpp)";
+      ConditionPathExists = "${homeDir}/.cache/opencode/models/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    };
+    Service = {
+      ExecStart = "${homeDir}/.cache/opencode/bin/llama.cpp/b11669/llama-b11669/llama-server --embedding --model ${homeDir}/.cache/opencode/models/Qwen3-Embedding-0.6B-Q8_0.gguf --host 127.0.0.1 --port ${toString embeddingPort}";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
+        "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "design-code-proxy.service"
@@ -76,6 +103,7 @@ in
         "mcpx.service"
       ];
       Wants = [
+        "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "mcpx.service"
       ];
@@ -90,9 +118,9 @@ in
     # from that file at service start (nix-openclaw runtime contract), so
     # the token itself never enters the store.
     environment = {
-      OPENCLAW_GATEWAY_TOKEN = "${homeDir}/.secrets/openclaw/gateway-token";
-      OPENCLAW_SLACK_BOT_TOKEN = "/home/user/.secrets/openclaw/slack-bot-token";
-      OPENCLAW_SLACK_APP_TOKEN = "/home/user/.secrets/openclaw/slack-app-token";
+      OPENCLAW_GATEWAY_TOKEN = "/run/secrets/openclaw/gateway-token";
+      OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
+      OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):
@@ -120,7 +148,13 @@ in
 
     # nix-openclaw tool plugins (CLI tools + skills, packaged in Nix).
     bundledPlugins = {
-      summarize.enable = true; # summarize URLs / PDFs / videos
+      # summarize is vendored as a custom plugin below (see
+      # plugins/summarize/flake.nix): the bundled plugin's pinned pnpm
+      # deps hash does not reproduce under the toolchain that
+      # nix-openclaw's hardcoded tools rev builds with, which broke the
+      # 2026-10-30 switch (hash mismatch in summarize-pnpm-deps).
+      # Do not re-enable until upstream re-pins.
+      summarize.enable = false; # summarize URLs / PDFs / videos (vendored below)
       gogcli.enable = true; # Google Workspace CLI (gog)
       goplaces.enable = true; # Google Places CLI
       # peekaboo / poltergeist are macOS-only in the nix-openclaw
@@ -131,6 +165,36 @@ in
       discrawl.enable = true; # Discord archive/search
       wacrawl.enable = true; # WhatsApp archive/search
     };
+
+    # Custom plugins supplied as plugin flakes
+    # (programs.openclaw.customPlugins).
+    customPlugins = [
+      {
+        # nix-openclaw runs builtins.getFlake on this string. A plain
+        # source-tree path is an UNLOCKED flake reference and pure
+        # evaluation (CI host-eval, #705) refuses it; a root-flake path
+        # input is no fix either — its lock node inherits the ROOT
+        # sourceInfo narHash, which does not match the plugin subtree
+        # the path fetcher hashes (Codex P1 on PR #3025). So fetch the
+        # subtree as a locked tree of its own: fetchTree with the
+        # subtree's own narHash pinned here, then hand getFlake the
+        # resulting store path with that same hash.
+        # When the plugin's files change, evaluation fails on the
+        # hash mismatch until the pin is refreshed with:
+        #   nix eval --impure --raw --expr '(builtins.fetchTree { type = "path"; path = ./home/openclaw/plugins/summarize; }).narHash'
+        # unsafeDiscardStringContext: getFlake also rejects strings
+        # carrying store-path context.
+        source =
+          let
+            pluginTree = builtins.fetchTree {
+              type = "path";
+              path = ./plugins/summarize;
+              narHash = "sha256-y4xkNIopeCdJ/C/PiIZeKlfALrmxUrBYg5CXUSqsMXU=";
+            };
+          in
+          builtins.unsafeDiscardStringContext "path:${pluginTree.outPath}?narHash=${pluginTree.narHash}";
+      }
+    ];
 
     # OpenClaw runtime plugins (channels, harnesses, providers, search),
     # packaged immutably by nix-openclaw from the pinned upstream catalog.
@@ -156,6 +220,7 @@ in
       "lobster" # typed workflow runtime for resumable automations
       "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
+      "memory-lancedb" # LanceDB long-term memory; owns plugins.slots.memory (#1300 phase 1)
     ];
 
     # Instance-local skills that encode how this fleet works.
@@ -183,7 +248,7 @@ in
           # Quota discipline (binding)
 
           - Plans only, never funds/PAYG. A 402 or quota error is a wall: one retry max on the same pool, then rotate or stop and report.
-          - Burn by expiry: use the pool that expires soonest; OpenAI (codex-proxy) is the final reserve — it is registered as a provider here but deliberately NOT in the default fallback chain.
+          - Burn by expiry: use the pool that expires soonest; OpenAI remains the final reserve but is reachable only as a leaf inside the OpenCode route pools, not as a direct OpenClaw provider.
           - Choose model AND effort per task, deliberately. Routine work: DeepSeek Flash. Flagships only for genuinely hard problems, right-sized effort.
           - Measure quotas before and during heavy work where a checker exists.
 
@@ -262,37 +327,15 @@ in
         };
       };
 
-      # Model routing: local plan proxies only (see QUOTAS.md). Primary is
-      # DeepSeek Flash on the CommandCode plan; fallbacks stay on plan
-      # routes; the Codex/OpenAI proxy is registered for explicit use as
-      # the final reserve, never as an automatic fallback.
+      # Model routing: OpenClaw uses only the opencode-route door
+      # (Drew, 2026-10-31). That door is pass-through only — it handles
+      # auth and translates pool routes; the underlying pools are
+      # reached exclusively through OpenCode routes (see QUOTAS.md).
       models = {
         mode = "merge";
         providers = {
-          commandcode = localProvider commandcodeProxyPort [
-            (model "deepseek/deepseek-v4-flash" "DeepSeek V4 Flash (CommandCode plan)")
-            (model "deepseek/deepseek-v4-pro" "DeepSeek V4 Pro (CommandCode plan)")
-            (model "moonshotai/kimi-k2.6" "Kimi K2.6 (CommandCode plan)")
-            (model "z-ai/glm-5.3-flash" "GLM 5.3 Flash (CommandCode plan)")
-          ];
-          design-code = localProvider designCodeProxyPort [
-            (model "deepseek-v4.1-flash" "DeepSeek V4.1 Flash (Open Design plan)")
-            (model "claude-haiku-5.5" "Claude Haiku 5.5 (Open Design plan)")
-            (model "gpt-6-luna" "GPT-6 Luna (Open Design plan)")
-          ];
-          agy = localProvider agyProxyPort [
-            (model "gemini-3.8-flash" "Gemini 3.8 Flash (Antigravity plan)")
-            (model "gemini-3.1-pro" "Gemini 3.1 Pro (Antigravity plan)")
-            (model "claude-sonnet-5-5" "Claude Sonnet 5.5 (Antigravity plan)")
-          ];
-          codex-proxy = localProvider codexProxyPort [
-            (model "gpt-5.6-luna" "GPT-5.6 Luna (ChatGPT plan — final reserve)")
-            (model "gpt-6-luna" "GPT-6 Luna (ChatGPT plan — final reserve)")
-            (model "gpt-5.6-sol" "GPT-5.6 Sol (ChatGPT plan — final reserve)")
-          ];
-          # The OpenCode server fronted by the route proxy (code#2229):
-          # each model id is an opencode-route pool, carried by the
-          # OpenCode build agent server-side.
+          # The route proxy (code#2229) fronts the OpenCode route
+          # pools (#2518): each model id is an opencode-route pool.
           opencode-route = localProvider opencodeRouteProxyPort [
             (model "workhorse" "Workhorse (OpenCode route pool)")
             (model "speed" "Speed (OpenCode route pool)")
@@ -312,11 +355,10 @@ in
       agents = {
         defaults = {
           model = {
-            primary = "commandcode/deepseek/deepseek-v4-flash";
+            primary = "opencode-route/workhorse";
             fallbacks = [
-              "design-code/deepseek-v4.1-flash"
-              "agy/gemini-3.8-flash"
-              "commandcode/moonshotai/kimi-k2.6"
+              "opencode-route/specialist"
+              "opencode-route/speed"
             ];
           };
           heartbeat = {
@@ -370,7 +412,14 @@ in
         dispatch.enabled = true;
       };
 
-      plugins.entries = {
+      plugins = {
+        # memory-lancedb owns the memory slot (#1300 phase 1, approved
+        # by Drew 2026-10-26). Reversible: remove this slot line (and
+        # the runtime plugin above) to fall back to the built-in
+        # memory backend.
+        slots.memory = "memory-lancedb";
+
+        entries = {
         acpx = {
           enabled = true;
           config = {
@@ -385,9 +434,16 @@ in
             # (and the npx fetch hangs on this laptop's npmjs route).
             # The standalone acpx CLI reads ~/.acpx/config.json instead;
             # that file is kept in sync above, but the plugin ignores it.
+            # Via the ACP-to-HTTP adapter (#1243), not `opencode acp`:
+            # sessions land on the shared serve at 127.0.0.1:13420.
+            # Fallback: command "/etc/profiles/per-user/user/bin/opencode"
+            # with args [ "acp" ] restores the private-server path.
             agents.opencode = {
-              command = "/etc/profiles/per-user/user/bin/opencode";
-              args = [ "acp" ];
+              command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
+              args = [
+                "--server"
+                "http://127.0.0.1:13420"
+              ];
             };
             agents.claude = {
               command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
@@ -403,6 +459,24 @@ in
         slack.enabled = true;
         codex.enabled = true;
         copilot.enabled = true;
+        "memory-lancedb" = {
+          enabled = true;
+          config = {
+            embedding = {
+              # Direct OpenAI-compatible path against the fixed local
+              # llama-server above. The apiKey is a placeholder label,
+              # not a credential: the loopback server checks no key
+              # (same posture as localProvider).
+              apiKey = "local-embedding";
+              baseUrl = "http://127.0.0.1:${toString embeddingPort}/v1";
+              model = "Qwen3-Embedding-0.6B-Q8_0";
+              dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
+            };
+            autoRecall = true;
+            autoCapture = false;
+          };
+        };
+        };
       };
 
       # Direct MCP wiring to the fleet's most useful servers (the same

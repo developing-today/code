@@ -84,22 +84,48 @@ is the way to configure a drop-in installation.
 
 Read in this order: **plugin option, then environment variable, then default.**
 
+The table is generated from the settings registry — `internal/settings/plugin.go`
+for the `plugin.*` options, `daemon.endpoint` and `scriptenv.go` for the two
+that name a daemon — so it cannot drift from what the code reads. Regenerate it
+with `go test ./internal/settings -run TestThePluginReadmeListsEveryOption -update`.
+
+<!-- BEGIN GENERATED: settings.Registry() plugin.*, plus the two daemon options; `go test ./internal/settings -run TestThePluginReadmeListsEveryOption -update` -->
+
 | option | variable | default | effect |
 | --- | --- | --- | --- |
 | `endpoint` | `MCPX_DAEMON_ENDPOINT`, `MCPX_ENDPOINT` | — | a daemon named outright: `http://host:port` or `unix:///path`. Stops the ladder. |
 | `socket` | `MCPX_SOCKET` | — | a socket named outright. Stops the ladder. |
-| `bin` | `MCPX_PLUGIN_BIN` | `mcpx` | the binary for rung 4. `""` forbids spawning anything. |
-| `binArgs` | `MCPX_PLUGIN_BIN_ARGS` | — | arguments before mcpx's own. Whitespace-separated, or a JSON array when one contains a space. |
-| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | `auto` prefers the socket and spawns only as a fallback; `v1` refuses the spawn fallback for tool execution (discovery may still spawn when no daemon is discoverable — `bin: ""` forbids spawning entirely); `cli` never uses the socket. |
-| `discoveryRetry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | `60s` | how long the plugin waits before looking for mcpx again after a failed lookup. |
-| `remember` | `MCPX_PLUGIN_REMEMBER` | `session` | default scope for a daemon choice. |
-| `env` | `MCPX_PLUGIN_ENV` | `full` | how much to inject into shell environments: `minimal`, `standard`, `full`. |
-| `instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | off | add mcpx usage to the system prompt. |
-| `toolTiming` | `MCPX_PLUGIN_TOOL_TIMING` | off | record opencode's tool timings into mcpx's log. |
-| `tools` | `MCPX_PLUGIN_TOOLS` | off | offer `mcpx_discover`, `mcpx_exec` and `mcpx_observe`. |
-| `daemonTools` | `MCPX_PLUGIN_DAEMON_TOOLS` | when unclear | offer `mcpx_daemon_status`, `mcpx_daemon_select` and `mcpx_daemon_forget`. Default: on when `tools` is on, or when more than one daemon was found at boot. |
-| `annotate` | `MCPX_PLUGIN_ANNOTATE` | on | put one line on each mcpx tool result naming the daemon that answered, when more than one matched. |
-| `headless` | `MCPX_PLUGIN_HEADLESS` | detected | `1` suppresses toasts. Detected from whether the server is running in the TUI's worker realm. |
+| `bin` | `MCPX_PLUGIN_BIN` | `mcpx` | the executable the plugin invokes. |
+| `binArgs` | `MCPX_PLUGIN_BIN_ARGS` | — | arguments put in front of every plugin invocation of mcpx. |
+| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | whether the plugin talks to the daemon or spawns the binary. |
+| `discoveryRetry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | `1m0s` | how long the plugin waits before looking for mcpx again. |
+| `toolTiming` | `MCPX_PLUGIN_TOOL_TIMING` | `false` | write every tool outcome into mcpx's log. |
+| `env` | `MCPX_PLUGIN_ENV` | `full` | how much session context is put into each command's environment. |
+| `instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | `false` | add mcpx usage guidance to the system prompt. |
+| `tools` | `MCPX_PLUGIN_TOOLS` | `false` | expose mcpx itself as tools the model can call. |
+| `remember` | `MCPX_PLUGIN_REMEMBER` | `session` | how long a chosen daemon stays chosen. |
+| `annotate` | `MCPX_PLUGIN_ANNOTATE` | `true` | add mcpx's own notes to a tool result. |
+| `headless` | `MCPX_PLUGIN_HEADLESS` | `auto` | suppress toasts, because nobody is looking at a screen. |
+| `daemonTools` | `MCPX_PLUGIN_DAEMON_TOOLS` | `auto` | offer the tools that list and choose between daemons. |
+
+<!-- END GENERATED -->
+
+Three of those need more than the one line the generated column carries. `bin:
+""` forbids spawning anything, which is how a machine with no binary says so
+rather than falling back. `binArgs` is whitespace-separated, or a JSON array
+when one argument contains a space. And `backend` is a choice between three
+behaviours: `auto` prefers the socket and spawns only as a fallback; `v1`
+refuses the spawn fallback for tool execution (discovery may still spawn when no
+daemon is discoverable — `bin: ""` forbids spawning entirely); `cli` never uses
+the socket.
+
+`headless` and `daemonTools` default to `auto`, which the plugin works out at
+boot: headless from whether it is running in the TUI's worker realm, and
+daemonTools to on when `tools` is on or when discovery found more than one
+daemon. `env` and `remember` are lists — `minimal`, `standard` or `full`, and
+`session`, `until-gone` or `indefinite` — described under
+[what gets injected](#what-gets-injected) and
+[remembering a choice](#remembering-a-choice).
 
 `MCPX_STATE_DIR` and `XDG_STATE_HOME` are read too, because that is where the
 daemon publishes its info files and where the remembered choice is kept. They

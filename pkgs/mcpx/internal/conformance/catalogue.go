@@ -37,11 +37,19 @@ const (
 
 // Applicability values: "applies", "n/a:<reason>", "not-implemented:<issue>".
 const (
-	Applies        = "applies"
-	NAPrefix       = "n/a:"
-	NotImplPrefix  = "not-implemented:"
-	oauthIssue     = "#253"
-	notChosenLabel = "optional feature mcpx does not implement"
+	Applies       = "applies"
+	NAPrefix      = "n/a:"
+	NotImplPrefix = "not-implemented:"
+	// The authorization gaps that remain after the catalogue's own per-row
+	// judgements point at the live code-side issues, per the OAuth scope
+	// decision recorded on #1950 (2026-10-29 triage, task 2846): the client
+	// OAuth flow is deferred by choice, so an unwaived client-side gap is
+	// #1950 itself; the server-side gap is the /mcp resource-server work
+	// scoped at #1975. (The number this replaced, #253, was the issue's
+	// dezren39/nix number from before the 2026-10-28 relocation.)
+	oauthClientIssue = "#1950"
+	oauthServerIssue = "#1975"
+	notChosenLabel   = "optional feature mcpx does not implement"
 )
 
 // Requirement is one row of the catalogue.
@@ -182,12 +190,18 @@ func sidesOf(side string) (server, client bool) {
 // Anything not plainly inapplicable applies: a requirement wrongly marked as
 // applying shows up as a missing test, which someone then looks at; one
 // wrongly marked n/a is never looked at again.
-func derive(bound bool, area, note string) string {
+//
+// The note is the catalogue's per-row, per-side judgement, so it is read
+// first — including for authorization rows, where a note saying
+// "not-implemented-by-choice" is the waiver the #1950 OAuth decision
+// records (client OAuth deferred; mcpx's auth position is in
+// internal/mcpauth). Only an authorization row whose note makes no such
+// judgement falls through to the blanket gap, which points at the live
+// issue for that side: #1975 for the server (the /mcp resource-server
+// work), #1950 for the client (the deferred flow's umbrella).
+func derive(bound bool, side, area, note string) string {
 	if !bound {
 		return NAPrefix + "addresses the other side"
-	}
-	if strings.Contains(area, "authorization") {
-		return NotImplPrefix + oauthIssue
 	}
 	n := strings.ToLower(strings.TrimSpace(note))
 	switch {
@@ -197,6 +211,12 @@ func derive(bound bool, area, note string) string {
 		return NAPrefix + reason(note, "not used")
 	case strings.Contains(n, "not-implemented-by-choice"):
 		return NAPrefix + notChosenLabel
+	}
+	if strings.Contains(area, "authorization") {
+		if side == Client {
+			return NotImplPrefix + oauthClientIssue
+		}
+		return NotImplPrefix + oauthServerIssue
 	}
 	return Applies
 }
@@ -242,8 +262,8 @@ func Parse(path string) ([]Requirement, error) {
 		out = append(out, Requirement{
 			ID: c[0], Revs: revs, Side: c[2], Level: c[3], Area: c[4], URL: url, Quote: c[5],
 			Applicability: map[string]string{
-				Server: derive(srv, c[4], c[7]),
-				Client: derive(cli, c[4], c[8]),
+				Server: derive(srv, Server, c[4], c[7]),
+				Client: derive(cli, Client, c[4], c[8]),
 			},
 			Notes: map[string]string{Server: c[7], Client: c[8]},
 		})

@@ -11,7 +11,11 @@ import (
 //
 // The daemon listens on loopback TCP as well as its unix socket, and /v1 is
 // unauthenticated: the socket's file permissions are the access control, and
-// a TCP port has none. A page in any browser on this machine can send a
+// a TCP port has none. The authorisation vocabulary (#1968) does not change
+// that -- it names the caller (a principal per surface, authz.go) and what
+// each operation would require, and the check answers yes; this refusal of
+// browser pages is a transport defence, not an authentication, and stays
+// the only thing standing between a web page and /v1 over TCP. A page in any browser on this machine can send a
 // "simple" cross-origin POST -- text/plain, no preflight -- to
 // 127.0.0.1:<port>/v1/exec, and the handler decodes the body as JSON
 // regardless of its declared type. So every page the user visits could run

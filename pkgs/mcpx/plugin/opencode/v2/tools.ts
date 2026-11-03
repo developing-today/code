@@ -21,11 +21,12 @@
  *
  * What differs from v1, honestly:
  *
- *  - No ctx.ask. v1's daemon_select confirmed through the tool context's
- *    permission prompt; the v2 ToolContext has no ask, and the permission
- *    domain (permission.hook("evaluate")) is SET-REMAINDER work on #1858,
- *    not this core. So v2 daemon_select applies the choice it was told to
- *    apply. Its description no longer claims a confirmation happens.
+ *  - daemon_select confirms through the v2 permission domain
+ *    (permission.ts, #1858 SET-REMAINDER item (2)): the tool asserts
+ *    `mcpx_daemon_select` before applying, the evaluate hook keeps that
+ *    action at "ask", and a rejection applies nothing. With no
+ *    permission domain wired there is no channel to confirm through,
+ *    and the tool says so instead of applying silently.
  *  - No toasts. The v2 server context slice this tree uses has no TUI
  *    channel; ambiguity is surfaced the other v1 way — the annotation line
  *    on tool results — which needs no interface at all.
@@ -51,12 +52,8 @@ import {
   type Target,
 } from "../mcpx/daemon.ts";
 import type { Options } from "./options.ts";
-import {
-  forgetDaemon,
-  readRememberedDaemon,
-  rememberDaemon,
-  type StorageLike,
-} from "./remember.ts";
+import { DAEMON_SELECT_ACTION, type PermissionAssertInput } from "./permission.ts";
+import { forgetDaemon, readRememberedDaemon, rememberDaemon, type StorageLike } from "./remember.ts";
 
 /** The slice of the v2 ToolEditor this module uses (promise/tool.ts). */
 export type ToolEditorLike = {
@@ -75,10 +72,7 @@ export type McpxToolInfo = {
   description: string;
   input: Record<string, unknown>;
   options?: { namespace?: string };
-  execute: (
-    input: never,
-    context: { sessionID: string },
-  ) => Promise<{ content: string }>;
+  execute: (input: never, context: { sessionID: string }) => Promise<{ content: string }>;
 };
 
 /** The slice of DaemonClient the tools use (structural, for tests). */
@@ -119,6 +113,13 @@ export type ToolRuntimeDeps = {
    * hook for exactly this reason.
    */
   onTarget?: (target: Target) => void;
+  /**
+   * The permission gate daemon_select asserts through before applying
+   * a choice (permission.ts). Wired from ctx.permission.assert in
+   * index.ts; absent means this host offers no permission domain, and
+   * daemon_select refuses rather than applying a choice unconfirmed.
+   */
+  assertPermission?: (input: PermissionAssertInput) => Promise<void>;
 };
 
 export type ToolRuntime = {
@@ -138,8 +139,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
   const options = deps.options;
   const discoverFn = deps.discoverFn ?? discover;
   const runBinFn = deps.runBinFn ?? runBin;
-  const clientFor =
-    deps.clientFor ?? ((target: Target) => new DaemonClient(target) as DaemonClientLike);
+  const clientFor = deps.clientFor ?? ((target: Target) => new DaemonClient(target) as DaemonClientLike);
   const discoveryRetryMs = options.discoveryRetryMs ?? TUNING.missCooldownMs;
 
   const ladderOptions = (remembered?: Target): DiscoverOptions => ({
@@ -147,9 +147,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
     endpoint: options.endpoint,
     socket: options.socket,
     bin: options.bin,
-    binArgs: Array.isArray(options.binArgs)
-      ? options.binArgs
-      : splitArgs(options.binArgs),
+    binArgs: Array.isArray(options.binArgs) ? options.binArgs : splitArgs(options.binArgs),
     remembered: remembered ?? chosen,
     // The v2 ladder is storage-backed (remember.ts). Without this the
     // shared discover() falls back to the v1 remember FILE whenever no
@@ -178,9 +176,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
   const refreshRemembered = async (): Promise<boolean> => {
     if (Date.now() - rememberedAt < TUNING.rememberRecheckMs) return false;
     rememberedAt = Date.now();
-    const record = await readRememberedDaemon(deps.storage, deps.directory).catch(
-      () => undefined,
-    );
+    const record = await readRememberedDaemon(deps.storage, deps.directory).catch(() => undefined);
     const now = record ? targetKey(record.target) : undefined;
     if (now === rememberedKey) return false;
     rememberedKey = now;
@@ -197,9 +193,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
         return { candidates: [], rung: 6, reason: "none", ambiguous: false };
       }
       await refreshRemembered();
-      const record = await readRememberedDaemon(deps.storage, deps.directory).catch(
-        () => undefined,
-      );
+      const record = await readRememberedDaemon(deps.storage, deps.directory).catch(() => undefined);
       // A choice made this session outranks the stored one: after a
       // transient failure clears `found`, rediscovery must not silently
       // switch back to the stored daemon a daemon_select moved away
@@ -225,7 +219,9 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
 
   const forget = (): void => {
     found = undefined;
-    missedAt = Date.now();
+    // A transient daemon failure is not a discovery miss; retry the ladder
+    // immediately on the next call.
+    missedAt = 0;
   };
 
   /**
@@ -233,9 +229,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
    * `backend` decides how hard to try: `v1` never spawns, `cli` never
    * uses the socket, `auto` prefers the socket (v1, unchanged).
    */
-  const viaDaemon = async <T>(
-    fn: (c: DaemonClientLike) => Promise<T>,
-  ): Promise<T | undefined> => {
+  const viaDaemon = async <T>(fn: (c: DaemonClientLike) => Promise<T>): Promise<T | undefined> => {
     if (options.backend === "cli") return undefined;
     const c = await daemon();
     if (!c) return undefined;
@@ -340,9 +334,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
       input: { ...EMPTY_INPUT },
       options: { namespace: NAMESPACE },
       execute: async () => {
-        const record = await readRememberedDaemon(deps.storage, deps.directory).catch(
-          () => undefined,
-        );
+        const record = await readRememberedDaemon(deps.storage, deps.directory).catch(() => undefined);
         const d = await discoverFn({
           ...ladderOptions(),
           remembered: chosen ?? record?.target,
@@ -352,9 +344,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
           if (d.target) {
             return result(`Using ${targetKey(d.target)} (named explicitly; no scan was done).`);
           }
-          return result(
-            "No mcpx daemon is running. Start one with `mcpx daemon`, or set MCPX_DAEMON_ENDPOINT.",
-          );
+          return result("No mcpx daemon is running. Start one with `mcpx daemon`, or set MCPX_DAEMON_ENDPOINT.");
         }
         const head =
           `${list.length} daemon${list.length === 1 ? "" : "s"} running. ` +
@@ -367,7 +357,8 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
       name: "daemon_select",
       description:
         "Point this session at one of the daemons mcpx_daemon_status listed, by its " +
-        "index. The tool sets the socket itself — pass the index, never a path.",
+        "index. The user is asked to confirm, and the tool sets the socket itself — " +
+        "pass the index, never a path.",
       input: {
         type: "object",
         properties: {
@@ -392,10 +383,11 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
         additionalProperties: false,
       },
       options: { namespace: NAMESPACE },
-      execute: async (input: { candidate: number; remember?: string; stopOthers?: boolean }) => {
-        const record = await readRememberedDaemon(deps.storage, deps.directory).catch(
-          () => undefined,
-        );
+      execute: async (
+        input: { candidate: number; remember?: string; stopOthers?: boolean },
+        context: { sessionID: string },
+      ) => {
+        const record = await readRememberedDaemon(deps.storage, deps.directory).catch(() => undefined);
         const d = await discoverFn({
           ...ladderOptions(),
           remembered: chosen ?? record?.target,
@@ -404,33 +396,57 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
         if (list.length === 0) return result("No daemon to select. Run mcpx_daemon_status first.");
         const pick = list[input.candidate];
         if (!pick) {
+          return result(`No candidate [${input.candidate}]. mcpx_daemon_status lists 0..${list.length - 1}.`);
+        }
+        const scope = (input.remember ?? options.remember ?? "session") as
+          | "session"
+          | "until-gone"
+          | "indefinite"
+          | "permanent";
+        // The user confirms, and sees what they are confirming — v1's
+        // ctx.ask, carried to the v2 permission domain (permission.ts).
+        // A rejection (or a deny rule) throws out of assert, so nothing
+        // is applied and the tool call fails with the reason.
+        if (!deps.assertPermission) {
           return result(
-            `No candidate [${input.candidate}]. mcpx_daemon_status lists 0..${list.length - 1}.`,
+            "This host offers no permission prompt, so the choice was not applied. " +
+              "Start the session where mcpx_daemon_select can ask, or set the daemon " +
+              "endpoint in the mcpx config directly.",
           );
         }
-        const scope = (input.remember ??
-          options.remember ??
-          "session") as "session" | "until-gone" | "indefinite" | "permanent";
+        await deps.assertPermission({
+          sessionID: context.sessionID,
+          action: DAEMON_SELECT_ACTION,
+          resources: [targetKey(pick.target)],
+          save: [targetKey(pick.target)],
+          metadata: {
+            daemon: label(pick),
+            socket: targetKey(pick.target),
+            config: pick.configPath,
+            started: pick.startedAt,
+            version: pick.version,
+            servers: pick.servers,
+            sessions: pick.sessions,
+            remember: scope,
+            stopOthers: input.stopOthers === true,
+            others: list.filter((c) => c !== pick).map((c) => targetKey(c.target)),
+          },
+        });
         const note = await applyChoice(pick.target, scope);
         let stopped = "";
         if (input.stopOthers) {
           const others = list.filter((c) => targetKey(c.target) !== targetKey(pick.target));
-          const results = await Promise.all(
-            others.map(async (c) => ({ c, ok: await clientFor(c.target).shutdown() })),
-          );
+          const results = await Promise.all(others.map(async (c) => ({ c, ok: await clientFor(c.target).shutdown() })));
           stopped =
             "\nStopped: " +
-            (results.length
-              ? results.map((r) => `${label(r.c)}${r.ok ? "" : " (failed)"}`).join(", ")
-              : "none");
+            (results.length ? results.map((r) => `${label(r.c)}${r.ok ? "" : " (failed)"}`).join(", ") : "none");
         }
         return result(`Now using ${label(pick)} (${targetKey(pick.target)}). ${note}${stopped}`);
       },
     },
     {
       name: "daemon_forget",
-      description:
-        "Drop the remembered daemon choice for this directory, so discovery decides again.",
+      description: "Drop the remembered daemon choice for this directory, so discovery decides again.",
       input: { ...EMPTY_INPUT },
       options: { namespace: NAMESPACE },
       execute: async () => {
@@ -470,9 +486,7 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
           if (input.namespace) return await c.types(input.namespace);
           const ns = await c.namespaces();
           return ns
-            .map(
-              (n) => `${n.namespace}  (${n.tools} tools)${n.description ? "  " + n.description : ""}`,
-            )
+            .map((n) => `${n.namespace}  (${n.tools} tools)${n.description ? "  " + n.description : ""}`)
             .join("\n");
         });
         const body = out ?? (await viaCLI(input.namespace ? ["types", input.namespace] : ["ls"]));

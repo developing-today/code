@@ -54,6 +54,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseProxyPort } from './proxy-port.mjs';
+import { createRequestBodyCollector } from './request-body.mjs';
+import { createStreamDecoder } from './stream-decode.mjs';
 
 const PORT = parseProxyPort('COMMANDCODE_PROXY_PORT', 18748);
 const HOST = process.env.COMMANDCODE_PROXY_HOST || '127.0.0.1';
@@ -425,7 +427,20 @@ const childEnv = () => {
 // change: the automatic multi-turn key hashes the first USER message,
 // not messages[0] — OpenCode's messages[0] is its identical system
 // prompt for every session, which would collide all conversations.
-const SESSION_FILE = path.join(PROXY_DIR, 'sessions.json');
+// Session map: SHARED with claude-code-proxy (mirrored key space), so
+// both proxies must resolve to the SAME path. It lives in the shared
+// CLI-proxy state root, not beside the script: bin/ is the tracked
+// checkout, and every write there dirtied the primary clone and blocked
+// pm-git-sync. #3067 completes the state-dir move of #2782, which
+// covered the WORKDIR state (bin/work) but missed this PROXY_DIR anchor.
+const SESSION_FILE =
+  process.env.COMMANDCODE_PROXY_SESSION_FILE ||
+  path.join(
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'),
+    'cli-proxies',
+    'sessions.json'
+  );
+fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
 const MAX_SESSIONS = 200;
 const sessionStore = new Map();
 
@@ -574,14 +589,16 @@ const acp = {
     console.log(`[commandcode-proxy] ACP resident process started (pid ${child.pid}, start #${this.starts})`);
 
     let lineBuffer = '';
+    const stdoutDecoder = createStreamDecoder();
+    const stderrDecoder = createStreamDecoder();
     child.stdout.on('data', chunk => {
-      lineBuffer += chunk.toString('utf-8');
+      lineBuffer += stdoutDecoder.push(chunk);
       const lines = lineBuffer.split('\n');
       lineBuffer = lines.pop();
       for (const line of lines) this.handleLine(line);
     });
     child.stderr.on('data', chunk => {
-      const msg = chunk.toString('utf-8');
+      const msg = stderrDecoder.push(chunk);
       if (msg.trim().length > 0) console.warn(`[acp stderr] ${msg.trim().slice(0, 500)}`);
     });
     child.on('error', err => console.error(`[commandcode-proxy] ACP process error: ${err.message}`));
@@ -799,7 +816,9 @@ const acp = {
       () => this.runChatLocked({ sessionKey, model, firstPrompt, deltaPrompt, ephemeral, onDelta, agency, lockKey }),
       () => this.runChatLocked({ sessionKey, model, firstPrompt, deltaPrompt, ephemeral, onDelta, agency, lockKey })
     );
-    this.locks.set(lockKey, run.catch(() => {}));
+    const stored = run.catch(() => {});
+    this.locks.set(lockKey, stored);
+    stored.then(() => { if (this.locks.get(lockKey) === stored) this.locks.delete(lockKey); });
     return run;
   },
 
@@ -857,6 +876,7 @@ const server = http.createServer((req, res) => {
         pid: acp.proc ? acp.proc.pid : null,
         starts: acp.starts,
         liveThreads: acp.liveSessions.size,
+        locks: acp.locks.size,
         storedMappings: sessionStore.size
       }
     }, null, 2));
@@ -880,10 +900,10 @@ const server = http.createServer((req, res) => {
 
   // Chat completions
   if (req.method === 'POST' && (pathname === '/v1/chat/completions' || pathname === '/chat/completions')) {
-    let bodyText = '';
+    const bodyCollector = createRequestBodyCollector(50 * 1024 * 1024);
     req.on('data', chunk => {
-      bodyText += chunk;
-      if (bodyText.length > 50 * 1024 * 1024) {
+      if (bodyCollector.tooLarge) return;
+      if (!bodyCollector.push(chunk)) {
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
         req.destroy();
@@ -891,12 +911,20 @@ const server = http.createServer((req, res) => {
     });
 
     req.on('end', () => {
+      if (bodyCollector.tooLarge) return;
+      const bodyText = bodyCollector.text();
       let body;
       try {
         body = JSON.parse(bodyText);
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `Invalid JSON body: ${err.message}` } }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
         return;
       }
 
@@ -1037,6 +1065,8 @@ const server = http.createServer((req, res) => {
         timer.unref();
 
         let lineBuffer = '';
+        const stdoutDecoder = createStreamDecoder();
+        const stderrDecoder = createStreamDecoder();
         let fullContent = '';
         let finalText = null;
         let promptTokens = Math.max(1, Math.ceil(attempt.prompt.length / 4));
@@ -1117,7 +1147,7 @@ const server = http.createServer((req, res) => {
         };
 
         child.stdout.on('data', chunk => {
-          lineBuffer += chunk.toString('utf-8');
+          lineBuffer += stdoutDecoder.push(chunk);
           const lines = lineBuffer.split('\n');
           lineBuffer = lines.pop(); // remainder
           for (const line of lines) {
@@ -1126,7 +1156,7 @@ const server = http.createServer((req, res) => {
         });
 
         child.stderr.on('data', chunk => {
-          const msg = chunk.toString('utf-8');
+          const msg = stderrDecoder.push(chunk);
           stderrTail = (stderrTail + msg).slice(-2000);
           if (msg.trim().length > 0) {
             console.warn(`[commandcode-proxy stderr] ${msg.trim()}`);

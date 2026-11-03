@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // PluginMethod is a hand-written DaemonClient method and the operation its

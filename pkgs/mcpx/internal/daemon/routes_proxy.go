@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 type openAITool struct {
@@ -32,16 +32,16 @@ type chatMessage struct {
 }
 
 type chatCompletionReq struct {
-	Model       string          `json:"model"`
-	Messages    []chatMessage   `json:"messages"`
-	Tools       []openAITool    `json:"tools,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Tools       []openAITool  `json:"tools,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	MaxTokens   *int          `json:"max_tokens,omitempty"`
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit)))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -150,7 +150,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
-	if authHdr := r.Header.Get("Authorization"); authHdr != "" {
+	// #1975: with daemon bearer auth on, the Authorization header is the
+	// daemon credential the gate just verified -- not the caller's upstream
+	// key. The configured upstream key stands; otherwise the daemon token
+	// would be forwarded to the provider (and the provider key would fail
+	// the gate). Unset, a caller-supplied header still selects the key,
+	// exactly as before.
+	if authHdr := r.Header.Get("Authorization"); authHdr != "" && BearerToken(s.set) == "" {
 		apiKey = strings.TrimPrefix(authHdr, "Bearer ")
 	}
 
@@ -293,6 +299,6 @@ func extractUserQuery(msgs []chatMessage) string {
 
 func randomHex(n int) string {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	_, _ = RandSource.Read(b)
 	return hex.EncodeToString(b)
 }

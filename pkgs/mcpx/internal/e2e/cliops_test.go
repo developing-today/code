@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // probeValue is a value an operation will accept far enough to show the

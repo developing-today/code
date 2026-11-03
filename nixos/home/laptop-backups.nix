@@ -37,6 +37,16 @@
 #   the unit is declared here per Drew's all-services-in-nix rule the
 #   same day. Script: ~/tools/supabase-backup.sh (wrapper; the dump
 #   program + config live in ~/tools/supabase-backup/).
+# - atlas-backup (daily ~04:47): the canonical local atlas.db
+#   (~/atlas/turso-atlas/data/atlas.db) snapshotted with sqlite3
+#   .backup, gzipped deterministically, and filed to the local backup
+#   dir, R2 (supabase-backups, atlas/<date>/) and Google Drive
+#   (Cloud/cold-store/db-backups/local-atlas/), every copy
+#   sha256-verified, content-hash dedupe against the backup log,
+#   7/7/4 retention (laptop/R2 dates, Drive archives). Migrated from
+#   the sandbox cron 2026-10-30 per Drew's laptop-only execution rule
+#   (code#1515). Script: ./atlas-backup.sh (vendored here; credentials
+#   from Bitwarden by name at runtime, never in the store).
 # - cold-store-nightly (daily 03:12): the cold-store reaper's nightly
 #   backup set (D1 exports, Supabase filing, Turso exports) to Google
 #   Drive. Migrated from the sandbox 2026-10-28 (code#1723). Script:
@@ -45,6 +55,19 @@
 # - cold-store-drill (monthly, day 1, 05:12; the script self-gates to
 #   Jan/Apr/Jul/Oct): restore drill for the cold-store backups.
 #   Script: ~/tools/cold-store-drill.sh (code#1723).
+#
+# - laptop-backups-watchdog (a few times daily): the freshness check
+#   from code#1841 (design dezren39/nix#1024 phase 3, implementation
+#   ported from dezren39/nix#1026) — read-only, attempts no repair.
+#   It names a stopped backup: pm-dashboard-backup's durable run
+#   record (.last-run.json, written on every exit path by its script)
+#   must be complete and fresher than services.laptop-backups.
+#   watchdog.maxAgeHours, and both backup timers must have triggered
+#   within the same threshold; any violation exits non-zero naming
+#   the job/timer. repo-archive-backup is covered via its timer's
+#   last-trigger time ONLY: its script (~/tools/repo-archive-
+#   backup.sh) and its restic credentials live outside this repo, so
+#   no run record is required of it.
 #
 # Pruning discipline: each job prunes only the dated directories it
 # created itself. The sandbox's backup job writes into its own tree under
@@ -64,6 +87,20 @@ let
   openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (
     builtins.readFile ./openclaw-backup.sh
   );
+  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (
+    builtins.readFile ./atlas-backup.sh
+  );
+  watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
+    builtins.readFile ./laptop-backups-watchdog.sh
+  );
+  # The watchdog checks only the jobs that are enabled: a disabled job
+  # has no run record and no timer, so requiring them would fail the
+  # watchdog forever in a supported configuration.
+  watchdogJobs = lib.concatStringsSep "," (
+    (lib.optional cfg.dashboard.enable "dashboard")
+    ++ (lib.optional cfg.repoArchive.enable "repo-archive")
+  );
+  watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
     pkgs.coreutils
     pkgs.findutils
@@ -71,13 +108,14 @@ let
     pkgs.zstd
     pkgs.python3
     pkgs.rclone
+    pkgs.sqlite
     pkgs.util-linux
     pkgs.systemd
   ];
 in
 {
   options.services.laptop-backups = {
-    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, supabase, cold-store)";
+    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, supabase, cold-store, atlas)";
 
     dashboard = {
       enable = lib.mkOption {
@@ -144,6 +182,19 @@ in
       };
     };
 
+    atlas = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily atlas.db backup to local dir + R2 + Google Drive (code#1515).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "04:47";
+        description = "Daily run time (local) for the atlas backup.";
+      };
+    };
+
     coldStoreNightly = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -177,6 +228,24 @@ in
         type = lib.types.str;
         default = "${home}/tools/cold-store-drill.sh";
         description = "Path of the cold-store drill wrapper script to run.";
+      };
+    };
+
+    watchdog = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Freshness watchdog for the laptop backups (code#1841): names a stopped or failing backup.";
+      };
+      maxAgeHours = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 26;
+        description = "Maximum age (hours) of pm-dashboard-backup's last complete run record and of both backup timers' last triggers before the watchdog fails naming the job.";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "*-*-* 06,12,18:30:00";
+        description = "Times of day the watchdog runs (systemd calendar).";
       };
     };
   };
@@ -222,6 +291,17 @@ in
           };
         };
       })
+      (lib.mkIf cfg.atlas.enable {
+        atlas-backup = {
+          Unit.Description = "Daily atlas.db backup - local + R2 + Drive (code#1515)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${atlasPkg}/bin/atlas-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            TimeoutStartSec = "90m";
+          };
+        };
+      })
       (lib.mkIf cfg.coldStoreNightly.enable {
         cold-store-nightly = {
           Unit.Description = "Cold-store nightly backup set (D1 + Supabase + Turso exports to Drive) (code#1723)";
@@ -239,6 +319,16 @@ in
             Type = "oneshot";
             ExecStart = cfg.coldStoreDrill.script;
             TimeoutStartSec = "15m";
+          };
+        };
+      })
+      (lib.mkIf watchdogWanted {
+        laptop-backups-watchdog = {
+          Unit.Description = "Freshness watchdog for the laptop backups - names a stopped backup (code#1841)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours} ${watchdogJobs}";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
           };
         };
       })
@@ -289,6 +379,17 @@ in
           Install.WantedBy = [ "timers.target" ];
         };
       })
+      (lib.mkIf cfg.atlas.enable {
+        atlas-backup = {
+          Unit.Description = "Run the atlas backup daily (code#1515)";
+          Timer = {
+            OnCalendar = cfg.atlas.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
       (lib.mkIf cfg.coldStoreNightly.enable {
         cold-store-nightly = {
           Unit.Description = "Run the cold-store nightly backup daily";
@@ -307,6 +408,17 @@ in
             OnCalendar = cfg.coldStoreDrill.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf watchdogWanted {
+        laptop-backups-watchdog = {
+          Unit.Description = "Run the laptop-backups freshness watchdog a few times daily (code#1841)";
+          Timer = {
+            OnCalendar = cfg.watchdog.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "10m";
           };
           Install.WantedBy = [ "timers.target" ];
         };

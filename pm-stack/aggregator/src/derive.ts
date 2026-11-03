@@ -192,7 +192,8 @@ export const RETRY_LOOP_THRESHOLD = 3;
 
 /**
  * Classify one session feed entry. Ordering matters: the first rule that
- * matches wins, so a walled-spin with a question still surfaces the question.
+ * matches wins. Questions stay first; a retry loop outranks its last-turn
+ * error once the repeated-error threshold is reached.
  */
 export function classifyAttention(e: SessionFeedEntry, now = Date.now()): AttentionEntry {
   let state: AttentionState = "in-motion";
@@ -201,12 +202,12 @@ export function classifyAttention(e: SessionFeedEntry, now = Date.now()): Attent
   if (e.awaitingQuestion) {
     state = "stopped-for-question";
     evidence = `Waiting on: ${e.awaitingQuestion}`;
-  } else if (e.lastTurnError) {
-    state = "errored";
-    evidence = `Last turn error: ${e.lastTurnError}`;
   } else if ((e.repeatedErrorCount ?? 0) >= RETRY_LOOP_THRESHOLD) {
     state = "stuck-retrying";
     evidence = `${e.repeatedErrorCount} consecutive identical errors, no progress.`;
+  } else if (e.lastTurnError) {
+    state = "errored";
+    evidence = `Last turn error: ${e.lastTurnError}`;
   } else if (e.longRunningCall && Date.parse(e.longRunningCall.startedAt) + CLI_STALL_MS < now) {
     state = "stalled-on-cli";
     evidence = `CLI running long: ${e.longRunningCall.command ?? "unknown"} (since ${e.longRunningCall.startedAt}).`;
@@ -228,7 +229,16 @@ export function attentionSorted(feed: SessionFeedEntry[], now = Date.now()): Att
 // ORCHESTRATOR tiering, session hierarchy, roadmap grains, today view.
 // ---------------------------------------------------------------------------
 
-import type { AttentionTier, BoardItem, OrchestrationSection, SessionSource, TierItem, TieredEntry } from "./model.ts";
+import type {
+  AttentionTier,
+  BoardItem,
+  DependencyRef,
+  OrchestrationSection,
+  SessionSource,
+  TierItem,
+  TieredEntry,
+} from "./model.ts";
+import { assembleWorkItems, formatBlockers } from "./work-items.ts";
 
 export function sourceOf(e: SessionFeedEntry): SessionSource {
   if (e.source) return e.source;
@@ -536,7 +546,7 @@ export function ymdLabel(ymd: string): string {
   // Defensive: an impossible date is echoed verbatim instead of
   // throwing on MONTH_NAMES[NaN] or rolling over into the next month.
   if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return ymd;
-  const d = new Date(`${ymd}T12:00:00Z`);
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00Z`);
   return `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()}`;
 }
 
@@ -625,7 +635,14 @@ export function monthTimeline(rows: RoadmapRow[]): Timeline {
       const [y, m] = ym.split("-").map(Number);
       put(row, { key: ym, label: monthLabel(ym), order: y * 12 + m });
     } else {
-      put(row, laneFor(row.horizon)); // quarter / ongoing / unscheduled lanes
+      const lane = laneFor(row.horizon); // quarter / ongoing / unscheduled lanes
+      // Quarter lanes carry order=year*4+quarter (the quarter view's scale),
+      // which sorts every quarter before every month lane here. Remap them
+      // onto this view's month scale (y*12+m): a quarter lane sits just
+      // after its start month (+0.5), so lanes interleave chronologically.
+      // laneFor/quarterLane stay untouched for timeline() (#3952).
+      const q = /^(\d{4})-Q([1-4])$/.exec(lane.key);
+      put(row, q ? { ...lane, order: Number(q[1]) * 12 + 3 * (Number(q[2]) - 1) + 1 + 0.5 } : lane);
     }
   }
   return {
@@ -639,6 +656,8 @@ export function monthTimeline(rows: RoadmapRow[]): Timeline {
 
 export interface TodayObjective {
   title: string;
+  /** Canonical work-item id (#1206), when the objective is one. */
+  id?: string;
   detail?: string;
   /** Where the objective came from, e.g. "orchestrator · today". */
   chip: string;
@@ -682,35 +701,39 @@ export function asStringList(v: unknown): string[] {
   return [];
 }
 
-/** Map the #899 section's goal measurements into the today view. */
+/** Map the #899 section's goal measurements into the today view.
+ *  Objectives and per-goal blockers come from the canonical work-item
+ *  projection (#1206): the same item carries the same id, status, and
+ *  blockers here as on the Board, Needs-you, Projects, and Program. */
 export function todayFromSection(section: OrchestrationSection): TodayView {
-  const blockedText = (deps?: { task: string; status: string; workerLabel?: string }[]): string | undefined =>
-    deps?.length
-      ? deps.map((d) => `${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`).join("; ")
-      : undefined;
+  const workItems = assembleWorkItems(section);
+  const blockedText = (blockers: DependencyRef[]): string | undefined =>
+    blockers.length ? formatBlockers(blockers, true) : undefined;
   const objectives: TodayObjective[] = [];
-  for (const g of section.goals) {
-    for (const task of g.linedUp.filter((t) => t.horizon === "today")) {
-      objectives.push({
-        title: task.title,
-        detail:
-          [task.status, task.horizonWhy, blockedText(task.blockedBy) && `blocked by ${blockedText(task.blockedBy)}`]
-            .filter(Boolean)
-            .join(" — ") || undefined,
-        chip: `orchestrator · today · ${g.goal}`,
-        ref: task.ref,
-      });
-    }
+  for (const item of workItems) {
+    if (item.horizon !== "today" || item.goal === undefined) continue;
+    const blocked = blockedText(item.blockers);
+    objectives.push({
+      id: item.id,
+      title: item.title,
+      detail:
+        [item.linedUpStatus, item.horizonWhy, blocked && `blocked by ${blocked}`].filter(Boolean).join(" \u2014 ") ||
+        undefined,
+      chip: `orchestrator \u00b7 today \u00b7 ${item.goal}`,
+      ref: item.ref,
+    });
   }
   if (objectives.length === 0) {
     for (const g of section.goals) {
-      objectives.push({ title: g.goal, detail: g.summary, chip: "orchestrator · goal" });
+      objectives.push({ title: g.goal, detail: g.summary, chip: "orchestrator \u00b7 goal" });
     }
   }
   const momentum: ProjectMomentum[] = section.goals.map((g) => {
     const blockers = [
       ...g.stalled.filter((s) => s.blocker).map((s) => `${s.title}: ${s.blocker}`),
-      ...g.linedUp.flatMap((t) => (t.blockedBy?.length ? [`${t.title} — blocked by ${blockedText(t.blockedBy)}`] : [])),
+      ...workItems
+        .filter((item) => item.goal === g.goal && item.blockers.length)
+        .map((item) => `${item.title} \u2014 blocked by ${blockedText(item.blockers)}`),
     ];
     return {
       project: g.goal,
@@ -843,6 +866,19 @@ export function buildAttentionFlags(
       }
     }
   }
+  for (const credential of quota.credentialLifecycle ?? []) {
+    if (credential.state !== "expired" && credential.state !== "expiring" && credential.state !== "rejected") continue;
+    const deadline = credential.expiresAt ? ` · expires ${credential.expiresAt.slice(0, 10)}` : "";
+    const reason = credential.reason ? ` · ${credential.reason}` : "";
+    const action = credential.userAction ? ` · user action: ${credential.userAction.title}` : "";
+    flags.push({
+      kind: "credential-lifecycle",
+      label: `${credential.providerName} · ${credential.label} — ${credential.state}`,
+      detail: `${credential.state}${deadline}${reason}${action}`,
+      href: `/quota/service/${encodeURIComponent(credential.serviceId)}`,
+      severity: credential.state === "expired" || credential.state === "rejected" ? 1000 : 500,
+    });
+  }
   for (const svc of usage.services) {
     for (const m of svc.metrics) {
       if (m.percent != null && m.percent > BUBBLE_PCT) {
@@ -882,7 +918,9 @@ export function buildAttentionFlags(
   // Worst first: over-limit by percent, then PAYG by dollars — the two
   // severities are different units, so kinds stay grouped, worst kind
   // (over-limit) first per the design's "worst first" reading order.
-  return flags.sort((a, b) => (a.kind === b.kind ? b.severity - a.severity : a.kind === "over-limit" ? -1 : 1));
+  const rank = (kind: AttentionFlag["kind"]): number =>
+    kind === "credential-lifecycle" ? 0 : kind === "over-limit" ? 1 : kind === "payg-unbilled" ? 2 : 3;
+  return flags.sort((a, b) => (rank(a.kind) === rank(b.kind) ? b.severity - a.severity : rank(a.kind) - rank(b.kind)));
 }
 
 export interface Freshness {
@@ -891,20 +929,39 @@ export interface Freshness {
   ageDays: number | null;
 }
 
+/**
+ * How far a measuredAt may sit in the future before it stops being
+ * believable (#1568). Date-only granularity and timezone noise can put a
+ * stamp a few hours — at most a day — ahead; beyond that the stamp is
+ * skewed or wrong, and its age is honestly unknown.
+ */
+export const FRESHNESS_FUTURE_TOLERANCE_MS = 86_400_000; // 1 day
+
 /** A card is stale when its freshest read is older than its cadence (§1.1). */
 export function freshness(measuredAt: string | null, cadenceDays: number, now = new Date()): Freshness {
   if (!measuredAt) return { stale: true, ageDays: null };
   // Date-only stamps age by calendar day (a read dated yesterday is
   // 1 day old all day today); datetimes age by elapsed whole days.
+  // The calendar is Chicago's, the timezone every other calendar
+  // helper here uses (#1629): a stamp is a Chicago date, so ageing it
+  // against the UTC day called a read dated today "1d ago" -- and
+  // stale -- from 19:00 Chicago onward, when UTC had rolled over and
+  // Chicago had not.
   if (measuredAt.length <= 10) {
     const t = Date.parse(`${measuredAt}T00:00:00Z`);
     if (Number.isNaN(t)) return { stale: true, ageDays: null };
-    const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const startOfToday = Date.parse(`${chicagoYmd(now)}T00:00:00Z`);
+    // A date-only stamp more than the tolerance past today's Chicago
+    // midnight is a future stamp, not a fresh one (#1568): without
+    // this bound the clamp below would pin it "today" until its
+    // date arrives.
+    if (t - startOfToday > FRESHNESS_FUTURE_TOLERANCE_MS) return { stale: true, ageDays: null };
     const ageDays = Math.max(0, Math.round((startOfToday - t) / 86_400_000));
     return { stale: ageDays > cadenceDays, ageDays };
   }
   const t = Date.parse(measuredAt);
   if (Number.isNaN(t)) return { stale: true, ageDays: null };
+  if (t - now.getTime() > FRESHNESS_FUTURE_TOLERANCE_MS) return { stale: true, ageDays: null };
   const ageDays = Math.max(0, Math.floor((now.getTime() - t) / 86_400_000));
   return { stale: ageDays > cadenceDays, ageDays };
 }
@@ -955,8 +1012,18 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
   const slope = ((last.value as number) - (first.value as number)) / days;
   if (slope <= 0.05) return null;
   const lastVal = last.value as number;
-  const projectedExhaustionAt =
-    lastVal >= 100 ? last.ts : new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000).toISOString();
+  // Out-of-domain pct (#2346): a negative percent-of-limit can never
+  // support a projection, and an unbounded extrapolation can land
+  // outside Date's range, where toISOString() throws RangeError. The
+  // contract is null when history cannot support a projection --
+  // slope and points are still reported.
+  let projectedExhaustionAt: string | null = null;
+  if (lastVal >= 100) {
+    projectedExhaustionAt = last.ts;
+  } else if (lastVal >= 0) {
+    const candidate = new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000);
+    if (Number.isFinite(candidate.getTime())) projectedExhaustionAt = candidate.toISOString();
+  }
   let projectedPercentAtReset: number | null = null;
   if (last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;

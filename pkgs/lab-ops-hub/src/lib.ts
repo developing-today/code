@@ -1,6 +1,7 @@
-// Pure helpers for Lab Ops Hub: crawl-target validation (#441) and the
-// /api/budget computation (#442). Kept free of Worker bindings so they can
-// be unit-tested with plain Node (test/lib.test.ts).
+// Pure helpers for Lab Ops Hub: crawl-target validation (#441), the
+// /api/budget computation (#442), and upload R2 key derivation (#2478).
+// Kept free of Worker bindings so they can be unit-tested with plain
+// Node (test/lib.test.ts).
 
 // --- Crawl URL validation ---------------------------------------------------
 // The crawler fetches a caller-supplied URL from inside the Worker's /
@@ -202,23 +203,43 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
 // fetcher is injected (it must use redirect:"manual") so this is testable
 // with plain Node.
 
+/** The R2 archive key for one crawl's full text (#2503). Date.now()
+ * alone collides for same-millisecond crawls — the second PUT silently
+ * overwrites the first crawl's archive while both D1 rows point at it —
+ * so the key carries a caller-supplied unique suffix (the route passes
+ * crypto.randomUUID()). Pure and injectable for tests. */
+export function crawlArchiveKey(nowMs: number, unique: string): string {
+  return `crawls/${nowMs}-${unique}.json`;
+}
+
 export type ManualFetcher = (url: string) => Promise<Response>;
+
+// Keep this policy in sync with container/app.py's _ValidatingRedirectHandler:
+// urllib max_redirections=10, max_repeats=4, and only 301/302/303/307/308.
+const FOLLOWABLE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_REDIRECT_REPEATS = 4;
 
 export async function fetchFollowingValidatedRedirects(
   startUrl: string,
   fetchFn: ManualFetcher,
-  maxRedirects = 5,
+  maxRedirects = 10,
 ): Promise<Response> {
   const start = validateCrawlUrl(startUrl);
   if (!start.ok) {
     throw new Error(`refusing to crawl ${startUrl}: ${start.error}`);
   }
   let current = start.url;
+  const redirectVisits = new Map<string, number>();
   for (let hop = 0; ; hop++) {
     const res = await fetchFn(current);
     if (res.status < 300 || res.status >= 400) return res;
+    if (!FOLLOWABLE_REDIRECT_STATUSES.has(res.status)) {
+      throw new Error(`unsupported redirect status ${res.status} while crawling ${startUrl}`);
+    }
     const location = res.headers.get("location");
-    if (!location) return res;
+    if (!location) {
+      throw new Error(`redirect response ${res.status} has no Location while crawling ${startUrl}`);
+    }
     if (hop >= maxRedirects) {
       throw new Error(`too many redirects (more than ${maxRedirects}) while crawling ${startUrl}`);
     }
@@ -233,6 +254,11 @@ export async function fetchFollowingValidatedRedirects(
       throw new Error(`refusing to follow redirect from ${current}: ${target.error}`);
     }
     current = target.url;
+    const visits = redirectVisits.get(current) ?? 0;
+    if (visits >= MAX_REDIRECT_REPEATS) {
+      throw new Error(`redirect target repeated more than ${MAX_REDIRECT_REPEATS} times while crawling ${startUrl}`);
+    }
+    redirectVisits.set(current, visits + 1);
   }
 }
 
@@ -352,4 +378,472 @@ export function computeBudget(by: Record<string, number>): {
     month_to_date_self_counted: resources,
     estimated_overage_usd: Math.round(total * 1_000_000) / 1_000_000,
   };
+}
+
+// --- JSON POST body validation (#2480) --------------------------------------
+// The JSON POST routes (machines, notes, tasks, crawl) used to call
+// req.json() unguarded and bind required fields unchecked: malformed JSON
+// threw a SyntaxError and a missing NOT NULL field threw a raw SQLite
+// constraint error, and the outer catch in index.ts turned both into a
+// 500 carrying internal error text. These pure helpers give the routes a
+// shared 400 vocabulary instead: an unparseable body -> "invalid JSON", a
+// JSON value that is not an object -> "JSON object required", and a
+// required field that is missing, not a string, or blank ->
+// "<field> required". Valid values are returned untouched (no trimming),
+// so successful requests are unchanged; genuine operational failures
+// still fall through to the 500 path in index.ts.
+
+export type JsonObjectBody = { ok: true; body: Record<string, unknown> } | { ok: false; error: string };
+
+export async function parseJsonObjectBody(req: Request): Promise<JsonObjectBody> {
+  let parsed: unknown;
+  try {
+    parsed = await req.json();
+  } catch {
+    return { ok: false, error: "invalid JSON" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: "JSON object required" };
+  }
+  return { ok: true, body: parsed as Record<string, unknown> };
+}
+
+export type RequiredString = { ok: true; value: string } | { ok: false; error: string };
+
+// A required field is satisfied only by a string with non-whitespace
+// content; the original string is preserved exactly (callers bind what
+// the client sent, not a trimmed copy).
+export function requireNonBlankString(body: Record<string, unknown>, field: string): RequiredString {
+  const v = body[field];
+  if (typeof v !== "string" || v.trim() === "") return { ok: false, error: `${field} required` };
+  return { ok: true, value: v };
+}
+
+export type Validated<T> = { ok: true; values: T } | { ok: false; error: string };
+
+export function validateMachineBody(body: Record<string, unknown>): Validated<{ name: string }> {
+  const name = requireNonBlankString(body, "name");
+  if (!name.ok) return name;
+  return { ok: true, values: { name: name.value } };
+}
+
+// True only for the machines.name UNIQUE violation (#2631). D1 surfaces
+// constraint failures in the error message (possibly wrapped, e.g.
+// "D1_ERROR: UNIQUE constraint failed: machines.name"); any other error —
+// including a UNIQUE violation on a different column — is not a machine
+// name conflict and must keep flowing to the 500 handler. Matching the
+// thrown constraint (rather than pre-checking the name) keeps concurrent
+// duplicate registrations from racing past validation.
+export function isMachineNameConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("UNIQUE constraint failed: machines.name");
+}
+
+// Notes check title before body, matching the order the fields are named
+// in the route's contract (and the triage note for #2480).
+export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string }> {
+  const title = requireNonBlankString(body, "title");
+  if (!title.ok) return title;
+  const text = requireNonBlankString(body, "body");
+  if (!text.ok) return text;
+  return { ok: true, values: { title: title.value, text: text.value } };
+}
+
+export function validateTaskBody(body: Record<string, unknown>): Validated<{ title: string }> {
+  const title = requireNonBlankString(body, "title");
+  if (!title.ok) return title;
+  return { ok: true, values: { title: title.value } };
+}
+
+// --- Upload R2 keys ---------------------------------------------------------
+// The key used to be `uploads/${Date.now()}-${sanitized}`: two uploads in
+// the same millisecond with the same (or sanitize-equivalent) filename
+// derived the SAME key, so the second FILES.put overwrote the first
+// object and its D1 INSERT then failed on the UNIQUE r2_key — leaving
+// the first row pointing at the second upload's bytes (#2478). The
+// random segment makes collisions practically impossible while the
+// timestamp + sanitized name keep keys sortable and recognisable. The
+// rand input is injectable so derivation stays a pure, testable
+// function; callers pass crypto.randomUUID().
+export function uploadKey(name: string, now: number, rand: string = crypto.randomUUID()): string {
+  return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
+}
+
+// Decode the path suffix before looking up an uploaded file. Keep this
+// route-specific response logic pure so malformed keys and the 404 control
+// can be covered without constructing a Worker environment.
+export async function fileResponseForKey(
+  encodedKey: string,
+  getFile: (key: string) => Promise<{
+    body: ReadableStream<Uint8Array> | null;
+    httpMetadata?: { contentType?: string };
+  } | null>,
+): Promise<Response> {
+  let key: string;
+  try {
+    key = decodeURIComponent(encodedKey);
+  } catch {
+    return new Response(JSON.stringify({ error: "bad file key encoding" }, null, 2), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  const obj = await getFile(key);
+  if (!obj) {
+    return new Response(JSON.stringify({ error: "not found in R2" }, null, 2), {
+      status: 404,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  return new Response(obj.body, {
+    headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
+  });
+}
+
+// --- HTML extraction (#569) -------------------------------------------------
+// extractHtml mirrors the container crawler's Extractor (container/app.py,
+// an html.parser.HTMLParser) so the Worker fallback in index.ts and the
+// container return identical {title, links, text} for the same page:
+// - links counts every <a> start tag (bare <a> and <a/> included), never
+//   anchors inside scripts, styles, or comments;
+// - title is the concatenated character data of <title> (entities decoded),
+//   and title data never leaks into text;
+// - text is the remaining character data with script/style content
+//   skipped (an unclosed script/style swallows the rest of the document,
+//   as HTMLParser's CDATA mode does), chunks joined with one space and
+//   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
+//   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
+//   both test/extractor.test.ts and test/test_extractor_parity.py.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  copy: "©",
+  reg: "®",
+  trade: "™",
+  hellip: "…",
+  mdash: "—",
+  ndash: "–",
+  lsquo: "‘",
+  rsquo: "’",
+  ldquo: "“",
+  rdquo: "”",
+  laquo: "«",
+  raquo: "»",
+  times: "×",
+  divide: "÷",
+  plusmn: "±",
+  deg: "°",
+  middot: "·",
+  bull: "•",
+  dagger: "†",
+  permil: "‰",
+  euro: "€",
+  pound: "£",
+  yen: "¥",
+  cent: "¢",
+  curren: "¤",
+  sect: "§",
+  para: "¶",
+  micro: "µ",
+  sup1: "¹",
+  sup2: "²",
+  sup3: "³",
+  frac12: "½",
+  frac14: "¼",
+  frac34: "¾",
+  iexcl: "¡",
+  iquest: "¿",
+  szlig: "ß",
+  agrave: "à",
+  aacute: "á",
+  acirc: "â",
+  atilde: "ã",
+  auml: "ä",
+  aring: "å",
+  aelig: "æ",
+  ccedil: "ç",
+  egrave: "è",
+  eacute: "é",
+  ecirc: "ê",
+  euml: "ë",
+  igrave: "ì",
+  iacute: "í",
+  icirc: "î",
+  iuml: "ï",
+  ntilde: "ñ",
+  ograve: "ò",
+  oacute: "ó",
+  ocirc: "ô",
+  otilde: "õ",
+  ouml: "ö",
+  ugrave: "ù",
+  uacute: "ú",
+  ucirc: "û",
+  uuml: "ü",
+  yacute: "ý",
+  yuml: "ÿ",
+  Agrave: "À",
+  Aacute: "Á",
+  Auml: "Ä",
+  Ccedil: "Ç",
+  Egrave: "È",
+  Eacute: "É",
+  Euml: "Ë",
+  Ntilde: "Ñ",
+  Ograve: "Ò",
+  Oacute: "Ó",
+  Ouml: "Ö",
+  Ugrave: "Ù",
+  Uacute: "Ú",
+  Uuml: "Ü",
+};
+
+// HTML numeric character-reference normalization: the same remapping
+// html.unescape applies for the container's HTMLParser. C1 controls
+// 0x80-0x9F map to their Windows-1252 characters; NUL, surrogates, and
+// out-of-range values become U+FFFD.
+const NUMERIC_REF_REMAP: Record<number, number> = {
+  0x80: 0x20ac,
+  0x81: 0x0081,
+  0x82: 0x201a,
+  0x83: 0x0192,
+  0x84: 0x201e,
+  0x85: 0x2026,
+  0x86: 0x2020,
+  0x87: 0x2021,
+  0x88: 0x02c6,
+  0x89: 0x2030,
+  0x8a: 0x0160,
+  0x8b: 0x2039,
+  0x8c: 0x0152,
+  0x8d: 0x008d,
+  0x8e: 0x017d,
+  0x8f: 0x008f,
+  0x90: 0x0090,
+  0x91: 0x2018,
+  0x92: 0x2019,
+  0x93: 0x201c,
+  0x94: 0x201d,
+  0x95: 0x2022,
+  0x96: 0x2013,
+  0x97: 0x2014,
+  0x98: 0x02dc,
+  0x99: 0x2122,
+  0x9a: 0x0161,
+  0x9b: 0x203a,
+  0x9c: 0x0153,
+  0x9d: 0x009d,
+  0x9e: 0x017e,
+  0x9f: 0x0178,
+};
+
+function normalizeNumericRef(code: number): number {
+  if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return 0xfffd;
+  return NUMERIC_REF_REMAP[code] ?? code;
+}
+
+export function decodeHtmlEntities(data: string): string {
+  return data.replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, body: string) => {
+    if (body.startsWith("#")) {
+      const hex = body[1] === "x" || body[1] === "X";
+      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+      return String.fromCodePoint(normalizeNumericRef(code));
+    }
+    // Own-property lookup only: a plain index would resolve inherited
+    // Object properties (&constructor;, &toString;) to JavaScript
+    // functions, where HTMLParser leaves unknown names literal.
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : whole;
+  });
+}
+
+// A '/' marks a start tag self-closing only where a new attribute could
+// begin (after the tag name, whitespace, or a quoted value) AND it is
+// the final character before '>': <script / > is an open script tag to
+// HTMLParser, not a self-closing one. A '/' ending an UNQUOTED attribute
+// value is part of the value: <script src=/x/> is likewise an open
+// script tag, not a self-closing one.
+function isSelfClosingTag(inner: string, nameEnd: number): boolean {
+  let k = nameEnd;
+  const len = inner.length;
+  while (k < len) {
+    while (k < len && /\s/.test(inner[k])) k += 1;
+    if (k >= len) return false;
+    if (inner[k] === "/") return k === len - 1;
+    while (k < len && !/[\s=/]/.test(inner[k])) k += 1; // attribute name
+    let m = k;
+    while (m < len && /\s/.test(inner[m])) m += 1;
+    if (m < len && inner[m] === "=") {
+      m += 1;
+      while (m < len && /\s/.test(inner[m])) m += 1;
+      if (m < len && (inner[m] === '"' || inner[m] === "'")) {
+        const q = inner[m];
+        m += 1;
+        while (m < len && inner[m] !== q) m += 1;
+        if (m < len) m += 1;
+      } else {
+        // Unquoted value: everything up to whitespace ('/' included).
+        while (m < len && !/\s/.test(inner[m])) m += 1;
+      }
+      k = m;
+    }
+  }
+  return false;
+}
+
+export function extractHtml(html: string): { title: string; links: number; text: string } {
+  let title = "";
+  let links = 0;
+  const textChunks: string[] = [];
+  let skipDepth = 0;
+  // Raw-text mode: script/style are HTMLParser CDATA elements, and
+  // HTMLParser likewise reports <title> content as raw character data
+  // (markup inside a title is literal and never counts as links).
+  let cdataTag: "script" | "style" | "title" | null = null;
+
+  const handleData = (raw: string) => {
+    if (raw === "") return;
+    const data = decodeHtmlEntities(raw);
+    if (cdataTag === "title") title += data;
+    else if (skipDepth === 0) textChunks.push(data);
+  };
+  const handleStartTag = (tag: string, selfClosing: boolean) => {
+    if (tag === "title") {
+      if (!selfClosing) cdataTag = "title";
+    } else if (tag === "a") links += 1;
+    else if (tag === "script" || tag === "style") {
+      skipDepth += 1;
+      if (selfClosing) skipDepth -= 1;
+      else cdataTag = tag;
+    }
+  };
+  const handleEndTag = (tag: string) => {
+    if ((tag === "script" || tag === "style") && skipDepth > 0) skipDepth -= 1;
+  };
+
+  let i = 0;
+  const n = html.length;
+  while (i < n) {
+    if (cdataTag !== null) {
+      // HTMLParser CDATA mode: only the matching close tag is markup.
+      const close = new RegExp(`</${cdataTag}(?=[\\s/>])`, "i").exec(html.slice(i));
+      if (close === null) {
+        handleData(html.slice(i));
+        i = n;
+        break;
+      }
+      handleData(html.slice(i, i + close.index));
+      i += close.index;
+      // Consume the close tag here, tolerantly: HTMLParser accepts
+      // recoverable end tags carrying trailing attributes
+      // (</script foo>), which the strict end-tag pattern in the normal
+      // path rejects -- skipDepth would stay set and the rest of the
+      // document would be discarded.
+      const closeTag = new RegExp(`</${cdataTag}[^>]*>`, "i").exec(html.slice(i));
+      const closedTag = cdataTag;
+      cdataTag = null;
+      if (closeTag !== null) {
+        handleEndTag(closedTag);
+        i += closeTag[0].length;
+      }
+      continue;
+    }
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      handleData(html.slice(i));
+      break;
+    }
+    if (lt > i) handleData(html.slice(i, lt));
+    i = lt;
+    if (html.startsWith("<!--", i)) {
+      // Comment ends per HTMLParser: --> or --!>, plus the abrupt
+      // empty-comment forms <!--> and <!--->.
+      if (html.startsWith(">", i + 4)) {
+        i += 5;
+        continue;
+      }
+      if (html.startsWith("->", i + 4)) {
+        i += 6;
+        continue;
+      }
+      const m = /--!?>/.exec(html.slice(i + 4));
+      i = m === null ? n : i + 4 + m.index + m[0].length;
+      continue;
+    }
+    const next = html[i + 1] ?? "";
+    if (next === "!" || next === "?") {
+      const end = html.indexOf(">", i + 2);
+      i = end === -1 ? n : end + 1;
+      continue;
+    }
+    if (next === "/") {
+      // End tags may carry (invalid but recoverable) attributes, which
+      // HTMLParser consumes rather than emitting as text: </p foo>
+      // still closes the paragraph. The match is bounded at the next
+      // '>' up front: an unbounded name-plus-remainder pattern
+      // backtracks quadratically on an incomplete end tag at EOF
+      // (</p followed by a long letter run and no '>').
+      const gt = html.indexOf(">", i);
+      const m = gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
+      if (m === null) {
+        if (gt === -1 && /^<\/[a-zA-Z]/.test(html.slice(i))) {
+          // Incomplete end tag at EOF: HTMLParser drops it.
+          i = n;
+          continue;
+        }
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleEndTag(m[1].toLowerCase());
+      i = gt + 1;
+      continue;
+    }
+    if (/[a-zA-Z]/.test(next)) {
+      // Start tag: scan to the closing '>' without letting a quoted
+      // attribute value end the tag early.
+      let j = i + 1;
+      let quote = "";
+      let lastSig = "";
+      while (j < n) {
+        const ch = html[j];
+        if (quote !== "") {
+          if (ch === quote) {
+            quote = "";
+            lastSig = ch;
+          }
+        } else if ((ch === '"' || ch === "'") && lastSig === "=") {
+          // A quote opens a quoted value only where a value begins
+          // (right after '='); a quote inside an unquoted value, as in
+          // <a href=/it's>, is data, as HTMLParser tokenizes it.
+          quote = ch;
+        } else if (ch === ">") break;
+        else if (!/\s/.test(ch)) lastSig = ch;
+        j += 1;
+      }
+      if (j >= n) {
+        handleData(html.slice(i)); // unterminated tag: HTMLParser emits it as data
+        break;
+      }
+      const inner = html.slice(i + 1, j);
+      const nameMatch = /^([a-zA-Z][^\s/>]*)/.exec(inner);
+      if (nameMatch === null) {
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleStartTag(nameMatch[1].toLowerCase(), isSelfClosingTag(inner, nameMatch[1].length));
+      i = j + 1;
+      continue;
+    }
+    handleData("<");
+    i += 1;
+  }
+
+  const text = textChunks.join(" ").replace(/\s+/g, " ").trim();
+  return { title: title.trim(), links, text };
 }

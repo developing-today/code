@@ -78,6 +78,64 @@
           "namepath": "root::chown",
           "shebang": true
         },
+        "deploy-developing-today-backup": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [["nix run .#developing-today-backup-deploy -- ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Deploy the developing-today-backup Worker via the nix flake app (wrangler versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+          "name": "deploy-developing-today-backup",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::deploy-developing-today-backup",
+          "shebang": false
+        },
+        "deploy-pkarr": {
+          "attributes": [{ "group": "pkarr" }],
+          "body": [["nix run .#pkarr-deploy -- ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Deploy the pkarr Worker via the nix flake app (cf versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+          "name": "deploy-pkarr",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::deploy-pkarr",
+          "shebang": false
+        },
         "fix": {
           "attributes": [{ "group": "format" }],
           "body": [],
@@ -138,6 +196,51 @@
           "private": false,
           "quiet": false,
           "namepath": "root::fmt",
+          "shebang": false
+        },
+        "github-backup-fetch": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [
+            ["systemctl --user start github-backup-fetch.service"],
+            ["@systemctl --user status github-backup-fetch.service --no-pager | head -5"]
+          ],
+          "dependencies": [],
+          "doc": "Run the github-backup daily fetch now (via the installed systemd unit)",
+          "name": "github-backup-fetch",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-fetch",
+          "shebang": false
+        },
+        "github-backup-reconcile": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [
+            ["systemctl --user start github-backup-reconcile.service"],
+            ["@systemctl --user status github-backup-reconcile.service --no-pager | head -5"]
+          ],
+          "dependencies": [],
+          "doc": "Run the github-backup weekly reconciliation sweep now (via the installed systemd unit)",
+          "name": "github-backup-reconcile",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-reconcile",
+          "shebang": false
+        },
+        "github-backup-units": {
+          "attributes": [{ "group": "github-backup" }],
+          "body": [["bash infra/github-backup/systemd/install-units.sh"]],
+          "dependencies": [],
+          "doc": "Install or refresh the github-backup laptop systemd units from this checkout",
+          "name": "github-backup-units",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::github-backup-units",
           "shebang": false
         },
         "id-mail-deploy": {
@@ -249,6 +352,65 @@
           "quiet": false,
           "namepath": "root::mcpx-stop",
           "shebang": false
+        },
+        "mcpx-test-affected": {
+          "attributes": [{ "group": "util" }],
+          "body": [
+            ["python3 pkgs/mcpx/scripts/affected-tests.py --base ", [["variable", "base"]], " ", [["variable", "args"]]]
+          ],
+          "dependencies": [],
+          "doc": "agent test tiers from code#1966 (policy: pkgs/mcpx/TESTING.md)",
+          "name": "mcpx-test-affected",
+          "parameters": [
+            {
+              "default": "origin/main",
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "singular",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "base",
+              "pattern": null,
+              "short": null,
+              "value": null
+            },
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::mcpx-test-affected",
+          "shebang": false
+        },
+        "rebuild": {
+          "attributes": [{ "group": "nixos" }],
+          "body": [["#!/usr/bin/env bash"], ["set -euo pipefail"], ["just update-inputs-all"], ["just switch"]],
+          "dependencies": [],
+          "doc": "Update all flake inputs, then rebuild and switch NixOS configuration",
+          "name": "rebuild",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "root::rebuild",
+          "shebang": true
         },
         "stage-docs": {
           "attributes": [{ "group": "docs" }],
@@ -665,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/hatch/git/worktrees/queue-1283-551/root.just",
+      "source": "/home/user/git/fleet/4856/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -750,7 +912,7 @@
     },
     "bench": {
       "attributes": [],
-      "body": [["cargo bench --bench world_bench -- ", ["variable", "args"]]],
+      "body": [["cargo bench --bench world_bench -- ", [["variable", "args"]]]],
       "dependencies": [],
       "doc": "Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out",
       "name": "bench",
@@ -1306,6 +1468,7 @@
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
+        { "arguments": [], "recipe": "roc-test", "star": null },
         { "arguments": [], "recipe": "doc", "star": null },
         { "arguments": [], "recipe": "build", "star": null },
         { "arguments": [], "recipe": "release", "star": null }
@@ -1313,7 +1476,7 @@
       "doc": "CI-safe checks (read-only, no modifications) [bun]",
       "name": "ci",
       "parameters": [],
-      "priors": 11,
+      "priors": 12,
       "private": false,
       "quiet": false,
       "namepath": "ci",
@@ -1454,7 +1617,7 @@
         ["@echo \"✓ Crash gate (sampled + corpus replay) passed\""]
       ],
       "dependencies": [],
-      "doc": "excluded everywhere (they rewrite the checked-in corpus files).",
+      "doc": "losing all PR coverage.",
       "name": "crash-gate-sampled",
       "parameters": [],
       "priors": 0,
@@ -1611,6 +1774,19 @@
       "private": false,
       "quiet": false,
       "namepath": "just-recipes",
+      "shebang": false
+    },
+    "just-recipes-check": {
+      "attributes": [{ "group": "deps" }],
+      "body": [["bash scripts/just-recipes-check.sh"]],
+      "dependencies": [],
+      "doc": "Fail when just-recipes.json has drifted from this justfile (#2729)",
+      "name": "just-recipes-check",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "just-recipes-check",
       "shebang": false
     },
     "kill": {
@@ -1909,6 +2085,35 @@
       "quiet": false,
       "namepath": "repl",
       "shebang": false
+    },
+    "roc-test": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["#!/usr/bin/env bash"],
+        ["set -euo pipefail"],
+        ["if ! command -v roc >/dev/null 2>&1; then"],
+        ["    echo \"roc-test: the pinned Roc compiler (nix/roc.nix) is not on PATH.\" >&2"],
+        [
+          "    echo \"roc-test: run inside 'nix develop' or the roc-test flake check — refusing to skip silently (#813).\" >&2"
+        ],
+        ["    exit 1"],
+        ["fi"],
+        ["echo \"roc-test: $(roc version)\""],
+        ["for module in RocJson Screen Key; do"],
+        ["    echo \"=== roc test examples/roc-world/${module}.roc ===\""],
+        ["    roc test \"examples/roc-world/${module}.roc\""],
+        ["done"],
+        ["echo \"✓ Roc library expectations passed (RocJson, Screen, Key)\""]
+      ],
+      "dependencies": [],
+      "doc": "Run the Roc library expect() tests (RocJson, Screen, Key) with the pinned Roc compiler (#813)",
+      "name": "roc-test",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "roc-test",
+      "shebang": true
     },
     "run": {
       "attributes": [{ "group": "run" }],
@@ -3096,7 +3301,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/hatch/git/worktrees/queue-1283-551/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/4856/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

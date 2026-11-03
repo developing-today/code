@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 )
 
 // Synthesize turns a natural language user prompt into a valid, executable TypeScript script.

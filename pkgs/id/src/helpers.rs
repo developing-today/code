@@ -32,7 +32,9 @@
 //! - **group**: Matches grouped under their query headers
 //! - **union**: Deduplicated matches by hash
 
+use crate::commands::text::{plain_field, tsv_row};
 use crate::protocol::{FindMatch, MatchKind, TaggedMatch};
+use anyhow::{Result, bail};
 
 /// Parses a put specification into path and optional name.
 ///
@@ -153,18 +155,24 @@ pub fn parse_get_spec(spec: &str) -> (&str, Option<&str>) {
 /// abc123...  config.json
 /// ```
 pub fn print_match_cli(m: &TaggedMatch, format: &str) {
+    println!("{}", format_match_cli(m, format));
+}
+
+fn format_match_cli(m: &TaggedMatch, format: &str) -> String {
     match format {
-        "group" => {
-            println!("[{}]", m.query);
-            println!("  {}\t{}", m.hash, m.name);
-        }
-        "union" => {
-            println!("{}\t{}", m.hash, m.name);
-        }
-        _ => {
-            // "tag" format (default)
-            println!("{}\t{}\t({})", m.hash, m.name, m.query);
-        }
+        "group" => format!(
+            "[{}]\n  {}",
+            plain_field(&m.query),
+            tsv_row(&m.hash, &m.name)
+        ),
+        "union" => tsv_row(&m.hash, &m.name),
+        // "tag" format (default)
+        _ => format!(
+            "{}\t{}\t({})",
+            m.hash,
+            plain_field(&m.name),
+            plain_field(&m.query)
+        ),
     }
 }
 
@@ -190,6 +198,13 @@ pub fn print_match_cli(m: &TaggedMatch, format: &str) {
 /// print_matches_cli(&matches, "group");
 /// ```
 pub fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
+    for line in format_matches_cli(matches, format) {
+        println!("{line}");
+    }
+}
+
+fn format_matches_cli(matches: &[TaggedMatch], format: &str) -> Vec<String> {
+    let mut lines = Vec::new();
     match format {
         "group" => {
             // Group by query
@@ -197,12 +212,12 @@ pub fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
             for m in matches {
                 if current_query != Some(&m.query) {
                     if current_query.is_some() {
-                        println!(); // Blank line between groups
+                        lines.push(String::new()); // Blank line between groups
                     }
-                    println!("[{}]", m.query);
+                    lines.push(format!("[{}]", plain_field(&m.query)));
                     current_query = Some(&m.query);
                 }
-                println!("  {}\t{}", m.hash, m.name);
+                lines.push(format!("  {}", tsv_row(&m.hash, &m.name)));
             }
         }
         "union" => {
@@ -210,17 +225,23 @@ pub fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
             let mut seen = std::collections::HashSet::new();
             for m in matches {
                 if seen.insert(m.hash) {
-                    println!("{}\t{}", m.hash, m.name);
+                    lines.push(tsv_row(&m.hash, &m.name));
                 }
             }
         }
         _ => {
             // "tag" format (default)
             for m in matches {
-                println!("{}\t{}\t({})", m.hash, m.name, m.query);
+                lines.push(format!(
+                    "{}\t{}\t({})",
+                    m.hash,
+                    plain_field(&m.name),
+                    plain_field(&m.query)
+                ));
             }
         }
     }
+    lines
 }
 
 /// Prints a single match in REPL format with match kind details.
@@ -244,18 +265,24 @@ pub fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
 ///   abc123...  config.json
 /// ```
 pub fn print_match_repl(query: &str, m: &FindMatch, format: &str) {
+    println!("{}", format_match_repl(query, m, format));
+}
+
+fn format_match_repl(query: &str, m: &FindMatch, format: &str) -> String {
     let kind_str = match m.kind {
         MatchKind::Exact => "exact",
         MatchKind::Prefix => "prefix",
         MatchKind::Contains => "contains",
     };
     match format {
-        "group" | "union" => {
-            println!("  {}\t{}", m.hash, m.name);
-        }
-        _ => {
-            println!("  {}\t{}\t[{}, {}]", m.hash, m.name, kind_str, query);
-        }
+        "group" | "union" => format!("  {}", tsv_row(&m.hash, &m.name)),
+        _ => format!(
+            "  {}\t{}\t[{}, {}]",
+            m.hash,
+            plain_field(&m.name),
+            kind_str,
+            plain_field(query)
+        ),
     }
 }
 
@@ -265,6 +292,48 @@ pub fn print_match_repl(query: &str, m: &FindMatch, format: &str) {
 /// protocol find paths can never diverge; this path is kept only for
 /// backwards compatibility.
 pub use crate::match_kind;
+
+/// Build the local write path for a downloaded find/search match.
+///
+/// A match name is untrusted input: in remote mode both the name and the
+/// blob content come from the queried node, so the name must never be used
+/// as a filesystem path verbatim (`../` and absolute names would overwrite
+/// arbitrary local files — issues #1614, #2307). The write path is derived
+/// from the name's final path component only (`Path::file_name` ruling),
+/// optionally under `dir`. A name with no final component (`..`, `/`, a
+/// trailing separator, empty) is refused and nothing is written. Ordinary
+/// single-segment names produce byte-identical paths to the previous
+/// verbatim behaviour.
+///
+/// This is the single shared implementation used by both the CLI
+/// (`commands/find.rs`) and the REPL (`repl/runner.rs`); do not copy this
+/// rule elsewhere.
+pub fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
+    if name.is_empty() || name.ends_with('/') {
+        bail!(
+            "refusing download of match with unsafe name {:?}: no final path component",
+            name
+        );
+    }
+    let Some(file_name) = std::path::Path::new(name)
+        .file_name()
+        .and_then(|c| c.to_str())
+    else {
+        bail!(
+            "refusing download of match with unsafe name {:?}: no final path component",
+            name
+        );
+    };
+    Ok(match dir {
+        Some(dir) => format!("{}/{}", dir, file_name),
+        // A derived bare "-" would collide with the stdout sentinel in
+        // export_blob ("-" means stdout there); write the file as "./-"
+        // instead. An explicit user-supplied "-" is untouched and still
+        // means stdout (Codex review on PR #4472).
+        None if file_name == "-" => "./-".to_owned(),
+        None => file_name.to_owned(),
+    })
+}
 
 /// Parse a duration such as `45s`, `90m`, `12h` or `3d` into seconds.
 ///
@@ -440,5 +509,61 @@ mod tests {
         print_match_repl("query", &m, "tag");
         print_match_repl("query", &m, "group");
         print_match_repl("query", &m, "union");
+    }
+
+    #[test]
+    fn match_renderers_quote_control_characters_in_names_and_queries() {
+        let hash = Hash::from_bytes([0u8; 32]);
+        let name = format!("x\n{}\tforged", "0".repeat(64));
+        let query = "find\nquery";
+        let tagged = TaggedMatch {
+            query: query.to_owned(),
+            hash,
+            name: name.clone(),
+            kind: MatchKind::Exact,
+            is_hash_match: false,
+        };
+
+        let tag = format_match_cli(&tagged, "tag");
+        assert_eq!(tag.matches('\t').count(), 2);
+        assert!(!tag.contains('\n'));
+        assert!(tag.contains(r#""x\n"#));
+        assert!(tag.ends_with(r#"("find\nquery")"#));
+
+        let group = format_match_cli(&tagged, "group");
+        let group_lines: Vec<_> = group.lines().collect();
+        assert_eq!(group_lines.len(), 2);
+        assert!(group_lines[0].contains(r#""find\nquery""#));
+        assert_eq!(group_lines[1].matches('\t').count(), 1);
+        assert!(group_lines[1].contains(r#""x\n"#));
+
+        let matches = format_matches_cli(&[tagged], "group");
+        assert_eq!(matches.len(), 2);
+        assert!(matches[0].contains(r#""find\nquery""#));
+        assert_eq!(matches[1].matches('\t').count(), 1);
+
+        let found = FindMatch {
+            hash,
+            name,
+            kind: MatchKind::Exact,
+            is_hash_match: false,
+        };
+        let repl = format_match_repl(query, &found, "tag");
+        assert_eq!(repl.matches('\t').count(), 2);
+        assert!(!repl.contains('\n'));
+        assert!(repl.contains(r#""x\n"#));
+        assert!(repl.ends_with(r#"[exact, "find\nquery"]"#));
+
+        let plain = TaggedMatch {
+            query: "simple query".to_owned(),
+            hash,
+            name: "ordinary name".to_owned(),
+            kind: MatchKind::Exact,
+            is_hash_match: false,
+        };
+        assert_eq!(
+            format_match_cli(&plain, "tag"),
+            format!("{hash}\tordinary name\t(simple query)")
+        );
     }
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // CallRelay is what a client asked of one tools/call that only the upstream

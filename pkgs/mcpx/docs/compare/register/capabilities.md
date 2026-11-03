@@ -2,50 +2,45 @@
 
 ```
 created:      2026-09-30T08:00:00-05:00
-last-updated: 2026-09-30T08:00:00-05:00
+last-updated: 2026-11-01T16:20:00-06:00
 increment:    1
 status:       standard
 tags:         area:compare
 description:  every ClientCapabilities/ServerCapabilities field per revision; what mcpx, opencode and lootbox declare
 ```
 
-A capability is a promise about the revision in force, and mcpx makes it twice: as a server to each host and as a
-client to each upstream. At `05c78b2` the largest gaps are declarations without delivery (stdio `listChanged` and
-`subscribe`, `tasks.requests.tools.call`, upstream `sampling`) and shapes sent to revisions that do not define them (core
-`tasks` to 2026 hosts, `extensions` to 2025-11-25 hosts, `roots.listChanged` to 2026 upstreams). How capabilities travel
-(`initialize`, `server/discover`, the 2026 per-request `_meta` key, `Implementation` fields) is in the lifecycle and
-`_meta` registers, and the `-32021` missing-capability error is in the errors register.
+A capability is a promise about the revision in force, both as a server to hosts and as a client to upstreams. The named CAP rows were re-audited for #1753; other observations retain their original snapshot.
 
-Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
+Status column: CAP-02/04/05/06/08 are current (audited at `2a93f3f64`); other rows retain the **mcpx @ 05c78b2** snapshot. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| CAP-01 | `experimental` map (client and server); 2026 narrows values to JSON objects | `2024-11-05 has` `2026-07-28 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (JSONObject)` | n/a — declared in neither direction | + low | S | low |
-| CAP-02 | client `roots`; deprecated to a bare `{}` in 2026 | `2024-11-05 has` `2026-07-28 deprecates` `mcpx missing` `opencode v1 has` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep · opencode v1 ✓ v2 ✓ · lootbox —` | partial — declared to every upstream; always answers an empty list (#210) | + med | S | med |
-| CAP-03 | client `roots.listChanged` removed in 2026 | `2024-11-05 has` `2026-07-28 removes` `mcpx missing` `2026-07-28 deprecates` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 rem · opencode —` | ✗ — `listChanged:false` sent to 2026 upstreams too (#200) | + low | S | low |
-| CAP-04 | client `sampling`; structured in 2025-11-25, deprecated in 2026 | `2024-11-05 has` `2025-11-25 has` `2026-07-28 deprecates` `mcpx missing` `mcpx has, others don't` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep · opencode v1 — v2 — · lootbox —` | partial — declared to every upstream; only a broker agent answers (#210) | + med | S | med |
-| CAP-05 | client `sampling.context` gates `includeContext` | `2025-11-25 has` `2026-07-28 deprecates` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 dep` | ✓ — never declared, correct for a proxy | + low | S | low |
-| CAP-06 | client `sampling.tools` gates tool use inside sampling | `2025-11-25 has` `2026-07-28 deprecates` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 dep` | ✓ — never declared upstream | − deprecated | M | low |
-| CAP-07 | client `elicitation` | `2025-06-18 has` `opencode v2 has` | `24-11 — · 25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 — v2 ✓ · lootbox —` | ✓ — always declared upstream; host gate checks revision | + high | S | low |
-| CAP-08 | client `elicitation.form`; `{}` means form only | `2025-11-25 has` `mcpx missing` `opencode v2 has` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓ · opencode v2 ✓ (applyDefaults)` | partial — form gate ignores a url-only declaration (#210) | + low | S | low |
-| CAP-09 | client `elicitation.url` | `2025-11-25 has` `mcpx missing` `opencode v2 has` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓ · opencode v1 — v2 ✓` | partial — host gate correct; never declared upstream (#200) | + med | M | med |
-| CAP-10 | client `tasks` (client-hosted tasks), 2025-11-25 only | `2025-11-25 has` `2026-07-28 removes` `has better replacement` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 rem · opencode — · lootbox —` | ✓ — never declared | − one-revision | S | low |
-| CAP-11 | client `extensions` map | `2026-07-28 has` `mcpx missing` | `26-07 ✓ only` | ✗ — never declared, so no upstream extension is reachable (#200) | + med | S | low |
-| CAP-12 | server `logging`; deprecated, not removed, in 2026 | `2024-11-05 has` `2026-07-28 deprecates` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep` | ✓ — never declared; `docs/protocol.md` says otherwise | + low | S | low |
-| CAP-13 | server `completions` | `2025-03-26 has` | `24-11 — (method ungated) · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓` | ✓ — declared in every era mcpx serves | + low | S | low |
-| CAP-14 | server `prompts` | `2024-11-05 has` `opencode v1 has` `opencode v2 has` | `all five ✓ · opencode v1 ✓ v2 ✓ (slash commands)` | ✓ — always declared | + low | S | low |
-| CAP-15 | server `prompts.listChanged`; 2026 delivers it only on a listen stream | `2024-11-05 has` `2026-07-28 has` `mcpx missing` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (listen) · opencode v1 — v2 ✓` | ✗ — stdio declares true, legacy hosts never receive it (#208) | + med | S | med |
-| CAP-16 | server `resources` | `2024-11-05 has` `opencode v1 has` `opencode v2 has` | `all five ✓ · opencode v1 ✓ (3 model tools) v2 ✓ (TUI only)` | ✓ — always declared, even with no upstream resources | + med | S | med |
-| CAP-17 | server `resources.subscribe`; kept in 2026 with a new meaning | `2024-11-05 has` `2026-07-28 has` `specs conflict` `mcpx missing` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (= resourceSubscriptions) · opencode never subscribes` | ✗ — stdio declares true; nothing is subscribed upstream (#208) | + med | M | med |
-| CAP-18 | server `resources.listChanged`; 2026 delivers it only on a listen stream | `2024-11-05 has` `2026-07-28 has` `mcpx missing` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (listen) · opencode v1 — v2 ✓` | ✗ — stdio declares true, legacy hosts never receive it (#208) | + med | S | med |
-| CAP-19 | server `tools` | `2024-11-05 has` `opencode v1 has` `opencode v2 has` | `all five ✓ · opencode v1 ✓ v2 ✓` | ✓ — always declared | + low | S | low |
-| CAP-20 | server `tools.listChanged`; 2026 delivers it only on a listen stream | `2024-11-05 has` `2026-07-28 has` `mcpx missing` `opencode v1 has` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (listen) · opencode v1 ✓ v2 ✓` | ✗ — stdio declares true; mcpx's own list never changes (#208) | + med | S | med |
-| CAP-21 | server core `tasks` object, 2025-11-25 only | `2025-11-25 has` `2026-07-28 removes` `has better replacement` `mcpx missing` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 rem (extension)` | ✗ — also sent to 2026 hosts (wire W5) (#209) | + med | S | low |
-| CAP-22 | server `tasks.list` | `2025-11-25 has` `2026-07-28 removes` `mcpx missing` | `25-11 ✓ only` | ✗ — declared though tasks are bound to no requestor (#209) | + med | S | med |
-| CAP-23 | server `tasks.cancel` | `2025-11-25 has` `2026-07-28 removes` | `25-11 ✓ · 26-07 rem (extension implies cancel)` | partial — declared; terminal-task cancel not rejected (tasks register) | + low | S | low |
-| CAP-24 | server `tasks.requests.tools.call` | `2025-11-25 has` `2026-07-28 removes` `mcpx missing` | `25-11 ✓ only` | ✗ — declared, but no tool allows task execution (#209) | + med | S | low |
-| CAP-25 | server `extensions` map | `2026-07-28 has` `mcpx missing` | `26-07 ✓ only` | ✗ — also sent to 2025-11-25 hosts (#209) | + low | S | low |
-| CAP-26 | `extensions["io.modelcontextprotocol/tasks"]` key, both directions | `2026-07-28 has` `specs conflict` `mcpx missing` | `26-07 ext only (SEP-2663 names 2026-06-30)` | ✗ — advertised to hosts, not implemented; never declared upstream (#209) | + med | M | med |
+| ID     | Difference                                                                  | Labels                                                                               | Where it exists                                                                                         | mcpx                                                                                                                                                                                                                                                                                               | Value          | Effort | Risk |
+| ------ | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | ------ | ---- |
+| CAP-01 | `experimental` map (client and server); 2026 narrows values to JSON objects | `2024-11-05 has` `2026-07-28 has`                                                    | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (JSONObject)`                                          | n/a — declared in neither direction                                                                                                                                                                                                                                                                | + low          | S      | low  |
+| CAP-02 | client `roots`; deprecated to a bare `{}` in 2026                           | `2024-11-05 has` `2026-07-28 deprecates` `opencode v1 has` `opencode v2 has`         | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep · opencode v1 ✓ v2 ✓ · lootbox —`                    | ✓ — declares roots and answers from configured roots; relays to the calling host's roots when declared (modern.go:342-359; daemon/hooks.go:373-409)                                                                                                                                                | + med          | S      | med  |
+| CAP-03 | client `roots.listChanged` removed in 2026                                  | `2024-11-05 has` `2026-07-28 removes` `mcpx missing` `2026-07-28 deprecates`         | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 rem · opencode —`                                        | ✗ — `listChanged:false` sent to 2026 upstreams too (#200)                                                                                                                                                                                                                                          | + low          | S      | low  |
+| CAP-04 | client `sampling`; structured in 2025-11-25, deprecated in 2026             | `2024-11-05 has` `2025-11-25 has` `2026-07-28 deprecates` `mcpx has, others don't`   | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep · opencode v1 — v2 — · lootbox —`                    | ✓ — declared only with an `OnServerRequest` handler; the daemon wires its broker handler (modern.go:120-123; daemon/hooks.go:82)                                                                                                                                                                   | + med          | S      | med  |
+| CAP-05 | client `sampling.context` gates `includeContext`                            | `2025-11-25 has` `2026-07-28 deprecates`                                             | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 dep`                                                     | ✓ — not declared; undeclared non-`none` `includeContext` is dropped before the handler (modern.go:142-179)                                                                                                                                                                                         | + low          | S      | low  |
+| CAP-06 | client `sampling.tools` gates tool use inside sampling                      | `2025-11-25 has` `2026-07-28 deprecates`                                             | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 dep`                                                     | ✓ — not declared; incoming `tools`/`toolChoice` requests are refused with `-32602` (modern.go:142-179)                                                                                                                                                                                             | − deprecated   | M      | low  |
+| CAP-07 | client `elicitation`                                                        | `2025-06-18 has` `opencode v2 has`                                                   | `24-11 — · 25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ · opencode v1 — v2 ✓ · lootbox —`                      | ✓ — always declared upstream; host gate checks revision                                                                                                                                                                                                                                            | + high         | S      | low  |
+| CAP-08 | client `elicitation.form`; `{}` means form only                             | `2025-11-25 has` `opencode v2 has`                                                   | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓ · opencode v2 ✓ (applyDefaults)`                       | ✓ — the host gate accepts `form` or empty `{}` and rejects url-only form requests (conn.go:259-285; PR #2162)                                                                                                                                                                                      | + low          | S      | low  |
+| CAP-09 | client `elicitation.url`                                                    | `2025-11-25 has` `mcpx missing` `opencode v2 has`                                    | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓ · opencode v1 — v2 ✓`                                  | partial — host gate correct; never declared upstream (#200)                                                                                                                                                                                                                                        | + med          | M      | med  |
+| CAP-10 | client `tasks` (client-hosted tasks), 2025-11-25 only                       | `2025-11-25 has` `2026-07-28 removes` `has better replacement`                       | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 rem · opencode — · lootbox —`                            | ✓ — never declared                                                                                                                                                                                                                                                                                 | − one-revision | S      | low  |
+| CAP-11 | client `extensions` map                                                     | `2026-07-28 has`                                                                     | `26-07 ✓ only`                                                                                          | Modern client declares the tasks extension; legacy initialize omits the map (`internal/mcpclient/modern.go:capabilities`).                                                                                                                                                                         | + med          | S      | low  |
+| CAP-12 | server `logging`; deprecated, not removed, in 2026                          | `2024-11-05 has` `2026-07-28 deprecates`                                             | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep`                                                     | ✓ — never declared; `docs/protocol.md` says otherwise                                                                                                                                                                                                                                              | + low          | S      | low  |
+| CAP-13 | server `completions`                                                        | `2025-03-26 has`                                                                     | `24-11 — (method ungated) · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓`                                      | ✓ — declared in every era mcpx serves                                                                                                                                                                                                                                                              | + low          | S      | low  |
+| CAP-14 | server `prompts`                                                            | `2024-11-05 has` `opencode v1 has` `opencode v2 has`                                 | `all five ✓ · opencode v1 ✓ v2 ✓ (slash commands)`                                                      | ✓ — always declared                                                                                                                                                                                                                                                                                | + low          | S      | low  |
+| CAP-15 | server `prompts.listChanged`; 2026 delivers it only on a listen stream      | `2024-11-05 has` `2026-07-28 has` `mcpx missing` `opencode v2 has`                   | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (listen) · opencode v1 — v2 ✓`                         | ✗ — stdio declares true, legacy hosts never receive it (#208)                                                                                                                                                                                                                                      | + med          | S      | med  |
+| CAP-16 | server `resources`                                                          | `2024-11-05 has` `opencode v1 has` `opencode v2 has`                                 | `all five ✓ · opencode v1 ✓ (3 model tools) v2 ✓ (TUI only)`                                            | ✓ — always declared, even with no upstream resources                                                                                                                                                                                                                                               | + med          | S      | med  |
+| CAP-17 | server `resources.subscribe`; kept in 2026 with a new meaning               | `2024-11-05 has` `2026-07-28 has` `specs conflict` `mcpx missing`                    | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (= resourceSubscriptions) · opencode never subscribes` | ✗ — stdio declares true; nothing is subscribed upstream (#208)                                                                                                                                                                                                                                     | + med          | M      | med  |
+| CAP-18 | server `resources.listChanged`; 2026 delivers it only on a listen stream    | `2024-11-05 has` `2026-07-28 has` `mcpx missing` `opencode v2 has`                   | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (listen) · opencode v1 — v2 ✓`                         | ✗ — stdio declares true, legacy hosts never receive it (#208)                                                                                                                                                                                                                                      | + med          | S      | med  |
+| CAP-19 | server `tools`                                                              | `2024-11-05 has` `opencode v1 has` `opencode v2 has`                                 | `all five ✓ · opencode v1 ✓ v2 ✓`                                                                       | ✓ — always declared                                                                                                                                                                                                                                                                                | + low          | S      | low  |
+| CAP-20 | server `tools.listChanged`; 2026 delivers it only on a listen stream        | `2024-11-05 has` `2026-07-28 has` `mcpx missing` `opencode v1 has` `opencode v2 has` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓ (listen) · opencode v1 ✓ v2 ✓`                         | ✗ — stdio declares true; mcpx's own list never changes (#208)                                                                                                                                                                                                                                      | + med          | S      | med  |
+| CAP-21 | server core `tasks` object, 2025-11-25 only                                 | `2025-11-25 has` `2026-07-28 removes` `has better replacement`                       | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 rem (extension)`                                         | Core tasks capability is limited to legacy revision; modern gets extension only (`internal/mcpserver/server.go:capabilities`).                                                                                                                                                                     | + med          | S      | low  |
+| CAP-22 | server `tasks.list`                                                         | `2025-11-25 has` `2026-07-28 removes` `mcpx missing`                                 | `25-11 ✓ only`                                                                                          | Legacy list is declared and lists connection-owned tasks only; unowned tasks remain accessible by ID (`internal/mcpserver/server.go:capabilities`; `internal/mcpserver/tasks.go:handleTask`, `visible`; #1554).                                                                                    | + med          | S      | med  |
+| CAP-23 | server `tasks.cancel`                                                       | `2025-11-25 has` `2026-07-28 removes`                                                | `25-11 ✓ · 26-07 rem (extension implies cancel)`                                                        | Legacy cancel declared and terminal cancel rejected; modern extension acknowledges (`internal/mcpserver/server.go:capabilities`; `internal/mcpserver/tasks.go:handleTask`, `handleModernTask`).                                                                                                    | + low          | S      | low  |
+| CAP-24 | server `tasks.requests.tools.call`                                          | `2025-11-25 has` `2026-07-28 removes`                                                | `25-11 ✓ only`                                                                                          | Legacy task execution is advertised; eligible gateway tools declare optional support and forbidden tools are rejected (`internal/mcpserver/server.go:taskOptional`, `capabilities`; `internal/mcpserver/tasks.go:legacyTaskSupport`, `maybeTask`).                                                 | + med          | S      | low  |
+| CAP-25 | server `extensions` map                                                     | `2026-07-28 has`                                                                     | `26-07 ✓ only`                                                                                          | Server extension map is emitted only for modern peers (`internal/mcpserver/server.go:capabilities`).                                                                                                                                                                                               | + low          | S      | low  |
+| CAP-26 | `extensions["io.modelcontextprotocol/tasks"]` key, both directions          | `2026-07-28 has` `specs conflict` `mcpx missing`                                     | `26-07 ext only (SEP-2663 names 2026-06-30)`                                                            | Server and modern client declare the extension; client polls task results, but upstream task input relay remains open (`internal/mcpserver/server.go:capabilities`; `internal/mcpclient/modern.go:capabilities`; `internal/mcpclient/tasks.go:finishModernTask`, `TaskInputRequiredError`; #1554). | + med          | M      | med  |
 
 ## CAP-01 `experimental` map (client and server)
 
@@ -71,22 +66,21 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Where.** All five revisions; deprecated in 2026. opencode v1 and v2 declare `roots: {}` and answer one root, the
   instance or Location directory (v2 notes it is legacy-era only). lootbox declares no capabilities at all, so an
   upstream `roots/list` gets the SDK's method-not-found.
-- **mcpx @ 05c78b2.** As a client it declares `roots` to every upstream (`internal/mcpclient/modern.go:52`) and answers
-  `roots/list` with `{"roots": []}` (`internal/mcpclient/modern.go:116-120`), because the daemon installs nil roots
-  (`internal/daemon/server.go:176`) and no setting feeds them. `docs/protocol.md:278` says it answers "the configured
-  roots". As a server it never asks a host for roots (roots register).
-- **Value to mcpx.** + filesystem servers could scope themselves to the caller's cwd or repo, which the pool's scope key
-  already knows; or − stop declaring.
-- **Effort.** S either way (derive roots from the call's scope, or drop the capability).
-- **Risk.** If not done: servers that refuse to run without a root fail with a confusing message — opencode v2's own
-  comment says some legacy servers do exactly that. If done per scope: roots differ per pooled instance, which is the
-  intended behaviour.
-- **Detail.** An empty list is a legal answer, so this is a doc/intent bug rather than a wire violation. opencode's root is
-  the opencode directory, not the worktree. lootbox's `capabilities: {}` comes with no request handler at all, so an
+- **mcpx @ 2a93f3f64.** As a client it declares `roots` (`internal/mcpclient/modern.go:102-108`) and answers
+  `roots/list` from its configured roots (`internal/mcpclient/modern.go:342-359`). When a server asks during a call
+  whose originating client declared roots, the daemon relays the request to that client's roots; otherwise mcpx falls
+  back to its configured roots (`internal/daemon/hooks.go:373-409`).
+- **Value to mcpx.** + filesystem servers can use the configured roots or the calling client's roots, rather than a
+  hard-coded empty list.
+- **Effort.** S — configured-root fallback and call-scoped host relay are implemented.
+- **Risk.** low — an empty configured-root list is legal; relayed roots stay scoped to the host call that requested them.
+- **Detail.** An empty configured-root list remains a legal fallback answer. A relayed answer is scoped to the host whose
+  call raised the request; mcpx does not broadcast one client's roots to other pooled clients. opencode's root is the
+  opencode directory, not the worktree. lootbox's `capabilities: {}` comes with no request handler at all, so an
   upstream `roots/list` or `elicitation/create` gets the SDK's default method-not-found.
 - **Sources.** `schema/2026-07-28/schema.ts:732` "roots?: {};"; `schema/2026-07-28/schema.ts:724` "@deprecated
-  Deprecated as of protocol version 2026-07-28 (SEP-2577)."; `internal/mcpclient/modern.go:52`;
-  `internal/daemon/server.go:176`; `docs/protocol.md:278` "the configured roots, before consulting any handler";
+  Deprecated as of protocol version 2026-07-28 (SEP-2577)."; `internal/mcpclient/modern.go:102-108,342-359`;
+  `internal/daemon/hooks.go:373-409`;
   `v1:packages/opencode/src/mcp/index.ts:46` "roots: {},"; `v2:packages/core/src/mcp/client.ts:146`;
   `v2:packages/core/src/mcp/client.ts:144` "Legacy era only"; `.lootbox/src/lib/external-mcps/mcp_client_manager.ts:150-153`
 
@@ -121,26 +115,24 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   2025-11-25 gives it `context` and `tools` sub-capabilities; 2026 deprecates the whole capability (SEP-2577).
 - **Where.** All five; structured from 2025-11-25; deprecated 2026. Neither opencode version declares it or registers a
   handler; lootbox declares nothing.
-- **mcpx @ 05c78b2.** As a client, `sampling: {}` is added whenever an `onElicit` handler exists
-  (`internal/mcpclient/modern.go:54-56`); the pool always installs one when hooks exist (`internal/pool/pool.go:393-399`)
-  and the daemon always installs `Elicit: r.answerServer` (`internal/daemon/hooks.go:69`), so every upstream is told
-  sampling works. The only answerer is an agent watching the broker; without a broker `answerServer` returns an error for
-  sampling (`internal/daemon/hooks.go:104-111`). `docs/protocol.md:271` says sampling is declared "only when a handler
-  exists". As a server, mcpx's gate for asking a host is only "declared `sampling`" (`internal/mcpserver/conn.go:211`).
+- **mcpx @ 2a93f3f64.** As a client, `sampling: {}` is declared iff an `OnServerRequest` handler exists
+  (`internal/mcpclient/modern.go:94-123`); the daemon wires its broker-backed handler (`internal/daemon/hooks.go:82,
+155-174`). The handler turns requests into broker work; an unanswered request may still expire. As a server, mcpx
+  checks host `sampling.tools` / `sampling.context` declarations before forwarding the corresponding shapes
+  (`internal/mcpserver/conn.go:561-581,696-703`).
 - **Value to mcpx.** + honesty: servers that have a no-sampling fallback would use it.
-- **Effort.** S — declare only when an agent answerer is configured.
+- **Effort.** S — done; capability declaration is conditional on the configured handler.
 - **Risk.** If not done: a sampling upstream waits out `elicit.ttl` (120 s) and then gets an error.
-- **Detail.** An empty `sampling: {}` in 2025-11-25+ means "basic sampling, no tools, no context inclusion". A proxy that
-  relays sampling should copy the downstream host's sub-capabilities or it silently narrows them. mcpx is the only one of
-  mcpx/opencode/lootbox that declares sampling at all. Forwarding sampling to a host without checking its sub-capabilities
-  or revision is in the sampling register.
+- **Detail.** An empty `sampling: {}` in 2025-11-25+ means "basic sampling, no tools, no context inclusion". mcpx does
+  not copy host sub-capabilities into its upstream declaration: it refuses incoming `tools`/`toolChoice` and strips
+  undeclared non-`none` `includeContext` (`internal/mcpclient/modern.go:142-179`). Host-bound forwarding separately
+  checks the host declarations (SMP-11). mcpx is the only one of mcpx/opencode/lootbox that declares sampling at all.
 - **Also recorded from the sampling register.** Bare in 2024-11-05..2025-06-18; structured in 2025-11-25 and
-  2026-07-28. Declares `sampling: {}` upstream when a handler is installed (`internal/mcpclient/modern.go:54-56`),
-  never `tools` or `context`, regardless of what the host behind the call declared. Whether mcpx should declare
-  sampling at all is SMP-09.
+  2026-07-28. The client declares `sampling: {}` only when its handler exists (`internal/mcpclient/modern.go:120-123`);
+  it never declares `tools` or `context`. The daemon installs the broker-backed handler (`internal/daemon/hooks.go:82`).
 - **Sources.** `schema/2024-11-05/schema.ts:202` "sampling?: object;"; `schema/2025-11-25/schema.ts:327` "sampling?:
   {"; `schema/2026-07-28/schema.ts:736` "@deprecated Deprecated as of protocol version 2026-07-28 (SEP-2577).";
-  `internal/mcpclient/modern.go:54-56`; `internal/daemon/hooks.go:69` "Elicit: r.answerServer,";
+  `internal/mcpclient/modern.go:94-123`; `internal/daemon/hooks.go:82,155-174`;
   `docs/protocol.md:271` "`sampling` only when a handler exists to answer it"; `v1:packages/opencode/src/mcp/index.ts:42`
   "// sampling: {},"; `v2:packages/core/src/mcp/client.ts:142`; `schema/2025-06-18/schema.ts:246` "sampling?: object;"
 
@@ -148,29 +140,33 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** Sub-capability that gates `includeContext`: without it, servers SHOULD use only `"none"` or omit the field.
 - **Where.** 2025-11-25 and 2026 (deprecated with the values it gates). The 2025-11-25 changelog does not mention it.
-- **mcpx @ 05c78b2.** Never declared upstream (`internal/mcpclient/modern.go:55`).
+- **mcpx @ 2a93f3f64.** Never declared upstream (`internal/mcpclient/modern.go:120-123`). Incoming
+  non-`none` `includeContext` is removed before the handler because mcpx did not declare `sampling.context`
+  (`internal/mcpclient/modern.go:142-179`); host-bound forwarding also removes it unless the host declared context
+  (`internal/mcpserver/conn.go:696-703`).
 - **Value to mcpx.** + not declaring it is correct: a proxy has no "context from other servers" to inject.
 - **Effort.** S.
 - **Risk.** None if left undeclared.
 - **Detail.** SHOULD-level only: a server may still send `thisServer`/`allServers` and the client MAY ignore it.
 - **Sources.** `schema/2025-11-25/schema.ts:332` "context?: object;"; `2025-11-25/client/sampling.mdx:69` "**With
-  context inclusion support (soft-deprecated):**"; `internal/mcpclient/modern.go:55`
+  context inclusion support (soft-deprecated):**"; `internal/mcpclient/modern.go:120-123,142-179`;
+  `internal/mcpserver/conn.go:696-703`.
 
 ## CAP-06 client `sampling.tools`
 
 - **What.** Declares that the client accepts `tools`/`toolChoice` in `sampling/createMessage`. Servers MUST NOT send
   tool-enabled sampling without it; the schema also says the client MUST error if it gets one anyway.
 - **Where.** 2025-11-25 and 2026 (deprecated).
-- **mcpx @ 05c78b2.** Never declared upstream (`internal/mcpclient/modern.go:55`). Downstream, the gate that decides
-  whether a host may be asked checks only `sampling` presence (`internal/mcpserver/conn.go:211`); that forwarding gap is
-  recorded in the sampling register.
+- **mcpx @ 2a93f3f64.** Never declares `sampling.tools` upstream. A tools/toolChoice request is refused with
+  `-32602` before the client handler runs (`internal/mcpclient/modern.go:142-179`). Host-bound tool requests are offered
+  only to a host that declared `sampling.tools` (`internal/mcpserver/conn.go:572-581`).
 - **Value to mcpx.** − relaying agentic sampling is work for a deprecated feature.
 - **Effort.** M — the tool loop (`tool_use`/`tool_result` blocks) has to pass through unmodified.
 - **Risk.** Declaring it without a tool loop invites requests mcpx must then refuse.
 - **Detail.** Prose and schema put the obligation on different sides: the server MUST NOT send, the client MUST error.
 - **Sources.** `schema/2025-11-25/schema.ts:336` "tools?: object;"; `2025-11-25/client/sampling.mdx:40` "Clients
-  **MUST** declare support for tool use via the `sampling.tools` capability"; `internal/mcpserver/conn.go:211`
-  "func (p Peer) CanSample() bool { return p.Declared("
+  **MUST** declare support for tool use via the `sampling.tools` capability"; `internal/mcpclient/modern.go:142-179`;
+  `internal/mcpserver/conn.go:313-319,572-581`.
 
 ## CAP-07 client `elicitation`
 
@@ -188,7 +184,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Detail.** For opencode v1 users the broker (`mcpx elicit`) is the only way to answer mcpx's questions. opencode v2's
   handler turns the request into a Location-global form (elicitation register).
 - **Sources.** `schema/2025-06-18/schema.ts:250` "elicitation?: object;"; `2025-06-18/basic/lifecycle.mdx:155` "|
-  Client   | `elicitation`  |"; `internal/mcpclient/modern.go:51`; `internal/mcpclient/modern.go:129-131`;
+  Client | `elicitation` |"; `internal/mcpclient/modern.go:51`; `internal/mcpclient/modern.go:129-131`;
   `internal/mcpserver/conn.go:192`; `v1:packages/opencode/src/mcp/index.ts:44` "// elicitation: {},";
   `v2:packages/core/src/mcp/client.ts:143`
 
@@ -197,29 +193,25 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** 2025-11-25 splits elicitation into `form` and `url`. An empty `elicitation: {}` is equivalent to
   `{ form: {} }`; a declaring client MUST support at least one mode; servers MUST NOT send an undeclared mode.
 - **Where.** 2025-11-25 and 2026. opencode v2 declares `form: { applyDefaults: true }`.
-- **mcpx @ 05c78b2.** As a client it declares bare `{}`, i.e. form only (`internal/mcpclient/modern.go:51`). As a server,
-  `CanElicit` returns true for any non-url mode once `elicitation` is declared (`internal/mcpserver/conn.go:192`,
-  `internal/mcpserver/conn.go:195`), without looking for a `form` key — so a 2025-11-25+ host that declared
-  `{ url: {} }` alone would still be sent a form request.
+- **mcpx @ 2a93f3f64.** As a client it declares form support (`internal/mcpclient/modern.go:98-104`). As a server,
+  `CanElicit` accepts an explicit `form` key or an empty declaration, but rejects a 2025-11-25+ url-only declaration
+  (`internal/mcpserver/conn.go:259-285`; PR #2162).
 - **Value to mcpx.** + low: url-only hosts are rare, but the rule is a MUST NOT.
-- **Effort.** S — treat "`form` present, or neither key present" as form support.
-- **Risk.** A url-only host receives a `requestedSchema` it cannot render.
+- **Effort.** S — done.
+- **Risk.** low — url-only hosts are not offered form requests.
 - **Detail.** `applyDefaults` is not a schema field (`form` is an open object) — it is the SDK's instruction to fill
   schema defaults into accepted content. Because `{}` means form-only, mcpx's upstream declaration never admits url mode
   (CAP-09).
 - **Also recorded from the elicitation register.** 2025-11-25 and 2026-07-28. opencode v2 declares `{ form: {
-  applyDefaults: true }, url: {} }`. Downstream, url mode needs ≥2025-11-25 and an explicit `url` key
-  (`internal/mcpserver/conn.go:198-207`). Upstream, mcpx declares bare `{}` (`internal/mcpclient/modern.go:51`), which
-  is form-only, so no upstream may send it a URL elicitation even when the host behind the call could open one. The
-  2026 per-request capabilities carry the same legacy-shaped object (see the capabilities register). Found while
-  drafting: `CanElicit` treats any declared `elicitation` as form-capable (`internal/mcpserver/conn.go:192-197`), so a
-  host that declared only `{ url: {} }` would still be sent form questions, which the MUST NOT forbids. No host in
-  this study declares url-only.
+applyDefaults: true }, url: {} }`. Downstream, form and url modes are gated independently by the declaration and
+  protocol era (`internal/mcpserver/conn.go:259-285`). Upstream, mcpx declares form and adds `url` only when a URL
+  handler exists (`internal/mcpclient/modern.go:98-104`); the 2026 per-request capabilities carry the same
+  legacy-shaped object (see the capabilities register).
 - **Sources.** `schema/2025-11-25/schema.ts:341` "elicitation?: { form?: object; url?: object };";
   `2025-11-25/client/elicitation.mdx:65` "an empty capabilities object is equivalent to declaring support for `form`
   mode only"; `2025-11-25/client/elicitation.mdx:75`; `2025-11-25/client/elicitation.mdx:77` "Servers **MUST NOT**
-  send elicitation requests with modes that are not supported by the client."; `internal/mcpserver/conn.go:195`
-  "if mode != "; `v2:packages/core/src/mcp/client.ts:143`; `internal/mcpserver/conn.go:198-207`; `internal/mcpclient/modern.go:51`
+  send elicitation requests with modes that are not supported by the client."; `internal/mcpserver/conn.go:259-285`;
+  `v2:packages/core/src/mcp/client.ts:143`; `internal/mcpclient/modern.go:98-104`
 
 ## CAP-09 client `elicitation.url`
 
@@ -264,9 +256,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Map of extension identifier to settings object; keys follow the `_meta` key-naming rules with a mandatory
   prefix; `{}` means supported with no settings.
 - **Where.** 2026 only.
-- **mcpx @ 05c78b2.** Never declared upstream (`internal/mcpclient/modern.go:46-58`). In particular mcpx never declares
-  `io.modelcontextprotocol/tasks`, so a 2026 upstream will never hand it a task, and `CallTool` sends only
-  `{name, arguments}` (`internal/mcpclient/client.go:845-858`).
+- **mcpx (current).** Modern client declares the tasks extension; legacy initialize omits the map (`internal/mcpclient/modern.go:capabilities`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + the only way to opt into tasks, apps and auth extensions from 2026 servers.
 - **Effort.** S to declare; each extension then costs its own implementation.
 - **Risk.** None for declaring nothing; declaring an extension mcpx cannot handle would be the #177 class.
@@ -414,7 +405,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Detail.** mcpx's pool does drop its cached schema on an upstream `list_changed` and publishes an event
   (`internal/daemon/hooks.go:37-51`); only the last hop to the host is missing.
 - **Sources.** `schema/2026-07-28/schema.ts:854` "listChanged?: boolean;"; `2026-07-28/server/resources.mdx:234`;
-  `internal/mcpserver/server.go:1400` "\"resources\":   map[string]any{\"subscribe\": push, \"listChanged\":
+  `internal/mcpserver/server.go:1400` "\"resources\": map[string]any{\"subscribe\": push, \"listChanged\":
   streamed},"; `v2:packages/core/src/mcp/index.ts:375`
 
 ## CAP-19 server `tools`
@@ -464,9 +455,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `requests.tools.call`). 2026 moves tasks into the `io.modelcontextprotocol/tasks` extension, and SEP-2663 says servers
   MUST NOT keep advertising the legacy capabilities under a protocol version that includes the extension.
 - **Where.** 2025-11-25 only; replaced by the extension in 2026.
-- **mcpx @ 05c78b2.** `capabilities()` emits the core shape whenever `Defines(version, FeatTasks)`, and `FeatTasks` has
-  no ceiling (`internal/mcpserver/server.go:1404-1418`; `internal/mcpserver/revisions.go:90`), so every 2026 host gets
-  `tasks {list, cancel, requests.tools.call}` from `server/discover` (wire W5). A send-conservatively conflict.
+- **mcpx (current).** Core tasks capability is limited to legacy revision; modern gets extension only (`internal/mcpserver/server.go:capabilities`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + keeps the capability object honest to modern hosts.
 - **Effort.** S — add a ceiling for the core shape.
 - **Risk.** Low for parsing (open set), but the declaration promises `tasks/list` and `tasks/result`, which the extension
@@ -483,8 +473,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** Declares `tasks/list`. A server that cannot bind tasks to requestors SHOULD NOT declare it.
 - **Where.** 2025-11-25; removed with the extension (which has no `tasks/list`).
-- **mcpx @ 05c78b2.** Declared (`internal/mcpserver/server.go:1412`), and `tasks/list` returns every task from every
-  connection (`internal/mcpserver/tasks.go:89-95`); an unrelated client listed another's task on the wire (W23).
+- **mcpx (current).** Legacy list is declared and lists connection-owned tasks only; unowned tasks remain accessible by ID (`internal/mcpserver/server.go:capabilities`; `internal/mcpserver/tasks.go:handleTask`, `visible`; #1554).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + removes cross-host metadata exposure on a shared daemon.
 - **Effort.** S — stop declaring, or bind tasks to a requestor.
 - **Risk.** If not done: any host sees every host's task ids and can collect their results.
@@ -497,8 +487,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Declares `tasks/cancel`. In 2025-11-25 cancelling a terminal task MUST be rejected with `-32602`; the 2026
   extension implies cancel and answers with an empty acknowledgement.
 - **Where.** 2025-11-25; implied by the extension in 2026.
-- **mcpx @ 05c78b2.** Declared (`internal/mcpserver/server.go:1412`); cancelling a finished task returns the task
-  snapshot instead of `-32602` (tasks register).
+- **mcpx (current).** Legacy cancel declared and terminal cancel rejected; modern extension acknowledges (`internal/mcpserver/server.go:capabilities`; `internal/mcpserver/tasks.go:handleTask`, `handleModernTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low.
 - **Effort.** S.
 - **Risk.** Low.
@@ -511,9 +501,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Declares that `tools/call` may be task-augmented. Each tool must also opt in with
   `execution.taskSupport`; absent means `"forbidden"`, and a conforming client then MUST NOT request a task.
 - **Where.** 2025-11-25 only.
-- **mcpx @ 05c78b2.** Declared (`internal/mcpserver/server.go:1413`), but mcpx's `Tool` struct has no `execution` field
-  (`internal/mcpserver/server.go:260-268`), so every mcpx tool is task-forbidden to a conforming client. mcpx still
-  accepts a `task` param from anyone (`internal/mcpserver/server.go:477-501`).
+- **mcpx (current).** Legacy task execution is advertised; eligible gateway tools declare optional support and forbidden tools are rejected (`internal/mcpserver/server.go:taskOptional`, `capabilities`; `internal/mcpserver/tasks.go:legacyTaskSupport`, `maybeTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + long `mcpx_exec`/`mcpx_call` runs could survive disconnects for conforming hosts.
 - **Effort.** S — add `execution: {taskSupport: "optional"}` to long-running tools, at 2025-11-25 only.
 - **Risk.** If not done: declared but unreachable (#177 class). If done carelessly: `taskSupport: "required"` would make
@@ -533,10 +522,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** Servers advertise extensions in an `extensions` map returned by `server/discover`.
 - **Where.** 2026 only; `ServerCapabilities` in 2025-11-25 has no such member.
-- **mcpx @ 05c78b2.** Emitted inside the same `FeatTasks` branch whose floor is 2025-11-25
-  (`internal/mcpserver/server.go:1415-1417`), so a 2025-11-25 `initialize` returns `extensions` too. This contradicts
-  mcpx's own rule that it "**declares** none of them outside the revision that defines them" (`docs/protocol.md:93-94`),
-  while the capability table at `docs/protocol.md:106` agrees with the code.
+- **mcpx (current).** Server extension map is emitted only for modern peers (`internal/mcpserver/server.go:capabilities`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low; a conservative send.
 - **Effort.** S — gate on 2026.
 - **Risk.** Low (open set).
@@ -550,9 +537,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   in each request's capabilities. It is not wire-compatible with 2025-11-25 tasks.
 - **Where.** 2026, as an official extension (SEP-2663). Under 2025-11-25, servers MUST NOT treat the capability as
   enabling tasks.
-- **mcpx @ 05c78b2.** As a server it advertises the key to 2025-11-25 and 2026 hosts
-  (`internal/mcpserver/server.go:1415-1417`) while implementing only the 2025-11-25 task wire shape (tasks register). As
-  a client it never declares the key (`internal/mcpclient/modern.go:46-58`).
+- **mcpx (current).** Server and modern client declare the extension; client polls task results, but upstream task input relay remains open (`internal/mcpserver/server.go:capabilities`; `internal/mcpclient/modern.go:capabilities`; `internal/mcpclient/tasks.go:finishModernTask`, `TaskInputRequiredError`; #1554).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + long-running upstream jobs through modern servers; honest advertising to modern hosts.
 - **Effort.** M — the extension's shapes (`resultType: "task"`, `tasks/update`, `DetailedTask`) differ from 2025-11-25.
 - **Risk.** If not done: 2026 hosts are promised an extension whose wire format mcpx does not speak.
