@@ -55,11 +55,27 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
+import { parseProxyPort, parseProxyMillis } from './proxy-port.mjs';
+
+// #2953 (define, don't assign): store an externally-spelled key with
+// define semantics, so "__proto__" becomes an own property instead of
+// invoking the Object.prototype setter and "constructor"/"toString"
+// shadow like any other key.
+const defineValue = (obj, key, value) => {
+  Object.defineProperty(obj, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
+};
+
 
 const HOST = process.env.ANTIGRAVITY_DIRECT_HOST || '127.0.0.1';
-const PORT = Number(process.env.ANTIGRAVITY_DIRECT_PORT || 18751);
+// #2823: both env values go through the house helpers, like every other
+// bin/* proxy. A bare Number() let 'abc'/'18941.9'/'99999' reach listen()
+// as an anonymous ERR_SOCKET_BAD_PORT, and let '0'/'0x4a35' bind a port
+// nobody configured; a bad timeout started healthy and 502'd every
+// request. Both now fail at startup naming the variable and its value.
+const PORT = parseProxyPort('ANTIGRAVITY_DIRECT_PORT', 18751);
 const UPSTREAM = (process.env.ANTIGRAVITY_DIRECT_UPSTREAM || 'https://daily-cloudcode-pa.googleapis.com').replace(/\/$/, '');
-const TIMEOUT_MS = Number(process.env.ANTIGRAVITY_DIRECT_TIMEOUT_MS || 300000);
+const TIMEOUT_MS = parseProxyMillis('ANTIGRAVITY_DIRECT_TIMEOUT_MS', 300000);
 const PROJECT = 'aicode-consumers';
 
 // The CLI's OAuth client id (public identifier, appears in its sign-in URLs).
@@ -295,6 +311,19 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
 // "null" becomes nullable), tuple `items` (becomes prefixItems), boolean
 // schemas (become {}), `required` naming an undeclared property, and
 // `properties` on a node whose type is not OBJECT.
+// Probed 2026-11-03 (opencode#1548): an ARRAY schema with neither items
+// nor prefixItems is likewise rejected ("items: missing field"), so a
+// bare {type: "array"} gets an unconstrained items synthesized below.
+// Probed 2026-11-03 (opencode#1550): for Claude models the upstream
+// re-serializes the proto Schema into an Anthropic input_schema, and
+// Anthropic's validator rejects `anyOf` outright -- any branch count, any
+// position, root or nested ("tools.N.custom.input_schema: JSON schema is
+// invalid. It must match JSON Schema draft 2020-12") -- while accepting
+// oneOf and allOf in every probed shape. Gemini models accept anyOf
+// verbatim. So for Claude targets anyOf is emitted as oneOf below: tool
+// unions are disjoint alternatives in practice (type unions, nullable
+// encodings), where exactly-one is the faithful reading, and oneOf is
+// the only union keyword the Anthropic side takes.
 // ---------------------------------------------------------------------------
 
 const SCHEMA_FIELDS = new Set([
@@ -338,7 +367,7 @@ const resolveSchemaRefs = (root) => {
       const target = $ref.startsWith('#') ? lookup($ref) : undefined;
       const merged = (target === undefined || chain.includes($ref) || chain.length >= 10)
         ? {} : { ...walkSchema(target, [...chain, $ref]) };
-      for (const [k, v] of Object.entries(siblings)) merged[k] = walkSchema(v, chain);
+      for (const [k, v] of Object.entries(siblings)) defineValue(merged, k, walkSchema(v, chain));
       return merged;
     }
     const out = {};
@@ -346,18 +375,18 @@ const resolveSchemaRefs = (root) => {
       if (SCHEMA_VALUE_KEYS.has(k)) { out[k] = v; continue; }
       if (SCHEMA_MAP_KEYS.has(k) && isSchemaRecord(v)) {
         const sub = {};
-        for (const [name, s] of Object.entries(v)) sub[name] = walkSchema(s, chain);
+        for (const [name, s] of Object.entries(v)) defineValue(sub, name, walkSchema(s, chain));
         out[k] = sub;
         continue;
       }
-      out[k] = walkSchema(v, chain);
+      defineValue(out, k, walkSchema(v, chain));
     }
     return out;
   };
   return walkSchema(root, []);
 };
 
-const convertSchemaNode = (node) => {
+const convertSchemaNode = (node, anthropic = false) => {
   // Boolean schemas and stray values become an unconstrained object schema.
   if (!isSchemaRecord(node)) return {};
   const out = {};
@@ -388,23 +417,31 @@ const convertSchemaNode = (node) => {
     if (k === 'properties') {
       if (isSchemaRecord(v)) {
         const props = {};
-        for (const [name, sub] of Object.entries(v)) props[name] = convertSchemaNode(sub);
+        for (const [name, sub] of Object.entries(v)) defineValue(props, name, convertSchemaNode(sub, anthropic));
         out.properties = props;
       }
       continue;
     }
     if (k === 'anyOf' || k === 'oneOf' || k === 'allOf') {
-      if (Array.isArray(v)) out[k] = v.map(convertSchemaNode);
+      if (Array.isArray(v)) {
+        const branches = v.map(sub => convertSchemaNode(sub, anthropic));
+        if (k === 'allOf') out.allOf = branches;
+        // anyOf folds into oneOf for Anthropic targets (see the header
+        // probe note); a node carrying both keywords merges both branch
+        // sets into the single oneOf the Anthropic side accepts.
+        else if (k === 'oneOf' || anthropic) out.oneOf = out.oneOf ? [...out.oneOf, ...branches] : branches;
+        else out.anyOf = branches;
+      }
       continue;
     }
-    if (k === 'not') { out.not = convertSchemaNode(v); continue; }
+    if (k === 'not') { out.not = convertSchemaNode(v, anthropic); continue; }
     if (k === 'type' || k === 'required' || k === 'minimum' || k === 'maximum' || k === 'items' || k === 'prefixItems') continue; // handled outside the loop
     out[k] = v; // scalar constraint fields: format, title, pattern, ...
   }
   if (minimum !== undefined) out.minimum = minimum;
   if (maximum !== undefined) out.maximum = maximum;
-  if (items !== undefined) out.items = convertSchemaNode(items);
-  if (prefixItems !== undefined) out.prefixItems = (Array.isArray(prefixItems) ? prefixItems : [prefixItems]).map(convertSchemaNode);
+  if (items !== undefined) out.items = convertSchemaNode(items, anthropic);
+  if (prefixItems !== undefined) out.prefixItems = (Array.isArray(prefixItems) ? prefixItems : [prefixItems]).map(sub => convertSchemaNode(sub, anthropic));
   // Type: uppercase it; collapse an array of types ("null" -> nullable,
   // first concrete type wins); infer OBJECT when properties are present
   // (the proto allows properties only for OBJECT).
@@ -419,6 +456,12 @@ const convertSchemaNode = (node) => {
   }
   if (nullable) out.nullable = true;
   if (out.type === undefined && out.properties) out.type = 'OBJECT';
+  // The proto requires `items` on an ARRAY schema even when the client
+  // leaves the element type unconstrained ("properties[paths].items:
+  // missing field", opencode#1548, probed live 2026-11-03): synthesize
+  // an unconstrained items — omitted items in JSON Schema means any
+  // element.
+  if (out.type === 'ARRAY' && out.items === undefined && out.prefixItems === undefined) out.items = {};
   // `required` may only name declared properties — the proto validates it
   // ("property is not defined"); with no properties there is nothing it
   // may name.
@@ -430,8 +473,8 @@ const convertSchemaNode = (node) => {
   return out;
 };
 
-const convertSchema = (schema) => {
-  const converted = convertSchemaNode(resolveSchemaRefs(isSchemaRecord(schema) ? schema : {}));
+const convertSchema = (schema, anthropic = false) => {
+  const converted = convertSchemaNode(resolveSchemaRefs(isSchemaRecord(schema) ? schema : {}), anthropic);
   // The parameters root must declare OBJECT (tool-schema.ts's objectRoot:
   // providers reject a tool schema whose root does not declare it).
   if (converted.type === undefined) converted.type = 'OBJECT';
@@ -444,8 +487,39 @@ const textOf = (content) => {
   return '';
 };
 
+// tool_choice translation (code#2822): the string forms map to a bare
+// mode; a specific-function choice {type:'function', function:{name:X}}
+// must pin X via allowedFunctionNames — flattening it to bare ANY would
+// let the model call any declared function instead of the one the client
+// required. A specific choice whose name is missing/malformed or not
+// among the declared functions is a caller error: fail closed with a 400
+// (invalidRequest), never widen to unrestricted ANY.
+const invalidToolChoice = (message) => {
+  const err = new Error(message);
+  err.invalidRequest = true;
+  return err;
+};
+const toolChoiceConfig = (toolChoice, declaredNames) => {
+  if (typeof toolChoice === 'string') {
+    return { mode: toolChoice === 'none' ? 'NONE' : toolChoice === 'auto' ? 'AUTO' : 'ANY' };
+  }
+  if (toolChoice && typeof toolChoice === 'object') {
+    const name = (toolChoice.function && typeof toolChoice.function.name === 'string' && toolChoice.function.name)
+      || (typeof toolChoice.name === 'string' && toolChoice.name) || null;
+    if (toolChoice.type !== 'function' || !name) {
+      throw invalidToolChoice('tool_choice must name a specific function: {type: "function", function: {name: "..."}}');
+    }
+    if (!declaredNames.includes(name)) {
+      throw invalidToolChoice('tool_choice names function "' + name + '" which is not among the declared tools');
+    }
+    return { mode: 'ANY', allowedFunctionNames: [name] };
+  }
+  throw invalidToolChoice('tool_choice must be a string or a specific-function object');
+};
+
 const buildV1Request = (body) => {
-  const { fullName, effort } = resolveModelAndEffort(body.model, body.reasoning_effort);
+  const { base, fullName, effort } = resolveModelAndEffort(body.model, body.reasoning_effort);
+  const anthropic = base.startsWith('claude');
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const systemParts = [];
   const contents = [];
@@ -486,7 +560,9 @@ const buildV1Request = (body) => {
             // may be sent (same code#2825 shape rule as functionResponse).
             if (parsedArgs && typeof parsedArgs === 'object' && !Array.isArray(parsedArgs)) args = parsedArgs;
           } catch {}
-          const part = { functionCall: { name: tc.function && tc.function.name, args } };
+          const call = { name: tc.function && tc.function.name, args };
+          if (anthropic && tc.id) call.id = tc.id;
+          const part = { functionCall: call };
           const sig = lookupSignature(tc.id);
           if (sig) part.thoughtSignature = sig;
           parts.push(part);
@@ -506,21 +582,35 @@ const buildV1Request = (body) => {
         const parsed = JSON.parse(result);
         response = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : { result: parsed };
       } catch { response = { result }; }
-      contents.push({ role: 'user', parts: [{ functionResponse: { name, response } }] });
+      const fr = { name, response };
+      // Same interop as the functionCall id above: for Claude targets the
+      // tool_result block must name its tool_use (opencode#1550).
+      if (anthropic && msg.tool_call_id) fr.id = msg.tool_call_id;
+      contents.push({ role: 'user', parts: [{ functionResponse: fr }] });
     }
   }
   const request = { contents };
   if (systemParts.length) request.systemInstruction = { role: 'user', parts: systemParts };
-  if (Array.isArray(body.tools) && body.tools.length) {
+  const hasToolsArray = Array.isArray(body.tools) && body.tools.length > 0;
+  const declaredNames = [];
+  if (hasToolsArray) {
     const decls = [];
     for (const t of body.tools) {
       const fn = t && t.type === 'function' ? t.function : t;
-      if (fn && fn.name) decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }) });
+      if (fn && fn.name) {
+        decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }, anthropic) });
+        declaredNames.push(fn.name);
+      }
     }
     if (decls.length) request.tools = [{ functionDeclarations: decls }];
-    if (body.tool_choice) {
-      const mode = body.tool_choice === 'none' ? 'NONE' : body.tool_choice === 'auto' ? 'AUTO' : 'ANY';
-      request.toolConfig = { functionCallingConfig: { mode } };
+  }
+  if (body.tool_choice) {
+    // An object (specific-function) choice is always validated, even with
+    // no declared tools (its name cannot be declared then -> 400). The
+    // string forms keep their historic gating: a toolConfig is only sent
+    // when the request carried a tools array.
+    if (typeof body.tool_choice === 'object' || hasToolsArray) {
+      request.toolConfig = { functionCallingConfig: toolChoiceConfig(body.tool_choice, declaredNames) };
     }
   }
   const generationConfig = {
@@ -668,7 +758,7 @@ const consumeSse = async (stream, onEvent) => {
         onEvent({ [part.thought ? 'thought' : 'text']: part.text });
       }
       if (part.functionCall) {
-        const call = { id: 'call_' + crypto.randomUUID().replace(/-/g, ''), name: part.functionCall.name, args: part.functionCall.args || {} };
+        const call = { id: (typeof part.functionCall.id === 'string' && part.functionCall.id) || 'call_' + crypto.randomUUID().replace(/-/g, ''), name: part.functionCall.name, args: part.functionCall.args || {} };
         if (part.thoughtSignature) call.signature = part.thoughtSignature;
         emittedCalls.push(call);
         onEvent({ toolCall: call });
@@ -714,7 +804,13 @@ const handleChatCompletions = async (req, res) => {
   try { body = JSON.parse(await readBody(req) || '{}'); }
   catch { return sendJson(res, 400, { error: { message: 'invalid JSON body', type: 'invalid_request_error' } }); }
   const requestedModel = body.model || 'gemini-3.8-flash';
-  const { fullName, payload } = buildV1Request(body);
+  let built;
+  try { built = buildV1Request(body); }
+  catch (e) {
+    if (e && e.invalidRequest) return sendJson(res, 400, { error: { message: e.message, type: 'invalid_request_error' } });
+    throw e;
+  }
+  const { fullName, payload } = built;
   const id = 'chatcmpl-' + crypto.randomUUID();
   const created = Math.floor(Date.now() / 1000);
   let upstream;

@@ -28,7 +28,6 @@
 package artifacts
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -291,7 +290,7 @@ func (s *Store) blobPath(hash string) string {
 // anything that can reach the daemon.
 func NewID() string {
 	b := make([]byte, defaults.ArtifactIDBytes)
-	_, _ = rand.Read(b)
+	_, _ = RandSource.Read(b)
 	return "art-" + hex.EncodeToString(b)
 }
 
@@ -781,17 +780,29 @@ func (s *Store) Export(m Meta, dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	dest, err := uniquePath(dir, m.Name)
+	dest, claim, err := claimPath(dir, m.Name)
 	if err != nil {
 		return "", err
 	}
 	src := s.blobPath(m.SHA256)
 	f, err := os.Open(src)
 	if err != nil {
+		claim.Close()
+		os.Remove(dest)
 		return "", err
 	}
 	defer f.Close()
-	if err := copyInto(dest, f); err != nil {
+	// The claim is the write target (#4253): the name stays taken for the
+	// whole copy, so nothing that appears in the meantime can be silently
+	// replaced, and a failed copy removes the claimed name rather than
+	// leaving a partial file that looks delivered.
+	if _, err := io.Copy(claim, f); err != nil {
+		claim.Close()
+		os.Remove(dest)
+		return "", err
+	}
+	if err := claim.Close(); err != nil {
+		os.Remove(dest)
 		return "", err
 	}
 	return dest, nil

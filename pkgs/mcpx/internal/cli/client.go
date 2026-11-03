@@ -740,9 +740,19 @@ func boolParam(b bool) string {
 
 // ClientModule returns the generated script client source.
 func (c *Client) ClientModule(ctx context.Context, ns []string, session string, prof Profile) (string, error) {
+	return c.ClientModuleLanguage(ctx, "", ns, session, prof)
+}
+
+// ClientModuleLanguage is ClientModule for a named script language (#1917
+// Phase 2). Empty names the default target, whose route and bytes are
+// unchanged; any other name is asked for on the same route.
+func (c *Client) ClientModuleLanguage(ctx context.Context, language string, ns []string, session string, prof Profile) (string, error) {
 	q := "?session=" + session + prof.query()
 	if len(ns) > 0 {
 		q += "&ns=" + strings.Join(ns, ",")
+	}
+	if language != "" {
+		q += "&language=" + urlEscape(language)
 	}
 	b, err := c.do(ctx, http.MethodGet, "/v1/client.ts"+q, nil)
 	return string(b), err
@@ -750,9 +760,17 @@ func (c *Client) ClientModule(ctx context.Context, ns []string, session string, 
 
 // Globals returns the ambient declarations for the installed globals.
 func (c *Client) Globals(ctx context.Context, ns []string, prof Profile) (string, error) {
+	return c.GlobalsLanguage(ctx, "", ns, prof)
+}
+
+// GlobalsLanguage is Globals for a named script language (#1917 Phase 2).
+func (c *Client) GlobalsLanguage(ctx context.Context, language string, ns []string, prof Profile) (string, error) {
 	q := "?_" + prof.query()
 	if len(ns) > 0 {
 		q += "&ns=" + strings.Join(ns, ",")
+	}
+	if language != "" {
+		q += "&language=" + urlEscape(language)
 	}
 	b, err := c.do(ctx, http.MethodGet, "/v1/globals.d.ts"+q, nil)
 	return string(b), err
@@ -836,19 +854,33 @@ type BatchResultItem struct {
 	Error      string          `json:"error,omitempty"`
 	IsError    bool            `json:"isError,omitempty"`
 	DurationMs int64           `json:"durationMs,omitempty"`
+	// Skipped marks an item a safe-prefix batch did not run, with
+	// the reason it stopped (#1927).
+	Skipped bool   `json:"skipped,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // BatchResponse is the response to /v1/batch.
 type BatchResponse struct {
 	Results []BatchResultItem `json:"results"`
+	// SafePrefix is present when a safe-prefix batch stopped:
+	// where, and why (#1927).
+	SafePrefix *BatchSafePrefix `json:"safePrefix,omitempty"`
+}
+
+// BatchSafePrefix reports a safe-prefix stop.
+type BatchSafePrefix struct {
+	StoppedAt int    `json:"stoppedAt"`
+	Reason    string `json:"reason"`
 }
 
 // Batch invokes multiple tools in a single turn.
-func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, cc config.CallContext) (*BatchResponse, error) {
+func (c *Client) Batch(ctx context.Context, calls []BatchCallItem, stopOnError bool, parallel bool, safePrefix bool, cc config.CallContext) (*BatchResponse, error) {
 	b, err := c.do(ctx, http.MethodPost, "/v1/batch", map[string]any{
 		"calls":       calls,
 		"stopOnError": stopOnError,
 		"parallel":    parallel,
+		"safePrefix":  safePrefix,
 		"context":     cc,
 	})
 	if err != nil {

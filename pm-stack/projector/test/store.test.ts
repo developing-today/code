@@ -7,6 +7,7 @@ import {
   migrate,
   upsertItem,
   upsertComment,
+  markCommentDeleted,
   upsertLink,
   getItems,
   getComments,
@@ -38,6 +39,26 @@ const item = (over: Partial<ItemRow>): Omit<ItemRow, "fetched_at"> => ({
   updated_at: "2026-10-25T00:00:00Z",
   closed_at: null,
   merged_at: null,
+  source_updated_at: "2026-10-25T00:00:00Z",
+  ...over,
+});
+
+const comment = (over: Partial<CommentRow> = {}): Omit<CommentRow, "fetched_at"> => ({
+  id: "comment-default",
+  ref: "developing-today/code#2",
+  kind: "issue_comment",
+  author: "dezren39",
+  body: "original",
+  created_at: "2026-10-25T00:00:00Z",
+  updated_at: null,
+  url: null,
+  path: null,
+  line: null,
+  diff_hunk: null,
+  review_state: null,
+  submitted_at: null,
+  commit_id: null,
+  deleted: 0,
   source_updated_at: "2026-10-25T00:00:00Z",
   ...over,
 });
@@ -129,6 +150,78 @@ describe("store: comments + links + subject view", () => {
     });
     const rows = await getComments(db, ["developing-today/code#1"]);
     expect(rows.map((r) => r.id)).toEqual(["c2", "c1"]);
+  });
+
+  test("an edited comment ignores a stale create replay", async () => {
+    const created = comment({ id: "comment-edit-stale" });
+    await upsertComment(db, created);
+    await upsertComment(
+      db,
+      comment({
+        ...created,
+        body: "edited",
+        updated_at: "2026-10-25T01:00:00Z",
+        source_updated_at: "2026-10-25T01:00:00Z",
+      }),
+    );
+    await upsertComment(db, { ...created, body: "stale original replay" });
+
+    const row = (await getComments(db, [created.ref])).find((c) => c.id === created.id);
+    expect(row?.body).toBe("edited");
+    expect(row?.updated_at).toBe("2026-10-25T01:00:00Z");
+    expect(row?.source_updated_at).toBe("2026-10-25T01:00:00Z");
+  });
+
+  test("a deleted comment is an absorbing tombstone for stale upserts", async () => {
+    const created = comment({ id: "comment-delete-stale" });
+    await upsertComment(db, created);
+    await upsertComment(
+      db,
+      comment({
+        ...created,
+        body: "edited before delete",
+        updated_at: "2026-10-25T01:00:00Z",
+        source_updated_at: "2026-10-25T01:00:00Z",
+      }),
+    );
+    await markCommentDeleted(db, created);
+
+    // A stale pre-edit event is older; equal- and later-version upserts are
+    // also rejected because the delete tombstone, not fetched_at, wins.
+    await upsertComment(db, { ...created, body: "stale original replay" });
+    await upsertComment(
+      db,
+      comment({
+        ...created,
+        body: "same-version replay",
+        updated_at: "2026-10-25T01:00:00Z",
+        source_updated_at: "2026-10-25T01:00:00Z",
+      }),
+    );
+    await upsertComment(
+      db,
+      comment({
+        ...created,
+        body: "post-delete update",
+        updated_at: "2026-10-25T02:00:00Z",
+        source_updated_at: "2026-10-25T02:00:00Z",
+      }),
+    );
+
+    const row = (await getComments(db, [created.ref], { includeDeleted: true })).find((c) => c.id === created.id);
+    expect(row?.body).toBe("edited before delete");
+    expect(row?.deleted).toBe(1);
+    expect(row?.source_updated_at).toBe("2026-10-25T01:00:00Z");
+  });
+
+  test("a delete arriving before an upsert leaves a durable tombstone", async () => {
+    const tombstone = comment({ id: "comment-delete-before-create", body: "deleted" });
+    await markCommentDeleted(db, tombstone);
+    await upsertComment(db, { ...tombstone, body: "stale create replay" });
+
+    const row = (await getComments(db, [tombstone.ref], { includeDeleted: true })).find((c) => c.id === tombstone.id);
+    expect(row?.body).toBe("deleted");
+    expect(row?.deleted).toBe(1);
   });
 
   test("links round-trip and subject view joins item + activity", async () => {
