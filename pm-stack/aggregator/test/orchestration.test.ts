@@ -3,6 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
+import { validateStreamEvent } from "../src/events.ts";
 import { todayFromSection } from "../src/derive.ts";
 import {
   ageMsText,
@@ -391,6 +392,29 @@ describe("live source orchestration states (#1140)", () => {
     await src.orchestration();
     expect(events.find((event) => event.kind === "tier-change" && event.ref === "developing-today/code#812")?.summary)
       .toContain("needs-user → —");
+  });
+
+  test("an orchestration action with a free-text target is preserved as a valid event (#4489 Codex P2)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-orch-action-ref-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const cfg = loadConfig({ PM_AGG_SOURCE: "live", PM_AGG_FEED_FILE: feedFile, PM_AGG_REGISTRY_FILE: join(dir, "registry.json"), PM_PROJECTOR_URL: "off" });
+    const events: Array<{ at?: string; actor: string; kind: string; ref: string; summary: string }> = [];
+    const src = liveSource(cfg, { onEvent: (event) => events.push(event) });
+    await writeFile(feedFile, JSON.stringify({
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+      attention: [],
+      orchestration: LIVE_SHAPE,
+    }));
+    await src.orchestration();
+    // LIVE_SHAPE's published action targets "fleet queues" (free text
+    // with a space). Its event must survive validation with a
+    // whitespace-free ref instead of being dropped by emitEvent.
+    const action = events.find((event) => event.kind === "verify");
+    expect(action).toBeDefined();
+    expect(action?.ref).toBe("fleet-queues");
+    expect(validateStreamEvent({ at: new Date().toISOString(), ...action }).ok).toBe(true);
   });
 
   test("a durable publication identity prevents replay after source restart", async () => {

@@ -524,6 +524,20 @@ export function titleRefs(title: string): RefKey[] {
   return out;
 }
 
+/**
+ * Event refs must be whitespace-free (validateStreamEvent in
+ * events.ts), but an orchestration action's target is free text the
+ * publisher chooses — "fleet queues" is a real published target
+ * (#4489 Codex P2). Forwarding it verbatim made emitEvent reject and
+ * permanently drop the action's event. Whitespace-free targets pass
+ * through unchanged; free-text targets are slugified so the action is
+ * preserved in the log instead of dropped.
+ */
+export const orchestrationActionRef = (target: string): string => {
+  const trimmed = target.trim();
+  return /\s/.test(trimmed) ? slugify(trimmed) : trimmed;
+};
+
 const slugify = (s: string): string =>
   s
     .toLowerCase()
@@ -1191,7 +1205,7 @@ export function liveSource(
                 at: action.at,
                 actor: "orchestrator",
                 kind: action.kind,
-                ref: action.target,
+                ref: orchestrationActionRef(action.target),
                 summary: action.summary.slice(0, 500),
               });
             }
