@@ -18,6 +18,7 @@
 import type { GhItem, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { refUrl } from "./model.ts";
 import { PROJECT_URL } from "./projects.ts";
+import { assembleWorkItems, type WorkItem } from "./work-items.ts";
 
 export interface ProgramLink {
   label: string;
@@ -238,6 +239,10 @@ export interface ProgramLive {
   tracked: TrackedIssue[];
   pool: PoolSummary;
   orchestration: OrchestrationFreshness | null;
+  /** The canonical work-item projection (#1206) of the section: the
+   *  same items, ids, statuses, ranks, and blockers every other page
+   *  shows, exposed on the /api/program.json twin. */
+  workItems: WorkItem[];
 }
 
 function counts(values: (string | null)[]): { name: string; count: number }[] {
@@ -268,6 +273,7 @@ export function buildProgramLive(
       byArea: counts(pool.map((p) => p.area)),
     },
     orchestration: orchestration ? { generatedAt: orchestration.generatedAt, runId: orchestration.runId } : null,
+    workItems: orchestration ? assembleWorkItems(orchestration) : [],
   };
 }
 

@@ -717,6 +717,11 @@ impl ReplicationTracker {
         if envelope.version != REPLICATION_ENVELOPE_VERSION {
             return Err(ReplicationError::UnsupportedEnvelopeVersion(envelope.version));
         }
+        // The supported journal range is 1..=MAX_JOURNAL_VERSION,
+        // matching validate_committed_journal on the receiver side:
+        // a version-0 snapshot accepted here would commit, then brick
+        // the replica at its next open (and destroy any valid journal
+        // it replaced).
         if !(JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(&envelope.header_version) {
             return Err(ReplicationError::UnsupportedJournalVersion(
                 envelope.header_version,

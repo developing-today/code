@@ -48,7 +48,12 @@ export function parseDnsRegister(md: string): DnsEntry[] {
     const cells = line.split("|").slice(1, -1).map(cleanCell);
     if (cells.length < 10) continue;
     const [domain, registrar, dnsHost, renewal, autoRenew, price, priorYearCost, used, plan, review] = cells;
-    if (!domain || !/^\d{4}-\d{2}-\d{2}$/.test(renewal)) continue;
+    // Shape alone is not enough: an impossible calendar date (2026-02-30,
+    // 2026-13-01) must be refused like a malformed row, or it string-sorts
+    // into the register, counts toward the annual total, and poisons
+    // nextRenewal / renewingSoon (#2199). isIsoDate re-checks the
+    // components, so leap dates (2024-02-29) still parse.
+    if (!domain || !/^\d{4}-\d{2}-\d{2}$/.test(renewal) || !isIsoDate(renewal)) continue;
     out.push({
       domain,
       registrar,

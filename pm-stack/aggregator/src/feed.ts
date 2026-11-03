@@ -53,9 +53,18 @@ export interface FleetFeed {
    *  in feeds written before the drift check existed. */
   checkout?: CheckoutDrift;
   quota: QuotaView;
-  /** Element drops loadFeed's quota sanitization made (#2429/#3921), set
+  /** Element and optional-field drops loadFeed's quota sanitization made
+   * (#2429/#3921/#4546), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
-  quotaDropped?: { pools: number; credentials: number; windows: number; activeSessions: number; burn: number };
+  quotaDropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+  };
   /** Element drops loadFeed's chargesAttention sanitization made
    * (#2439), set only when at least one entry dropped; absent on raw
    * parsed feeds and on feeds whose entries all survived. */
@@ -482,7 +491,7 @@ const QUOTA_FRESHNESS_STATES = ["ok", "stale", "error"];
 function isQuotaFreshness(v: unknown): v is PoolFreshness {
   return (
     isRecord(v) &&
-    typeof v.measuredAt === "string" &&
+    isIsoDate(v.measuredAt) &&
     typeof v.source === "string" &&
     typeof v.state === "string" &&
     QUOTA_FRESHNESS_STATES.includes(v.state) &&
@@ -507,7 +516,7 @@ function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
     isRecord(v) &&
     typeof v.session === "string" &&
     typeof v.model === "string" &&
-    isFiniteNumber(v.tokens)
+    isNonNegative(v.tokens)
   );
 }
 
@@ -578,9 +587,11 @@ export interface QuotaSanitization {
   droppedWindows: number;
   droppedActiveSessions: number;
   droppedBurn: number;
+  droppedPoolFreshness: number;
+  droppedBurnTokensPerMin: number;
 }
 
-/** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921,
+/** Drop-and-count sanitization of a gate-passed quota section (#2429/#3921/#4546,
  * following poolFromFeed's per-element pattern, built on the shared
  * arrayOf primitive from #2577): malformed pools and burn segments
  * drop individually, malformed windows/credential rows/active sessions
@@ -592,10 +603,20 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   let droppedCredentials = 0;
   let droppedWindows = 0;
   let droppedActiveSessions = 0;
+  let droppedPoolFreshness = 0;
+  let droppedBurnTokensPerMin = 0;
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
     droppedWindows += windows?.dropped ?? 0;
     let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
+    if (pool.freshness !== undefined && !isQuotaFreshness(pool.freshness)) {
+      delete out.freshness;
+      droppedPoolFreshness += 1;
+    }
+    if (pool.burnTokensPerMin !== undefined && !isNonNegative(pool.burnTokensPerMin)) {
+      delete out.burnTokensPerMin;
+      droppedBurnTokensPerMin += 1;
+    }
     if (pool.credentials !== undefined) {
       const rows = arrayOf(isQuotaCredentialRow)(pool.credentials);
       droppedCredentials += rows?.dropped ?? 0;
@@ -638,13 +659,24 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
   // Surface the loss on the view itself (its consumers project the
   // view, e.g. /api/quota.json), not only on the feed wrapper.
-  if (droppedPools + droppedCredentials + droppedWindows + droppedActiveSessions + droppedBurn > 0) {
+  if (
+    droppedPools +
+      droppedCredentials +
+      droppedWindows +
+      droppedActiveSessions +
+      droppedBurn +
+      droppedPoolFreshness +
+      droppedBurnTokensPerMin >
+    0
+  ) {
     view.dropped = {
       pools: droppedPools,
       credentials: droppedCredentials,
       windows: droppedWindows,
       activeSessions: droppedActiveSessions,
       burn: droppedBurn,
+      poolFreshness: droppedPoolFreshness,
+      burnTokensPerMin: droppedBurnTokensPerMin,
     };
   }
   return {
@@ -654,6 +686,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     droppedWindows,
     droppedActiveSessions,
     droppedBurn,
+    droppedPoolFreshness,
+    droppedBurnTokensPerMin,
   };
 }
 
@@ -829,6 +863,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
         windows: san.droppedWindows,
         activeSessions: san.droppedActiveSessions,
         burn: san.droppedBurn,
+        poolFreshness: san.droppedPoolFreshness,
+        burnTokensPerMin: san.droppedBurnTokensPerMin,
       },
       ...(charges ? { chargesAttention: charges.values } : {}),
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),

@@ -20,6 +20,7 @@ import {
   assertNotDefaultBranch,
   openPrCommands,
   runSync,
+  resolveConfigPath,
   deepMergeProviders,
   SYNC_OWNED_PROVIDERS,
 } from './provider-catalog-sync.mjs';
@@ -287,7 +288,9 @@ test('parseArgs accepts the documented controls', () => {
 
 function runCli(args, env = {}) {
   const clean = { ...process.env, ...env };
-  delete clean.OPENCODE_CONFIG_PATH;
+  // Scrub the ambient overlay variable unless a test passes it explicitly
+  // (#4588: the explicit-pass case is the regression under test).
+  if (!Object.hasOwn(env, 'OPENCODE_CONFIG_PATH')) delete clean.OPENCODE_CONFIG_PATH;
   return spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: clean });
 }
 
@@ -337,6 +340,49 @@ test('CLI control: dry run exits 3 without writing; --apply exits 0 and writes',
   const applied = runCli([...base, '--apply']);
   assert.equal(applied.status, 0, `apply: ${applied.stdout} ${applied.stderr}`);
   assert.ok(fs.readFileSync(configPath, 'utf8').includes('acme-2'));
+});
+
+// ---------------------------------------------------------------------------
+// #4588: config resolution — OPENCODE_CONFIG_PATH names the runtime overlay
+// since #4544 and must never become this tool's target
+// ---------------------------------------------------------------------------
+
+test('resolveConfigPath: --config beats env, catalog env beats default, OPENCODE_CONFIG_PATH ignored (#4588)', () => {
+  const root = '/repo';
+  const overlay = '/state/opencode-runtime.jsonc';
+  const dflt = path.join(root, '.opencode', 'opencode.jsonc');
+  // Explicit flag wins over every env var.
+  assert.equal(
+    resolveConfigPath({ options: { '--config': '/flag.jsonc' }, env: { OPENCODE_CONFIG_PATH: overlay, OPENCODE_CATALOG_SYNC_CONFIG: '/env.jsonc' }, root }),
+    '/flag.jsonc',
+  );
+  // Catalog-sync-specific env is the only env override.
+  assert.equal(
+    resolveConfigPath({ options: {}, env: { OPENCODE_CONFIG_PATH: overlay, OPENCODE_CATALOG_SYNC_CONFIG: '/env.jsonc' }, root }),
+    '/env.jsonc',
+  );
+  // OPENCODE_CONFIG_PATH alone changes nothing: tracked default.
+  assert.equal(resolveConfigPath({ options: {}, env: { OPENCODE_CONFIG_PATH: overlay }, root }), dflt);
+  assert.equal(resolveConfigPath({ options: {}, env: {}, root }), dflt);
+});
+
+test('CLI: OPENCODE_CONFIG_PATH pointing at the overlay does not redirect the target (#4588)', () => {
+  const { configPath, sourceDir, modelsDev } = controlFixture();
+  const dir = path.dirname(configPath);
+  const overlayPath = path.join(dir, 'opencode-runtime.jsonc');
+  fs.writeFileSync(overlayPath, JSON.stringify({ provider: { openai: { models: { 'g-1': {} } } } }));
+  const r = runCli(
+    ['--config', configPath, '--runtime-config', overlayPath, '--models-dev', modelsDev, '--source-dir', sourceDir, '--json'],
+    { OPENCODE_CONFIG_PATH: overlayPath },
+  );
+  // The tracked file carries commandcode/acme-1 and the snapshot adds acme-2:
+  // a run against the tracked default reports the validated addition (exit 3).
+  // Against the overlay (the bug) it would report config=overlay and exit 0.
+  assert.equal(r.status, 3, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.config, configPath);
+  assert.equal(report.runtime_overlay, overlayPath);
+  assert.ok(report.providers.commandcode, `providers: ${Object.keys(report.providers)}`);
 });
 
 // ---------------------------------------------------------------------------

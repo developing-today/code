@@ -19,7 +19,7 @@ health gate):
 
 | Layer     | Piece           | Version / pin                                                    | Reach                                                                                    | Deployment definition |
 | --------- | --------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)                        | `ready-for-agent/`    |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, loopback + tailnet (app loopback-only; tailnet via socket proxy, #1181)                        | `ready-for-agent/`    |
 | Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + host tailnet address (`PM_STACK_TAILNET_IP`):7777; no tunnel hostname | `pad/`                |
 | Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + host tailnet address (`PM_STACK_TAILNET_IP`):8484; no tunnel hostname | `grist/`              |
 | Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route       | `aggregator/`         |

@@ -196,6 +196,7 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
+pub mod hosted_binding;
 pub mod idset;
 pub mod invite;
 pub mod invites;
@@ -218,6 +219,7 @@ pub mod sandbox;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
+pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod server_config;
 #[cfg(feature = "world")]
@@ -255,6 +257,8 @@ pub mod world_manifest;
 pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;
+#[cfg(feature = "world")]
+pub mod world_replication_net;
 #[cfg(feature = "world")]
 pub use id_core::world_presentation;
 #[cfg(feature = "world")]

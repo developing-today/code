@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -28,7 +28,7 @@ use tokio::{
 };
 
 use crate::abuse::{
-    AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, Counters, Direction,
+    AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, ConnectionId, Counters, Direction,
     EndpointId as AbuseEndpointId, NodeId,
 };
 use crate::frames::{read_frame_body, read_frame_len};
@@ -76,6 +76,8 @@ pub struct WorldProtocol {
     /// endpoint opens, plus the counter registry operators read via
     /// [`WorldProtocol::abuse_counters`].
     abuse: Arc<Mutex<AbuseEvaluator>>,
+    /// Lifetime count of peers refused by the per-peer connection cap.
+    connection_cap_refusals: Arc<AtomicU64>,
 }
 
 /// Monotonic milliseconds for the abuse evaluator, from a process-wide
@@ -124,7 +126,16 @@ impl WorldProtocol {
                 local_node,
                 budgets,
             ))),
+            connection_cap_refusals: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Number of connections refused by the per-peer cap since this
+    /// protocol instance was created. Refusal details, including the
+    /// peer identity, are also emitted at `WARN` level.
+    #[must_use]
+    pub fn connection_cap_refusals(&self) -> u64 {
+        self.connection_cap_refusals.load(Ordering::Relaxed)
     }
 
     /// Snapshot of the per-(local node, remote endpoint) frame/byte
@@ -159,6 +170,25 @@ impl WorldProtocol {
     }
 }
 
+/// Owns one evaluator registration for a live QUIC connection. Keeping
+/// this guard in `accept` ties the per-peer slot to the transport's full
+/// lifetime, including every early return and unwinding path.
+struct PeerConnectionRegistration {
+    abuse: Arc<Mutex<AbuseEvaluator>>,
+    endpoint: AbuseEndpointId,
+    connection: ConnectionId,
+}
+
+impl Drop for PeerConnectionRegistration {
+    fn drop(&mut self) {
+        let mut abuse = self
+            .abuse
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        abuse.close_connection(&self.endpoint, self.connection);
+    }
+}
+
 impl ProtocolHandler for WorldProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // Bound stale endpoint and counter state as new connections arrive;
@@ -167,6 +197,39 @@ impl ProtocolHandler for WorldProtocol {
         self.prune_abuse_state();
         let remote = conn.remote_id();
         tracing::debug!("world: connection from node {remote}");
+        let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
+        let connection_id = match self.abuse.lock() {
+            Ok(mut abuse) => match abuse.open_connection(remote_endpoint, abuse_now_ms()) {
+                Ok(connection_id) => connection_id,
+                Err(refusal) => {
+                    let refusal_count = self
+                        .connection_cap_refusals
+                        .fetch_add(1, Ordering::Relaxed)
+                        .saturating_add(1);
+                    tracing::warn!(
+                        remote = %remote,
+                        refusal_count,
+                        retry_after_ms = ?refusal.retry_after_ms,
+                        "world: per-peer connection cap reached; refusing connection"
+                    );
+                    conn.close(0_u32.into(), b"per-peer connection cap reached");
+                    return Ok(());
+                }
+            },
+            Err(_) => {
+                tracing::error!(
+                    remote = %remote,
+                    "world: abuse evaluator lock poisoned; refusing connection"
+                );
+                conn.close(0_u32.into(), b"abuse evaluator unavailable");
+                return Ok(());
+            }
+        };
+        let _registration = PeerConnectionRegistration {
+            abuse: Arc::clone(&self.abuse),
+            endpoint: remote_endpoint,
+            connection: connection_id,
+        };
         let permits = Arc::new(Semaphore::new(MAX_SESSIONS_PER_CONNECTION));
         let mut sessions = JoinSet::new();
         while let Ok((mut send, recv)) = conn.accept_bi().await {
@@ -177,7 +240,6 @@ impl ProtocolHandler for WorldProtocol {
             };
             let hub = self.hub.clone();
             let abuse = Arc::clone(&self.abuse);
-            let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
             sessions.spawn(async move {
                 let _permit = permit;
                 let mut io = StreamIo::new(send, recv, abuse, remote_endpoint);
@@ -392,6 +454,93 @@ pub fn route_frame(frame: &serde_json::Value, world: Option<&str>) -> String {
             serde_json::Value::Object(routed).to_string()
         }
         _ => frame.to_string(),
+    }
+}
+
+const MAX_ADMIN_HISTORY_RECORD_BYTES: usize = crate::world::MAX_RECORDS
+    * (crate::world::MAX_RECORD_KEY_BYTES + crate::world::MAX_RECORD_VALUE_BYTES + 8);
+// Bound the entire transfer, not just the decoded `event` and `records`
+// values. The allowance covers top-level framing, per-event/per-page JSON
+// wrappers, and worst-case quote/backslash escaping in record keys.
+const MAX_ADMIN_HISTORY_RESPONSE_BYTES: usize = crate::world::MAX_ADMIN_HISTORY_BYTES
+    + MAX_ADMIN_HISTORY_RECORD_BYTES
+    + crate::world::MAX_RECORDS * crate::world::MAX_RECORD_KEY_BYTES
+    + (crate::world::MAX_ADMIN_HISTORY_EVENTS + crate::world::MAX_RECORDS + 1) * 256;
+
+#[derive(Default)]
+struct AdminHistoryBudget {
+    event_bytes: usize,
+    record_bytes: usize,
+    record_count: usize,
+    response_bytes: usize,
+}
+
+impl AdminHistoryBudget {
+    fn add_frame(&mut self, bytes: usize) -> Result<()> {
+        self.response_bytes = self
+            .response_bytes
+            .checked_add(bytes)
+            .context("admin history response byte count overflow")?;
+        anyhow::ensure!(
+            self.response_bytes <= MAX_ADMIN_HISTORY_RESPONSE_BYTES,
+            "admin history response exceeds {MAX_ADMIN_HISTORY_RESPONSE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    fn add_event(&mut self, bytes: usize) -> Result<()> {
+        self.event_bytes = self
+            .event_bytes
+            .checked_add(bytes)
+            .context("admin event byte count overflow")?;
+        anyhow::ensure!(
+            self.event_bytes <= crate::world::MAX_ADMIN_HISTORY_BYTES,
+            "admin history events exceed {} bytes",
+            crate::world::MAX_ADMIN_HISTORY_BYTES
+        );
+        Ok(())
+    }
+
+    fn add_record(&mut self, key: &str, value: &serde_json::Value) -> Result<()> {
+        anyhow::ensure!(
+            !key.is_empty() && key.len() <= crate::world::MAX_RECORD_KEY_BYTES,
+            "admin history contains an invalid record key"
+        );
+        anyhow::ensure!(
+            !key.chars().any(char::is_control),
+            "admin history contains a control character in a record key"
+        );
+        let value_bytes = serde_json::to_vec(value)
+            .context("measure an admin history record")?
+            .len();
+        anyhow::ensure!(
+            value_bytes <= crate::world::MAX_RECORD_VALUE_BYTES,
+            "admin history record value exceeds {} bytes",
+            crate::world::MAX_RECORD_VALUE_BYTES
+        );
+        self.record_count = self
+            .record_count
+            .checked_add(1)
+            .context("admin record count overflow")?;
+        anyhow::ensure!(
+            self.record_count <= crate::world::MAX_RECORDS,
+            "admin history contains more than {} records",
+            crate::world::MAX_RECORDS
+        );
+        let entry_bytes = key
+            .len()
+            .checked_add(value_bytes)
+            .and_then(|bytes| bytes.checked_add(8))
+            .context("admin record byte count overflow")?;
+        self.record_bytes = self
+            .record_bytes
+            .checked_add(entry_bytes)
+            .context("admin record byte count overflow")?;
+        anyhow::ensure!(
+            self.record_bytes <= MAX_ADMIN_HISTORY_RECORD_BYTES,
+            "admin history records exceed {MAX_ADMIN_HISTORY_RECORD_BYTES} bytes"
+        );
+        Ok(())
     }
 }
 
@@ -956,8 +1105,24 @@ impl WorldClient {
     ///
     /// Fails on a malformed frame or stream error.
     pub async fn recv_json(&mut self) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .recv_json_with_frame_bytes()
+            .await?
+            .map(|(frame, _)| frame))
+    }
+
+    /// Receive one JSON frame and report its complete serialized wire size,
+    /// including the four-byte length prefix.
+    async fn recv_json_with_frame_bytes(&mut self) -> Result<Option<(serde_json::Value, usize)>> {
         match read_frame(&mut self.recv).await? {
-            Some(body) => Ok(Some(serde_json::from_slice(&body).context("decode frame")?)),
+            Some(body) => {
+                let bytes = body
+                    .len()
+                    .checked_add(4)
+                    .context("frame byte count overflow")?;
+                let frame = serde_json::from_slice(&body).context("decode frame")?;
+                Ok(Some((frame, bytes)))
+            }
             None => Ok(None),
         }
     }
@@ -1265,6 +1430,131 @@ impl WorldClient {
                 None => return Ok(pages),
             }
         }
+    }
+
+    /// Export the retained journal-order event window and its records as an
+    /// administrator. Join capabilities cannot request this frame.
+    ///
+    /// # Errors
+    ///
+    /// Host refusal, malformed/out-of-order frames, or an invalid admin token.
+    pub(crate) async fn admin_event_history(
+        &mut self,
+        admin_token: &str,
+    ) -> Result<crate::world::AdminEventHistory> {
+        self.send_json(&serde_json::json!({
+            "type": "event_history_admin",
+            "admin_token": admin_token,
+        }))
+        .await?;
+        let mut budget = AdminHistoryBudget::default();
+        let (begin, frame_bytes) = self
+            .recv_json_with_frame_bytes()
+            .await?
+            .context("host closed before admin history export")?;
+        budget.add_frame(frame_bytes)?;
+        if begin["type"] != "event_history_begin" {
+            bail!(
+                "{}",
+                begin["message"]
+                    .as_str()
+                    .unwrap_or("host refused admin history export")
+            );
+        }
+        let world_id = begin["world_id"]
+            .as_str()
+            .context("history reply has no world ID")?
+            .to_owned();
+        let module_hash = begin["module_hash"].as_str().map(str::to_owned);
+        let current_sequence = begin["current_sequence"]
+            .as_u64()
+            .context("history reply has no sequence")?;
+        let complete = begin["complete"]
+            .as_bool()
+            .context("history reply has no completeness flag")?;
+        let event_count = begin["event_count"]
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
+            .context("history reply has an invalid event count")?;
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let (frame, frame_bytes) = self
+                .recv_json_with_frame_bytes()
+                .await?
+                .context("host closed during admin history export")?;
+            budget.add_frame(frame_bytes)?;
+            if frame["type"] != "event_history_event" {
+                bail!(
+                    "{}",
+                    frame["message"]
+                        .as_str()
+                        .unwrap_or("unexpected frame during admin history export")
+                );
+            }
+            let event_bytes = serde_json::to_vec(&frame["event"])
+                .context("measure an admin history event")?
+                .len();
+            budget.add_event(event_bytes)?;
+            events.push(
+                serde_json::from_value(frame["event"].clone())
+                    .context("decode an admin history event")?,
+            );
+        }
+        let mut records = crate::world::Records::new();
+        let mut after: Option<String> = None;
+        loop {
+            let (frame, frame_bytes) = self
+                .recv_json_with_frame_bytes()
+                .await?
+                .context("host closed before admin history records")?;
+            budget.add_frame(frame_bytes)?;
+            if frame["type"] != "records" {
+                bail!(
+                    "{}",
+                    frame["message"]
+                        .as_str()
+                        .unwrap_or("unexpected frame during admin history records")
+                );
+            }
+            anyhow::ensure!(
+                frame["sequence"].as_u64() == Some(current_sequence),
+                "admin history records do not match its event sequence"
+            );
+            let page: crate::world::Records = serde_json::from_value(frame["records"].clone())
+                .context("decode admin history records")?;
+            let page_cursor = after.clone();
+            for (key, value) in page {
+                anyhow::ensure!(
+                    after.as_deref().is_none_or(|cursor| key.as_str() > cursor),
+                    "admin history record pages are out of order"
+                );
+                budget.add_record(&key, &value)?;
+                after = Some(key.clone());
+                records.insert(key, value);
+            }
+            match frame["next_after"].as_str() {
+                Some(next) => {
+                    anyhow::ensure!(
+                        after.as_deref() == Some(next),
+                        "invalid admin history cursor"
+                    );
+                    anyhow::ensure!(
+                        page_cursor.as_deref().is_none_or(|cursor| next > cursor),
+                        "admin history record cursor did not advance"
+                    );
+                }
+                None => break,
+            }
+        }
+        Ok(crate::world::AdminEventHistory {
+            world_id,
+            module_hash,
+            current_sequence,
+            complete,
+            events,
+            records,
+        })
     }
 
     /// Ask for a read-only ticket for the world's records document.
@@ -1582,14 +1872,16 @@ mod tests {
         router: Router,
         addr: EndpointAddr,
         world: WorldHandle,
+        protocol: WorldProtocol,
     }
 
     async fn host(admin: Option<&str>) -> Host {
         let ep = endpoint().await;
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world.clone(), admin.map(str::to_owned));
+        let protocol = WorldProtocol::new(service);
         let router = Router::builder(ep.clone())
-            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .accept(WORLD_ALPN, protocol.clone())
             .spawn();
         // Loopback sockets only: the test endpoints use no relay or discovery.
         let addr = EndpointAddr::from_parts(
@@ -1607,7 +1899,39 @@ mod tests {
             router,
             addr,
             world,
+            protocol,
         }
+    }
+
+    async fn endpoint_with_key(key: [u8; 32]) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(iroh_base::SecretKey::from_bytes(&key))
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn wait_for_connection_count(
+        protocol: &WorldProtocol,
+        endpoint: AbuseEndpointId,
+        expected: usize,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count = protocol
+                    .abuse
+                    .lock()
+                    .unwrap()
+                    .active_connection_count(&endpoint);
+                if count == expected {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for registered peer connections");
     }
 
     async fn next(client: &mut WorldClient) -> Option<serde_json::Value> {
@@ -1615,6 +1939,83 @@ mod tests {
             .await
             .expect("timed out waiting for a world frame")
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn accept_enforces_per_peer_connection_cap_and_releases_slots() {
+        let host = host(Some("admin")).await;
+        let peer_key = [71; 32];
+        let peer_id: AbuseEndpointId = *iroh_base::SecretKey::from_bytes(&peer_key)
+            .public()
+            .as_bytes();
+        let mut clients = Vec::new();
+
+        // Separate endpoint instances with the same identity model distinct
+        // concurrent QUIC connections from one peer.
+        for _ in 0..4 {
+            let client_endpoint = endpoint_with_key(peer_key).await;
+            let client = WorldClient::connect(&client_endpoint, host.addr.clone())
+                .await
+                .unwrap();
+            clients.push((client_endpoint, client));
+        }
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+
+        let fifth_endpoint = endpoint_with_key(peer_key).await;
+        let fifth = WorldClient::connect(&fifth_endpoint, host.addr.clone()).await;
+        if let Ok(client) = fifth {
+            client.close();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.protocol.connection_cap_refusals() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fifth peer connection was not refused");
+        assert_eq!(host.protocol.connection_cap_refusals(), 1);
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+
+        // The same cap is independent per peer, not a server-wide limit.
+        let other_endpoint = endpoint_with_key([72; 32]).await;
+        let other_id: AbuseEndpointId = *other_endpoint.id().as_bytes();
+        let mut other = WorldClient::connect(&other_endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        wait_for_connection_count(&host.protocol, other_id, 1).await;
+        assert_eq!(host.protocol.connection_cap_refusals(), 1);
+        other
+            .invite("admin", "Other peer", None, None)
+            .await
+            .unwrap();
+
+        // Closing one transport releases its registration and admits a new
+        // connection from the peer that had reached the cap.
+        let (closed_endpoint, closed_client) = clients.remove(0);
+        closed_client.close();
+        closed_endpoint.close().await;
+        wait_for_connection_count(&host.protocol, peer_id, 3).await;
+
+        let retry_endpoint = endpoint_with_key(peer_key).await;
+        let mut retry = WorldClient::connect(&retry_endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        wait_for_connection_count(&host.protocol, peer_id, 4).await;
+        retry
+            .invite("admin", "Replacement peer", None, None)
+            .await
+            .unwrap();
+
+        retry.close();
+        retry_endpoint.close().await;
+        other.close();
+        other_endpoint.close().await;
+        fifth_endpoint.close().await;
+        for (client_endpoint, client) in clients {
+            client.close();
+            client_endpoint.close().await;
+        }
+        host.router.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1757,6 +2158,59 @@ mod tests {
 
     fn join(capability: &str, after: Option<u64>) -> serde_json::Value {
         serde_json::json!({"type": "join", "capability": capability, "after": after})
+    }
+
+    #[test]
+    fn admin_history_client_rejects_over_limit_payload() {
+        let mut event_budget = AdminHistoryBudget::default();
+        assert!(
+            event_budget
+                .add_event(crate::world::MAX_ADMIN_HISTORY_BYTES)
+                .is_ok()
+        );
+        assert!(event_budget.add_event(1).is_err());
+
+        let mut record_budget = AdminHistoryBudget::default();
+        for _ in 0..crate::world::MAX_RECORDS {
+            assert!(
+                record_budget
+                    .add_record("key", &serde_json::Value::Null)
+                    .is_ok()
+            );
+        }
+        assert!(
+            record_budget
+                .add_record("extra", &serde_json::Value::Null)
+                .is_err()
+        );
+        assert!(
+            record_budget
+                .add_record(
+                    "key",
+                    &serde_json::Value::String(
+                        "x".repeat(crate::world::MAX_RECORD_VALUE_BYTES + 1)
+                    )
+                )
+                .is_err()
+        );
+
+        let frame = serde_json::json!({
+            "type": "event_history_begin",
+            "world_id": "lobby",
+            "current_sequence": 0,
+            "complete": true,
+            "event_count": 0,
+            "ignored": "x".repeat(4096),
+        });
+        let wire_bytes = serde_json::to_vec(&frame).unwrap().len() + 4;
+        let mut padded_budget = AdminHistoryBudget {
+            response_bytes: MAX_ADMIN_HISTORY_RESPONSE_BYTES - wire_bytes + 1,
+            ..AdminHistoryBudget::default()
+        };
+        assert!(
+            padded_budget.add_frame(wire_bytes).is_err(),
+            "ignored top-level JSON fields count toward the transfer limit"
+        );
     }
 
     #[tokio::test]
