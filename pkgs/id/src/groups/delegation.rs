@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use p2panda_core::Hash;
 
 use super::fold::{Decision, Effect, Engine, FoldError, Judged, Refusal, access_role, causal_past};
-use super::policy::{RemoveMode, RemoveSuccessor};
+use super::policy::{Delegation, RemoveMode, RemoveSuccessor};
 use super::{Body, Delegate, Event, Key, MemberOp, Role};
 
 /// A grant that took effect: `from` gave `to` the scope `scope` in `group`, as event `id`.
@@ -357,6 +357,19 @@ impl Engine {
                 })
                 .collect();
             if superseding.is_empty() {
+                // A non-removal role change (a demotion) carries no RemoveMode: under
+                // Cascade delegation the link stands only while the grantor still holds
+                // the scope at `after`, so demoting the grantor below the grant's scope
+                // withdraws the delegated authority (the pre-RemoveMode Cascade check,
+                // including for cross-world crossings). Under Transfer delegation the
+                // link stands until a removal disposes of it. A group-anchored grant
+                // (from: None) has no grantor to demote.
+                if self.groups[&group].policy.delegation_mode() == Delegation::Cascade
+                    && let Some(grantor) = grant.from
+                    && !self.holds(group, grantor, grant.scope, after)?
+                {
+                    continue;
+                }
                 links.push(Link {
                     origin: grant.id,
                     from: grant.from,
@@ -396,7 +409,24 @@ impl Engine {
                             .admins_at_position(by_id, &group, &removal.after)
                             .into_iter()
                             .collect(),
-                        RemoveSuccessor::Actor => vec![removal.actor],
+                        RemoveSuccessor::Actor => {
+                            // `removal.actor` is the removing event's author key, which
+                            // may be an authorized device key rather than the account
+                            // itself: membership and `holds` are account-level, so
+                            // resolve the device to its account at the removal's
+                            // position, or the reissue check fails and the grants are
+                            // silently revoked instead of transferred.
+                            let actor = self
+                                .authorized_device_account(
+                                    by_id,
+                                    group,
+                                    removal.actor,
+                                    &removal.after,
+                                )
+                                .map(|(account, _)| account)
+                                .unwrap_or(removal.actor);
+                            vec![actor]
+                        }
                     };
                     for successor in successors {
                         let holds_now = self.holds(group, successor, grant.scope, after)?;

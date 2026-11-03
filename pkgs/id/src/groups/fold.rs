@@ -1242,7 +1242,10 @@ impl Engine {
                 if let Body::Create(create) = &event.body {
                     candidates.extend(create.members.iter().map(|(member, _)| *member));
                 }
-            } else if event.group == Some(*group) {
+                // Membership-operation subjects are candidates too: an account added
+                // or promoted to Admin after creation may never have authored an
+                // event, so the author/create-member scan above misses it and
+                // Transfer(Admin) would silently skip the only remaining Admin.
                 if let Body::Member(
                     MemberOp::Add { member, .. }
                     | MemberOp::SetRole { member, .. }
