@@ -4,43 +4,48 @@
 # the offender on a violating tree, and does not count test code.
 set -euo pipefail
 
-SCRIPT="/home/user/git/fleet/6592-1411-line-guard/check-production-line-limit.sh"
-TMP="/tmp/tmp.UL8Pow9FpO"
-trap "rm -rf """ EXIT
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-production-line-limit.sh"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
 
 gen() { # gen <path> <production-lines> [test-lines]
-  local path="" prod="" test_lines="0"
-  mkdir -p "."
-  { for i in ; do echo "fn f() {}"; done
-    if [ "" -gt 0 ]; then
+  local path="$1" prod="$2" test_lines="${3:-0}"
+  mkdir -p "$(dirname "$path")"
+  { for i in $(seq 1 "$prod"); do echo "fn f$i() {}"; done
+    if [ "$test_lines" -gt 0 ]; then
       echo "#[cfg(test)]"
-      for i in ; do echo "fn t() {}"; done
+      for i in $(seq 1 "$test_lines"); do echo "fn t$i() {}"; done
     fi
-  } > ""
+  } > "$path"
 }
 
-mkdir -p "/ok/pkgs/id/src/web"
-gen "/ok/pkgs/id/src/small.rs" 100
-gen "/ok/pkgs/id/src/long_with_tests.rs" 100 5000
-gen "/ok/pkgs/id/src/web/markdown.rs" 3000
-bash "" "/ok" > "/ok.out"
-grep -q "GRANDFATHERED pkgs/id/src/web/markdown.rs" "/ok.out"
-grep -q "production-line-guard: OK" "/ok.out"
+# Compliant tree: under-limit file + a file whose PRODUCTION part is
+# under the limit even though the file is long (test module appended).
+mkdir -p "$TMP/ok/pkgs/id/src/web"
+gen "$TMP/ok/pkgs/id/src/small.rs" 100
+gen "$TMP/ok/pkgs/id/src/long_with_tests.rs" 100 5000
+# The real grandfathered path, over the limit: warning, not failure.
+gen "$TMP/ok/pkgs/id/src/web/markdown.rs" 3000
+bash "$SCRIPT" "$TMP/ok" > "$TMP/ok.out"
+grep -q "GRANDFATHERED pkgs/id/src/web/markdown.rs" "$TMP/ok.out"
+grep -q "production-line-guard: OK" "$TMP/ok.out"
 echo "pass: compliant tree passes, grandfather reported"
 
-mkdir -p "/bad/pkgs/id/src"
-gen "/bad/pkgs/id/src/huge.rs" 2501
-if bash "" "/bad" > "/bad.out" 2>&1; then
+# Violating tree: one synthetic over-limit production file.
+mkdir -p "$TMP/bad/pkgs/id/src"
+gen "$TMP/bad/pkgs/id/src/huge.rs" 2501
+if bash "$SCRIPT" "$TMP/bad" > "$TMP/bad.out" 2>&1; then
   echo "FAIL: guard accepted an over-limit file" >&2; exit 1
 fi
-grep -q "OVER LIMIT pkgs/id/src/huge.rs: 2501 production lines" "/bad.out"
+grep -q "OVER LIMIT pkgs/id/src/huge.rs: 2501 production lines" "$TMP/bad.out"
 echo "pass: violating tree fails and names the offender with its count"
 
-mkdir -p "/tests/pkgs/id/tests" "/tests/pkgs/id/src/encryption"
-gen "/tests/pkgs/id/tests/cli_integration.rs" 4000
-gen "/tests/pkgs/id/src/encryption/tests.rs" 4000
-bash "" "/tests" > "/tests.out"
-grep -q "checked 0 production" "/tests.out"
+# Test code is out of scope: tests/ trees and tests.rs modules.
+mkdir -p "$TMP/tests/pkgs/id/tests" "$TMP/tests/pkgs/id/src/encryption"
+gen "$TMP/tests/pkgs/id/tests/cli_integration.rs" 4000
+gen "$TMP/tests/pkgs/id/src/encryption/tests.rs" 4000
+bash "$SCRIPT" "$TMP/tests" > "$TMP/tests.out"
+grep -q "checked 0 production" "$TMP/tests.out"
 echo "pass: test files are not counted"
 
 echo "check-production-line-limit.test.sh: all contract tests passed"
