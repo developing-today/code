@@ -5,9 +5,13 @@
 //! on open, so an entry that was not finished survives a restart. A line cut
 //! short by a crash was never acknowledged, so it is dropped on open.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+#[cfg(unix)]
+use std::fs::File;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, ensure};
@@ -23,6 +27,8 @@ use crate::envelope_net::deliver;
 
 /// Deliveries attempted before an envelope is given up.
 pub const MAX_ATTEMPTS: u32 = 12;
+/// The maximum number of newest finished entries retained by the outbox.
+pub const MAX_FINISHED_ENTRIES: usize = 100;
 const BASE_DELAY_MS: u64 = 60_000;
 const MAX_DELAY_MS: u64 = 6 * 60 * 60 * 1000;
 
@@ -115,10 +121,15 @@ enum Record {
 }
 
 /// The queue, keyed by envelope ID.
+///
+/// It retains the newest [`MAX_FINISHED_ENTRIES`] finished entries by finish
+/// order, along with every unfinished entry. When replay drops older finished
+/// entries, the journal is compacted on open.
 #[derive(Debug)]
 pub struct Outbox {
     path: PathBuf,
     entries: BTreeMap<String, Entry>,
+    finished_order: VecDeque<String>,
 }
 
 impl Outbox {
@@ -131,6 +142,7 @@ impl Outbox {
         let mut outbox = Self {
             path: path.into(),
             entries: BTreeMap::new(),
+            finished_order: VecDeque::new(),
         };
         let text = match fs::read_to_string(&outbox.path) {
             Ok(text) => text,
@@ -138,6 +150,7 @@ impl Outbox {
             Err(error) => return Err(error).context("reading the envelope outbox"),
         };
         let mut kept = 0;
+        let mut dropped_finished = false;
         for (number, line) in text.split_inclusive('\n').enumerate() {
             if !line.ends_with('\n') {
                 // The final line has no newline: a crash cut the append
@@ -158,7 +171,7 @@ impl Outbox {
             }
             match serde_json::from_str::<Record>(line.trim_end()) {
                 Ok(record) => {
-                    outbox.apply(record)?;
+                    dropped_finished |= outbox.apply(record)?;
                     kept += line.len();
                 }
                 Err(error) => {
@@ -173,6 +186,9 @@ impl Outbox {
                 .write(true)
                 .open(&outbox.path)?
                 .set_len(kept as u64)?;
+        }
+        if dropped_finished {
+            outbox.compact_journal()?;
         }
         Ok(outbox)
     }
@@ -299,10 +315,13 @@ impl Outbox {
             .open(&self.path)?;
         file.write_all(line.as_bytes())?;
         file.sync_data()?;
-        self.apply(record)
+        self.apply(record)?;
+        Ok(())
     }
 
-    fn apply(&mut self, record: Record) -> Result<()> {
+    /// Applies a record and reports whether it evicted a finished entry.
+    fn apply(&mut self, record: Record) -> Result<bool> {
+        let mut dropped_finished = false;
         match record {
             Record::Queued { target, envelope } => {
                 self.insert_queued(target, Payload::Envelope(envelope))?;
@@ -327,19 +346,119 @@ impl Outbox {
                 outcome,
                 detail,
             } => {
-                let entry = self.entry_mut(&id)?;
-                entry.attempts = attempts;
-                entry.finish = Some(outcome);
-                entry.last_error = detail;
+                {
+                    let entry = self.entry_mut(&id)?;
+                    entry.attempts = attempts;
+                    entry.finish = Some(outcome);
+                    entry.last_error = detail;
+                }
+                self.finished_order.retain(|finished_id| finished_id != &id);
+                self.finished_order.push_back(id);
+                if self.finished_order.len() > MAX_FINISHED_ENTRIES {
+                    if let Some(oldest) = self.finished_order.pop_front() {
+                        self.entries.remove(&oldest);
+                        dropped_finished = true;
+                    }
+                }
             }
             Record::Withdrawn { id } => {
                 ensure!(
                     self.entries.remove(&id).is_some(),
                     "outbox record withdraws unknown envelope {id}"
                 );
+                self.finished_order.retain(|finished_id| finished_id != &id);
             }
         }
+        Ok(dropped_finished)
+    }
+
+    /// Rewrites the journal as a snapshot of the retained entries.
+    fn compact_journal(&self) -> Result<()> {
+        let mut temporary_path = self.path.as_os_str().to_owned();
+        temporary_path.push(".compact.tmp");
+        let temporary_path = PathBuf::from(temporary_path);
+        let permissions = fs::metadata(&self.path)?.permissions();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary_path)
+            .context("creating the compacted envelope outbox")?;
+
+        for record in self.compact_records()? {
+            serde_json::to_writer(&mut file, &record)?;
+            file.write_all(b"\n")?;
+        }
+        fs::set_permissions(&temporary_path, permissions)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary_path, &self.path)
+            .context("replacing the envelope outbox with its compacted journal")?;
+
+        #[cfg(unix)]
+        {
+            let parent = self
+                .path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            File::open(parent)?.sync_all()?;
+        }
         Ok(())
+    }
+
+    /// Builds a replayable snapshot while preserving the finish-order queue.
+    fn compact_records(&self) -> Result<Vec<Record>> {
+        let mut records = Vec::with_capacity(self.entries.len() * 2);
+        for entry in self.entries.values() {
+            records.push(match &entry.payload {
+                Payload::Envelope(envelope) => Record::Queued {
+                    target: entry.target.clone(),
+                    envelope: envelope.clone(),
+                },
+                Payload::Artifact(artifact) => Record::QueuedArtifact {
+                    target: entry.target.clone(),
+                    artifact: artifact.clone(),
+                },
+            });
+        }
+
+        // Pending entries have no finish-order significance, so their retry
+        // state can be replayed before the finished entries.
+        for (id, entry) in &self.entries {
+            if entry.finish.is_none()
+                && (entry.attempts > 0 || entry.next_at != 0 || entry.last_error.is_some())
+            {
+                records.push(Record::Attempted {
+                    id: id.clone(),
+                    attempts: entry.attempts,
+                    next_at: entry.next_at,
+                    error: entry.last_error.clone().unwrap_or_default(),
+                });
+            }
+        }
+
+        for id in &self.finished_order {
+            let entry = self
+                .entries
+                .get(id)
+                .with_context(|| format!("finished entry {id} is missing during compaction"))?;
+            records.push(Record::Attempted {
+                id: id.clone(),
+                attempts: entry.attempts,
+                next_at: entry.next_at,
+                error: entry.last_error.clone().unwrap_or_default(),
+            });
+            records.push(Record::Finished {
+                id: id.clone(),
+                attempts: entry.attempts,
+                outcome: entry
+                    .finish
+                    .context("finished-order entry has no finish during compaction")?,
+                detail: entry.last_error.clone(),
+            });
+        }
+        Ok(records)
     }
 
     fn insert_queued(&mut self, target: String, payload: Payload) -> Result<()> {
@@ -527,6 +646,105 @@ mod tests {
         assert_eq!(entry.last_error.as_deref(), Some("bad signature"));
         assert!(outbox.due(u64::MAX).is_empty());
         assert!(outbox.record("e1", NOW, Outcome::Delivered).is_err());
+    }
+
+    #[test]
+    fn runtime_retains_the_newest_finished_entries_in_finish_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        let total = MAX_FINISHED_ENTRIES + 5;
+
+        for index in 0..total {
+            let id = format!("e{index:03}");
+            outbox.enqueue(&target(), envelope(&id)).unwrap();
+        }
+        for index in (0..total).step_by(2).chain((1..total).step_by(2)) {
+            let id = format!("e{index:03}");
+            outbox.record(&id, NOW, Outcome::Delivered).unwrap();
+        }
+
+        assert_eq!(
+            outbox
+                .entries()
+                .filter(|entry| entry.finish.is_some())
+                .count(),
+            MAX_FINISHED_ENTRIES
+        );
+        for oldest in [0, 2, 4, 6, 8] {
+            assert!(outbox.entry(&format!("e{oldest:03}")).is_none());
+        }
+        assert!(outbox.entry("e001").is_some());
+        assert!(outbox.entry("e104").is_some());
+
+        outbox.enqueue(&target(), envelope("pending")).unwrap();
+        assert_eq!(outbox.entries().count(), MAX_FINISHED_ENTRIES + 1);
+        assert_eq!(outbox.due(NOW), vec!["pending".to_owned()]);
+    }
+
+    #[test]
+    fn replay_compacts_finished_history_and_preserves_state_and_finish_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = path(&dir);
+        let mut outbox = Outbox::open(&journal).unwrap();
+        let total = MAX_FINISHED_ENTRIES + 5;
+
+        for index in 0..total {
+            let id = format!("e{index:03}");
+            outbox.enqueue(&target(), envelope(&id)).unwrap();
+        }
+        for index in (0..total).step_by(2).chain((1..total).step_by(2)) {
+            let id = format!("e{index:03}");
+            outbox.record(&id, NOW, Outcome::Delivered).unwrap();
+        }
+        outbox.enqueue(&target(), envelope("pending-now")).unwrap();
+        outbox
+            .enqueue(&target(), envelope("pending-later"))
+            .unwrap();
+        outbox
+            .record("pending-later", NOW, Outcome::Retry("down".to_owned()))
+            .unwrap();
+
+        let expected_entries = outbox.entries.clone();
+        let expected_due_now = outbox.due(NOW);
+        let expected_due_later = outbox.due(NOW + MINUTE);
+        drop(outbox);
+
+        // A parseable record without its trailing newline is still a torn tail;
+        // open must truncate it before compacting the completed history.
+        let mut file = OpenOptions::new().append(true).open(&journal).unwrap();
+        file.write_all(queued_line("torn").as_bytes()).unwrap();
+        drop(file);
+
+        let reopened = Outbox::open(&journal).unwrap();
+        assert_eq!(reopened.entries, expected_entries);
+        assert_eq!(reopened.due(NOW), expected_due_now);
+        assert_eq!(reopened.due(NOW + MINUTE), expected_due_later);
+        assert!(reopened.entry("torn").is_none());
+
+        let compacted = fs::read_to_string(&journal).unwrap();
+        assert!(compacted.ends_with('\n'));
+        assert!(!compacted.contains("e000"));
+        assert!(!compacted.contains("e002"));
+        assert!(compacted.contains("e001"));
+        assert!(compacted.contains("pending-later"));
+        drop(reopened);
+
+        let mut reopened_again = Outbox::open(&journal).unwrap();
+        assert_eq!(reopened_again.entries, expected_entries);
+        assert_eq!(reopened_again.due(NOW), expected_due_now);
+        assert_eq!(reopened_again.due(NOW + MINUTE), expected_due_later);
+        assert_eq!(fs::read_to_string(&journal).unwrap(), compacted);
+
+        // Compaction must keep the relative finish order so the next finish
+        // evicts the oldest entry that survived the first cap.
+        reopened_again
+            .enqueue(&target(), envelope("next-finish"))
+            .unwrap();
+        reopened_again
+            .record("next-finish", NOW, Outcome::Delivered)
+            .unwrap();
+        assert!(reopened_again.entry("e010").is_none());
+        assert!(reopened_again.entry("e001").is_some());
     }
 
     #[test]
