@@ -181,6 +181,20 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
     typeof r.id === "string" &&
     typeof r.source === "string" &&
     typeof r.label === "string" &&
+    // #3525: render.ts dereferences status (sessionRecordIsLive calls
+    // r.status.toLowerCase()), agentId/agentLabel (identitiesFromRecords
+    // interpolates agentLabel) and tokensTotal (renderSessions sums it,
+    // sessionRecordLine formats it with toLocaleString()) unconditionally.
+    // SessionRecord requires string status/agentId/agentLabel, so a record
+    // missing any of them is poisoned and rejected, not coerced (the
+    // #2347/#2376 precedent). tokensTotal is optional on SessionRecord, so
+    // absent is fine; when present it must be a finite number >= 0 — a
+    // string/Infinity/negative/object value poisons the page token total.
+    typeof r.status === "string" &&
+    typeof r.agentId === "string" &&
+    typeof r.agentLabel === "string" &&
+    (r.tokensTotal === undefined ||
+      (typeof r.tokensTotal === "number" && Number.isFinite(r.tokensTotal) && r.tokensTotal >= 0)) &&
     (r.lastSeenAt === undefined || isIsoDate(r.lastSeenAt)) &&
     (r.startedAt === undefined || isIsoDate(r.startedAt)) &&
     // #2408/#2485/#4284: mergeRecords spreads taskRefs as an array, and
