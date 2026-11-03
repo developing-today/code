@@ -21,6 +21,7 @@
 // never blocks or fails the underlying action, publish, or merge.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isIsoDate } from "./validate.ts";
 
 export interface StreamEvent {
   /** ISO timestamp of the event. */
@@ -51,7 +52,12 @@ const FIELD = /^[\w ./#:@-]+$/;
 export function validateStreamEvent(e: unknown): { ok: true; value: StreamEvent } | { ok: false; error: string } {
   if (typeof e !== "object" || e === null) return { ok: false, error: "event must be an object" };
   const v = e as Record<string, unknown>;
-  if (typeof v.at !== "string" || !Number.isFinite(Date.parse(v.at))) {
+  // Real calendar dates only (#5154): Date.parse rolls day-overflow
+  // dates over (2026-02-30 parses as March 2), so the shared isIsoDate
+  // primitive from validate.ts is the gate, like the DNS/charges
+  // boundaries. Genuine ISO timestamps (leap dates, offsets, fractional
+  // seconds) still pass.
+  if (typeof v.at !== "string" || !isIsoDate(v.at)) {
     return { ok: false, error: "event.at must be an ISO timestamp string" };
   }
   // Identity fields align with their upstream contracts (#4489 Codex
