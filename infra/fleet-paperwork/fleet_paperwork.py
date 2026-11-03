@@ -16,7 +16,7 @@ Auth flow (same one the pm-stack services use):
      the seconds it takes openssl to sign one JWT.
   2. Sign a short-lived RS256 JWT (openssl) and exchange it for an
      installation token scoped to the installation that owns the target repo
-     (org installation for developing-today/*, personal for dezren39/nix,
+     (org installation for developing-today/*, personal for dezren39/*,
      resolved live from GET /app/installations — never hardcoded).
   3. POST the issue/comment/close with that token, then GET the result back
      and compare. Missing, empty, or mismatched readback = nonzero exit.
@@ -26,12 +26,25 @@ Every successful write is appended to a local ledger
 before each write the script waits out the remainder of --pace seconds since
 the previous ledger-recorded write, so batches cannot burst.
 
+The app now also holds contents/pull_requests write, so two generic commands
+expose it beyond issue filing, without hand-rolling the token flow each time:
+
+  token  print the installation token for a repo's owner (stdout only), for
+         GH_TOKEN=$(... token --repo owner/name) gh ... or curl.
+  api    one arbitrary REST call as the app (PR create/edit, reviews,
+         comments anywhere). --method is required for every call, so no
+         write can happen by default; the caller owns readback verification.
+
 Usage:
   fleet_paperwork.py check [--repo owner/name]
   fleet_paperwork.py create --repo owner/name --title T --body-file F \
       [--label L ...] [--no-dedupe] [--dry-run]
   fleet_paperwork.py comment --repo owner/name --issue N --body-file F [--dry-run]
   fleet_paperwork.py close --repo owner/name --issue N [--dry-run]
+  fleet_paperwork.py token --repo owner/name
+  fleet_paperwork.py api --repo owner/name --method GET --path /repos/owner/name
+  fleet_paperwork.py api --repo owner/name --method POST \
+      --path /repos/owner/name/pulls --input pr.json
 """
 
 from __future__ import annotations
@@ -118,9 +131,15 @@ def app_jwt(app_id: str, key_b64: str) -> str:
     return f"{header}.{payload}.{b64url(sig.stdout)}"
 
 
-def http(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict]:
+def http_raw(method: str, path: str, token: str, data: bytes | None = None) -> tuple[int, str]:
+    """One HTTP call that reports HTTP errors instead of dying on them.
+
+    Returns (status, raw body text). Transport failures (DNS, TLS, refused)
+    still die — there is no status to report for them. Used directly by the
+    `api` command; `http` below is the die-on-error wrapper the issue
+    commands have always used.
+    """
     url = path if path.startswith("http") else API + path
-    data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Accept", "application/vnd.github+json")
@@ -129,18 +148,25 @@ def http(method: str, path: str, token: str, body: dict | None = None) -> tuple[
         req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req) as resp:
-            raw = resp.read().decode()
-            return resp.status, (json.loads(raw) if raw else {})
+            return resp.status, resp.read().decode()
     except urllib.error.HTTPError as e:
-        raw = e.read().decode(errors="replace")
+        return e.code, e.read().decode(errors="replace")
+    except urllib.error.URLError as e:
+        die(f"{method} {url} failed: {e.reason}")
+    raise AssertionError("unreachable")
+
+
+def http(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict]:
+    url = path if path.startswith("http") else API + path
+    data = json.dumps(body).encode() if body is not None else None
+    status, raw = http_raw(method, path, token, data)
+    if status >= 400:
         try:
             detail = json.loads(raw)
         except Exception:
             detail = {"raw": raw}
-        die(f"{method} {url} -> HTTP {e.code}: {detail.get('message', raw[:300])}")
-    except urllib.error.URLError as e:
-        die(f"{method} {url} failed: {e.reason}")
-    raise AssertionError("unreachable")
+        die(f"{method} {url} -> HTTP {status}: {detail.get('message', raw[:300])}")
+    return status, (json.loads(raw) if raw else {})
 
 
 class AppClient:
@@ -332,6 +358,46 @@ def cmd_comment(args) -> int:
     return 0
 
 
+def cmd_token(args) -> int:
+    """Print the installation token for the repo's owner — the token and
+    nothing else on stdout (all diagnostics go to stderr), so callers can do
+    GH_TOKEN=$(fleet_paperwork.py token --repo owner/name) gh .... The repo
+    must be in the installation's scope, same check as every other command,
+    so a typo'd repo fails here instead of as a confusing 404 downstream."""
+    client = AppClient(args.sops)
+    client.assert_repo_in_scope(args.repo)
+    print(client.token_for(args.repo.split("/")[0]))
+    return 0
+
+
+def cmd_api(args) -> int:
+    """One arbitrary REST call as the app, for everything the issue commands
+    do not cover (PR create/edit, reviews, comments anywhere). The HTTP
+    status goes to stderr and the response body to stdout; HTTP >= 400
+    prints both and exits nonzero. Unlike the issue commands there is no
+    readback verification — the caller owns verifying what it did."""
+    if not (args.path.startswith("/") or args.path.startswith("http")):
+        die(f"--path must be a REST path starting with '/': {args.path!r}")
+    client = AppClient(args.sops)
+    client.assert_repo_in_scope(args.repo)
+    token = client.token_for(args.repo.split("/")[0])
+    data = None
+    if args.input:
+        try:
+            payload = json.loads(Path(args.input).read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            die(f"--input {args.input}: not readable JSON: {e}")
+        data = json.dumps(payload).encode()
+    status, raw = http_raw(args.method, args.path, token, data)
+    print(f"{args.method} {args.path} -> HTTP {status}", file=sys.stderr)
+    if raw:
+        try:
+            print(json.dumps(json.loads(raw), indent=2))
+        except Exception:
+            print(raw)
+    return 0 if status < 400 else 1
+
+
 def cmd_close(args) -> int:
     client = AppClient(args.sops)
     client.assert_repo_in_scope(args.repo)
@@ -385,6 +451,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pace", type=float, default=3.0)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_comment)
+
+    p = sub.add_parser("token", help="print the installation token for a "
+                                     "repo's owner (stdout only)")
+    p.add_argument("--repo", required=True)
+    p.set_defaults(fn=cmd_token)
+
+    p = sub.add_parser("api", help="one arbitrary REST call as the app")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--method", required=True, type=str.upper,
+                   help="HTTP method — required for every call, so a write "
+                        "can never happen by default")
+    p.add_argument("--path", required=True,
+                   help="REST path, e.g. /repos/owner/name/pulls")
+    p.add_argument("--input", help="file holding the JSON request body")
+    p.set_defaults(fn=cmd_api)
 
     p = sub.add_parser("close", help="close an issue (verified)")
     p.add_argument("--repo", required=True)
