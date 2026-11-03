@@ -701,7 +701,10 @@ mod tests {
                     assert!(
                         SQLITE.contains(&name.as_str())
                             || name == &root
-                            || (name == "p2panda-store" && dep == "sqlx"),
+                            || (name == "p2panda-store" && dep == "sqlx")
+                            // Cargo.lock records sqlx-sqlite's optional backend edge even
+                            // when it is inactive; cargo tree below checks the shipped graph.
+                            || (name == "sqlx-sqlite" && dep == "libsqlite3-sys"),
                         "{name} depends on {dep}: SQLite is back in the shipped build (see \
                          vendor/README.md)"
                     );
