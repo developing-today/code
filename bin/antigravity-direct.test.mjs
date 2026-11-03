@@ -170,3 +170,98 @@ test('specific-function tool_choice with no declared tools is a 400', async () =
   assert.equal(body.error.type, 'invalid_request_error');
   assert.equal(generateCalls().length, beforeCount);
 });
+
+// --- #2823: env parsing is strict -----------------------------------------
+// A bad ANTIGRAVITY_DIRECT_PORT used to reach listen() as an anonymous
+// ERR_SOCKET_BAD_PORT (or bind 0 / a hex-decoded port), and a bad
+// ANTIGRAVITY_DIRECT_TIMEOUT_MS started healthy then 502'd every
+// request. Both must now fail at startup, naming the variable and value.
+
+const stubSecretTool = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-direct-env-'));
+  const file = path.join(dir, 'secret-tool');
+  const expiry = new Date(Date.now() + 3600e3).toISOString();
+  fs.writeFileSync(file, '#!/usr/bin/env node\nconsole.log(JSON.stringify({ token: { access_token: "stub-access-token", refresh_token: "stub-refresh-token", expiry: ' + JSON.stringify(expiry) + ' }, auth_method: "consumer" }));\n');
+  fs.chmodSync(file, 0o755);
+  return { dir, file };
+};
+
+const spawnProxy = (env) => {
+  const stub = stubSecretTool();
+  const child = spawn(process.execPath, [path.join(binDir, 'antigravity-direct.mjs')], {
+    env: {
+      ...process.env,
+      ANTIGRAVITY_DIRECT_HOST: '127.0.0.1',
+      ANTIGRAVITY_DIRECT_UPSTREAM: 'http://127.0.0.1:1',
+      SECRET_TOOL_PATH: stub.file,
+      XDG_STATE_HOME: stub.dir,
+      ...env
+    },
+    stdio: ['ignore', 'ignore', 'pipe']
+  });
+  let stderr = '';
+  child.stderr.on('data', (c) => { stderr += c; });
+  const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal, stderr })));
+  const cleanup = () => fs.rmSync(stub.dir, { recursive: true, force: true });
+  return { child, exited, cleanup };
+};
+
+const rejectedCase = (name, raw, pattern) => {
+  test(`${name}=${raw} is rejected at startup naming the variable`, async () => {
+    const { child, exited, cleanup } = spawnProxy({ [name]: raw });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    const { code, stderr } = await exited;
+    clearTimeout(timer);
+    cleanup();
+    assert.equal(code, 1, `expected exit 1, got ${code}; stderr=${stderr}`);
+    assert.match(stderr, new RegExp(`${name}="${raw}"`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(stderr, pattern);
+    // A Node listen/timer error would name none of the above.
+    assert.doesNotMatch(stderr, /ERR_SOCKET_BAD_PORT|RangeError|TimeoutOverflowWarning/);
+  });
+};
+
+for (const raw of ['abc', '18941abc', '18941.9', '0', '99999', '0x4a35']) {
+  rejectedCase('ANTIGRAVITY_DIRECT_PORT', raw, /not a valid port \(expected an integer 1-65535\)/);
+}
+for (const raw of ['abc', '-5000', '3000000000']) {
+  rejectedCase('ANTIGRAVITY_DIRECT_TIMEOUT_MS', raw, /not a valid timeout \(expected an integer 1-2147483647 ms\)/);
+}
+
+test('valid port with a 300ms timeout serves and times a hanging upstream out', async () => {
+  const hanging = http.createServer(() => {}); // accepts, never responds
+  const hangingPort = await freePort();
+  await new Promise(r => hanging.listen(hangingPort, '127.0.0.1', r));
+  const port = await freePort();
+  const { child, cleanup } = spawnProxy({
+    ANTIGRAVITY_DIRECT_PORT: String(port),
+    ANTIGRAVITY_DIRECT_TIMEOUT_MS: '300',
+    ANTIGRAVITY_DIRECT_UPSTREAM: 'http://127.0.0.1:' + hangingPort
+  });
+  try {
+    const deadline = Date.now() + 30000;
+    for (;;) {
+      try {
+        const r = await fetch('http://127.0.0.1:' + port + '/healthz');
+        if (r.ok) break;
+      } catch {}
+      if (Date.now() > deadline) throw new Error('proxy did not come up');
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const started = Date.now();
+    const res = await fetch('http://127.0.0.1:' + port + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemini-3.8-flash', messages: [{ role: 'user', content: 'hi' }] })
+    });
+    const body = await res.json();
+    const elapsed = Date.now() - started;
+    assert.equal(res.status, 502);
+    assert.match(JSON.stringify(body), /upstream timeout after 300ms/);
+    assert.ok(elapsed >= 250 && elapsed < 5000, `expected ~300ms timeout, took ${elapsed}ms`);
+  } finally {
+    child.kill('SIGKILL');
+    hanging.close();
+    cleanup();
+  }
+});
