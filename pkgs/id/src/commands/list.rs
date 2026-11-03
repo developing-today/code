@@ -7,12 +7,15 @@
 //!
 //! Each line contains:
 //! ```text
-//! <hash>\t<name>
+//! <hash>\t<name>\t<origin>\t<uploaded_at>
 //! ```
 //!
 //! Where:
 //! - `hash` is the 64-character BLAKE3 content hash
 //! - `name` is the tag name assigned to the blob
+//! - `origin` is the node that first wrote the file, or `unknown` for
+//!   files written before origin stamping existed (#4973)
+//! - `uploaded_at` is the upload time (unix seconds), or `unknown`
 //!
 //! # Examples
 //!
@@ -30,7 +33,7 @@ use iroh_base::EndpointId;
 
 use crate::commands::client::create_local_client_endpoint;
 use crate::commands::serve::get_serve_info;
-use crate::commands::text::tsv_row;
+use crate::commands::text::list_tsv_row;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
@@ -88,8 +91,16 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
                 if items.is_empty() {
                     println!("(no files stored)");
                 } else {
-                    for (hash, name) in items {
-                        println!("{}", tsv_row(hash, &name));
+                    for entry in &items {
+                        println!(
+                            "{}",
+                            list_tsv_row(
+                                entry.hash,
+                                &entry.name,
+                                entry.origin.as_deref(),
+                                entry.uploaded_at
+                            )
+                        );
                     }
                 }
                 Ok(())
@@ -108,7 +119,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
     while let Some(item) = list.next().await {
         let item = item?;
         let name = String::from_utf8_lossy(item.name.as_ref());
-        println!("{}", tsv_row(item.hash, &name));
+        println!("{}", list_tsv_row(item.hash, &name, None, None));
         count += 1;
     }
     if count == 0 {
@@ -154,8 +165,16 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
             if items.is_empty() {
                 println!("(no files stored)");
             } else {
-                for (hash, name) in items {
-                    println!("{}", tsv_row(hash, &name));
+                for entry in &items {
+                    println!(
+                        "{}",
+                        list_tsv_row(
+                            entry.hash,
+                            &entry.name,
+                            entry.origin.as_deref(),
+                            entry.uploaded_at
+                        )
+                    );
                 }
             }
             Ok(())

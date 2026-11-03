@@ -92,7 +92,7 @@ use crate::commands::client::create_local_client_endpoint;
 use crate::commands::put::{add_raw, push_and_name};
 use crate::commands::serve::get_serve_info;
 use crate::commands::tag::{self as tag, TagDisplayOptions};
-use crate::commands::text::{plain_field, tsv_row};
+use crate::commands::text::{list_tsv_row, plain_field};
 use crate::discovery::PeerAnnouncement;
 use crate::local::LocalNode;
 use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
@@ -441,8 +441,9 @@ impl ReplContext {
 
     /// List all stored blobs.
     ///
-    /// Prints a tab-separated list of hash and name for each stored blob.
-    /// Output format: `<hash>\t<name>`
+    /// Prints a tab-separated list for each stored blob with its origin
+    /// node and upload time (#4973; `unknown` when not recorded).
+    /// Output format: `<hash>\t<name>\t<origin>\t<uploaded_at>`
     ///
     /// In connected modes, sends `MetaRequest::List` to the server.
     /// In local mode, directly iterates the store's tags.
@@ -464,25 +465,41 @@ impl ReplContext {
                     if items.is_empty() {
                         println!("(no files stored)");
                     } else {
-                        for (hash, name) in items {
-                            println!("{}", tsv_row(hash, &name));
+                        for entry in &items {
+                            println!(
+                                "{}",
+                                list_tsv_row(
+                                    entry.hash,
+                                    &entry.name,
+                                    entry.origin.as_deref(),
+                                    entry.uploaded_at
+                                )
+                            );
                         }
                     }
                 }
                 _ => bail!("unexpected response"),
             }
         } else if let ReplContextInner::Local { node } = &self.inner {
-            let store_handle = node.blobs();
-            let mut list = store_handle.tags().list().await?;
-            let mut count = 0;
-            while let Some(item) = list.next().await {
-                let item = item?;
-                let name = String::from_utf8_lossy(item.name.as_ref());
-                println!("{}", tsv_row(item.hash, &name));
-                count += 1;
-            }
-            if count == 0 {
-                println!("(no files stored)");
+            match node.request(MetaRequest::List).await {
+                MetaResponse::List { items } => {
+                    if items.is_empty() {
+                        println!("(no files stored)");
+                    } else {
+                        for entry in &items {
+                            println!(
+                                "{}",
+                                list_tsv_row(
+                                    entry.hash,
+                                    &entry.name,
+                                    entry.origin.as_deref(),
+                                    entry.uploaded_at
+                                )
+                            );
+                        }
+                    }
+                }
+                _ => bail!("unexpected response"),
             }
         }
         Ok(())
@@ -873,8 +890,16 @@ impl ReplContext {
                 if items.is_empty() {
                     println!("(no files stored on @{})", &node_str[..8]);
                 } else {
-                    for (hash, name) in items {
-                        println!("{}", tsv_row(hash, &name));
+                    for entry in &items {
+                        println!(
+                            "{}",
+                            list_tsv_row(
+                                entry.hash,
+                                &entry.name,
+                                entry.origin.as_deref(),
+                                entry.uploaded_at
+                            )
+                        );
                     }
                 }
             }

@@ -104,11 +104,15 @@ pub struct DeleteOutcome {
 }
 
 /// File operations over a blob [`Store`] and a [`TagStore`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FileOps<'a> {
     store: &'a Store,
     tags: &'a TagStore,
     blob_wait: Duration,
+    /// Node that originated a write, stamped as the file's `origin` tag
+    /// (#4973). `None` when the caller does not know its node id: no
+    /// origin is stamped and listings show the file's origin as unknown.
+    origin: Option<String>,
 }
 
 /// Serialises archive-name resolve+claim within this process (#2462).
@@ -182,6 +186,7 @@ impl<'a> FileOps<'a> {
             store,
             tags,
             blob_wait: Duration::ZERO,
+            origin: None,
         }
     }
 
@@ -195,6 +200,16 @@ impl<'a> FileOps<'a> {
     #[must_use]
     pub const fn with_blob_wait(mut self, wait: Duration) -> Self {
         self.blob_wait = wait;
+        self
+    }
+
+    /// Stamp writes with `origin` (a node id) as the file's origin node
+    /// (#4973). The stamp is set-if-absent: the node that first wrote a
+    /// file stays its origin across later writes and renames, and files
+    /// written before origin stamping existed simply have no origin tag.
+    #[must_use]
+    pub fn with_origin(mut self, origin: String) -> Self {
+        self.origin = Some(origin);
         self
     }
 
@@ -303,7 +318,8 @@ impl<'a> FileOps<'a> {
     /// Name `hash` as `name`, after verifying the blob is complete in the store.
     ///
     /// Sets the `created` tag only if absent and always refreshes `modified`,
-    /// then auto-tags `name`/`file`.
+    /// stamps the `origin` node if one is configured and none is recorded
+    /// yet, then auto-tags `name`/`file`.
     pub async fn put(&self, name: &str, hash: Hash) -> Result<(), FileOpError> {
         Self::validate_name(name)?;
         if !self.blob_present(hash).await? {
@@ -345,6 +361,14 @@ impl<'a> FileOps<'a> {
             .await
         {
             tracing::warn!("failed to set modified tag for {name}: {e:#}");
+        }
+        if let Some(origin) = &self.origin
+            && let Err(e) = self
+                .tags
+                .set_if_absent(ns, subject, b"origin", Some(origin.as_bytes()), b"")
+                .await
+        {
+            tracing::warn!("failed to set origin tag for {name}: {e:#}");
         }
         if let Err(e) = self.tags.auto_tag(ns, subject, None).await {
             tracing::warn!("failed to auto-tag {name}: {e:#}");
