@@ -808,12 +808,25 @@ impl WorldCore {
                         "journal system entry has a non-system payload"
                     );
                     if let WorldEventKind::System { event: text } = &event.kind
-                        && let Some((participant, _)) = presence_change(text)
+                        && let Some((participant, joined)) = presence_change(text)
                     {
                         ensure!(
                             core.capabilities.contains_key(&participant),
                             "journal presence event names an unknown participant"
                         );
+                        // Replica restore also needs per-participant
+                        // session counts (F12.13): `open_presence` records
+                        // only that a participant is present, not how many
+                        // sessions hold them there.
+                        let count = present.entry(participant).or_insert(0);
+                        if joined {
+                            *count += 1;
+                        } else {
+                            *count = count.saturating_sub(1);
+                        }
+                        if *count == 0 {
+                            present.remove(&participant);
+                        }
                     }
                     replay.push(event.clone());
                     core.record_admin_history(event);

@@ -1236,6 +1236,10 @@ impl Directory {
                 {
                     continue;
                 }
+                let is_founder = member
+                    == (Member::Account {
+                        id: founders[id].clone(),
+                    });
                 let entry = DirectoryEntry::MemberSet {
                     group: *id,
                     member,
@@ -1250,11 +1254,7 @@ impl Directory {
                 // rejects it through `ensure_admins` and replica startup
                 // fails. Defer founder downgrades until all memberships
                 // are in place.
-                if member
-                    == (Member::Account {
-                        id: founders[id].clone(),
-                    })
-                {
+                if is_founder {
                     founder_downgrades.push(entry);
                 } else {
                     entries.push(entry);
