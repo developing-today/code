@@ -758,11 +758,13 @@ export interface SubscriptionSanitization {
 /** One subscription row safe to hand to the renderers (#2446): the
  * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
  * a null row or a non-string field 500s /quota and is served verbatim
- * by /api/quota.json. */
+ * by /api/quota.json. renewsAt must be null or a real ISO calendar
+ * date (#3513): invalid strings survive sanitization otherwise and
+ * render verbatim as renewal dates. */
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
   return (
-    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
+    typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt))
   );
 }
 
