@@ -86,7 +86,10 @@ for d in "${REPOS[@]}"; do
   # its default — never flag it, never move it.
   if [ "$has_origin" -eq 0 ]; then
     db="$(g branch --show-current)"
-    [ -z "$db" ] && db=main
+    if [ -z "$db" ]; then
+      say "- $name: detached HEAD without origin — skipped"
+      continue
+    fi
   fi
   if [ "$has_origin" -eq 1 ]; then
     timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"

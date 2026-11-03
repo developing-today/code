@@ -327,9 +327,18 @@ export interface QuotaView {
    * loader dropped malformed pools, credentials, windows, active sessions,
    * or burn segments, so an
    * incomplete read is distinguishable from a successful empty one
-   * in the public payload (/api/quota.json projects this view).
+   * in the public payload (/api/quota.json projects this view). Optional
+   * pool freshness and burn-rate drops are counted without dropping the pool.
    * Additive for existing consumers. */
-  dropped?: { pools: number; credentials: number; windows: number; activeSessions: number; burn: number };
+  dropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+  };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
