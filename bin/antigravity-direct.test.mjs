@@ -171,6 +171,58 @@ test('specific-function tool_choice with no declared tools is a 400', async () =
   assert.equal(generateCalls().length, beforeCount);
 });
 
+// --- opencode#1548: bare array schemas ------------------------------------
+// A tool property declared {type: 'array'} with no items is legal JSON
+// Schema (unconstrained elements) but the upstream proto validator
+// rejects an ARRAY schema without items ("properties[paths].items:
+// missing field"), which 400'd every tool-carrying session through this
+// door. Conversion must synthesize an unconstrained items for any ARRAY
+// node that carries neither items nor prefixItems.
+
+const lastFunctionDeclarations = () => {
+  const calls = generateCalls();
+  assert.ok(calls.length > 0, 'expected at least one upstream generate call');
+  return calls[calls.length - 1].body.request.tools[0].functionDeclarations;
+};
+
+const assertArraysCarryItems = (node, where) => {
+  if (Array.isArray(node)) { node.forEach((v, i) => assertArraysCarryItems(v, `${where}[${i}]`)); return; }
+  if (!node || typeof node !== 'object') return;
+  if (node.type === 'ARRAY') {
+    assert.ok(node.items !== undefined || node.prefixItems !== undefined, `${where}: ARRAY schema without items`);
+  }
+  for (const [k, v] of Object.entries(node)) assertArraysCarryItems(v, `${where}.${k}`);
+};
+
+test('bare array tool properties reach upstream with synthesized items (opencode#1548)', async () => {
+  const tools = [{
+    type: 'function',
+    function: {
+      name: 'collect_files',
+      description: 'collect files',
+      parameters: {
+        type: 'object',
+        properties: {
+          paths: { type: 'array', description: 'paths to collect' },
+          matrix: { type: 'array', items: { type: 'array' } },
+          choice: { anyOf: [{ type: 'array' }, { type: 'string' }] },
+          tuple: { type: 'array', items: [{ type: 'string' }, { type: 'number' }] },
+          named: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['paths']
+      }
+    }
+  }];
+  const { status } = await chat({ tools });
+  assert.equal(status, 200);
+  const decls = lastFunctionDeclarations();
+  assert.equal(decls.length, 1);
+  const props = decls[0].parameters.properties;
+  assert.deepEqual(props.paths, { type: 'ARRAY', description: 'paths to collect', items: {} });
+  assert.deepEqual(props.named, { type: 'ARRAY', items: { type: 'STRING' } });
+  assertArraysCarryItems(decls[0].parameters, 'parameters');
+});
+
 // --- #2823: env parsing is strict -----------------------------------------
 // A bad ANTIGRAVITY_DIRECT_PORT used to reach listen() as an anonymous
 // ERR_SOCKET_BAD_PORT (or bind 0 / a hex-decoded port), and a bad

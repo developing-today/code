@@ -311,6 +311,9 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
 // "null" becomes nullable), tuple `items` (becomes prefixItems), boolean
 // schemas (become {}), `required` naming an undeclared property, and
 // `properties` on a node whose type is not OBJECT.
+// Probed 2026-11-03 (opencode#1548): an ARRAY schema with neither items
+// nor prefixItems is likewise rejected ("items: missing field"), so a
+// bare {type: "array"} gets an unconstrained items synthesized below.
 // ---------------------------------------------------------------------------
 
 const SCHEMA_FIELDS = new Set([
@@ -435,6 +438,12 @@ const convertSchemaNode = (node) => {
   }
   if (nullable) out.nullable = true;
   if (out.type === undefined && out.properties) out.type = 'OBJECT';
+  // The proto requires `items` on an ARRAY schema even when the client
+  // leaves the element type unconstrained ("properties[paths].items:
+  // missing field", opencode#1548, probed live 2026-11-03): synthesize
+  // an unconstrained items — omitted items in JSON Schema means any
+  // element.
+  if (out.type === 'ARRAY' && out.items === undefined && out.prefixItems === undefined) out.items = {};
   // `required` may only name declared properties — the proto validates it
   // ("property is not defined"); with no properties there is nothing it
   // may name.
