@@ -76,6 +76,7 @@ describe("captureItemHistory", () => {
         ref: `${REPO}#7`,
         repo: REPO,
         number: 7,
+        kind: "issue",
         state: "open",
         status: "In Progress",
         effort: "m",
@@ -120,16 +121,44 @@ describe("weeklyTransitions / weeklyCompletions", () => {
 
   test("a missing-source week is excluded, never read as zero", () => {
     const cutoffs = [
-      cutoff(W1, [poolItem(7)]),
+      cutoff(W1, [poolItem(7), poolItem(8)]),
       cutoff(W2, [], { complete: false, unavailable: true }),
-      cutoff(W3, [poolItem(7, { state: "closed" })]),
+      cutoff(W3, [poolItem(7, { state: "closed" }), poolItem(8)]),
+      cutoff(W4, [poolItem(7, { state: "closed" }), poolItem(8, { state: "closed" })]),
     ];
-    // The incomplete cutoff contributes no week; W3 is compared
-    // against the last complete cutoff (W1), so the closure is
-    // counted exactly once — and the gap stays stored and visible.
-    expect(weeklyCompletions(cutoffs)).toEqual([{ cutoffAt: W3, completed: 1 }]);
+    // The incomplete cutoff breaks the chain: #7's closure spans the
+    // gap, so it is attributed to NO week (never to W3's bucket, and
+    // the gap is not read as a zero week either). Buckets resume at
+    // the first uninterrupted pair (W3 -> W4), where #8 closes.
+    expect(weeklyTransitions(cutoffs)).toEqual([
+      { cutoffAt: W4, completedRefs: [`${REPO}#8`], reopenedRefs: [] },
+    ]);
+    expect(weeklyCompletions(cutoffs)).toEqual([{ cutoffAt: W4, completed: 1 }]);
     expect(cutoffs[1]!.coverage.unavailable).toBe(true);
     expect(cutoffs[1]!.items).toEqual([]);
+  });
+
+  test("PR transitions never count as completed units", () => {
+    const cutoffs = [
+      cutoff(W1, [
+        poolItem(7),
+        poolItem(8, { contentKind: "pr" }),
+        poolItem(9, { contentKind: "pr" }),
+      ]),
+      cutoff(W2, [
+        poolItem(7, { state: "closed" }),
+        poolItem(8, { contentKind: "pr", state: "merged" }),
+        poolItem(9, { contentKind: "pr", state: "closed" }),
+      ]),
+    ];
+    // Only the issue is a unit (design SS1): the merged PR and the
+    // unmerged-but-closed PR contribute nothing, and an issue plus
+    // its PR can never double-count.
+    expect(weeklyTransitions(cutoffs)).toEqual([
+      { cutoffAt: W2, completedRefs: [`${REPO}#7`], reopenedRefs: [] },
+    ]);
+    expect(cutoffs[0]!.items.find((i) => i.number === 8)!.kind).toBe("pr");
+    expect(cutoffs[0]!.items.find((i) => i.number === 7)!.kind).toBe("issue");
   });
 });
 
@@ -146,6 +175,30 @@ describe("blockerFirstObserved", () => {
       lowerBound: true,
     });
     expect(blockerFirstObserved(cutoffs, `${REPO}#7`, `${REPO}#42`)).toBeNull();
+  });
+
+  test("a re-added edge starts a new episode at its re-observation", () => {
+    const cutoffs = [
+      cutoff(W1, [poolItem(7, { blockedBy: [`${REPO}#9`] })]),
+      cutoff(W2, [poolItem(7)]), // complete cutoff: edge observed absent
+      cutoff(W3, [poolItem(7, { blockedBy: [`${REPO}#9`] })]), // re-added
+      cutoff(W4, [poolItem(7, { blockedBy: [`${REPO}#9`] })]),
+    ];
+    // Age runs from the current episode's first observation (W3),
+    // never backdated across the W2 removal: 7 days, not 21.
+    expect(blockerFirstObserved(cutoffs, `${REPO}#7`, `${REPO}#9`)).toEqual({
+      firstObservedAt: W3,
+      lowerBoundAgeDays: 7,
+      lowerBound: true,
+    });
+  });
+
+  test("an edge removed at the last complete cutoff has no current episode", () => {
+    const cutoffs = [
+      cutoff(W1, [poolItem(7, { blockedBy: [`${REPO}#9`] })]),
+      cutoff(W2, [poolItem(7)]),
+    ];
+    expect(blockerFirstObserved(cutoffs, `${REPO}#7`, `${REPO}#9`)).toBeNull();
   });
 });
 

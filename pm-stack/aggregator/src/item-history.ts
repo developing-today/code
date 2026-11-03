@@ -24,9 +24,11 @@
 // - Transitions are *observed* transitions between consecutive
 //   complete cutoffs, stamped with the observing cutoff — never an
 //   exact historical event time backfilled from current state.
-// - A blocker edge's age is a lower bound from the first cutoff that
-//   observed it (`firstObservedAt`), labelled as such everywhere it
-//   is returned. GitHub does not publish edge event times to this
+// - A blocker edge's age is a lower bound from the first cutoff of
+//   its current uninterrupted episode (`firstObservedAt`): a complete
+//   cutoff that observes the item without the edge ends the episode,
+//   so a re-added edge starts a new one. The bound is labelled as
+//   such everywhere it is returned. GitHub does not publish edge event times to this
 //   aggregator, so nothing here pretends otherwise.
 //
 // Ownership/retention: the store file lives beside the other durable
@@ -47,6 +49,12 @@ export interface ItemHistoryItem {
   ref: RefKey;
   repo: string;
   number: number;
+  /** Content kind from the project pool. The forecasting unit is
+   * the native child issue (design SS1): PRs are recorded — their
+   * state is a real observation — but never counted as completed
+   * units in the derivations. Absent on lines written before kind
+   * was recorded; such items are treated as issues. */
+  kind?: GhKind;
   /** GitHub state at observation time ("merged" for merged PRs). */
   state: GhState;
   /** Project Status single-select value; null when unset. Distinct
@@ -109,6 +117,7 @@ export function captureItemHistory(
         ref: item.ref,
         repo: item.repo,
         number: item.number,
+        kind: item.contentKind,
         state: item.state,
         status: item.status,
         effort: effortOf(item.labels),
@@ -147,6 +156,7 @@ export function isItemHistoryCutoff(v: unknown): v is ItemHistoryCutoff {
       typeof i.ref === "string" &&
       typeof i.repo === "string" &&
       Number.isInteger(i.number) &&
+      (i.kind === undefined || i.kind === "issue" || i.kind === "pr") &&
       (i.state === "open" || i.state === "closed" || i.state === "merged") &&
       (typeof i.status === "string" || i.status === null) &&
       (typeof i.effort === "string" || i.effort === null) &&
@@ -210,10 +220,10 @@ export class ItemHistoryStore {
 export interface WeeklyTransitions {
   /** The cutoff closing the week. */
   cutoffAt: string;
-  /** Items observed open at the previous complete cutoff and
+  /** Items observed open at the previous bounding cutoff and
    * closed/merged at this one. */
   completedRefs: RefKey[];
-  /** Items observed closed/merged at the previous complete cutoff
+  /** Items observed closed/merged at the previous bounding cutoff
    * and open at this one. A reopened item leaves the completed
    * count until it closes again (the design's throughput unit). */
   reopenedRefs: RefKey[];
@@ -227,14 +237,31 @@ export interface WeeklyTransitions {
  * Complete weeks with no transitions appear with empty lists: a
  * zero-completion week is a real observation, preserved as such.
  */
+/**
+ * Observed transitions per complete week. A week exists only where
+ * two *consecutive stored* cutoffs are both complete: an incomplete
+ * cutoff breaks the chain, and transitions that span it fall in an
+ * unknown interval attributed to no week — the next complete cutoff
+ * becomes a fresh baseline instead of silently absorbing the gap
+ * weeks' completions into its own bucket. Complete weeks with no
+ * transitions appear with empty lists: a zero-completion week is a
+ * real observation, preserved as such. Only issue items count as
+ * units (design SS1): a PR closing or merging is not a completed
+ * unit, and an issue plus its PR never double-count.
+ */
 export function weeklyTransitions(cutoffs: ItemHistoryCutoff[]): WeeklyTransitions[] {
-  const complete = cutoffs.filter((c) => c.coverage.complete && !c.coverage.unavailable);
+  const ordered = [...cutoffs].sort((a, b) => a.cutoffAt.localeCompare(b.cutoffAt));
   const weeks: WeeklyTransitions[] = [];
-  for (let i = 1; i < complete.length; i++) {
-    const before = new Map(complete[i - 1]!.items.map((item) => [item.ref, item.state]));
+  for (let i = 1; i < ordered.length; i++) {
+    const prev = ordered[i - 1]!;
+    const cur = ordered[i]!;
+    if (!prev.coverage.complete || prev.coverage.unavailable) continue;
+    if (!cur.coverage.complete || cur.coverage.unavailable) continue;
+    const before = new Map(prev.items.map((item) => [item.ref, item.state]));
     const completedRefs: RefKey[] = [];
     const reopenedRefs: RefKey[] = [];
-    for (const item of complete[i]!.items) {
+    for (const item of cur.items) {
+      if (item.kind === "pr") continue;
       const was = before.get(item.ref);
       if (was === "open" && item.state !== "open") completedRefs.push(item.ref);
       if (was !== undefined && was !== "open" && item.state === "open") {
@@ -242,7 +269,7 @@ export function weeklyTransitions(cutoffs: ItemHistoryCutoff[]): WeeklyTransitio
       }
     }
     weeks.push({
-      cutoffAt: complete[i]!.cutoffAt,
+      cutoffAt: cur.cutoffAt,
       completedRefs: completedRefs.sort(),
       reopenedRefs: reopenedRefs.sort(),
     });
@@ -260,11 +287,18 @@ export function weeklyCompletions(cutoffs: ItemHistoryCutoff[]): { cutoffAt: str
 }
 
 /**
- * The first observation of one blocker edge: the earliest cutoff
- * that recorded `blockerRef` in `ref`'s blockedBy. The returned age
- * is a LOWER BOUND on the edge's true age — the edge may be older
- * than the history — and is labelled as such; no exact event time is
- * fabricated. Null when the edge was never observed.
+ * The first observation of the CURRENT episode of one blocker edge:
+ * the earliest cutoff of the latest uninterrupted run that recorded
+ * `blockerRef` in `ref`'s blockedBy. A complete cutoff that observes
+ * the item without the edge ends the episode, so an edge removed and
+ * later re-added starts a new episode — the age of the new episode
+ * is never backdated across the removal. (An incomplete cutoff
+ * establishes neither presence-to-absence nor a reset: its scope is
+ * partial.) The returned age is a LOWER BOUND on the current
+ * episode's true age — the edge may predate the episode's first
+ * observation — and is labelled as such; no exact event time is
+ * fabricated. Null when the edge has no current episode (never
+ * observed, or observed removed at a later complete cutoff).
  */
 export function blockerFirstObserved(
   cutoffs: ItemHistoryCutoff[],
@@ -272,17 +306,22 @@ export function blockerFirstObserved(
   blockerRef: RefKey,
 ): { firstObservedAt: string; lowerBoundAgeDays: number; lowerBound: true } | null {
   const ordered = [...cutoffs].sort((a, b) => a.cutoffAt.localeCompare(b.cutoffAt));
+  let episodeStart: string | null = null;
   for (const cutoff of ordered) {
     const item = cutoff.items.find((i) => i.ref === ref);
-    if (item && item.blockedBy.includes(blockerRef)) {
-      const last = ordered[ordered.length - 1]!;
-      const ageMs = Date.parse(last.cutoffAt) - Date.parse(cutoff.cutoffAt);
-      return {
-        firstObservedAt: cutoff.cutoffAt,
-        lowerBoundAgeDays: Math.max(0, Math.floor(ageMs / 86_400_000)),
-        lowerBound: true,
-      };
+    if (!item) continue;
+    if (item.blockedBy.includes(blockerRef)) {
+      if (episodeStart === null) episodeStart = cutoff.cutoffAt;
+    } else if (cutoff.coverage.complete && !cutoff.coverage.unavailable) {
+      episodeStart = null;
     }
   }
-  return null;
+  if (episodeStart === null) return null;
+  const last = ordered[ordered.length - 1]!;
+  const ageMs = Date.parse(last.cutoffAt) - Date.parse(episodeStart);
+  return {
+    firstObservedAt: episodeStart,
+    lowerBoundAgeDays: Math.max(0, Math.floor(ageMs / 86_400_000)),
+    lowerBound: true,
+  };
 }
