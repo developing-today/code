@@ -46,6 +46,7 @@ mod tests;
 pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
+pub(crate) use core::AdminHistoryByteLedger;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use replication::{
