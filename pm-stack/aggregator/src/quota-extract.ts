@@ -12,7 +12,7 @@
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
 // exactly TWO ChatGPT pools — the main account (drewrypope) reached
-// through the `codex` gatherer door (pool openai:codex) and the
+// through the `codex` gatherer door (pool openai) and the
 // alternate account (popesdrew) through the `openai.alternate` door
 // (pool openai.alternate). Separate accounts, separate allowances:
 // never collapse them into one pool.
@@ -467,9 +467,22 @@ interface PoolSpec {
   shellNote: string;
 }
 
+// POOL NAMING (2026-11-03, Drew): a pool's id is its OpenCode config
+// provider id whenever the config defines one — meta, openai,
+// openai.alternate, opencode-go.drewrypope, opencode-go.popesdrew, cline-pass,
+// opendesign, deepseek, commandcode. The colon-suffixed spellings these
+// replaced (meta:high-usage, openai:codex, opencode-go:drewrypope, ...)
+// survive only in the historical snapshot series and the one-shot
+// backfill seed (scripts/backfill-usage-snapshots.ts), which keep the
+// ids in use on their observation dates. Two pools keep colon ids
+// because the config defines no provider with their name:
+// anthropic:claude-pro (burned through the claude-code provider) and
+// the antigravity:* splits (burned through antigravity-ls /
+// antigravity-agy / google; the config's antigravity-direct is a
+// different door and renaming would misattribute the pools).
 export const POOL_SPECS: PoolSpec[] = [
   {
-    id: "meta:high-usage",
+    id: "meta",
     provider: "Meta Model API",
     plan: "Muse API High Usage",
     heading: /^### Meta Model API/,
@@ -485,7 +498,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (console-only usage).",
   },
   {
-    id: "openai:codex",
+    id: "openai",
     provider: "OpenAI",
     plan: "ChatGPT (Codex pool)",
     heading: /^### ChatGPT/,
@@ -499,10 +512,10 @@ export const POOL_SPECS: PoolSpec[] = [
     heading: /^### ChatGPT \(Alternate\)/,
     extract: extractChatGptAlternate,
     shellNote:
-      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai:codex); the two are never combined.",
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai); the two are never combined.",
   },
   {
-    id: "opencode-go:drewrypope",
+    id: "opencode-go.drewrypope",
     provider: "OpenCode Go",
     plan: "drewrypope account",
     heading: /^### OpenCode Go/,
@@ -510,7 +523,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "opencode-go:popesdrew",
+    id: "opencode-go.popesdrew",
     provider: "OpenCode Go",
     plan: "popesdrew account",
     heading: /^### OpenCode Go/,
@@ -518,7 +531,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read.",
   },
   {
-    id: "cline-pass:cline-pass",
+    id: "cline-pass",
     provider: "ClinePass",
     plan: "Cline Pass (Annual)",
     heading: /^### ClinePass/,
@@ -526,7 +539,7 @@ export const POOL_SPECS: PoolSpec[] = [
     shellNote: "No current read (dashboard-only source).",
   },
   {
-    id: "commandcode:go",
+    id: "commandcode",
     provider: "Command Code",
     plan: "GO",
     heading: /^### Command Code/,
@@ -554,7 +567,7 @@ export const POOL_SPECS: PoolSpec[] = [
 /** Pools that render with identity only (no dated-read extractor). */
 const SHELL_POOLS: QuotaPool[] = [
   {
-    id: "opendesign:go",
+    id: "opendesign",
     provider: "Open Design",
     plan: "Go",
     state: "healthy",
@@ -562,7 +575,7 @@ const SHELL_POOLS: QuotaPool[] = [
     note: "No dated read. Live windows arrive through the quota gatherer (the OpenCode opendesign credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent.",
   },
   {
-    id: "deepseek:api",
+    id: "deepseek",
     provider: "DeepSeek",
     plan: "API (PAYG)",
     state: "healthy",
@@ -586,8 +599,11 @@ const POOL_DOOR_PROVIDER_ID: Record<string, string> = {
 
 /**
  * The opencode provider id whose disablement filters a pool: the pool's
- * door provider ("openai" in "openai:codex"; "claude-code" for
- * "anthropic:claude-pro").
+ * door provider. Since the 2026-11-03 config-name alignment the pool id
+ * IS the door provider id for every single-door pool ("openai",
+ * "meta", "cline-pass", "opendesign", "opencode-go.personal", ...);
+ * the one exception is "anthropic:claude-pro", whose door is
+ * "claude-code" (there is no `anthropic` provider in the config).
  */
 export function poolProviderId(poolId: string): string {
   return POOL_DOOR_PROVIDER_ID[poolId] ?? poolId.split(":")[0];
@@ -630,13 +646,13 @@ export function poolFilteredByDisabled(poolId: string, disabledProviderIds: Read
  * hiding it would leave a live pool unreported. Drew, 2026-11-03:
  * meta and opendesign are standard report members and must show real
  * quotas gathered by asking OpenCode. Today the list holds only
- * meta:high-usage: the deployed config disables the `meta` provider
+ * meta: the deployed config disables the `meta` provider
  * as a direct session door, which otherwise filtered the pool at
  * assembly and left the board with no Meta row at all, while the
- * gatherer's module read (serviceId meta:high-usage) had no pool to
+ * gatherer's module read (serviceId meta) had no pool to
  * land on.
  */
-export const FILTER_EXEMPT_POOL_IDS: ReadonlySet<string> = new Set(["meta:high-usage"]);
+export const FILTER_EXEMPT_POOL_IDS: ReadonlySet<string> = new Set(["meta"]);
 
 /** True when the disabled-door filter must not drop this pool. */
 export function poolFilterExempt(poolId: string): boolean {

@@ -54,7 +54,7 @@ describe("quota extractors", () => {
       expect(claude.windows[0].resetsAt).toBeNull();
 
       const metaView = `\n### Meta Model API\n- weekly quota 46% used at 03:20 CDT. Weekly reset today ${reset} CDT.\n`;
-      const meta = extractQuotaPools(metaView, NOW).find((p) => p.id === "meta:high-usage")!;
+      const meta = extractQuotaPools(metaView, NOW).find((p) => p.id === "meta")!;
       expect(meta.windows).toHaveLength(1);
       expect(meta.windows[0].percent).toBe(46);
       expect(meta.windows[0].resetsAt).toBeNull();
@@ -64,7 +64,7 @@ describe("quota extractors", () => {
 
   test("meta feb-30 reset neither discards the read nor invents a wall lift (#2470)", () => {
     const burnedView = `\n### Meta Model API\n- weekly quota 46% used at 03:20 CDT, then burned to empty by morning sessions. Weekly reset today 2026-02-30 19:00 CDT.\n`;
-    const meta = extractQuotaPools(burnedView, NOW).find((p) => p.id === "meta:high-usage")!;
+    const meta = extractQuotaPools(burnedView, NOW).find((p) => p.id === "meta")!;
     expect(meta.windows).toHaveLength(1);
     expect(meta.windows[0].percent).toBe(46);
     expect(meta.windows[0].resetsAt).toBeNull();
@@ -73,7 +73,7 @@ describe("quota extractors", () => {
   });
 
   test("codex 7-day read", () => {
-    const p = byId.get("openai:codex")!;
+    const p = byId.get("openai")!;
     expect(p.windows[0].percent).toBe(11);
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
@@ -81,20 +81,20 @@ describe("quota extractors", () => {
   test("month-based resets normalize month case and preserve reads for invalid dates across extractors", () => {
     const consumers = [
       {
-        id: "openai:codex",
+        id: "openai",
         view: (reset: string) => `\n### ChatGPT — main account plans\n7-day 42% used; resets ${reset}, 18:01 UTC.\n`,
         window: { name: "7-day", percent: 42 },
         extraWindows: 0,
       },
       {
-        id: "opencode-go:drewrypope",
+        id: "opencode-go.drewrypope",
         view: (reset: string) =>
           `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${reset}, 18:01 UTC.\n`,
         window: { name: "monthly", unit: "usd", limit: 60, used: 36, percent: 60 },
         extraWindows: 0,
       },
       {
-        id: "commandcode:go",
+        id: "commandcode",
         view: (reset: string) =>
           `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${reset}, 18:01 UTC.\n`,
         window: { name: "monthly credits", unit: "usd", limit: 10, used: 6.57, percent: 65.7 },
@@ -115,7 +115,7 @@ describe("quota extractors", () => {
         expect(pool.windows).toHaveLength(1 + consumer.extraWindows);
         expect(pool.windows[0]).toMatchObject(consumer.window);
         expect(pool.windows[0].resetsAt).toBe(reset.expected);
-        if (consumer.id === "commandcode:go") {
+        if (consumer.id === "commandcode") {
           expect(pool.windows.slice(1).map((window) => window.percent)).toEqual([1.2, 8.8]);
         }
       }
@@ -126,15 +126,15 @@ describe("quota extractors", () => {
     const pastDate = "Sep 24";
     const cases = [
       {
-        id: "openai:codex",
+        id: "openai",
         view: `\n### ChatGPT — main account plans\n7-day 42% used; resets ${pastDate}, 18:01 UTC.\n`,
       },
       {
-        id: "opencode-go:drewrypope",
+        id: "opencode-go.drewrypope",
         view: `\n### OpenCode Go ×2 workspaces\n- **drewrypope — monthly 60% used**; monthly reset ${pastDate}, 18:01 UTC.\n`,
       },
       {
-        id: "commandcode:go",
+        id: "commandcode",
         view: `\n### Command Code\n$6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends ${pastDate}, 18:01 UTC.\n`,
       },
     ];
@@ -156,10 +156,10 @@ describe("quota extractors", () => {
   });
 
   test("meta is walled until the weekly reset — and it is the only Meta pool", () => {
-    const p = byId.get("meta:high-usage")!;
+    const p = byId.get("meta")!;
     expect(p.state).toBe("walled");
     expect(p.wallLiftsAt).toBe("2026-10-25T19:00:00-05:00");
-    expect(pools.some((x) => /muse plan|power/i.test(`${x.id} ${x.plan}`) && x.id !== "meta:high-usage")).toBe(false);
+    expect(pools.some((x) => /muse plan|power/i.test(`${x.id} ${x.plan}`) && x.id !== "meta")).toBe(false);
     expect(pools.filter((x) => x.provider.includes("Meta")).length).toBe(1);
   });
 
@@ -168,7 +168,7 @@ describe("quota extractors", () => {
       "weekly quota **46% used at 03:20 CDT**, then burned to empty by morning sessions and spilled to PAYG. **Weekly reset today 2026-10-25 19:00 CDT.**",
       "**Freshest dated read (2026-10-26, laptop meta-provider probes 14:30–14:42Z): API returns 402 billing_not_configured (billing-verification wall) on all 11 probes — pool BLOCKED, no usable quota.** Weekly reset was today 2026-10-25 19:00 CDT (that reset has since passed).",
     );
-    const p = extractQuotaPools(blockedView, new Date("2026-10-26T17:00:00Z")).find((x) => x.id === "meta:high-usage")!;
+    const p = extractQuotaPools(blockedView, new Date("2026-10-26T17:00:00Z")).find((x) => x.id === "meta")!;
     expect(p.state).toBe("walled");
     expect(p.note).toContain("billing_not_configured");
     expect(p.note).toContain("2026-10-26");
@@ -179,7 +179,7 @@ describe("quota extractors", () => {
     const goView = (section: string) => "\n### OpenCode Go \u00d72 workspaces\n" + section + "\n";
     const go = (view: string) => {
       const m = new Map(extractQuotaPools(view, NOW).map((p) => [p.id, p]));
-      return { personal: m.get("opencode-go:drewrypope")!, lab: m.get("opencode-go:popesdrew")! };
+      return { personal: m.get("opencode-go.drewrypope")!, lab: m.get("opencode-go.popesdrew")! };
     };
 
     // Control: both paragraphs carry their own reset.
@@ -216,23 +216,23 @@ describe("quota extractors", () => {
   });
 
   test("opencode go workspaces are separate pools in USD", () => {
-    const personal = byId.get("opencode-go:drewrypope")!;
+    const personal = byId.get("opencode-go.drewrypope")!;
     expect(personal.windows[0]).toMatchObject({ unit: "usd", limit: 60, used: 36 });
     expect(personal.windows[0].resetsAt).toBe("2026-11-03T03:02:00.000Z");
-    const lab = byId.get("opencode-go:popesdrew")!;
+    const lab = byId.get("opencode-go.popesdrew")!;
     expect(lab.windows[0].used).toBe(30);
     expect(lab.windows[1]).toMatchObject({ name: "weekly", used: 0 });
   });
 
   test("clinepass windows with relative resets anchored to the measured read", () => {
-    const p = byId.get("cline-pass:cline-pass")!;
+    const p = byId.get("cline-pass")!;
     expect(p.windows.map((w) => w.percent)).toEqual([0, 26, 69]);
     expect(p.windows[1].resetsAt).toBe("2026-10-31T08:48:00.000Z");
     expect(p.windows[2].resetsAt).toBe("2026-11-06T00:48:00.000Z");
   });
 
   test("command code credits + short windows", () => {
-    const p = byId.get("commandcode:go")!;
+    const p = byId.get("commandcode")!;
     expect(p.windows[0]).toMatchObject({ unit: "usd", used: 6.57, limit: 10 });
     expect(p.windows[1].percent).toBe(1.2);
     expect(p.windows[2].percent).toBe(8.8);
@@ -243,7 +243,7 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Newer dated read (model-efficiency plan, freshest reads 2026-10-25 morning): $6.57 of $10 used ($3.43 left); 5h 1.2%, weekly 8.8%; period ends Nov 2, 23:04 UTC.** **Freshest dated read (console, 2026-10-27 10:05 CDT, commandcode.ai Settings): monthly limit 69% used, resets Nov 2; weekly limit 14% (resets in 4d); 5-hour limit 0% ("No usage in this window yet"); extra/top-up credits $0.00 balance.**
 `;
-    const p = extractQuotaPools(multi, NOW).find((x) => x.id === "commandcode:go")!;
+    const p = extractQuotaPools(multi, NOW).find((x) => x.id === "commandcode")!;
     expect(p.windows.map((w) => [w.name, w.percent])).toEqual([
       ["monthly", 69],
       ["weekly", 14],
@@ -258,7 +258,7 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Dated read (2026-10-25): $6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends Nov 2, 23:04 UTC.** **Freshest dated read (2026-10-30): monthly limit 55 percent used (the console printed the figure in words this cycle).**
 `;
-    const p = extractQuotaPools(stale, NOW).find((x) => x.id === "commandcode:go")!;
+    const p = extractQuotaPools(stale, NOW).find((x) => x.id === "commandcode")!;
     expect(p.windows).toEqual([]);
   });
 
@@ -267,7 +267,7 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Dated read (2026-10-30 09:00 CDT): monthly limit 55% used; weekly limit 20%; 5-hour limit 3%.** **Dated update (2026-10-30 12:00 CDT): monthly limit 100 percent used (the console printed the figure in words).**
 `;
-    const p = extractQuotaPools(sameDay, NOW).find((x) => x.id === "commandcode:go")!;
+    const p = extractQuotaPools(sameDay, NOW).find((x) => x.id === "commandcode")!;
     expect(p.windows).toEqual([]);
   });
 
@@ -276,7 +276,7 @@ describe("quota extractors", () => {
 ### Command Code
 - **Usage / dates:** **Dated read (2026-10-30): extra/top-up credits $0.10 balance; hub credits 0.1 flat.**
 `;
-    const p = extractQuotaPools(balanceOnly, NOW).find((x) => x.id === "commandcode:go")!;
+    const p = extractQuotaPools(balanceOnly, NOW).find((x) => x.id === "commandcode")!;
     expect(p.windows).toEqual([]);
   });
 
@@ -319,7 +319,7 @@ describe("America/Chicago dated reads", () => {
   test("Meta does not treat a winter reset as passed an hour early", () => {
     const view = `### Meta Model API\nweekly quota 46% used at 03:20 CDT, then burned to empty. Weekly reset today 2026-12-16 14:00 CDT.`;
     const pool = extractQuotaPools(view, new Date("2026-12-16T19:30:00.000Z")).find(
-      (candidate) => candidate.id === "meta:high-usage",
+      (candidate) => candidate.id === "meta",
     )!;
     expect(pool.state).toBe("walled");
     expect(pool.wallLiftsAt).toBe("2026-12-16T14:00:00-06:00");
@@ -327,7 +327,7 @@ describe("America/Chicago dated reads", () => {
 
   test("ClinePass relative windows anchor to a winter read in CST", () => {
     const view = `### ClinePass\nMeasured 2026-12-16 ~14:00 CDT: 5-hour **0%** used; weekly **26%** used (resets in 0d 1h); monthly **69%** used (resets in 0d 2h).`;
-    const pool = extractQuotaPools(view).find((candidate) => candidate.id === "cline-pass:cline-pass")!;
+    const pool = extractQuotaPools(view).find((candidate) => candidate.id === "cline-pass")!;
     expect(pool.windows[1].resetsAt).toBe("2026-12-16T21:00:00.000Z");
     expect(pool.windows[2].resetsAt).toBe("2026-12-16T22:00:00.000Z");
   });
@@ -342,9 +342,9 @@ describe("windowPercent + guidance", () => {
   test("choices bucket pools by state and reset proximity", () => {
     const pools = extractQuotaPools(VIEW, NOW);
     const choices = computeChoices(pools, NOW.getTime());
-    expect(choices.doNotStart).toContain("meta:high-usage");
-    expect(choices.hasHeadroom).toContain("openai:codex");
-    expect(choices.hasHeadroom).not.toContain("meta:high-usage");
+    expect(choices.doNotStart).toContain("meta");
+    expect(choices.hasHeadroom).toContain("openai");
+    expect(choices.hasHeadroom).not.toContain("meta");
     // Claude resets in >24h; nothing in this fixture resets within a day
     // with headroom, so burn-before-reset is empty.
     expect(choices.burnBeforeReset).toEqual([]);
@@ -371,19 +371,19 @@ describe("disabled_providers enforcement (#1114)", () => {
     const disabled = new Set(["openrouter", "github-copilot", "openai", "meta"]);
     const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
     const ids = pools.map((p) => p.id);
-    expect(ids).not.toContain("openai:codex");
-    expect(filtered).toEqual([["openai:codex", "openai"]]);
+    expect(ids).not.toContain("openai");
+    expect(filtered).toEqual([["openai", "openai"]]);
     const choices = computeChoices(pools, NOW.getTime());
     const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
-    expect(named).not.toContain("openai:codex");
-    // The one exemption (Drew, 2026-11-03): meta:high-usage is a
+    expect(named).not.toContain("openai");
+    // The one exemption (Drew, 2026-11-03): meta is a
     // standard report member whose quota is gathered by asking
     // OpenCode; its disabled entry is the direct session door only,
     // so the pool stays on the board — and in guidance — while
     // every other named pool still answers to an enabled door.
-    expect(ids).toContain("meta:high-usage");
+    expect(ids).toContain("meta");
     for (const id of named) {
-      if (id === "meta:high-usage") continue;
+      if (id === "meta") continue;
       expect(disabled.has(poolProviderId(id))).toBe(false);
     }
   });
@@ -457,9 +457,9 @@ describe("disabled_providers enforcement (#1114)", () => {
     // open-design (not opendesign) and opencode (not opencode-go).
     const disabled = new Set(["openai-codex", "chatgpt", "open-design", "opencode"]);
     const ids = extractQuotaPools(VIEW, NOW, disabled).map((p) => p.id);
-    expect(ids).toContain("openai:codex");
-    expect(ids).toContain("opendesign:go");
-    expect(ids).toContain("opencode-go:drewrypope");
-    expect(ids).toContain("opencode-go:popesdrew");
+    expect(ids).toContain("openai");
+    expect(ids).toContain("opendesign");
+    expect(ids).toContain("opencode-go.drewrypope");
+    expect(ids).toContain("opencode-go.popesdrew");
   });
 });

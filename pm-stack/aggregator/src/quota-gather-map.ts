@@ -56,8 +56,11 @@ export function normalizeResetAt(v: unknown): string | null {
 
 /**
  * Hub pool/snapshot service id for a provider result. Mirrors
- * POOL_SPECS (src/quota-extract.ts) where a pool exists, so gatherer
- * records continue the series the dated-read writers started.
+ * POOL_SPECS (src/quota-extract.ts) where a pool exists. Pool ids are
+ * the OpenCode config provider ids (2026-11-03 alignment — see the
+ * POOL NAMING note in quota-extract.ts), so a renamed pool starts a
+ * NEW snapshot series under its config name; the pre-rename series
+ * stays in the store under the old colon id, unrewritten.
  * OpenCode Go answers one row per workspace credential (the module's
  * per-credential fetch); each row lands under the bare id, and
  * entriesWithPoolSplits below ALSO files attributable rows under
@@ -69,15 +72,15 @@ export function serviceIdFor(providerId: string): string {
     case "claude":
       return "anthropic:claude-pro";
     case "codex":
-      return "openai:codex";
+      return "openai";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
     case "meta":
-      return "meta:high-usage";
+      return "meta";
     case "opendesign":
-      return "opendesign:go";
+      return "opendesign";
     default:
       return providerId;
   }
@@ -96,8 +99,8 @@ export const GATHERER_SOURCE = "openchamber-quota";
  * These MUST mirror POOL_SPECS (src/quota-extract.ts) — the overlay side
  * of this contract.
  */
-export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go:drewrypope";
-export const GO_POPESDREW_SERVICE_ID = "opencode-go:popesdrew";
+export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
+export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
 export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity:gemini";
 export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity:claude-gpt";
 
@@ -231,7 +234,7 @@ const FILE_EXPORT_WINDOW_SECONDS: Record<string, number> = { "5h": 18_000, weekl
 
 /**
  * Map one file-export document onto a quota-current entry. The v1
- * producer was Meta (service meta:high-usage, ~/atlas/meta-quota-
+ * producer was Meta (service meta, ~/atlas/meta-quota-
  * export/latest.json on the laptop) — retired 2026-11-03 when the
  * gatherer began asking the OpenCode quota module for Meta
  * directly (PR #5040); the mapper stays as the #1301 convention's
@@ -247,7 +250,7 @@ export function entryFromFileExport(
   const entry: QuotaCurrentEntry = {
     providerId: "meta",
     providerName: "Meta",
-    serviceId: "meta:high-usage",
+    serviceId: "meta",
     state: "error",
     measuredAt: opts.fileMtimeIso ?? new Date(0).toISOString(),
     source: doc?.source ?? "file-export",

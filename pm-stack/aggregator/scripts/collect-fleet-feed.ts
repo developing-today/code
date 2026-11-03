@@ -184,21 +184,21 @@ const passwordFile =
 function poolFor(provider: string, model: string): string | null {
   switch (provider) {
     case "meta":
-      return "meta:high-usage";
+      return "meta";
     case "claude-code":
       return "anthropic:claude-pro";
     case "openai":
     case "openai-codex":
     case "chatgpt":
-      return "openai:codex";
+      return "openai";
     case "openai.alternate":
       return "openai.alternate";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
     case "opendesign":
-      return "opendesign:go";
+      return "opendesign";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
     case "antigravity-ls":
     case "antigravity-agy":
     case "google":

@@ -2193,7 +2193,7 @@ function attentionStripHtml(usage: UsageView): string {
  * the yuan figure as read, never converted to dollars.
  */
 function paygBalanceHtml(usage: UsageView): string {
-  const recs = (usage.history["deepseek:api"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
+  const recs = (usage.history["deepseek"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
   if (!recs.length) return "";
   const last = recs[recs.length - 1];
   return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
