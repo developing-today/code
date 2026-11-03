@@ -111,7 +111,8 @@ import {
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
-import { renderAlerts, esc } from "./render.ts";
+import { renderAlerts, renderNotifications, esc } from "./render.ts";
+import { rollupNotificationSends } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import { searchWork } from "./search-view.ts";
@@ -1781,6 +1782,27 @@ async function handler(req: Request): Promise<Response> {
               VAPID_PUBLIC_KEY,
             ),
           )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+  }
+  if (path === "/notifications" || path === "/api/notifications.json") {
+    // #3319: the weekly sent-vs-acted roll-up over the send ledger.
+    // Same reachability as every dashboard page (the tailnet origin);
+    // the only alerts write surface stays the bearer-gated intake.
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const sends = await store.listSends();
+      const rollup = rollupNotificationSends(sends, new Date());
+      if (path === "/api/notifications.json") return json(rollup);
+      return html(renderNotifications({ available: true, rollup }, prov()));
+    } catch {
+      return path === "/notifications"
+        ? html(renderNotifications({ available: false, rollup: null }, prov()))
         : json({ error: "alerts store unavailable" }, 503);
     }
   }
