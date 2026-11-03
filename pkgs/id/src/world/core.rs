@@ -383,7 +383,12 @@ impl WorldCore {
                     // journals minted before format stripping landed can
                     // legitimately carry ZWJ/ZWNJ names such as family
                     // emoji, and those worlds restored fine before this
-                    // check existed.
+                    // check existed. The pre-#4711 sanitizer (no trim
+                    // after the 48-char cap) is also accepted: journals
+                    // minted before the boundary fix can legitimately
+                    // carry 48-char names ending in whitespace, and
+                    // refusing those would brick worlds that minted
+                    // fine under the rules of their time.
                     ensure!(
                         !participant.display_name.is_empty()
                             && (participant.display_name
@@ -391,7 +396,10 @@ impl WorldCore {
                                 || participant.display_name
                                     == legacy_sanitize_display_name(
                                         &participant.display_name
-                                    )),
+                                    )
+                                || is_pre_fix_mint_display_name(
+                                    &participant.display_name
+                                )),
                         "participant {} has a display name mint could not have produced",
                         participant.id
                     );

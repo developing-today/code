@@ -2551,6 +2551,55 @@ mod tests {
             [header.clone(), legacy],
         )
         .unwrap();
+        // A name minted before #4711 — 48 chars ending in a space, the
+        // exact output of the pre-fix sanitizer for a longer input —
+        // also restores fine: that journal was written by a live mint
+        // path, and refusing it bricks the world.
+        let boundary = JournalEntry::Issued {
+            participant: Participant {
+                id: 1,
+                display_name: format!("{} ", "a".repeat(47)),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), boundary],
+        )
+        .unwrap();
+        // And a name minted now from a boundary input (>48 chars,
+        // whitespace at position 48) is trimmed at mint and restores.
+        let (minted, minted_token) = source
+            .issue_capability(
+                &format!("{} {}", "a".repeat(47), "b".repeat(10)),
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+            )
+            .unwrap();
+        assert_eq!(minted.display_name, "a".repeat(47));
+        let minted_entry = JournalEntry::Issued {
+            participant: minted.clone(),
+            digest: hex_encode(&token_digest(minted_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [header.clone(), minted_entry],
+        )
+        .unwrap();
         for bad_name in [
             String::new(),
             "a\u{7}\n".to_owned() + &"x".repeat(98),
