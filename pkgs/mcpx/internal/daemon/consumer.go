@@ -435,31 +435,43 @@ func (e ErrNotConfirmed) Error() string {
 // disambiguation default, and for the opposite reason: there, doing nothing
 // is safe; here, doing nothing is the destructive thing.
 func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool string, cc config.CallContext) error {
+	return r.confirmDestructiveFor(ctx, p, tool, cc, false)
+}
+
+// confirmDestructiveFor is confirmDestructive for a call that may name a
+// script-backed view (scripted). A script view carries no annotation a
+// caller can trust, so the floor asks about it, as it asks about any
+// tool whose annotations clear nothing.
+func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, tool string, cc config.CallContext, scripted bool) error {
 	if !r.consumer.ConfirmDestructive || r.broker == nil {
 		return nil
 	}
-	all, _, at := p.CachedSchemas()
-	if at.IsZero() {
-		// Never read, or invalidated by a list_changed. Deciding from an
-		// empty or stale list would let the call through unasked -- which
-		// is what happened on every call that arrived while a new daemon
-		// was still reading schemas -- so read them now, and refuse if
-		// they cannot be read: failing open is the one wrong answer here.
-		fresh, _, err := p.RefreshSchemas(ctx)
-		if err != nil {
-			return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
-				Reason: "its annotations could not be read: " + err.Error()}
-		}
-		all = fresh
-		// This refresh is a genuine catalog observation: discharge
-		// any dead-rule re-check a list_changed left pending (#1986).
-		r.recheckDeadArgumentRules(p.Name())
-	}
 	var found *mcpclient.Tool
-	for i := range all {
-		if all[i].Name == tool {
-			found = &all[i]
-			break
+	if scripted {
+		found = &mcpclient.Tool{Name: tool}
+	} else {
+		all, _, at := p.CachedSchemas()
+		if at.IsZero() {
+			// Never read, or invalidated by a list_changed. Deciding from an
+			// empty or stale list would let the call through unasked -- which
+			// is what happened on every call that arrived while a new daemon
+			// was still reading schemas -- so read them now, and refuse if
+			// they cannot be read: failing open is the one wrong answer here.
+			fresh, _, err := p.RefreshSchemas(ctx)
+			if err != nil {
+				return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
+					Reason: "its annotations could not be read: " + err.Error()}
+			}
+			all = fresh
+			// This refresh is a genuine catalog observation: discharge
+			// any dead-rule re-check a list_changed left pending (#1986).
+			r.recheckDeadArgumentRules(p.Name())
+		}
+		for i := range all {
+			if all[i].Name == tool {
+				found = &all[i]
+				break
+			}
 		}
 	}
 	if found == nil || annotationClearsCall(p, found) {
@@ -542,6 +554,13 @@ func (e ErrArgumentRuleDenied) Error() string {
 // under allow confirmDestructive still runs, which is how the floor
 // reaches a destructive call the policy let through.
 func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
+	return r.applyWritePolicyFor(ctx, p, server, tool, cc, args, false)
+}
+
+// applyWritePolicyFor is applyWritePolicy for a call that may name a
+// script-backed view (scripted), whose tool name has no upstream
+// annotations to classify by.
+func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any, scripted bool) (bool, error) {
 	// A record only affects a server with an unknown write. Consult it
 	// before argument rules, the write mode, or the destructive floor.
 	// A read-only hint is exempt; if it cannot be refreshed, fail closed
@@ -633,26 +652,30 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 	// RefreshSchemas returns the error instead of serving the stale
 	// catalogue, and deciding from stale annotations is exactly the
 	// fail-open this gate exists to prevent.
-	all, _, at := p.CachedSchemas()
-	if at.IsZero() || p.SchemaExpired() {
-		fresh, _, err := p.RefreshSchemas(ctx)
-		if err != nil {
-			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
-				Reason: "write policy: its annotations could not be read: " + err.Error()}
-		}
-		all = fresh
-		// This refresh is a genuine catalog observation: discharge
-		// any dead-rule re-check a list_changed left pending (#1986).
-		r.recheckDeadArgumentRules(p.Name())
-	}
 	// A tool the schemas do not name is treated as unannotated, which
 	// the specification's defaults read as a possibly destructive
-	// write -- the conservative answer, not an exemption.
+	// write -- the conservative answer, not an exemption. A script-backed
+	// view (#1933 slice 2) has no upstream schema to read at all, so it
+	// is always that unannotated write.
 	class := policy.Classify(nil)
-	for i := range all {
-		if all[i].Name == tool {
-			class = policy.Classify(all[i].Annotations)
-			break
+	if !scripted {
+		all, _, at := p.CachedSchemas()
+		if at.IsZero() || p.SchemaExpired() {
+			fresh, _, err := p.RefreshSchemas(ctx)
+			if err != nil {
+				return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
+					Reason: "write policy: its annotations could not be read: " + err.Error()}
+			}
+			all = fresh
+			// This refresh is a genuine catalog observation: discharge
+			// any dead-rule re-check a list_changed left pending (#1986).
+			r.recheckDeadArgumentRules(p.Name())
+		}
+		for i := range all {
+			if all[i].Name == tool {
+				class = policy.Classify(all[i].Annotations)
+				break
+			}
 		}
 	}
 
