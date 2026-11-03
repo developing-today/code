@@ -48,7 +48,7 @@ type ChainInfo struct {
 	// Bypass is true when MCPX_CONFIG short-circuited both passes.
 	Bypass bool
 	// Discovery lists the pass-1 locations, nearest first: the seed
-	// expansions followed by the default walk.
+	// expansions spliced around the default walk at the seed's null.
 	Discovery []string
 	// Load lists the pass-2 locations, nearest first — the chain
 	// LoadFrom actually merges.
@@ -76,6 +76,57 @@ func SetPathsConfigSeed(entries []string) {
 	seedMu.Lock()
 	defer seedMu.Unlock()
 	flagSeed = append([]string(nil), entries...)
+}
+
+// AddPathsConfigSeed appends one --paths-config occurrence to the
+// pass-1 seed. The setting is Repeatable, and the normal binding
+// accumulates repeated occurrences; the bootstrap flag must do the
+// same (PR #2477 finding) — replacing on each call left only the
+// last value in discovery. main calls this once per occurrence;
+// SetPathsConfigSeed remains the replace/reset form.
+func AddPathsConfigSeed(entries []string) {
+	seedMu.Lock()
+	defer seedMu.Unlock()
+	for _, e := range entries {
+		// On the command line the splice marker is spelled "-"
+		// (the settings schema's contract for a repeatable flag,
+		// and docs/proposals.md); decode it to the marker the seed
+		// list itself carries, or it would be read as a directory
+		// named "-" and the seed would silently lose its splice.
+		if e == "-" {
+			e = settings.NullMarker
+		}
+		flagSeed = append(flagSeed, e)
+	}
+}
+
+// PathsConfigSeedEnv returns the flag seed in MCPX_PATHS_CONFIG form
+// (a JSON array, with null for splice markers), so a caller starting
+// a child process — an auto-started daemon — can forward it (PR
+// #2477 finding): the flag seed otherwise lives only in this
+// process's memory, and the child would resolve a different chain.
+// ok is false when no flag seed was given; an environment seed
+// already travels in the environment itself.
+func PathsConfigSeedEnv() (string, bool) {
+	seedMu.Lock()
+	fs := append([]string(nil), flagSeed...)
+	seedMu.Unlock()
+	if len(fs) == 0 {
+		return "", false
+	}
+	arr := make([]any, len(fs))
+	for i, e := range fs {
+		if e == settings.NullMarker {
+			arr[i] = nil
+		} else {
+			arr[i] = e
+		}
+	}
+	b, err := json.Marshal(arr)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 // pathsConfigSeed returns the pass-1 seed entries: the flag when given,
@@ -180,9 +231,9 @@ func readPathsConfig(path string) (entries []string, ok bool, err error) {
 	}
 	var doc struct {
 		Paths struct {
-			Config []any `json:"config"`
+			Config any `json:"config"`
 		} `json:"paths"`
-		Flat []any `json:"paths.config"`
+		Flat any `json:"paths.config"`
 	}
 	if uerr := json.Unmarshal(StripJSONC(b), &doc); uerr != nil {
 		return nil, false, fmt.Errorf("reading paths.config in %s: %w", path, uerr)
@@ -194,8 +245,26 @@ func readPathsConfig(path string) (entries []string, ok bool, err error) {
 	if raw == nil {
 		return nil, false, nil
 	}
-	out := make([]string, 0, len(raw))
-	for _, e := range raw {
+	// A string value is the comma/newline list spelling the settings
+	// layer itself accepts for this key (ApplyFile / Set.List), and
+	// existing configs use it. Discovery runs before dispatch, so
+	// refusing it here would make a previously valid file block every
+	// command (PR #2477 finding); accept it like the loader does.
+	if str, isStr := raw.(string); isStr {
+		out := make([]string, 0, 4)
+		for _, f := range strings.FieldsFunc(str, func(r rune) bool { return r == ',' || r == '\n' }) {
+			if f = strings.TrimSpace(f); f != "" {
+				out = append(out, f)
+			}
+		}
+		return out, true, nil
+	}
+	arr, isArr := raw.([]any)
+	if !isArr {
+		return nil, false, fmt.Errorf("reading paths.config in %s: paths.config is not a list", path)
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
 		if e == nil {
 			out = append(out, settings.NullMarker)
 			continue
@@ -301,11 +370,30 @@ func ResolveChainFrom(wd string) ([]string, *ChainInfo, error) {
 			chain0 = append(chain0, p)
 		}
 	}
-	for _, loc := range expandAll(info.Seeded, wd) {
-		add0(loc)
-	}
-	for _, loc := range SearchPathFrom(wd) {
-		add0(loc)
+	// The seed obeys the same splice rule as a file's list (PR #2477
+	// finding): entries before a null land nearer than the default
+	// walk, entries after it land farther, and a seed with no null
+	// replaces the default walk outright — which is what the
+	// registry help for the setting promises ("Without a null the
+	// list replaces outright"). No seed at all leaves the walk
+	// untouched.
+	if len(info.Seeded) > 0 {
+		before, after, hasNull := expandEntries(info.Seeded, wd)
+		for _, loc := range before {
+			add0(loc)
+		}
+		if hasNull {
+			for _, loc := range SearchPathFrom(wd) {
+				add0(loc)
+			}
+		}
+		for _, loc := range after {
+			add0(loc)
+		}
+	} else {
+		for _, loc := range SearchPathFrom(wd) {
+			add0(loc)
+		}
 	}
 	info.Discovery = chain0
 
@@ -316,6 +404,13 @@ func ResolveChainFrom(wd string) ([]string, *ChainInfo, error) {
 
 	// Discovery reads: only paths.config, from files that exist.
 	declared := map[string][]string{}
+	// The same declarations keyed by file identity, with the
+	// discovery spelling kept for relative-path resolution: the
+	// load chain may retain a different spelling of the same file
+	// (a symlink alias a nearer list inserted), and the declaration
+	// must still be found (PR #5165 review).
+	declaredByID := map[string][]string{}
+	declaredFrom := map[string]string{}
 	for _, f := range chain0 {
 		entries, ok, err := readPathsConfig(f)
 		if err != nil {
@@ -323,25 +418,39 @@ func ResolveChainFrom(wd string) ([]string, *ChainInfo, error) {
 		}
 		if ok {
 			declared[f] = entries
+			id := chainIdentity(f)
+			declaredByID[id] = entries
+			declaredFrom[id] = f
 		}
 	}
 
 	// A cycle among the discovered files is refused before any chain
 	// is built from it: A adds B and B adds A has no honest order.
+	// Graph endpoints are file identities, not raw spellings (PR
+	// #2477 finding): the membership test above is by identity, so
+	// the graph must be too — two spellings of one file (a symlink
+	// alias) would otherwise be unrelated vertices, and a real cycle
+	// through an alias would slip past.
 	edges := map[string][]string{}
 	for f, entries := range declared {
+		from := chainIdentity(f)
 		for _, loc := range expandAll(entries, filepath.Dir(f)) {
 			// A file naming its own location is idempotent, not a
 			// cycle: it is already in the chain at that point.
-			if chainIdentity(loc) == chainIdentity(f) {
+			to := chainIdentity(loc)
+			if to == from {
 				continue
 			}
-			if inChain0[chainIdentity(loc)] {
-				edges[f] = append(edges[f], loc)
+			if inChain0[to] {
+				edges[from] = append(edges[from], to)
 			}
 		}
 	}
-	if closing, cyc, found := findCycle(edges, chain0); found {
+	order := make([]string, 0, len(chain0))
+	for _, p := range chain0 {
+		order = append(order, chainIdentity(p))
+	}
+	if closing, cyc, found := findCycle(edges, order); found {
 		return nil, nil, fmt.Errorf("paths.config cycle refused: %s closes the cycle (%s)",
 			closing, strings.Join(cyc, " -> "))
 	}
@@ -352,7 +461,7 @@ func ResolveChainFrom(wd string) ([]string, *ChainInfo, error) {
 	// inherited remainder (after the null), or replace that remainder
 	// outright when the list has no null.
 	load := append([]string{}, chain0...)
-	applied := map[string]bool{}
+	applied := map[string]bool{} // by file identity, like declaredByID
 	indexOf := func(p string) int {
 		id := chainIdentity(p)
 		for i, q := range load {
@@ -362,38 +471,53 @@ func ResolveChainFrom(wd string) ([]string, *ChainInfo, error) {
 		}
 		return -1
 	}
-	for _, f := range chain0 {
-		entries, ok := declared[f]
-		if !ok {
-			continue
-		}
-		idx := indexOf(f)
-		if idx < 0 {
-			// A nearer file's list replaced the remainder and this
-			// file fell out of the chain; its declaration is a
-			// pass-2 divergence to report below, not to apply.
-			continue
-		}
-		before, after, hasNull := expandEntries(entries, filepath.Dir(f))
-		next := make([]string, 0, len(load)+len(before)+len(after))
-		next = append(next, load[:idx+1]...)
-		next = append(next, before...)
-		if hasNull {
-			next = append(next, load[idx+1:]...)
-			next = append(next, after...)
-		}
-		// Dedupe by identity, first (nearest) occurrence wins — the
-		// same rule SearchPathFrom applies to the default walk.
-		deduped := next[:0]
-		seen := map[string]bool{}
-		for _, p := range next {
-			if id := chainIdentity(p); !seen[id] {
-				seen[id] = true
-				deduped = append(deduped, p)
+	// Declarations apply in the resolved chain's order, not in
+	// discovery order (PR #2477 finding): when a nearer file's list
+	// reorders the chain, the files it moved nearer govern before
+	// the ones they displaced — applying in discovery order let a
+	// displaced file's no-null list replace a remainder the new
+	// order had already extended. Each application can reorder the
+	// remainder, so rescan from the nearest end after each one. A
+	// file a nearer replacement dropped from the chain is never
+	// reached here; pass 2 reports it as divergent.
+	for {
+		progressed := false
+		for _, f := range load {
+			id := chainIdentity(f)
+			entries, ok := declaredByID[id]
+			if !ok || applied[id] {
+				continue
 			}
+			idx := indexOf(f)
+			if idx < 0 {
+				continue
+			}
+			before, after, hasNull := expandEntries(entries, filepath.Dir(declaredFrom[id]))
+			next := make([]string, 0, len(load)+len(before)+len(after))
+			next = append(next, load[:idx+1]...)
+			next = append(next, before...)
+			if hasNull {
+				next = append(next, load[idx+1:]...)
+				next = append(next, after...)
+			}
+			// Dedupe by identity, first (nearest) occurrence wins — the
+			// same rule SearchPathFrom applies to the default walk.
+			deduped := next[:0]
+			seen := map[string]bool{}
+			for _, p := range next {
+				if id := chainIdentity(p); !seen[id] {
+					seen[id] = true
+					deduped = append(deduped, p)
+				}
+			}
+			load = deduped
+			applied[id] = true
+			progressed = true
+			break
 		}
-		load = deduped
-		applied[f] = true
+		if !progressed {
+			break
+		}
 	}
 	info.Load = load
 
@@ -405,7 +529,7 @@ func ResolveChainFrom(wd string) ([]string, *ChainInfo, error) {
 		inLoad[chainIdentity(p)] = true
 	}
 	for _, f := range load {
-		if applied[f] {
+		if applied[chainIdentity(f)] {
 			continue
 		}
 		entries, ok, err := readPathsConfig(f)
@@ -428,7 +552,7 @@ func ResolveChainFrom(wd string) ([]string, *ChainInfo, error) {
 		}
 	}
 	for f := range declared {
-		if !applied[f] && indexOf(f) < 0 {
+		if !applied[chainIdentity(f)] && indexOf(f) < 0 {
 			info.Divergent = append(info.Divergent, fmt.Sprintf(
 				"%s declares paths.config but a nearer file's list replaced the rest of the chain — reported, not applied (pass 2)",
 				f))

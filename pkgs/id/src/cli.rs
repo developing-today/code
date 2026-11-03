@@ -362,6 +362,14 @@ pub enum Command {
         /// or temporary file sharing sessions.
         #[arg(long)]
         ephemeral: bool,
+        /// Path to the operator server config TOML (#5119 slice 1).
+        ///
+        /// When given, the config is loaded at startup: a malformed
+        /// file fails startup naming the parse error, and startup
+        /// provisioning runs from the loaded config. Without the
+        /// flag no file is read and serve behaves exactly as before.
+        #[arg(long)]
+        server_config: Option<PathBuf>,
         /// Disable relay servers and use direct connections only.
         ///
         /// May prevent connections through NATs or firewalls.

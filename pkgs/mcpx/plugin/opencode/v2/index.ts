@@ -7,18 +7,18 @@
  * set (tool-filter.ts, #5122), the once-per-session full-environment
  * send, execute.after timing records,
  * the permission gate (permission.ts: evaluate hook + daemon_select
- * assert), and tool registration (tools.ts: tool.transform under the mcpx
- * namespace, so the model sees the v1 names — mcpx_exec and friends).
+ * assert), tool registration (tools.ts: tool.transform under the mcpx
+ * namespace, so the model sees the v1 names — mcpx_exec and friends),
+ * and the sampling watcher (sampling.ts, #1858 item (4)): broker
+ * sample rows answered through ctx.generate.text.
  * The v1 tree stays beside this one, untouched, until v2 is what runs.
  */
 import { targetKey, type Target } from "../mcpx/daemon.ts";
 import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
-import {
-  wirePermissionGate,
-  type PermissionDomainLike,
-} from "./permission.ts";
+import { wirePermissionGate, type PermissionDomainLike } from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
+import { startSamplingWatcher, type GenerateTextLike, type SamplingDaemonLike } from "./sampling.ts";
 import { createSessionEnv } from "./session-env.ts";
 import {
   createToolFilter,
@@ -26,17 +26,8 @@ import {
   setDisabledTools,
   type ToolFilterInput,
 } from "./tool-filter.ts";
-import {
-  createTimingLog,
-  type ExecuteAfterInput,
-  type ToolTimingRecord,
-} from "./timing.ts";
-import {
-  createToolRuntime,
-  registerTools,
-  type ToolDomainLike,
-  type ToolRuntime,
-} from "./tools.ts";
+import { createTimingLog, type ExecuteAfterInput, type ToolTimingRecord } from "./timing.ts";
+import { createToolRuntime, registerTools, type ToolDomainLike, type ToolRuntime } from "./tools.ts";
 
 /** The slice of the v2 setup Context this core uses (promise/plugin.ts). */
 export type McpxV2Context = {
@@ -61,9 +52,18 @@ export type McpxV2Context = {
    * refuses to apply unconfirmed choices.
    */
   permission?: PermissionDomainLike;
+  /**
+   * The v2 generate domain (sampling.ts): one-shot completions.
+   * Optional in the type because stub hosts omit it; without it the
+   * sampling watcher never starts and broker sample rows are left
+   * for another answerer, exactly as before item (4).
+   */
+  generate?: {
+    text: GenerateTextLike;
+  };
 };
 
-export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Promise<void> {
+export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Promise<(() => void) | undefined> {
   const options = resolveOptions(rawOptions, process.env);
   const directory = ctx.directory ?? process.cwd();
   const sessionEnv = createSessionEnv({
@@ -219,6 +219,27 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     toolsEnabled: options.tools ?? false,
     daemonTools: options.daemonTools,
   }).catch(() => []);
+
+  // Sampling (#1858 item (4)): when the host offers ctx.generate.text
+  // and the option has not turned it off, watch the daemon's broker
+  // for sample rows routed to the agent and answer them. The watcher
+  // resolves the daemon through the tool runtime on every poll, so
+  // it follows daemon_select like everything else; a client without
+  // the elicit methods (a stub, an older daemon core) reads as no
+  // daemon. Setup returns the watcher's stop as its cleanup.
+  const generate = ctx.generate;
+  if (options.answerSampling === false || !generate) return undefined;
+  const watcher = startSamplingWatcher({
+    generate: generate.text,
+    client: async (): Promise<SamplingDaemonLike | undefined> => {
+      const client = (await runtime?.daemon().catch(() => undefined)) as Partial<SamplingDaemonLike> | undefined;
+      if (typeof client?.pendingElicitations !== "function" || typeof client?.answer !== "function") {
+        return undefined;
+      }
+      return client as SamplingDaemonLike;
+    },
+  });
+  return () => watcher.stop();
 }
 
 export default {

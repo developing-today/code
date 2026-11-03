@@ -10,7 +10,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"; kill "${STUB_PID:-}" 2>/dev/null || true' EXIT
 
 mkdir -p "$WORK/repos/code"
-cat > "$WORK/config.json" <<'JSON'
+cat >"$WORK/config.json" <<'JSON'
 {
   "version": 1,
   "graphqlUrl": "http://127.0.0.1:16056/graphql",
@@ -101,22 +101,29 @@ export RFA_CONFIG="$WORK/config.json"
 export RFA_REPOS_DIR="$WORK/repos"
 export RFA_GRAPHQL_URL="http://127.0.0.1:16056/graphql"
 
-: > "$WORK/mutations.log"
-DRY_RUN=1 ./apply-config.sh > "$WORK/dry-run.out"
+: >"$WORK/mutations.log"
+DRY_RUN=1 ./apply-config.sh >"$WORK/dry-run.out"
 grep -q "would register" "$WORK/dry-run.out"
-[[ ! -s "$WORK/mutations.log" ]] || { echo "FAIL: dry run mutated the harness"; exit 1; }
+[[ ! -s "$WORK/mutations.log" ]] || {
+  echo "FAIL: dry run mutated the harness"
+  exit 1
+}
 echo "ok: dry run plans registration and mutates nothing"
 
-./apply-config.sh > "$WORK/first.out"
+./apply-config.sh >"$WORK/first.out"
 grep -q "addLocalRepository" "$WORK/mutations.log"
 grep -q "updateRepositorySettings" "$WORK/mutations.log"
 grep -q "unpauseRepository" "$WORK/mutations.log"
 echo "ok: first apply registers, configures, unpauses"
 
-: > "$WORK/mutations.log"
-./apply-config.sh > "$WORK/second.out"
+: >"$WORK/mutations.log"
+./apply-config.sh >"$WORK/second.out"
 grep -q "already match config" "$WORK/second.out"
-[[ ! -s "$WORK/mutations.log" ]] || { echo "FAIL: second apply was not a no-op:"; cat "$WORK/mutations.log"; exit 1; }
+[[ ! -s "$WORK/mutations.log" ]] || {
+  echo "FAIL: second apply was not a no-op:"
+  cat "$WORK/mutations.log"
+  exit 1
+}
 echo "ok: second apply is a no-op (idempotent)"
 
 echo "apply-config.test: PASS"

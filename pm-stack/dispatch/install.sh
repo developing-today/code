@@ -135,8 +135,8 @@ if [ "$CHANGED" -eq 1 ]; then
 
   cd "$DST"
   bun install --silent
-  echo "$SRC_HASH" > "$DST/.deploy-tree-hash"
-  echo "$SRC_INPUTS" > "$DST/.deploy-inputs-hash"
+  echo "$SRC_HASH" >"$DST/.deploy-tree-hash"
+  echo "$SRC_INPUTS" >"$DST/.deploy-inputs-hash"
 fi
 
 systemctl --user daemon-reload
