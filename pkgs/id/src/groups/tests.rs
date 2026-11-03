@@ -976,6 +976,75 @@ fn test_keep_prior_lets_a_grant_made_before_the_removal_stand() {
 }
 
 #[test]
+fn test_keep_prior_readd_does_not_revive_grants_the_member_made() {
+    // Issue #169 (ruling 2026-11-03): revival is refused. 2 is removed after d1 and then
+    // re-added; at the head d1 is no link, so 3 has no chain.
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::KeepPrior));
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(add("a2", 1, g, 2, Role::Write, &["x0"]));
+    events.push(delegate("d2", 3, g, 4, Role::Read, false, &["a2"]));
+    let p = project(&events);
+    assert_eq!(
+        outcome(&p, "a2"),
+        Outcome::Applied,
+        "the re-add itself applies"
+    );
+    assert!(
+        !p.grant_in_force(&id("d1")),
+        "a grant made before the removal does not revive on re-add"
+    );
+    assert_eq!(
+        outcome(&p, "d2"),
+        Outcome::Refused(Refusal::NoChain),
+        "3 has no chain once d1 is cut"
+    );
+}
+
+#[test]
+fn test_keep_prior_readd_does_not_revive_grants_the_member_received() {
+    // The other direction of issue #169: d0 is the owner's grant TO 2. 2's removal and
+    // re-add cut it too - the re-added member starts clean, holding only its role.
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::KeepPrior));
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(add("a2", 1, g, 2, Role::Write, &["x0"]));
+    let p = project(&events);
+    assert!(
+        !p.grant_in_force(&id("d0")),
+        "a grant received before the removal does not revive on re-add"
+    );
+}
+
+#[test]
+fn test_keep_prior_readd_starts_clean_and_a_reissued_grant_stands() {
+    // After the re-add the owner re-issues the grant; the new chain carries authority and
+    // the pre-removal grant stays cut.
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::KeepPrior));
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(add("a2", 1, g, 2, Role::Write, &["x0"]));
+    events.push(delegate("d3", 1, g, 2, Role::Write, true, &["a2"]));
+    events.push(delegate("d4", 2, g, 3, Role::Write, true, &["d3"]));
+    events.push(delegate("d5", 3, g, 4, Role::Read, false, &["d4"]));
+    let p = project(&events);
+    assert_eq!(
+        outcome(&p, "d5"),
+        Outcome::Applied,
+        "the re-issued chain carries 3"
+    );
+    assert!(
+        p.grant_in_force(&id("d3")),
+        "a grant issued after the re-add stands"
+    );
+    assert!(p.grant_in_force(&id("d4")));
+    assert!(
+        !p.grant_in_force(&id("d1")),
+        "the pre-removal grant stays cut after the re-issue"
+    );
+}
+
+#[test]
 fn test_cascade_removes_the_grants_the_removed_member_made() {
     let g = id("g");
     let mut events = chain_base(None);
@@ -1435,6 +1504,27 @@ proptest! {
             if concurrent {
                 prop_assert!(!in_force, "a grant concurrent with its grantor's removal is void");
             }
+            // Issue #169: under keep_prior a re-add cuts the grants an endpoint made or
+            // received before its removal. Mirrors Engine::cut_by_readd at the head.
+            let readded_after_removal = |member: Key| {
+                events
+                    .iter()
+                    .filter(|r| {
+                        r.group == Some(group)
+                            && matches!(r.body, Body::Member(MemberOp::Remove { member: m, .. }) if m == member)
+                            && p.takes_effect(&r.id)
+                            && pasts[&r.id].contains(&grant.id)
+                    })
+                    .any(|r| {
+                        events.iter().any(|a| {
+                            a.group == Some(group)
+                                && matches!(a.body, Body::Member(MemberOp::Add { member: m, .. }) if m == member)
+                                && p.takes_effect(&a.id)
+                                && pasts[&a.id].contains(&r.id)
+                        })
+                    })
+            };
+            let cut_by_readd = readded_after_removal(grantor) || readded_after_removal(delegate.grantee);
             match view.policy.delegation_mode() {
                 Delegation::Cascade => {
                     let holds_at_head = view
@@ -1451,10 +1541,17 @@ proptest! {
                     }
                 }
                 Delegation::KeepPrior => {
-                    let before_every_removal =
-                        removals.iter().all(|r| pasts[&r.id].contains(&grant.id));
-                    if !vetoed && before_every_removal {
-                        prop_assert!(in_force, "keep_prior keeps a grant made before the removal");
+                    if cut_by_readd {
+                        prop_assert!(
+                            !in_force,
+                            "keep_prior: a re-add cuts pre-removal grants (issue #169)"
+                        );
+                    } else {
+                        let before_every_removal =
+                            removals.iter().all(|r| pasts[&r.id].contains(&grant.id));
+                        if !vetoed && before_every_removal {
+                            prop_assert!(in_force, "keep_prior keeps a grant made before the removal");
+                        }
                     }
                 }
             }

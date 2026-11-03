@@ -47,6 +47,8 @@ pub enum Removal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Delegation {
     /// Grants made before the removal stand. Grants made concurrently with it are void.
+    /// A re-add starts clean: pre-removal grants the account made or received do not revive
+    /// when it is re-added (issue #169); they must be re-issued.
     #[value(name = "keep_prior")]
     KeepPrior,
     /// A grant stands only while its grantor still holds the scope. The default.
