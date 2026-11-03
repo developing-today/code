@@ -14,6 +14,12 @@ on:
       - ".opencode/opencode.jsonc"
       - "bin/check-opencode-metered-providers.mjs"
       - "bin/check-opencode-metered-providers.test.mjs"
+      - "bin/check-opencode-route-rules.mjs"
+      - "bin/check-opencode-route-rules.test.mjs"
+      - "bin/provider-catalog-sync.mjs"
+      - "bin/provider-catalog-sync.test.mjs"
+      - "bin/snapshot-provider-catalogs.mjs"
+      - "bin/provider-catalog-snapshot.test.mjs"
       - ".github/workflows/opencode-config-guard.yml"
   merge_group:
   push:
@@ -34,7 +40,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
+      - name: Run provider-catalog audit fixtures
+        run: node --test bin/provider-catalog-sync.test.mjs bin/provider-catalog-snapshot.test.mjs
       - name: Run guard fixtures
         run: node --test bin/check-opencode-metered-providers.test.mjs
       - name: Check canonical OpenCode config
         run: node bin/check-opencode-metered-providers.mjs .opencode/opencode.jsonc
+      - name: Run route-rule guard fixtures
+        run: node --test bin/check-opencode-route-rules.test.mjs
+      - name: Check canonical route rules
+        run: node bin/check-opencode-route-rules.mjs .opencode/opencode.jsonc

@@ -74,7 +74,7 @@ const defineValue = (obj, key, value) => {
 // Provider source table. `modelsDev` is the provider id in models.dev's
 // api.json used as cross-check (null = no meaningful cross-check).
 // ---------------------------------------------------------------------------
-const PROVIDER_SOURCES = {
+export const PROVIDER_SOURCES = {
   'claude-code': { kind: 'proxy', port: 18749, modelsDev: null },
   commandcode: { kind: 'proxy', port: 18748, modelsDev: 'commandcode' },
   'openai-codex': { kind: 'proxy', port: 18744, modelsDev: 'openai' },
