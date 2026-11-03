@@ -139,6 +139,14 @@ pub(crate) enum ClientFrame {
         #[serde(default)]
         role: Option<String>,
     },
+    /// Public: list the worlds this server hosts, as the browsable
+    /// directory (#812). No admin token: the reply carries directory
+    /// metadata only — world names, loaded state, the default, and a
+    /// per-world presence *count*. It never names who is present, and
+    /// it neither creates nor opens any world. The admin `ListWorlds`
+    /// frame remains for operators; this is the deliberate public
+    /// boundary for the directory feed.
+    Directory {},
     /// Admin: list the worlds this server hosts.
     ListWorlds {
         admin_token: String,
