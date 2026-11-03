@@ -134,24 +134,34 @@
   // the list. The Meta pool reset at 2026-11-02T00:00:00Z and reads
   // fresh 0% with 100 pts headroom; the door is back in service.
   "disabled_providers": [
+    "google",
+    "google-vertex",
+    "cloudflare-ai-gateway",
     "groq",
     "nvidia",
     "vercel",
     "huggingface",
     "opencode",
+    "github-copilot",
     "openai-codex",
     "openrouter",
+    "cloudflare-workers-ai",
     "open-design",
     "deepseek",
     "claude-code",
     "meta",
     "commandcode"
   ],
-  // 2026-11-03 (Drew): the muse, antigravity-ls, antigravity-agy, code-design,
-  // design-code, github-copilot, google, google-vertex, cloudflare-ai-gateway,
-  // cloudflare-gateway, cloudflare-workers-ai and chatgpt entries left this list
-  // together with their provider definitions — retired and deleted, not just
-  // disabled. openai-codex was evaluated for the same removal and KEPT: live
+  // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
+  // design-code, cloudflare-gateway and chatgpt left this list together with
+  // their provider definitions -- retired and deleted, not just disabled.
+  // google, google-vertex, cloudflare-ai-gateway, cloudflare-workers-ai and
+  // github-copilot had their definitions deleted too, but their entries STAY
+  // as tombstones: the provider catalog auto-activates those five ids unless
+  // they are listed here (verified live 2026-11-03 -- with the entries removed
+  // all five reappeared in the running server within minutes). The entries are
+  // the only trace of them left; there are no definitions to flip back on.
+  // openai-codex was evaluated for the same removal and KEPT whole: live
   // model_routes still target openai-codex/* directly.
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
