@@ -821,12 +821,12 @@ Object.fromEntries / spread, or the entry is written with
 Object.defineProperty. The non-conforming forms for external keys are
 obj[key] = v, obj[key] ??= ..., dst[k] = src[k] copy loops, and
 Object.assign(dst, src) with an externally-keyed src — all go through
-[[Set]], and for the one spelling "__proto__" [[Set]] invokes the
+[[Set]], and for the one spelling "**proto**" [[Set]] invokes the
 Object.prototype setter instead of creating an own property, silently
 dropping the entry or moving the container's prototype. Keys are data:
 preserve, don't reject. Code-constructed tables whose keys are all
 internal are exempt. Probe matrix for every covered site — keys
-"__proto__" (string value), "__proto__" (object value), "constructor",
+"**proto**" (string value), "**proto**" (object value), "constructor",
 "toString", and an ordinary key: the entry exists as an own property with
 its value, a JSON round-trip preserves it, and neither the container's
 prototype nor Object.prototype moves or gains own properties.

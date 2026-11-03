@@ -42,12 +42,8 @@ describe("tap targets are at least 40px tall (#1180)", () => {
     expect(renderSource).toContain("[id] { scroll-margin-top: 192px; }");
   });
   test("wide project and alert tables live in intentional scroll wrappers", () => {
-    expect(renderSource).toContain(
-      '<div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository',
-    );
-    expect(renderSource).toContain(
-      '<div class="tblwrap"><table><caption>Recent alert-ledger transitions',
-    );
+    expect(renderSource).toContain('<div class="tblwrap"><table><caption>Coverage — pool vs backlog by repository');
+    expect(renderSource).toContain('<div class="tblwrap"><table><caption>Recent alert-ledger transitions');
   });
   test("interactive AA chart points have a large touch target", () => {
     expect(renderSource).toContain('class="xpt-hit" cx="');

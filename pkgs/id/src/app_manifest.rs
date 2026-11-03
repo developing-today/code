@@ -140,6 +140,12 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
     }
     if let Some(resources) = &manifest.resources {
         ensure_distinct_entries(&resources.files, "resources.files")?;
+        for entry in &resources.files {
+            ensure!(
+                is_confined_relative_path(entry),
+                "resources.files entry {entry:?} must be a relative path inside the app folder"
+            );
+        }
     }
     if let Some(program) = &manifest.program {
         ensure!(
@@ -368,6 +374,28 @@ fn ensure_distinct_entries(entries: &[String], field: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Folder confinement for `[resources].files` entries (#4059): the design
+/// rule is that everything is relative to the app folder — no absolute
+/// paths, no references outside the folder. The check mirrors the
+/// `program.source` rule above: the entry must be non-empty and every
+/// path component must be a plain name, so a root, `.` or `..` component
+/// anywhere in the entry rejects it. Glob segments such as `**` are
+/// ordinary components and stay legal (`assets/**`, `web/templates/**`).
+fn is_confined_relative_path(entry: &str) -> bool {
+    // Segment-level, not only component-level: `Path::components`
+    // normalizes an internal `.` away (`a/./b` yields just `a`, `b`),
+    // so the raw segments are checked as well. An empty segment rejects
+    // doubled or trailing separators along with the empty entry itself.
+    !entry.is_empty()
+        && !Path::new(entry).is_absolute()
+        && Path::new(entry)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+        && entry
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 fn is_kebab_id(id: &str) -> bool {
@@ -623,6 +651,43 @@ commands = ["play"]
             assert!(
                 error.to_string().contains("resources.files"),
                 "resource-file validation error names the field: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unconfined_resource_files() {
+        // Folder confinement (#4059): [resources].files entries are paths
+        // the pack step will read, so absolute paths, parent traversal
+        // anywhere in the entry, and dot paths are rejected with an error
+        // naming the offending entry.
+        for entry in [
+            "/etc/passwd",
+            "../../etc/passwd",
+            "../secret",
+            "a/../../b",
+            ".",
+            "./assets",
+            "a/./b",
+            "",
+        ] {
+            let source =
+                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains("resources.files") && message.contains(entry),
+                "rejection of {entry:?} names the field and the entry: {message}"
+            );
+        }
+        // Confined entries — plain files, nested paths, and the design's
+        // glob shapes — stay accepted.
+        for entry in ["assets/logo.png", "web/templates/index.html", "assets/**"] {
+            let source =
+                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            assert!(
+                parse_app_manifest(&source, "tic-tac-toe").is_ok(),
+                "confined entry {entry:?} is accepted"
             );
         }
     }

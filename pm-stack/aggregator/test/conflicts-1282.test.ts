@@ -87,7 +87,10 @@ describe("detectConflicts (#1282 slice 1)", () => {
     const entries = detectConflicts({ pool: [], services: [svc], now: NOW });
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.id)).toEqual(["quota-records:turso:0", "quota-records:turso:1"]);
-    expect(entries[0].values).toEqual({ a: "Summary row says $25/mo, card says $20/mo", b: "Dashboard says 3 of 5 databases" });
+    expect(entries[0].values).toEqual({
+      a: "Summary row says $25/mo, card says $20/mo",
+      b: "Dashboard says 3 of 5 databases",
+    });
     expect(entries[0].sources.a).toBe("Turso");
     expect(entries[0].ageDays).toBe(2);
     expect(entries[0].ageBasis).toBe("service-measured-at");

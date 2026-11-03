@@ -145,9 +145,15 @@ describe("dashboard actions store", () => {
     expect(appliedDuplicate.duplicateOf).toBe(applied.action.id);
 
     const concurrent = await Promise.all([
-      store.add(newAction({ verb: "answer", objectRef: "orch:concurrent", payload: { optionId: "yes", questionId: "q5" } })),
       store.add(
-        newAction({ verb: "answer", objectRef: "orch:concurrent", payload: { answers: [{ questionId: "q5", value: "yes" }] } }),
+        newAction({ verb: "answer", objectRef: "orch:concurrent", payload: { optionId: "yes", questionId: "q5" } }),
+      ),
+      store.add(
+        newAction({
+          verb: "answer",
+          objectRef: "orch:concurrent",
+          payload: { answers: [{ questionId: "q5", value: "yes" }] },
+        }),
       ),
     ]);
     expect(concurrent.filter((result) => result.action.state === "new")).toHaveLength(1);

@@ -102,7 +102,14 @@ describe("parseClinePassPayload (ported OpenChamber mapping)", () => {
   });
 
   test("empty or drifted payloads are unparseable, never a zero reading", () => {
-    for (const payload of [null, [], {}, { data: null }, { data: { limits: [] } }, { data: { limits: [{ type: "weekly" }] } }]) {
+    for (const payload of [
+      null,
+      [],
+      {},
+      { data: null },
+      { data: { limits: [] } },
+      { data: { limits: [{ type: "weekly" }] } },
+    ]) {
       let caught: unknown = null;
       try {
         parseClinePassPayload(payload);
@@ -219,7 +226,10 @@ describe("fetchClinePassPayload (credential hygiene)", () => {
 describe("gatherClinePass (gatherer registration path)", () => {
   test("config parses references only; a bare value is rejected", () => {
     expect(credentialRefFromConfig(undefined)).toBeNull();
-    expect(credentialRefFromConfig("bitwarden:clinepass-session")).toEqual({ kind: "bitwarden", name: "clinepass-session" });
+    expect(credentialRefFromConfig("bitwarden:clinepass-session")).toEqual({
+      kind: "bitwarden",
+      name: "clinepass-session",
+    });
     expect(credentialRefFromConfig("file:/home/user/.local/state/clinepass/token")).toEqual({
       kind: "file",
       path: "/home/user/.local/state/clinepass/token",
@@ -233,7 +243,8 @@ describe("gatherClinePass (gatherer registration path)", () => {
       now: NOW,
       previous: null,
       credentialRef: { kind: "bitwarden", name: "clinepass-fixture" },
-      resolveCredentialValue: async (ref) => (ref.kind === "bitwarden" && ref.name === "clinepass-fixture" ? "fixture-token" : null),
+      resolveCredentialValue: async (ref) =>
+        ref.kind === "bitwarden" && ref.name === "clinepass-fixture" ? "fixture-token" : null,
       fetchImpl: async () => ({ status: 200, text: async () => JSON.stringify(DOCUMENTED) }),
     });
     expect(out.status).toBe("ok");
