@@ -518,6 +518,29 @@ EOF
 check comment-before-agent-last "$tmp/comment-before-agent-last.fixture" \
   '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"},"plan":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
 
+# Case 24 (#4770): a block comment containing a literal /* before the
+# final legacy `agent` entry — the backward separator scan must match
+# the comment's actual opening delimiter, not the inner literal, so
+# the fold succeeds and the comment text is preserved byte-identical.
+cat >"$tmp/block-comment-inner-delimiter.fixture" <<'EOF'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  },
+  /* example syntax: /* text */
+  "agent": {
+    "build": { "model": "anthropic/claude-sonnet-4-5" }
+  }
+}
+EOF
+check block-comment-inner-delimiter "$tmp/block-comment-inner-delimiter.fixture" \
+  '{"$schema":"https://opencode.ai/config.json","agents":{"build":{"model":"anthropic/claude-sonnet-4-5"}}}' 0
+grep -qF '/* example syntax: /* text */' "$tmp/block-comment-inner-delimiter.jsonc" || {
+  echo "FAIL block-comment-inner-delimiter: comment text not preserved"
+  failures=$((failures + 1))
+}
+
 if [ "$failures" -ne 0 ]; then
   echo "normalize_test: $failures failure(s)"
   exit 1
