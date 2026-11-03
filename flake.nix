@@ -299,8 +299,13 @@ rec {
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer
     # intelligence source on the laptop). Home Manager module + overlay;
     # consumed by home/openclaw. Pinned by flake.lock like everything else.
+    # developing-today fork (code#2257): carries the sessions_spawn
+    # headless patch (allow-sessions-spawn-headless) in the gateway
+    # build; upstream openclaw/nix-openclaw has no such patch. Keep
+    # the fork rebased on upstream; drop the fork when upstream takes
+    # the patch or the gate changes.
     nix-openclaw = {
-      url = "github:openclaw/nix-openclaw";
+      url = "github:developing-today/nix-openclaw";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
