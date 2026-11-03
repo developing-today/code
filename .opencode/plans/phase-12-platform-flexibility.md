@@ -68,7 +68,8 @@ Tasks are numbered F12.n.
 ## Sequencing
 
 ```text
-Phase 11 done: F11.1, F11.4, F11.10, F11.11, F11.12
+Phase 11 done: F11.1, F11.4, F11.10, F11.11
+Still planned from Phase 11: F11.12 (journal format management)
 F12.4 -> F12.5 -> F12.6 -> F12.14
 F12.1 -> F12.2, F12.3
 F12.7 -> F12.8 -> F12.9 -> F12.15
@@ -76,6 +77,8 @@ F11.7/8/9 -> F12.10, F12.11, F12.12
 F12.13 after F11.12 and F12.6
 F12.16, F12.17, F12.18 anytime after F11.10
 ```
+
+F11.12 stays **Planned**, as the Phase 11 status tracker (`.opencode/plans/2026-10-20_phase-11-status.md`) records: the fail-loud rollback check landed (#244), but `id world journal check` and `id world journal backup` do not exist yet. The sequencing block above previously listed F11.12 as done; that was the inconsistency #841 reconciles — the F11.12 dependencies below (F12.1, F12.13, and the compatibility risk) are unchanged and still gate on it landing.
 
 The provider registry (F12.4) and the manifest (F12.1) have the highest return, because each turns a core-code change into data.
 

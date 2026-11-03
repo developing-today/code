@@ -110,7 +110,7 @@ fn member_remove(name: &str, by: u8, group: Hash, member: u8, after_names: &[&st
         Some(group),
         Body::Member(MemberOp::Remove {
             member: key(member),
-            successor: None,
+            mode: id::groups::RemoveMode::Revoke,
         }),
     )
 }

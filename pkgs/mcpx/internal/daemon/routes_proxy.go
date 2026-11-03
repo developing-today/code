@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -300,6 +299,6 @@ func extractUserQuery(msgs []chatMessage) string {
 
 func randomHex(n int) string {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	_, _ = RandSource.Read(b)
 	return hex.EncodeToString(b)
 }

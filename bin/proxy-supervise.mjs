@@ -93,6 +93,18 @@ export const pidAlive = (pid) => {
   }
 };
 
+// Capture the running build's argv before stopping it. Nix store paths
+// are immutable, so this lets a swap recovery restart the actual previous
+// command even after the active config has advanced to a new build.
+const commandForPid = (pid) => {
+  try {
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    return argv.length > 0 ? argv : null;
+  } catch {
+    return null;
+  }
+};
+
 // Epoch ms at which a pid started, from /proc (Linux). null elsewhere.
 export const pidStartedAt = (pid) => {
   try {
@@ -123,8 +135,110 @@ const writeJsonAtomic = (file, obj) => {
 
 // ---------- config ----------
 
+const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+// loadConfig validates the whole config before any reconcile begins
+// (#1952): a malformed entry must fail fast with an error naming the
+// config file and the offending entry/field, never escape as an opaque
+// TypeError, and never pass unsafe timeouts/ports through to runtime
+// calculations (drain deadlines, lock staleness, port arithmetic).
 export const loadConfig = (file) => {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const fail = (msg) => {
+    throw new Error(`proxy-supervise: invalid config ${file}: ${msg}`);
+  };
+  const checkString = (where, field, value, { required = false } = {}) => {
+    if (value === undefined) {
+      if (required) fail(`${where}: field '${field}' is required and must be a non-empty string`);
+      return;
+    }
+    if (typeof value !== 'string' || value.length === 0)
+      fail(`${where}: field '${field}' must be a non-empty string, got ${JSON.stringify(value)}`);
+  };
+  const checkInt = (where, field, value, min, max) => {
+    if (!Number.isInteger(value) || value < min || value > max)
+      fail(`${where}: field '${field}' must be an integer in ${min}..=${max}, got ${JSON.stringify(value)}`);
+  };
+  const checkStringArray = (where, field, value, { nonEmpty = false } = {}) => {
+    if (!Array.isArray(value))
+      fail(`${where}: field '${field}' must be an array of non-empty strings, got ${JSON.stringify(value)}`);
+    if (nonEmpty && value.length === 0)
+      fail(`${where}: field '${field}' must be a non-empty array of non-empty strings`);
+    value.forEach((item, i) => {
+      if (typeof item !== 'string' || item.length === 0)
+        fail(`${where}: field '${field}[${i}]' must be a non-empty string, got ${JSON.stringify(item)}`);
+    });
+  };
+
+  if (!isPlainObject(raw)) fail('top-level value must be an object');
+  checkString('config', 'stateDir', raw.stateDir);
+  checkString('config', 'endpointDir', raw.endpointDir);
+  if (raw.systemdRun !== undefined && raw.systemdRun !== null && raw.systemdRun !== 'system' && raw.systemdRun !== 'user')
+    fail(`config: field 'systemdRun' must be 'system', 'user', or null, got ${JSON.stringify(raw.systemdRun)}`);
+  if (raw.drainSeconds !== undefined) checkInt('config', 'drainSeconds', raw.drainSeconds, 0, 3600);
+  if (raw.healthTimeoutSeconds !== undefined) checkInt('config', 'healthTimeoutSeconds', raw.healthTimeoutSeconds, 1, 3600);
+  if (raw.lockTimeoutSeconds !== undefined) checkInt('config', 'lockTimeoutSeconds', raw.lockTimeoutSeconds, 1, 86400);
+  if (raw.proxies !== undefined && !Array.isArray(raw.proxies))
+    fail(`config: field 'proxies' must be an array, got ${JSON.stringify(raw.proxies)}`);
+
+  const seenNames = new Set();
+  const seenPorts = new Map();
+  for (const [i, p] of (raw.proxies || []).entries()) {
+    if (!isPlainObject(p)) fail(`proxies[${i}]: entry must be an object, got ${JSON.stringify(p)}`);
+    const where = typeof p.name === 'string' && p.name ? `proxies[${i}] ('${p.name}')` : `proxies[${i}]`;
+    checkString(where, 'name', p.name, { required: true });
+    if (seenNames.has(p.name)) fail(`${where}: field 'name' duplicates an earlier proxy name '${p.name}'`);
+    seenNames.add(p.name);
+    if (p.command === undefined)
+      fail(`${where}: field 'command' is required and must be a non-empty array of non-empty strings`);
+    checkStringArray(where, 'command', p.command, { nonEmpty: true });
+    checkInt(where, 'canonicalPort', p.canonicalPort, 1, 65535);
+    checkString(where, 'portEnv', p.portEnv, { required: true });
+    const altPortOffset = p.altPortOffset ?? 1000;
+    if (!Number.isInteger(altPortOffset) || altPortOffset <= 0)
+      fail(`${where}: field 'altPortOffset' must be a positive integer, got ${JSON.stringify(p.altPortOffset)}`);
+    if (p.canonicalPort + altPortOffset > 65535)
+      fail(`${where}: field 'altPortOffset' makes canonicalPort + altPortOffset exceed 65535 (${p.canonicalPort} + ${altPortOffset})`);
+    if (p.hashFiles !== undefined) checkStringArray(where, 'hashFiles', p.hashFiles);
+    if (p.hashEnv !== undefined) checkStringArray(where, 'hashEnv', p.hashEnv);
+    if (p.backends !== undefined) {
+      if (!Array.isArray(p.backends))
+        fail(`${where}: field 'backends' must be an array, got ${JSON.stringify(p.backends)}`);
+      p.backends.forEach((b, j) => {
+        if (!isPlainObject(b)) fail(`${where}: field 'backends[${j}]' must be an object, got ${JSON.stringify(b)}`);
+        checkString(where, `backends[${j}].name`, b.name, { required: true });
+        checkString(where, `backends[${j}].env`, b.env, { required: true });
+      });
+    }
+    if (p.env !== undefined) {
+      if (!isPlainObject(p.env))
+        fail(`${where}: field 'env' must be an object mapping names to strings, got ${JSON.stringify(p.env)}`);
+      for (const [k, v] of Object.entries(p.env))
+        if (typeof v !== 'string') fail(`${where}: field 'env.${k}' must be a string, got ${JSON.stringify(v)}`);
+    }
+    if (p.strategy !== undefined && !['ab', 'swap', 'inplace'].includes(p.strategy))
+      fail(`${where}: field 'strategy' must be one of 'ab', 'swap', 'inplace', got ${JSON.stringify(p.strategy)}`);
+    checkString(where, 'host', p.host);
+    if (p.healthPath !== undefined && (typeof p.healthPath !== 'string' || !p.healthPath.startsWith('/')))
+      fail(`${where}: field 'healthPath' must be a string starting with '/', got ${JSON.stringify(p.healthPath)}`);
+    checkString(where, 'cwd', p.cwd);
+    if (p.wireCommand !== undefined) checkStringArray(where, 'wireCommand', p.wireCommand, { nonEmpty: true });
+    // Each proxy claims two ports on its host at runtime — the canonical
+    // port and the alternate (canonicalPort + altPortOffset) — and reconcile
+    // health-checks and spawns on exactly those two, keying health on the
+    // port alone. Two proxies on the same host must therefore never claim
+    // the same port in any role (#4094); the same port on a different host
+    // is a different claim and stays valid.
+    const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
+    for (const [field, port] of [['canonicalPort', p.canonicalPort], ['altPort', p.canonicalPort + altPortOffset]]) {
+      const claim = `${host}:${port}`;
+      const prior = seenPorts.get(claim);
+      if (prior)
+        fail(`${where}: field '${field}' port ${port} on host '${host}' is already claimed by proxy '${prior.name}' as its ${prior.field}`);
+      seenPorts.set(claim, { name: p.name, field });
+    }
+  }
+
   const cfg = {
     stateDir: expandPath(raw.stateDir || '~/.local/state/proxy-supervisor'),
     endpointDir: expandPath(raw.endpointDir || '~/.local/state'),
@@ -294,6 +408,21 @@ const spawnInstance = async (cfg, proxy, env, port) => {
   return { pid: child.pid, unit: null, isDead: () => exited || !pidAlive(child.pid) };
 };
 
+const startHealthyInstance = async (cfg, proxy, env, port) => {
+  const instance = await spawnInstance(cfg, proxy, env, port);
+  const healthy = instance.pid !== null && (await waitHealthy(
+    proxy,
+    port,
+    cfg.healthTimeoutSeconds,
+    instance.isDead,
+  ));
+  if (!healthy) {
+    if (pidAlive(instance.pid)) await stopInstance(instance.pid, 2, cfg, instance.unit);
+    else if (instance.unit) systemctl(cfg, ['stop', instance.unit]);
+  }
+  return { ...instance, healthy };
+};
+
 export const stopInstance = async (pid, drainSeconds, cfg = null, unit = null) => {
   if (unit && cfg) systemctl(cfg, ['stop', unit]);
   if (!pidAlive(pid)) return 'already-dead';
@@ -435,11 +564,40 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
         log(JSON.stringify(result));
         return result;
       }
+      const desiredCommand = commandForPid(current.pid) || proxy.command;
       await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
       const fin = await spawnInstance(cfg, proxy, env, proxy.canonicalPort);
       const okFin = await waitHealthy(proxy, proxy.canonicalPort, cfg.healthTimeoutSeconds, fin.isDead);
       if (!okFin) {
-        result.action = 'swap-failed';
+        if (pidAlive(fin.pid)) await stopInstance(fin.pid, 2, cfg, fin.unit);
+        else if (fin.unit) systemctl(cfg, ['stop', fin.unit]);
+        const lastError = { at: new Date().toISOString(), hash, targetPort: proxy.canonicalPort };
+        const desiredProxy = { ...proxy, command: desiredCommand };
+        const kept = await startHealthyInstance(cfg, desiredProxy, env, current.port);
+        if (kept.healthy) {
+          const recovered = { ...current, port: current.port, pid: kept.pid, unit: kept.unit, startedAt: new Date().toISOString() };
+          delete recovered.live;
+          delete recovered.failed;
+          writeJsonAtomic(stateFile(cfg, proxy.name), { current: recovered, lastError });
+          writeEndpoint(cfg, proxy, { ...recovered, previousPort: proxy.canonicalPort });
+          result.action = 'swap-failed-kept-on-alternate';
+          result.port = recovered.port;
+          result.pid = recovered.pid;
+          log(JSON.stringify(result));
+          return result;
+        }
+        const failedCurrent = {
+          port: current.port,
+          hash: current.hash,
+          pid: kept.pid ?? current.pid,
+          unit: kept.unit ?? current.unit,
+          startedAt: current.startedAt,
+          failed: true,
+        };
+        try { fs.unlinkSync(endpointFile(cfg, proxy.name)); } catch { /* absent or already removed */ }
+        writeJsonAtomic(stateFile(cfg, proxy.name), { current: failedCurrent, lastError });
+        result.action = 'swap-failed-unrecovered';
+        result.error = fin.error || kept.error || 'canonical and alternate recovery starts were unhealthy';
         log(JSON.stringify(result));
         return result;
       }
@@ -540,6 +698,7 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     if (proxy.strategy === 'swap' && targetPort !== proxy.canonicalPort) {
       // Candidate validated on the alternate port. Stop it and the old
       // instance, then start the same build on the canonical port.
+      const previousCommand = current?.live ? commandForPid(current.pid) : null;
       await stopInstance(newPid, cfg.drainSeconds, cfg, inst.unit);
       if (current?.live && current.pid !== newPid) await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
       const final = await spawnInstance(cfg, proxy, env, proxy.canonicalPort);
@@ -547,8 +706,55 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
       if (!finalHealthy) {
         if (pidAlive(final.pid)) await stopInstance(final.pid, 2, cfg, final.unit);
         else if (final.unit) systemctl(cfg, ['stop', final.unit]);
-        result.action = 'swap-failed';
-        writeJsonAtomic(stateFile(cfg, proxy.name), { ...state, lastError: { at: new Date().toISOString(), hash, targetPort: proxy.canonicalPort } });
+        const lastError = { at: new Date().toISOString(), hash, targetPort: proxy.canonicalPort };
+        const oldProxy = { ...proxy, command: previousCommand || proxy.command };
+        const old = current?.live
+          ? await startHealthyInstance(cfg, oldProxy, env, proxy.canonicalPort)
+          : { healthy: false, error: 'no previous live build to restart' };
+        if (old.healthy) {
+          const recovered = { ...current, port: proxy.canonicalPort, pid: old.pid, unit: old.unit, startedAt: new Date().toISOString() };
+          delete recovered.live;
+          delete recovered.failed;
+          writeJsonAtomic(stateFile(cfg, proxy.name), { current: recovered, lastError });
+          writeEndpoint(cfg, proxy, { ...recovered, previousPort: targetPort });
+          result.action = 'swap-failed-old-restarted';
+          result.port = recovered.port;
+          result.pid = recovered.pid;
+          log(JSON.stringify(result));
+          return result;
+        }
+
+        const candidate = await startHealthyInstance(cfg, proxy, env, targetPort);
+        if (candidate.healthy) {
+          const recovered = {
+            port: targetPort,
+            hash,
+            pid: candidate.pid,
+            unit: candidate.unit,
+            startedAt: new Date().toISOString(),
+            validatedOnPort: targetPort,
+          };
+          writeJsonAtomic(stateFile(cfg, proxy.name), { current: recovered, lastError });
+          writeEndpoint(cfg, proxy, { ...recovered, previousPort: proxy.canonicalPort });
+          result.action = 'swap-failed-new-on-alternate';
+          result.port = recovered.port;
+          result.pid = recovered.pid;
+          log(JSON.stringify(result));
+          return result;
+        }
+
+        const failedCurrent = {
+          port: targetPort,
+          hash,
+          pid: candidate.pid ?? final.pid,
+          unit: candidate.unit ?? final.unit,
+          startedAt: new Date().toISOString(),
+          failed: true,
+        };
+        try { fs.unlinkSync(endpointFile(cfg, proxy.name)); } catch { /* absent or already removed */ }
+        writeJsonAtomic(stateFile(cfg, proxy.name), { current: failedCurrent, lastError });
+        result.action = 'swap-failed-unrecovered';
+        result.error = final.error || old.error || candidate.error || 'all swap recovery starts were unhealthy';
         log(JSON.stringify(result));
         return result;
       }
@@ -599,25 +805,53 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
 
 // ---------- main ----------
 
-const main = async () => {
-  const args = process.argv.slice(2);
-  const get = (flag) => {
-    const i = args.indexOf(flag);
-    return i >= 0 ? args[i + 1] : null;
-  };
-  const configPath = get('--config');
-  if (!configPath) {
-    console.error('usage: proxy-supervise.mjs --config <config.json> [--only <name>] [--status] [--dry-run]');
-    process.exit(2);
+const USAGE = 'usage: proxy-supervise.mjs --config <config.json> [--only <name>] [--status] [--dry-run]';
+
+const parseArgs = (args) => {
+  const parsed = { configPath: null, only: null, status: false, dryRun: false };
+  const seen = new Set();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--config' || arg === '--only') {
+      if (seen.has(arg)) throw new Error(`duplicate argument: ${arg}`);
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) throw new Error(`missing value for ${arg}`);
+      if (arg === '--config') parsed.configPath = value;
+      else parsed.only = value;
+      seen.add(arg);
+      i++;
+      continue;
+    }
+    if (arg === '--status' || arg === '--dry-run') {
+      if (seen.has(arg)) throw new Error(`duplicate argument: ${arg}`);
+      if (arg === '--status') parsed.status = true;
+      else parsed.dryRun = true;
+      seen.add(arg);
+      continue;
+    }
+    throw new Error(`unknown argument: ${arg}`);
   }
+  if (!parsed.configPath) throw new Error('missing required --config');
+  return parsed;
+};
+
+const main = async () => {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`proxy-supervise: ${error.message}\n${USAGE}`);
+    process.exitCode = 2;
+    return;
+  }
+  const { configPath, only, status, dryRun } = options;
   const cfg = loadConfig(configPath);
-  const only = get('--only');
   const selected = cfg.proxies.filter((p) => !only || p.name === only);
   if (selected.length === 0) {
     console.error(`no proxy named ${only} in ${configPath}`);
     process.exit(2);
   }
-  if (args.includes('--status')) {
+  if (status) {
     for (const p of selected) {
       const st = readJson(stateFile(cfg, p.name));
       const ep = readJson(endpointFile(cfg, p.name));
@@ -626,12 +860,19 @@ const main = async () => {
     }
     return;
   }
-  const dryRun = args.includes('--dry-run');
   let failures = 0;
   for (const p of selected) {
     try {
       const r = await reconcile(cfg, p, { dryRun });
-      if (['roll-failed-old-kept', 'swap-failed', 'abort-occupied'].includes(r.action)) failures++;
+      if ([
+        'roll-failed-old-kept',
+        'swap-failed',
+        'swap-failed-old-restarted',
+        'swap-failed-new-on-alternate',
+        'swap-failed-kept-on-alternate',
+        'swap-failed-unrecovered',
+        'abort-occupied',
+      ].includes(r.action)) failures++;
     } catch (e) {
       failures++;
       console.log(JSON.stringify({ name: p.name, action: 'error', error: String(e).slice(0, 300) }));

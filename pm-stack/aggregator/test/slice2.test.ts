@@ -8,6 +8,7 @@ import {
   roadmapDayGrain,
   sessionChildren,
   sessionRoots,
+  timeline,
 } from "../src/derive.ts";
 import { type OrchestrationSection, type RoadmapRow, type SessionFeedEntry, type TierItem } from "../src/model.ts";
 import { renderAttention, renderRoadmap, renderToday } from "../src/render.ts";
@@ -18,7 +19,7 @@ import {
   FIXTURE_ROADMAP,
   fixtureSource,
 } from "../src/sources/fixtures.ts";
-import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
+import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 
 const NOW = Date.parse("2026-10-25T15:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -227,6 +228,56 @@ describe("jules mapping (#898 §5)", () => {
     expect(failed.lastTurnError).toContain("failed");
   });
 
+  test("skips malformed elements while preserving valid siblings", () => {
+    const malformed = {
+      items: {
+        good: { state: "IN_PROGRESS" },
+        bad: null,
+      },
+    } as unknown as JulesReviewState;
+    expect(mapJulesItems(malformed).map((entry) => entry.sessionId)).toEqual(["good"]);
+    expect(julesSummary(malformed).tracked).toBe(1);
+    expect(droppedJulesItemCount(malformed)).toBe(1);
+  });
+
+  test("degrades non-string state, title, and source fields", () => {
+    const malformed = {
+      items: {
+        numericState: { state: 42 },
+        numericFields: { title: 42, source: 42 },
+      },
+    } as unknown as JulesReviewState;
+    const [numericState, numericFields] = mapJulesItems(malformed);
+    expect(numericState.supervisionNote).toBe("Jules UNKNOWN");
+    expect(numericState.activeToolCalls).toBe(0);
+    expect(numericState.outcome).toBeUndefined();
+    expect(numericFields.title).toBeUndefined();
+    expect(numericFields.directory).toBeUndefined();
+  });
+
+  test("treats string or array items as an empty state", () => {
+    for (const items of ["nope", ["session"]]) {
+      const malformed = { items } as unknown as JulesReviewState;
+      expect(mapJulesItems(malformed)).toEqual([]);
+      expect(julesSummary(malformed).tracked).toBe(0);
+      expect(droppedJulesItemCount(malformed)).toBe(0);
+    }
+  });
+
+  test("skips array elements and counts them as dropped", () => {
+    const malformed = { items: { bad: ["session"] } } as unknown as JulesReviewState;
+    expect(mapJulesItems(malformed)).toEqual([]);
+    expect(julesSummary(malformed).tracked).toBe(0);
+    expect(droppedJulesItemCount(malformed)).toBe(1);
+  });
+
+  test("treats a non-object top-level state as empty", () => {
+    const malformed = null as unknown as JulesReviewState;
+    expect(mapJulesItems(malformed)).toEqual([]);
+    expect(julesSummary(malformed)).toEqual({ at: null, tracked: 0 });
+    expect(droppedJulesItemCount(malformed)).toBe(0);
+  });
+
   test("parses keeper totals", () => {
     const s = julesSummary(state);
     expect(s.total).toBe(84);
@@ -299,6 +350,47 @@ describe("roadmap grains (#898 §3)", () => {
     const keys = tl.lanes.map((l) => l.key);
     expect(keys).toContain("2026-10");
     expect(keys).toContain("2026-Q4");
+  });
+
+  test("month timeline sorts quarter and month lanes on one chronological scale (#3952)", () => {
+    const mk = (id: number, horizon: string): RoadmapRow => ({
+      id,
+      subject: `grist:doc/Roadmap/${id}`,
+      title: `Row ${id}`,
+      area: "PM stack",
+      status: "Planned",
+      horizon,
+      source: "",
+      notes: "",
+      links: [],
+    });
+    // Deliberately scrambled input order: the lane sequence must come from
+    // the order scale, not from insertion order / sort stability.
+    const tl = monthTimeline([
+      mk(1, "Q1 2030"),
+      mk(2, "Ongoing"),
+      mk(3, "2027-01-15"),
+      mk(4, "Q4 2026"),
+      mk(5, "Unscheduled"),
+      mk(6, "2026-10-24"),
+      mk(7, "Q1 2027"),
+      mk(8, "Someday"),
+    ]);
+    expect(tl.lanes.map((l) => l.key)).toEqual([
+      "2026-10",
+      "2026-Q4",
+      "2027-01",
+      "2027-Q1",
+      "2030-Q1",
+      "ongoing",
+      "other:Someday",
+      "unscheduled",
+    ]);
+    // The quarter view is unchanged: timeline() still uses laneFor orders
+    // on the year*4+quarter scale.
+    const qt = timeline([mk(9, "Q1 2030"), mk(10, "Q4 2026"), mk(11, "Q1 2027")]);
+    expect(qt.lanes.map((l) => l.key)).toEqual(["2026-Q4", "2027-Q1", "2030-Q1"]);
+    expect(qt.lanes.map((l) => l.order)).toEqual([8108, 8109, 8121]);
   });
 
   test("day grains window the dated rows and count the rest honestly", () => {
