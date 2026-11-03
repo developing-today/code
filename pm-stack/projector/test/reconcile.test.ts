@@ -150,7 +150,6 @@ describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
     labels: [],
     assignees: [],
     draft: false,
-    merged: false,
     merged_at: null,
     created_at: "2026-10-01T00:00:00Z",
     updated_at: "2026-10-04T00:00:00Z",
@@ -190,7 +189,7 @@ describe("reconcileRepos prs stream sources pulls-shaped data (#4528)", () => {
   test("merged-first-sight stores merged=1 + merged_at", async () => {
     const repo = "developing-today/prs-merged-first-sight";
     const { fetchFn } = prsFake(repo, [
-      pullsPr(repo, 8, { state: "closed", merged: true, merged_at: "2026-10-03T00:00:00Z" }),
+      pullsPr(repo, 8, { state: "closed", merged_at: "2026-10-03T00:00:00Z" }),
     ]);
     const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
     expect(result.ok).toBe(true);
