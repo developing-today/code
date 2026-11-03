@@ -558,6 +558,61 @@ impl EventStore {
     }
 }
 
+/// The operator block list as the enforcement seams consult it (#2245).
+///
+/// A seam holds an `Arc<dyn BlockList>` and asks it about a peer, a topic
+/// tag, or an IP; it never reads the `blocks` table itself. Implementations
+/// read the list live on every call, so a block (or an unblock) lands on the
+/// next check, and they judge expiry against the wall clock
+/// ([`crate::time::unix_ms`]) — the same epoch `Block::added_at_ms` and
+/// `Block::expires_at_ms` are stamped in. That is why this trait takes no
+/// `now_ms`: the session clocks the sync seams carry are not all wall
+/// clocks (the abuse evaluator's is monotonic), and a block's expiry is a
+/// wall-clock fact.
+///
+/// The invariant from the module docs rides on this trait's callers: blocks
+/// change serving and subscribing only. No ingest path consults a
+/// `BlockList`, so an already-signed object from a blocked peer is decided
+/// by the store's ordinary rules, exactly as if the block did not exist.
+pub trait BlockList: std::fmt::Debug + Send + Sync + 'static {
+    /// Whether (`kind`, `value`) is blocked now. An expired block is not
+    /// enforced, so this is false for one, however long it stays listed.
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool;
+
+    /// Whether the endpoint with this 32-byte key is blocked.
+    fn peer_blocked(&self, peer: &[u8; 32]) -> bool {
+        self.is_blocked(BlockKind::PeerKey, peer)
+    }
+
+    /// Whether this topic tag is blocked. The tag is raw bytes: a pull
+    /// gate passes its world's name, the sync handshake passes the topic's
+    /// hash bytes; an operator blocks whichever form a surface names.
+    fn topic_tag_blocked(&self, tag: &[u8]) -> bool {
+        self.is_blocked(BlockKind::TopicTag, tag)
+    }
+
+    /// Whether this IP is blocked. IP rows name the address in its text
+    /// form (as the storage tests write them), so the check formats `ip`
+    /// the same way.
+    fn ip_blocked(&self, ip: &std::net::IpAddr) -> bool {
+        self.is_blocked(BlockKind::Ip, ip.to_string().as_bytes())
+    }
+}
+
+impl BlockList for EventStore {
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        // A read error invents no block: the seam fails open, and the
+        // store's error still surfaces on the store's own read paths.
+        EventStore::is_blocked(self, kind, value, crate::time::unix_ms()).unwrap_or(false)
+    }
+}
+
+impl<T: BlockList + ?Sized> BlockList for std::sync::Arc<T> {
+    fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
+        (**self).is_blocked(kind, value)
+    }
+}
+
 impl EventStore {
     /// Opens the store in `dir`, creating it if the directory has none. `limits` are the caps
     /// on waiting events, and `now_ms` is the clock: the waiting events due at it are dropped.
@@ -1949,6 +2004,69 @@ mod tests {
             vec![expiring],
             "the expired row stays on the list as the operator's record"
         );
+    }
+
+    #[test]
+    fn test_block_list_answers_peer_topic_and_ip_from_the_store() {
+        let (_dir, store) = open_temp();
+        store
+            .add_block(&block(BlockKind::PeerKey, &[7u8; 32], None))
+            .unwrap();
+        store
+            .add_block(&block(BlockKind::TopicTag, b"spam", None))
+            .unwrap();
+        store
+            .add_block(&block(BlockKind::Ip, b"192.0.2.1", None))
+            .unwrap();
+        // The trait is what the enforcement seams hold: it answers from the
+        // store's live rows, with no clock handed in.
+        let list: &dyn BlockList = &store;
+        assert!(list.peer_blocked(&[7u8; 32]));
+        assert!(!list.peer_blocked(&[8u8; 32]));
+        assert!(list.topic_tag_blocked(b"spam"));
+        assert!(!list.topic_tag_blocked(b"ham"));
+        let blocked_ip: std::net::IpAddr = "192.0.2.1".parse().unwrap();
+        let other_ip: std::net::IpAddr = "192.0.2.2".parse().unwrap();
+        assert!(list.ip_blocked(&blocked_ip));
+        assert!(!list.ip_blocked(&other_ip));
+        // An expired block is listed but never enforced, through the trait
+        // exactly as through the store (its expiry, 1_500, is long past).
+        store
+            .add_block(&block(BlockKind::PeerKey, &[9u8; 32], Some(1_500)))
+            .unwrap();
+        assert!(!list.peer_blocked(&[9u8; 32]));
+        assert_eq!(store.blocks().unwrap().len(), 4);
+    }
+
+    /// The #2245 invariant: a block changes serving and subscribing only.
+    /// Signed events from a blocked author are ingested and applied by the
+    /// ordinary rules — if ingest ever consulted the block list, the graph
+    /// would diverge between nodes that block and nodes that do not.
+    #[test]
+    fn test_a_blocked_authors_signed_events_are_still_ingested() {
+        let (_dir, mut store) = open_temp();
+        let signer = key(41);
+        let who = author(&signer);
+        store
+            .add_block(&block(BlockKind::PeerKey, &who, None))
+            .unwrap();
+        assert!(store.is_blocked(BlockKind::PeerKey, &who, 2_000).unwrap());
+        let events = chain_of(&signer, 2);
+        for event in &events {
+            assert!(
+                matches!(
+                    store.ingest(&event.bytes, 0).unwrap(),
+                    Ingest::Accepted { .. }
+                ),
+                "a blocked author's signed event was not accepted"
+            );
+        }
+        assert_eq!(
+            store.chain(&who).unwrap().map(|chain| chain.next_seq),
+            Some(2),
+            "both events applied, block notwithstanding"
+        );
+        store.check_invariants().unwrap();
     }
 
     #[test]
