@@ -127,7 +127,9 @@ export class WorldObject {
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname === "/cold-start") {
       this.dropGuest(); // force the next request through ensureGuest()'s restore path
-      return Response.json({ cold: true, journaledStep: this.step });
+      const rows = this.sql.exec(`SELECT step FROM journal ORDER BY step DESC LIMIT 1`).toArray();
+      const journaledStep = rows.length > 0 ? Number(rows[0].step) : 0;
+      return Response.json({ cold: true, journaledStep });
     }
     if (req.method === "POST" && url.pathname === "/step") {
       // Validate before touching the guest: a malformed request must never
