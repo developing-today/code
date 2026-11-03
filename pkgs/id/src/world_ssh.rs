@@ -3255,6 +3255,71 @@ mod tests {
         server.abort();
     }
 
+    /// Proving test for tracker #796 item 9-6: an SSH `window-change`
+    /// request must reach the session as a resize and refit the shell view
+    /// to the new viewport size (drafted on #796 from task 6509; landed once
+    /// the ssh feature compiled again after #3962).
+    /// A program whose view is one fixed 4x2 ASCII screen.
+    struct FixedScreenSsh;
+
+    impl crate::world::WorldProgram for FixedScreenSsh {
+        fn view(
+            &mut self,
+            _viewer: &crate::world::Participant,
+        ) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["abcd","wxyz"]}"#
+                    .to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_change_refits_the_shell_view_to_the_new_size() {
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(FixedScreenSsh),
+        );
+        let (_, capability) = world
+            .issue(
+                "player".to_owned(),
+                crate::world::WorldScopes::from_names(["join", "input"]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world, Some("admin".to_owned())));
+        let (port, server) = start(hub).await;
+        let session = connect(port, capability.expose()).await;
+        let mut channel = shell(&session).await;
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        // The pty opens at 80x24, so the whole 4x2 screen is shown first.
+        read_until(&mut channel, &mut terminal, "wxyz").await;
+        assert!(terminal.screen().contents().contains("abcd"));
+
+        // A terminal window change must reach the session as a resize and
+        // refit the view: 2x1 keeps only the first two cells of row one.
+        channel.window_change(2, 1, 0, 0).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let contents = terminal.screen().contents();
+                if contents.contains("ab") && !contents.contains("wxyz") {
+                    break;
+                }
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => terminal.process(&data),
+                    Some(_) => {}
+                    None => panic!("shell closed before the refitted view"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the refitted view");
+        let contents = terminal.screen().contents();
+        assert!(contents.contains("ab"), "{contents:?}");
+        assert!(!contents.contains("cd"), "{contents:?}");
+        server.abort();
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_shell_plays_the_world_in_command_mode_using_input_command() {
