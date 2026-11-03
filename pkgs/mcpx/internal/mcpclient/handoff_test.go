@@ -140,3 +140,32 @@ func TestClientHandoffCommitsOnlyWhenActivated(t *testing.T) {
 	_ = second.Close()
 	<-adopted.exited
 }
+
+// TestRecvRefusesWhileDetached pins the #2842 exclusion: after Detach, a
+// Recv that was waiting (or starts late) must refuse at once instead of
+// consuming frames the successor owns -- and must not write pending
+// against Detach's snapshot of it.
+func TestRecvRefusesWhileDetached(t *testing.T) {
+	tr, err := NewStdio(StdioOptions{Command: "sh", Args: []string{"-c", echoScript}, InheritEnv: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.Detach(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := tr.Recv()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "detached") {
+			t.Fatalf("Recv on a detached transport: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Recv on a detached transport blocked instead of refusing")
+	}
+	tr.Reattach()
+	_ = tr.Close()
+}
