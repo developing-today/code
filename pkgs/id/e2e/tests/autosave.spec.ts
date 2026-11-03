@@ -53,6 +53,38 @@ async function waitForEditorReady(page: Page): Promise<void> {
   await expect(page.locator(".ProseMirror")).toBeVisible({ timeout: 10_000 });
 }
 
+/**
+ * Assert an exact save count only after saves have gone quiet (#1230).
+ *
+ * The exact-count assertions used to run the moment the button first showed
+ * "saved ✓", which races the AutoSaveManager's legitimate later saves: the
+ * 2s debounce can fire after a slow manual save, and a retry/follow-up save
+ * can land just after the indicator flips. Under sandbox timing that made
+ * the counts fail off-by-one/two even though every save succeeded. Waiting
+ * until the count has been stable for longer than the debounce interval
+ * (2.5s > 2s) means timer-driven follow-ups have had their chance to fire
+ * before the exact count is judged — the assertion keeps its full strength
+ * (debounce coalescing still means exactly one save), it just judges the
+ * settled total instead of a mid-flight snapshot.
+ */
+async function expectCountAfterQuiescence(page: Page, getCount: () => number, expected: number): Promise<void> {
+  const settleWindowMs = 2500;
+  const deadline = Date.now() + 20_000;
+  let last = getCount();
+  let stableSince = Date.now();
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(250);
+    const current = getCount();
+    if (current !== last) {
+      last = current;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince >= settleWindowMs) {
+      break;
+    }
+  }
+  expect(getCount()).toBe(expected);
+}
+
 /** Type text into the ProseMirror editor */
 async function typeInEditor(page: Page, text: string): Promise<void> {
   await page.locator(".ProseMirror").click();
@@ -138,8 +170,9 @@ test.describe("Auto-save", () => {
     // Now stop typing and wait for debounce + save
     await expect(page.locator("#save-btn")).toHaveText("saved ✓", { timeout: 8000 });
 
-    // Only 1 save should have been made (debounce coalesced all edits)
-    expect(saveCount).toBe(1);
+    // Only 1 save should have been made (debounce coalesced all edits);
+    // judged after quiescence so a legitimate follow-up save cannot race it
+    await expectCountAfterQuiescence(page, () => saveCount, 1);
   });
 
   test("Ctrl+S triggers immediate manual save", async ({ page, baseURL }) => {
@@ -163,7 +196,7 @@ test.describe("Auto-save", () => {
 
     // Should save immediately and show "saved ✓"
     await expect(page.locator("#save-btn")).toHaveText("saved ✓", { timeout: 5000 });
-    expect(saveCount).toBe(1);
+    await expectCountAfterQuiescence(page, () => saveCount, 1);
   });
 
   test("save button re-enables after save (disabled-forever bug fix)", async ({ page, baseURL }) => {
@@ -219,8 +252,8 @@ test.describe("Auto-save", () => {
     // Then should auto-retry and succeed
     await expect(page.locator("#save-btn")).toHaveText("saved ✓", { timeout: 10000 });
 
-    // Two save requests total (initial + retry)
-    expect(requestCount).toBe(2);
+    // Two save requests total (initial + retry), judged after quiescence
+    await expectCountAfterQuiescence(page, () => requestCount, 2);
   });
 
   test("save button click triggers save via triggerSave", async ({ page, baseURL }) => {
@@ -243,6 +276,6 @@ test.describe("Auto-save", () => {
 
     // Should save and show "saved ✓"
     await expect(page.locator("#save-btn")).toHaveText("saved ✓", { timeout: 5000 });
-    expect(saveCount).toBe(1);
+    await expectCountAfterQuiescence(page, () => saveCount, 1);
   });
 });

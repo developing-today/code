@@ -24,6 +24,9 @@
  *     metrics: [ { id, used, unit, source } ] }
  * Metric ids match the aggregator's saas-extract cloudflare card, so
  * the aggregator can prefer these live values over tracker prose.
+ * When a UTC day's Workers AI neurons exceed the alert threshold
+ * (#2287), the document also carries an `alerts` array (present only
+ * when firing) which the aggregator surfaces on the card's sourceNote.
  *
  * Billing: the subscriptions/billing endpoints return 403 with the
  * day-to-day token (probed live 2026-10-29, #1048) — the issue's own
@@ -57,6 +60,31 @@ export const SOURCE = "file-export/cloudflare";
  */
 export const API_REQUEST_TIMEOUT_MS = 30_000;
 export const API_BASE = "https://api.cloudflare.com/client/v4";
+/**
+ * Workers AI neurons/day alert (#2287). The per-day-average
+ * workers-ai-neurons metric dilutes a single-day burn across the whole
+ * cycle (the Oct 24–25 2026 burn: 4.11M neurons, ~$45, invisible for
+ * days), so the exporter also runs a grouped per-day/per-model
+ * aiInference query and fires an alert for any UTC day whose total
+ * exceeds the threshold. The limit sizes for cycle-days × models
+ * (31 days × every model id in the catalogue, with headroom); a result
+ * at the limit is flagged as a lower bound, never silently truncated —
+ * the r2-storage discipline.
+ */
+export const AI_NEURONS_DAY_GROUP_LIMIT = 10000;
+/** Default alert threshold: 5× the 10k free daily neurons allowance. */
+export const AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT = 50000;
+
+/** Threshold from the environment: CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD,
+ * retunable without a code change. Unset, empty, non-numeric, or
+ * negative values fall back to the default — a typo must never
+ * silently disable (or zero) the alert. */
+export function aiNeuronsDayAlertThreshold(env = process.env) {
+  const raw = env?.CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD;
+  if (raw == null || String(raw).trim() === "") return AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT;
+}
 /** The analytics scopes the day-to-day token needs for this collector. */
 export const ANALYTICS_SCOPES = [
   "Account Analytics Read (GraphQL analytics: workersInvocationsAdaptive, kvOperationsAdaptiveGroups, d1AnalyticsAdaptiveGroups, queueMessageOperationsAdaptiveGroups, r2OperationsAdaptiveGroups, r2StorageAdaptiveGroups, aiInferenceAdaptiveGroups)",
@@ -82,8 +110,13 @@ export function cycleStartUtc(now = new Date()) {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
-const num = (v, field) => {
-  const n = typeof v === "string" || typeof v === "number" ? Number(v) : NaN;
+const PLAIN_DECIMAL = /^[0-9]+(?:\.[0-9]+)?$/;
+const DECIMAL_COUNT = /^[0-9]+$/;
+
+const num = (v, field, { integerString = false } = {}) => {
+  const validString = typeof v === "string" &&
+    (integerString ? DECIMAL_COUNT.test(v) : PLAIN_DECIMAL.test(v));
+  const n = typeof v === "number" ? v : validString ? Number(v) : NaN;
   if (!Number.isFinite(n) || n < 0) {
     throw new ExportError("unparseable", 6, `graphql: field ${field} not a finite non-negative number`);
   }
@@ -133,7 +166,7 @@ export function classifyR2(groups) {
   const unclassified = [];
   for (const g of groups) {
     const action = g?.dimensions?.actionType;
-    const requests = num(g?.sum?.requests, `r2.${String(action)}.requests`);
+    const requests = num(g?.sum?.requests, `r2.${String(action)}.requests`, { integerString: true });
     const status = g?.dimensions?.responseStatusCode;
     if (status != null && R2_NONBILLABLE_STATUSES.has(Number(status))) {
       nonbillable += requests;
@@ -158,26 +191,85 @@ export function foldKv(groups) {
   let reads = 0;
   let writes = 0;
   for (const g of groups) {
-    const requests = num(g?.sum?.requests, `kv.${String(g?.dimensions?.actionType)}.requests`);
+    const requests = num(g?.sum?.requests, `kv.${String(g?.dimensions?.actionType)}.requests`, { integerString: true });
     if (g?.dimensions?.actionType === "read") reads += requests;
     else writes += requests; // write, delete, list — and any future write-side action
   }
   return { reads, writes };
 }
 
-const firstSum = (groups, field, label) => {
+const firstSum = (groups, field, label, { integerString = true } = {}) => {
   if (!Array.isArray(groups)) {
     throw new ExportError("unparseable", 6, `graphql: ${label} groups missing`);
   }
   let total = 0;
-  for (const g of groups) total += num(g?.sum?.[field], `${label}.${field}`);
+  for (const g of groups) total += num(g?.sum?.[field], `${label}.${field}`, { integerString });
   return total;
 };
+
+const AI_DAY_DATE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+/** Fold the grouped per-day/per-model aiInference rows into threshold
+ * alerts (#2287). Dimension field names verified against the live
+ * GraphQL schema at implementation time (2026-11-01): `date` and
+ * `modelId` are the aiInferenceAdaptiveGroups dimensions (`modelName`
+ * and `model` are unknown fields). Fail-closed like the rest of the
+ * parser: a missing groups field or a drifted dimension is shape
+ * drift, not zero usage. Returns the alerts (only days whose total
+ * strictly exceeds the threshold) plus whether the grouped result hit
+ * the query limit — in which case day totals are lower bounds and the
+ * alerts say so. */
+export function aiNeuronsDayAlerts(groups, threshold) {
+  if (!Array.isArray(groups)) {
+    throw new ExportError("unparseable", 6, "graphql: aiInferenceAdaptiveGroupsByDay groups missing");
+  }
+  const byDay = new Map();
+  for (const g of groups) {
+    const date = g?.dimensions?.date;
+    const model = g?.dimensions?.modelId;
+    if (typeof date !== "string" || !AI_DAY_DATE.test(date)) {
+      throw new ExportError("unparseable", 6, `graphql: ai dimensions.date not a YYYY-MM-DD date: ${String(date)}`);
+    }
+    if (typeof model !== "string" || model === "") {
+      throw new ExportError("unparseable", 6, "graphql: ai dimensions.modelId missing");
+    }
+    const neurons = num(g?.sum?.totalNeurons, `ai.${date}.${model}.totalNeurons`, { integerString: false });
+    let day = byDay.get(date);
+    if (!day) {
+      day = { total: 0, models: new Map() };
+      byDay.set(date, day);
+    }
+    day.total += neurons;
+    day.models.set(model, (day.models.get(model) ?? 0) + neurons);
+  }
+  const saturated = groups.length >= AI_NEURONS_DAY_GROUP_LIMIT;
+  const alerts = [];
+  for (const date of [...byDay.keys()].sort()) {
+    const day = byDay.get(date);
+    if (day.total <= threshold) continue;
+    const topModels = [...day.models.entries()]
+      .map(([model, neurons]) => ({ model, neurons: Math.round(neurons) }))
+      .sort((a, b) => b.neurons - a.neurons)
+      .slice(0, 3);
+    alerts.push({
+      kind: "workers-ai-neurons-day",
+      date,
+      totalNeurons: Math.round(day.total),
+      threshold,
+      topModels,
+      ...(saturated ? { lowerBound: true } : {}),
+    });
+  }
+  return { alerts, saturated };
+}
 
 /** Parse one combined GraphQL analytics payload into export metrics.
  * Fail-closed: any recognised-shape violation throws; GraphQL-level
  * errors are handled by the caller (they arrive out-of-band). */
-export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}) {
+export function parseGraphqlUsage(
+  account,
+  { now = new Date(), cycleStart, aiThreshold = AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT } = {},
+) {
   const src = "cloudflare-graphql-analytics";
   const metrics = [];
   const push = (id, used, unit, extra = {}) =>
@@ -230,13 +322,19 @@ export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}
         : ""),
   });
 
-  const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai");
+  // Neurons are a fractional measurement (fixture total 4114515.31), not a request count: plain-decimal strings stay valid here.
+  const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai", { integerString: false });
   const daysElapsed = Math.max(1, (now - cycleStart) / 86_400_000);
   push("workers-ai-neurons", Math.round(neuronsTotal / daysElapsed), "neurons", {
     detail: `per-day average over the cycle to date; cycle total ${Math.round(neuronsTotal)} neurons`,
   });
 
-  return { metrics, r2Unclassified: r2.unclassified };
+  // The average above stays for card compatibility; the per-day alert
+  // (#2287) is computed from the grouped query so a one-day burn is
+  // not diluted by the cycle length.
+  const aiNeurons = aiNeuronsDayAlerts(account?.aiInferenceAdaptiveGroupsByDay, aiThreshold);
+
+  return { metrics, r2Unclassified: r2.unclassified, aiNeurons };
 }
 
 /** Classify the billing probe pair (billing/profile + subscriptions).
@@ -274,6 +372,11 @@ export function successDocument({ measuredAt, cycleStart, accountId, billing, pa
     billing,
     r2Buckets,
     ...(parsed.r2Unclassified?.length ? { r2UnclassifiedActions: parsed.r2Unclassified } : {}),
+    // #2287: the alerts array is present ONLY when a day is firing, so
+    // consumers can key on its presence; saturation of the grouped
+    // query is flagged on the document even when no day crossed.
+    ...(parsed.aiNeurons?.alerts?.length ? { alerts: parsed.aiNeurons.alerts } : {}),
+    ...(parsed.aiNeurons?.saturated ? { aiNeuronsByDaySaturated: true } : {}),
     metrics: parsed.metrics,
   };
 }
@@ -337,6 +440,7 @@ const GRAPHQL_QUERY = `query($a: string!, $s: Time!, $e: Time!) {
       r2OperationsAdaptiveGroups(limit: 1000, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { actionType responseStatusCode } sum { requests } }
       r2StorageAdaptiveGroups(limit: 10000, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { bucketName } max { payloadSize } }
       aiInferenceAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { sum { totalNeurons } }
+      aiInferenceAdaptiveGroupsByDay: aiInferenceAdaptiveGroups(limit: 10000, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { date modelId } sum { totalNeurons } }
     }
   }
 }`;
@@ -404,7 +508,24 @@ export async function run({ token, accountId, now = new Date() } = {}) {
   });
   if (gql.status === 401 || gql.status === 403) throw scopeError("POST /graphql", gql.status);
   if (gql.status !== 200) throw new ExportError("fetch-failed", 7, `POST /graphql: HTTP ${gql.status}`);
-  const gqlErrors = gql.body?.errors ?? [];
+  // GraphQL errors: an array of {message: string} is the documented shape,
+  // and a single object with a string message is the same shape unwrapped -
+  // normalise it to the array so it classifies identically (#2608). Any
+  // other drift (errors as a string, null/non-object entries, a missing or
+  // non-string message) is a shape this parser does not know: fail closed
+  // as unparseable instead of throwing a bare TypeError that main() would
+  // misclassify as fetch-failed, or silently ignoring the error.
+  const rawErrors = gql.body?.errors ?? [];
+  const gqlErrors = Array.isArray(rawErrors) ? rawErrors : [rawErrors];
+  for (const e of gqlErrors) {
+    if (!e || typeof e !== "object" || typeof e.message !== "string") {
+      throw new ExportError(
+        "unparseable",
+        6,
+        "POST /graphql: malformed errors shape (expected an array of {message: string})",
+      );
+    }
+  }
   if (gqlErrors.length) {
     const msg = gqlErrors.map((e) => e.message.split("\n")[0]).join(" ; ");
     if (/auth|permission|scope/i.test(msg)) throw scopeError("POST /graphql", 403);
@@ -412,7 +533,7 @@ export async function run({ token, accountId, now = new Date() } = {}) {
   }
   const account = gql.body?.data?.viewer?.accounts?.[0];
   if (!account) throw new ExportError("unparseable", 6, "POST /graphql: no account node in data");
-  const parsed = parseGraphqlUsage(account, { now, cycleStart: start });
+  const parsed = parseGraphqlUsage(account, { now, cycleStart: start, aiThreshold: aiNeuronsDayAlertThreshold() });
   return successDocument({
     measuredAt: now.toISOString(),
     cycleStart: start,

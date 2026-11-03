@@ -20,9 +20,10 @@
 //!
 //! [`plain_field`] quotes a value when it contains a character that could
 //! break or blur a **tab-separated** row: any control character (this includes
-//! `LF`, `CR` and `TAB`, plus NUL, DEL, `NEL` and the rest) and the Unicode
-//! line/paragraph separators `U+2028` / `U+2029`. Everything else — including
-//! ASCII space and ordinary Unicode — is printed byte-identically to before.
+//! `LF`, `CR` and `TAB`, plus NUL, DEL, `NEL` and the rest), Unicode format
+//! characters (Cf), and the line/paragraph separators `U+2028` / `U+2029`.
+//! Everything else — including ASCII space and ordinary Unicode — is printed
+//! byte-identically to before.
 //!
 //! The trigger set is deliberately narrower than the `key=value` renderer's
 //! (#1611 also quotes on a space): a space does not delimit a TSV field, so a
@@ -32,15 +33,68 @@
 //! A quoted field is a JSON string literal, so a consumer that needs the
 //! original bytes can parse it as JSON. Values with no structure-breaking
 //! character are the common case and stay unwrapped, exactly as before.
+//!
+//! # The plain-output contract (design #3455, Phase 3b)
+//!
+//! A plain-text field is row-safe only if it contains no character that can
+//! act on the terminal. There are exactly two such classes:
+//!
+//! * **Structure characters**: control characters (category Cc, matched by
+//!   `char::is_control`) plus the line/paragraph separators `U+2028` /
+//!   `U+2029`, which are not controls but which some consumers treat as line
+//!   breaks.
+//! * **Format characters**: category Cf, per the crate's one shared set
+//!   (`crate::is_format_char`). These are invisible or reorder the text
+//!   around them (bidi overrides/isolates, zero-width characters), so they
+//!   can falsify a row's columns at the terminal even from inside quotes.
+//!
+//! Every plain renderer in `pkgs/id` accounts for both classes; the
+//! disposition differs by surface kind:
+//!
+//! * **Row renderers escape**: [`plain_field`] (this module) and the
+//!   `key=value` renderer (`crate::commands::group`) quote an affected value and
+//!   render each offending character as `\uXXXX`, so the value stays complete
+//!   and JSON-recoverable but no raw actor reaches the terminal.
+//! * **Stripping sanitizers strip**: `crate::world::sanitize_display_name`,
+//!   `crate::world::sanitize_chat` and the SSH world's terminal gate drop both
+//!   classes (chat keeps `ZWJ`/`ZWNJ` so legitimate emoji survive; the SSH
+//!   gate keeps `LF`/`TAB` so terminal layout survives).
+//! * **Ingest validators refuse**: directory names/descriptions, invite
+//!   names and petnames refuse both classes at the boundary, so no new
+//!   stored value carries one.
+//!
+//! No surface re-derives the character set: the single definition is
+//! `crate::is_format_char`, the complete Unicode 16 general-category Cf
+//! set, defined once in `id-core` (`crates/id-core/src/unicode.rs`) and
+//! shared by validation and rendering.
+
+use std::fmt::Display;
 
 /// Returns `true` for characters that could break a tab-separated row.
 ///
 /// Control characters cover `LF`, `CR`, `TAB`, NUL and every other C0/C1
-/// code point (including `NEL`, `U+0085`); the Unicode line and paragraph
-/// separators are included because some consumers treat them as line breaks
-/// even though they are not control characters.
+/// code point (including `NEL`, `U+0085`); format characters can be invisible
+/// or reorder text; and the Unicode line and paragraph separators are included
+/// because some consumers treat them as line breaks even though they are not
+/// control characters.
 fn breaks_row(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+    c.is_control() || crate::is_format_char(c) || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
+fn push_unicode_escape(rendered: &mut String, c: char) {
+    use std::fmt::Write as _;
+
+    let code_point = u32::from(c);
+    if code_point <= 0xFFFF {
+        // Writing into a String cannot fail.
+        let _ = write!(rendered, "\\u{code_point:04x}");
+    } else {
+        // JSON escapes supplementary scalars as a UTF-16 surrogate pair.
+        let scalar = code_point - 0x1_0000;
+        let high = 0xD800 + (scalar >> 10);
+        let low = 0xDC00 + (scalar & 0x3FF);
+        let _ = write!(rendered, "\\u{high:04x}\\u{low:04x}");
+    }
 }
 
 /// Renders `value` as one row-safe field.
@@ -76,15 +130,18 @@ pub fn plain_field(value: &str) -> String {
             '\r' => rendered.push_str("\\r"),
             '\t' => rendered.push_str("\\t"),
             c if breaks_row(c) => {
-                use std::fmt::Write as _;
-                // Writing into a String cannot fail.
-                let _ = write!(rendered, "\\u{:04x}", u32::from(c));
+                push_unicode_escape(&mut rendered, c);
             }
             c => rendered.push(c),
         }
     }
     rendered.push('"');
     rendered
+}
+
+/// Formats one tab-separated row whose name field may contain untrusted text.
+pub fn tsv_row(hash: impl Display, name: &str) -> String {
+    format!("{hash}\t{}", plain_field(name))
 }
 
 #[cfg(test)]
@@ -137,6 +194,50 @@ mod tests {
     }
 
     #[test]
+    fn format_characters_are_quoted_and_escaped_alone_or_with_a_tab() {
+        let alone = plain_field("\u{202e}");
+        assert_eq!(alone, r#""\u202e""#);
+        assert!(!alone.contains('\u{202e}'));
+        assert_eq!(serde_json::from_str::<String>(&alone).unwrap(), "\u{202e}");
+
+        let with_tab = plain_field("a\u{202e}\tb");
+        assert_eq!(with_tab, r#""a\u202e\tb""#);
+        assert!(!with_tab.contains('\u{202e}'));
+        assert_eq!(
+            serde_json::from_str::<String>(&with_tab).unwrap(),
+            "a\u{202e}\tb"
+        );
+    }
+
+    #[test]
+    fn every_shared_format_character_is_json_escaped() {
+        let mut count = 0;
+        for code_point in 0..=0x10_FFFF {
+            let Some(c) = char::from_u32(code_point) else {
+                continue;
+            };
+            if !crate::is_format_char(c) {
+                continue;
+            }
+
+            let value = c.to_string();
+            let rendered = plain_field(&value);
+            assert!(rendered.starts_with('"') && rendered.ends_with('"'));
+            assert!(
+                rendered.contains("\\u"),
+                "{c:?} was not escaped: {rendered:?}"
+            );
+            assert!(!rendered.contains(c), "raw format character {c:?} remains");
+            assert_eq!(serde_json::from_str::<String>(&rendered).unwrap(), value);
+            count += 1;
+        }
+        assert!(
+            count > 100,
+            "expected the complete Unicode 16 Cf set, got {count}"
+        );
+    }
+
+    #[test]
     fn quotes_and_backslashes_are_escaped_inside_a_quoted_value() {
         assert_eq!(plain_field("a\"b\nc"), r#""a\"b\nc""#);
         assert_eq!(plain_field("a\\b\nc"), r#""a\\b\nc""#);
@@ -149,5 +250,19 @@ mod tests {
         );
         assert_eq!(rendered.matches('\t').count(), 0);
         assert!(!rendered.contains('\n'));
+    }
+
+    #[test]
+    fn tsv_row_keeps_control_characters_inside_the_name_field() {
+        let row = tsv_row("hash", "x\nforged\tcolumn");
+        assert_eq!(row, format!("hash\t{}", r#""x\nforged\tcolumn""#));
+        assert_eq!(
+            row.matches('\t').count(),
+            1,
+            "only the real delimiter remains"
+        );
+        assert!(!row.contains('\n'), "the name cannot add a physical row");
+
+        assert_eq!(tsv_row("hash", "ordinary name"), "hash\tordinary name");
     }
 }

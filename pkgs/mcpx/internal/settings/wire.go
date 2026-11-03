@@ -190,6 +190,26 @@ func limitSettings() []Setting {
 				"sending something a conforming client will reject.",
 		},
 		{
+			Path: "completion.perMinute", Kind: KindInt, Default: "120",
+			Scope: ScopeDaemon, Hot: true, Plumbing: true,
+			Name: "Completion rate (per caller)", Short: "how many completion requests one caller may make against one server per minute; 0 disables",
+			Long: "completion/complete acquires a pool lease and may wake an " +
+				"upstream, and a client sends one per keystroke, so the daemon " +
+				"refuses past this fixed window with HTTP 429 before any pool " +
+				"lookup (#2387). Counted on admission only: a refused request " +
+				"consumes no quota.",
+		},
+		{
+			Path: "completion.serverPerMinute", Kind: KindInt, Default: "600",
+			Scope: ScopeDaemon, Hot: true, Plumbing: true,
+			Name: "Completion rate (per server)", Short: "how many completion requests one server may receive per minute across all callers; 0 disables",
+			Long: "The backstop window for completion/complete (#2387): caller " +
+				"identity is only as strong as the session a caller reports, " +
+				"so this window bounds one server's total completion rate " +
+				"across every caller. Refusals are HTTP 429 before any pool " +
+				"lookup and consume no quota.",
+		},
+		{
 			Path: "elicit.pendingLimit", Kind: KindInt, Default: defaults.Num(defaults.ElicitPending),
 			Scope: ScopeDaemon, Hot: true, Plumbing: true,
 			Name: "Pending questions", Short: "how many unanswered questions one listing returns",

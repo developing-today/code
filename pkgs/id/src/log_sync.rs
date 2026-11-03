@@ -6,6 +6,10 @@
 //! if both agree on range sync, each side runs a range session (`event_store::sync`) on the same
 //! stream pair, over the same store (#179).
 //!
+//! A group-sync initiator is not built yet. When one calls `sync_with`, it must persist successful
+//! completion after that call returns successfully, keyed by topic and peer, for later selection.
+//! Completion recording is deferred until that initiator exists.
+//!
 //! Three decisions shape the session:
 //!
 //! - **Arrival order is the write path.** Each operation is handed to an ingest worker, which verifies
@@ -302,6 +306,15 @@ pub async fn answer(
             finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::PullRefused);
         }
+        // A blocked topic tag is not pulled (#2245): the gate's block list
+        // is also checked against the requested topic's hash bytes, the
+        // form this seam names a topic in. Refused exactly as a pull
+        // refusal, before the method is agreed.
+        if gate.topic_tag_blocked(request.topic.as_bytes()) {
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
+            return Err(SyncError::PullRefused);
+        }
         if !support.supports(request.method) {
             send_message(&mut send, &Answer::Refuse).await?;
             finish_stream(&mut send, &mut recv).await;
@@ -524,7 +537,7 @@ fn ingest_arrivals(
     let mut tally = Tally::default();
     while let Some(first) = arrivals.blocking_recv() {
         let mut batch: Vec<Vec<u8>> = Vec::new();
-        for arrival in collect_batch(first, &mut arrivals) {
+        for arrival in collect_batch(first, &mut arrivals, BATCH_GRACE) {
             match arrival {
                 Arrival::Header(bytes) => batch.push(bytes),
                 Arrival::Refused => tally.refused += 1,
@@ -547,11 +560,20 @@ fn ingest_arrivals(
 /// [`INGEST_BATCH`] headers and at most [`BATCH_MAX_ARRIVALS`] arrivals in total, refusals
 /// included, so a refused stream cannot hold the batch open (see [`BATCH_MAX_ARRIVALS`]).
 /// Everything already queued is taken at once; then, while the batch is not full, the worker
-/// waits out an idle [`BATCH_GRACE`] for more arrivals before giving up on the batch — each
+/// waits out an idle `grace` for more arrivals before giving up on the batch — each
 /// arrival restarts the wait — so arrivals paced by the stream still land in the same write
 /// transaction, however long their run spans. The wait ends early when the stream
 /// closes (every sender dropped), so a session's last, partial batch is not held back.
-fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<Arrival> {
+///
+/// The production caller passes [`BATCH_GRACE`]. The grace is a parameter so the tests can
+/// inject one their pacing cannot race: 5 ms against arrivals paced every 2 ms is a margin
+/// a loaded scheduler breaks, which made these tests a coin flip on the build machine
+/// (#3199). The production tuning is unchanged.
+fn collect_batch(
+    first: Arrival,
+    arrivals: &mut mpsc::Receiver<Arrival>,
+    grace: Duration,
+) -> Vec<Arrival> {
     use tokio::sync::mpsc::error::TryRecvError;
 
     let mut batch = Vec::new();
@@ -577,8 +599,7 @@ fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<
                 }
                 Err(TryRecvError::Disconnected) => break None,
                 Err(TryRecvError::Empty) => {
-                    let end =
-                        *grace_end.get_or_insert_with(|| std::time::Instant::now() + BATCH_GRACE);
+                    let end = *grace_end.get_or_insert_with(|| std::time::Instant::now() + grace);
                     if std::time::Instant::now() >= end {
                         break None;
                     }
@@ -692,6 +713,9 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -1011,6 +1035,13 @@ mod tests {
         store_b.check_invariants().unwrap();
     }
 
+    /// The grace the batch-collection tests inject into [`collect_batch`]: fifty times the
+    /// production [`BATCH_GRACE`], so no plausible scheduler hiccup on a loaded build
+    /// machine can split a batch the pacing means to keep whole (#3199). The pacing itself
+    /// stays at the production-like 2 ms, and the grace-restart test below runs long enough
+    /// that the whole run still spans far longer than this grace.
+    const TEST_GRACE: Duration = Duration::from_millis(250);
+
     /// Arrivals paced a few milliseconds apart — as a bulk stream paces them — still land in
     /// one batch, so the session pays one write transaction for them, not one per operation.
     #[test]
@@ -1024,7 +1055,7 @@ mod tests {
         });
         // The first arrival, however it gets here, starts the batch.
         let first = rx.blocking_recv().expect("the pacer went away");
-        let batch = collect_batch(first, &mut rx);
+        let batch = collect_batch(first, &mut rx, TEST_GRACE);
         pacer.join().unwrap();
 
         assert_eq!(batch.len(), 3, "paced arrivals share one batch");
@@ -1041,8 +1072,11 @@ mod tests {
     /// operation just because its stream outlasts the first grace window.
     #[test]
     fn test_batch_collection_grace_restarts_on_each_arrival() {
-        const PACED: usize = 8;
-        let (tx, mut rx) = mpsc::channel::<Arrival>(16);
+        // Paced every 2 ms, the run spans ~400 ms — far longer than the injected grace —
+        // so it still proves the grace is an idle wait that each arrival restarts, not a
+        // total window that would cut the run at the first grace expiry.
+        const PACED: usize = 200;
+        let (tx, mut rx) = mpsc::channel::<Arrival>(PACED + 16);
         let pacer = std::thread::spawn(move || {
             for n in 0..PACED {
                 tx.try_send(Arrival::Header(vec![n as u8])).unwrap();
@@ -1050,7 +1084,7 @@ mod tests {
             }
         });
         let first = rx.blocking_recv().expect("the pacer went away");
-        let batch = collect_batch(first, &mut rx);
+        let batch = collect_batch(first, &mut rx, TEST_GRACE);
         pacer.join().unwrap();
 
         assert_eq!(
@@ -1068,7 +1102,7 @@ mod tests {
         tx.try_send(Arrival::Header(vec![7])).unwrap();
         let first = rx.try_recv().unwrap();
         let started = std::time::Instant::now();
-        let batch = collect_batch(first, &mut rx);
+        let batch = collect_batch(first, &mut rx, BATCH_GRACE);
 
         assert_eq!(batch.len(), 1);
         assert!(
@@ -1086,7 +1120,7 @@ mod tests {
             tx.try_send(Arrival::Header(vec![(n % 251) as u8])).unwrap();
         }
         let first = rx.try_recv().unwrap();
-        let batch = collect_batch(first, &mut rx);
+        let batch = collect_batch(first, &mut rx, BATCH_GRACE);
 
         assert_eq!(batch.len(), INGEST_BATCH, "the batch is capped");
         let mut left = 0;
@@ -1111,9 +1145,15 @@ mod tests {
             }
         });
         let first = rx.blocking_recv().expect("the pacer went away");
-        let started = std::time::Instant::now();
-        let batch = collect_batch(first, &mut rx);
-        let elapsed = started.elapsed();
+        let batch = collect_batch(first, &mut rx, TEST_GRACE);
+        // The batch must end at the cap while the stream is still flowing: when it
+        // returns, the pacer still has most of its sends (and their 2 ms sleeps) ahead of
+        // it, so it cannot have finished. Checking the pacer states the property directly;
+        // the wall-clock version raced the pacer's own scheduling under load (#3199).
+        assert!(
+            !pacer.is_finished(),
+            "the batch ended while the stream was still flowing"
+        );
         pacer.join().unwrap();
 
         assert_eq!(
@@ -1126,10 +1166,6 @@ mod tests {
                 .iter()
                 .all(|arrival| matches!(arrival, Arrival::Refused)),
             "the capped batch holds the refusals it collected"
-        );
-        assert!(
-            elapsed < Duration::from_millis((SENT * 2) as u64),
-            "the batch ended while the stream was still flowing, took {elapsed:?}"
         );
     }
 
@@ -1183,6 +1219,9 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1645,6 +1684,94 @@ mod tests {
         assert_eq!(
             applied(&store_a, &[&alice], 3),
             applied(&store_b, &[&alice], 3)
+        );
+    }
+
+    /// #2245: a peer blocked by key is refused by the responder's gate
+    /// before any event is sent, under the open policy included. The
+    /// dialer gets `Refuse`, the responder reports the refusal, and the
+    /// blocked peer's store does not change.
+    #[tokio::test]
+    async fn test_blocked_peer_log_session_is_refused_and_sends_no_event() {
+        let topic = group(14);
+        let alice = key(26);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let gate = testing::open_gate()
+            .with_blocks(testing::stub_blocks(&[*testing::key(0xd5).public().as_bytes()], &[]));
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed to the blocked peer"
+        );
+    }
+
+    /// #2245: a blocked topic tag is not pulled. The peer is not blocked
+    /// and the gate is open, but the requested topic's hash bytes are a
+    /// blocked tag, so the session is refused before the method is agreed.
+    #[tokio::test]
+    async fn test_blocked_topic_tag_log_session_is_refused_and_sends_no_event() {
+        let topic = group(15);
+        let alice = key(27);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let blocks = std::sync::Arc::new(testing::StubBlocks {
+            peers: Default::default(),
+            topics: [topic.as_bytes().to_vec()].into_iter().collect(),
+        });
+        let gate = testing::open_gate().with_blocks(blocks);
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed for the blocked topic"
         );
     }
 

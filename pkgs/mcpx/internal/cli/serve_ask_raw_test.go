@@ -58,8 +58,8 @@ func (b *rawAskBackend) ReadResource(context.Context, string) ([]mcpserver.Resou
 func (b *rawAskBackend) GetPrompt(context.Context, string, map[string]string) (string, error) {
 	return "", nil
 }
-func (b *rawAskBackend) Complete(context.Context, json.RawMessage) ([]string, error) {
-	return nil, nil
+func (b *rawAskBackend) Complete(context.Context, json.RawMessage) (mcpserver.Completion, error) {
+	return mcpserver.Completion{}, nil
 }
 func (b *rawAskBackend) ResourceTemplates(context.Context) ([]mcpserver.ResourceRef, error) {
 	return nil, nil

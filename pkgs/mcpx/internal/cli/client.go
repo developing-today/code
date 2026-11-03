@@ -108,7 +108,10 @@ func clientSettings() *settings.Set {
 func callHeader(set *settings.Set) string {
 	ov := map[string]string{}
 	for _, decl := range set.Schema().All() {
-		if decl.Scope != settings.ScopeCall {
+		// CallRequest settings ride along too: pool.callTimeout is the
+		// daemon's ceiling, but a caller may ask for a shorter call
+		// (#1864 item 4); the daemon clamps the request to its own value.
+		if decl.Scope != settings.ScopeCall && !decl.CallRequest {
 			continue
 		}
 		v, ok := set.Value(decl.Path)

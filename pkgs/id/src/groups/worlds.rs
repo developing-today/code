@@ -188,7 +188,7 @@ mod tests {
     use super::{Isolation, Markers, Worlds};
     use crate::groups::policy::Policy;
     use crate::groups::{
-        Body, Create, Delegate, Event, Key, MemberOp, Outcome, Refusal, Role, Template,
+        Body, Create, Delegate, Event, Key, MemberOp, Outcome, Refusal, RemoveMode, Role, Template,
     };
     use Isolation::{Isolated, Unisolated};
 
@@ -258,7 +258,7 @@ mod tests {
             let group = self.group(world);
             let body = Body::Member(MemberOp::Remove {
                 member: key(who),
-                successor: None,
+                mode: RemoveMode::Revoke,
             });
             self.push(world, by, Some(&group), body)
         }

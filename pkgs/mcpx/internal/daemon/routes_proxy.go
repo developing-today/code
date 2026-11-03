@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
@@ -41,7 +42,7 @@ type chatCompletionReq struct {
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit)))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

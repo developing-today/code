@@ -3,13 +3,18 @@ import { DurableObject } from "cloudflare:workers";
 import {
   computeBudget,
   crawlFetcher,
+  extractHtml,
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
   readResponseTextCapped,
+  crawlArchiveKey,
+  uploadKey,
   validateCrawlUrl,
+  isMachineNameConflict,
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
+  fileResponseForKey,
 } from "./lib";
 
 // ---------------------------------------------------------------------------
@@ -203,13 +208,10 @@ async function crawlFallback(url: string) {
   // Cap the body read at the container's 2,000,000 bytes (#481): res.text()
   // would buffer a huge page whole in the Worker's memory.
   const html = await readResponseTextCapped(res);
-  const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? "";
-  const links = (html.match(/<a\s/gi) ?? []).length;
-  const text = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Extraction matches the container Extractor exactly (#569):
+  // extractHtml in lib.ts mirrors its HTMLParser semantics and both
+  // doors are pinned by the paired fixtures in test/.
+  const { title, links, text } = extractHtml(html);
   return { title, excerpt: text.slice(0, 500), links, status_code: res.status, text: text.slice(0, 20000) };
 }
 
@@ -276,20 +278,30 @@ export default {
         const b = parsed.body;
         const valid = validateMachineBody(b);
         if (!valid.ok) return json({ error: valid.error }, 400);
-        const r = await env.DB.prepare(
-          "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        )
-          .bind(
-            valid.values.name,
-            b.role ?? "compute",
-            b.cpu ?? null,
-            b.ram_gb ?? null,
-            b.storage ?? null,
-            b.gpu ?? null,
-            b.status ?? "planned",
-            b.notes ?? null,
+        let r;
+        try {
+          r = await env.DB.prepare(
+            "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
           )
-          .run();
+            .bind(
+              valid.values.name,
+              b.role ?? "compute",
+              b.cpu ?? null,
+              b.ram_gb ?? null,
+              b.storage ?? null,
+              b.gpu ?? null,
+              b.status ?? "planned",
+              b.notes ?? null,
+            )
+            .run();
+        } catch (e) {
+          // A duplicate name is a client conflict, not a server fault
+          // (#2631); every other DB failure keeps the outer 500.
+          if (isMachineNameConflict(e)) {
+            return json({ error: "machine name already exists", name: valid.values.name }, 409);
+          }
+          throw e;
+        }
         ctx.waitUntil(Promise.all([logUsage(env, "d1_write", "machine"), env.CACHE.delete("machines:all")]));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
       }
@@ -360,7 +372,7 @@ export default {
         const file = form.get("file") as File | null;
         if (!file) return json({ error: "multipart field 'file' required" }, 400);
         const buf = await file.arrayBuffer();
-        const key = `uploads/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, "_")}`;
+        const key = uploadKey(file.name, Date.now(), crypto.randomUUID());
         await env.FILES.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
           .bind(key, file.name, file.type || null, buf.byteLength)
@@ -377,11 +389,7 @@ export default {
       }
       const fileMatch = p.match(/^\/api\/files\/(.+)$/);
       if (fileMatch && req.method === "GET") {
-        const obj = await env.FILES.get(decodeURIComponent(fileMatch[1]));
-        if (!obj) return json({ error: "not found in R2" }, 404);
-        return new Response(obj.body, {
-          headers: { "content-type": obj.httpMetadata?.contentType ?? "application/octet-stream" },
-        });
+        return fileResponseForKey(fileMatch[1], (key) => env.FILES.get(key));
       }
 
       // Live board (Durable Object, one global room)
@@ -414,7 +422,7 @@ export default {
           containerError = String(e).slice(0, 300);
           result = await crawlFallback(b.url);
         }
-        const key = `crawls/${Date.now()}.json`;
+        const key = crawlArchiveKey(Date.now(), crypto.randomUUID());
         await env.FILES.put(key, JSON.stringify({ url: b.url, source, ...result }, null, 2), {
           httpMetadata: { contentType: "application/json" },
         });

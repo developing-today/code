@@ -72,13 +72,17 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
-	r.beginAsk(id, server, key, cc.SessionID)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	res, err := p.Call(ctx, key, tool, args)
+
+	res, err := r.callWithLedger(withRequestedCallTimeout(ctx), p, server, effTool, effArgs, rs, "reporting")
+
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
@@ -122,7 +126,7 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	t, terr := s.taskStore().StartWithDeadline(reportingRequestor, askTTL.Milliseconds(), askTTL,
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
-			callCtx := withRun(ctx, run)
+			callCtx := withCallSettings(withRun(ctx, run), s.callSettings(r))
 			res, err := s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
 			// This path returns before handleCall's own reporting, so
 			// report the completed call here: an exec run whose calls

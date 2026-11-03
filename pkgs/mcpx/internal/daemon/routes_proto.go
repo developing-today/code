@@ -298,14 +298,18 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// the table before the upstream request goes out, so it is registered
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
+	rs, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+
 	if err != nil {
 		return nil, err
 	}
-	r.beginAsk(id, server, key, cc.SessionID)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
-	return p.Call(ctx, key, tool, args)
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+
+	return r.callWithLedger(ctx, p, server, effTool, effArgs, rs, "ask")
+
 }
 
 // ReadResourceAsk is resources/read, interruptibly.
@@ -314,11 +318,11 @@ func (r *Registry) ReadResourceAsk(ctx context.Context, id, server, uri string, 
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
 	}
-	key := r.keyFor(p, cc)
-	r.beginAsk(id, server, key, cc.SessionID)
+	rs := r.resolvedFor(p, cc)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
-	return p.ReadResource(ctx, key, upstreamResourceURI(ctx, p, uri))
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+	return p.ReadResource(ctx, rs, upstreamResourceURI(ctx, p, uri))
 }
 
 // GetPromptAsk is prompts/get, interruptibly.
@@ -327,11 +331,11 @@ func (r *Registry) GetPromptAsk(ctx context.Context, id, server, name string, ar
 	if !ok {
 		return nil, fmt.Errorf("unknown server or namespace %q", server)
 	}
-	key := r.keyFor(p, cc)
-	r.beginAsk(id, server, key, cc.SessionID)
+	rs := r.resolvedFor(p, cc)
+	r.beginAsk(id, server, rs.Key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
-	return p.GetPrompt(ctx, key, name, args)
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
+	return p.GetPrompt(ctx, rs, name, args)
 }
 
 // runKey carries the exec run a /v1/call was made from.
@@ -438,6 +442,12 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	// arrives for a call nothing has heard of.
 	ready := make(chan string, 1)
 	caps := withClientCaps(context.Background(), r)
+	// The ask funnels read the request's call settings off the task
+	// context (withRequestedCallTimeout), and the task outlives this
+	// request, so capture them by value now and attach them inside the
+	// callback -- the same treatment the client caps get (#1864 item 4:
+	// a caller's shorter pool.callTimeout applies to ask calls too).
+	cs := s.callSettings(r)
 	// The /v1/ask ttl is the interruptible call's lifetime (proto.askTTL
 	// by default), not just retention: it bounds the work itself, which
 	// internal/pool's budget treats as the outer bound while upstream
@@ -450,6 +460,7 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 		// by value rather than through r.Context().
 		ctx = mcpclient.WithClientCapabilities(ctx, mcpclient.ClientCapabilitiesFrom(caps))
 		ctx = mcpclient.WithCallerVersion(ctx, mcpclient.CallerVersionFrom(caps))
+		ctx = withCallSettings(ctx, cs)
 		var (
 			raw json.RawMessage
 			err error
@@ -510,7 +521,7 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 	s.reg.asks.beginRun(id, run, opts.Session)
 	defer s.reg.endAsk(id)
 	start := time.Now()
-	res, err := s.ExecService().Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run}, nil)
+	res, err := s.ExecService().Run(ctx, execsvc.Request{Source: req.Source, Opts: opts, RunID: run, CallSettings: callSettingsHeaderValue(callSettingsFrom(ctx))}, nil)
 	if err != nil && res == nil {
 		return nil, &tasks.Fault{Code: http.StatusBadRequest, Message: err.Error()}
 	}
@@ -995,7 +1006,7 @@ func (s *Server) watchResources(ctx context.Context, server string, uris []strin
 		}
 		upstream = upstreamResourceURI(ctx, p, upstream)
 		match = append(match, upstream)
-		release, err := p.Watch(ctx, s.reg.keyFor(p, config.CallContext{}), upstream)
+		release, err := p.Watch(ctx, s.reg.resolvedFor(p, config.CallContext{}), upstream)
 		if err != nil {
 			w.refuse(u, err.Error())
 			s.warnUnwatched(owner, u, err.Error())

@@ -4,6 +4,8 @@ What the opencode plugin does when there is no `mcpx` on `PATH`, why each rung
 of the ladder exists, and what was found building it.
 
 ```
+id:           finding-the-daemon-without-the-binary
+since:        pre-release
 created:      2026-09-29T21:00:00-05:00
 last-updated: 2026-09-29T21:00:00-05:00
 status:       implemented
@@ -22,7 +24,7 @@ The binary must not be a precondition. Two reasons, one of them forced:
 - a daemon may be running under launchd, in a container, or on another host,
   with no `mcpx` on the plugin's `PATH`;
 - opencode v2 removes Bun's `$` from the plugin API. `node:child_process`
-  still works, but the runtime no longer *offers* a way to run a command, and
+  still works, but the runtime no longer _offers_ a way to run a command, and
   building on one it does not offer is building on sand.
 
 And the harder half: **never fail because there are two.** A plugin that
@@ -34,7 +36,7 @@ refuses to work until the user disambiguates has converted "we guessed" into
 ## 2. `GET /v1/resolve`
 
 The one new daemon endpoint. It answers "which daemon serves this directory?"
-for *any* directory, from *any* live daemon, because the answer is a function
+for _any_ directory, from _any_ live daemon, because the answer is a function
 of mcpx's configuration search path and not of what the asked daemon happens
 to have loaded.
 
@@ -71,7 +73,7 @@ definitions, used to invalidate the schema cache. The file name is
 `FingerprintConfig(sources)` — the daemon key, over every path and every byte
 that contributed. Two different numbers for the same daemon, under one name.
 
-`/v1/resolve` returns the *key*, because that is what identifies a daemon.
+`/v1/resolve` returns the _key_, because that is what identifies a daemon.
 Renaming the field in the info file would be the real fix; it is out of scope
 here and is reported rather than done.
 
@@ -79,15 +81,15 @@ here and is reported rather than done.
 
 ## 3. The ladder
 
-| # | rung | cost | applies when |
-| --- | --- | --- | --- |
-| 0 | explicit endpoint or socket | free | configured, or remote |
-| 1 | the remembered choice, still answering | one health check | every session after the first |
-| 2 | the `daemon-*.json` info files | readdir + parallel health | the usual case |
-| 3 | `/v1/resolve` against any live daemon | one request | two or more candidates |
-| 4 | `mcpx --json status` | one spawn, ~23 ms | a binary exists and rung 3 was not available |
-| 5 | ask | a toast, a prompt, or the picker | still ambiguous, and someone is there |
-| 6 | best candidate, warn, carry on | free | headless, or unanswered |
+| #   | rung                                   | cost                             | applies when                                 |
+| --- | -------------------------------------- | -------------------------------- | -------------------------------------------- |
+| 0   | explicit endpoint or socket            | free                             | configured, or remote                        |
+| 1   | the remembered choice, still answering | one health check                 | every session after the first                |
+| 2   | the `daemon-*.json` info files         | readdir + parallel health        | the usual case                               |
+| 3   | `/v1/resolve` against any live daemon  | one request                      | two or more candidates                       |
+| 4   | `mcpx --json status`                   | one spawn, ~23 ms                | a binary exists and rung 3 was not available |
+| 5   | ask                                    | a toast, a prompt, or the picker | still ambiguous, and someone is there        |
+| 6   | best candidate, warn, carry on         | free                             | headless, or unanswered                      |
 
 Rung 5 is deliberately **not** in the core. The core returns the candidates and
 a warning; whether anyone can be asked, and how, is the adapter's business, and
@@ -114,7 +116,7 @@ function, so a second opinion is the same opinion.
 
 ### Rung 0 does not fall through
 
-A named endpoint that is not answering returns *that endpoint* with a warning,
+A named endpoint that is not answering returns _that endpoint_ with a warning,
 never a local daemon. Answering from the wrong machine — wrong servers, wrong
 credentials, possibly wrong data — is worse than answering not at all. This
 matches what the CLI already does (`will not start a local one`).
@@ -141,7 +143,7 @@ turns that into a socket. The agent cannot mistype a path it never types. This
 is why the guided skill beats a coded walkthrough: it degrades correctly when
 the agent is confused.
 
-⚠️ v1's `permission.ask` *hook* is dead code — declared, documented, never
+⚠️ v1's `permission.ask` _hook_ is dead code — declared, documented, never
 invoked. Nothing here is built on it.
 
 ### Detecting headless
@@ -162,11 +164,11 @@ calls deliberately, asks anything.
 
 ## 5. Remembering
 
-| scope | where | why there |
-| --- | --- | --- |
-| session | plugin memory | it should not outlive the session |
-| until-gone, indefinite | `$MCPX_STATE_DIR/opencode-daemons.json` | **v1 server plugins have no storage API** |
-| permanent | `PUT /v1/settings/daemon.endpoint` | it is a user preference, and mcpx already owns those |
+| scope                  | where                                   | why there                                            |
+| ---------------------- | --------------------------------------- | ---------------------------------------------------- |
+| session                | plugin memory                           | it should not outlive the session                    |
+| until-gone, indefinite | `$MCPX_STATE_DIR/opencode-daemons.json` | **v1 server plugins have no storage API**            |
+| permanent              | `PUT /v1/settings/daemon.endpoint`      | it is a user preference, and mcpx already owns those |
 
 The file is keyed by directory, written through a rename, and read at rung 1
 before the scan. `ctx.storage` in v2 replaces it exactly.
@@ -182,12 +184,12 @@ always would put a file read in front of every tool call.
 
 Discovery was half the problem. The rest:
 
-| feature | before | now |
-| --- | --- | --- |
-| tool timing | `POST /v1/log`, spawn fallback | `POST /v1/log`, and **drop** the record with no daemon |
-| `mcpx_discover` | `mcpx ls` / `mcpx types` | `GET /v1/namespaces`, `GET /v1/types` |
-| `mcpx_observe` | `mcpx log` / `mcpx stats` | `GET /v1/log`, `GET /v1/stats` |
-| `mcpx_exec` | `mcpx exec` | `POST /v1/exec`, falling back on 404 |
+| feature         | before                         | now                                                    |
+| --------------- | ------------------------------ | ------------------------------------------------------ |
+| tool timing     | `POST /v1/log`, spawn fallback | `POST /v1/log`, and **drop** the record with no daemon |
+| `mcpx_discover` | `mcpx ls` / `mcpx types`       | `GET /v1/namespaces`, `GET /v1/types`                  |
+| `mcpx_observe`  | `mcpx log` / `mcpx stats`      | `GET /v1/log`, `GET /v1/stats`                         |
+| `mcpx_exec`     | `mcpx exec`                    | `POST /v1/exec`, falling back on 404                   |
 
 Dropping the timing record is the right failure. A timing is not worth 23 ms on
 every tool call, and certainly not worth failing one.

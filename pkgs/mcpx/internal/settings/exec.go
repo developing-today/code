@@ -84,8 +84,8 @@ func artifactSettings() []Setting {
 			Name:  "Artifacts directory",
 			Short: "write this run's artifacts here",
 			Long: "A directory the caller can read. When it is on the same machine " +
-				"as the daemon the files are hardlinked into it rather than copied, " +
-				"so handing back a gigabyte costs an inode. Names are sanitised and " +
+				"as the daemon the files are copied from the store into it; this still " +
+				"requires file I/O. Names are sanitised and " +
 				"collisions get a numeric suffix; nothing is ever overwritten.",
 		},
 		{

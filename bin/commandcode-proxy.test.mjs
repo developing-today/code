@@ -242,3 +242,97 @@ test('ACP prompt usage cacheReadTokens surfaces as prompt_tokens_details.cached_
   assert.equal(noCache.choices[0].message.content, 'ACP-OK');
   assert.equal(noCache.usage.prompt_tokens_details, undefined, 'absent cacheReadTokens must omit prompt_tokens_details entirely');
 });
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-nullbody-'));
+  const stubHome = path.join(tmp, 'home');
+  const stubBin = path.join(stubHome, 'tools', 'command-code', 'bin');
+  fs.mkdirSync(stubBin, { recursive: true });
+  fs.writeFileSync(path.join(stubBin, 'commandcode'), STUB, { mode: 0o755 });
+  const port = 18953;
+  const env = {
+    ...process.env,
+    HOME: stubHome,
+    COMMANDCODE_PROXY_PORT: String(port),
+    COMMANDCODE_PROXY_HOST: '127.0.0.1',
+    COMMANDCODE_PROXY_EGRESS: '',
+    COMMANDCODE_PROXY_TIMEOUT_MS: '30000',
+    STUB_RECORD_DIR: path.join(tmp, 'rec'),
+  };
+  fs.mkdirSync(path.join(tmp, 'rec'), { recursive: true });
+  const child = spawn('node', [path.join(binDir, 'commandcode-proxy.mjs')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+  await waitFor(`http://127.0.0.1:${port}/health`);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
+});
+
+test('ACP lock map self-deletes settled entries (#2407)', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-proxy-locks-test-'));
+  const stubHome = path.join(tmp, 'home');
+  const stubBin = path.join(stubHome, 'tools', 'command-code', 'bin');
+  fs.mkdirSync(stubBin, { recursive: true });
+  fs.writeFileSync(path.join(stubBin, 'commandcode'), ACP_STUB, { mode: 0o755 });
+
+  const port = 18950;
+  const env = {
+    ...process.env,
+    HOME: stubHome,
+    COMMANDCODE_PROXY_PORT: String(port),
+    COMMANDCODE_PROXY_HOST: '127.0.0.1',
+    COMMANDCODE_PROXY_EGRESS: '',
+    COMMANDCODE_PROXY_TIMEOUT_MS: '30000',
+    COMMANDCODE_PROXY_WORKDIR: path.join(tmp, 'work'),
+  };
+  const child = spawn('node', [path.join(binDir, 'commandcode-proxy.mjs')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+  await waitFor('http://127.0.0.1:' + port + '/health');
+
+  const chatH = async (body, headers = {}) => {
+    const res = await fetch('http://127.0.0.1:' + port + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    assert.equal(res.status, 200, 'expected 200, got ' + res.status + ': ' + text.slice(0, 300));
+    return JSON.parse(text);
+  };
+  const locksNow = async () => (await (await fetch('http://127.0.0.1:' + port + '/health')).json()).acp.locks;
+  const waitLocksEmpty = async () => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const n = await locksNow();
+      if (n === 0) return;
+      if (Date.now() > deadline) assert.fail('locks map must be empty after settle, got ' + n);
+      await new Promise(r => setTimeout(r, 50));
+    }
+  };
+
+  // Two distinct session keys through runChat's lock chain.
+  for (const id of ['cc-leak-a', 'cc-leak-b']) {
+    const res = await chatH({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'hi ' + id }], stream: false }, { 'x-session-id': id });
+    assert.equal(res.choices[0].message.content, 'ACP-OK');
+  }
+  await waitLocksEmpty();
+
+  // Same key back-to-back: both complete and the map empties afterwards.
+  const h = { 'x-session-id': 'cc-order-key' };
+  const [r1, r2] = await Promise.all([
+    chatH({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'first' }], stream: false }, h),
+    chatH({ model: 'deepseek/deepseek-v4-flash', messages: [{ role: 'user', content: 'second' }], stream: false }, h),
+  ]);
+  assert.equal(r1.choices[0].message.content, 'ACP-OK');
+  assert.equal(r2.choices[0].message.content, 'ACP-OK');
+  await waitLocksEmpty();
+});

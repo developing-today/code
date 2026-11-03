@@ -108,7 +108,10 @@ func (s *Store) Calls(q Query) ([]CallStat, error) {
 		if out[i].TotalMs != out[j].TotalMs {
 			return out[i].TotalMs > out[j].TotalMs
 		}
-		return out[i].Server+out[i].Tool < out[j].Server+out[j].Tool
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].Tool < out[j].Tool
 	})
 	return out, nil
 }

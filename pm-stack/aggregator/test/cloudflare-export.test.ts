@@ -83,6 +83,41 @@ describe("applyCloudflareExport", () => {
     expect(cf.sourceClass).toBe("manual");
   });
 
+  test("alerts in a fresh export render loudly on the sourceNote (#2287)", () => {
+    const doc = freshDoc();
+    doc.alerts = [
+      {
+        kind: "workers-ai-neurons-day",
+        date: "2026-10-24",
+        totalNeurons: 3090000,
+        threshold: 50000,
+        topModels: [
+          { model: "@cf/deepseek-ai/deepseek-v4-pro-0813", neurons: 2990000 },
+          { model: "@cf/meta/llama-3.1-8b-instruct", neurons: 100000 },
+        ],
+      },
+    ];
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    expect(cf.sourceNote).toContain("⚠ ALERT workers-ai-neurons-day");
+    expect(cf.sourceNote).toContain("2026-10-24");
+    expect(cf.sourceNote).toContain("3090000");
+    expect(cf.sourceNote).toContain("@cf/deepseek-ai/deepseek-v4-pro-0813");
+    // The pre-alert rendering is untouched apart from the appended alert.
+    expect(cf.sourceNote).toContain("invoice-only");
+  });
+
+  test("a document without alerts renders the sourceNote exactly as before (#2287)", () => {
+    const withEmpty = freshDoc();
+    withEmpty.alerts = [];
+    for (const doc of [freshDoc(), withEmpty]) {
+      const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+      const cf = services.find((s) => s.id === "cloudflare")!;
+      expect(cf.sourceNote).not.toContain("ALERT");
+      expect(cf.sourceNote).toContain("invoice-only");
+    }
+  });
+
   test("a lower-bound metric carries the marker onto the card", () => {
     const doc = freshDoc();
     doc.metrics = doc.metrics!.map((m) => (m.id === "r2-storage" ? { ...m, lowerBound: true } : m));
