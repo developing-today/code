@@ -26,12 +26,22 @@
 //                             shared server OpenChamber attaches to)
 //   OPENCODE_SERVER_PASSWORD  when set, sent as HTTP basic auth
 //                             (user "opencode"), matching serve's auth
+//   OPENCODE_AUTH_FILE        JSON state file carrying the standing
+//                             server's "password" field, read at
+//                             runtime when the env var is unset
+//                             (default ~/.local/state/opencode/
+//                             service-prod.json — the server's own
+//                             state file, #4615). The value is never
+//                             logged or baked into tracked config.
 //   OPENCODE_ACP_ADAPTER_DEBUG=1 -> diagnostics on stderr (stdout is
 //                             the protocol channel and stays clean)
 //
 // The adapter spawns no server of its own; if the shared serve is
 // unreachable, session/new fails with the connection error.
 
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import process from 'node:process';
 
@@ -60,9 +70,61 @@ function parseServerUrl(argv) {
 
 const serverBase = parseServerUrl(process.argv.slice(2));
 
+// Resolve the standing server's password (#4615), mirroring the fleet
+// pattern (pm-stack dispatch's OpenCodeClient, bin/openchamber-start.sh):
+// the password lives in the server's own state file and is read at
+// runtime — never baked into tracked config or the Nix store, never
+// logged. Precedence: the OPENCODE_SERVER_PASSWORD env var, then the
+// JSON state file named by OPENCODE_AUTH_FILE (default
+// ~/.local/state/opencode/service-prod.json, field "password").
+// Resolved lazily on first use and cached for the process lifetime
+// (acpx launches a fresh adapter per gateway session).
+//
+// A missing state file just means no auth (a passwordless dev serve).
+// A state file that exists but is malformed, or carries no password,
+// warns once on stderr — the file path and the problem, never any
+// credential value — and requests go out unauthenticated, so the
+// serve's own 401 names the real problem instead of a silent hang.
+let resolvedPassword;
+let credentialResolved = false;
+function serverPassword() {
+  if (credentialResolved) return resolvedPassword;
+  credentialResolved = true;
+  const fromEnv = process.env.OPENCODE_SERVER_PASSWORD;
+  if (fromEnv) {
+    resolvedPassword = fromEnv;
+    return resolvedPassword;
+  }
+  const authFile =
+    process.env.OPENCODE_AUTH_FILE ||
+    join(homedir(), '.local', 'state', 'opencode', 'service-prod.json');
+  let raw;
+  try {
+    raw = readFileSync(authFile, 'utf8');
+  } catch {
+    debug(`no readable credential state file at ${authFile}; requests go unauthenticated`);
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.password === 'string' && parsed.password) {
+      resolvedPassword = parsed.password;
+      return resolvedPassword;
+    }
+    process.stderr.write(
+      `[${AGENT_NAME}] credential state file ${authFile} carries no password; requests go unauthenticated\n`,
+    );
+  } catch {
+    process.stderr.write(
+      `[${AGENT_NAME}] credential state file ${authFile} is not valid JSON; requests go unauthenticated\n`,
+    );
+  }
+  return undefined;
+}
+
 function authHeaders(extra = {}) {
   const headers = { ...extra };
-  const password = process.env.OPENCODE_SERVER_PASSWORD;
+  const password = serverPassword();
   if (password) {
     headers.Authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
   }

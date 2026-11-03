@@ -10,7 +10,7 @@
 use super::*;
 
 use anyhow::{Context, Result, ensure};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
@@ -30,6 +30,11 @@ pub struct WorldCore {
     pub(crate) active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    /// The per-world total memory budget ledger (#557): created with
+    /// the default ceiling, and replaced by [`WorldCore::restore`]
+    /// with the ledger measured over the journal (its limit is the
+    /// last persisted profile budget, or the default ceiling).
+    pub(crate) memory_budget: crate::world_limits::WorldMemoryBudget,
     /// This world's own capability ceiling. The ledger allows the intersection
     /// of this and the server's `limits.server_caps`.
     pub(crate) caps_ceiling: BTreeSet<String>,
@@ -148,6 +153,7 @@ impl WorldCore {
             active_module_provenance: None,
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
+            memory_budget: crate::world_limits::WorldMemoryBudget::default(),
             caps_ceiling: crate::world_caps::catalog_names(),
             schedules: BTreeMap::new(),
             isolation: Isolation::default(),
@@ -201,10 +207,85 @@ impl WorldCore {
         limits: WorldLimits,
         entries: impl IntoIterator<Item = JournalEntry>,
     ) -> Result<RestoredWorld> {
+        Self::restore_with_runtime(
+            world_id,
+            limits,
+            crate::world_limits::RuntimeLimits::default(),
+            entries,
+        )
+    }
+
+    /// Rebuild a world from its journal, resolving the persisted
+    /// per-world total memory budget against the server ceiling the
+    /// process is currently configured with (`runtime`), not the
+    /// ceiling in force when the journal was written.
+    ///
+    /// # Errors
+    ///
+    /// Same refusal contract as [`Self::restore`].
+    pub fn restore_with_runtime(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        runtime: crate::world_limits::RuntimeLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
         let mut core = Self::new(world_id, limits)?;
         let mut program = None;
         let mut replay = Vec::new();
         let mut present: BTreeMap<u64, u64> = BTreeMap::new();
+        let entries: Vec<JournalEntry> = entries.into_iter().collect();
+        // #557 Phase 2: enforce the per-world total memory budget at
+        // restore. The effective limit resolves the journal's FINAL
+        // persisted profile against the CURRENT server ceiling
+        // (`runtime.total_memory_bytes`): replay replaces the whole
+        // execution profile, so a later profile whose budget is unset
+        // resets an earlier one — an unset budget inherits the current
+        // ceiling, and a set budget is clamped beneath it. The
+        // persisted request cannot be trusted to already be clamped:
+        // `set_execution_profile` journals the unclamped request, so
+        // resolving here is what makes lowering the server ceiling
+        // constrain restore and raising it reopen a budgetless journal
+        // written under a smaller ceiling. Charge the fixed core
+        // charge plus each materialized entry (serialized length +
+        // structural allowance) BEFORE applying any entry: an
+        // over-budget journal is refused whole with a typed
+        // [`crate::world_limits::WorldMemoryBudgetRefusal`], no state
+        // is partially applied, and the durable journal is never
+        // modified by a restore, so the same journal reopens unchanged
+        // once the configured budget allows it. This charges the
+        // restore/materialization seam only; runtime growth, program
+        // reservations, and transient peaks are later #557 phases.
+        let mut persisted_total: Option<u64> = None;
+        for entry in &entries {
+            match entry {
+                JournalEntry::ExecutionProfile { profile } => {
+                    persisted_total = profile.total_memory_bytes;
+                }
+                JournalEntry::Checkpoint {
+                    execution_profile, ..
+                } => {
+                    persisted_total = execution_profile
+                        .as_ref()
+                        .and_then(|profile| profile.total_memory_bytes);
+                }
+                _ => {}
+            }
+        }
+        let limit = persisted_total.map_or(runtime.total_memory_bytes, |total| {
+            total.min(runtime.total_memory_bytes)
+        });
+        let mut memory_budget = crate::world_limits::WorldMemoryBudget::new(limit);
+        memory_budget.try_charge(crate::world_limits::WORLD_MEMORY_BASE_BYTES)?;
+        for entry in &entries {
+            let serialized_len = serde_json::to_vec(entry).map_or(0, |bytes| bytes.len());
+            memory_budget
+                .try_charge(crate::world_limits::journal_entry_charge(serialized_len))?;
+        }
+        // A compacted journal writes a revoked parent before its descendants'
+        // Issued/Revoked pairs. Remember descendants made unusable by that
+        // earlier revocation so their later explicit Revoked entries remain
+        // valid without allowing duplicate revocation entries.
+        let mut inherited_revocations = HashSet::new();
         let mut entries = entries.into_iter();
         match entries.next() {
             Some(JournalEntry::Created { world_id, version }) => {
@@ -220,6 +301,7 @@ impl WorldCore {
             }
             Some(_) => anyhow::bail!("world journal does not start with a header"),
             None => {
+                core.memory_budget = memory_budget;
                 return Ok(RestoredWorld {
                     core,
                     program,
@@ -298,6 +380,19 @@ impl WorldCore {
                             participant.id
                         );
                     }
+                    let mut ancestor = parent;
+                    let mut revoked_by_ancestor = false;
+                    while let Some(ancestor_id) = ancestor {
+                        let ancestor_record = core
+                            .capabilities
+                            .get(&ancestor_id)
+                            .context("delegated capability ancestor disappeared during restore")?;
+                        if ancestor_record.revoked {
+                            revoked_by_ancestor = true;
+                            break;
+                        }
+                        ancestor = ancestor_record.parent;
+                    }
                     // #2890: mint refuses scope bits from_bits rejects
                     // and scopes without JOIN; a journaled Issued entry
                     // must meet the same bar, or restore would resurrect
@@ -319,25 +414,31 @@ impl WorldCore {
                             .checked_add(1)
                             .context("participant ID exhausted")?,
                     );
+                    let issued_participant_id = participant.id;
                     core.capabilities.insert(
-                        participant.id,
+                        issued_participant_id,
                         CapabilityRecord {
                             digest,
                             participant,
                             scopes: validated_scopes,
                             parent,
-                            revoked: false,
+                            revoked: revoked_by_ancestor,
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
                             subject,
                         },
                     );
+                    if revoked_by_ancestor {
+                        inherited_revocations.insert(issued_participant_id);
+                    }
                 }
                 JournalEntry::Revoked { participant_id, .. } => {
-                    ensure!(
-                        !core.revoke_tree(participant_id).is_empty(),
-                        "journal revokes unknown or revoked participant {participant_id}"
-                    );
+                    if !inherited_revocations.remove(&participant_id) {
+                        ensure!(
+                            !core.revoke_tree(participant_id).is_empty(),
+                            "journal revokes unknown or revoked participant {participant_id}"
+                        );
+                    }
                 }
                 JournalEntry::CapsGranted { granted } => {
                     for name in &granted {
@@ -355,7 +456,7 @@ impl WorldCore {
                 }
                 JournalEntry::ExecutionProfile { profile } => {
                     profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in journal")?;
                     core.execution_profile = profile;
                 }
@@ -582,7 +683,7 @@ impl WorldCore {
                     core.active_seed = seed;
                     let execution_profile = execution_profile.unwrap_or_default();
                     execution_profile
-                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .resolve(runtime)
                         .context("invalid world execution profile in checkpoint")?;
                     core.execution_profile = execution_profile;
                     // Absent means the whole catalog: older checkpoints and
@@ -629,6 +730,7 @@ impl WorldCore {
                 },
             });
         }
+        core.memory_budget = memory_budget;
         core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
@@ -876,6 +978,13 @@ impl WorldCore {
     }
 
     /// The per-world resource requests, independent of current server ceilings.
+    /// The world's total-memory budget ledger (#557): the effective
+    /// limit, the logical charge measured at restore, its high-water
+    /// mark, and the refusal count. Logical accounting, not RSS.
+    pub const fn memory_budget(&self) -> &crate::world_limits::WorldMemoryBudget {
+        &self.memory_budget
+    }
+
     pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
         self.execution_profile
     }

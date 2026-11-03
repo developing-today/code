@@ -313,6 +313,15 @@ async function gmailCandidates(
     stagedTriage === undefined
       ? []
       : (JSON.parse(stagedTriage) as unknown[]).map((el) => (typeof el === "string" ? el : JSON.stringify(el)));
+  // Staged mode never falls back to the live CLI (#4660): a staging with
+  // fewer responses than queries is a broken staging, and silently
+  // substituting a live read (or dropping the source) would produce a
+  // partial batch that looks complete. Fail visibly instead.
+  if (INPUTS_DIR && stagedResponses.length !== queries.length) {
+    throw new Error(
+      `staged gmail-triage.json holds ${stagedResponses.length} response(s) for ${queries.length} gmail queries — staging is short; refusing to fall back to the live gmail CLI in staged mode`,
+    );
+  }
   for (const [i, query] of queries.entries()) {
     const stdout =
       stagedResponses[i] ??
@@ -425,6 +434,10 @@ async function main(): Promise<void> {
         );
       }
     } catch (err) {
+      // Staged mode (#4660): any gmail failure means the batch would be
+      // silently partial, so the run fails visibly — non-zero exit, no
+      // candidates file. Live mode keeps the plaid-only fallback.
+      if (INPUTS_DIR) throw err;
       console.error(
         `producer: gmail read failed (${err instanceof Error ? err.message : "error"}); plaid candidates only`,
       );

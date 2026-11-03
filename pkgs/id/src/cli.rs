@@ -1466,6 +1466,9 @@ pub struct WorldRuntimeArgs {
     /// Wall-clock budget for one native worker call, in milliseconds.
     #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
     pub world_native_deadline_ms: u64,
+    /// Total per-world logical memory budget, in MiB (1..=65536, #557 Phase 1).
+    #[arg(long, default_value_t = 64, requires = "world", value_name = "MIB")]
+    pub world_total_memory_mib: u64,
 }
 
 /// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
@@ -1490,6 +1493,9 @@ impl crate::world_limits::WorldLimitArgs for WorldRuntimeArgs {
     }
     fn world_native_deadline_ms(&self) -> u64 {
         self.world_native_deadline_ms
+    }
+    fn world_total_memory_mib(&self) -> u64 {
+        self.world_total_memory_mib
     }
 }
 
@@ -2122,7 +2128,10 @@ pub enum WorldCommand {
     },
     /// Verify a recorded fixture's determinism: replay it twice offline
     /// through a module and compare the records after every event. Prints a
-    /// verdict line first; exits nonzero at the first divergence.
+    /// verdict line first; exits nonzero at the first divergence, or when
+    /// the two replays agree with each other but mismatch the fixture's
+    /// header records (the header verdict is printed, as `replay` prints
+    /// it).
     ///
     /// Verification covers the fixture's recorded events only. Host-originated
     /// events are not retained in the event stream (#242), so a live recording
@@ -5087,6 +5096,10 @@ mod world_limits_args_tests {
             assert_eq!(limits.native.memory_bytes, defaults.native.memory_bytes);
             assert_eq!(limits.native.cpu_seconds, defaults.native.cpu_seconds);
             assert_eq!(limits.native.call_deadline, defaults.native.call_deadline);
+            assert_eq!(
+                limits.total_memory_bytes, defaults.total_memory_bytes,
+                "--world-total-memory-mib default must match the built-in budget"
+            );
             #[cfg(feature = "sandbox")]
             {
                 assert_eq!(limits.sandbox.fuel, defaults.sandbox.fuel);
@@ -5111,11 +5124,14 @@ mod world_limits_args_tests {
                 "3",
                 "--world-native-deadline-ms",
                 "250",
+                "--world-total-memory-mib",
+                "128",
             ])
             .unwrap();
             assert_eq!(limits.native.memory_bytes, 64 * MIB);
             assert_eq!(limits.native.cpu_seconds, 3);
             assert_eq!(limits.native.call_deadline, Duration::from_millis(250));
+            assert_eq!(limits.total_memory_bytes, 128 * MIB);
             #[cfg(feature = "sandbox")]
             {
                 assert_eq!(limits.sandbox.fuel, 5000);
@@ -5139,5 +5155,7 @@ mod world_limits_args_tests {
             assert!(parse(&["--world-native-memory-mib", "8"]).is_err());
             assert!(parse(&["--world-native-cpu-secs", "0"]).is_err());
             assert!(parse(&["--world-native-deadline-ms", "0"]).is_err());
+            assert!(parse(&["--world-total-memory-mib", "0"]).is_err());
+            assert!(parse(&["--world-total-memory-mib", "131072"]).is_err());
         }
 }
