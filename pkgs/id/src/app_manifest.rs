@@ -138,6 +138,9 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
     if let Some(capabilities) = &manifest.capabilities {
         ensure_distinct_entries(&capabilities.request, "capabilities.request")?;
     }
+    if let Some(resources) = &manifest.resources {
+        ensure_distinct_entries(&resources.files, "resources.files")?;
+    }
     if let Some(program) = &manifest.program {
         ensure!(
             !program.kind.trim().is_empty(),
@@ -339,10 +342,10 @@ fn is_safe_web_path(path: &str) -> bool {
 }
 
 /// One consistent list-entry rule for manifest string lists
-/// (`interfaces.cli.commands`, `capabilities.request`): every entry must be
-/// non-blank with no leading or trailing whitespace, and no entry may
-/// repeat. Duplicate and blank comparisons use the trimmed form, so a
-/// whitespace-padded entry can neither evade the duplicate gate nor be
+/// (`interfaces.cli.commands`, `capabilities.request`, `resources.files`):
+/// every entry must be non-blank with no leading or trailing whitespace, and
+/// no entry may repeat. Duplicate and blank comparisons use the trimmed form,
+/// so a whitespace-padded entry can neither evade the duplicate gate nor be
 /// stored verbatim — padded entries are rejected, not silently trimmed.
 /// Rejections name the field: like the #4082 duplicate gate this extends, a
 /// repeated or padded entry is an authoring mistake the gate should name
@@ -605,6 +608,35 @@ commands = ["play"]
         let duplicate =
             format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\", \"store.read\"]\n");
         assert!(parse_app_manifest(&duplicate, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn rejects_blank_duplicate_and_padded_resource_files() {
+        for files in [
+            r#"["", "assets/**"]"#,
+            r#"["  ", "assets/**"]"#,
+            r#"["assets/**", "assets/**"]"#,
+            r#"["assets/**", " assets/**"]"#,
+        ] {
+            let source = format!("{MANIFEST}\n[resources]\nfiles = {files}\n");
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(
+                error.to_string().contains("resources.files"),
+                "resource-file validation error names the field: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_design_resource_files_and_empty_optional_list() {
+        let design_example =
+            format!("{MANIFEST}\n[resources]\nfiles = [\"assets/**\", \"web/templates/**\"]\n");
+        assert!(parse_app_manifest(&design_example, "tic-tac-toe").is_ok());
+
+        // The resources section is optional, and an explicitly empty files
+        // list remains legal.
+        let empty = format!("{MANIFEST}\n[resources]\nfiles = []\n");
+        assert!(parse_app_manifest(&empty, "tic-tac-toe").is_ok());
     }
 
     #[test]
