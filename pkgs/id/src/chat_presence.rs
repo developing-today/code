@@ -76,6 +76,15 @@ pub const TYPING_TTL_SECS: u64 = 12;
 /// single received heartbeat can make the table do.
 pub const MAX_HEARTBEAT_CHANNELS: usize = 64;
 
+/// The maximum number of distinct nodes retained in [`PresenceTable`], aligned with
+/// discovery's [`MAX_PEERS`](crate::discovery::MAX_PEERS).
+///
+/// Bounding the node count prevents unbounded memory growth from a flood of
+/// self-signed heartbeats with minted keys on the public gossip topic (#4004). At
+/// capacity a new node is admitted only by evicting an entry already past its TTL;
+/// if every entry is fresh the new node is refused (design #4502, Phase 2).
+pub const MAX_PRESENCE_NODES: usize = 1_000;
+
 /// Frame prefix distinguishing presence frames from peer-discovery announcements on
 /// the shared gossip topic. A frame without this prefix is not a presence frame, and
 /// [`decode_frame`] returns `None` for it; legacy announcement bytes never decode as
@@ -161,7 +170,9 @@ impl PresenceHeartbeat {
         let Ok(signature) = Signature::from_slice(&self.signature) else {
             return false;
         };
-        verifying_key.verify(&self.signing_bytes(), &signature).is_ok()
+        verifying_key
+            .verify(&self.signing_bytes(), &signature)
+            .is_ok()
     }
 
     /// Whether the heartbeat claims typing in `channel`.
@@ -247,7 +258,7 @@ impl PresenceTable {
     /// Records a heartbeat as of `now` (unix seconds), the deterministic core of
     /// [`update`](Self::update) and [`update_scoped`](Self::update_scoped).
     ///
-    /// Three guards, mirroring [`crate::discovery::PeerDiscovery`]:
+    /// Four guards, mirroring [`crate::discovery::PeerDiscovery`]:
     ///
     /// - **Freshness bound.** A heartbeat stamped older than [`PRESENCE_TTL_SECS`]
     ///   relative to `now` is refused — replaying a captured heartbeat cannot keep a
@@ -264,6 +275,13 @@ impl PresenceTable {
     ///   duplicates are dropped: a wire-decoded heartbeat bypasses
     ///   [`PresenceHeartbeat::new`], so the constructor's dedupe/bound on
     ///   channels and typing is enforced here too.
+    /// - **Node count bound.** The table stores at most [`MAX_PRESENCE_NODES`]
+    ///   nodes. An existing node always refreshes in place, consuming no new
+    ///   capacity. A new node arriving at capacity is admitted only by evicting one
+    ///   entry already past its TTL — the oldest such, ties broken by `node` bytes —
+    ///   mirroring [`crate::discovery::PeerDiscovery::update`]'s stale-only eviction.
+    ///   If every entry is fresh the new node is refused, so a flood of minted keys
+    ///   cannot churn live entries out early (#4004, design #4502 Phase 2).
     ///
     /// Returns whether the heartbeat was accepted (inserted or replacing).
     pub fn update_at(
@@ -301,11 +319,36 @@ impl PresenceTable {
         let Ok(mut entries) = self.entries.write() else {
             return false;
         };
-        if let Some(existing) = entries.get(&node)
-            && heartbeat.ts < existing.heartbeat.ts
-        {
-            return false;
+        if let Some(existing_ts) = entries.get(&node).map(|entry| entry.heartbeat.ts) {
+            if heartbeat.ts < existing_ts {
+                return false;
+            }
+            // An existing node always refreshes in place: no new capacity and no
+            // eviction, subject only to the ordering guard above.
+            entries.insert(node, Entry { heartbeat });
+            return true;
         }
+
+        // Inserting a new node key while at capacity: admit it only by evicting an
+        // entry already past its TTL (oldest such, ties by key bytes), mirroring
+        // PeerDiscovery::update. If every entry is fresh, refuse the new node.
+        if entries.len() >= MAX_PRESENCE_NODES {
+            let victim = entries
+                .iter()
+                .filter(|(_, entry)| now.saturating_sub(entry.heartbeat.ts) > PRESENCE_TTL_SECS)
+                .min_by(|(left_key, left), (right_key, right)| {
+                    left.heartbeat
+                        .ts
+                        .cmp(&right.heartbeat.ts)
+                        .then_with(|| left_key.cmp(right_key))
+                })
+                .map(|(key, _)| *key);
+            let Some(victim) = victim else {
+                return false;
+            };
+            entries.remove(&victim);
+        }
+
         entries.insert(node, Entry { heartbeat });
         true
     }
@@ -710,7 +753,10 @@ mod tests {
             Liveness::Offline
         );
         let roster = table.roster_at(&chan, &[alice], replay_at);
-        assert!(!roster[0].typing, "a replayed typing claim must not refresh");
+        assert!(
+            !roster[0].typing,
+            "a replayed typing claim must not refresh"
+        );
     }
 
     #[test]
@@ -734,7 +780,9 @@ mod tests {
         forged.ts += 1;
         assert!(!forged.verify());
         let mut forged = hb;
-        forged.node = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes();
+        forged.node = SigningKey::from_bytes(&[8u8; 32])
+            .verifying_key()
+            .to_bytes();
         assert!(!forged.verify());
     }
 
@@ -755,6 +803,168 @@ mod tests {
         );
     }
 
+    fn signing_key(index: usize) -> SigningKey {
+        let mut seed = [0u8; 32];
+        seed[0..8].copy_from_slice(&(index as u64).to_le_bytes());
+        SigningKey::from_bytes(&seed)
+    }
+
+    fn node_at(index: usize) -> AuthorKey {
+        signing_key(index).verifying_key().to_bytes()
+    }
+
+    fn signed_heartbeat(index: usize, channels: Vec<Hash>, ts: u64) -> PresenceHeartbeat {
+        let key = signing_key(index);
+        let mut heartbeat = heartbeat(node_at(index), channels, ts);
+        heartbeat.sign(&key);
+        heartbeat
+    }
+
+    /// Fills `table` with fresh, distinct signed entries stamped `ts`, starting at
+    /// node index `first`.
+    fn fill_fresh(table: &PresenceTable, chan: Hash, first: usize, count: usize, ts: u64) {
+        for index in first..first + count {
+            let heartbeat = signed_heartbeat(index, vec![chan], ts);
+            assert!(table.update_at(heartbeat, ts, &|_, _| true));
+        }
+    }
+
+    #[test]
+    fn node_count_bound_caps_storage_and_refuses_fresh_new_nodes() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 10_000;
+
+        fill_fresh(&table, chan, 0, MAX_PRESENCE_NODES, now);
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Over-cap inserts of distinct signed nodes while every entry is fresh are
+        // refused: a flood of minted keys cannot churn live entries out early.
+        for extra in 0..100 {
+            assert!(
+                !table.update_at(
+                    signed_heartbeat(MAX_PRESENCE_NODES + extra, vec![chan], now),
+                    now,
+                    &|_, _| true
+                ),
+                "a new node must be refused when the table is full of fresh entries"
+            );
+            assert!(table.count() <= MAX_PRESENCE_NODES);
+        }
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Every long-standing entry survives the flood.
+        let live = table.live_nodes_at(&chan, now);
+        assert_eq!(live.len(), MAX_PRESENCE_NODES);
+        assert!(live.contains(&node_at(0)));
+    }
+
+    #[test]
+    fn node_count_bound_evicts_only_a_stale_entry_to_admit_a_new_node() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let stale_ts = 10_000;
+        let fresh_ts = stale_ts + 190;
+        let now = fresh_ts + 10;
+
+        // One entry goes stale: stamped well over a TTL before `now`.
+        assert!(table.update_at(
+            signed_heartbeat(0, vec![chan], stale_ts),
+            stale_ts,
+            &|_, _| true
+        ));
+        // The rest of the table is fresh at `now`.
+        fill_fresh(&table, chan, 1, MAX_PRESENCE_NODES - 1, fresh_ts);
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        let new_node = node_at(MAX_PRESENCE_NODES);
+        assert!(
+            table.update_at(
+                signed_heartbeat(MAX_PRESENCE_NODES, vec![chan], now),
+                now,
+                &|_, _| true
+            ),
+            "a stale entry opens exactly one slot"
+        );
+
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        // The stale entry was the victim; the fresh ones were untouched.
+        assert!(!table.entries.read().unwrap().contains_key(&node_at(0)));
+        assert!(table.entries.read().unwrap().contains_key(&node_at(1)));
+        assert_eq!(table.liveness_at(&new_node, &chan, now), Liveness::Live);
+        assert_eq!(table.liveness_at(&node_at(1), &chan, now), Liveness::Live);
+    }
+
+    #[test]
+    fn node_count_bound_evicts_oldest_stale_entry_ties_by_key_bytes() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let stale_ts = 20_000;
+        let fresh_ts = stale_ts + 190;
+        let now = fresh_ts + 10;
+
+        // Two stale entries share a timestamp: the lower key bytes must be evicted.
+        for index in 0..2 {
+            assert!(table.update_at(
+                signed_heartbeat(index, vec![chan], stale_ts),
+                stale_ts,
+                &|_, _| true
+            ));
+        }
+        fill_fresh(&table, chan, 10, MAX_PRESENCE_NODES - 2, fresh_ts);
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        let new_index = 5_000;
+        let new_node = node_at(new_index);
+        assert!(table.update_at(
+            signed_heartbeat(new_index, vec![chan], now),
+            now,
+            &|_, _| true
+        ));
+
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        let (lower, higher) = {
+            let first = node_at(0);
+            let second = node_at(1);
+            if first < second {
+                (first, second)
+            } else {
+                (second, first)
+            }
+        };
+        let entries = table.entries.read().unwrap();
+        assert!(
+            !entries.contains_key(&lower),
+            "ties evict the lower node key bytes"
+        );
+        assert!(entries.contains_key(&higher));
+        drop(entries);
+        assert_eq!(table.liveness_at(&new_node, &chan, now), Liveness::Live);
+    }
+
+    #[test]
+    fn existing_node_update_at_capacity_succeeds_in_place_without_eviction() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 30_000;
+
+        fill_fresh(&table, chan, 0, MAX_PRESENCE_NODES, now);
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+
+        // Updating an existing node key at capacity refreshes it in place: no
+        // capacity is consumed and no entry is evicted.
+        let existing = node_at(42);
+        assert!(table.update_at(
+            signed_heartbeat(42, vec![chan], now + 1),
+            now + 1,
+            &|_, _| true
+        ));
+
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        assert_eq!(table.liveness_at(&existing, &chan, now + 1), Liveness::Live);
+        assert!(table.entries.read().unwrap().contains_key(&node_at(0)));
+    }
+
     #[test]
     fn constructor_deduplicates_and_bounds_typing_claims() {
         let chan = channel("general");
@@ -768,14 +978,11 @@ mod tests {
         let hb = PresenceHeartbeat::new(alice, vec![chan], typing, 10_000);
         assert_eq!(hb.typing, vec![chan]);
         assert!(hb.typing.len() <= hb.channels.len());
-        // The encoded frame stays small: the ~3.3 MB duplicate blowup is gone.
         assert!(encode_frame(&hb).len() < 1_000);
     }
 
     #[test]
     fn wire_decoded_heartbeat_typing_is_deduplicated_and_bounded_on_store() {
-        // A heartbeat decoded off the wire bypasses PresenceHeartbeat::new, so
-        // update_at must enforce the same dedupe/bound before storing it.
         let table = PresenceTable::new();
         let chan = channel("general");
         let alice = key(1);
@@ -808,5 +1015,20 @@ mod tests {
         let stored = &entries.get(&alice).expect("heartbeat stored").heartbeat;
         assert_eq!(stored.channels, vec![chan]);
         assert_eq!(stored.typing, vec![chan]);
+    }
+
+    #[test]
+    fn existing_node_older_heartbeat_is_still_refused_at_capacity() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let now = 40_000;
+
+        fill_fresh(&table, chan, 0, MAX_PRESENCE_NODES, now);
+
+        // The ordering guard still applies to an existing node at capacity.
+        let existing = node_at(7);
+        assert!(!table.update_at(signed_heartbeat(7, vec![chan], now - 1), now, &|_, _| true));
+        assert_eq!(table.count(), MAX_PRESENCE_NODES);
+        assert_eq!(table.liveness_at(&existing, &chan, now), Liveness::Live);
     }
 }
