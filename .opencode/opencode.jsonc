@@ -1626,9 +1626,13 @@
       // (2026-11-03: the main account got its own instance id,
       // openai.main, so the bare openai provider is now only the
       // instanceOf parent + catalog - no account rides it directly.)
+      // 2026-11-03 (Drew, direct order): WEIGHTED 2:1 main:alternate,
+      // replacing the ordered alternate-first arrangement above - main
+      // (fresh weekly window) carries the pair, alternate backs it.
       "openai-plan": {
-        "providers": ["openai.alternate", "openai.main"],
-        "selection": "ordered"
+        "providers": ["openai.main", "openai.alternate"],
+        "selection": "weighted",
+        "weights": { "openai.main": 2, "openai.alternate": 1 }
       },
       // opencode-go-plans (2026-11-03, Drew): the OpenCode Go plans as
       // ONE virtual provider (provider routes, opencode#1132). Consumers
@@ -1636,13 +1640,18 @@
       // providers. Round-robin: the two accounts are peers on the same
       // plan, so they split traffic evenly (an earlier weighted 3/2
       // burn-by-expiry tilt was dropped for the simpler equal split).
+      // 2026-11-03 (Drew, direct order): WEIGHTED 2:1
+      // drewrypope:popesdrew, replacing the equal round-robin split
+      // described above; the opencode providers are weighted above
+      // opendesign in every pool that seats both.
       // The bare opencode-go provider is NOT a member: it has no account
       // of its own and rides whichever console login is active, so its
       // burn landed on that account unattributed. Quota/health rules
       // still demote a walled member inside the group.
       "opencode-go-plans": {
         "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew"],
-        "selection": "round-robin"
+        "selection": "weighted",
+        "weights": { "opencode-go.drewrypope": 2, "opencode-go.popesdrew": 1 }
       }
     },
     "model_routes": {
