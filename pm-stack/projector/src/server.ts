@@ -22,7 +22,7 @@ function libsqlStore(db: Client): ProjectorStore {
   return {
     upsertItem: (i) => store.upsertItem(db, i),
     upsertComment: (c) => store.upsertComment(db, c),
-    markCommentDeleted: (id) => store.markCommentDeleted(db, id),
+    markCommentDeleted: (c) => store.markCommentDeleted(db, c),
     recordPush: (p) => store.recordPush(db, p),
   };
 }
@@ -88,6 +88,9 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
     const signature = req.headers.get("x-hub-signature-256");
     const event = req.headers.get("x-github-event") ?? "unknown";
     const deliveryId = req.headers.get("x-github-delivery") ?? "";
+    if (!deliveryId) {
+      return jsonResponse(400, { error: "missing_delivery_id" });
+    }
     let body: Uint8Array;
     try {
       body = await readBoundedBody(req.body, 10_000_000);
@@ -252,7 +255,14 @@ export function serve(db: Client, env: ServerEnv, port: number): Bun.Server {
     // A reconcile poll runs for minutes; Bun's 10s default idle timeout
     // closed the socket mid-poll and the caller saw an empty reply.
     idleTimeout: 255,
-    async fetch(req) {
+    async fetch(req, server) {
+      // /reconcile is a long poll by design: under GitHub rate
+      // limiting a full pass takes longer than Bun's 255s
+      // idle-timeout ceiling, and the reconcile timer unit's curl
+      // died at the cap with an empty reply (curl 52) even though
+      // the poll itself was healthy (2026-11-01). Exempt just this
+      // route from the idle timeout; every other route keeps 255s.
+      if (new URL(req.url).pathname === "/reconcile") server.timeout(req, 0);
       return handleRequest(req, db, env);
     },
   });

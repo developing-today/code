@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
-    WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
+    WorldHandle, WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -82,6 +82,12 @@ impl FileJournal {
                     break;
                 }
                 let complete = line.last() == Some(&b'\n');
+                if line == b"\n" {
+                    // Empty lines carry no entry. Preserve their bytes so a
+                    // later torn-tail repair cannot truncate past them.
+                    good_len += read as u64;
+                    continue;
+                }
                 match serde_json::from_slice::<JournalEntry>(&line) {
                     Ok(entry) if complete => {
                         entries.push(entry);
@@ -195,6 +201,41 @@ impl WorldJournal for FileJournal {
         self.file.write_all(&line).context("write world journal")?;
         self.file.sync_data().context("sync world journal")?;
         Ok(())
+    }
+
+    fn replication_snapshot(&mut self) -> Result<crate::world::JournalSnapshot> {
+        let bytes = std::fs::read(&self.path)
+            .with_context(|| format!("read world journal snapshot {}", self.path.display()))?;
+        ensure!(
+            bytes.is_empty() || bytes.ends_with(b"\n"),
+            "world journal {} has an unterminated final entry",
+            self.path.display()
+        );
+        Ok(crate::world::JournalSnapshot {
+            header_version: self.version,
+            bytes,
+        })
+    }
+
+    fn replication_snapshot_source(&mut self) -> Result<crate::world::JournalSnapshotSource> {
+        // Open a separate descriptor while the actor still owns the journal.
+        // It pins the current inode across compaction, and the captured length
+        // excludes appends that happen after the actor returns to its loop.
+        let file = File::open(&self.path)
+            .with_context(|| format!("open world journal snapshot {}", self.path.display()))?;
+        let byte_len = file
+            .metadata()
+            .with_context(|| format!("stat world journal snapshot {}", self.path.display()))?
+            .len();
+        Ok(crate::world::JournalSnapshotSource::from_reader(
+            self.version,
+            byte_len,
+            file,
+        ))
+    }
+
+    fn replication_header_version(&self) -> Option<u32> {
+        Some(self.version)
     }
 
     fn compact(&mut self, entries: &[JournalEntry]) -> Result<()> {
@@ -377,7 +418,7 @@ pub async fn open_world(
             .await
             .context("journal open task")??;
     let journal_entries = entries.len();
-    let mut restored = WorldCore::restore(world_id, limits, entries)?;
+    let mut restored = WorldCore::restore_with_runtime(world_id, limits, runtime, entries)?;
     let directory_path = dir.join("directory.jsonl");
     let directory =
         tokio::task::spawn_blocking(move || crate::directory::Directory::open(&directory_path))
@@ -650,6 +691,108 @@ mod tests {
     fn service(admin: Option<&str>) -> impl FnOnce(WorldHandle) -> WorldService {
         let admin = admin.map(str::to_owned);
         move |handle| WorldService::new(handle, admin)
+    }
+
+    #[tokio::test]
+    async fn replication_feed_snapshots_exact_bytes_and_follows_durable_appends() {
+        let dir = TempDir::new().unwrap();
+        let (service, _) = open_world(
+            dir.path(),
+            "lobby",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(None),
+        )
+        .await
+        .unwrap();
+        let world = service.world();
+        let (world_id, first_source, mut first_updates) = world.replication_feed().await.unwrap();
+        let (second_world_id, second_source, mut second_updates) =
+            world.replication_feed().await.unwrap();
+        let durable_bytes = std::fs::read(dir.path().join("journal.jsonl")).unwrap();
+        assert_eq!(world_id, "lobby");
+        assert_eq!(second_world_id, world_id);
+        assert_eq!(first_source.header_version, second_source.header_version);
+        assert_eq!(first_source.byte_len, durable_bytes.len() as u64);
+
+        // The actor is free to append before the network materializes either
+        // source. The captured length still bounds both snapshots to this cut.
+        world
+            .set_isolation(Authority::Admin, Isolation::Unisolated)
+            .await
+            .unwrap();
+        let first = first_source.read().unwrap();
+        let second = second_source.read().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.bytes, durable_bytes);
+        assert!(first.bytes.ends_with(b"\n"));
+        for update in [
+            first_updates.recv().await.unwrap(),
+            second_updates.recv().await.unwrap(),
+        ] {
+            match update {
+                crate::world::ReplicationUpdate::Append {
+                    header_version,
+                    entry,
+                } => {
+                    assert_eq!(header_version, first.header_version);
+                    assert!(entry.ends_with(b"\n"));
+                    assert!(matches!(
+                        serde_json::from_slice::<JournalEntry>(&entry).unwrap(),
+                        JournalEntry::Isolation {
+                            isolation: Isolation::Unisolated
+                        }
+                    ));
+                }
+                other => panic!("expected durable append, got {other:?}"),
+            }
+        }
+        world.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn replication_snapshot_repairs_an_unterminated_torn_tail() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (journal, _) = FileJournal::open(&path, "lobby").unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        drop(journal);
+
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(br#"{"torn":"entry""#)
+            .unwrap();
+        assert_ne!(std::fs::read(&path).unwrap(), expected);
+
+        let (mut journal, _) = FileJournal::open(&path, "lobby").unwrap();
+        let snapshot = journal.replication_snapshot().unwrap();
+        assert_eq!(snapshot.bytes, expected);
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+    }
+
+    #[test]
+    fn replication_snapshot_source_is_pinned_and_reads_only_its_captured_length() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, entries) = FileJournal::open(&path, "lobby").unwrap();
+        journal
+            .append(&JournalEntry::Isolation {
+                isolation: Isolation::Unisolated,
+            })
+            .unwrap();
+        let expected = std::fs::read(&path).unwrap();
+        let source = journal.replication_snapshot_source().unwrap();
+        assert_eq!(source.byte_len, expected.len() as u64);
+
+        // Replacing the path after capture must not redirect the reader to a
+        // compacted image; the source owns the old inode and captured length.
+        journal.compact(&entries).unwrap();
+        let snapshot = source.read().unwrap();
+        assert_eq!(snapshot.bytes, expected);
+        assert!(snapshot.bytes.ends_with(b"\n"));
+        assert_ne!(std::fs::read(&path).unwrap(), snapshot.bytes);
     }
 
     #[tokio::test]
@@ -1084,6 +1227,30 @@ mod tests {
     }
 
     #[test]
+    fn blank_lines_before_between_and_after_entries_are_skipped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open(&path, "w").unwrap());
+        let created = std::fs::read(&path).unwrap();
+        let revoked = serde_json::to_vec(&JournalEntry::Revoked {
+            participant_id: 1,
+            by: None,
+        })
+        .unwrap();
+
+        let mut with_blanks = b"\n".to_vec();
+        with_blanks.extend_from_slice(&created);
+        with_blanks.extend_from_slice(b"\n");
+        with_blanks.extend_from_slice(&revoked);
+        with_blanks.extend_from_slice(b"\n\n");
+        std::fs::write(&path, &with_blanks).unwrap();
+
+        let (_, entries) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(std::fs::read(&path).unwrap(), with_blanks);
+    }
+
+    #[test]
     fn a_terminated_entry_this_binary_cannot_read_is_refused_not_dropped() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("journal.jsonl");
@@ -1466,6 +1633,7 @@ mod tests {
                     module_hash: "h".to_owned(),
                     seed: 1,
                     provenance: None,
+                    trust: None,
                 },
             },
         });
@@ -1477,8 +1645,11 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
         });
         let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
         assert!(error.to_string().contains("checkpoint"), "{error:#}");

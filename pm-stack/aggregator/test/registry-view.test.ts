@@ -2,12 +2,7 @@
 // query pipeline behind /sessions and /api/registry.json.
 
 import { describe, expect, test } from "bun:test";
-import {
-  parseRegistryQuery,
-  queryRegistry,
-  registryQueryString,
-  type RegistryQuery,
-} from "../src/registry-view.ts";
+import { parseRegistryQuery, queryRegistry, registryQueryString, type RegistryQuery } from "../src/registry-view.ts";
 import { authorBadge, renderSessions, sessionRecordLine } from "../src/render.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 import type { SessionRecord } from "../src/model.ts";
@@ -59,6 +54,18 @@ describe("parseRegistryQuery", () => {
     expect(q("window=all").windowDays).toBeNull();
     expect(q("window=30").windowDays).toBe(30);
     expect(q("window=banana").windowDays).toBe(7);
+  });
+  test("limit/offset use the strict decimal grammar, not parseInt prefix parsing (#3717)", () => {
+    // Non-decimal spellings fall back to the defaults (limit 100, offset 0),
+    // exactly as window=1e2 falls back to the default window.
+    for (const bad of ["1e2", "5.9", "10junk", "0x10"]) {
+      expect(q().limit).toBe(100);
+      expect(q().offset).toBe(0);
+    }
+    // Plain unsigned decimals still parse, including the boundary values.
+    expect(q("limit=42").limit).toBe(42);
+    expect(q("offset=42").offset).toBe(42);
+    expect(q("offset=0").offset).toBe(0);
   });
   test("limit clamps to 1..500", () => {
     expect(q("limit=9999").limit).toBe(500);

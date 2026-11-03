@@ -47,6 +47,52 @@ const startStub = (name) => new Promise((resolve) => {
     req.on('end', () => {
       stub.calls += 1;
       stub.remotePorts.push(req.socket.remotePort);
+      if (stub.mode === 'stall-mid-stream') {
+        // Send one SSE chunk, then go silent forever (PR #4204 Codex P2,
+        // second round): the backend timeout must tear the client stream
+        // down, not leave it open.
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        const chunk = {
+          id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 0, model: 'stub-model',
+          choices: [{ index: 0, delta: { content: `partial from ${name}` }, finish_reason: null }]
+        };
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        return;
+      }
+      if (stub.mode === 'stall-status') {
+        // Flush a 429 head and then leave the body open forever (#2097 /
+        // PR #4204 Codex P2): the proxy falls back at the head, and the
+        // stalled body must not be able to hurt the fallback afterwards.
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.flushHeaders();
+        return;
+      }
+      if (stub.mode === 'hang') {
+        // Accept the request and never respond (#2097): the wedged-backend
+        // case. The socket is left open; the proxy's backend timeout is
+        // the only thing that can unstick the client request.
+        return;
+      }
+      if (stub.mode === 'slow-stream') {
+        // Actively streaming with gaps well under any sane inactivity
+        // timeout: must NOT be killed by the backend timeout (#2097).
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        const chunk = {
+          id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 0, model: 'stub-model',
+          choices: [{ index: 0, delta: { content: `hello from ${name}` }, finish_reason: null }]
+        };
+        let sent = 0;
+        const timer = setInterval(() => {
+          sent += 1;
+          if (sent <= 3) {
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          } else {
+            clearInterval(timer);
+            res.end('data: [DONE]\n\n');
+          }
+        }, 150);
+        return;
+      }
       if (stub.mode === 'error-mid-stream') {
         // Send a head and a partial body, then destroy the socket:
         // the proxy's backend response errors mid-stream (#782).
@@ -108,7 +154,7 @@ const startStub = (name) => new Promise((resolve) => {
   });
 });
 
-const startProxy = async () => {
+const startProxy = async ({ backendTimeoutMs } = {}) => {
   const primary = await startStub('primary');
   const fallback = await startStub('fallback');
   const port = await freePort();
@@ -119,8 +165,9 @@ const startProxy = async () => {
     env: {
       ...env,
       DESIGN_CODE_PROXY_PORT: String(port),
-      ANTIGRAVITY_LS_PROXY_PORT: String(primary.port),
-      CODEX_PROXY_PORT: String(fallback.port)
+      ANTIGRAVITY_DIRECT_PORT: String(primary.port),
+      CODEX_PROXY_PORT: String(fallback.port),
+      ...(backendTimeoutMs ? { DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS: String(backendTimeoutMs) } : {})
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -325,4 +372,75 @@ test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t
   });
   assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
   await alive.text();
+});
+
+test('silent primary times out and falls back instead of hanging forever (#2097)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy({ backendTimeoutMs: 800 });
+  t.after(stop);
+  primary.mode = 'hang';
+  const started = Date.now();
+  const res = await post(port);
+  assert.ok(Date.now() - started < 5000, 'fallback must answer within the client abort window');
+  assert.equal(res.status, 200);
+  const body = JSON.parse(await res.text());
+  assert.equal(body.choices[0].message.content, 'hello from fallback');
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 1);
+});
+
+test('both backends silent answer a bounded 502, never an indefinite hang (#2097)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy({ backendTimeoutMs: 800 });
+  t.after(stop);
+  primary.mode = 'hang';
+  fallback.mode = 'hang';
+  const started = Date.now();
+  const res = await post(port);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5000, `both-hang must 502 within the client abort window, took ${elapsed}ms`);
+  assert.equal(res.status, 502);
+  const body = JSON.parse(await res.text());
+  assert.match(body.error.message, /All design code backends failed/);
+  assert.match(body.error.message, /backend timeout/);
+});
+
+test('slow but actively streaming primary is not killed by the backend timeout (#2097)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy({ backendTimeoutMs: 800 });
+  t.after(stop);
+  primary.mode = 'slow-stream';
+  const res = await post(port, { stream: true });
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /hello from primary/);
+  assert.match(text, /\[DONE\]/);
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 0);
+});
+
+test('a retired primary with a stalled 429 body cannot truncate the fallback stream (#2097, PR #4204 Codex P2)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy({ backendTimeoutMs: 400 });
+  t.after(stop);
+  primary.mode = 'stall-status';
+  fallback.mode = 'slow-stream';
+  const res = await post(port, { stream: true });
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.match(text, /hello from fallback/);
+  assert.match(text, /\[DONE\]/);
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 1);
+});
+
+test('a primary that stalls mid-stream has its client stream torn down by the timeout (#2097, PR #4204 Codex P2 round 2)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy({ backendTimeoutMs: 400 });
+  t.after(stop);
+  primary.mode = 'stall-mid-stream';
+  const res = await post(port, { stream: true });
+  assert.equal(res.status, 200);
+  // The body read must fail (stream torn down) rather than hang: the 5s
+  // client abort in post() only covers the fetch head, so race the read
+  // against a 3s bound explicitly.
+  const read = res.text().then(() => 'completed', () => 'torn-down');
+  const bounded = new Promise(r => setTimeout(() => r('hung'), 3000));
+  assert.equal(await Promise.race([read, bounded]), 'torn-down');
+  assert.equal(fallback.calls, 0);
 });

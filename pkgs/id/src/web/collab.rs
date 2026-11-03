@@ -64,10 +64,11 @@ use std::{
 use tokio::sync::{RwLock, broadcast};
 
 use super::content_mode::{ContentMode, detect_mode_with_content};
-use super::identity::short_id;
+use super::identity::{sanitize_name, short_id};
 use super::markdown::{
     markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
 };
+use crate::frames::MAX_FRAME_BYTES;
 
 /// Message type tags for the wire protocol.
 mod msg {
@@ -82,6 +83,9 @@ mod msg {
     pub const AUTH: u8 = 8;
     pub const AUTH_OK: u8 = 9;
 }
+
+/// Maximum number of steps accepted in one client message.
+const MAX_STEPS_PER_MESSAGE: usize = 1_000;
 
 /// Query parameters for WebSocket connection.
 #[derive(Debug, Deserialize)]
@@ -410,6 +414,9 @@ impl CollabState {
     /// Finds all cursors with the matching `identity_client_id`, updates the
     /// stored name, and broadcasts the updated cursor to all connected clients.
     pub async fn update_client_name(&self, identity_client_id: &str, new_name: &str) {
+        let Some(new_name) = sanitize_name(Some(new_name.to_owned())) else {
+            return;
+        };
         let docs = self.documents.read().await;
         for (doc_id, doc) in docs.iter() {
             let mut cursors = doc.cursors.write().await;
@@ -660,6 +667,46 @@ fn extract_binary(msg: &Message) -> Option<Vec<u8>> {
     }
 }
 
+/// Apply one versioned client step batch, rejecting oversized batches before
+/// changing document history, version, or broadcasting an update.
+///
+/// The version check, the append, and the version bump happen atomically
+/// under the document steps lock (#2968), so two sockets submitting at the
+/// same base version cannot both be accepted. The broadcast and log happen
+/// after that lock has been released.
+async fn apply_steps(
+    doc: &Document,
+    version: u64,
+    steps: &[serde_json::Value],
+    client_id: u64,
+) -> Result<u64, String> {
+    if steps.len() > MAX_STEPS_PER_MESSAGE {
+        return Err(format!(
+            "Step batch exceeds maximum of {MAX_STEPS_PER_MESSAGE} steps"
+        ));
+    }
+
+    let new_version = doc
+        .try_apply_steps(version, steps, client_id)
+        .await
+        .map_err(|current_version| {
+            format!("Version mismatch: expected {current_version}, got {version}")
+        })?;
+
+    let update = CollabMessage::Update {
+        steps: steps.to_vec(),
+        client_ids: vec![client_id; steps.len()],
+    };
+    let broadcast_count = doc.broadcast.send(update).unwrap_or(0);
+    tracing::info!(
+        "[collab] Broadcast to {} receivers, new version={}",
+        broadcast_count,
+        new_version
+    );
+
+    Ok(new_version)
+}
+
 /// WebSocket upgrade handler for collaborative editing.
 pub async fn ws_collab_handler(
     ws: WebSocketUpgrade,
@@ -667,16 +714,55 @@ pub async fn ws_collab_handler(
     Query(params): Query<WsParams>,
     State(state): State<super::AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        handle_collab_socket(
-            socket,
-            doc_id,
-            params.filename,
-            state.collab,
-            state.store,
-            state.identity,
-        )
-    })
+    ws.max_message_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| {
+            handle_collab_socket(
+                socket,
+                doc_id,
+                params.filename,
+                state.collab,
+                state.store,
+                state.identity,
+            )
+        })
+}
+
+async fn store_and_broadcast_cursor(
+    doc: &Document,
+    client_id: u64,
+    head: u32,
+    anchor: u32,
+    cached_display_name: Option<String>,
+    incoming_name: Option<String>,
+    identity_client_id: Option<String>,
+) -> Option<String> {
+    let effective_name = sanitize_name(cached_display_name.or(incoming_name));
+    let client_id_str = client_id.to_string();
+
+    {
+        let mut cursors = doc.cursors.write().await;
+        cursors.insert(
+            client_id_str,
+            CursorPosition {
+                head,
+                anchor,
+                name: effective_name.clone(),
+                identity_client_id,
+                last_update: Instant::now(),
+                disconnected_at: None,
+            },
+        );
+    }
+
+    let cursor_msg = CollabMessage::Cursor {
+        client_id,
+        head,
+        anchor,
+        name: effective_name.clone(),
+        idle_secs: None,
+    };
+    let _ = doc.broadcast.send(cursor_msg);
+    effective_name
 }
 
 /// Handle a WebSocket connection for collaborative editing.
@@ -1033,43 +1119,18 @@ async fn handle_collab_socket(
                             steps.len()
                         );
 
-                        // Verify the version and apply the steps atomically
-                        // per document (#2968): the check, the append, and
-                        // the version bump all happen under the steps write
-                        // lock inside try_apply_steps. Broadcast and Ack
-                        // stay below, after that lock has been released.
-                        let new_version = match doc.try_apply_steps(version, &steps, client_id).await
-                        {
-                            Ok(new_version) => new_version,
-                            Err(current_version) => {
-                                let error_msg = CollabMessage::Error {
-                                    error: format!(
-                                        "Version mismatch: expected {current_version}, got {version}"
-                                    ),
-                                };
-                                tracing::warn!(
-                                    "[collab] Version mismatch: expected {}, got {}",
-                                    current_version,
-                                    version
-                                );
+                        let new_version = match apply_steps(&doc, version, &steps, client_id).await {
+                            Ok(version) => version,
+                            Err(error) => {
+                                tracing::warn!("[collab] Rejected Steps: {}", error);
+                                let error_msg = CollabMessage::Error { error };
                                 let mut sender = sender.lock().await;
-                                let _ =
-                                    sender.send(Message::Binary(error_msg.encode().into())).await;
+                                let _ = sender
+                                    .send(Message::Binary(error_msg.encode().into()))
+                                    .await;
                                 continue;
                             }
                         };
-
-                        // Broadcast to other clients
-                        let update = CollabMessage::Update {
-                            steps: steps.clone(),
-                            client_ids: vec![client_id; steps.len()],
-                        };
-                        let broadcast_count = doc.broadcast.send(update).unwrap_or(0);
-                        tracing::info!(
-                            "[collab] Broadcast to {} receivers, new version={}",
-                            broadcast_count,
-                            new_version
-                        );
 
                         // Send ack to sender
                         let ack = CollabMessage::Ack {
@@ -1103,7 +1164,20 @@ async fn handle_collab_socket(
                                     })
                                 );
                             }
-                        let effective_name = cached_display_name.clone().or(name);
+                        // Remember this client's ID for disconnect cleanup before
+                        // storing and broadcasting its cursor.
+                        *client_id_for_cleanup.write().await = Some(client_id_str);
+
+                        let effective_name = store_and_broadcast_cursor(
+                            &doc,
+                            client_id,
+                            head,
+                            anchor,
+                            cached_display_name.clone(),
+                            name,
+                            identity_client_id.clone(),
+                        )
+                        .await;
 
                         tracing::debug!(
                             "[collab] Received Cursor: client={}, head={}, anchor={}, name={:?}",
@@ -1113,33 +1187,6 @@ async fn handle_collab_socket(
                             effective_name
                         );
 
-                        // Remember this client's ID for disconnect cleanup
-                        *client_id_for_cleanup.write().await = Some(client_id_str.clone());
-
-                        {
-                            let mut cursors = doc.cursors.write().await;
-                            cursors.insert(
-                                client_id_str,
-                                CursorPosition {
-                                    head,
-                                    anchor,
-                                    name: effective_name.clone(),
-                                    identity_client_id: identity_client_id.clone(),
-                                    last_update: Instant::now(),
-                                    disconnected_at: None,
-                                },
-                            );
-                        }
-
-                        // Broadcast cursor position to all clients (no idle_secs for live updates)
-                        let cursor_msg = CollabMessage::Cursor {
-                            client_id,
-                            head,
-                            anchor,
-                            name: effective_name,
-                            idle_secs: None,
-                        };
-                        let _ = doc.broadcast.send(cursor_msg);
                     }
                     _ => {
                         tracing::debug!("[collab] Received unexpected message type, ignoring");
@@ -1379,6 +1426,45 @@ mod tests {
     }
 
     #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_rejects_oversized_batch_without_mutation() {
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+        let steps = vec![serde_json::json!({"stepType": "replace"}); MAX_STEPS_PER_MESSAGE + 1];
+
+        let error = apply_steps(&doc, 0, &steps, 123).await.unwrap_err();
+
+        assert!(error.contains("1000"));
+        assert_eq!(doc.version(), 0);
+        assert!(doc.steps.read().await.is_empty());
+        assert!(updates.try_recv().is_err());
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_apply_steps_accepts_small_batch_and_broadcasts_update() {
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+        let steps = vec![serde_json::json!({"stepType": "replace", "from": 0})];
+
+        let ack_version = apply_steps(&doc, 0, &steps, 123).await.unwrap();
+
+        assert_eq!(ack_version, 1);
+        assert_eq!(doc.version(), 1);
+        assert_eq!(doc.steps.read().await.len(), 1);
+        match updates.recv().await.unwrap() {
+            CollabMessage::Update {
+                steps: broadcast_steps,
+                client_ids,
+            } => {
+                assert_eq!(broadcast_steps, steps);
+                assert_eq!(client_ids, vec![123]);
+            }
+            other => panic!("Expected Update, got {other:?}"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
     #[test]
     fn test_collab_message_update_roundtrip() {
         let msg = CollabMessage::Update {
@@ -1443,6 +1529,33 @@ mod tests {
                 assert!(idle_secs.is_none());
             }
             _ => panic!("Expected Cursor message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn test_cursor_ingest_sanitizes_before_storage_and_broadcast() {
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+
+        let name = store_and_broadcast_cursor(
+            &doc,
+            54321,
+            100,
+            50,
+            None,
+            Some("A\n\u{202e}lice".to_owned()),
+            None,
+        )
+        .await;
+        assert_eq!(name.as_deref(), Some("Alice"));
+
+        let stored = doc.cursors.read().await.get("54321").unwrap().name.clone();
+        assert_eq!(stored.as_deref(), Some("Alice"));
+
+        match updates.recv().await.unwrap() {
+            CollabMessage::Cursor { name, .. } => assert_eq!(name.as_deref(), Some("Alice")),
+            _ => panic!("Expected sanitized cursor broadcast"),
         }
     }
 
