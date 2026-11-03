@@ -10,6 +10,8 @@ pub struct WorldHandle {
     /// The world's host metrics registry (F11.7), shared with the actor
     /// and the session layer.
     metrics: WorldMetrics,
+    /// Whether the actor runs in F12.13 read-only replica mode.
+    read_only: bool,
 }
 
 use super::*;
@@ -39,8 +41,43 @@ impl WorldHandle {
     /// [`WorldCore::restore`]); the actor only appends.
     pub fn spawn_durable(
         core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        Self::spawn_inner(core, program, journal, false, HashMap::new())
+    }
+
+    /// Spawn a replica actor over a verified, already-restored world.
+    /// Local mutations and program side effects are refused; the replica
+    /// carries no journal to append to. Only a core returned by
+    /// [`WorldCore::restore_replica`] may be served this way.
+    pub(crate) fn spawn_read_only(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        restored_presence: BTreeMap<u64, u64>,
+    ) -> Result<Self> {
+        if !core.replica_mode {
+            anyhow::bail!("read-only actors require a replica-restored core");
+        }
+        let presence = restored_presence
+            .into_iter()
+            .map(|(id, count)| (id, usize::try_from(count).map_or(usize::MAX, |count| count)))
+            .collect();
+        Ok(Self::spawn_inner(core, program, None, true, presence))
+    }
+
+    /// Whether this handle fronts a read-only replica actor.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn spawn_inner(
+        core: WorldCore,
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
+        read_only: bool,
+        presence: HashMap<u64, usize>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -74,6 +111,7 @@ impl WorldHandle {
             journal,
             metrics: metrics.clone(),
             storage_failed: false,
+            read_only,
             program_healthy,
             view_failures: 0,
             compaction_off: false,
@@ -82,7 +120,7 @@ impl WorldHandle {
             records_sender,
             replication_sender,
             view_changed: view_changed_sender,
-            presence: HashMap::new(),
+            presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
             denied_subs: BTreeSet::new(),
@@ -99,6 +137,7 @@ impl WorldHandle {
             records,
             view_changed,
             metrics,
+            read_only,
         }
     }
 

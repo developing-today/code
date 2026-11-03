@@ -10,7 +10,9 @@ const jwk = publicKey.export({ format: "jwk" }) as unknown as Record<string, unk
 jwk.kid = "test-kid-1";
 jwk.alg = "RS256";
 
-const JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks.json";
+// Use the production constant, never a copy: a hard-coded copy of the
+// old bogus .json URL is exactly how code#4886 stayed hidden by tests.
+import { GITHUB_JWKS_URL as JWKS_URL } from "../src/auth.ts";
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (input: unknown) => {
   if (String(input) === JWKS_URL) {

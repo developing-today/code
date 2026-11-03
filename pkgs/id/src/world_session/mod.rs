@@ -717,24 +717,47 @@ impl WorldService {
 
     /// Read the currently pinned module artifact for peer download.
     /// The caller must already have authenticated as a world participant.
+    ///
+    /// Falls back to the module directory when there is no blob pin to
+    /// serve from. A read-only replica clears its blob store so module
+    /// uploads stay refused, but the module it restored was loaded out of
+    /// its module directory, so spectators can still download it from
+    /// there (PR #4708 Codex P2).
     pub async fn module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
-        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?;
-        let pin = self.module_pin.lock().await;
-        let Some(pin) = pin.as_ref() else {
-            return Err(InstallError::Unavailable);
-        };
-        if pin.hash().to_string() != expected_hash {
-            return Err(InstallError::InvalidUpload);
+        if let Some(blobs) = self.blobs.as_ref() {
+            let pin = self.module_pin.lock().await;
+            match pin.as_ref() {
+                Some(pin) if pin.hash().to_string() == expected_hash => {
+                    let bytes = blobs
+                        .blobs()
+                        .get_bytes(pin.hash())
+                        .await
+                        .map_err(|_| InstallError::Unavailable)?;
+                    if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash
+                    {
+                        return Err(InstallError::Unavailable);
+                    }
+                    return Ok(bytes.to_vec());
+                }
+                Some(_) => return Err(InstallError::InvalidUpload),
+                None => {}
+            }
         }
-        let bytes = blobs
-            .blobs()
-            .get_bytes(pin.hash())
-            .await
-            .map_err(|_| InstallError::Unavailable)?;
-        if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash {
+        if let Some(modules) = self.module_dir.clone() {
+            let requested = expected_hash.to_owned();
+            let loaded = tokio::task::spawn_blocking(move || modules.load(&requested))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if loaded.len() <= MAX_WORLD_MODULE_BYTES {
+                return Ok(loaded);
+            }
             return Err(InstallError::Unavailable);
         }
-        Ok(bytes.to_vec())
+        if self.blobs.is_none() {
+            return Err(InstallError::Disabled);
+        }
+        Err(InstallError::Unavailable)
     }
 
     /// Read a stored module's bytes by hash, active or not: from the blob
@@ -1728,9 +1751,8 @@ async fn records_ticket_session<I: SessionIo>(
     }
 }
 
-/// Largest page of records returned in one frame, comfortably inside
-/// [`MAX_FRAME_BYTES`] after JSON framing overhead.
-pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+/// Compatibility alias for the provider manifest's shared records-page bound.
+pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = crate::world_caps::MAX_RECORDS_PAGE_BYTES;
 
 async fn records_session<I: SessionIo>(
     meter: &WorldMetrics,
@@ -2822,8 +2844,21 @@ async fn handle_client_frame<I: SessionIo>(
         }
     };
     // Accepted events reach everyone, including the sender, through the
-    // broadcast branch, so only rejections are answered directly.
-    result.is_ok() || send_error(service.frame_meter(), io, "world event rejected").await
+    // broadcast branch, so only rejections are answered directly. A
+    // read-only replica names its mode: the refusal is the replica, not the
+    // spectator's capability.
+    if result.is_ok() {
+        return true;
+    }
+    if service.world().is_read_only() {
+        return send_error(
+            service.frame_meter(),
+            io,
+            "world is read-only (replica); local mutations are refused",
+        )
+        .await;
+    }
+    send_error(service.frame_meter(), io, "world event rejected").await
 }
 
 /// Serialize and send one server frame, metering its bytes into the

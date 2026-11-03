@@ -36,6 +36,7 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
@@ -50,6 +51,11 @@ pub use core::WorldCore;
 pub(crate) use core::AdminHistoryByteLedger;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use replica::{
+    ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
+    restore_replica_entries_with_runtime, restore_replica_journal,
+    restore_replica_journal_with_runtime, serve_replica,
+};
 pub use replication::{
     AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
     REPLICATION_ENVELOPE_VERSION, REPLICATION_FRAME_MAGIC, ReplicationCursor, ReplicationEnvelope,
@@ -278,12 +284,15 @@ impl WorldScopes {
     /// connected participant may read; `chat.say` also needs `CHAT`.
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
-        match cap {
-            "chat.say" => self.contains(Self::CHAT),
+        match crate::world_caps::PROVIDER_REGISTRY.get(cap).map_or(
+            crate::world_caps::RequiredScope::Join,
+            |provider| provider.required_scope,
+        ) {
+            crate::world_caps::RequiredScope::Chat => self.contains(Self::CHAT),
             // Reading chat needs only the right to read it (`CHAT` or
             // `HISTORY`), the same rule the event stream applies.
-            "chat.history" => self.reads_chat(),
-            _ => self.contains(Self::JOIN),
+            crate::world_caps::RequiredScope::ChatRead => self.reads_chat(),
+            crate::world_caps::RequiredScope::Join => self.contains(Self::JOIN),
         }
     }
 
@@ -1213,6 +1222,10 @@ pub struct RestoredWorld {
     /// Inputs committed after the install or checkpoint, in order, to replay
     /// through it.
     pub replay: Vec<WorldEvent>,
+    /// Live presence reconstructed from journaled `players` events. Writer
+    /// restore clears it after synthesizing the process-restart leaves;
+    /// replica restore retains it at the verified cursor.
+    pub presence: BTreeMap<u64, u64>,
 }
 
 /// The profile requested by the world admin and when it takes effect.
