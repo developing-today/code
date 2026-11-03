@@ -214,6 +214,22 @@ impl Drop for PeerConnectionRegistration {
     }
 }
 
+/// The remote IP of the connection's selected path, when that path
+/// is a direct IP path (#2245). A connection whose selected path is
+/// a relay or a custom transport has no peer IP an operator block
+/// could name: it yields `None`, and IP blocks never apply to it.
+/// Best-effort by construction — a direct path that opens after
+/// admission is not re-judged, exactly as the issue scopes IP
+/// enforcement to the listener.
+fn direct_ip_of(conn: &Connection) -> Option<std::net::IpAddr> {
+    let paths = conn.paths();
+    let selected = paths.iter().find(|path| path.is_selected())?;
+    match selected.remote_addr() {
+        iroh::TransportAddr::Ip(addr) => Some(addr.ip()),
+        _ => None,
+    }
+}
+
 impl ProtocolHandler for WorldProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // Bound stale endpoint and counter state as new connections arrive;
@@ -223,8 +239,11 @@ impl ProtocolHandler for WorldProtocol {
         let remote = conn.remote_id();
         tracing::debug!("world: connection from node {remote}");
         let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
+        let direct_ip = direct_ip_of(&conn);
         let connection_id = match self.abuse.lock() {
-            Ok(mut abuse) => match abuse.open_connection(remote_endpoint, abuse_now_ms()) {
+            Ok(mut abuse) => match abuse
+                .open_connection_with_direct_ip(remote_endpoint, direct_ip, abuse_now_ms())
+            {
                 Ok(connection_id) => connection_id,
                 Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
                     // #2245: an operator block is not a cap refusal — it

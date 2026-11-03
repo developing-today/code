@@ -700,7 +700,10 @@ impl AbuseEvaluator {
 
     /// Like [`AbuseEvaluator::new`], with the operator block list
     /// (#2245) attached: a new connection from an endpoint blocked by
-    /// key is refused with [`Refusal::blocked_by_operator`]. The list
+    /// key is refused with [`Refusal::blocked_by_operator`], and so is
+    /// a connection whose directly observed IP is blocked, when the
+    /// listener supplies one to
+    /// [`AbuseEvaluator::open_connection_with_direct_ip`]. The list
     /// is consulted live on every open, so a block or an unblock lands
     /// on the next connection. Frame and byte checks are unchanged —
     /// a block refuses new sessions; it does not retroactively charge
@@ -983,12 +986,51 @@ impl AbuseEvaluator {
         endpoint: EndpointId,
         now_ms: u64,
     ) -> Result<ConnectionId, Refusal> {
+        self.open_connection_inner(endpoint, None, now_ms)
+    }
+
+    /// Like [`AbuseEvaluator::open_connection`], for a listener that
+    /// directly observed the connection's remote IP (#2245): when
+    /// `direct_ip` is `Some` and the attached block list blocks that
+    /// IP, the connection is refused with
+    /// [`Refusal::blocked_by_operator`] before any bucket or cap is
+    /// consulted — the listener-only, best-effort IP enforcement the
+    /// issue asks for. A relayed or otherwise obscured connection
+    /// passes `None` and is judged exactly as by
+    /// [`AbuseEvaluator::open_connection`]: an IP block never refuses
+    /// a peer whose IP was not directly observed.
+    ///
+    /// # Errors
+    ///
+    /// The same refusals as [`AbuseEvaluator::open_connection`], plus
+    /// a [`RefusalReason::BlockedByOperator`] refusal when `direct_ip`
+    /// names a blocked IP.
+    pub fn open_connection_with_direct_ip(
+        &mut self,
+        endpoint: EndpointId,
+        direct_ip: Option<IpAddr>,
+        now_ms: u64,
+    ) -> Result<ConnectionId, Refusal> {
+        self.open_connection_inner(endpoint, direct_ip, now_ms)
+    }
+
+    fn open_connection_inner(
+        &mut self,
+        endpoint: EndpointId,
+        direct_ip: Option<IpAddr>,
+        now_ms: u64,
+    ) -> Result<ConnectionId, Refusal> {
         if self
             .blocks
             .as_ref()
             .is_some_and(|blocks| blocks.peer_blocked(&endpoint))
         {
             return Err(Refusal::blocked_by_operator());
+        }
+        if let (Some(blocks), Some(ip)) = (&self.blocks, direct_ip) {
+            if blocks.ip_blocked(&ip) {
+                return Err(Refusal::blocked_by_operator());
+            }
         }
         let cap = self.policy.max_connections_per_peer;
         // Ids are unique and never reused; a refused open may skip
@@ -1248,6 +1290,32 @@ mod tests {
         assert_eq!(eval.active_connection_count(&endpoint(7)), 0);
         eval.open_connection(endpoint(8), 0)
             .expect("an unblocked endpoint still connects");
+    }
+
+    #[test]
+    fn a_blocked_direct_ip_is_refused_a_new_connection() {
+        // #2245 listener seam: with a block list attached, a connection
+        // whose directly observed IP is blocked is refused as an
+        // operator block — and no connection is registered. An
+        // unblocked direct IP still connects, and a relayed
+        // connection (no IP observed) is unaffected by the IP block.
+        let blocked_ip: IpAddr = "203.0.113.7".parse().expect("test ip");
+        let other_ip: IpAddr = "203.0.113.8".parse().expect("test ip");
+        let blocks = crate::pull_policy::testing::stub_blocks_with_ips(&[], &[], &[blocked_ip]);
+        let mut eval = evaluator().with_block_list(blocks);
+        let refused = eval
+            .open_connection_with_direct_ip(endpoint(7), Some(blocked_ip), 0)
+            .expect_err("a blocked direct IP was admitted");
+        assert_eq!(refused, Refusal::blocked_by_operator());
+        assert_eq!(refused.reason, RefusalReason::BlockedByOperator);
+        assert_eq!(refused.retry_after_ms, None);
+        assert_eq!(eval.active_connection_count(&endpoint(7)), 0);
+        eval.open_connection_with_direct_ip(endpoint(7), Some(other_ip), 0)
+            .expect("an unblocked direct IP still connects");
+        eval.open_connection_with_direct_ip(endpoint(8), None, 0)
+            .expect("a relayed connection is unaffected by IP blocks");
+        eval.open_connection(endpoint(9), 0)
+            .expect("the pre-#2245 entry point is unchanged");
     }
 
     #[test]
