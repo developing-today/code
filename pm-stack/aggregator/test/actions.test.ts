@@ -154,6 +154,70 @@ describe("dashboard actions store", () => {
     expect(concurrent.filter((result) => result.duplicateOf)).toHaveLength(1);
   });
 
+  test("text answers dedupe only while pending: the next reply lands after the first is applied", async () => {
+    const store = new ActionsStore(join(mkdtempSync(join(tmpdir(), "agg-answer-text-")), "actions.json"));
+    const objectRef = "session:reply-turns";
+    const first = await store.add(
+      newAction({ kind: "session", verb: "answer", objectRef, payload: { text: "first" } }),
+    );
+    expect(first.action.state).toBe("new");
+    const doubleSubmit = await store.add(
+      newAction({ kind: "session", verb: "answer", objectRef, payload: { text: "first" } }),
+    );
+    expect(doubleSubmit.duplicateOf).toBe(first.action.id);
+    await store.markResult(first.action.id, { outcome: "applied", byRun: "orch-test" });
+    const nextTurn = await store.add(
+      newAction({ kind: "session", verb: "answer", objectRef, payload: { text: "second" } }),
+    );
+    expect(nextTurn.duplicateOf).toBeUndefined();
+    expect(nextTurn.action.state).toBe("new");
+  });
+
+  test("duplicate detection scans past malformed persisted answer shapes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-answer-malformed-"));
+    const file = join(dir, "actions.json");
+    const raw = (id: string, payload: unknown) => ({
+      id,
+      clientToken: `ct-${id}`,
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:malformed-scan",
+      payload,
+      author: drew,
+      createdAt: iso(NOW),
+      state: "new",
+    });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        actions: [
+          raw("bad-null-entry", { answers: [null] }),
+          raw("bad-answers-object", { answers: { questionId: "q1", value: "x" } }),
+          raw("bad-answers-string", { answers: "nope" }),
+          raw("good", { answers: [{ questionId: "q1", value: "good" }] }),
+        ],
+      }),
+    );
+    const store = new ActionsStore(file);
+    const fresh = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:malformed-scan",
+        payload: { answers: [{ questionId: "q9", value: "new" }] },
+      }),
+    );
+    expect(fresh.action.state).toBe("new");
+    const dup = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:malformed-scan",
+        payload: { answers: [{ questionId: "q1", value: "again" }] },
+      }),
+    );
+    expect(dup.duplicateOf).toBe("good");
+  });
+
   test("supersede transitions a still-new action; applied history stands", async () => {
     const store = new ActionsStore(file);
     const snooze = await store.add(
@@ -717,7 +781,17 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
     expect(recorded.action.state).toBe("rejected");
     expect(recorded.action.duplicateOf).toBe(original.id);
     expect(recorded.duplicateOf).toBe(original.id);
+    // Replaying the persisted duplicate attempt (same client token) keeps
+    // the 409 semantics instead of reading as a fresh success.
+    const replay = await post("/api/actions", { ...body, clientToken: "ct-session-answer-2" });
+    expect(replay.status).toBe(409);
     await post("/api/actions/result", { id: original.id, outcome: "applied", byRun: "jules-fixture" });
+    // Once the first reply is applied, the session's next reply is a new
+    // turn, not a duplicate (Codex P1 on PR #4024).
+    const nextTurn = await post("/api/actions", { ...body, clientToken: "ct-session-answer-3" });
+    expect(nextTurn.status).toBe(201);
+    const { action: nextAction } = (await nextTurn.json()) as { action: DashAction };
+    await post("/api/actions/result", { id: nextAction.id, outcome: "applied", byRun: "jules-fixture" });
   });
 
   test("/attention serves the action forms; /api/actions.json is inspectable", async () => {

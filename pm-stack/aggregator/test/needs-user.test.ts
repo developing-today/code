@@ -322,6 +322,14 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
     expect(checkActionAgainstItem(actionInput({ payload: { answers, optionId: "csv" } }), item, NOW)).toBeNull();
   });
 
+  test("standalone options do not map onto the sole survey question without evidence", () => {
+    // extendedRaw(): csv/json format options beside an independent
+    // audience question (internal/public) — picking csv must not read as
+    // answering audience (Codex P2 on PR #4024).
+    expect(questionIdForOption(item, "csv")).toBeUndefined();
+    expect(questionIdForOption(item, "json")).toBeUndefined();
+  });
+
   test("option shortcuts resolve to a shared question id", () => {
     const mapped = sanitizeTierItemExtensions({
       ...BASE,

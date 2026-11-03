@@ -145,7 +145,10 @@ function sanitizeQuestions(raw: unknown): TierItemQuestion[] | undefined {
 
 /** Resolve a shortcut option to its canonical survey question. Explicit
  *  publisher mapping wins; otherwise match the option id among question
- *  choices, or use the sole question when the item has exactly one. */
+ *  choices. A sole question is NOT evidence of a mapping: an item may
+ *  carry standalone options beside one independent survey question, and
+ *  mapping the option onto it would record a wrong answer and lock the
+ *  real question (Codex P2 on PR #4024). */
 export function questionIdForOption(item: TierItem | undefined, optionId: string): string | undefined {
   const option = item?.options?.find((candidate) => candidate.id === optionId);
   if (!option || !item) return undefined;
@@ -153,7 +156,7 @@ export function questionIdForOption(item: TierItem | undefined, optionId: string
   if (option.questionId && questions.some((question) => question.id === option.questionId)) return option.questionId;
   const matches = questions.filter((question) => question.options?.some((choice) => choice.id === optionId));
   if (matches.length === 1) return matches[0]?.id;
-  return questions.length === 1 ? questions[0]?.id : undefined;
+  return undefined;
 }
 
 function sanitizeDelegation(raw: unknown, whyUser: WhyUserClass | undefined): TierItemDelegation | undefined {

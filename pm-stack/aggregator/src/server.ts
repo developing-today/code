@@ -862,6 +862,19 @@ async function handler(req: Request): Promise<Response> {
           409,
         );
       }
+      // A client-token replay of an already-persisted duplicate attempt
+      // keeps the rejected semantics instead of reading as a fresh
+      // "sent · pending" success (Codex P2 on PR #4024).
+      if (!created && action.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${action.duplicateOf}`,
+            action,
+            duplicateOf: action.duplicateOf,
+          },
+          409,
+        );
+      }
       // #1276: saved-view preference verbs are applied by the
       // aggregator itself to the views store and marked applied (or
       // rejected, with the reason) in the same request — the action

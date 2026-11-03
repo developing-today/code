@@ -255,13 +255,32 @@ export interface NewAction {
   supersedes?: string;
 }
 
-/** The question slots an answer action claims. Option-only and free-text
- *  answers use reserved slots until the item resolver supplies a question id. */
+/** The question slots an answer action claims. Survey and option answers
+ *  claim their published question ids (an option with no resolved question
+ *  uses the reserved "$options" slot). A text-only answer claims the
+ *  reserved "$answer" slot, which duplicate detection treats as
+ *  pending-only (see add()): a session reply or free-text decision is a
+ *  conversation turn, not a published question, so once the previous turn
+ *  is applied the next one must be able to land. Persisted records can
+ *  carry malformed payload shapes (load() retains them; see the
+ *  malformed-payload test), so every extraction here is shape-guarded
+ *  exactly as cardState()'s is. */
 function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[] {
-  if (action.verb !== "answer") return [];
-  const ids = new Set(action.payload.answers?.map((answer) => answer.questionId) ?? []);
-  if (action.payload.optionId) ids.add(action.payload.questionId ?? "$options");
-  if (action.payload.text && !ids.size) ids.add("$answer");
+  if (action.verb !== "answer" || !isRecord(action.payload)) return [];
+  const ids = new Set<string>();
+  if (Array.isArray(action.payload.answers)) {
+    for (const entry of action.payload.answers) {
+      if (isRecord(entry) && typeof entry.questionId === "string") ids.add(entry.questionId);
+    }
+  }
+  if (typeof action.payload.optionId === "string" && action.payload.optionId) {
+    ids.add(
+      typeof action.payload.questionId === "string" && action.payload.questionId
+        ? action.payload.questionId
+        : "$options",
+    );
+  }
+  if (typeof action.payload.text === "string" && action.payload.text && !ids.size) ids.add("$answer");
   return [...ids];
 }
 
@@ -681,23 +700,38 @@ export class ActionsStore {
    * action stays in history and the newer action wins by recency in
    * the effective-state derivation. A distinct answer for an occupied
    * question slot is itself persisted as rejected with `duplicateOf`
-   * pointing to the pending/applied answer that owns that slot.
+   * pointing to the pending/applied answer that owns that slot. The
+   * text-only "$answer" slot is the exception: it dedupes only against
+   * still-pending answers, because a session (or free-text) reply is a
+   * conversation turn — once the previous turn is applied, the next
+   * reply is new work, not a duplicate (Codex P1 on PR #4024).
    */
   async add(input: NewAction): Promise<{ action: DashAction; created: boolean; duplicateOf?: string }> {
     await this.load();
     const existing = this.actions.find((a) => a.clientToken === input.clientToken);
     if (existing) return { action: existing, created: false };
     const questionIds = answerQuestionIds(input);
-    const duplicate = questionIds.length
-      ? this.actions.find(
-          (candidate) =>
-            candidate.objectRef === input.objectRef &&
-            candidate.verb === "answer" &&
-            candidate.state !== "rejected" &&
-            candidate.state !== "superseded" &&
-            answerQuestionIds(candidate).some((questionId) => questionIds.includes(questionId)),
-        )
-      : undefined;
+    const publishedIds = questionIds.filter((questionId) => questionId !== "$answer");
+    const sameAnswerTarget = (candidate: DashAction) =>
+      candidate.objectRef === input.objectRef && candidate.verb === "answer";
+    const duplicate =
+      (publishedIds.length
+        ? this.actions.find(
+            (candidate) =>
+              sameAnswerTarget(candidate) &&
+              candidate.state !== "rejected" &&
+              candidate.state !== "superseded" &&
+              answerQuestionIds(candidate).some((questionId) => publishedIds.includes(questionId)),
+          )
+        : undefined) ??
+      (questionIds.includes("$answer")
+        ? this.actions.find(
+            (candidate) =>
+              sameAnswerTarget(candidate) &&
+              candidate.state === "new" &&
+              answerQuestionIds(candidate).includes("$answer"),
+          )
+        : undefined);
     const action: DashAction = {
       id: newActionId(),
       clientToken: input.clientToken,

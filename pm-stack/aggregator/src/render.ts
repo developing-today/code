@@ -651,6 +651,12 @@ document.addEventListener("submit", async (ev) => {
       const b = await res.json().catch(() => ({}));
       if (typeof b.duplicateOf === "string") {
         if (submitBtn) submitBtn.disabled = false;
+        // The rejected attempt is persisted under this form's token; a
+        // corrected resubmit (e.g. dropping the already-answered
+        // question) is a NEW attempt and needs a fresh token, or the
+        // store's client-token dedupe would replay the rejected record
+        // as if it had been sent (Codex P2 on PR #4024).
+        form.dataset.token = "ct-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
         if (err) err.textContent = "Duplicate recorded" + (typeof b.action?.id === "string" ? " as " + b.action.id : "") + "; points to existing answer " + b.duplicateOf + ".";
         return;
       }
