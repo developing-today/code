@@ -470,6 +470,21 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
     expect(records.map((r) => r.metricId).sort()).toEqual(["5h", "weekly"]);
     expect(records.every((r) => r.source === "console")).toBe(true);
   });
+  test("rejects impossible and non-ISO measuredAt stamps", () => {
+    for (const measuredAt of [
+      "2026-02-30T12:00:00Z",
+      "2026-04-31T12:00:00Z",
+      "March 2, 2026",
+      "03/02/2026",
+    ]) {
+      const entry = entryFromFileExport(
+        { ...okDoc, measuredAt },
+        { fileMtimeIso: okDoc.measuredAt, stale: false },
+      );
+      expect(entry.state).toBe("error");
+      expect(entry.windows).toEqual([]);
+    }
+  });
   test("out-of-range percentages and negative dollar labels are omitted", () => {
     const doc = {
       source: "file-export/test",
