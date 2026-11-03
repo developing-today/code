@@ -72,7 +72,8 @@ struct Model {
     /// Held events in arrival order.
     held: Vec<Held>,
     arrived: BTreeSet<u32>,
-    ready: Vec<u32>,
+    /// Ready events by key and id, so an arrival can drop its copy (#4730).
+    ready: Vec<(u32, u32)>,
     expired: Vec<(u8, u32)>,
     /// Every event the model has expired, so that none is released later.
     ever_expired: BTreeSet<u32>,
@@ -123,7 +124,7 @@ impl Model {
             .filter(|dep| !self.arrived.contains(dep))
             .collect();
         if missing.is_empty() {
-            self.ready.push(id);
+            self.ready.push((key, id));
             return false;
         }
         if self.count(author) >= self.per_author {
@@ -144,6 +145,7 @@ impl Model {
     fn arrive(&mut self, key: u32, now: u64) -> Vec<Held> {
         self.expire_due(now);
         self.held.retain(|held| held.key != key);
+        self.ready.retain(|(ready_key, _)| *ready_key != key);
         self.arrived.insert(key);
         let mut released = Vec::new();
         for mut held in std::mem::take(&mut self.held) {
@@ -159,6 +161,9 @@ impl Model {
 
     fn take_ready(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.ready)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
     }
 
     fn expire(&mut self, now: u64) -> Vec<(u8, u32)> {
