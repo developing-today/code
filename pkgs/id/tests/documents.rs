@@ -106,6 +106,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         document: Some(doc.clone()),
         removes: None,
         note: None,
+        link: None,
     }
 }
 
@@ -122,6 +123,7 @@ fn tag_ext(op: TagOp, after: Vec<Hash>) -> ChainExt {
         document: None,
         removes: None,
         note: None,
+        link: None,
     }
 }
 
@@ -380,6 +382,7 @@ fn test_a_document_event_that_does_not_fit_its_kind_is_not_signed() {
         document: None,
         removes: None,
         note: None,
+        link: None,
     };
     assert!(sign(&key, 0, None, None, missing).is_err());
     let with_tag = ChainExt {

@@ -52,6 +52,19 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
   // emit null so the store preserves the stored values instead of
   // resetting them to defaults (#4158).
   const carriesMergeFields = "merged" in obj || "merged_at" in obj || "draft" in obj;
+  // The pulls LIST endpoint carries merged_at but no merged boolean
+  // (only the single-PR get and webhook payloads carry both), so derive
+  // merged from merged_at when the boolean is absent (#4528, salvaged
+  // from the duplicate PR #4687; fixes the Codex P1 on PR #4597).
+  const merged = !carriesMergeFields
+    ? null
+    : obj.merged != null
+      ? obj.merged
+        ? 1
+        : 0
+      : obj.merged_at != null
+        ? 1
+        : 0;
   return {
     ref: itemRef(repo, number),
     repo,
@@ -63,7 +76,7 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
     state: obj.state === "closed" ? "closed" : "open",
     state_reason: iso(obj.state_reason),
     draft: carriesMergeFields ? (obj.draft ? 1 : 0) : null,
-    merged: carriesMergeFields ? (obj.merged ? 1 : 0) : null,
+    merged,
     author: iso(obj.user?.login),
     labels: jstr(labels),
     assignees: jstr(assignees),

@@ -16,17 +16,30 @@ const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v'
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
 const HOME_DIR = process.env.HOME || '/home/user';
-// Config resolution (#591): in a repo checkout, sync the repo's own
-// .opencode/opencode.jsonc. When home-manager installs this script it lands
-// alone in the Nix store, so ROOT_DIR resolves to /nix and the repo-relative
-// path never exists — fall back to the deployed user config, which is the
-// file the sync-models service actually maintains. $OPENCODE_CONFIG_PATH
-// overrides both.
+// Config resolution (#591, #4544): the model catalogs this script maintains
+// live in the runtime overlay (~/.local/state/opencode/opencode-runtime.jsonc),
+// which the OpenCode server layers over the tracked configured default via
+// OPENCODE_CONFIG. The tracked file carries deliberate configuration only,
+// so these automatic rewrites never dirty the repo tree. $OPENCODE_CONFIG_PATH
+// overrides everything. When no runtime overlay exists yet (pre-split
+// installs), fall back to the historical chain: in a repo checkout, sync the
+// repo's own .opencode/opencode.jsonc; when home-manager installs this script
+// it lands alone in the Nix store, so ROOT_DIR resolves to /nix and the
+// repo-relative path never exists — fall back to the deployed user config,
+// which is the file the sync-models service actually maintains.
+const RUNTIME_CONFIG_PATH = path.join(
+  HOME_DIR,
+  '.local/state/opencode/opencode-runtime.jsonc',
+);
 const REPO_CONFIG_PATH = path.join(ROOT_DIR, '.opencode/opencode.jsonc');
 const USER_CONFIG_PATH = path.join(HOME_DIR, '.config/opencode/opencode.jsonc');
 const OPENCODE_CONFIG_PATH =
   process.env.OPENCODE_CONFIG_PATH ||
-  (fs.existsSync(REPO_CONFIG_PATH) ? REPO_CONFIG_PATH : USER_CONFIG_PATH);
+  (fs.existsSync(RUNTIME_CONFIG_PATH)
+    ? RUNTIME_CONFIG_PATH
+    : fs.existsSync(REPO_CONFIG_PATH)
+      ? REPO_CONFIG_PATH
+      : USER_CONFIG_PATH);
 const POLICY_PATH = path.join(import.meta.dirname, 'sync-models.policy.json');
 const CODEX_CACHE_PATH = path.join(HOME_DIR, '.codex/models_cache.json');
 const GEMINI_CACHE_PATH = path.join(HOME_DIR, '.gemini/antigravity_models_cache.json');
@@ -402,7 +415,8 @@ function setJsoncPath(text, keys, value) {
 }
 
 // Removes the member at `keys` by deleting its lines (and its comma). Comments
-// on other lines are kept.
+// on other lines are kept; an inline comment on the removed member is refused
+// rather than silently discarded.
 function removeJsoncPath(text, keys) {
   let object = parseJsoncTree(text);
   for (const key of keys.slice(0, -1)) {
@@ -414,6 +428,16 @@ function removeJsoncPath(text, keys) {
   const lineStart = text.lastIndexOf('\n', member.keyStart - 1) + 1;
   if (text.slice(lineStart, member.keyStart).trim() !== '') {
     throw new Error(`cannot remove ${keys.join('/')}: it shares a line with other JSON`);
+  }
+  const lineEnd = text.indexOf('\n', member.value.end);
+  const memberLineEnd = lineEnd < 0 ? text.length : lineEnd;
+  const trailing = text.slice(member.value.end, memberLineEnd);
+  if (trailing.includes('//') || trailing.includes('/*')) {
+    const error = new Error(
+      `cannot remove ${keys.join('/')}: inline comment on the member line would be lost`,
+    );
+    error.name = 'JsoncCommentRemovalError';
+    throw error;
   }
   let end = member.value.end;
   while (text[end] === ' ' || text[end] === '\t') end++;

@@ -332,6 +332,7 @@ pub fn sign_authorisation(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         },
     )?)
 }
@@ -363,6 +364,7 @@ pub fn sign_revoke(
             removes: None,
             note: None,
             link: None,
+            checkpoint: None,
         },
     )?)
 }
