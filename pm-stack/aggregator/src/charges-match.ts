@@ -16,6 +16,28 @@
 //
 // No balances or debt data pass through here: candidates are charge
 // evidence only (date, merchant, amount, payment-method label).
+//
+// The charges contract (#3161 — a charge is evidence), stated once:
+// (1) Admission requires payment evidence: a candidate exists only
+// where money demonstrably moved — declined/failed alerts and
+// amounts merely due are not charges, and the candidate's amount is
+// the amount paid (the producer's rule, produce-charge-candidates).
+// (2) Identity is one rule everywhere: two observations are the
+// same charge only when their provenance differs (cross-source
+// here; hand-fed vs auto in charges-collect's sameCharge), amounts
+// are equal, dates fall inside the 3-day window
+// (DEDUPE_WINDOW_DAYS), and the merchant identity holds at token
+// boundaries; an empty normalized merchant never matches anything,
+// and conflicting known payment methods veto the merge (agreement
+// or absence does not block it). Classification follows the same
+// boundary rule: service names, aliases and SaaS markers match at
+// token boundaries only, against the hub's whole known catalog —
+// SaaS services plus the quota pools and their aliases.
+// (3) Delivery: surfaced means delivered — surfaced keys are
+// persisted only for charges in a feed that was successfully
+// published, and consumers read the charges sections on their own
+// validity, never gated on an unrelated section (the collector's
+// and the live source's side of the contract).
 
 import type { ChargeRow } from "./model.ts";
 
