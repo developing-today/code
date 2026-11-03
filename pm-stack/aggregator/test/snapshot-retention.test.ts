@@ -518,6 +518,46 @@ describe("isSnapshotRollup count gate (#3443)", () => {
   });
 });
 
+describe("isSnapshotRollup value domain (#4276)", () => {
+  test("refuses negative scalar pct values in min, max, and last", () => {
+    // Mirrors the isSnapshotRecord scalar-pct rule (#2346): a corrupt
+    // rollup must not re-seed the reading path via expandRollup.
+    expect(isSnapshotRollup(rollup({ valueLast: -5 }))).toBe(false);
+    expect(isSnapshotRollup(rollup({ valueMin: -20, valueLast: -5 }))).toBe(false);
+    expect(isSnapshotRollup(rollup({ valueMin: -20, valueMax: -5, valueLast: -5 }))).toBe(false);
+  });
+
+  test("refuses min ordered after max in scalar and pair forms", () => {
+    // aggAddRecord only lowers min / raises max, so an inverted
+    // rollup is unproducible by writers and therefore corrupt.
+    expect(isSnapshotRollup(rollup({ valueMin: 90, valueMax: 10 }))).toBe(false);
+    const invertedPair = rollup({
+      unit: "usd-est",
+      valueMin: { low: 20, high: 30 },
+      valueMax: { low: 1, high: 2 },
+      valueLast: { low: 20, high: 30 },
+    });
+    expect(isSnapshotRollup(invertedPair)).toBe(false);
+  });
+
+  test("valid pct, negative usd, and ordered pair rollups pass and expand to valid records", () => {
+    const passing = [
+      rollup(),
+      rollup({ unit: "usd", valueMin: -20, valueMax: -5, valueLast: -5 }),
+      rollup({
+        unit: "usd-est",
+        valueMin: { low: 1, high: 2 },
+        valueMax: { low: 20, high: 30 },
+        valueLast: { low: 20, high: 30 },
+      }),
+    ];
+    for (const r of passing) {
+      expect(isSnapshotRollup(r)).toBe(true);
+      expect(expandRollup(r).every(isSnapshotRecord)).toBe(true);
+    }
+  });
+});
+
 describe("withSnapshotStoreLock stale reclamation (PR #2379 Codex round 2)", () => {
   test("concurrent reclaimers of an abandoned lock never overlap critical sections", async () => {
     // Regression: reclamation used to rm the lock path unconditionally,

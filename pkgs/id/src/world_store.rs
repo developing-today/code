@@ -401,7 +401,7 @@ pub async fn open_world(
             .await
             .context("journal open task")??;
     let journal_entries = entries.len();
-    let mut restored = WorldCore::restore(world_id, limits, entries)?;
+    let mut restored = WorldCore::restore_with_runtime(world_id, limits, runtime, entries)?;
     let directory_path = dir.join("directory.jsonl");
     let directory =
         tokio::task::spawn_blocking(move || crate::directory::Directory::open(&directory_path))
