@@ -40,6 +40,21 @@ fi
 grep -q "OVER LIMIT pkgs/id/src/huge.rs: 2501 production lines" "$TMP/bad.out"
 echo "pass: violating tree fails and names the offender with its count"
 
+# Production code AFTER an early out-of-line test-module declaration
+# still counts (Codex finding on PR #4709): a file that declares
+# #[cfg(test)] mod tests; at the top and then runs 2,501 production
+# lines must fail, not be truncated at the declaration.
+mkdir -p "$TMP/early/pkgs/id/src"
+{ echo "#[cfg(test)]"
+  echo "mod tests;"
+  for i in $(seq 1 2501); do echo "fn p$i() {}"; done
+} > "$TMP/early/pkgs/id/src/early.rs"
+if bash "$SCRIPT" "$TMP/early" > "$TMP/early.out" 2>&1; then
+  echo "FAIL: guard truncated counting at an out-of-line test declaration" >&2; exit 1
+fi
+grep -q "OVER LIMIT pkgs/id/src/early.rs: 2501 production lines" "$TMP/early.out"
+echo "pass: production after an out-of-line test declaration is counted"
+
 # Test code is out of scope: tests/ trees and tests.rs modules.
 mkdir -p "$TMP/tests/pkgs/id/tests" "$TMP/tests/pkgs/id/src/encryption"
 gen "$TMP/tests/pkgs/id/tests/cli_integration.rs" 4000
