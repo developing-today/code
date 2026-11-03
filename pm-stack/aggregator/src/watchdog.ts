@@ -32,7 +32,13 @@
 // - service probes: a failed probe (ok === false) for Kaneo, Grist,
 //   or Pad breaches immediately; the probe cache (60 s, health.ts)
 //   is the debounce.
-import { ageMsText, FEED_STALE_MS, GENERATED_AT_FUTURE_SKEW_MS, ORCHESTRATION_STALE_MS, type SectionDiagnosis } from "./feed.ts";
+import {
+  ageMsText,
+  FEED_STALE_MS,
+  GENERATED_AT_FUTURE_SKEW_MS,
+  ORCHESTRATION_STALE_MS,
+  type SectionDiagnosis,
+} from "./feed.ts";
 import type { TierItem } from "./model.ts";
 
 /** Feed freshness bound — mirrors health.ts / live.ts FEED_STALE_MS. */

@@ -447,7 +447,9 @@ class TestPack(ColdStoreTestBase):
             return real_compress(store_self, src_arg, frame_path)
 
         with mock.patch.object(
-            ColdStore, "_compress_to_frame", autospec=True,
+            ColdStore,
+            "_compress_to_frame",
+            autospec=True,
             side_effect=mutate_then_compress,
         ):
             with self.assertRaisesRegex(

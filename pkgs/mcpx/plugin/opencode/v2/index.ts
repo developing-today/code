@@ -14,28 +14,12 @@
 import { targetKey, type Target } from "../mcpx/daemon.ts";
 import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
-import {
-  wirePermissionGate,
-  type PermissionDomainLike,
-} from "./permission.ts";
+import { wirePermissionGate, type PermissionDomainLike } from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
-import {
-  startSamplingWatcher,
-  type GenerateTextLike,
-  type SamplingDaemonLike,
-} from "./sampling.ts";
+import { startSamplingWatcher, type GenerateTextLike, type SamplingDaemonLike } from "./sampling.ts";
 import { createSessionEnv } from "./session-env.ts";
-import {
-  createTimingLog,
-  type ExecuteAfterInput,
-  type ToolTimingRecord,
-} from "./timing.ts";
-import {
-  createToolRuntime,
-  registerTools,
-  type ToolDomainLike,
-  type ToolRuntime,
-} from "./tools.ts";
+import { createTimingLog, type ExecuteAfterInput, type ToolTimingRecord } from "./timing.ts";
+import { createToolRuntime, registerTools, type ToolDomainLike, type ToolRuntime } from "./tools.ts";
 
 /** The slice of the v2 setup Context this core uses (promise/plugin.ts). */
 export type McpxV2Context = {
@@ -68,10 +52,7 @@ export type McpxV2Context = {
   };
 };
 
-export async function setupMcpxV2(
-  ctx: McpxV2Context,
-  rawOptions?: Options,
-): Promise<(() => void) | undefined> {
+export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Promise<(() => void) | undefined> {
   const options = resolveOptions(rawOptions, process.env);
   const directory = ctx.directory ?? process.cwd();
   const sessionEnv = createSessionEnv({
@@ -196,13 +177,8 @@ export async function setupMcpxV2(
   const watcher = startSamplingWatcher({
     generate: generate.text,
     client: async (): Promise<SamplingDaemonLike | undefined> => {
-      const client = (await runtime?.daemon().catch(() => undefined)) as
-        | Partial<SamplingDaemonLike>
-        | undefined;
-      if (
-        typeof client?.pendingElicitations !== "function" ||
-        typeof client?.answer !== "function"
-      ) {
+      const client = (await runtime?.daemon().catch(() => undefined)) as Partial<SamplingDaemonLike> | undefined;
+      if (typeof client?.pendingElicitations !== "function" || typeof client?.answer !== "function") {
         return undefined;
       }
       return client as SamplingDaemonLike;

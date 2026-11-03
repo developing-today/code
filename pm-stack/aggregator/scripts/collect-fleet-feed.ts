@@ -73,12 +73,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
-import {
-  aaAbsent,
-  aaSectionFromSupabase,
-  isAaSection,
-  type AaRawPayload,
-} from "../src/aa.ts";
+import { aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
 import {
   feedSectionStatus,
   normalizeOrchestrationSection,

@@ -523,12 +523,7 @@ function isQuotaCredentialRow(v: unknown): v is QuotaCredentialRow {
 type QuotaActiveSession = NonNullable<QuotaPool["activeSessions"]>[number];
 
 function isQuotaActiveSession(v: unknown): v is QuotaActiveSession {
-  return (
-    isRecord(v) &&
-    typeof v.session === "string" &&
-    typeof v.model === "string" &&
-    isNonNegative(v.tokens)
-  );
+  return isRecord(v) && typeof v.session === "string" && typeof v.model === "string" && isNonNegative(v.tokens);
 }
 
 /** One historical burn segment as renderQuota maps it (#2429).
@@ -558,12 +553,7 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
  * totals and attention severity. */
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
-  return (
-    typeof v.merchant === "string" &&
-    isFiniteNumber(v.amountUsd) &&
-    v.amountUsd > 0 &&
-    isIsoDate(v.at)
-  );
+  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && v.amountUsd > 0 && isIsoDate(v.at);
 }
 
 /** One charges-evidence row as the /quota charges strip renders it
@@ -724,7 +714,8 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
   let droppedActiveSessions = 0;
   let droppedPoolFreshness = 0;
   let droppedBurnTokensPerMin = 0;
-  const lifecycleRows = quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
+  const lifecycleRows =
+    quota.credentialLifecycle === undefined ? undefined : arrayOf(isCredentialLifecycleRow)(quota.credentialLifecycle);
   const droppedCredentialLifecycle = lifecycleRows?.dropped ?? (quota.credentialLifecycle === undefined ? 0 : 1);
   const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
     const windows = arrayOf(isQuotaWindow)(pool.windows);
@@ -789,7 +780,9 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
             providerName: safeProviderReason(row.providerName),
             label: safeProviderReason(row.label),
             ...(row.reason ? { reason: safeProviderReason(row.reason) } : {}),
-            ...(row.userAction ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } } : {}),
+            ...(row.userAction
+              ? { userAction: { owner: "user" as const, title: safeProviderReason(row.userAction.title) } }
+              : {}),
           })),
         }
       : {}),
@@ -873,9 +866,7 @@ export interface SubscriptionSanitization {
  * render verbatim as renewal dates. */
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
-  return (
-    typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt))
-  );
+  return typeof v.name === "string" && typeof v.plan === "string" && (v.renewsAt === null || isIsoDate(v.renewsAt));
 }
 
 /** Drop malformed subscription rows at the loadFeed boundary (#2446,
