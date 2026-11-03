@@ -16,7 +16,6 @@ let
   # defaults when the env var is absent.
   clefProxyPort = 18742;
   codexProxyPort = 18744;
-  designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
   opencodeRouteProxyPort = 18750;
@@ -49,11 +48,63 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
-  # Hidden-shell auth hook (1Password service account, Jules, Cloudflare).
+  # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
+  # The cascade's opencode build -- openchamber's nested opencode
+  # input, which is exactly the derivation services.opencode.package
+  # defaults to (the fork's module wrapper mkDefaults the fork
+  # flake's own packages.<system>.opencode). Named once here: the
+  # wrapper below execs it, and the wrapped package joins over it.
+  opencodeCascade = inputs.openchamber.inputs.opencode.packages.${system}.opencode;
+  # Drew's opencode wrapper -- formerly a standalone home.packages
+  # entry (writeShellScriptBin "opencode"), logic unchanged:
+  # Cloudflare env top-up and the stamp-gated sync-models
+  # kick. The one change is the exec target: the cascade build, not
+  # this repo's root opencode input (a second fork build, so CLI and
+  # service ran different fork commits).
+  opencodeWrapper = pkgs.writeShellScript "opencode" ''
+    if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
+      [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
+      [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
+      export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
+    fi
+
+    # Opportunistic background model sync (max once every 24h, detached)
+    _CACHE_DIR="$HOME/.cache"
+    [ -n "$XDG_CACHE_HOME" ] && _CACHE_DIR="$XDG_CACHE_HOME"
+    _SYNC_STAMP="$_CACHE_DIR/sync-models.last"
+    if [ ! -f "$_SYNC_STAMP" ] || [ -n "$(find "$_SYNC_STAMP" -mtime +1 2>/dev/null)" ]; then
+      mkdir -p "$_CACHE_DIR"
+      touch "$_SYNC_STAMP"
+      (
+        export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
+        if command -v sync-models >/dev/null 2>&1; then
+          sync-models >/dev/null 2>&1
+        elif [ -x "$HOME/code/bin/sync-models.mjs" ]; then
+          ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" >/dev/null 2>&1
+        fi
+      ) &
+    fi
+
+    exec ${opencodeCascade}/bin/opencode "$@"
+  '';
+  # The cascade opencode with the wrapper as its bin/opencode.
+  # symlinkJoin over the cascade package: the rest of its tree --
+  # above all bin/mcpx, the cascade mcpx symlink the code#5027
+  # settlement relies on -- rides along untouched. This is what
+  # services.opencode.package points at (below), so the systemd user
+  # service and the home profile share this one derivation.
+  opencodeWrapped = pkgs.symlinkJoin {
+    name = "${opencodeCascade.name}-wrapped";
+    paths = [ opencodeCascade ];
+    postBuild = ''
+      rm $out/bin/opencode
+      install -Dm755 ${opencodeWrapper} $out/bin/opencode
+    '';
+  };
   # The environment the mcpx daemon runs with (services.mcpx.environment
   # below; the module renders it into the unit).
   mcpxEnvironment = {
@@ -339,9 +390,10 @@ in
   # converting back to v1 — that conversion is what made the keys flap on
   # every OpenChamber launch.
   #
-  # Watch the file and normalise any v1 spelling that lands in it (hand
-  # edits, older tools) to v2. The script is idempotent and refuses to
-  # write anything it cannot re-parse.
+  # Normalise any v1 spelling that lands in the file (hand edits, older
+  # tools) to v2. The script is idempotent and refuses to write anything
+  # it cannot re-parse. It is deliberately NOT watched by a path unit
+  # right now — see the note under the service.
   systemd.user.services.opencode-config-normalize = {
     Unit = {
       Description = "Normalise opencode config to v2 plugin/agent keys";
@@ -363,14 +415,25 @@ in
       ];
     };
   };
-  systemd.user.paths.opencode-config-normalize = {
-    Unit.Description = "Watch opencode config for v1 plugin/agent keys";
-    Path = {
-      PathChanged = "%h/.config/opencode/opencode.jsonc";
-      Unit = "opencode-config-normalize.service";
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # No systemd.user.paths.opencode-config-normalize until the fleet
+  # switch lands the v2 normaliser (2026-11-03): the normaliser in the
+  # RUNNING generation (built 2026-11-01, before #4594 taught
+  # pkgs/opencode-config-normalize to emit only v2) still writes the v1
+  # spellings, and a declared path unit re-arms on every home-manager
+  # activation — the runtime stops applied during the #5094 adoption
+  # were silently undone and the tracked config flapped back to v1.
+  # Until the switch, the service above runs only when started
+  # deliberately (systemctl --user start opencode-config-normalize).
+  # Restore the path unit in the same change that verifies the switched
+  # generation carries the v2 normaliser:
+  #   systemd.user.paths.opencode-config-normalize = {
+  #     Unit.Description = "Watch opencode config for v1 plugin/agent keys";
+  #     Path = {
+  #       PathChanged = "%h/.config/opencode/opencode.jsonc";
+  #       Unit = "opencode-config-normalize.service";
+  #     };
+  #     Install.WantedBy = [ "default.target" ];
+  #   };
 
   # Dated, on-change snapshots of agent credentials and config.
   #
@@ -410,7 +473,6 @@ in
       # PathChanged fires on close-after-write. Directories are watched where
       # the interesting file is rewritten rather than edited in place.
       PathChanged = [
-        "%h/.config/jules/api-key"
         "%h/.local/share/opencode/auth.json"
         "%h/.config/opencode/opencode.jsonc"
         "%h/.local/share/t3code/userdata/settings.json"
@@ -598,34 +660,18 @@ in
   # history, drop the session-variable removals below, and re-point the
   # plan seats in opencode.jsonc back from antigravity-direct.
 
-  systemd.user.services.design-code-proxy = {
-    Unit = {
-      Description = "Code Design / Design Code Local Proxy Bridge for OpenCode";
-      After = [
-        "network-online.target"
-        "codex-proxy.service"
-      ];
-      Wants = [
-        "network-online.target"
-        "codex-proxy.service"
-      ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "design-code-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/design-code-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "DESIGN_CODE_PROXY_PORT=${toString designCodeProxyPort}"
-        "DESIGN_CODE_PROXY_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Design Code proxy removed (2026-11-03, Drew): its unit definition
+  # stood here. Drew removed the design persona routes and the whole
+  # design-code machinery — "the only design thing I have is opendesign"
+  # — so the :18746 door has no consumers left: the persona routes are
+  # removed from opencode.jsonc in the same pass, and the opendesign
+  # provider/pool (a different thing, kept) never used this door. The
+  # definition is removed, not commented out, so the switch stops the
+  # service and it stays off; bin/design-code-proxy.mjs remains in the
+  # repo as history, uninvoked, and its port let and session variable
+  # are removed with it. To undo: restore this unit block, the
+  # designCodeProxyPort let, and the DESIGN_CODE_PROXY_PORT session
+  # variable from git history, and re-add the config-side machinery.
 
   # Proxy supervisor retired (#2104, 2026-10-28): the proxy-supervisor
   # oneshot service, its 2-minute timer, and the supervisor config that
@@ -802,7 +848,7 @@ in
 
   systemd.user.services.sync-models = {
     Unit = {
-      Description = "Sync AI models for OpenCode providers from models.dev, agy, and Codex";
+      Description = "Sync AI models for OpenCode providers from models.dev and agy";
       After = [ "network-online.target" ];
     };
     Service = {
@@ -913,12 +959,34 @@ in
     # inherits them — the mcpx daemon receives them the same way.)
   };
 
+  services.opencode = {
+    # enable comes from the cascade (mkDefault at each layer).
+    #
+    # package: the cascade build with the wrapper baked in
+    # (opencodeWrapped, in the let above) -- one derivation for the
+    # service unit and the home profile (Drew's ruling, 2026-11-03;
+    # code#5038, option A). As a standalone home.packages entry the
+    # wrapper collided with this package on bin/opencode, and it
+    # exec'd the root input's build besides (CLI/service skew).
+    package = opencodeWrapped;
+  };
+
   services.mcpx = {
     # enable comes from the cascade (mkDefault at each layer).
     #
-    # This repo's own mcpx build — the package the hand-rolled unit
-    # ran (pkgs/mcpx) — rather than the fork's re-export default.
-    package = mcpx;
+    # package: deliberately unset. There is one mcpx — the
+    # cascade's (the fork's build, via the module wrapper's
+    # mkDefault) — and this config takes that one (Drew's ruling,
+    # 2026-11-03; code#5027). The former pin to this repo's own
+    # pkgs/mcpx build made two mcpx builds coexist and collided
+    # with the fork package's bin/mcpx in the home profile.
+    #
+    # addPackageToProfile: off. The profile's bin/mcpx comes from
+    # exactly one provider — the opencode package's bundled
+    # symlink. The module also adding cfg.package to home.packages
+    # would put a second mcpx entry in the profile (Drew's ruling,
+    # 2026-11-03; code#5027).
+    addPackageToProfile = false;
     # The daemon's environment, unchanged from the hand-rolled unit
     # (mcpxEnvironment above).
     environment = mcpxEnvironment;
@@ -1096,7 +1164,6 @@ in
     #
     #   bws-access-token          | ~/.config/bws/access-token          -> BWS_ACCESS_TOKEN (bws login)
     #   op-service-account-token  | ~/.config/op/service-account-token  -> OP_SERVICE_ACCOUNT_TOKEN
-    #   jules-api-key             | ~/.config/jules/api-key             -> JULES_API_KEY
     #   cloudflare-{account-id,gateway-id,ai-inference-token} | ~/.config/cloudflare/...
     #
     # The hook is sourced from bashrcExtra, which home-manager places BEFORE the
@@ -1104,10 +1171,6 @@ in
     # these exports used to be invisible to hidden agent shells). Non-interactive
     # `bash -c` shells get it through BASH_ENV instead (nixos/agent-auth +
     # systemd.user.sessionVariables below). See pkgs/agent-shell-env/env.sh.
-    #
-    # JULES_API_KEY is consumed by the @google/jules-mcp server wired into
-    # opencode via "mcp.jules" -> environment -> {env:JULES_API_KEY}. The `jules`
-    # CLI ignores it and uses the `jules login` OAuth token in gnome-keyring.
     bash = {
       bashrcExtra = ''
         . "${agent-shell-env}/share/agent-shell-env/env.sh"
@@ -1449,7 +1512,6 @@ in
       CLEF_PROXY_PORT = toString clefProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
       ANTIGRAVITY_DIRECT_PORT = toString antigravityDirectProxyPort;
-      DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
       # The three below were missing: their {env:...} templates in
       # opencode.jsonc resolved to an empty port in the OpenChamber serve
       # (2026-10-25 audit) because the variables never reached its
@@ -1502,21 +1564,13 @@ in
         (pkgs.writeShellScriptBin "clef-proxy" ''
           exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
         '')
-        (pkgs.writeShellScriptBin "agy-proxy" ''
-          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs "$@"
-        '')
+        # No "agy-proxy" / "antigravity-ls-proxy" launchers here: both
+        # doors were retired 2026-10-30 and their units removed above.
+        # The .mjs files remain in bin/ as history, uninvoked — a PATH
+        # launcher would resurrect a retired door on its canonical port.
         (pkgs.writeShellScriptBin "codex-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "antigravity-ls-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs "$@"
-        '')
-        (pkgs.writeShellScriptBin "design-code-proxy" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
@@ -1526,35 +1580,9 @@ in
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
           exec ${pkgs.nodejs}/bin/node ${../../bin/sync-models.mjs} "$@"
         '')
-        (pkgs.writeShellScriptBin "opencode" ''
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] && [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-            [ -r "$HOME/.config/cloudflare/account-id" ] && export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-            [ -r "$HOME/.config/cloudflare/gateway-id" ] && export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-            export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-          fi
-          if [ -z "$JULES_API_KEY" ] && [ -r "$HOME/.config/jules/api-key" ]; then
-            export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
-          fi
-
-          # Opportunistic background model sync (max once every 24h, detached)
-          _CACHE_DIR="$HOME/.cache"
-          [ -n "$XDG_CACHE_HOME" ] && _CACHE_DIR="$XDG_CACHE_HOME"
-          _SYNC_STAMP="$_CACHE_DIR/sync-models.last"
-          if [ ! -f "$_SYNC_STAMP" ] || [ -n "$(find "$_SYNC_STAMP" -mtime +1 2>/dev/null)" ]; then
-            mkdir -p "$_CACHE_DIR"
-            touch "$_SYNC_STAMP"
-            (
-              export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-              if command -v sync-models >/dev/null 2>&1; then
-                sync-models >/dev/null 2>&1
-              elif [ -x "$HOME/code/bin/sync-models.mjs" ]; then
-                ${pkgs.nodejs}/bin/node "$HOME/code/bin/sync-models.mjs" >/dev/null 2>&1
-              fi
-            ) &
-          fi
-
-          exec ${inputs.opencode.packages.${system}.opencode}/bin/opencode "$@"
-        '')
+        # No standalone "opencode" script in this list: the CLI is
+        # services.opencode.package -- the cascade build with the
+        # wrapper baked in (opencodeWrapped, in the let above; code#5038).
         #
         #         dog
         #         felix

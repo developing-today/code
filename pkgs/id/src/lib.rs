@@ -182,6 +182,7 @@ pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
 pub use id_core::discovery;
+pub mod didit;
 mod peer_announcement;
 pub mod documents;
 #[cfg(feature = "world")]
@@ -210,6 +211,7 @@ pub mod notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
 pub mod protocol;
+pub mod publications;
 pub mod pull_policy;
 pub mod references;
 pub mod rejection;

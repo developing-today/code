@@ -256,7 +256,10 @@ describe("project registry", () => {
     const cloudNext = (cloud.editorial?.next ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
     expect(cloudNext).toContain("OCI signup resolution");
     expect(cloudNext).toContain("CPCOE-29381");
-    expect(cloudNext).toContain("Free-services pass");
+    // #1059: the free-services adoption record was published 2026-11-03, so the
+    // entry now lives in done (doc/2026-11-03T18-30-00Z_record_free_services_adoption.md).
+    const cloudDone = (cloud.editorial?.done ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(cloudDone).toContain("Free-services pass — adoption decisions recorded");
     // The 2026-10-26 SaaS review list must stay named in the entry.
     for (const svc of [
       "boats.cloud",
@@ -271,11 +274,12 @@ describe("project registry", () => {
       "GCP",
       "AWS",
     ]) {
-      expect(cloudNext).toContain(svc);
+      expect(cloudDone).toContain(svc);
     }
-    // boats.cloud caveat (CodeRabbit nitpick on PR #2406): it stays unverified and untouched.
-    expect(cloudNext).toContain("unverified");
-    expect(cloudNext).toContain("untouched");
+    // boats.cloud is recorded unverifiable (not left open), and nothing is adopted yet.
+    expect(cloudDone).toContain("unverifiable");
+    expect(cloudDone).toContain("nothing is adopted yet");
+    expect(cloudDone).toContain("pending Drew");
     const cloudLongTerm = (cloud.editorial?.longTerm ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
     expect(cloudLongTerm).toContain("Egress offload");
     expect(cloudLongTerm).toContain("zero-egress");

@@ -281,9 +281,10 @@ impl LinkProjection {
 /// # Errors
 ///
 /// Returns [`LinkProjectionError`] when two link events share an ID, a link names
-/// a source or target note with no create in `notes`, a link's asserting revision
-/// is not a revision of its source note, or a link pins a revision that is not a
-/// revision of its target note.
+/// a source note with no create in `notes`, or a link's asserting revision is not
+/// a revision of its source note. For links asserted by a current head, it also
+/// returns an error when the target note is missing or a pin is not a revision of
+/// that target. Superseded links are dropped before target and pin validation.
 pub fn project_links(
     notes: &[NoteRecord],
     links: &[AppliedLink],
@@ -315,6 +316,9 @@ pub fn project_links(
                 note: *source,
             });
         }
+        if !source_note.heads.contains(revision) {
+            continue;
+        }
         let target_note = by_note.get(target).ok_or(LinkProjectionError::UnknownTarget {
             link: link.id,
             target: *target,
@@ -327,9 +331,6 @@ pub fn project_links(
                     target: *target,
                 });
             }
-        }
-        if !source_note.heads.contains(revision) {
-            continue;
         }
         edges.push(LinkRecord {
             id: link.id,
@@ -563,6 +564,30 @@ mod tests {
         assert_eq!(projection.edges().len(), 1);
         assert_eq!(projection.edges()[0].id, hash(41));
         assert!(projection.backlinks_to(hash(20)).is_empty());
+    }
+
+    #[test]
+    fn test_a_superseded_link_with_a_bad_pin_is_dropped() {
+        let folded = notes(&[
+            create(10, b"v1"),
+            revise(11, 10, b"v2", &[10]),
+            create(20, b"target one"),
+            create(30, b"target two"),
+        ]);
+
+        let projection =
+            project_links(&folded, &[link(40, 10, 10, 20, "dropped", Some(30))]).unwrap();
+
+        assert!(projection.edges().is_empty());
+    }
+
+    #[test]
+    fn test_a_superseded_link_with_an_unknown_target_is_dropped() {
+        let folded = notes(&[create(10, b"v1"), revise(11, 10, b"v2", &[10])]);
+
+        let projection = project_links(&folded, &[link(40, 10, 10, 99, "dropped", None)]).unwrap();
+
+        assert!(projection.edges().is_empty());
     }
 
     #[test]

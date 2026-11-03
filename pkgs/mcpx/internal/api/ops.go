@@ -536,6 +536,7 @@ func Ops() []Op {
 					Schema: `{"type":"array","items":{"type":"object","properties":{"server":{"type":"string"},"tool":{"type":"string"},"args":{"type":"object"}},"required":["tool"]}}`},
 				{Name: "stopOnError", In: InBody, Type: "boolean", Desc: "stop execution on first failure (default true)"},
 				{Name: "parallel", In: InBody, Type: "boolean", Desc: "execute calls concurrently (default false)"},
+				{Name: "safePrefix", In: InBody, Type: "boolean", Desc: "execute only the safe prefix (#1927): run calls in order until the first destructiveHint-annotated call, which and everything after it are reported skipped with the reason; forces sequential execution"},
 			}, callContextParams()...),
 		},
 		{

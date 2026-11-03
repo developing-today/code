@@ -250,7 +250,7 @@ def pace(pace_secs: float) -> None:
 def ledger_append(action: str, repo: str, number: str, detail: str) -> None:
     path = ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     with path.open("a") as fh:
         fh.write(f"{ts}\t{action}\t{repo}\t{number}\t{detail}\n")
 

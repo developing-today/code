@@ -171,6 +171,164 @@ test('specific-function tool_choice with no declared tools is a 400', async () =
   assert.equal(generateCalls().length, beforeCount);
 });
 
+// --- opencode#1548: bare array schemas ------------------------------------
+// A tool property declared {type: 'array'} with no items is legal JSON
+// Schema (unconstrained elements) but the upstream proto validator
+// rejects an ARRAY schema without items ("properties[paths].items:
+// missing field"), which 400'd every tool-carrying session through this
+// door. Conversion must synthesize an unconstrained items for any ARRAY
+// node that carries neither items nor prefixItems.
+
+const lastFunctionDeclarations = () => {
+  const calls = generateCalls();
+  assert.ok(calls.length > 0, 'expected at least one upstream generate call');
+  return calls[calls.length - 1].body.request.tools[0].functionDeclarations;
+};
+
+const assertArraysCarryItems = (node, where) => {
+  if (Array.isArray(node)) { node.forEach((v, i) => assertArraysCarryItems(v, `${where}[${i}]`)); return; }
+  if (!node || typeof node !== 'object') return;
+  if (node.type === 'ARRAY') {
+    assert.ok(node.items !== undefined || node.prefixItems !== undefined, `${where}: ARRAY schema without items`);
+  }
+  for (const [k, v] of Object.entries(node)) assertArraysCarryItems(v, `${where}.${k}`);
+};
+
+test('bare array tool properties reach upstream with synthesized items (opencode#1548)', async () => {
+  const tools = [{
+    type: 'function',
+    function: {
+      name: 'collect_files',
+      description: 'collect files',
+      parameters: {
+        type: 'object',
+        properties: {
+          paths: { type: 'array', description: 'paths to collect' },
+          matrix: { type: 'array', items: { type: 'array' } },
+          choice: { anyOf: [{ type: 'array' }, { type: 'string' }] },
+          tuple: { type: 'array', items: [{ type: 'string' }, { type: 'number' }] },
+          named: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['paths']
+      }
+    }
+  }];
+  const { status } = await chat({ tools });
+  assert.equal(status, 200);
+  const decls = lastFunctionDeclarations();
+  assert.equal(decls.length, 1);
+  const props = decls[0].parameters.properties;
+  assert.deepEqual(props.paths, { type: 'ARRAY', description: 'paths to collect', items: {} });
+  assert.deepEqual(props.named, { type: 'ARRAY', items: { type: 'STRING' } });
+  assertArraysCarryItems(decls[0].parameters, 'parameters');
+});
+
+// --- opencode#1550: anyOf folds to oneOf for Claude targets ---------------
+// For Claude models the upstream re-serializes the proto Schema into an
+// Anthropic input_schema, and Anthropic's validator rejects anyOf in any
+// position ("tools.N.custom.input_schema: JSON schema is invalid. It must
+// match JSON Schema draft 2020-12"), which 400'd workhorse sessions on
+// the Claude leaf all day 2026-11-03 (any tool with a zod-union or
+// nullable-anyOf property). Conversion for Claude targets must emit
+// oneOf instead; Gemini targets keep anyOf verbatim.
+
+const assertNoKey = (node, key, where) => {
+  if (Array.isArray(node)) { node.forEach((v, i) => assertNoKey(v, key, `${where}[${i}]`)); return; }
+  if (!node || typeof node !== 'object') return;
+  assert.ok(!(key in node), `${where}: unexpected ${key}`);
+  for (const [k, v] of Object.entries(node)) assertNoKey(v, key, `${where}.${k}`);
+};
+
+const UNION_TOOLS = [{
+  type: 'function',
+  function: {
+    name: 'probe_union',
+    description: 'union-shaped parameters',
+    parameters: {
+      type: 'object',
+      properties: {
+        nullable_note: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        either: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+        listed: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'boolean' }] } },
+        pick: { oneOf: [{ type: 'string' }, { type: 'number' }] }
+      }
+    }
+  }
+}];
+
+test('anyOf tool schemas fold to oneOf for claude models (opencode#1550)', async () => {
+  const { status } = await chat({ model: 'claude-sonnet-5-5', tools: UNION_TOOLS });
+  assert.equal(status, 200);
+  const decls = lastFunctionDeclarations();
+  assert.equal(decls.length, 1);
+  const props = decls[0].parameters.properties;
+  assert.deepEqual(props.nullable_note, { oneOf: [{ type: 'STRING' }, { type: 'NULL' }] });
+  assert.deepEqual(props.either, { oneOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+  assert.deepEqual(props.listed, { type: 'ARRAY', items: { oneOf: [{ type: 'STRING' }, { type: 'BOOLEAN' }] } });
+  assert.deepEqual(props.pick, { oneOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+  assertNoKey(decls[0].parameters, 'anyOf', 'parameters');
+});
+
+test('anyOf tool schemas stay anyOf for gemini models (opencode#1550)', async () => {
+  const { status } = await chat({ tools: UNION_TOOLS });
+  assert.equal(status, 200);
+  const decls = lastFunctionDeclarations();
+  const props = decls[0].parameters.properties;
+  assert.deepEqual(props.nullable_note, { anyOf: [{ type: 'STRING' }, { type: 'NULL' }] });
+  assert.deepEqual(props.either, { anyOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+  assert.deepEqual(props.listed, { type: 'ARRAY', items: { anyOf: [{ type: 'STRING' }, { type: 'BOOLEAN' }] } });
+  assert.deepEqual(props.pick, { oneOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
+});
+
+// --- opencode#1550 (part 2): tool-call ids ride the history parts --------
+// For Claude models the upstream's v1internal->Anthropic conversion emits
+// a tool_use block per history functionCall part and a tool_result per
+// functionResponse part, and Anthropic requires both ids
+// ("messages.N.content.M.tool_use.id: Field required", then
+// "tool_result.tool_use_id: Field required") -- which 400'd every Claude
+// session continuation carrying a tool call. Conversion for Claude
+// targets must carry the client's tool_call ids on both part kinds;
+// Gemini targets keep the historic id-less parts.
+
+const HISTORY = [
+  { role: 'user', content: 'list the files' },
+  { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] },
+  { role: 'tool', tool_call_id: 'call_1', name: 'get_weather', content: '{"temp": 3}' },
+  { role: 'user', content: 'thanks' }
+];
+
+test('history tool calls carry their ids for claude models (opencode#1550)', async () => {
+  const res = await fetch('http://127.0.0.1:' + proxyPort + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-5-5', messages: HISTORY, tools: TOOLS })
+  });
+  assert.equal(res.status, 200);
+  await res.json();
+  const calls = generateCalls();
+  const contents = calls[calls.length - 1].body.request.contents;
+  const callPart = contents.flatMap(c => c.parts).find(p => p.functionCall);
+  const respPart = contents.flatMap(c => c.parts).find(p => p.functionResponse);
+  assert.equal(callPart.functionCall.id, 'call_1');
+  assert.equal(respPart.functionResponse.id, 'call_1');
+});
+
+test('history tool calls stay id-less for gemini models (opencode#1550)', async () => {
+  const res = await fetch('http://127.0.0.1:' + proxyPort + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'gemini-3.8-flash', messages: HISTORY, tools: TOOLS })
+  });
+  assert.equal(res.status, 200);
+  await res.json();
+  const calls = generateCalls();
+  const contents = calls[calls.length - 1].body.request.contents;
+  const callPart = contents.flatMap(c => c.parts).find(p => p.functionCall);
+  const respPart = contents.flatMap(c => c.parts).find(p => p.functionResponse);
+  assert.ok(!('id' in callPart.functionCall), 'gemini functionCall must not carry id');
+  assert.ok(!('id' in respPart.functionResponse), 'gemini functionResponse must not carry id');
+});
+
 // --- #2823: env parsing is strict -----------------------------------------
 // A bad ANTIGRAVITY_DIRECT_PORT used to reach listen() as an anonymous
 // ERR_SOCKET_BAD_PORT (or bind 0 / a hex-decoded port), and a bad

@@ -60,13 +60,34 @@ class TestLedgerPacing(unittest.TestCase):
 
     def test_pace_waits_remainder(self):
         fp.ledger_append("create", "developing-today/code", "42", "t")
+        last = fp.last_write_epoch(Path(self.tmp.name))
         start = time.time()
         fp.pace(1.0)
         elapsed = time.time() - start
         # Waits out the remainder of the 1 s window since the ledger write:
-        # substantial, but less than a full fresh second.
+        # substantial, but no more than the stamp-derived remainder plus a
+        # small wake-up tolerance (a fixed 1.0 bound flakes on overshoot).
         self.assertGreaterEqual(elapsed, 0.4)
-        self.assertLess(elapsed, 1.0)
+        self.assertLess(elapsed, 1.0 - (start - last) + 0.1)
+
+    def test_append_records_subsecond_precision(self):
+        fp.ledger_append("create", "developing-today/code", "42", "t")
+        stamp = Path(self.tmp.name).read_text().strip().split("	")[0]
+        # A fractional-second part must be present: whole-second stamps
+        # truncate up to ~1 s of age and defeat pace() spacing (#5109).
+        self.assertIn(".", stamp)
+        last = fp.last_write_epoch(Path(self.tmp.name))
+        self.assertIsNotNone(last)
+        self.assertAlmostEqual(last, time.time(), delta=0.5)
+
+    def test_second_precision_ledger_line_still_parses(self):
+        # Lines written by older versions (timespec="seconds") must keep
+        # parsing via fromisoformat.
+        Path(self.tmp.name).write_text(
+            "2026-01-01T00:00:00+00:00\tcreate\tdeveloping-today/code\t1\tx\n")
+        last = fp.last_write_epoch(Path(self.tmp.name))
+        self.assertIsNotNone(last)
+        self.assertAlmostEqual(last, 1767225600.0, delta=1)
 
     def test_pace_zero_is_immediate(self):
         fp.ledger_append("create", "developing-today/code", "42", "t")

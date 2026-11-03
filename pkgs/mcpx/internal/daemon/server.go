@@ -1184,7 +1184,16 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		reply = func(_ http.ResponseWriter, code int, v any) { rw.finish(code, v) }
 	}
 	start := time.Now()
-	res, err := s.reg.Call(ctx, req.Server, req.Tool, cc, args)
+	var res json.RawMessage
+	var err error
+	dryRun := false
+	if syn, ok := s.dryRunResult(ctx, req.Server, req.Tool); ok {
+		// A dry run's calls are answered synthetically and never
+		// reach a server (#1927).
+		res, dryRun = syn, true
+	} else {
+		res, err = s.reg.Call(ctx, req.Server, req.Tool, cc, args)
+	}
 	dur := time.Since(start).Truncate(time.Millisecond)
 	s.reportCallFrame(ctx, req.Server, req.Tool, args, start, res, err)
 
@@ -1195,7 +1204,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		outBytes, _ = json.Marshal(res)
 	}
 
-	if fb := s.reg.FeedbackStore(); fb != nil {
+	if fb := s.reg.FeedbackStore(); fb != nil && !dryRun {
 		_ = fb.RecordInteraction(logstore.InteractionRecord{
 			TraceID:   cc.CallID,
 			Timestamp: start,
@@ -1228,8 +1237,34 @@ type batchReq struct {
 	Calls       []batchCallReqItem `json:"calls"`
 	StopOnError *bool              `json:"stopOnError"`
 	Parallel    bool               `json:"parallel"`
-	Context     config.CallContext `json:"context"`
-	Session     string             `json:"session"`
+	// SafePrefix executes the batch's safe prefix (#1927): calls run
+	// in order until the first one whose tool is annotated
+	// destructiveHint, which -- and everything after it -- is
+	// reported skipped instead of run. It is the batched form of
+	// elicit.confirmDestructive: one stop for the whole batch rather
+	// than a confirmation per call. Safe-prefix is an ordering
+	// guarantee, so it forces sequential execution; Parallel is
+	// ignored when it is set.
+	SafePrefix bool               `json:"safePrefix,omitempty"`
+	Context    config.CallContext `json:"context"`
+	Session    string             `json:"session"`
+}
+
+// batchItemNames resolves a batch item's server and tool from its
+// alternative spellings, the way runOne always has.
+func batchItemNames(item batchCallReqItem) (string, string) {
+	server := item.Server
+	if server == "" {
+		server = item.Namespace
+	}
+	tool := item.Tool
+	if tool == "" {
+		tool = item.Name
+	}
+	if server == "" && strings.Contains(tool, ".") {
+		server, tool, _ = strings.Cut(tool, ".")
+	}
+	return server, tool
 }
 
 // bodyBytes is the configured request-body limit for key, falling back
@@ -1270,17 +1305,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 	results := make([]map[string]any, len(req.Calls))
 
 	runOne := func(ctx context.Context, i int, item batchCallReqItem) (map[string]any, error) {
-		server := item.Server
-		if server == "" {
-			server = item.Namespace
-		}
-		tool := item.Tool
-		if tool == "" {
-			tool = item.Name
-		}
-		if server == "" && strings.Contains(tool, ".") {
-			server, tool, _ = strings.Cut(tool, ".")
-		}
+		server, tool := batchItemNames(item)
 		if server == "" || tool == "" {
 			return map[string]any{
 				"index":   i,
@@ -1311,7 +1336,13 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		start := time.Now()
-		res, err := s.reg.Call(ctx, server, tool, cc, args)
+		var res json.RawMessage
+		var err error
+		if syn, ok := s.dryRunResult(ctx, server, tool); ok {
+			res = syn
+		} else {
+			res, err = s.reg.Call(ctx, server, tool, cc, args)
+		}
 		dur := time.Since(start).Truncate(time.Millisecond)
 		// Batch items bypass the single-call handlers, so report each
 		// completed one here: a script's batch(...) calls belong in
@@ -1340,7 +1371,8 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		}, nil
 	}
 
-	if req.Parallel {
+	out := map[string]any{"results": results}
+	if req.Parallel && !req.SafePrefix {
 		var wg sync.WaitGroup
 		wg.Add(len(req.Calls))
 		for i, item := range req.Calls {
@@ -1353,16 +1385,37 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		wg.Wait()
 	} else {
 		for i, item := range req.Calls {
+			if req.SafePrefix {
+				server, tool := batchItemNames(item)
+				if picked := s.pickTool(server, tool); picked != nil && destructiveHint(picked.Annotations) {
+					reason := fmt.Sprintf("safe-prefix: stopped before destructive call %s.%s at index %d", server, tool, i)
+					for j := i; j < len(req.Calls); j++ {
+						sj, tj := batchItemNames(req.Calls[j])
+						results[j] = map[string]any{
+							"index":   j,
+							"server":  sj,
+							"tool":    tj,
+							"status":  "skipped",
+							"skipped": true,
+							"reason":  reason,
+							"isError": false,
+						}
+					}
+					out["safePrefix"] = map[string]any{"stoppedAt": i, "reason": reason}
+					break
+				}
+			}
 			res, err := runOne(ctx, i, item)
 			results[i] = res
 			if stopOnErr && err != nil {
 				results = results[:i+1]
+				out["results"] = results
 				break
 			}
 		}
 	}
 
-	writeJSON(w, 200, map[string]any{"results": results})
+	writeJSON(w, 200, out)
 }
 
 type resourceReq struct {
@@ -1791,29 +1844,48 @@ func (s *Server) reportCallFrame(ctx context.Context, server, tool string, args 
 		callErr = errors.New("tool returned an error result (isError)")
 	}
 	var dh *bool
-	tools := s.reg.Tools([]string{server})
-	// Dispatch resolves an exact server name before a namespace
-	// (Registry.Pool), so the annotations must be picked the same way:
-	// a server whose namespace equals another server's name must not
-	// lend its annotations to that server's calls.
-	var picked *ToolInfo
-	for i := range tools {
-		if tools[i].Tool == tool && tools[i].Server == server {
-			picked = &tools[i]
-			break
-		}
-	}
-	if picked == nil {
-		for i := range tools {
-			if tools[i].Tool == tool && tools[i].Namespace == server {
-				picked = &tools[i]
-				break
-			}
-		}
-	}
-	if picked != nil {
+	if picked := s.pickTool(server, tool); picked != nil {
 		d := destructiveHint(picked.Annotations)
 		dh = &d
 	}
 	s.callRegistry().ReportCall(run, server, tool, args, time.Since(start), callErr, dh)
+}
+
+// pickTool resolves the ToolInfo for a call the way dispatch does:
+// an exact server name before a namespace (Registry.Pool), so a
+// server whose namespace equals another server's name never lends
+// its annotations or schemas to that server's calls.
+func (s *Server) pickTool(server, tool string) *ToolInfo {
+	if s.reg == nil {
+		return nil
+	}
+	tools := s.reg.Tools([]string{server})
+	for i := range tools {
+		if tools[i].Tool == tool && tools[i].Server == server {
+			return &tools[i]
+		}
+	}
+	for i := range tools {
+		if tools[i].Tool == tool && tools[i].Namespace == server {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+// dryRunResult answers a call without executing it when the call's
+// run is marked as a dry run (#1927): the synthetic result is built
+// from the tool's declared outputSchema, and the call is still
+// reported as a call frame (marked dryRun) by the usual path, so
+// the exec stream shows exactly what would have been called.
+func (s *Server) dryRunResult(ctx context.Context, server, tool string) (json.RawMessage, bool) {
+	run := runFrom(ctx)
+	if run == "" || !s.callRegistry().IsDryRun(run) {
+		return nil, false
+	}
+	var schema json.RawMessage
+	if picked := s.pickTool(server, tool); picked != nil {
+		schema = picked.OutputSchema
+	}
+	return execsvc.SyntheticResult(schema), true
 }

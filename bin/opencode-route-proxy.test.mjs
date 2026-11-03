@@ -142,6 +142,11 @@ const startProxy = async (arg = {}) => {
   db.prepare(
     "INSERT INTO credential (integration_id, label, value, active) VALUES (?,?,?,1)",
   ).run("leafB", "test", JSON.stringify({ key: "key-b", type: "api_key" }));
+  // leafNoCred's only credential row is INACTIVE (active = 0), so its
+  // credential lookup comes back empty (#3228 fixture).
+  db.prepare(
+    "INSERT INTO credential (integration_id, label, value, active) VALUES (?,?,?,0)",
+  ).run("leafNoCred", "test-inactive", JSON.stringify({ key: "key-a", type: "api_key" }));
   db.close();
 
   const configPath = path.join(tmp, "opencode.jsonc");
@@ -163,6 +168,11 @@ const startProxy = async (arg = {}) => {
     },
     "openai": {
       "models": { "m-gpt": {} },
+    },
+    "leafNoCred": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1" },
+      "models": { "m-nc": {}, "m-b": {} },
     },
     "leafOff": {
       "npm": "@ai-sdk/openai-compatible",
@@ -192,6 +202,8 @@ const startProxy = async (arg = {}) => {
       "t-variant": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "variants": { "medium": "high" } } ] },
       "t-nested": { "selection": "ordered", "targets": ["opencode-route/t-ordered"] },
       "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
+      "t-nocred-first": { "selection": "ordered", "targets": ["leafNoCred/m-nc", "leafB/m-b"] },
+      "t-nocred-only": { "selection": "ordered", "targets": ["leafNoCred/m-nc"] },
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
@@ -628,18 +640,47 @@ test("empty-shell openai block resolves the built-in endpoint default", async ()
   const p = await startProxy();
   try {
     // The fixture openai block is an empty shell (models only, no
-    // npm/options/baseURL) and no credential is stored for it, so a
-    // resolved endpoint surfaces as a credential failure — while an
-    // unresolved one would surface as UnknownProvider (#3256). The
-    // check order in callLeaf (endpoint first, credential second)
-    // makes this a network-free proof the default resolved.
+    // npm/options/baseURL) and no credential is stored for it. Since
+    // #3228, a credential-less leaf is skipped before any attempt, so
+    // this route — whose only leaf is credential-less — fails with
+    // the no-credentialed-members error and records NO attempt (the
+    // pre-#3228 shape, one Authentication attempt, is superseded).
     const res = await p.post({ model: "opencode-route/t-openai-default", messages: MSGS });
     assert.equal(res.status, 502);
-    const rows = p.attempts();
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].provider_id, "openai");
-    assert.equal(rows[0].error_tag, "Authentication");
-    assert.notEqual(rows[0].error_tag, "UnknownProvider");
+    const json = await res.json();
+    assert.match(json.error.message, /no credentialed members/);
+    assert.equal(p.attempts().length, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("credential-less leaves are skipped in a walk (#3228)", async () => {
+  const p = await startProxy();
+  try {
+    // leafNoCred's credential row is inactive; the walk must complete
+    // via the healthy leafB and record no attempt against leafNoCred.
+    const res = await p.post({ model: "opencode-route/t-nocred-first", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafB"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a walk of only credential-less leaves fails without an Authentication error (#3228)", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-nocred-only", messages: MSGS });
+    assert.equal(res.status, 502);
+    const json = await res.json();
+    assert.match(json.error.message, /no credentialed members/);
+    assert.equal(p.attempts().length, 0);
   } finally {
     await p.cleanup();
   }

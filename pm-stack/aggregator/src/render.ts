@@ -33,6 +33,7 @@ import {
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  questionIdForOption,
   type NeedsOrder,
 } from "./tier-items.ts";
 import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
@@ -52,6 +53,7 @@ import {
 import { summarizeDns } from "./dns.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
+import type { NotificationRollup } from "./notifications.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
@@ -101,11 +103,13 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
+import type { SearchResult } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -132,6 +136,11 @@ const CSS = `
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
 [id] { scroll-margin-top: 96px; }
 nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navsearch { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.navsearch input, .search-page-form input { min-width: 12rem; padding: 7px 9px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: inherit; }
+.navsearch button, .search-page-form button { padding: 7px 10px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: inherit; cursor: pointer; }
+.search-page-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.search-page-form input { flex: 1; }
 .navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
 .navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
 .navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
@@ -619,6 +628,7 @@ document.addEventListener("submit", async (ev) => {
   if (standingAuto) payload.standingAuto = standingAuto === "true";
   const answersByQuestion = {};
   for (const el of form.querySelectorAll("[name^='answers:']")) {
+    if (el.disabled) continue;
     const qid = el.name.slice("answers:".length);
     if (el.type === "checkbox") { if (el.checked) (answersByQuestion[qid] = answersByQuestion[qid] || []).push(el.value); }
     else if (el.type === "radio") { if (el.checked) answersByQuestion[qid] = el.value; }
@@ -644,7 +654,21 @@ document.addEventListener("submit", async (ev) => {
   if (form.dataset.supersedes) body.supersedes = form.dataset.supersedes;
   try {
     const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      if (typeof b.duplicateOf === "string") {
+        if (submitBtn) submitBtn.disabled = false;
+        // The rejected attempt is persisted under this form's token; a
+        // corrected resubmit (e.g. dropping the already-answered
+        // question) is a NEW attempt and needs a fresh token, or the
+        // store's client-token dedupe would replay the rejected record
+        // as if it had been sent (Codex P2 on PR #4024).
+        form.dataset.token = "ct-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+        if (err) err.textContent = "Duplicate recorded" + (typeof b.action?.id === "string" ? " as " + b.action.id : "") + "; points to existing answer " + b.duplicateOf + ".";
+        return;
+      }
+      throw new Error(b.error || ("HTTP " + res.status));
+    }
     window.__dashAfter(form, "✓ sent · pending — the fleet applies it on its next pass");
   } catch (e) {
     if (submitBtn) submitBtn.disabled = false;
@@ -739,6 +763,10 @@ export function pageDropdown(active: string): string {
   return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
+function globalSearch(): string {
+  return `<form class="navsearch" action="/search" method="get" role="search"><input type="search" name="q" aria-label="Search board and roadmap work" placeholder="Search work…" required><button type="submit">Search</button></form>`;
+}
+
 function layout(
   title: string,
   body: string,
@@ -758,9 +786,41 @@ function layout(
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
+<body><nav>${links}${dropdown}${globalSearch()}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+}
+
+/** First-slice global search over board/roadmap subjects and linked refs. */
+export function renderSearch(
+  query: string,
+  results: SearchResult[],
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const cards = results
+    .map((result) => {
+      const badges = result.refs
+        .map((ref) => {
+          const item = items.get(ref);
+          return item
+            ? itemBadge(item)
+            : `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`;
+        })
+        .join(" ");
+      return `<div class="card"><a href="/item/${encodeURIComponent(result.id)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+    })
+    .join("");
+  const body = `<h1>Search</h1><p class="muted">Search board items and roadmap rows by subject, title, or linked issue/PR ref. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  return layout(
+    "Search",
+    body,
+    provenance,
+    "/search",
+    "",
+    detail ? freshnessChips(detail, ["board", "roadmap", "items"]) : "",
+  );
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -1256,9 +1316,10 @@ export function whyUserBadge(item: TierItem): string {
   return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
 }
 
-function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[]): string {
+function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[], answerAction?: DashAction): string {
   const name = `answers:${q.id}`;
   const answered = answeredValue !== undefined;
+  const disabled = answered ? " disabled" : "";
   let field: string;
   if (q.type === "single" || q.type === "yesno") {
     const opts = q.options ?? [
@@ -1268,7 +1329,7 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${opts
       .map(
         (o) =>
-          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else if (q.type === "multi") {
@@ -1276,16 +1337,16 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${(q.options ?? [])
       .map(
         (o) =>
-          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else {
-    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}">`;
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}"${disabled}>`;
   }
   // #1451: answered state rides the card — a partial submit records
   // what it covered and the still-open required questions say so.
   const state = answered
-    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}</span>`
+    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}${answerAction ? ` · ${answerAction.state === "new" ? "pending" : "applied"} · action ${esc(answerAction.id)}` : ""}</span>`
     : q.required
       ? ` <span class="qremaining">still needed</span>`
       : "";
@@ -1390,28 +1451,45 @@ export function needsUserFormsHtml(
   cs: CardState = cardState(undefined),
 ): string {
   const forms: string[] = [];
+  // Older option actions predate the canonical question pointer. Resolve
+  // them from the currently published item so already-answered cards
+  // cannot reopen the same question after this deploy.
+  const answered = new Map(cs.answered);
+  const answerActionsByQuestion = new Map(cs.answerActionsByQuestion);
+  for (const [optionId, action] of cs.answeredOptionActionsById) {
+    const questionId = questionIdForOption(item, optionId);
+    if (questionId && !answered.has(questionId)) {
+      answered.set(questionId, optionId);
+      answerActionsByQuestion.set(questionId, action);
+    }
+  }
   for (const opt of item.options ?? []) {
-    const picked = cs.answeredOptionId === opt.id;
+    const questionId = questionIdForOption(item, opt.id);
+    const questionValue = questionId ? answered.get(questionId) : undefined;
+    const answerAction = questionId ? answerActionsByQuestion.get(questionId) : cs.answeredOptionAction;
+    const locked = questionId ? questionValue !== undefined : cs.answeredOptionActionsById.size > 0;
+    const picked = cs.answeredOptionId === opt.id || (questionId !== undefined && questionValue === opt.id);
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${picked ? " disabled" : ""}>${esc(opt.label)}${picked ? " ✓ answered · pending" : ""}</button>${
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${locked ? " disabled" : ""}>${esc(opt.label)}${locked ? ` ✓ answered${answerAction?.state === "new" ? " · pending" : ""}` : ""}</button>${locked && answerAction ? `<span class="muted">Answer action ${esc(answerAction.id)}</span>` : ""}${
           opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
         }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
       }),
     );
   }
   if (item.questions?.length) {
-    const remaining = item.questions.filter((q) => q.required && !cs.answered.has(q.id));
-    const allDone = remaining.length === 0 && item.questions.some((q) => cs.answered.has(q.id));
+    const remaining = item.questions.filter((q) => q.required && !answered.has(q.id));
+    const allDone = remaining.length === 0 && item.questions.some((q) => answered.has(q.id));
+    const hasUnanswered = item.questions.some((q) => !answered.has(q.id));
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `${item.questions.map((q) => questionFieldHtml(q, cs.answered.get(q.id))).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">${
+        inner: `${item.questions.map((q) => questionFieldHtml(q, answered.get(q.id), answerActionsByQuestion.get(q.id))).join("")}<button type="submit" class="primary"${hasUnanswered ? "" : " disabled"}>Submit answers</button><span class="why">${
           allDone
             ? "All required questions are answered — the answers are recorded and pending with the orchestrator."
             : `Answer any subset and submit (#1451): answered questions are recorded, and the card keeps showing what remains${remaining.length ? ` — still needed: ${esc(remaining.map((q) => q.id).join(", "))}` : ""}.`
@@ -2192,7 +2270,7 @@ function attentionStripHtml(usage: UsageView): string {
  * the yuan figure as read, never converted to dollars.
  */
 function paygBalanceHtml(usage: UsageView): string {
-  const recs = (usage.history["deepseek:api"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
+  const recs = (usage.history["deepseek"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
   if (!recs.length) return "";
   const last = recs[recs.length - 1];
   return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
@@ -5965,6 +6043,55 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 
 // --- All pages (the manifest as a page) ---------------------------------------
 
+// --- Source-conflict inbox (#1282, slice 1) -----------------------------------
+
+/**
+ * /conflicts — the read-only source-conflict inbox. Every disagreement the
+ * facets already report, in one queue, grouped by conflict class, each entry
+ * naming the item, both sources, both values and how long the pair has been
+ * on record. It resolves nothing: slice 1 projects only, so this page is the
+ * same list /api/conflicts.json serves, rendered.
+ */
+export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, detail?: ProvenanceDetail): string {
+  const chips = detail ? freshnessChips(detail, ["items", "usage"]) : "";
+  const ageCell = (entry: ConflictEntry): string => {
+    if (entry.ageDays === null) return `<span class="muted">undated</span>`;
+    const days = `<strong>${entry.ageDays}</strong> day${entry.ageDays === 1 ? "" : "s"}`;
+    const floor = entry.ageBasis === "project-item-updated-at" ? " (floor)" : "";
+    return `at least ${days}${floor}<br><span class="muted">${esc(fmtDate(entry.observedAt ?? ""))}${entry.ageBasis === "undated" ? "" : ` · ${esc(entry.ageBasis)}`}</span>`;
+  };
+  const itemCell = (entry: ConflictEntry): string => {
+    const label = esc(entry.item.title);
+    if (!entry.item.url) return `<strong>${label}</strong>`;
+    return `<a href="${esc(entry.item.url)}"><strong>${label}</strong></a>${entry.item.ref ? `<br><span class="muted"><code>${esc(entry.item.ref)}</code></span>` : ""}`;
+  };
+  const groups = inbox.byClass
+    .map((cls) => {
+      const entries = inbox.entries.filter((e) => e.classId === cls.classId);
+      if (!entries.length) return "";
+      const rows = entries
+        .map(
+          (e) =>
+            `<tr><td>${itemCell(e)}</td><td>${esc(e.sources.a)}<br><span class="muted">vs</span><br>${esc(e.sources.b)}</td><td><span class="badge stale">${esc(e.values.a)}</span><br><span class="muted">vs</span><br><span class="badge stale">${esc(e.values.b)}</span></td><td>${ageCell(e)}</td><td>${e.href ? `<a href="${esc(e.href)}">records →</a>` : "—"}</td></tr>`,
+        )
+        .join("");
+      return `<h2 id="class-${esc(cls.classId)}">${esc(cls.label)} (${entries.length})</h2>
+<div class="tblwrap"><table><caption>${esc(cls.label)} — item, sources, both values, age</caption><tr><th scope="col">Item</th><th scope="col">Sources</th><th scope="col">Both values</th><th scope="col">Disagreeing for</th><th scope="col">Records</th></tr>${rows}</table></div>`;
+    })
+    .join("");
+  const oldest = inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const body = `<h1>Source conflicts</h1>
+<p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
+<div class="board">
+<div class="card"><strong>Conflicts</strong><br>${inbox.total} live</div>
+${inbox.byClass.map((c) => `<div class="card"><strong>${esc(c.label)}</strong><br>${c.count} live</div>`).join("")}
+<div class="card"><strong>Oldest disagreement</strong><br>${oldest}</div>
+</div>
+<p class="muted">Age is a <strong>floor</strong>, not an exact birthday: it is measured from the newest timestamp the source carries for the pair (a Project item's <code>updatedAt</code>, a service's <code>measuredAt</code>), so the values have disagreed for <em>at least</em> that long — an item edited yesterday for another reason can carry a much older clash.</p>
+${inbox.total ? groups : `<div class="banner">No live source disagreements in this projection — every facet that reports a disagreement agrees with its counterpart right now. An empty inbox here is a real empty, not an unread one: the page and /api/conflicts.json are built from the same projection.</div>`}`;
+  return layout("Source conflicts", body, provenance, "/conflicts", "", chips);
+}
+
 export function renderPages(provenance: Provenance, history: PageHealth[] = []): string {
   const byRoute = new Map(history.map((p) => [p.route, p]));
   const rows = PAGES.map((p) => {
@@ -6108,6 +6235,8 @@ ${rfaSection}
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
+<h2>Source conflicts</h2>
+<div class="card">${view.conflicts ? `<strong><a href="/conflicts">${view.conflicts.total} live source conflict${view.conflicts.total === 1 ? "" : "s"}</a></strong>${view.conflicts.byClass.filter((c) => c.count > 0).map((c) => ` · ${esc(c.label)}: ${c.count}`).join("")}${view.conflicts.oldestAgeDays === null ? "" : ` · oldest at least <strong>${view.conflicts.oldestAgeDays}</strong> day${view.conflicts.oldestAgeDays === 1 ? "" : "s"}`} (#1282 slice 1 — a growing count means the sources keep disagreeing and nobody has ruled on the class)` : `<span class="muted">not assembled for this health view</span>`}</div>
 <h2>Dashboard comments</h2>
 <div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting)</div>
 <h2>Source facets</h2>
@@ -6924,4 +7053,60 @@ document.getElementById("push-test").addEventListener("click", async () => {
 });
 </script>`;
   return layout("Alerts", body, provenance, "/alerts", script);
+}
+
+// --- Notifications page (#3319, notification measurement) -------------------
+
+export interface NotificationsPageView {
+  available: boolean;
+  rollup: NotificationRollup | null;
+}
+
+function pct(ratio: number | null): string {
+  return ratio === null ? "—" : `${Math.round(ratio * 100)}%`;
+}
+
+export function renderNotifications(view: NotificationsPageView, provenance: Provenance): string {
+  if (!view.available || !view.rollup) {
+    return layout(
+      "Notifications",
+      `<h1>Notifications</h1><p class="muted">The notification send ledger (Supabase <code>alerts.notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/notifications",
+    );
+  }
+  const rollup = view.rollup;
+  const proposals = rollup.classes.filter((c) => c.proposal);
+  const rows = rollup.classes
+    .map((c) => {
+      const cells = c.weeks
+        .map((w) => `<td>${w.sent} sent · ${w.acted} acted (${pct(w.ratio)})</td>`)
+        .join("");
+      return `<tr><td><strong>${esc(c.class)}</strong></td>${cells}<td>${c.sent} sent · ${c.acted} acted (${pct(c.ratio)})</td></tr>`;
+    })
+    .join("");
+  const weekHeads = rollup.classes[0]
+    ? rollup.classes[0].weeks.map((w) => `<th scope="col">week of ${esc(fmtDate(w.start))}</th>`).join("")
+    : "";
+  const proposalHtml = proposals.length
+    ? `<h2>Default-off proposals</h2>${proposals
+        .map(
+          (c) =>
+            `<div class="card"><strong>Proposal: default class <code>${esc(c.class)}</code> off</strong> — acted-on ratio ${pct(c.ratio)} over the rolling window (${c.acted} of ${c.sent} sends acted on within 24h), under the 10% threshold.<br><span class="muted">Proposal only — this page never changes a preference or a default. Turning a class off by default is Drew's call, made on the Alerts page's subscription preferences.</span></div>`,
+        )
+        .join("")}`
+    : `<h2>Default-off proposals</h2><p class="muted">No class is under the 10% acted-on threshold over the rolling window.</p>`;
+  const body = `<h1>Notifications</h1>
+<p class="muted">Weekly sent-vs-acted-on roll-up over the alert throat's send ledger (<code>alerts.notification_sends</code>), rolling four weeks ending ${esc(fmtDate(rollup.asOf))}. Read-only: this page measures; it never changes a notification preference or default. Machine-first: <a href="/api/notifications.json">/api/notifications.json</a>.</p>
+<h2>How acted-on is counted (attribution)</h2>
+<p class="muted">A send counts as acted-on when the incident's Ack lands within 24 hours of the send: Ack is the exactly-once transition that stamps the send's <code>acted_on_at</code>, so it is the durable acted-on signal. Only ledger rows with outcome <code>sent</code> count as sends — suppressed (quiet hours / dedupe), gone, and error attempts never reached a device and never enter the denominator, and no send is inferred from delivered/escalated incident events. What this cannot attribute: reading a notification without acking, acting on the incident through another surface (GitHub, chat, a later dashboard visit that does not ack), and sends to subscriptions that were later removed — those count as sent-but-not-acted even when a human did see them. Test sends (class <code>test</code>) are real ledger rows and are reported as their own class.</p>
+${rollup.undated ? `<p class="muted">${rollup.undated} ledger row(s) carried no usable send timestamp and were excluded from the roll-up.</p>` : ""}
+<h2>Per class, per week</h2>
+${
+  rollup.classes.length
+    ? `<div class="tblwrap"><table><caption>Sent vs acted-on by class and rolling week</caption><tr><th scope="col">class</th>${weekHeads}<th scope="col">rolling 4 weeks</th></tr>${rows}</table></div>`
+    : `<p class="muted">No sends in the rolling four-week window.</p>`
+}
+${proposalHtml}`;
+  return layout("Notifications", body, provenance, "/notifications");
 }

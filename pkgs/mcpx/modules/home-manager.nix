@@ -26,10 +26,25 @@ in
 {
   imports = [ ./common.nix ];
 
+  options.services.mcpx.addPackageToProfile = lib.mkOption {
+    type = lib.types.bool;
+    default = true;
+    description = ''
+      Whether the module adds `package` to `home.packages`, putting
+      `bin/mcpx` on the profile PATH. Turn it off when another
+      package in the profile already provides `bin/mcpx` — the fork
+      opencode package's `bin/mcpx` is a link to this very build, and
+      home-manager's buildEnv still counts the package and the link
+      as two providers of the same path (code#5027). The daemon is
+      unaffected either way: the service definition runs `package`
+      directly, never through the profile.
+    '';
+  };
+
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        home.packages = [ cfg.package ];
+        home.packages = lib.mkIf cfg.addPackageToProfile [ cfg.package ];
 
         # Point every other mcpx client at the same config the
         # daemon runs, two ways: MCPX_CONFIG in the session
@@ -46,13 +61,19 @@ in
         systemd.user.services.mcpx = {
           Unit.Description = "mcpx daemon";
           Install.WantedBy = [ "default.target" ];
-          # Via the service-level `environment` attribute, not
-          # Service.Environment: home-manager injects its own
-          # Service.Environment (session variables) and the two
-          # definitions do not merge.
-          inherit (cfg) environment;
           Service = {
             ExecStart = "${cfg.package}/bin/mcpx daemon --config ${cfg.configFile}";
+            # The daemon environment, as [Service] Environment=
+            # entries through home-manager's typed list option.
+            # List definitions merge in the module system, so other
+            # contributors' entries concatenate with these; and
+            # session variables never compete here — home-manager
+            # delivers those to the user manager via environment.d,
+            # not as per-service Environment= lines. (A service-level
+            # `environment` attribute, by contrast, falls through
+            # the unit type's freeform and is serialized as a literal
+            # [environment] section — code#5088.)
+            Environment = lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
             Restart = "always";
             TimeoutStopSec = 20;
             WorkingDirectory = "%h";

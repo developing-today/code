@@ -146,6 +146,7 @@ export const OPS: Record<string, OpSpec> = {
       calls: { in: "body", required: true },
       stopOnError: { in: "body" },
       parallel: { in: "body" },
+      safePrefix: { in: "body" },
       session: { in: "body" },
       context: { in: "body" },
     },
@@ -1008,7 +1009,7 @@ export class DaemonOps {
   /**
    * Execute multiple tool calls in a single turn. `POST /v1/batch`.
    */
-  batch(args: { calls: unknown[]; stopOnError?: boolean; parallel?: boolean; session?: string; context?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
+  batch(args: { calls: unknown[]; stopOnError?: boolean; parallel?: boolean; safePrefix?: boolean; session?: string; context?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("batch", args, opts) as Promise<unknown>
   }
 
