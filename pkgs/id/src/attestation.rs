@@ -155,8 +155,9 @@ pub enum MatchState {
 ///
 /// # Errors
 ///
-/// Returns a chain error if the extension or backlink is invalid, or a
-/// JSON error if the agreement cannot be serialized.
+/// Returns [`SignError::DuplicateSeat`] if the agreement names the same
+/// player in both seats, a chain error if the extension or backlink is
+/// invalid, or a JSON error if the agreement cannot be serialized.
 pub fn sign_genesis(
     key: &SigningKey,
     seq_num: SeqNum,
@@ -164,6 +165,9 @@ pub fn sign_genesis(
     agreement: &GenesisAgreement,
     after: Vec<Hash>,
 ) -> Result<Event, SignError> {
+    if agreement.players[0] == agreement.players[1] {
+        return Err(SignError::DuplicateSeat);
+    }
     let body = agreement.body()?;
     Ok(chain::sign(
         key,
@@ -234,12 +238,18 @@ pub fn sign_claim(
 /// is a fork and computes `Disputed`, never `Agreed`. Claims answering a
 /// different agreement, from non-players, or with an outcome other than
 /// `"draw"` or a seated player's lowercase 64-character hex id are ignored.
+/// An agreement whose two seats name the same player is malformed — there
+/// is no second player — and always computes `Proposed`, whatever genesis
+/// or claims accompany it (#2863).
 #[must_use]
 pub fn compute_state(
     agreement: &GenesisAgreement,
     genesis: &[(PlayerId, GenesisAgreement)],
     claims: &[(PlayerId, ResultClaim)],
 ) -> MatchState {
+    if agreement.players[0] == agreement.players[1] {
+        return MatchState::Proposed;
+    }
     let genesis_ok = agreement.players.iter().all(|player| {
         genesis
             .iter()
@@ -299,6 +309,9 @@ pub enum SignError {
     Json(serde_json::Error),
     /// The chain refused the event (extension or backlink rules).
     Chain(chain::ChainError),
+    /// The genesis agreement names the same player in both seats: a
+    /// match needs two distinct players, so there is nothing to sign.
+    DuplicateSeat,
 }
 
 impl From<serde_json::Error> for SignError {
@@ -318,6 +331,9 @@ impl std::fmt::Display for SignError {
         match self {
             Self::Json(err) => write!(f, "attestation object would not serialize: {err}"),
             Self::Chain(err) => write!(f, "chain refused the attestation event: {err:?}"),
+            Self::DuplicateSeat => {
+                write!(f, "genesis agreement names the same player in both seats")
+            }
         }
     }
 }

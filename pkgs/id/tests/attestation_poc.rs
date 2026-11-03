@@ -28,8 +28,8 @@ use p2panda_core::{Hash, SigningKey};
 use tempfile::TempDir;
 
 use id::attestation::{
-    GenesisAgreement, MatchState, ResultClaim, author_id, compute_state, player_id, sign_claim,
-    sign_genesis,
+    author_id, compute_state, player_id, sign_claim, sign_genesis, GenesisAgreement, MatchState,
+    ResultClaim,
 };
 use id::chain;
 use id::event_store::{EventStore, Ingest};
@@ -354,4 +354,78 @@ fn same_player_claims_with_different_position_fields_are_disputed() {
             MatchState::Disputed,
         );
     }
+}
+
+/// A duplicate-seat agreement (`players = [A, A]`) plus the claim set the
+/// #2863 probe used: one genesis event and one claim, both from A alone.
+fn duplicate_seat_objects(
+    second_claim: Option<ResultClaim>,
+) -> (
+    GenesisAgreement,
+    Vec<(id::attestation::PlayerId, GenesisAgreement)>,
+    Vec<(id::attestation::PlayerId, ResultClaim)>,
+) {
+    let a = key(0);
+    let agreement = GenesisAgreement {
+        game_id: "tic-tac-toe".to_owned(),
+        logic_hash: Hash::digest(include_bytes!("../apps/tic-tac-toe/program/main.roc")),
+        players: [player_id(&a), player_id(&a)],
+        witness: None,
+        objection_window_secs: 3600,
+    };
+    let genesis = vec![(player_id(&a), agreement.clone())];
+    let claim = ResultClaim {
+        agreement: agreement.agreement_hash().unwrap(),
+        outcome: hex(&player_id(&a)),
+        final_state_hash: Hash::digest(FINAL_BOARD_JSON.as_bytes()),
+        frontiers: vec![],
+    };
+    let mut claims = vec![(player_id(&a), claim)];
+    if let Some(extra) = second_claim {
+        claims.push((player_id(&a), extra));
+    }
+    (agreement, genesis, claims)
+}
+
+#[test]
+fn duplicate_seat_single_genesis_and_claim_stays_proposed() {
+    // The #2863 probe matrix, first row: before the fix this computed
+    // `Agreed` from one key's single genesis + single claim.
+    let (agreement, genesis, claims) = duplicate_seat_objects(None);
+    assert_eq!(
+        compute_state(&agreement, &genesis, &claims),
+        MatchState::Proposed
+    );
+}
+
+#[test]
+fn duplicate_seat_two_distinct_claims_stays_proposed_never_disputed() {
+    // Two distinct claims from A (different outcomes) would compute
+    // `Disputed` for distinct seats; a self-match is never `Disputed`
+    // either — it is not a match at all.
+    let a = key(0);
+    let (agreement, genesis, _) = duplicate_seat_objects(None);
+    let second = ResultClaim {
+        agreement: agreement.agreement_hash().unwrap(),
+        outcome: "draw".to_owned(),
+        final_state_hash: Hash::digest(FINAL_BOARD_JSON.as_bytes()),
+        frontiers: vec![],
+    };
+    let (_, _, claims) = duplicate_seat_objects(Some(second));
+    let _ = a;
+    assert_eq!(
+        compute_state(&agreement, &genesis, &claims),
+        MatchState::Proposed
+    );
+}
+
+#[test]
+fn sign_genesis_refuses_duplicate_seat_agreement() {
+    let a = key(0);
+    let (agreement, _, _) = duplicate_seat_objects(None);
+    let result = sign_genesis(&a, 0, None, &agreement, vec![]);
+    assert!(
+        matches!(result, Err(id::attestation::SignError::DuplicateSeat)),
+        "duplicate-seat genesis must be refused, got: {result:?}"
+    );
 }
