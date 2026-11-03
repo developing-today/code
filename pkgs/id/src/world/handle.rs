@@ -34,6 +34,21 @@ impl WorldHandle {
         Self::spawn_durable(core, program, None)
     }
 
+    /// Spawn a world actor for a world restored from durable state (see
+    /// [`crate::world_store::open_world`]). Request ids the restored program
+    /// already lists in `wants` are refused with `actor_denied` / `restarted`
+    /// instead of re-executed: they may have run before the restart, and
+    /// `handled_requests` is memory-only, so the actor cannot tell done from
+    /// never-run. Requests the program issues after the open execute
+    /// normally.
+    pub fn spawn_restored(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        Self::spawn_durable_inner(core, program, journal, true)
+    }
+
     /// Spawn a world actor that journals every mutation before acknowledging
     /// it. `program` must already reflect the journal (see
     /// [`WorldCore::restore`]); the actor only appends.
@@ -41,6 +56,34 @@ impl WorldHandle {
         core: WorldCore,
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        Self::spawn_durable_inner(core, program, journal, false)
+    }
+
+    /// Request ids the program lists in `wants` right now. A restored open
+    /// captures these so the actor can refuse (rather than re-execute) the
+    /// pre-restart intent; see
+    /// [`WorldActor::stale_wants_at_open`](super::WorldActor::stale_wants_at_open).
+    pub(crate) fn stale_wants_from(program: &mut dyn WorldProgram) -> BTreeSet<String> {
+        match program.wants() {
+            Ok(Some(text)) => crate::world_caps::parse_wants(&text)
+                .map(|wants| {
+                    wants
+                        .requests
+                        .iter()
+                        .map(|request| request.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            _ => BTreeSet::new(),
+        }
+    }
+
+    fn spawn_durable_inner(
+        core: WorldCore,
+        mut program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        restored: bool,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -68,6 +111,15 @@ impl WorldHandle {
             .map(|(id, _)| id.clone())
             .collect();
         let metrics = WorldMetrics::default();
+        // A restored program's current `wants` predates the restart: its
+        // request ids are captured now so the first `after_change` passes
+        // refuse rather than re-execute them (see
+        // [`WorldActor::stale_wants_at_open`]). Fresh worlds start empty.
+        let stale_wants_at_open: BTreeSet<String> = if restored {
+            Self::stale_wants_from(program.as_mut())
+        } else {
+            BTreeSet::new()
+        };
         let actor = WorldActor {
             core,
             program,
@@ -88,6 +140,7 @@ impl WorldHandle {
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
             overdue_at_open,
+            stale_wants_at_open,
             acting: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
