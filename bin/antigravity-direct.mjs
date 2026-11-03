@@ -519,6 +519,7 @@ const toolChoiceConfig = (toolChoice, declaredNames) => {
 
 const buildV1Request = (body) => {
   const { base, fullName, effort } = resolveModelAndEffort(body.model, body.reasoning_effort);
+  const anthropic = base.startsWith('claude');
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const systemParts = [];
   const contents = [];
@@ -559,7 +560,9 @@ const buildV1Request = (body) => {
             // may be sent (same code#2825 shape rule as functionResponse).
             if (parsedArgs && typeof parsedArgs === 'object' && !Array.isArray(parsedArgs)) args = parsedArgs;
           } catch {}
-          const part = { functionCall: { name: tc.function && tc.function.name, args } };
+          const call = { name: tc.function && tc.function.name, args };
+          if (anthropic && tc.id) call.id = tc.id;
+          const part = { functionCall: call };
           const sig = lookupSignature(tc.id);
           if (sig) part.thoughtSignature = sig;
           parts.push(part);
@@ -579,7 +582,11 @@ const buildV1Request = (body) => {
         const parsed = JSON.parse(result);
         response = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : { result: parsed };
       } catch { response = { result }; }
-      contents.push({ role: 'user', parts: [{ functionResponse: { name, response } }] });
+      const fr = { name, response };
+      // Same interop as the functionCall id above: for Claude targets the
+      // tool_result block must name its tool_use (opencode#1550).
+      if (anthropic && msg.tool_call_id) fr.id = msg.tool_call_id;
+      contents.push({ role: 'user', parts: [{ functionResponse: fr }] });
     }
   }
   const request = { contents };
@@ -591,7 +598,7 @@ const buildV1Request = (body) => {
     for (const t of body.tools) {
       const fn = t && t.type === 'function' ? t.function : t;
       if (fn && fn.name) {
-        decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }, base.startsWith('claude')) });
+        decls.push({ name: fn.name, description: fn.description || '', parameters: convertSchema(fn.parameters || { type: 'object', properties: {} }, anthropic) });
         declaredNames.push(fn.name);
       }
     }
@@ -751,7 +758,7 @@ const consumeSse = async (stream, onEvent) => {
         onEvent({ [part.thought ? 'thought' : 'text']: part.text });
       }
       if (part.functionCall) {
-        const call = { id: 'call_' + crypto.randomUUID().replace(/-/g, ''), name: part.functionCall.name, args: part.functionCall.args || {} };
+        const call = { id: (typeof part.functionCall.id === 'string' && part.functionCall.id) || 'call_' + crypto.randomUUID().replace(/-/g, ''), name: part.functionCall.name, args: part.functionCall.args || {} };
         if (part.thoughtSignature) call.signature = part.thoughtSignature;
         emittedCalls.push(call);
         onEvent({ toolCall: call });

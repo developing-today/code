@@ -280,6 +280,55 @@ test('anyOf tool schemas stay anyOf for gemini models (opencode#1550)', async ()
   assert.deepEqual(props.pick, { oneOf: [{ type: 'STRING' }, { type: 'NUMBER' }] });
 });
 
+// --- opencode#1550 (part 2): tool-call ids ride the history parts --------
+// For Claude models the upstream's v1internal->Anthropic conversion emits
+// a tool_use block per history functionCall part and a tool_result per
+// functionResponse part, and Anthropic requires both ids
+// ("messages.N.content.M.tool_use.id: Field required", then
+// "tool_result.tool_use_id: Field required") -- which 400'd every Claude
+// session continuation carrying a tool call. Conversion for Claude
+// targets must carry the client's tool_call ids on both part kinds;
+// Gemini targets keep the historic id-less parts.
+
+const HISTORY = [
+  { role: 'user', content: 'list the files' },
+  { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Oslo"}' } }] },
+  { role: 'tool', tool_call_id: 'call_1', name: 'get_weather', content: '{"temp": 3}' },
+  { role: 'user', content: 'thanks' }
+];
+
+test('history tool calls carry their ids for claude models (opencode#1550)', async () => {
+  const res = await fetch('http://127.0.0.1:' + proxyPort + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-5-5', messages: HISTORY, tools: TOOLS })
+  });
+  assert.equal(res.status, 200);
+  await res.json();
+  const calls = generateCalls();
+  const contents = calls[calls.length - 1].body.request.contents;
+  const callPart = contents.flatMap(c => c.parts).find(p => p.functionCall);
+  const respPart = contents.flatMap(c => c.parts).find(p => p.functionResponse);
+  assert.equal(callPart.functionCall.id, 'call_1');
+  assert.equal(respPart.functionResponse.id, 'call_1');
+});
+
+test('history tool calls stay id-less for gemini models (opencode#1550)', async () => {
+  const res = await fetch('http://127.0.0.1:' + proxyPort + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'gemini-3.8-flash', messages: HISTORY, tools: TOOLS })
+  });
+  assert.equal(res.status, 200);
+  await res.json();
+  const calls = generateCalls();
+  const contents = calls[calls.length - 1].body.request.contents;
+  const callPart = contents.flatMap(c => c.parts).find(p => p.functionCall);
+  const respPart = contents.flatMap(c => c.parts).find(p => p.functionResponse);
+  assert.ok(!('id' in callPart.functionCall), 'gemini functionCall must not carry id');
+  assert.ok(!('id' in respPart.functionResponse), 'gemini functionResponse must not carry id');
+});
+
 // --- #2823: env parsing is strict -----------------------------------------
 // A bad ANTIGRAVITY_DIRECT_PORT used to reach listen() as an anonymous
 // ERR_SOCKET_BAD_PORT (or bind 0 / a hex-decoded port), and a bad
