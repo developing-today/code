@@ -6924,6 +6924,30 @@ mod tests {
     }
 
     #[test]
+    fn test_blockquote_leading_block_round_trips_without_extra_blank_lines() {
+        // #1002: comrak's formatter inserts two empty quote lines before
+        // certain first blocks unless the save path normalizes them. Keep
+        // paragraph-then-fence's single separator as a control.
+        let mut mismatches = Vec::new();
+        for original in [
+            "> ```rust\n> code\n> ```\n",
+            "> | a | b |\n> |---|---|\n> | 1 | 2 |\n",
+            "> ---\n>\n> after\n",
+            // Controls: these already use the expected blockquote shape.
+            "> paragraph\n",
+            "> # heading\n",
+            "> - item\n",
+            "> paragraph\n>\n> ```rust\n> code\n> ```\n",
+        ] {
+            let saved = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+            if saved != original {
+                mismatches.push(format!("{original:?} => {saved:?}"));
+            }
+        }
+        assert!(mismatches.is_empty(), "round-trip mismatches: {mismatches:#?}");
+    }
+
+    #[test]
     fn test_info_less_fence_in_blockquote_trailing_content_round_trips() {
         // #1496 acceptance cases: a no-info fence inside a blockquote
         // followed by each kind of trailing quoted content must reopen
