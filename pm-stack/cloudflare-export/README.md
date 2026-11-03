@@ -110,6 +110,16 @@ append-only `history.jsonl`:
 }
 ```
 
+`r2Buckets` is the complete bucket-name enumeration (every
+`result_info.total_pages` page followed). When enumeration is
+unavailable or cannot be proven complete — a non-200 answer, a
+missing/malformed `result.buckets`, a failed later page, or a full
+page with no pagination metadata — the document keeps `status: "ok"`
+and all GraphQL metrics but records `"r2Buckets": null` plus a
+`r2BucketsDetail` string naming the failed page and reason (#2574).
+A partial list is never published as complete; 401/403 still throws
+the `token-scope` contract above.
+
 ## Failure states (fail-closed)
 
 A failed tick writes a failure document with `status`,

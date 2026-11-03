@@ -15,6 +15,7 @@
 //! is (an Iroh node ID); that never grants world authority.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -30,8 +31,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
-    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldHandle,
-    WorldMetrics, WorldPolicy, WorldScopes,
+    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, SessionId,
+    WorldHandle, WorldMetrics, WorldPolicy, WorldScopes,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
@@ -64,6 +65,11 @@ pub use types::{
 };
 
 impl WorldService {
+    /// Allocate an ephemeral identity for one accepted connection.
+    pub(crate) fn next_session_id(&self) -> SessionId {
+        SessionId::new(self.next_session_id.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Require module artifacts to carry a valid signature from one of these
     /// Ed25519 public keys. An empty list preserves the legacy unsigned path.
     #[must_use]
@@ -193,6 +199,7 @@ impl WorldService {
             mail: None,
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
+            next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -923,6 +930,22 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     };
     // Hub-level frames are about the server, not one world.
     match &frame {
+        ClientFrame::Directory {} => {
+            // The public directory (#812): names, loaded state, default,
+            // and presence counts only — no admin token, no identities,
+            // and listing never opens a world.
+            let worlds = hub.list();
+            let _ = send_json(
+                &unattributed,
+                io,
+                &ServerFrame::Worlds {
+                    default: hub.default_world(),
+                    worlds,
+                },
+            )
+            .await;
+            return;
+        }
         ClientFrame::ListWorlds { admin_token } => {
             if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
                 let _ = send_error(&unattributed, io, "admin denied").await;
@@ -1537,6 +1560,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         }
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd
+        | ClientFrame::Directory { .. }
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::SetIsolation { .. }
@@ -2109,6 +2133,7 @@ async fn joined<I: SessionIo>(
     screen_patches: bool,
 ) {
     let world = service.world();
+    let session_id = service.next_session_id();
     // Subscribe before taking the snapshot so no event can fall in the gap;
     // events at or below the cursor are skipped when delivered.
     let mut events = world.subscribe();
@@ -2230,6 +2255,7 @@ async fn joined<I: SessionIo>(
                         &text,
                         &mut viewport,
                         cursor,
+                        session_id,
                         &mut view_state,
                         screen_patches,
                         &mut pending_view_deadline,
@@ -2501,6 +2527,7 @@ async fn handle_client_frame<I: SessionIo>(
     text: &str,
     viewport: &mut Option<Viewport>,
     sequence: u64,
+    session_id: SessionId,
     view_state: &mut ViewRevisionState,
     screen_patches: bool,
     pending_view_deadline: &mut Option<tokio::time::Instant>,
@@ -2559,6 +2586,11 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             }
+            // The clamp to the presentation maximum (120x50) is intentional,
+            // not a validation gap: F14.2 (.opencode/plans/phase-14-close-out.md)
+            // accepts viewports up to the transport bound (500x200) and clamps
+            // them to MAX_SCREEN_WIDTH x MAX_SCREEN_HEIGHT for presentation
+            // (#942 verdict). Do not narrow the accepted range to 120x50.
             let clamped_width = usize::from(width).min(crate::world_presentation::MAX_SCREEN_WIDTH);
             let clamped_height =
                 usize::from(height).min(crate::world_presentation::MAX_SCREEN_HEIGHT);
@@ -2591,10 +2623,16 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             };
-            world.input(token.clone(), bytes).await
+            world
+                .input_from_session(token.clone(), bytes, session_id)
+                .await
         }
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
-            Some(data) => world.input(token.clone(), data).await,
+            Some(data) => {
+                world
+                    .input_from_session(token.clone(), data, session_id)
+                    .await
+            }
             None => {
                 return send_error(service.frame_meter(), io, "input data must be hexadecimal")
                     .await;
@@ -2827,6 +2865,7 @@ async fn handle_client_frame<I: SessionIo>(
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
+        | ClientFrame::Directory { .. }
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::SetIsolation { .. }

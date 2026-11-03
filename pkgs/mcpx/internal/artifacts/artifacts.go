@@ -28,7 +28,6 @@
 package artifacts
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -291,7 +290,7 @@ func (s *Store) blobPath(hash string) string {
 // anything that can reach the daemon.
 func NewID() string {
 	b := make([]byte, defaults.ArtifactIDBytes)
-	_, _ = rand.Read(b)
+	_, _ = RandSource.Read(b)
 	return "art-" + hex.EncodeToString(b)
 }
 

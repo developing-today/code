@@ -58,6 +58,10 @@ type ConsumerPolicy struct {
 	ModelDefault        string
 	ModelBudget         int
 	ModelTimeout        time.Duration
+
+	// SamplingAnswerLocally is sampling.answerLocally: answer upstream
+	// sampling requests from the configured model layer (#1925 slice 3).
+	SamplingAnswerLocally bool
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -163,6 +167,7 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.ModelDefault = set.String("model.default")
 	p.ModelBudget = set.Int("model.budget")
 	p.ModelTimeout = set.Duration("model.timeout")
+	p.SamplingAnswerLocally = set.Bool("sampling.answerLocally")
 	return p
 }
 
@@ -863,10 +868,19 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		Prelude:       prelude(nss),
 		ClientSource:  codegen.Module(nss, s.endpoint, session),
 		GlobalsSource: codegen.GlobalDeclarations(nss),
-		Timeout:       timeout,
-		Stdout:        &out,
-		Stderr:        &errOut,
-		Env:           env,
+		// A Python one-shot lands here with a Python prelude when the
+		// source chose it (#1917 Phase 2); the same options the runner
+		// itself would derive reach one from daemon callers.
+		Clients: map[string]runner.Client{
+			codegen.Python.Name: {
+				Module:  codegen.PythonModule(nss, s.endpoint, session),
+				Globals: codegen.PythonGlobals(nss),
+			},
+		},
+		Timeout: timeout,
+		Stdout:  &out,
+		Stderr:  &errOut,
+		Env:     env,
 	})
 	result := &ExecResult{Stdout: out.String(), Stderr: errOut.String()}
 	if rerr != nil {

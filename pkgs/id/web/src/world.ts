@@ -267,7 +267,12 @@ function initWorld(): void {
         break;
       case "records": {
         if (!recordsPending) return;
-        Object.assign(records, frame.records ?? {});
+        // #2953 (define, don't assign): frame.records is peer-supplied, so
+        // its keys are stored with define semantics — Object.assign would
+        // run a "__proto__" key through the setter instead of storing it.
+        for (const [k, v] of Object.entries(frame.records ?? {})) {
+          Object.defineProperty(records, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
         recordsAfter = frame.next_after ?? null;
         if (recordsAfter === null) {
           recordsPending = false;
@@ -437,7 +442,9 @@ function initWorld(): void {
           throw new Error("World records changed while paging; refresh the host view");
         }
         recordsSequence = result.records_sequence;
-        Object.assign(allRecords, result.records);
+        for (const [k, v] of Object.entries(result.records)) {
+          Object.defineProperty(allRecords, k, { value: v, writable: true, enumerable: true, configurable: true });
+        }
         if (firstPage) {
           firstPage = false;
           cursor = result.snapshot?.current_sequence ?? 0;
@@ -606,14 +613,20 @@ function initWorld(): void {
       );
     });
     upload.addEventListener("message", async (message) => {
-      let frame: WorldFrame;
+      let parsed: unknown;
       try {
-        frame = JSON.parse(String(message.data)) as typeof frame;
+        parsed = JSON.parse(String(message.data)) as unknown;
       } catch {
         setStatus("Host returned an invalid upload response", "error");
         upload.close();
         return;
       }
+      if (!isRecord(parsed) || typeof parsed.type !== "string") {
+        setStatus("Host returned an invalid upload response", "error");
+        upload.close();
+        return;
+      }
+      const frame = parsed as WorldFrame;
       if (frame.type === "error") {
         setStatus(frame.message ?? "Module install failed", "error");
         upload.close();
@@ -622,7 +635,7 @@ function initWorld(): void {
       if (frame.type === "upload_ready" && !uploadStarted) {
         uploadStarted = true;
         const chunkBytes = frame.chunk_bytes;
-        if (!chunkBytes || chunkBytes < 1 || chunkBytes > 6 * 1024) {
+        if (typeof chunkBytes !== "number" || !Number.isInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > 6 * 1024) {
           setStatus("Host returned an invalid module chunk size", "error");
           upload.close();
           return;
@@ -727,14 +740,20 @@ function initWorld(): void {
       );
     });
     compiler.addEventListener("message", (message) => {
-      let frame: WorldFrame;
+      let parsed: unknown;
       try {
-        frame = JSON.parse(String(message.data)) as WorldFrame;
+        parsed = JSON.parse(String(message.data)) as unknown;
       } catch {
         setStatus("Host returned an invalid compile response", "error");
         compiler.close();
         return;
       }
+      if (!isRecord(parsed) || typeof parsed.type !== "string") {
+        setStatus("Host returned an invalid compile response", "error");
+        compiler.close();
+        return;
+      }
+      const frame = parsed as WorldFrame;
       if (frame.type === "error") {
         setStatus(frame.message ?? "Roc compilation failed", "error");
         appendLine(log, `compile error: ${frame.message ?? "Roc compilation failed"}`);

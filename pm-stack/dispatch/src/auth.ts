@@ -50,12 +50,17 @@ function b64urlDecode(s: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, "base64"));
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function parseJwt(token: string): JwtParts | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   try {
-    const header = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[0]!)));
-    const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]!)));
+    const header: unknown = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[0]!)));
+    const payload: unknown = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]!)));
+    if (!isJsonObject(header) || !isJsonObject(payload)) return null;
     return {
       header,
       payload,

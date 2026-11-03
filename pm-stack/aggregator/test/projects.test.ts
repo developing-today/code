@@ -32,7 +32,7 @@ const GQL = {
         nodes: [
           {
             id: "PVTI_1",
-            databaseId: 111,
+            databaseId: 111 as number | null,
             type: "ISSUE",
             content: {
               number: 508,
@@ -98,10 +98,13 @@ function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount 
 describe("fetchProjectPool pagination", () => {
   test("throws rather than returning a partial pool when page ten has another page", async () => {
     let calls = 0;
-    const fetchFn: typeof fetch = async () => {
-      calls++;
-      return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
-    };
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(true, `cursor-${calls}`)));
+      },
+      { preconnect: () => {} },
+    );
 
     await expect(fetchProjectPool("test-token", fetchFn)).rejects.toThrow(/truncat.*25/i);
     expect(calls).toBe(10);
@@ -109,10 +112,13 @@ describe("fetchProjectPool pagination", () => {
 
   test("returns every item from a finite multi-page pool", async () => {
     let calls = 0;
-    const fetchFn: typeof fetch = async () => {
-      calls++;
-      return new Response(JSON.stringify(projectPage(calls < 3, calls < 3 ? `cursor-${calls}` : null, 6)));
-    };
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(calls < 3, calls < 3 ? `cursor-${calls}` : null, 6)));
+      },
+      { preconnect: () => {} },
+    );
 
     const items = await fetchProjectPool("test-token", fetchFn);
     expect(calls).toBe(3);
@@ -121,10 +127,13 @@ describe("fetchProjectPool pagination", () => {
 
   test("returns a single-page pool unchanged", async () => {
     let calls = 0;
-    const fetchFn: typeof fetch = async () => {
-      calls++;
-      return new Response(JSON.stringify(projectPage(false, null, 3)));
-    };
+    const fetchFn: typeof fetch = Object.assign(
+      async () => {
+        calls++;
+        return new Response(JSON.stringify(projectPage(false, null, 3)));
+      },
+      { preconnect: () => {} },
+    );
 
     const items = await fetchProjectPool("test-token", fetchFn);
     expect(calls).toBe(1);

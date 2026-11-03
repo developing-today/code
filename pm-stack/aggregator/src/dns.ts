@@ -183,12 +183,20 @@ export function isDnsSection(v: unknown): v is DnsSection {
         typeof (e as DnsEntry).renewal === "string" &&
         // priceUsd is number|null in the model: null/absent stays valid,
         // but a present value must be a finite number (#2412).
-        ((e as DnsEntry).priceUsd === null ||
-          (e as DnsEntry).priceUsd === undefined ||
-          (typeof (e as DnsEntry).priceUsd === "number" &&
-            Number.isFinite((e as DnsEntry).priceUsd) &&
-            // A present price must also be non-negative (#4226).
-            (e as DnsEntry).priceUsd >= 0)) &&
+        (() => {
+          // Bind once so the typeof guard narrows the same expression the
+          // comparison uses; re-reading (e as DnsEntry).priceUsd each time
+          // does not narrow and trips TS2531 (#4226).
+          const priceUsd = (e as DnsEntry).priceUsd;
+          return (
+            priceUsd === null ||
+            priceUsd === undefined ||
+            (typeof priceUsd === "number" &&
+              Number.isFinite(priceUsd) &&
+              // A present price must also be non-negative (#4226).
+              priceUsd >= 0)
+          );
+        })() &&
         // status feeds summarizeDns buckets; an unknown/missing status
         // under-counts silently, so the gate owns the enum (#2412).
         ((e as DnsEntry).status === "active" ||

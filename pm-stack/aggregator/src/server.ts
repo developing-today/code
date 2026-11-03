@@ -10,7 +10,13 @@ import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
-import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
+import {
+  checkActionAgainstItem,
+  effectiveNeedsOrder,
+  effectiveStandingAuto,
+  findTierItem,
+  questionIdForOption,
+} from "./tier-items.ts";
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
@@ -36,6 +42,7 @@ import {
   type ItemsCoverage,
 } from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
+import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import {
@@ -58,7 +65,6 @@ import { identitiesFromRecords } from "./registry.ts";
 import {
   attentionFragment,
   attentionSections,
-  esc,
   ghObjectRef,
   renderAa,
   renderAttention,
@@ -67,6 +73,7 @@ import {
   renderBoardBody,
   renderDiscuss,
   renderDns,
+  renderConflicts,
   renderHealth,
   renderItem,
   deriveOverview,
@@ -83,6 +90,7 @@ import {
   renderQueueShell,
   buildRoadmapDrill,
   renderRoadmap,
+  renderSearch,
   renderServiceDetail,
   renderSessions,
   renderToday,
@@ -106,6 +114,7 @@ import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, esc } from "./render.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
@@ -221,6 +230,20 @@ async function ensureProvenancePrimed(): Promise<void> {
 }
 
 /**
+ * The source-conflict inbox (#1282 slice 1), assembled from the same facets
+ * the rest of the dashboard reads. Read-only: detection collects what the
+ * facets already report, and no render changes because of it.
+ */
+async function assembleConflicts(): Promise<ConflictInbox> {
+  const [pool, orchestration, usage] = await Promise.all([
+    source.projects().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.usage().catch(() => emptyUsageView()),
+  ]);
+  return conflictInbox({ pool, orchestration, services: usage.services });
+}
+
+/**
  * The one health assembly behind both /health and /api/health
  * (#1147): primed provenance first (so facet truth never depends on
  * request order, #1267), then the feed snapshot the section ages and
@@ -252,6 +275,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     detail: source.provenanceDetail?.(),
     itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
+    conflicts: await assembleConflicts().catch(() => null),
   });
 }
 
@@ -408,6 +432,13 @@ async function roadmapContext() {
   const drill =
     reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
   return { rows, items, pool: poolResult.pool, reconciliation, drill };
+}
+
+async function searchContext(query: string) {
+  const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
+  const refs = [...new Set([...allRefs(board), ...allRefs(rows)])];
+  const items = await source.items(refs);
+  return { query, results: searchWork(board, rows, items, query), items };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -812,13 +843,14 @@ async function handler(req: Request): Promise<Response> {
       // consumer rejects what it cannot apply.
       if (parsed.value.kind === "triage") {
         const section = await source.orchestration().catch(() => null);
+        let item: ReturnType<typeof findTierItem>;
         if (section) {
-          const problem = checkActionAgainstItem(
-            parsed.value,
-            findTierItem(section, parsed.value.objectRef),
-            Date.now(),
-          );
+          item = findTierItem(section, parsed.value.objectRef);
+          const problem = checkActionAgainstItem(parsed.value, item, Date.now());
           if (problem) return json({ error: problem }, 400);
+        }
+        if (parsed.value.verb === "answer" && parsed.value.payload.optionId) {
+          parsed.value.payload.questionId = questionIdForOption(item, parsed.value.payload.optionId) ?? "$options";
         }
       }
       // #1509: persistence failure -> 5xx (see /api/comments above).
@@ -829,6 +861,29 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
       const { action, created } = added;
+      if (added.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${added.duplicateOf}`,
+            action,
+            duplicateOf: added.duplicateOf,
+          },
+          409,
+        );
+      }
+      // A client-token replay of an already-persisted duplicate attempt
+      // keeps the rejected semantics instead of reading as a fresh
+      // "sent · pending" success (Codex P2 on PR #4024).
+      if (!created && action.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${action.duplicateOf}`,
+            action,
+            duplicateOf: action.duplicateOf,
+          },
+          409,
+        );
+      }
       // #1276: saved-view preference verbs are applied by the
       // aggregator itself to the views store and marked applied (or
       // rejected, with the reason) in the same request — the action
@@ -1231,6 +1286,15 @@ async function handler(req: Request): Promise<Response> {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
     });
   }
+  if (path === "/assets/aa-explorer-computations.js") {
+    // Shared with Bun tests so the browser and regression suite exercise the
+    // same Cost Explorer calculations.
+    const file = Bun.file(new URL("./assets/aa-explorer-computations.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
 
   if (path === "/dns") {
     return html(renderDns(await source.dns(), prov(), provDetail()));
@@ -1264,6 +1328,14 @@ async function handler(req: Request): Promise<Response> {
         view,
       ),
     );
+  }
+  if (path === "/search") {
+    const { query, results, items } = await searchContext(url.searchParams.get("q") ?? "");
+    return html(renderSearch(query, results, items, prov(), provDetail()));
+  }
+  if (path === "/api/search.json") {
+    const { query, results } = await searchContext(url.searchParams.get("q") ?? "");
+    return json({ query: query.trim(), total: results.length, results });
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
@@ -1300,6 +1372,15 @@ async function handler(req: Request): Promise<Response> {
   // #1279: briefs need the latest comment per item, guaranteed per ref —
   // the bulk comments() read can truncate an item's latest comment away
   // in a busy batch, so prefer the source's per-ref latest read.
+  // #1282 slice 1: one read-only inbox over every disagreement the facets
+  // report. The page and its JSON twin are the same projection, assembled
+  // once per request — they cannot disagree about what disagrees.
+  if (path === "/conflicts" || path === "/api/conflicts.json") {
+    const inbox = await assembleConflicts();
+    if (path === "/api/conflicts.json") return json(inbox);
+    return html(renderConflicts(inbox, prov(), provDetail()));
+  }
+
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
@@ -1729,6 +1810,11 @@ async function handler(req: Request): Promise<Response> {
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
+    body.conflicts = view.conflicts;
+    // #1203: the ready-for-agent harness facet — backend readiness,
+    // repository settings, work-item counts and GraphQL errors reach the
+    // machine surface too, not only the rendered page.
+    body.rfa = view.rfa;
     body.degraded = view.degraded;
     return json(body);
   }

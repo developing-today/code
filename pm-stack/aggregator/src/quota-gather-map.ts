@@ -13,6 +13,7 @@
 // gatherer change; a provider whose usage is not window-shaped keeps
 // its raw usage on the entry and yields no windows (never zeros).
 import type { QuotaCurrentEntry, QuotaCurrentWindow, SnapshotRecord } from "./model.ts";
+import { safeProviderReason } from "./credential-lifecycle.ts";
 
 /** The subset of a quota-module result the mapper reads. */
 export interface QuotaProviderResult {
@@ -26,6 +27,8 @@ export interface QuotaProviderResult {
   planLabel?: string;
   credentialId?: string;
   credentialLabel?: string;
+  credentialExpiresAt?: number | string | null;
+  credentialSource?: "claude-code" | "opencode" | "environment";
 }
 
 interface RawWindow {
@@ -53,8 +56,11 @@ export function normalizeResetAt(v: unknown): string | null {
 
 /**
  * Hub pool/snapshot service id for a provider result. Mirrors
- * POOL_SPECS (src/quota-extract.ts) where a pool exists, so gatherer
- * records continue the series the dated-read writers started.
+ * POOL_SPECS (src/quota-extract.ts) where a pool exists. Pool ids are
+ * the OpenCode config provider ids (2026-11-03 alignment — see the
+ * POOL NAMING note in quota-extract.ts), so a renamed pool starts a
+ * NEW snapshot series under its config name; the pre-rename series
+ * stays in the store under the old colon id, unrewritten.
  * OpenCode Go answers one row per workspace credential (the module's
  * per-credential fetch); each row lands under the bare id, and
  * entriesWithPoolSplits below ALSO files attributable rows under
@@ -66,11 +72,17 @@ export function serviceIdFor(providerId: string): string {
     case "claude":
       return "anthropic:claude-pro";
     case "codex":
-      return "openai:codex";
+      return "openai";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
+    case "command-code":
+      return "commandcode";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
+    case "meta":
+      return "meta";
+    case "opendesign":
+      return "opendesign";
     default:
       return providerId;
   }
@@ -89,25 +101,24 @@ export const GATHERER_SOURCE = "openchamber-quota";
  * These MUST mirror POOL_SPECS (src/quota-extract.ts) — the overlay side
  * of this contract.
  */
-export const GO_PERSONAL_SERVICE_ID = "opencode-go:personal";
-export const GO_LAB_SERVICE_ID = "opencode-go:lab";
-export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity:gemini";
-export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity:claude-gpt";
+export const GO_DREWRYPOPE_SERVICE_ID = "opencode-go.drewrypope";
+export const GO_POPESDREW_SERVICE_ID = "opencode-go.popesdrew";
+export const ANTIGRAVITY_GEMINI_SERVICE_ID = "antigravity-direct.gemini";
+export const ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID = "antigravity-direct.claude-gpt";
 
 /**
  * Which split Go pool a per-workspace entry belongs to, from the
  * credential's human label. OpenCode credential labels are user-set; on
- * the fleet laptop the Go workspaces are labeled "Personal" and "Lab"
- * (a third workspace, "Home", has no hub pool and stays
- * combined-only). Org ids are opaque per-machine strings, so they
+ * the fleet laptop the Go accounts are labeled "drewrypope" and "popesdrew"
+ * (the "Home" workspace was removed 2026-11-03 and has no hub pool). Org ids are opaque per-machine strings, so they
  * cannot name pools — the label is the only stable gatherer-side
  * signal. Unmatched entries yield null: no fabricated pool row, the
  * combined row still carries the reading.
  */
 export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
   const label = entry.credentialLabel?.trim().toLowerCase();
-  if (label === "personal") return GO_PERSONAL_SERVICE_ID;
-  if (label === "lab") return GO_LAB_SERVICE_ID;
+  if (label === "drewrypope") return GO_DREWRYPOPE_SERVICE_ID;
+  if (label === "popesdrew") return GO_POPESDREW_SERVICE_ID;
   return null;
 }
 
@@ -224,11 +235,15 @@ export interface FileExportDoc {
 const FILE_EXPORT_WINDOW_SECONDS: Record<string, number> = { "5h": 18_000, weekly: 604_800 };
 
 /**
- * Map one file-export document onto a quota-current entry (v1
- * producer: Meta, service meta:high-usage, ~/atlas/meta-quota-export/
- * latest.json on the laptop). `doc` null = the file could not be
- * read or parsed; `stale` = its mtime is past the staleness bound.
- * Both are error entries — never zeros.
+ * Map one file-export document onto a quota-current entry. The v1
+ * producer was Meta (service meta, ~/atlas/meta-quota-
+ * export/latest.json on the laptop) — retired 2026-11-03 when the
+ * gatherer began asking the OpenCode quota module for Meta
+ * directly (PR #5040); the mapper stays as the #1301 convention's
+ * tested shape for the next producer the module cannot reach.
+ * `doc` null = the file could not be read or parsed; `stale` = its
+ * mtime is past the staleness bound. Both are error entries — never
+ * zeros.
  */
 export function entryFromFileExport(
   doc: FileExportDoc | null,
@@ -237,7 +252,7 @@ export function entryFromFileExport(
   const entry: QuotaCurrentEntry = {
     providerId: "meta",
     providerName: "Meta",
-    serviceId: "meta:high-usage",
+    serviceId: "meta",
     state: "error",
     measuredAt: opts.fileMtimeIso ?? new Date(0).toISOString(),
     source: doc?.source ?? "file-export",
@@ -313,12 +328,21 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     state,
     measuredAt,
     source: GATHERER_SOURCE,
+    credentialWatch: true,
     windows: [],
   };
   if (result.credentialId) entry.credentialId = result.credentialId;
   if (result.credentialLabel) entry.credentialLabel = result.credentialLabel;
+  const expiry = result.credentialExpiresAt;
+  if (typeof expiry === "number" && Number.isFinite(expiry)) {
+    const date = new Date(expiry);
+    if (Number.isFinite(date.getTime())) entry.credentialExpiresAt = date.toISOString();
+  } else if (typeof expiry === "string" && Number.isFinite(Date.parse(expiry))) {
+    entry.credentialExpiresAt = new Date(expiry).toISOString();
+  }
+  if (result.credentialSource) entry.credentialSource = result.credentialSource;
   if (result.planLabel) entry.planLabel = result.planLabel;
-  if (result.error) entry.error = result.error;
+  if (result.error) entry.error = safeProviderReason(result.error);
   if (result.usage != null) entry.usage = result.usage;
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {

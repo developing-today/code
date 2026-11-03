@@ -2177,13 +2177,16 @@ pub enum WorldCommand {
         #[arg(long)]
         allow_partial: bool,
     },
-    /// List the worlds a host serves (needs the host's admin token).
+    /// List the worlds a host serves. Without `--admin-token` this reads
+    /// the host's public directory (#812: names, loaded state, presence
+    /// counts); with it, the admin listing is used.
     List {
         /// The host's node ID (64 hex characters).
         node: String,
         /// Admin secret configured with `serve --world-admin-token`.
+        /// Optional: omit it to read the public directory.
         #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
-        admin_token: String,
+        admin_token: Option<String>,
         /// Print one JSON object instead of tab-separated lines.
         #[arg(long)]
         json: bool,
