@@ -67,8 +67,10 @@ export function terminalBytesForKey(event: KeyEventLike): Uint8Array | null {
     return null;
   }
 
-  if (event.key in specialKeys) {
-    const special = specialKeys[event.key];
+  if (Object.hasOwn(Object.prototype, event.key)) return null;
+
+  const special = Object.hasOwn(specialKeys, event.key) ? specialKeys[event.key] : undefined;
+  if (special) {
     const modified = event.ctrlKey || event.altKey || event.shiftKey;
     if (!modified) return new TextEncoder().encode(special.plain);
     const mod = modifierParameter(event);

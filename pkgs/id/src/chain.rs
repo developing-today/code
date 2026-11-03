@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
+use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
+use crate::notes::{NoteOp, check_note_op, is_note_kind};
 use crate::tag_claims::{TagOp, check_op, is_tag_kind};
 
 /// The domain tag every `ChainExt` carries, so this header type cannot be
@@ -115,6 +117,14 @@ pub struct ChainExt {
     /// The ID of the `document.put` a `document.remove` removes, and `None` for every other kind.
     /// It is signed with the header (P5.6).
     pub removes: Option<Hash>,
+    /// The note operation of a `note.create` or `note.revise`, and `None` for every
+    /// other kind. It is the note's body (#3814): signed with the header, so an event
+    /// carries its whole note operation, and sync needs no separate body.
+    pub note: Option<NoteOp>,
+    /// The note link operation of a `note.link`, and `None` for every other kind.
+    /// It is the link body (#3816): signed with the header, so an event carries
+    /// its whole link operation, and sync needs no separate body.
+    pub link: Option<NoteLinkOp>,
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
@@ -133,6 +143,10 @@ struct Wire {
     document: Option<DocumentRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     removes: Option<Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<NoteOp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    link: Option<NoteLinkOp>,
 }
 
 impl From<ChainExt> for Wire {
@@ -145,6 +159,8 @@ impl From<ChainExt> for Wire {
             tag: ext.tag,
             document: ext.document,
             removes: ext.removes,
+            note: ext.note,
+            link: ext.link,
         }
     }
 }
@@ -163,6 +179,8 @@ impl TryFrom<Wire> for ChainExt {
             tag: wire.tag,
             document: wire.document,
             removes: wire.removes,
+            note: wire.note,
+            link: wire.link,
         };
         ext.validate()?;
         Ok(ext)
@@ -251,6 +269,44 @@ impl ChainExt {
                 )));
             }
             (true, Some(_)) => {}
+        }
+        match (is_note_kind(&self.kind), &self.note) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a note operation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its note operation",
+                    self.kind
+                )));
+            }
+            (true, Some(op)) => {
+                check_note_op(&self.kind, op)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
+        match (is_note_link_kind(&self.kind), &self.link) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a note link operation",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its note link operation",
+                    self.kind
+                )));
+            }
+            (true, Some(op)) => {
+                check_note_link_op(&self.kind, op)
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
         }
         Ok(())
     }
@@ -404,6 +460,8 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
         }
     }
 
@@ -708,7 +766,7 @@ mod golden {
     use dcbor::{ByteString, CBOR};
     use p2panda_core::{AnyHeader, Hash, Header, SigningKey};
 
-    use super::{ChainExt, DOMAIN_TAG, Event, decode, sign};
+    use super::{decode, sign, ChainExt, Event, DOMAIN_TAG};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.
     fn key() -> SigningKey {
@@ -881,6 +939,8 @@ mod golden {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
             },
         )
         .unwrap();
@@ -897,6 +957,8 @@ mod golden {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
             },
         )
         .unwrap();

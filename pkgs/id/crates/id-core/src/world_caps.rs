@@ -72,6 +72,18 @@ pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// Most distinct tick intervals one program may subscribe to.
 pub const MAX_TICK_INTERVALS: usize = 4;
 
+/// Usage key that aggregates every unknown capability name.
+///
+/// A guest program controls requested capability names, so recording each
+/// distinct unknown name would let it mint one [`CapUsage`] entry (and one
+/// [`CapsReport`] entry) per name, forever.
+/// Unknown names — including unknown subscription specs, which reach the
+/// ledger as their full spec — aggregate here instead, so `usage` holds at
+/// most the catalog names plus this one bucket. [`is_known`] decides the
+/// split: anything outside [`CATALOG`] lands in this bucket, even a literal
+/// request for this key.
+pub const UNKNOWN_CAP_USAGE_KEY: &str = "<unknown>";
+
 /// Capabilities the server knows how to provide. New providers add names;
 /// existing names never change meaning. Platform modules are gated when source
 /// that imports them is compiled, not at run time.
@@ -548,11 +560,17 @@ impl CapLedger {
     /// whether the participant that caused the use may cause `cap`. A refused
     /// actor is counted as a denial and never triggers a grant.
     pub fn decide_for(&mut self, cap: &str, actor_permits: bool) -> Decision {
-        let entry = self.usage.entry(cap.to_owned()).or_default();
+        // Unknown names aggregate into one shared bucket: a guest program
+        // controls requested names, so one map entry per distinct unknown
+        // name would be unbounded host memory (and CapsReport size).
         if !is_known(cap) {
-            entry.denied += 1;
+            self.usage
+                .entry(UNKNOWN_CAP_USAGE_KEY.to_owned())
+                .or_default()
+                .denied += 1;
             return Decision::Deny(CapError::unknown());
         }
+        let entry = self.usage.entry(cap.to_owned()).or_default();
         // A ceiling is checked before anything else, so grant-on-use can
         // never add a name the server or the world excludes.
         if !self.allowed.contains(cap) {
@@ -961,6 +979,57 @@ mod tests {
             "a name the catalog lacks is never allowed, even if a ceiling lists it"
         );
         assert_eq!(ledger.allowed(), &names(&["time.now"]));
+    }
+
+    #[test]
+    fn unknown_names_and_specs_share_one_bounded_usage_bucket() {
+        let mut ledger = CapLedger::new(BTreeSet::new(), false);
+        for i in 0..10_000 {
+            let name = format!("evil.cap.{i}");
+            assert_eq!(ledger.decide(&name), Decision::Deny(CapError::unknown()));
+            // Unknown subscription specs reach the ledger as their full spec.
+            let spec = format!("evil.spec:{i}");
+            let cap = Subscription::parse(&spec).cap().to_owned();
+            assert_eq!(ledger.decide(&cap), Decision::Deny(CapError::unknown()));
+        }
+        assert_eq!(
+            ledger.usage().len(),
+            1,
+            "20,000 distinct unknown names must not mint 20,000 entries"
+        );
+        assert_eq!(
+            ledger.usage()[UNKNOWN_CAP_USAGE_KEY],
+            CapUsage {
+                allowed: 0,
+                denied: 20_000
+            }
+        );
+
+        // Known capabilities keep per-name accounting beside the bucket.
+        ledger.set_granted(BTreeSet::from(["time.now".to_owned()]));
+        assert_eq!(ledger.decide("time.now"), Decision::Allow);
+        assert_eq!(
+            ledger.decide("chat.say"),
+            Decision::Deny(CapError::denied())
+        );
+        assert_eq!(
+            ledger.usage()["time.now"],
+            CapUsage {
+                allowed: 1,
+                denied: 0
+            }
+        );
+        assert_eq!(
+            ledger.usage()["chat.say"],
+            CapUsage {
+                allowed: 0,
+                denied: 1
+            }
+        );
+        assert!(
+            ledger.usage().len() <= CATALOG.len() + 1,
+            "usage stays bounded by the catalog plus the unknown bucket"
+        );
     }
 
     #[test]

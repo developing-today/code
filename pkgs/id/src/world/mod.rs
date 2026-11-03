@@ -35,6 +35,9 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+mod replication;
+mod replication_receiver;
+pub mod signed;
 mod util;
 
 #[cfg(test)]
@@ -45,9 +48,21 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use replication::{
+    AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
+    REPLICATION_ENVELOPE_VERSION, REPLICATION_FRAME_MAGIC, ReplicationCursor, ReplicationEnvelope,
+    ReplicationError, ReplicationKind, ReplicationTracker, SESSION_NONCE_BYTES,
+    SignedReplicationEnvelope, advance_cursor, chain_base_cursor, chain_payload, frame_digest,
+    journal_entry_line, payload_digest, split_entry_payload,
+};
+pub use replication_receiver::{
+    DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
+    ReceiverProgress,
+};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, sanitize_chat, sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
+    sanitize_display_name, token_digest,
 };
 
 /// A chat participant may send at most this many lines during the rolling window.
@@ -377,6 +392,14 @@ pub enum WorldEventKind {
         /// Server-observed origin metadata. Absent on older journal entries.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provenance: Option<ModuleProvenance>,
+        /// The trust decision that admitted this module (#1069), carried
+        /// by the install event itself so the decision and the install
+        /// are one durable record: a separate audit append after the
+        /// install event could fail and leave a durable install with no
+        /// decision (or a split live/restored state). Absent on older
+        /// journal entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trust: Option<TrustDecision>,
     },
 }
 
@@ -416,6 +439,14 @@ pub struct SourceBuildProvenance {
     pub schema_version: u8,
     /// Domain-separated BLAKE3 digest of the compiler executable bytes.
     pub compiler_blake3: String,
+    /// Version string the compiler binary reports for itself (`roc
+    /// version`), recorded alongside its digest (#1069): the digest
+    /// identifies the exact bytes, the version is the human-legible
+    /// name for them. Empty when the version probe failed. Defaulted
+    /// so provenance records written before this field existed still
+    /// deserialize.
+    #[serde(default)]
+    pub compiler_version: String,
     /// BLAKE3 digest of the platform tree, including relative paths.
     pub platform_blake3: String,
     /// BLAKE3 digest of the submitted source filenames and contents.
@@ -627,6 +658,30 @@ pub enum CoordinatorJournalEntry {
         /// Why the handoff was cancelled.
         reason: String,
     },
+}
+
+/// The basis on which the module trust gate admitted a module (#1069).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustBasis {
+    /// A publisher signature verified against the configured trust list.
+    SignatureVerified,
+    /// No trust list is configured, so the gate admits any module.
+    NoTrustList,
+    /// The server compiled the module from source itself, so the upload
+    /// trust gate does not apply.
+    ServerCompiled,
+}
+
+/// A trust gate decision recorded in the journal as part of the
+/// install event it admitted (#1069): the basis, and the publisher key
+/// when one verified.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustDecision {
+    /// The basis on which the module was admitted.
+    pub basis: TrustBasis,
+    /// Hex public key of the verifying publisher, if any.
+    pub publisher: Option<String>,
 }
 
 /// One durable fact about a world, in commit order.
@@ -895,7 +950,10 @@ pub(crate) struct JournalAdminHistory {
 /// version-1 binary cannot read. New entry kinds raise the header to the
 /// highest required version *before* the entry is appended, by atomically
 /// rewriting the journal (sibling temp file, fsync, rename), so a failed bump
-/// leaves the old journal untouched. A binary refuses any journal newer than
+/// leaves the old journal untouched. The first such entries were an
+/// [`JournalEntry::ExecutionProfile`], a region-handoff entry, an entry
+/// carrying a per-world total memory budget, and a checkpoint carrying
+/// open program-visible presence. A binary refuses any journal newer than
 /// [`MAX_JOURNAL_VERSION`] at the header check in [`WorldCore::restore`],
 /// never mid-read. New binaries accept versions 1..=[`MAX_JOURNAL_VERSION`],
 /// so existing journals stay readable and a journal that never needs a newer
@@ -915,11 +973,22 @@ pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 /// [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_REGION_HANDOFF: u32 = 3;
 
+/// Header version of a journal that persists a per-world total memory
+/// budget (#557 Phase 1, design `doc/2026-11-01_design_id557.md`): an
+/// [`JournalEntry::ExecutionProfile`] or [`JournalEntry::Checkpoint`]
+/// whose profile sets `total_memory_bytes`. An older binary would parse
+/// the entry yet silently ignore the budget it cannot account for, so the
+/// budget requires a version the old binary refuses at the header check.
+/// Profiles and checkpoints without a budget keep their existing version.
+pub const JOURNAL_VERSION_WORLD_BUDGET: u32 = 4;
+
 /// Header version of a checkpoint that carries open program-visible presence.
-/// Version-3 binaries would ignore the field and fail to close those joins on
+/// Version-4 binaries would ignore the field and fail to close those joins on
 /// restart, so such checkpoints must be refused by them. This follows the
-/// region-handoff journal version so both features retain distinct contracts.
-pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 4;
+/// world-budget journal version so both features retain distinct contracts.
+/// (Renumbered from 4 to 5 when this branch merged main: main had already
+/// assigned version 4 to the world-budget contract above.)
+pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 5;
 
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
@@ -927,11 +996,21 @@ pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 4;
 pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_OPEN_PRESENCE;
 
 /// The header version a journal must carry once it contains `entry`: version 2
-/// for execution-profile entries, version 3 for region-handoff entries, and
-/// version 4 for checkpoints with open-presence metadata. Checkpoints combine
-/// the requirements of their transfers, retained events and presence field.
+/// for execution-profile entries, version 3 for region-handoff entries,
+/// version 4 for entries persisting a per-world total memory budget, and
+/// version 5 for checkpoints with open-presence metadata. Checkpoints combine
+/// the requirements of their transfers, retained events, profile and presence field.
 #[must_use]
 pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+    // A persisted budget always requires the budget version, on top of any
+    // version the entry kind itself already requires.
+    let budget_version = |profile: Option<&crate::world_limits::WorldExecutionProfile>| {
+        if profile.is_some_and(|p| p.total_memory_bytes.is_some()) {
+            JOURNAL_VERSION_WORLD_BUDGET
+        } else {
+            JOURNAL_VERSION
+        }
+    };
     match entry {
         JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
             JOURNAL_VERSION_REGION_HANDOFF
@@ -949,9 +1028,10 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
             transfers,
             events,
             open_presence,
+            execution_profile,
             ..
         } => {
-            if open_presence.is_some() {
+            let base = if open_presence.is_some() {
                 JOURNAL_VERSION_OPEN_PRESENCE
             } else if transfers.is_some()
                 || events
@@ -961,9 +1041,12 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
                 JOURNAL_VERSION_REGION_HANDOFF
             } else {
                 JOURNAL_VERSION
-            }
+            };
+            base.max(budget_version(execution_profile.as_ref()))
         }
-        JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        JournalEntry::ExecutionProfile { profile } => {
+            JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
+        }
         _ => JOURNAL_VERSION,
     }
 }
@@ -981,6 +1064,19 @@ pub trait WorldJournal: Send + 'static {
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
 
+    /// Capture the exact durable journal bytes and their header version.
+    /// Implementations that do not own a readable journal may leave this
+    /// unsupported; the replication feed is available only for durable
+    /// journals that can provide an atomic snapshot from the world actor.
+    fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+        bail!("this journal cannot provide a replication snapshot")
+    }
+
+    /// Current journal header version, when the implementation can report it.
+    fn replication_header_version(&self) -> Option<u32> {
+        None
+    }
+
     /// Atomically replace the whole journal with `entries` (a header, the
     /// participants and a [`JournalEntry::Checkpoint`]). Either the old or
     /// the new journal survives a crash, never a mixture.
@@ -992,6 +1088,31 @@ pub trait WorldJournal: Send + 'static {
     fn compact(&mut self, _entries: &[JournalEntry]) -> Result<()> {
         bail!("this journal cannot be compacted")
     }
+}
+
+/// A byte-exact, newline-terminated journal image captured by the actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalSnapshot {
+    /// Version in the journal's `Created` header.
+    pub header_version: u32,
+    /// Exact JSONL bytes, including every entry's newline.
+    pub bytes: Vec<u8>,
+}
+
+/// A durable change delivered to replication subscribers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplicationUpdate {
+    /// One entry appended and fsynced after the subscriber's snapshot.
+    Append {
+        /// Header version the appended entry is encoded under.
+        header_version: u32,
+        /// Exact serialized JSONL entry bytes, including its newline.
+        entry: Vec<u8>,
+    },
+    /// The journal was compacted or its header version changed.
+    Reset(JournalSnapshot),
+    /// A reset became necessary but the journal image could not be captured.
+    ResetFailed,
 }
 
 /// The program a journal says was running, and where to resume it from.

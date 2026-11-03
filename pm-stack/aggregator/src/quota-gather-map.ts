@@ -137,7 +137,7 @@ export function entryFromFileExport(
   entry.measuredAt = measuredAt;
   for (const w of doc.windows ?? []) {
     const pct = num(w.usedPct);
-    if (!w.name || pct == null) continue;
+    if (!w.name || pct == null || pct < 0 || pct > 100) continue;
     entry.windows.push({
       name: w.name,
       value: pct,
@@ -155,7 +155,7 @@ export function entryFromFileExport(
     });
   }
   const labelWindow = (name: string, usd: number | null | undefined): void => {
-    if (typeof usd !== "number" || !Number.isFinite(usd)) return;
+    if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return;
     entry.windows.push({
       name,
       value: null,
@@ -175,10 +175,11 @@ export function entryFromFileExport(
 
 /** Map one provider result onto a quota-current entry. */
 export function entryFromResult(result: QuotaProviderResult, tickIso: string): QuotaCurrentEntry {
-  const measuredAt =
-    typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt)
-      ? new Date(result.fetchedAt).toISOString()
-      : tickIso;
+  let measuredAt = tickIso;
+  if (typeof result.fetchedAt === "number" && Number.isFinite(result.fetchedAt) && result.fetchedAt > 0) {
+    const fetchedDate = new Date(result.fetchedAt);
+    if (Number.isFinite(fetchedDate.getTime())) measuredAt = fetchedDate.toISOString();
+  }
   const state: QuotaCurrentEntry["state"] = result.ok ? "ok" : result.configured ? "error" : "unconfigured";
   const entry: QuotaCurrentEntry = {
     providerId: result.providerId,
@@ -197,6 +198,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
 
   const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
     const pct = num(raw?.usedPercent);
+    if (pct != null && (pct < 0 || pct > 100)) return;
     entry.windows.push({
       name,
       value: pct,
@@ -426,6 +428,15 @@ export const TURSO_SOURCE = "turso-api";
 const gb = (bytes: number): number => Math.round((bytes / 1e9) * 1e6) / 1e6;
 const pct3 = (used: number, limit: number): number => Math.round((used / limit) * 100 * 1000) / 1000;
 
+/** Turso usage counts are counts: a negative value is impossible, so it is
+ * treated exactly like a metric the response does not carry (#2553) — the
+ * window is omitted, never published negative. Local to entryFromTurso:
+ * the shared num() keeps its semantics for the other mappers. */
+const numNonNegative = (v: unknown): number | null => {
+  const n = num(v);
+  return n !== null && n < 0 ? null : n;
+};
+
 /**
  * Map one Turso usage + subscription read onto a quota-current
  * entry (serviceId "turso", the SaaS card's snapshot id, so the
@@ -465,7 +476,8 @@ export function entryFromTurso(
     return entry;
   }
   const periodEnd = sub?.current_billing_period_end ?? sub?.current_period_end ?? sub?.period_end ?? sub?.ends_at;
-  const periodStart = sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
+  const periodStart =
+    sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
   const resetsAt = normalizeResetAt(periodEnd);
   const startMs = typeof periodStart === "string" ? Date.parse(periodStart) : Number.NaN;
   const endMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : Number.NaN;
@@ -486,9 +498,9 @@ export function entryFromTurso(
       state: "ok",
     });
   };
-  const databases = num(usage.databases);
+  const databases = numNonNegative(usage.databases);
   push("databases", databases, TURSO_LIMITS.databases, databases ?? 0, `${databases} / ${TURSO_LIMITS.databases}`);
-  const storageBytes = num(usage.storage_bytes);
+  const storageBytes = numNonNegative(usage.storage_bytes);
   push(
     "storage",
     storageBytes,
@@ -496,7 +508,7 @@ export function entryFromTurso(
     storageBytes == null ? 0 : gb(storageBytes),
     `${storageBytes == null ? "?" : gb(storageBytes)} GB / 5 GB`,
   );
-  const rowsRead = num(usage.rows_read);
+  const rowsRead = numNonNegative(usage.rows_read);
   push(
     "rows-read",
     rowsRead,
@@ -504,7 +516,7 @@ export function entryFromTurso(
     rowsRead ?? 0,
     `${rowsRead?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsRead.toLocaleString("en-US")}`,
   );
-  const rowsWritten = num(usage.rows_written);
+  const rowsWritten = numNonNegative(usage.rows_written);
   push(
     "rows-written",
     rowsWritten,
@@ -512,7 +524,7 @@ export function entryFromTurso(
     rowsWritten ?? 0,
     `${rowsWritten?.toLocaleString("en-US")} / ${TURSO_LIMITS.rowsWritten.toLocaleString("en-US")}`,
   );
-  const bytesSynced = num(usage.bytes_synced);
+  const bytesSynced = numNonNegative(usage.bytes_synced);
   push(
     "sync",
     bytesSynced,
@@ -527,4 +539,58 @@ export function entryFromTurso(
   entry.state = "ok";
   entry.usage = usage;
   return entry;
+}
+
+/**
+ * #1268: map over items with at most `limit` invocations in flight,
+ * preserving input order in the results. The gatherer fetches ~30
+ * catalogue providers per tick; an unbounded Promise.all fires all
+ * of them at once. A non-positive or non-finite limit degrades to
+ * sequential (1) rather than to unbounded. Errors propagate like
+ * Promise.all: the first rejection rejects the whole map (callers
+ * that fail soft per item catch inside their worker, as runProvider
+ * does).
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const cap = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(cap, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * #1268: the last-known entries for a provider — the previous tick's
+ * `ok` entries, verbatim. When this tick's run for a provider errors
+ * out (timeout, fetch failure), the gatherer retains these instead
+ * of writing fresh error rows over them: the entries keep their
+ * original measuredAt, so the hub's freshness classification
+ * (quota-current.ts) surfaces them as stale — last-known data with
+ * visible staleness, never fresh-looking zeros and never a vanished
+ * provider. Error/unconfigured previous entries are not data and are
+ * never retained.
+ */
+export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId: string): QuotaCurrentEntry[] {
+  return prev.filter((e) => e.providerId === providerId && e.state === "ok");
+}
+
+/**
+ * #1268: stamp retained entries with the failed tick that kept them.
+ * Copies, never the previous tick's objects; measuredAt is preserved
+ * (it is the honest age of the data) — the stamp is the explicit
+ * signal readers use to classify the entry stale immediately,
+ * instead of it reading as fresh until the freshness bound lapses.
+ */
+export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
+  return entries.map((e) => ({ ...e, retainedFromFailedTick: failedTickIso }));
 }

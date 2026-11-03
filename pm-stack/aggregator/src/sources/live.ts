@@ -23,6 +23,7 @@ import {
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import { isRecord } from "../validate.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import {
@@ -113,13 +114,25 @@ interface KaneoColumn {
   tasks: KaneoTask[];
 }
 
-/** Kaneo project slug -> GitHub repo (pm-stack/kaneo-projects.json, Session H). */
-const KANEO_PROJECT_REPOS: Record<string, string> = {
-  code: "developing-today/code",
-  opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
-  nix: "dezren39/nix",
-};
+/** Kaneo project slug -> GitHub repo, read authoritatively from
+ * pm-stack/kaneo-projects.json (#1201). Unknown slugs stay unmapped
+ * (repo "") — never guessed — so no invented repo-based refs appear.
+ * An unreadable registry degrades to the same empty map. */
+async function kaneoProjectRepos(cfg: Config): Promise<Record<string, string>> {
+  try {
+    const raw = await readFile(cfg.kaneo.projectsFile, "utf8");
+    const doc = JSON.parse(raw) as { projects?: { slug?: unknown; repository?: unknown }[] };
+    const map: Record<string, string> = {};
+    for (const p of doc.projects ?? []) {
+      if (typeof p?.slug === "string" && typeof p?.repository === "string" && p.repository.includes("/")) {
+        map[p.slug] = p.repository;
+      }
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
 
 async function kaneoProjects(
   cfg: Config,
@@ -132,11 +145,14 @@ async function kaneoProjects(
   if (!workspaceId) throw new Error("kaneo workspace empty");
   const proj = await getJson(`${cfg.kaneo.baseUrl}/api/project?workspaceId=${workspaceId}`, { Cookie: cookie });
   if (!proj.ok) throw new Error("kaneo project read failed");
+  // #1201: the registry is the only source of slug -> repo. Unknown
+  // slugs stay unmapped (repo "") instead of guessing a repo name.
+  const repos = await kaneoProjectRepos(cfg);
   return (proj.json as { id: string; slug: string; name: string }[]).map((p) => ({
     id: p.id,
     slug: p.slug,
     name: p.name,
-    repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
+    repo: repos[p.slug] ?? "",
     workspaceId,
   }));
 }
@@ -175,10 +191,13 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
         if (isRetiredDoneTableTitle(t.title)) continue;
         const links: Link[] = (t.externalLinks ?? [])
           .filter((l) => l.resourceType === "issue" || l.resourceType === "pull_request")
-          .map((l) => {
+          .flatMap((l) => {
+            // #1201: only a GitHub URL names a repo. A non-GitHub URL —
+            // or an unmapped project — yields no repo-based ref at all;
+            // refs are never invented from a guessed repo.
             const m = /github\.com\/([\w.-]+\/[\w.-]+)\//.exec(l.url);
-            const repo = m ? m[1] : p.repo;
-            return { ref: `${repo}#${l.externalId}`, relation: "tracks" as const };
+            if (!m) return [];
+            return [{ ref: `${m[1]}#${l.externalId}`, relation: "tracks" as const }];
           });
         out.push({
           // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
@@ -396,6 +415,49 @@ export async function projectorComments(baseUrl: string, refs: RefKey[]): Promis
   return out;
 }
 
+/** The latest non-deleted comment per ref, from a list in any order. */
+export function latestPerRef(comments: Comment[]): Comment[] {
+  const byRef = new Map<RefKey, Comment>();
+  for (const c of comments) {
+    if (c.deleted) continue;
+    const cur = byRef.get(c.ref);
+    if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
+  }
+  return [...byRef.values()];
+}
+
+/**
+ * The latest comment for each ref, one projector read per ref (#1279).
+ * The bulk /comments read applies its row limit across every requested
+ * ref (projector default 500), so in a busy batch an item's latest
+ * comment can be truncated away entirely; a per-ref limit=1 read cannot
+ * be crowded out by other items' comments. Reads run with bounded
+ * concurrency against the local projector; any failed read fails the
+ * whole call (null), matching projectorComments' fail-soft contract.
+ */
+export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
+  if (refs.length === 0) return [];
+  const out: Comment[] = [];
+  const CONCURRENCY = 16;
+  for (let i = 0; i < refs.length; i += CONCURRENCY) {
+    const batch = refs.slice(i, i + CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (ref): Promise<Comment[] | null> => {
+        const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(ref)}&limit=1`);
+        if (!r.ok) return null;
+        return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+          .map(mapProjectorComment)
+          .filter((c) => !c.deleted);
+      }),
+    );
+    for (const rows of results) {
+      if (rows === null) return null;
+      if (rows.length) out.push(latestPerRef(rows)[0]);
+    }
+  }
+  return out;
+}
+
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
 export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
   const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
@@ -457,7 +519,12 @@ export function titleRefs(title: string): RefKey[] {
     if (!out.includes(ref)) out.push(ref);
   };
   for (const ref of refsInText(title)) add(ref);
-  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) add(`${m[1]}#${m[2]}`);
+  const explicitRefSpans: { start: number; end: number }[] = [];
+  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
+    const start = m.index ?? 0;
+    explicitRefSpans.push({ start, end: start + m[0].length });
+    add(`${m[1]}#${m[2]}`);
+  }
   const aliases: { at: number; repo: string }[] = [];
   for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
     aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
@@ -465,6 +532,7 @@ export function titleRefs(title: string): RefKey[] {
   if (aliases.length) {
     for (const m of title.matchAll(/#(\d+)/g)) {
       const at = m.index ?? 0;
+      if (explicitRefSpans.some((span) => span.start <= at && at < span.end)) continue;
       const before = aliases.filter((a) => a.at < at).pop();
       const repo = (before ?? aliases.find((a) => a.at > at))?.repo;
       if (repo) add(`${repo}#${m[1]}`);
@@ -489,11 +557,10 @@ const normTitle = (s: string): string =>
  * The synthetic in-flight entries for one orchestration section,
  * deduped against the board they will be merged into:
  * - a task whose GitHub ref (its own `ref`, or one its title carries)
- *   already appears in a Kaneo card's links is dropped — the Kaneo
- *   card is the record for that work. This is deliberately coarse:
- *   one shared ref drops the whole entry, even when its title names
- *   further refs no Kaneo card carries.
- * - a task whose title matches a Kaneo card's title is dropped.
+ *   already appears in a Kaneo card's links loses only that ref — the
+ *   Kaneo card is the record for that work. Unmatched refs stay linked
+ *   on the in-flight entry.
+ * - a ref-less task whose title matches a Kaneo card's title is dropped.
  * - repeats inside the section itself (the same task lined up under
  *   two goals, or twice under one) emit once, keyed by first ref,
  *   else by normalized title.
@@ -513,17 +580,18 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
       };
       if (task.ref) add(task.ref);
       for (const ref of titleRefs(task.title)) add(ref);
-      if (refs.some((r) => existingRefs.has(r))) continue;
+      const remainingRefs = refs.filter((ref) => !existingRefs.has(ref));
+      if (refs.length > 0 && remainingRefs.length === 0) continue;
       const titleKey = normTitle(task.title);
-      if (existingTitles.has(titleKey)) continue;
-      const key = refs[0] ?? titleKey;
+      if (refs.length === 0 && existingTitles.has(titleKey)) continue;
+      const key = remainingRefs[0] ?? titleKey;
       if (emitted.has(key) || emitted.has(titleKey)) continue;
       emitted.add(key);
       emitted.add(titleKey);
       out.push({
         id: `orch:${slugify(goal.goal)}/${slugify(task.title)}`,
         title: task.title,
-        repo: refs.length ? parseRef(refs[0]).repo : "",
+        repo: remainingRefs.length ? parseRef(remainingRefs[0]).repo : "",
         source: "orchestrator",
         status: "in-flight",
         orchStatus: task.status,
@@ -532,7 +600,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
         // The lane header dates the lane by the section that produced
         // it; every synthetic entry carries that stamp.
         updatedAt: section.generatedAt,
-        links: refs.map((ref) => ({ ref, relation: "tracks" as const })),
+        links: remainingRefs.map((ref) => ({ ref, relation: "tracks" as const })),
       });
     }
   }
@@ -562,6 +630,20 @@ async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasS
     /* no gatherer file (or unreadable): base services stand */
   }
   return services;
+}
+
+/**
+ * One feed attention row safe to key by sessionId (#2427): isFleetFeed
+ * only checks that `attention` is an array, never its entries, so a
+ * null row throws on `.sessionId` here and rows without a string
+ * sessionId all collapse onto the same map key. Malformed rows are
+ * dropped at this consumer, before the dedupe insert — the gate stays
+ * structural (triage task 3640) and the collector's emitted shape is
+ * unchanged. Sibling sections are element-filtered the same way
+ * (registry via isSessionRecord, subscriptions via isSubscriptionRow).
+ */
+export function isFeedAttentionEntry(v: unknown): v is SessionFeedEntry {
+  return isRecord(v) && typeof v.sessionId === "string" && v.sessionId.length > 0;
 }
 
 export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
@@ -754,9 +836,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     },
     async items(refs) {
       // #910 stage 5: the fleet feed's GitHub Project pool is the
-      // resolution source FIRST — the projector is dead by config and
-      // the Projects-scope token cannot read arbitrary issues, only
-      // the Project (whose items carry their linked issue's state).
+      // resolution source FIRST — the projector (deployed; the NixOS
+      // module pins PM_PROJECTOR_URL to it) serves refs outside the
+      // pool below, and the Projects-scope token cannot read arbitrary
+      // issues, only the Project (whose items carry their linked
+      // issue's state).
       const out = new Map<RefKey, GhItem>();
       const feed = await getFeed();
       // #2399: the pool enters through the single feed gate (fail-soft,
@@ -827,6 +911,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       }
       return fix.comments(refs);
     },
+    async latestComments(refs) {
+      if (cfg.projector.baseUrl) {
+        const live = await projectorLatestComments(cfg.projector.baseUrl, refs);
+        if (live) {
+          provenance.comments = "live (projector)";
+          return live;
+        }
+      }
+      return latestPerRef(await fix.comments(refs));
+    },
     async quota() {
       // Slice 1 (#890): quota comes from the fleet feed file produced
       // on the sandbox by scripts/collect-fleet-feed.ts. A stale feed
@@ -843,8 +937,22 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         view = feed.quota;
         const dropped = feed.quotaDropped;
-        if (dropped && dropped.pools + dropped.windows + dropped.burn > 0) {
-          provenance.quota += ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.windows} window(s), ${dropped.burn} burn segment(s) (#2429)`;
+        if (
+          dropped &&
+          dropped.pools +
+            dropped.credentials +
+            dropped.windows +
+            dropped.activeSessions +
+            dropped.burn +
+            dropped.poolFreshness +
+            dropped.burnTokensPerMin >
+            0
+        ) {
+          provenance.quota +=
+            ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.credentials} credential row(s), ` +
+            `${dropped.windows} window(s), ${dropped.activeSessions} active session(s), ` +
+            `${dropped.burn} burn segment(s), ${dropped.poolFreshness} pool freshness value(s), ` +
+            `${dropped.burnTokensPerMin} burn rate(s) (#2429/#3921/#4546)`;
         }
       } else {
         provenance.quota = "fixtures (no fleet feed file yet)";
@@ -855,12 +963,24 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const file = parseQuotaCurrent(JSON.parse(raw));
         if (file) {
           provenance.quota += ` · gatherer ${file.generatedAt}`;
+          const sanitized = file.sanitized;
+          if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
+            provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
+          }
           return overlayQuotaCurrent(view, file);
         }
       } catch {
         /* no gatherer file (or unreadable): base view stands */
       }
       return view;
+    },
+    async ingestSnapshots(): Promise<number> {
+      // The server's background writer tick is the landing step for
+      // collector-derived records carried by the feed. Keep this out of
+      // usage(): GETs must remain safe with a read-only snapshot store.
+      const feed = await getFeed();
+      if (!feed?.snapshots?.length) return 0;
+      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
@@ -869,13 +989,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // from the quota view + registry files; fixtures only when
       // neither exists. Snapshot history comes from the local store
       // (§4): the feed carries the writers' records (collector-derived
-      // plus the stewardship / check-usage outbox), and ingesting them
-      // here — append with dedupe — is the one write this reader makes.
+      // plus the stewardship / check-usage outbox); a background writer
+      // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
       const store = new SnapshotStore(cfg.snapshotsDir);
-      if (feed?.snapshots?.length) {
-        await store.append(feed.snapshots).catch(() => 0);
-      }
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)
@@ -1000,7 +1117,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
 
       const feed = await getFeed();
       if (feed) {
-        for (const e of feed.attention) byId.set(e.sessionId, e);
+        for (const e of feed.attention) if (isFeedAttentionEntry(e)) byId.set(e.sessionId, e);
         parts.push(`sandbox via fleet feed (${feedAgeText(feed.generatedAt)})`);
       }
 

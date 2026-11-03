@@ -124,6 +124,78 @@ describe("orchestration section validation", () => {
     expect(() => todayFromSection(minimal)).not.toThrow();
   });
 
+  // #2417: the gate checked array presence only, so poisoned elements
+  // (null / primitives / shapeless objects) passed into consumers and
+  // threw TypeErrors. Every array's elements are now validated at this
+  // boundary; a poisoned section must reject, normalize to null, and
+  // diagnose as invalid with a stable failed-check name.
+  test("rejects poisoned tier elements in both tier arrays", () => {
+    for (const bad of [null, 42, {}]) {
+      const drew = { ...SECTION, tiers: { ...SECTION.tiers, needsDrew: [bad] } };
+      expect(isOrchestrationSection(drew)).toBe(false);
+      expect(orchestrationSectionProblem(drew)).toBe("tiers.needsDrew (per-item shape)");
+      expect(normalizeOrchestrationSection(drew)).toBeNull();
+      const orch = { ...SECTION, tiers: { ...SECTION.tiers, needsOrchestrator: [bad] } };
+      expect(isOrchestrationSection(orch)).toBe(false);
+      expect(orchestrationSectionProblem(orch)).toBe("tiers.needsOrchestrator (per-item shape)");
+    }
+  });
+
+  test("rejects non-record elements in goal linedUp and stalled arrays", () => {
+    const goal = SECTION.goals[0]!;
+    for (const field of ["linedUp", "stalled"] as const) {
+      const malformed = { ...SECTION, goals: [{ ...goal, [field]: [null] }] };
+      expect(isOrchestrationSection(malformed)).toBe(false);
+      expect(orchestrationSectionProblem(malformed)).toBe("goals (per-goal shape)");
+      expect(normalizeOrchestrationSection(malformed)).toBeNull();
+    }
+    const nullGoal = { ...SECTION, goals: [null] };
+    expect(isOrchestrationSection(nullGoal)).toBe(false);
+  });
+
+  test("rejects poisoned dependency elements and bad dependency shapes", () => {
+    const nullDep = { ...SECTION, dependencies: [null] };
+    expect(isOrchestrationSection(nullDep)).toBe(false);
+    expect(orchestrationSectionProblem(nullDep)).toBe("dependencies (per-dependency shape)");
+    const noStatus = { ...SECTION, dependencies: [{ task: "Write the thing" }] };
+    expect(isOrchestrationSection(noStatus)).toBe(false);
+    const badStatus = { ...SECTION, dependencies: [{ task: "Write the thing", status: "bogus" }] };
+    expect(isOrchestrationSection(badStatus)).toBe(false);
+    const badRef = {
+      ...SECTION,
+      dependencies: [{ task: "Write the thing", status: "queued", ref: 42 }],
+    };
+    expect(isOrchestrationSection(badRef)).toBe(false);
+    const good = {
+      ...SECTION,
+      dependencies: [{ task: "Write the thing", status: "queued", ref: "developing-today/code#1" }],
+    };
+    expect(isOrchestrationSection(good)).toBe(true);
+  });
+
+  test("rejects poisoned action elements and actions missing rendered fields", () => {
+    const nullAction = { ...SECTION, actions: [null] };
+    expect(isOrchestrationSection(nullAction)).toBe(false);
+    expect(orchestrationSectionProblem(nullAction)).toBe("actions (per-action shape)");
+    const noSummary = {
+      ...SECTION,
+      actions: [{ at: "2026-10-25T17:20:00.000Z", kind: "nudge", target: "task 1" }],
+    };
+    expect(isOrchestrationSection(noSummary)).toBe(false);
+    const good = {
+      ...SECTION,
+      actions: [{ at: "2026-10-25T17:20:00.000Z", kind: "nudge", target: "task 1", summary: "Nudged it." }],
+    };
+    expect(isOrchestrationSection(good)).toBe(true);
+  });
+
+  test("a poisoned section diagnoses as invalid, never absent or live", () => {
+    const poisoned = { ...SECTION, tiers: { ...SECTION.tiers, needsDrew: [null] } };
+    const diagnosis = diagnoseOrchestrationSection(poisoned);
+    expect(diagnosis.state).toBe("invalid");
+    expect(diagnosis.failedChecks).toEqual(["tiers.needsDrew (per-item shape)"]);
+  });
+
   test("a fleet feed carrying the section still validates as a feed", () => {
     const feed = {
       version: 1,
@@ -423,7 +495,7 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
   test("registry facet counts the MERGED total, with its noun (#1138)", async () => {
     const src = await sourceWithFeed({
       orchestration: liveSection(),
-      registry: [{ id: "ses-diag-1", source: "opencode-sandbox", label: "Diag session" }],
+      registry: [{ id: "ses-diag-1", source: "opencode-sandbox", label: "Diag session", taskRefs: [] }],
     });
     const records = await src.registry();
     expect(records.length).toBe(1);
@@ -433,5 +505,29 @@ describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
     expect(facet?.count).toBe(1);
     expect(facet?.countLabel).toBe("session records");
     expect(facet?.state).toBe("live");
+  });
+
+  test("registry and coverage share sanitized optional feed rows (#2539)", async () => {
+    for (const registry of ["bad", { registry: "bad" }, 42, [null]]) {
+      const src = await sourceWithFeed({ registry });
+      const records = await src.registry();
+      expect(Array.isArray(records)).toBe(true);
+
+      const coverage = await src.coverage();
+      const muse = coverage.find((row) => row.source === "claude-code");
+      expect(muse?.wired).toBe(false);
+      expect(muse?.detail).toContain("no launch records");
+    }
+
+    const clean = await sourceWithFeed({
+      registry: [
+        { id: "ses-muse-1", source: "claude-code", label: "Muse launch", taskRefs: [] },
+        { id: "ses-opencode-1", source: "opencode-sandbox", label: "OpenCode session", taskRefs: [] },
+      ],
+    });
+    expect(await clean.registry()).toHaveLength(2);
+    const muse = (await clean.coverage()).find((row) => row.source === "claude-code");
+    expect(muse?.wired).toBe(true);
+    expect(muse?.detail).toContain("1 recorded");
   });
 });

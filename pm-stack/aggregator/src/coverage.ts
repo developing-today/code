@@ -74,16 +74,36 @@ export interface CoverageSnapshotFile {
 
 export const COVERAGE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+function isRepositoryRef(value: string): boolean {
+  const parts = value.split("/");
+  if (parts.length !== 2) return false;
+  const [owner, name] = parts;
+  // GitHub owners are alphanumeric segments separated by single hyphens;
+  // repository names additionally allow dots and underscores.
+  return (
+    /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(owner!) &&
+    owner!.length <= 39 &&
+    /^[A-Za-z0-9._-]{1,100}$/.test(name!) &&
+    name !== "." &&
+    name !== ".."
+  );
+}
+
 /** Structural gate for one census row, shared by the feed reader. */
 export function isRepoCensus(v: unknown): v is RepoCensus {
   if (!v || typeof v !== "object") return false;
   const r = v as Record<string, unknown>;
   return (
     typeof r.repo === "string" &&
-    r.repo.includes("/") &&
+    isRepositoryRef(r.repo) &&
     Number.isInteger(r.openIssues) &&
+    (r.openIssues as number) >= 0 &&
     Number.isInteger(r.gateNow) &&
-    Number.isInteger(r.gateNext)
+    (r.gateNow as number) >= 0 &&
+    Number.isInteger(r.gateNext) &&
+    (r.gateNext as number) >= 0 &&
+    (r.gateNow as number) <= (r.openIssues as number) &&
+    (r.gateNext as number) <= (r.openIssues as number)
   );
 }
 

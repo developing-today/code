@@ -5,6 +5,26 @@ import { join } from "node:path";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
+function parseAggregatorPort(value: string | undefined): number {
+  const normalized = s(value, "4870");
+  const port = Number(normalized);
+  if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
+  }
+  return port;
+}
+
+function parseAggregatorHosts(value: string | undefined): string[] {
+  const hosts = s(value, "127.0.0.1")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+  if (hosts.length === 0) {
+    throw new Error(`Invalid PM_AGG_HOSTS=${JSON.stringify(value)}; expected at least one non-empty host`);
+  }
+  return hosts;
+}
+
 export interface Config {
   /** "fixtures" | "live" — the default Source. */
   source: "fixtures" | "live";
@@ -15,8 +35,12 @@ export interface Config {
   feedFile: string;
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
+  /** Append-only roadmap annotation store (#1284), separate from comments. */
+  roadmapAnnotationsFile: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
+  /** Saved-views store (#1276) — named per-person filter sets. */
+  viewsFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
@@ -43,6 +67,9 @@ export interface Config {
     origin: string;
     email: string | null;
     password: string | null;
+    /** Authoritative project slug -> repo registry (#1201):
+     * pm-stack/kaneo-projects.json. Unknown slugs stay unmapped. */
+    projectsFile: string;
   };
   grist: {
     baseUrl: string;
@@ -76,14 +103,13 @@ export interface Config {
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
     source: env.PM_AGG_SOURCE === "live" ? "live" : "fixtures",
-    port: Number(s(env.PM_AGG_PORT, "4870")),
-    hosts: s(env.PM_AGG_HOSTS, "127.0.0.1")
-      .split(",")
-      .map((h) => h.trim())
-      .filter(Boolean),
+    port: parseAggregatorPort(env.PM_AGG_PORT),
+    hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
+    roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
+    viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     quotaViewFile: s(
@@ -111,6 +137,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       origin: s(env.KANEO_ORIGIN, s(env.KANEO_CLIENT_URL, "https://kaneo.security.cab")),
       email: env.KANEO_ADMIN_EMAIL ?? null,
       password: env.KANEO_ADMIN_PASSWORD ?? null,
+      // The registry is authoritative for slug -> repo (#1201); the reader
+      // runs with cwd=pm-stack/aggregator, hence the sibling path.
+      projectsFile: s(env.PM_KANEO_PROJECTS_FILE, join(process.cwd(), "..", "kaneo-projects.json")),
     },
     grist: {
       baseUrl: s(env.GRIST_URL, "http://127.0.0.1:8484"),
