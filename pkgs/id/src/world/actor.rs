@@ -421,6 +421,9 @@ impl WorldActor {
             if let Err(error) = journal.append(&entry) {
                 self.storage_failed = true;
                 tracing::error!("world journal append failed: {error:#}");
+                if version_before != journal.replication_header_version() {
+                    let _ = replication_sender.send(ReplicationUpdate::ResetFailed);
+                }
                 return Err(error.context("world storage failed; the world is read-only"));
             }
             self.metrics.record_journal_append(started.elapsed());
@@ -1575,17 +1578,22 @@ impl WorldActor {
                 let _ = reply.send(self.metrics.snapshot(sessions));
             }
             WorldCommand::ReplicationFeed { reply } => {
-                // Subscribe before capturing the image. The actor is the only
-                // journal owner and processes commands serially, so no durable
-                // append can fall between these two operations.
-                let updates = self.replication_sender.subscribe();
-                let world_id = self.core.world_id().to_owned();
-                let result = self
-                    .journal
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
-                    .and_then(|journal| journal.replication_snapshot())
-                    .map(|snapshot| (world_id, snapshot, updates));
+                let result = if self.storage_failed {
+                    Err(anyhow::anyhow!(
+                        "world storage failed; replication feed is unavailable"
+                    ))
+                } else {
+                    // Subscribe before capturing the image. The actor is the
+                    // only journal owner and processes commands serially, so
+                    // no durable append can fall between these two operations.
+                    let updates = self.replication_sender.subscribe();
+                    let world_id = self.core.world_id().to_owned();
+                    self.journal
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("world has no durable journal"))
+                        .and_then(|journal| journal.replication_snapshot())
+                        .map(|snapshot| (world_id, snapshot, updates))
+                };
                 let _ = reply.send(result);
             }
             WorldCommand::CapsInfo { reply } => {
@@ -1686,6 +1694,75 @@ mod replication_feed_tests {
         }
     }
 
+    /// Write a complete journal entry, then fail as though `sync_data`
+    /// returned an error. The bytes remain visible to readers but are not
+    /// confirmed durable, matching the failure window in `FileJournal`.
+    struct SyncDataFailingJournal {
+        path: std::path::PathBuf,
+        version: u32,
+        entries: Vec<JournalEntry>,
+    }
+
+    impl SyncDataFailingJournal {
+        fn new(path: &std::path::Path) -> Self {
+            let entries = vec![JournalEntry::Created {
+                world_id: "lobby".to_owned(),
+                version: 1,
+            }];
+            std::fs::write(
+                path,
+                entries
+                    .iter()
+                    .flat_map(journal_entry_line)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+            Self {
+                path: path.to_owned(),
+                version: 1,
+                entries,
+            }
+        }
+    }
+
+    impl WorldJournal for SyncDataFailingJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            let required_version = journal_version_required_by(entry);
+            if required_version > self.version {
+                self.version = required_version;
+                if let Some(JournalEntry::Created { version, .. }) = self.entries.first_mut() {
+                    *version = required_version;
+                }
+            }
+            self.entries.push(entry.clone());
+
+            // This succeeds like `write_all`, leaving a complete newline-
+            // terminated entry; the error models `sync_data` failing after
+            // that write.
+            std::fs::write(
+                &self.path,
+                self.entries
+                    .iter()
+                    .flat_map(journal_entry_line)
+                    .collect::<Vec<_>>(),
+            )?;
+            Err(anyhow::anyhow!(
+                "simulated sync_data failure after complete write"
+            ))
+        }
+
+        fn replication_snapshot(&mut self) -> Result<JournalSnapshot> {
+            Ok(JournalSnapshot {
+                header_version: self.version,
+                bytes: std::fs::read(&self.path)?,
+            })
+        }
+
+        fn replication_header_version(&self) -> Option<u32> {
+            Some(self.version)
+        }
+    }
+
     #[test]
     fn header_bump_publishes_a_reset_instead_of_a_tail() {
         let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
@@ -1722,6 +1799,66 @@ mod replication_feed_tests {
                 version: 2,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn new_replication_feed_refuses_complete_unconfirmed_entry_after_sync_failure() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let journal = SyncDataFailingJournal::new(&path);
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let mut actor =
+            WorldActor::for_test(core, Box::new(SnapshotProgram), Some(Box::new(journal)));
+
+        let unconfirmed = JournalEntry::Isolation {
+            isolation: Isolation::Unisolated,
+        };
+        assert!(actor.persist(unconfirmed.clone()).is_err());
+        assert!(actor.storage_failed);
+
+        let bytes = std::fs::read(path).unwrap();
+        assert!(
+            bytes.ends_with(b"\n"),
+            "the failed append wrote a complete line"
+        );
+        let written: Vec<JournalEntry> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(written.last(), Some(&unconfirmed));
+
+        let (reply, response) = oneshot::channel();
+        actor.handle(WorldCommand::ReplicationFeed { reply }).await;
+        let feed = response.await.unwrap();
+        assert!(
+            feed.is_err(),
+            "a new feed must not receive a snapshot containing the failed append"
+        );
+    }
+
+    #[test]
+    fn sync_failure_after_header_bump_publishes_reset_failed() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let journal = SyncDataFailingJournal::new(&path);
+        let core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let mut actor =
+            WorldActor::for_test(core, Box::new(SnapshotProgram), Some(Box::new(journal)));
+        let mut updates = actor.replication_sender.subscribe();
+        let profile = actor.core.execution_profile();
+
+        let result = actor.persist(JournalEntry::ExecutionProfile { profile });
+
+        assert!(result.is_err());
+        assert_eq!(
+            actor.journal.as_ref().unwrap().replication_header_version(),
+            Some(2)
+        );
+        assert!(matches!(
+            updates.try_recv().unwrap(),
+            ReplicationUpdate::ResetFailed
+        ));
     }
 
     #[tokio::test]
