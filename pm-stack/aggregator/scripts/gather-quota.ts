@@ -375,7 +375,8 @@ async function runClinePass(tickIso: string): Promise<ProviderRun | null> {
     credentialRef: ref,
     resolveCredentialValue: resolveClinePassCredentialValue,
   });
-  const entry = outcome.value ?? clinePassErrorEntry(outcome.detail ?? `cline-pass adapter: ${outcome.status}`, tickIso);
+  const entry =
+    outcome.value ?? clinePassErrorEntry(outcome.detail ?? `cline-pass adapter: ${outcome.status}`, tickIso);
   return {
     id: CLINEPASS_PROVIDER_ID,
     state: outcome.status === "ok" ? "ok" : "error",
