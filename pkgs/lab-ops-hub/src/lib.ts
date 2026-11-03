@@ -1,3 +1,5 @@
+import { HTML5_ENTITIES, MAX_HTML5_ENTITY_KEY_LENGTH } from "./html5-entities.ts";
+
 // Pure helpers for Lab Ops Hub: crawl-target validation (#441), the
 // /api/budget computation (#442), and upload R2 key derivation (#2478).
 // Kept free of Worker bindings so they can be unit-tested with plain
@@ -515,93 +517,6 @@ export async function fileResponseForKey(
 //   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
 //   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
 //   both test/extractor.test.ts and test/test_extractor_parity.py.
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-  copy: "©",
-  reg: "®",
-  trade: "™",
-  hellip: "…",
-  mdash: "—",
-  ndash: "–",
-  lsquo: "‘",
-  rsquo: "’",
-  ldquo: "“",
-  rdquo: "”",
-  laquo: "«",
-  raquo: "»",
-  times: "×",
-  divide: "÷",
-  plusmn: "±",
-  deg: "°",
-  middot: "·",
-  bull: "•",
-  dagger: "†",
-  permil: "‰",
-  euro: "€",
-  pound: "£",
-  yen: "¥",
-  cent: "¢",
-  curren: "¤",
-  sect: "§",
-  para: "¶",
-  micro: "µ",
-  sup1: "¹",
-  sup2: "²",
-  sup3: "³",
-  frac12: "½",
-  frac14: "¼",
-  frac34: "¾",
-  iexcl: "¡",
-  iquest: "¿",
-  szlig: "ß",
-  agrave: "à",
-  aacute: "á",
-  acirc: "â",
-  atilde: "ã",
-  auml: "ä",
-  aring: "å",
-  aelig: "æ",
-  ccedil: "ç",
-  egrave: "è",
-  eacute: "é",
-  ecirc: "ê",
-  euml: "ë",
-  igrave: "ì",
-  iacute: "í",
-  icirc: "î",
-  iuml: "ï",
-  ntilde: "ñ",
-  ograve: "ò",
-  oacute: "ó",
-  ocirc: "ô",
-  otilde: "õ",
-  ouml: "ö",
-  ugrave: "ù",
-  uacute: "ú",
-  ucirc: "û",
-  uuml: "ü",
-  yacute: "ý",
-  yuml: "ÿ",
-  Agrave: "À",
-  Aacute: "Á",
-  Auml: "Ä",
-  Ccedil: "Ç",
-  Egrave: "È",
-  Eacute: "É",
-  Euml: "Ë",
-  Ntilde: "Ñ",
-  Ograve: "Ò",
-  Oacute: "Ó",
-  Ouml: "Ö",
-  Ugrave: "Ù",
-  Uacute: "Ú",
-  Uuml: "Ü",
-};
 
 // HTML numeric character-reference normalization: the same remapping
 // html.unescape applies for the container's HTMLParser. C1 controls
@@ -648,17 +563,54 @@ function normalizeNumericRef(code: number): number {
 }
 
 export function decodeHtmlEntities(data: string): string {
-  return data.replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, body: string) => {
-    if (body.startsWith("#")) {
-      const hex = body[1] === "x" || body[1] === "X";
-      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
-      return String.fromCodePoint(normalizeNumericRef(code));
+  const decoded: string[] = [];
+  let copyFrom = 0;
+  let i = 0;
+  const numericReference = /&#([xX][0-9a-fA-F]+|\d+);?/y;
+  while (i < data.length) {
+    if (data[i] !== "&") {
+      i += 1;
+      continue;
     }
-    // Own-property lookup only: a plain index would resolve inherited
-    // Object properties (&constructor;, &toString;) to JavaScript
-    // functions, where HTMLParser leaves unknown names literal.
-    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body) ? NAMED_ENTITIES[body] : whole;
-  });
+
+    if (data[i + 1] === "#") {
+      numericReference.lastIndex = i;
+      const numeric = numericReference.exec(data);
+      if (numeric) {
+        const body = numeric[1];
+        const hex = body[0] === "x" || body[0] === "X";
+        const code = Number.parseInt(body.slice(hex ? 1 : 0), hex ? 16 : 10);
+        decoded.push(data.slice(copyFrom, i), String.fromCodePoint(normalizeNumericRef(code)));
+        i += numeric[0].length;
+        copyFrom = i;
+        continue;
+      }
+    } else {
+      let end = i + 1;
+      while (
+        end < data.length &&
+        end - (i + 1) < MAX_HTML5_ENTITY_KEY_LENGTH &&
+        /[A-Za-z0-9;]/.test(data[end])
+      ) {
+        end += 1;
+      }
+      let matched = false;
+      for (let matchEnd = end; matchEnd > i + 1; matchEnd -= 1) {
+        const entity = HTML5_ENTITIES.get(data.slice(i + 1, matchEnd));
+        if (entity !== undefined) {
+          decoded.push(data.slice(copyFrom, i), entity);
+          i = matchEnd;
+          copyFrom = i;
+          matched = true;
+          break;
+        }
+      }
+      if (matched) continue;
+    }
+    i += 1;
+  }
+  decoded.push(data.slice(copyFrom));
+  return decoded.join("");
 }
 
 // A '/' marks a start tag self-closing only where a new attribute could
