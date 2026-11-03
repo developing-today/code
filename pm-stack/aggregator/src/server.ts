@@ -197,7 +197,10 @@ async function recordSourceGap(source: string, from: string, to: string | null):
     }
     for (const gap of await activityStore.gaps()) {
       if (gap.source === source && gap.status === "open") {
-        await activityStore.resolveGap(gap.id, "backfilled");
+        // Recovery happened now, not at the last failed poll: extend
+        // the gap window to the recovery moment as it resolves
+        // (Codex P2, PR #5141).
+        await activityStore.resolveGap(gap.id, "backfilled", new Date().toISOString());
       }
     }
   } catch (err) {

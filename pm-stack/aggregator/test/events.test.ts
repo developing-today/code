@@ -5,7 +5,7 @@
 // first), and the fire-and-forget contract: a failing event write
 // never blocks or fails the underlying action.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -41,6 +41,22 @@ describe("events store (#1739)", () => {
     const list = await reloaded.list();
     expect(list.map((e) => e.summary)).toEqual(["later thing", "did a thing"]);
     expect(list[0]?.at).toBe(secondAt);
+  });
+
+  test("a failed append rolls back in memory, so a retry cannot duplicate it (PR #5141 codex)", async () => {
+    // Point the store at a path whose parent is a regular file: every
+    // persist fails (mkdir/write under a file), deterministically.
+    const dir = mkdtempSync(join(tmpdir(), "agg-events-blocked-"));
+    const blocker = join(dir, "blocker");
+    writeFileSync(blocker, "not a directory");
+    const store = new EventsStore(join(blocker, "events.json"));
+    await expect(store.record({ ...base })).rejects.toThrow();
+    expect(await store.list()).toHaveLength(0);
+    // The retry the #3321 ingestion path makes after a failed append:
+    // it must fail the same way, not accumulate a second in-memory copy.
+    await expect(store.record({ ...base })).rejects.toThrow();
+    expect(await store.list()).toHaveLength(0);
+    expect(await store.has(base.kind, base.ref)).toBe(false);
   });
 
   test("record stamps `at` when the writer omits it", async () => {

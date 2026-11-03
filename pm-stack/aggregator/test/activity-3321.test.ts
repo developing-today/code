@@ -269,6 +269,22 @@ describe("ingestion store (#3321)", () => {
     expect(html).toContain("backfilled");
   });
 
+  test("resolveGap extends the gap window to the recovery time (PR #5141 codex)", async () => {
+    const { store } = tmpStores();
+    const gap = await store.recordGap("kaneo", iso(3_600_000), iso(1_800_000));
+    const recoveredAt = iso(60_000);
+    const resolved = await store.resolveGap(gap.id, "backfilled", recoveredAt);
+    expect(resolved?.status).toBe("backfilled");
+    // The outage ran until recovery, not until the last failed poll:
+    // the resolved window ends at the recovery moment.
+    expect(resolved?.to).toBe(recoveredAt);
+    // An earlier `to` never shrinks the window.
+    const gap2End = iso(900_000);
+    const gap2 = await store.recordGap("watchdog:x", iso(3_600_000), gap2End);
+    const resolved2 = await store.resolveGap(gap2.id, "backfilled", iso(1_800_000));
+    expect(resolved2?.to).toBe(gap2End);
+  });
+
   test("watchdog gap sync: breach opens a gap, recovery resolves it as backfilled", async () => {
     const { store } = tmpStores();
     const item = watchdogItem("watchdog:fleet-feed", 600_000);

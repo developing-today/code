@@ -524,11 +524,22 @@ export class IngestionStore {
   }
 
   /** Flip a gap's status (backfill landed, or the window aged past
-   *  any possible recovery). Unknown / already-resolved ids no-op. */
-  async resolveGap(id: string, status: Exclude<GapStatus, "open">): Promise<GapRecord | null> {
+   *  any possible recovery). Unknown / already-resolved ids no-op.
+   *  When the caller knows when the outage actually ended (`to`,
+   *  Codex P2 on PR #5141), the gap's window extends to that moment
+   *  before resolving: a gap recorded from failure timestamps alone
+   *  otherwise reports a zero/short duration that understates the
+   *  interruption, which ran until recovery, not until the last
+   *  failed poll. */
+  async resolveGap(
+    id: string,
+    status: Exclude<GapStatus, "open">,
+    to?: string,
+  ): Promise<GapRecord | null> {
     await this.load();
     const gap = this.data.gaps.find((g) => g.id === id);
     if (!gap || gap.status !== "open") return gap ?? null;
+    if (to && Date.parse(to) > Date.parse(gap.to)) gap.to = to;
     gap.status = status;
     gap.resolvedAt = new Date().toISOString();
     await this.persist();
@@ -575,7 +586,7 @@ export async function syncWatchdogGaps(
   }
   for (const gap of await store.gaps()) {
     if (gap.status === "open" && gap.source.startsWith("watchdog:") && !breached.has(gap.source)) {
-      await store.resolveGap(gap.id, "backfilled");
+      await store.resolveGap(gap.id, "backfilled", now.toISOString());
     }
   }
 }

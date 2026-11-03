@@ -191,6 +191,47 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
     }
   });
 
+  test("overlapping board polls serialize diffing: no A->C phantom transition (PR #5141 codex)", async () => {
+    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const restore = installFetch(state);
+    const deliveries: ActivityDelivery[] = [];
+    let releaseFirst: (() => void) | null = null;
+    let firstCallSeen: (() => void) | null = null;
+    const firstCall = new Promise<void>((r) => { firstCallSeen = r; });
+    let calls = 0;
+    try {
+      const src = await makeSource(state, {
+        onActivity: async (d) => {
+          deliveries.push(...d);
+          calls++;
+          if (calls === 1) {
+            firstCallSeen!();
+            await new Promise<void>((r) => { releaseFirst = r; });
+          }
+          return true;
+        },
+      });
+      await src.board(); // baseline: both cards in-progress
+      state.cardStatus.p1 = "in-review";
+      const b1 = src.board(); // diffs in-progress -> in-review, then blocks in onActivity
+      await firstCall;
+      state.cardStatus.p1 = "in-progress";
+      const b2 = src.board(); // fetches the return to in-progress while the first poll is still ingesting
+      releaseFirst!();
+      await Promise.all([b1, b2]);
+      const p1Moves = deliveries.filter((d) => d.ref.includes("t-p1")).map((d) => d.summary);
+      // Serialized: the second poll diffed against the ADVANCED
+      // baseline, so history is in-progress -> in-review -> in-progress.
+      // Unserialized it would diff in-progress -> in-progress and
+      // derive no delivery at all for the second move.
+      expect(p1Moves.some((s) => s.includes("in-progress -> in-review"))).toBe(true);
+      expect(p1Moves.some((s) => s.includes("in-review -> in-progress"))).toBe(true);
+      expect(p1Moves).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
   test("polling failure opens a gap; the next complete poll reports recovery", async () => {
     const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
     const restore = installFetch(state);

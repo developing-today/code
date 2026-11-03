@@ -237,13 +237,24 @@ export class EventsStore {
     return this.events.some((event) => event.kind === kind && event.ref === ref);
   }
 
-  /** Append one event (retention enforced on append). */
+  /** Append one event (retention enforced on append). A persist
+   *  failure rolls the in-memory append back (Codex P2, PR #5141):
+   *  callers that retry a failed append (the #3321 ingestion retry
+   *  path) must not find the first attempt still sitting in memory,
+   *  or the retry persists a duplicate copy of the same event. Only
+   *  the appended object is removed, so a concurrent successful
+   *  append is never clobbered by another call's rollback. */
   async record(input: NewStreamEvent): Promise<StreamEvent> {
     await this.load();
     const parsed = validateStreamEvent({ ...input, at: input.at ?? new Date().toISOString() });
     if (!parsed.ok) throw new Error(parsed.error);
     this.events = pruneEvents([...this.events, parsed.value]);
-    await this.persist();
+    try {
+      await this.persist();
+    } catch (err) {
+      this.events = this.events.filter((e) => e !== parsed.value);
+      throw err;
+    }
     return parsed.value;
   }
 }

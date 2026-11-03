@@ -816,6 +816,23 @@ export function liveSource(
     }
     prevKaneoCards = next;
   }
+  // #3321: serialize the whole diff -> ingest -> baseline-advance
+  // sequence across board() calls (Codex P2, PR #5141). board()
+  // callers (boardContext, searchContext, page renders) run
+  // concurrently; while one poll awaits its ingestion acknowledgment
+  // the shared baseline must not be read by a second poll, or that
+  // poll diffs against the pre-change baseline and derives
+  // deliveries for a transition that never happened (A->C instead
+  // of B->C). A failed step does not wedge the chain.
+  let kaneoIngestionChain: Promise<void> = Promise.resolve();
+  function enqueueKaneoIngestion(fn: () => Promise<void>): Promise<void> {
+    const run = kaneoIngestionChain.then(fn, fn);
+    kaneoIngestionChain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
   // #1739: the last orchestration run whose publish was recorded in
   // the event log, plus its tier membership — a new runId is a publish
   // step, and the tier diff between successive publishes is the
@@ -1003,6 +1020,7 @@ export function liveSource(
           );
           await noteKaneoGap(new Date());
         } else {
+          await enqueueKaneoIngestion(async () => {
           await seedKaneoSeqFromPersisted();
           await noteKaneoRecovered();
           try {
@@ -1056,6 +1074,7 @@ export function liveSource(
               `[activity] WARNING: kaneo change diff failed: ${err instanceof Error ? err.message : String(err)}`,
             );
           }
+          });
         }
         // A successfully fetched board is live data even when the
         // done policy (#1146) filters it to empty: falling through to

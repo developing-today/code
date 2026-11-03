@@ -153,6 +153,12 @@ in
               # (pre-switch) unit resolves them identically.
               "PM_AGG_EVENTS_FILE=${aggState}/events.json"
               "PM_AGG_VIEWS_FILE=${aggState}/views.json"
+              # The activity-ingestion store (#3321) is runtime state
+              # too: left at its cwd default its first persisted
+              # delivery created activity-ingestion.json inside this
+              # checkout (Codex P1 on PR #5141, same failure class as
+              # code#4906 above).
+              "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json"
             ];
             Restart = "on-failure";
             RestartSec = 5;
