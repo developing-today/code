@@ -1810,10 +1810,9 @@ where
         anyhow::Ok(())
     });
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut stdin_open = true;
     let result = loop {
         tokio::select! {
-            line = lines.next_line(), if stdin_open => match line? {
+            line = lines.next_line() => match line? {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
@@ -1840,7 +1839,11 @@ where
                         break Err(e);
                     }
                 }
-                None => stdin_open = false,
+                // Stdin EOF ends the session: a scripted client leaves by
+                // closing stdin (interactive users have Ctrl-C). Keeping
+                // the pump alive past EOF hung every scripted join until
+                // the server happened to close the connection first.
+                None => break Ok(()),
             },
             ended = &mut reader => {
                 break ended.context("reader task")?;
