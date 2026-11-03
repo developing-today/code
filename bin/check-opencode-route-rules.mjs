@@ -26,6 +26,14 @@ function activeMap(config, key) {
   return config[key];
 }
 
+function normalizeWindowGate(window) {
+  if (typeof window === 'string' && window) return { name: window, invert: false };
+  if (isObject(window) && typeof window.name === 'string' && window.name) {
+    return { name: window.name, invert: window.invert === true };
+  }
+  return null;
+}
+
 function splitModelReference(reference) {
   if (typeof reference !== 'string') return null;
   const slash = reference.indexOf('/');
@@ -40,14 +48,23 @@ function splitModelReference(reference) {
 }
 
 function catalogInfo(config, provider, model) {
-  const block = config.provider?.[provider];
-  if (!isObject(block) || !Object.hasOwn(block, 'models') || !isObject(block.models)) {
-    return { catalog: 'unknown', exists: null, model: null };
+  const seen = new Set();
+  let id = provider;
+  while (typeof id === 'string' && id && !seen.has(id)) {
+    seen.add(id);
+    const block = config.provider?.[id];
+    if (!isObject(block)) return { catalog: 'unknown', exists: null, model: null };
+    // Match the route proxy's providerDef: an explicit model map wins; when
+    // absent, follow instanceOf to the tracked base provider.
+    if (isObject(block.models)) {
+      if (!Object.hasOwn(block.models, model)) {
+        return { catalog: 'tracked', exists: false, model: null };
+      }
+      return { catalog: 'tracked', exists: true, model: block.models[model] };
+    }
+    id = block.instanceOf;
   }
-  if (!Object.hasOwn(block.models, model)) {
-    return { catalog: 'tracked', exists: false, model: null };
-  }
-  return { catalog: 'tracked', exists: true, model: block.models[model] };
+  return { catalog: 'unknown', exists: null, model: null };
 }
 
 function formatCandidate(candidate) {
@@ -66,6 +83,7 @@ export function inspectRouteRules(config) {
   const disabled = new Set(Array.isArray(config.disabled_providers) ? config.disabled_providers : []);
   const modelRoutes = activeMap(config, 'model_routes');
   const providerRoutes = activeMap(config, 'provider_routes');
+  const modelRouteWindows = activeMap(config, 'model_route_windows');
   const tiers = {};
 
   const resolve = (reference, effort, tier, trace, stack) => {
@@ -89,8 +107,26 @@ export function inspectRouteRules(config) {
       return resolveTargets(route, selectedEffort, tier, `${trace} -> ${parsed.model}`, [...stack, parsed.model]);
     }
 
-    const providerRoute = providerRoutes?.[parsed.provider];
+    // Configured concrete providers take precedence over a same-named group,
+    // matching providerRouteDef in the route proxy.
+    const providerRoute = isObject(config.provider?.[parsed.provider]) ? null : providerRoutes?.[parsed.provider];
     if (isObject(providerRoute)) {
+      // The runtime disables a provider-route group before expanding any
+      // member. Keep a disabled placeholder for the audit report, but do not
+      // let its enabled-looking members prove tier coverage.
+      if (disabled.has(parsed.provider)) {
+        return [{
+          provider: parsed.provider,
+          model: parsed.model,
+          effort: selectedEffort,
+          disabled: true,
+          disabled_route: true,
+          funds: isMeteredModel(`${parsed.provider}/${parsed.model}`),
+          catalog: 'unknown',
+          exists: null,
+          trace,
+        }];
+      }
       if (!Array.isArray(providerRoute.providers) || providerRoute.providers.length === 0) {
         addIssue(`${tier}: provider route "${parsed.provider}" has no providers at ${trace}`);
         return [];
@@ -100,6 +136,14 @@ export function inspectRouteRules(config) {
           addIssue(`${tier}: provider route "${parsed.provider}" has an invalid provider at ${trace}`);
           return [];
         }
+        if (provider === 'opencode-route' || isObject(providerRoutes?.[provider])) return [];
+        if (disabled.has(provider)) {
+          return appendLeaf(provider, parsed.model, selectedEffort, tier, `${trace} -> ${parsed.provider}`);
+        }
+        const catalog = catalogInfo(config, provider, parsed.model);
+        // The runtime skips a group member whose known catalog lacks this
+        // model; heterogeneous provider routes are valid.
+        if (catalog.catalog === 'tracked' && !catalog.exists) return [];
         return appendLeaf(provider, parsed.model, selectedEffort, tier, `${trace} -> ${parsed.provider}`);
       });
     }
@@ -132,6 +176,12 @@ export function inspectRouteRules(config) {
     }
     return route.targets.flatMap((target, index) => {
       const targetTrace = `${trace}.targets[${index}]`;
+      const windowGate = isObject(target) ? normalizeWindowGate(target.window) : null;
+      if (windowGate && (!isObject(modelRouteWindows) || !Object.hasOwn(modelRouteWindows, windowGate.name))) {
+        addIssue(`${tier}: target at ${targetTrace} names unknown model-route window "${windowGate.name}"`);
+        // An unknown non-inverted gate is permanently closed in the router.
+        if (!windowGate.invert) return [];
+      }
       let effort = incomingEffort;
       if (isObject(target) && isObject(target.variants) && effort !== null) {
         if (Object.hasOwn(target.variants, effort)) {

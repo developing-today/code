@@ -67,6 +67,26 @@ test('disabled provider members are excluded from effective pools and coverage',
   assert.ok(result.tiers.scout.coverage.every((candidate) => candidate.provider !== 'disabled'));
 });
 
+test('a disabled provider-route group is excluded before member expansion', () => {
+  const config = configWith({ scout: ['plan/model#low'] });
+  config.disabled_providers.push('plan');
+  const result = inspectRouteRules(config);
+  assert.equal(result.tiers.scout.coverage.length, 0);
+  assert.equal(result.tiers.scout.members.length, 0);
+  assert.equal(result.tiers.scout.disabled_excluded.length, 1);
+  assert.equal(result.tiers.scout.disabled_excluded[0].disabled_route, true);
+  assert.ok(result.issues.some((issue) => issue.includes('no enabled, tracked, existing, non-funds model')));
+});
+
+test('provider-route expansion skips members whose tracked catalogs lack the target', () => {
+  const config = configWith({ scout: ['plan/model#low'] });
+  config.provider.other = { models: { different: {} } };
+  config.experimental.provider_routes.plan.providers.push('other');
+  const result = inspectRouteRules(config);
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.tiers.scout.coverage.map(({ provider }) => provider), ['good']);
+});
+
 test('disabled and funds-only candidates cannot satisfy tier coverage', () => {
   const config = configWith(Object.fromEntries(
     ['scout', 'workhorse', 'specialist', 'summit'].map((tier) => [
@@ -106,6 +126,23 @@ test('flags missing tracked models, unsupported variants, and route cycles', () 
   assert.ok(issues.some((issue) => issue.includes('good/missing is missing from its tracked provider catalog')));
   assert.ok(issues.some((issue) => issue.includes('good/model#max is not a declared variant')));
   assert.ok(issues.some((issue) => issue.includes('model-route cycle')));
+});
+
+test('follows instanceOf for tracked models and their effort variants', () => {
+  const config = configWith({ scout: ['alias/model#low'] });
+  config.provider.alias = { instanceOf: 'good' };
+  const result = inspectRouteRules(config);
+  assert.deepEqual(result.issues, []);
+  assert.equal(result.tiers.scout.coverage[0].catalog, 'tracked');
+  assert.equal(result.tiers.scout.effort_variants_checked, 1);
+});
+
+test('unknown non-inverted window gates are rejected and excluded from coverage', () => {
+  const config = configWith({ scout: [{ model: 'good/model#low', window: 'typo-window' }] });
+  config.experimental.model_route_windows = {};
+  const result = inspectRouteRules(config);
+  assert.equal(result.tiers.scout.coverage.length, 0);
+  assert.ok(result.issues.some((issue) => issue.includes('unknown model-route window "typo-window"')));
 });
 
 test('canonical OpenCode config satisfies the route rules', () => {
