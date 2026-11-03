@@ -125,7 +125,7 @@ impl Default for WorldLimits {
             checkpoint_every: 1000,
             min_tick_ms: 1000,
             grant_on_use: false,
-            server_caps: crate::world_caps::catalog_names(),
+            server_caps: crate::world_caps::default_ceiling_names(),
         }
     }
 }

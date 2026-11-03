@@ -312,7 +312,7 @@ impl WorldCore {
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
             memory_budget: crate::world_limits::WorldMemoryBudget::default(),
-            caps_ceiling: crate::world_caps::catalog_names(),
+            caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
             isolation: Isolation::default(),
             cross_world_write: false,
@@ -910,15 +910,17 @@ impl WorldCore {
                         .resolve(runtime)
                         .context("invalid world execution profile in checkpoint")?;
                     core.execution_profile = execution_profile;
-                    // Absent means the whole catalog: older checkpoints and
-                    // default ceilings omit the field.
+                    // Absent means the default ceiling: older checkpoints and
+                    // default ceilings omit the field. A provider registered
+                    // since the checkpoint joins only if its manifest default
+                    // opts it in — never by registration alone (#838).
                     core.caps_ceiling = match caps_ceiling {
                         Some(ceiling) => {
                             crate::world_caps::validate_ceiling_names(&ceiling)
                                 .context("invalid capability ceiling in checkpoint")?;
                             ceiling.into_iter().collect()
                         }
-                        None => crate::world_caps::catalog_names(),
+                        None => crate::world_caps::default_ceiling_names(),
                     };
                     // A checkpoint comes first in its journal, so its
                     // transfer list is the whole active-handoff state.
@@ -1019,9 +1021,9 @@ impl WorldCore {
             entries.push(JournalEntry::CapsGranted { granted });
         }
         // The ceiling rides on the checkpoint, so compaction keeps it; the
-        // default is omitted and reads back as the whole catalog.
+        // default is omitted and reads back as the default ceiling.
         let caps_ceiling: Option<Vec<String>> = (self.caps_ceiling
-            != crate::world_caps::catalog_names())
+            != crate::world_caps::default_ceiling_names())
         .then(|| self.caps_ceiling.iter().cloned().collect());
         if let Some(ceiling) = &caps_ceiling {
             // An older binary cannot read a `CapsCeiling` entry and refuses the
