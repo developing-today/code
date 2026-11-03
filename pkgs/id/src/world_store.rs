@@ -461,6 +461,140 @@ pub async fn open_world(
     Ok((service, report))
 }
 
+/// Open a read-only replica world rooted at `dir` (F12.13 phase 4).
+///
+/// The replica directory holds the verified journal at
+/// `journal.jsonl` (written by [`crate::world::DurableReceiver`]), an
+/// optional `directory.jsonl` carrying the directory facts the replicated
+/// capabilities depend on (replayed without rewriting it), and an optional
+/// `modules/` store. Opening never invents history: the committed journal
+/// entries are re-validated and restored presence-preserving (no header
+/// bumps, no entry synthesis, no compaction), and the actor spawns
+/// read-only with no journal to append to — every local mutation and
+/// program side effect is refused while spectator reads serve over the
+/// existing session protocol.
+///
+/// Crash debris is recovered, not served: like the receiver, opening drops
+/// an interrupted tail append back to the last committed batch and ignores
+/// torn scratch files. Either way the last committed state is what serves.
+///
+/// # Errors
+///
+/// Fails when no committed replica journal exists yet, when the journal is
+/// not a well-formed chain for `world_id` under `pinned_source`, or when
+/// the directory facts do not apply. A module that cannot be loaded or
+/// replayed does **not** fail the open: like the writer path, the replica
+/// serves with the program marked unavailable (see
+/// [`OpenReport::program_error`]).
+pub async fn open_replica(
+    dir: &Path,
+    world_id: &str,
+    pinned_source: [u8; 32],
+    limits: WorldLimits,
+    runtime: crate::world_limits::RuntimeLimits,
+    service: impl FnOnce(WorldHandle) -> WorldService,
+) -> Result<(WorldService, OpenReport, crate::world::ReplicaCursor)> {
+    use crate::world::{DurableReceiver, restore_replica_entries};
+
+    let dir_owned = dir.to_owned();
+    let id = world_id.to_owned();
+    let id_for_receiver = id.clone();
+    let (journal_bytes, committed) = tokio::task::spawn_blocking(move || {
+        let receiver = DurableReceiver::open(&dir_owned, &id_for_receiver, pinned_source)?;
+        let committed = receiver.committed_cursor();
+        let bytes = receiver.read_journal()?;
+        Ok::<_, crate::world::ReceiverError>((bytes, committed))
+    })
+    .await
+    .context("replica open task")??;
+    ensure!(
+        committed.is_some(),
+        "replica {world_id} has no committed journal yet"
+    );
+    let entries = crate::world::parse_replica_journal(&journal_bytes, world_id)?;
+    let journal_entries = entries.len();
+    let subjects = replica_subjects(&entries);
+    let directory_path = dir.join("directory.jsonl");
+    let (restored, petnames) = tokio::task::spawn_blocking({
+        let directory_path = directory_path.clone();
+        let dir_owned = dir.to_owned();
+        move || {
+            // Read-only replay: opening a replica must not truncate or
+            // rewrite the directory sidecar.
+            let directory =
+                crate::directory::Directory::replay_read_only(&directory_path)
+                    .context("directory open")?;
+            let restored =
+                restore_replica_entries(&id, limits, entries, &directory, &subjects)?;
+            let petnames_path = dir_owned.join("petnames.jsonl");
+            let petnames =
+                crate::petname::Petnames::open(&petnames_path).context("petnames open")?;
+            Ok::<_, anyhow::Error>((restored, petnames))
+        }
+    })
+    .await
+    .context("replica restore task")??;
+    let mut core = restored.core;
+    core.set_petnames(petnames);
+    let cursor = restored.cursor;
+    let modules = ModuleDir::new(dir.join("modules"));
+    let mut report = OpenReport {
+        sequence: cursor.sequence,
+        journal_entries,
+        module_hash: restored.program.as_ref().map(|p| p.module_hash.clone()),
+        replayed_inputs: 0,
+        program_error: None,
+    };
+
+    let mut restored_module = None;
+    let program: Box<dyn WorldProgram> = match &restored.program {
+        None => Box::new(EmptyProgram),
+        Some(spec) => match restore_program(
+            &modules,
+            spec,
+            &restored.replay,
+            core.execution_profile().resolve(runtime)?,
+        )
+        .await
+        {
+            Ok((program, wasm)) => {
+                report.replayed_inputs = restored.replay.len();
+                restored_module = Some(wasm);
+                program
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                tracing::error!("replica {world_id}: could not restore program: {message}");
+                report.program_error = Some(message.clone());
+                Box::new(UnavailableProgram(message))
+            }
+        },
+    };
+    // No journal, no outbox: the replica appends nothing and queues nothing
+    // for other servers. Directory writes are refused by the read-only
+    // actor, so the loaded directory facts stay exactly as verified.
+    let handle = WorldHandle::spawn_durable_read_only(core, program, None);
+    debug_assert!(handle.is_read_only());
+    let service = service(handle).with_module_dir(modules);
+    if let Some(wasm) = restored_module {
+        service.adopt_module(wasm).await?;
+    }
+    Ok((service, report, cursor))
+}
+
+/// Every account appearing in a replica journal's capability chains: the
+/// subjects the replica's directory facts must cover for
+/// [`WorldCore::effective_scopes`](crate::world::WorldCore::effective_scopes).
+fn replica_subjects(entries: &[JournalEntry]) -> std::collections::BTreeSet<String> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            JournalEntry::Issued { subject: Some(subject), .. } => Some(subject.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// What a fork copies from one world into a new one (F12.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForkSpec {

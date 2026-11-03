@@ -531,6 +531,40 @@ impl Directory {
         Ok(directory)
     }
 
+    /// Rebuild the directory from complete journal lines without modifying
+    /// the file. Used by read-only world replicas: the normal replay path
+    /// truncates a torn final line as writer recovery, but opening a replica
+    /// must not rewrite even a damaged directory sidecar.
+    ///
+    /// A torn final fragment is ignored (like [`Self::replay`]); a malformed
+    /// newline-terminated entry remains fatal. The artifact log is not
+    /// opened or repaired: replica authorization exports only current facts
+    /// from complete journal entries.
+    pub fn replay_read_only(path: &Path) -> Result<Self> {
+        let mut directory = Self::new();
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(directory),
+            Err(error) => return Err(error.into()),
+        };
+        let kept_len = if text.is_empty() || text.ends_with('\n') {
+            text.len()
+        } else {
+            text.rfind('\n').map_or(0, |index| index + 1)
+        };
+        for (number, line) in text[..kept_len].lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let entry: DirectoryEntry = serde_json::from_str(line)
+                .with_context(|| format!("directory journal line {} is malformed", number + 1))?;
+            directory
+                .apply_replay(&entry)
+                .with_context(|| format!("directory journal line {} is refused", number + 1))?;
+        }
+        Ok(directory)
+    }
+
     /// Durably append one entry to the journal.
     ///
     /// # Errors
@@ -1017,6 +1051,206 @@ impl Directory {
     #[must_use]
     pub fn anonymous_ceiling(&self) -> WorldScopes {
         self.tiers[&Tier::Anonymous]
+    }
+
+    /// Directory facts a read-only replica needs for spectator
+    /// authorization (F12.13 phase 4): everything
+    /// [`crate::world::WorldCore::effective_scopes`] consults for the given
+    /// capability subjects — account ceilings (tiers and group grants) and
+    /// the friendship graph — as entries the replica applies to an empty
+    /// directory. The caller passes every account appearing in the
+    /// replicated journal's capability chains; unknown subjects are skipped
+    /// (they read back under the anonymous tier, fail-closed).
+    ///
+    /// Account secrets never cross: signed-up accounts carry only their
+    /// stored digest, keyed accounts only their public ID. Friendships are
+    /// re-expressed without envelope IDs — the request/accept pair
+    /// validates as a unit, and only current friendships are exported, so
+    /// there is nothing to void. Groups export only when the groups a
+    /// subject's level flows through form a contiguous `1..=k` prefix (the
+    /// journal replays groups in creation order); group founders are the
+    /// lowest-ID account already holding admin, so no authority widens.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a group the subjects depend on cannot be represented as
+    /// such a prefix, so a gappy topology can never silently narrow a
+    /// subject's ceiling. Worlds without group grants (like the phase-4
+    /// friendship-delegation acceptance case) never hit this.
+    pub fn replica_facts_for(
+        &self,
+        subjects: &BTreeSet<String>,
+    ) -> Result<Vec<DirectoryEntry>> {
+        // Groups that grant a subject some level, closed under nesting: a
+        // subject's level can flow through a nested group, and `MemberSet`
+        // refuses an unknown group.
+        let mut groups: BTreeSet<u64> = BTreeSet::new();
+        let mut stack: Vec<u64> = self
+            .groups
+            .keys()
+            .filter(|id| subjects.iter().any(|s| self.level_in(s, **id).is_some()))
+            .copied()
+            .collect();
+        while let Some(id) = stack.pop() {
+            if groups.insert(id) {
+                for ((_, member), _) in self.members.range(
+                    (id, Member::Group { id: 0 })..=(id, Member::Group { id: u64::MAX }),
+                ) {
+                    if let Member::Group { id: nested } = member {
+                        stack.push(*nested);
+                    }
+                }
+            }
+        }
+        // Journal replay creates groups in order, so the export must be the
+        // contiguous prefix starting at group 1.
+        let ordered: Vec<u64> = groups.iter().copied().collect();
+        let contiguous = ordered
+            .iter()
+            .enumerate()
+            .all(|(index, id)| *id as usize == index + 1);
+        ensure!(
+            contiguous,
+            "replica export cannot represent non-contiguous group IDs {ordered:?}"
+        );
+        // Accounts to reproduce: the subjects that exist, plus founders of
+        // exported groups (`GroupCreated` refuses an unknown founder).
+        let mut accounts: BTreeSet<String> = subjects
+            .iter()
+            .filter(|id| self.accounts.contains_key(*id))
+            .cloned()
+            .collect();
+        let mut founders: BTreeMap<u64, String> = BTreeMap::new();
+        for id in &ordered {
+            let founder = self
+                .members
+                .range(
+                    (*id, Member::Account { id: String::new() })
+                        ..=(*id, Member::Group { id: u64::MAX }),
+                )
+                .filter(|((_, member), level)| {
+                    matches!(member, Member::Account { .. }) && **level == Level::Admin
+                })
+                .map(|((_, member), _)| match member {
+                    Member::Account { id } => id.clone(),
+                    Member::Group { .. } => unreachable!("filtered to accounts"),
+                })
+                .min();
+            let Some(founder) = founder else {
+                anyhow::bail!("replica export cannot represent group {id} with no account admin");
+            };
+            accounts.insert(founder.clone());
+            founders.insert(*id, founder);
+        }
+        let mut entries = Vec::new();
+        let mut sorted_accounts: Vec<&String> = accounts.iter().collect();
+        sorted_accounts.sort();
+        for id in sorted_accounts {
+            let account = &self.accounts[id.as_str()];
+            if let Some(digest) = self.digests.get(id.as_str()) {
+                entries.push(DirectoryEntry::AccountSignedUp {
+                    id: (*id).clone(),
+                    name: account.name.clone(),
+                    digest: hex_encode(digest),
+                });
+            } else {
+                entries.push(DirectoryEntry::AccountKeyed {
+                    id: (*id).clone(),
+                    name: account.name.clone(),
+                });
+            }
+            // Ceilings read the verified tier (directly verified or via a
+            // confirmed email), so export the verified flag on that basis:
+            // the replica reaches the same ceiling either way.
+            if self.is_verified(id) {
+                entries.push(DirectoryEntry::AccountVerified { id: (*id).clone() });
+            }
+        }
+        // Non-default tiers ride along: ceilings intersect them.
+        let defaults = BTreeMap::from([
+            (Tier::Anonymous, WorldScopes::GUEST),
+            (Tier::Registered, WorldScopes::GUEST),
+            (
+                Tier::Verified,
+                WorldScopes::GUEST.union(WorldScopes::DELEGATE),
+            ),
+        ]);
+        for (tier, scopes) in &self.tiers {
+            if defaults.get(tier) != Some(scopes) {
+                entries.push(DirectoryEntry::TierSet {
+                    tier: *tier,
+                    scopes: scopes.bits(),
+                });
+            }
+        }
+        for id in &ordered {
+            let group = &self.groups[id];
+            entries.push(DirectoryEntry::GroupCreated {
+                id: *id,
+                name: group.name.clone(),
+                description: group.description.clone(),
+                scopes: group.scopes.bits(),
+                founder: founders[id].clone(),
+            });
+            // Subject memberships reproduce subject ceilings; nested links
+            // reproduce the paths levels flow through. Other accounts stay
+            // out: the founder above already keeps an admin in place.
+            let mut memberships: Vec<(Member, Level)> = self
+                .members
+                .range(
+                    (*id, Member::Account { id: String::new() })
+                        ..=(*id, Member::Group { id: u64::MAX }),
+                )
+                .map(|((_, member), level)| (member.clone(), *level))
+                .filter(|(member, _)| match member {
+                    Member::Account { id } => subjects.contains(id),
+                    Member::Group { .. } => true,
+                })
+                .collect();
+            memberships.sort_by(|a, b| a.0.cmp(&b.0));
+            for (member, level) in memberships {
+                // The founder's admin comes from `GroupCreated` itself.
+                if member
+                    == (Member::Account {
+                        id: founders[id].clone(),
+                    })
+                    && level == Level::Admin
+                {
+                    continue;
+                }
+                entries.push(DirectoryEntry::MemberSet {
+                    group: *id,
+                    member,
+                    level: Some(level),
+                });
+            }
+        }
+        // Current friendships among the exported accounts. Synthesized
+        // without envelope IDs: the pair validates as a unit and there is
+        // no voided request to track.
+        let sorted: Vec<&String> = accounts.iter().collect();
+        let mut pairs: Vec<(&String, &String)> = Vec::new();
+        for (index, a) in sorted.iter().enumerate() {
+            for b in &sorted[index + 1..] {
+                if self.are_friends(a, b) {
+                    pairs.push((a, b));
+                }
+            }
+        }
+        for (a, b) in pairs {
+            entries.push(DirectoryEntry::FriendRequested {
+                from: (*a).clone(),
+                to: (*b).clone(),
+                id: None,
+            });
+            entries.push(DirectoryEntry::FriendAccepted {
+                from: (*a).clone(),
+                to: (*b).clone(),
+                request: None,
+                id: None,
+            });
+        }
+        Ok(entries)
     }
 
     /// The group with this ID, if it exists.

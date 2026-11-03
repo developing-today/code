@@ -10,6 +10,8 @@ pub struct WorldHandle {
     /// The world's host metrics registry (F11.7), shared with the actor
     /// and the session layer.
     metrics: WorldMetrics,
+    /// Whether the actor runs in F12.13 read-only replica mode.
+    read_only: bool,
 }
 
 use super::*;
@@ -41,6 +43,46 @@ impl WorldHandle {
         core: WorldCore,
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        Self::spawn_inner(core, program, journal, false)
+    }
+
+    /// Spawn a replica actor over a verified, already-restored world.
+    /// Local mutations and program side effects are refused; `journal`
+    /// must be absent because a replica never appends.
+    pub fn spawn_durable_read_only(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        assert!(
+            journal.is_none(),
+            "a read-only replica carries no journal to append to"
+        );
+        assert!(
+            core.replica_mode,
+            "read-only actors require a replica-restored core"
+        );
+        Self::spawn_inner(core, program, None, true)
+    }
+
+    /// Spawn a read-only replica actor over an in-memory program, without
+    /// any journal. See [`Self::spawn_durable_read_only`].
+    pub fn spawn_read_only(core: WorldCore, program: Box<dyn WorldProgram>) -> Self {
+        Self::spawn_durable_read_only(core, program, None)
+    }
+
+    /// Whether this handle fronts a read-only replica actor.
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn spawn_inner(
+        core: WorldCore,
+        mut program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+        read_only: bool,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -74,6 +116,7 @@ impl WorldHandle {
             journal,
             metrics: metrics.clone(),
             storage_failed: false,
+            read_only,
             program_healthy,
             view_failures: 0,
             compaction_off: false,
@@ -99,6 +142,7 @@ impl WorldHandle {
             records,
             view_changed,
             metrics,
+            read_only,
         }
     }
 

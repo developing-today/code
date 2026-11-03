@@ -35,6 +35,7 @@ mod clock;
 mod core;
 mod handle;
 mod metrics;
+mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
@@ -59,6 +60,7 @@ pub use replication_receiver::{
     DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
     ReceiverProgress,
 };
+pub use replica::{ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries, restore_replica_journal, serve_replica};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
     constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,

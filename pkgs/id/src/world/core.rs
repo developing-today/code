@@ -68,6 +68,9 @@ pub struct WorldCore {
     pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
     /// Accepted signed moves, in world sequence order.
     pub(crate) signed_moves: Vec<signed::SignedMoveRecord>,
+    /// This core came from a verified journal and may only be served as a
+    /// spectator replica. It is set only by `restore_replica`.
+    pub(crate) replica_mode: bool,
 }
 
 /// The abuse-evaluator policy for world chat: the historical caps
@@ -206,6 +209,7 @@ impl WorldCore {
             author_keys: HashMap::new(),
             move_chains: HashMap::new(),
             signed_moves: Vec::new(),
+            replica_mode: false,
         };
         core.sync_ledger_ceiling();
         Ok(core)
@@ -240,6 +244,42 @@ impl WorldCore {
         world_id: impl Into<String>,
         limits: WorldLimits,
         entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        Self::restore_inner(world_id, limits, entries, false)
+    }
+
+    /// Rebuild a replica world from its verified journal (F12.13 phase 4).
+    ///
+    /// Same admission rules as [`Self::restore`], but presence-preserving:
+    /// no synthetic presence-off events are fed into the program for
+    /// participants the journal still shows present. That synthesis is
+    /// correct for a writer restart (its sessions really ended) but wrong
+    /// for a replica: a snapshot taken while participants remain connected
+    /// to the writer would otherwise mark them offline in the replica's
+    /// program state even though the journal is intact, breaking
+    /// writer-record parity at the snapshot cursor. The replica restores
+    /// presence as session state (its actor tracks live sessions) without
+    /// journaling or replaying synthetic events.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::restore`].
+    pub fn restore_replica(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+    ) -> Result<RestoredWorld> {
+        let mut restored = Self::restore_inner(world_id, limits, entries, true)?;
+        restored.core.replica_mode = true;
+        Ok(restored)
+    }
+
+    /// Shared restore; `preserve_presence` selects the replica mode above.
+    fn restore_inner(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        entries: impl IntoIterator<Item = JournalEntry>,
+        preserve_presence: bool,
     ) -> Result<RestoredWorld> {
         let mut core = Self::new(world_id, limits)?;
         let mut program = None;
@@ -665,18 +705,21 @@ impl WorldCore {
             }
         }
         // Sessions end with the process, and a crash skips their leave, so
-        // anyone the journal still shows present is gone by now.
-        for participant in present.into_keys() {
-            let name = core
-                .participant(participant)
-                .map_or_else(|| participant.to_string(), |p| p.display_name);
-            replay.push(WorldEvent {
-                sequence: 0,
-                participant_id: 0,
-                kind: WorldEventKind::System {
-                    event: presence_event(participant, &name, false),
-                },
-            });
+        // anyone the journal still shows present is gone by now. Replicas
+        // (F12.13) skip this synthesis: see `restore_replica`.
+        if !preserve_presence {
+            for participant in present.into_keys() {
+                let name = core
+                    .participant(participant)
+                    .map_or_else(|| participant.to_string(), |p| p.display_name);
+                replay.push(WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: presence_event(participant, &name, false),
+                    },
+                });
+            }
         }
         core.sync_ledger_ceiling();
         Ok(RestoredWorld {
@@ -1063,7 +1106,11 @@ impl WorldCore {
             }
             current = record.parent;
         }
-        Some(scopes)
+        if self.replica_mode {
+            Some(scopes.intersect(WorldScopes::JOIN))
+        } else {
+            Some(scopes)
+        }
     }
 
     /// Fewest actions the capability or any ancestor may still take, or `None`
