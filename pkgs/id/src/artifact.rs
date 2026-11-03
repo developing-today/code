@@ -643,6 +643,33 @@ impl ArtifactLog {
         }
         Ok(log)
     }
+
+    /// Load and verify an artifact log without truncating a torn final
+    /// fragment. Used by read-only replicas, whose startup must never
+    /// rewrite local state.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error).context("reading the artifact file"),
+        };
+        let kept = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let text = std::str::from_utf8(&bytes[..kept]).context("artifact file is not UTF-8")?;
+        let mut log = Self::default();
+        for (number, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let artifact: SignedArtifact = serde_json::from_str(line)
+                .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
+            log.store(artifact, false)
+                .with_context(|| format!("artifact line {} is refused", number + 1))?;
+        }
+        Ok(log)
+    }
 }
 
 /// Durably append one artifact to the file at `path`.
@@ -1034,6 +1061,17 @@ mod tests {
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
+    }
+
+    #[test]
+    fn read_only_artifact_open_ignores_a_torn_non_utf8_tail_without_writing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let log = ArtifactLog::open_read_only(&path).unwrap();
+        assert_eq!(log.all().count(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     fn public(seed: u8) -> String {

@@ -24,11 +24,20 @@ describe("world screen presenter", () => {
       width: 4,
       height: 1,
       runs: [
-        { start: 0, cells: [{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }, { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 }] },
+        {
+          start: 0,
+          cells: [
+            { symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 },
+            { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+          ],
+        },
         { start: 3, cells: [{ symbol: "x", fg: 4, bg: 0, bold: true, columns: 1 }] },
       ],
     };
-    const full: ScreenSurface = { ...previous, cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells] };
+    const full: ScreenSurface = {
+      ...previous,
+      cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells],
+    };
     const applied = applyScreenPatch(previous, patch);
     expect(applied).toEqual(full);
     const root = document.createElement("div");
@@ -47,7 +56,15 @@ describe("world screen presenter", () => {
       height: 1,
       runs,
     });
-    expect(applyScreenPatch(previous, patch([{ start: 1, cells: [previous.cells[1]] }, { start: 1, cells: [previous.cells[0]] }]))).toBeNull();
+    expect(
+      applyScreenPatch(
+        previous,
+        patch([
+          { start: 1, cells: [previous.cells[1]] },
+          { start: 1, cells: [previous.cells[0]] },
+        ]),
+      ),
+    ).toBeNull();
     expect(applyScreenPatch(previous, patch([{ start: 2, cells: [previous.cells[0]] }]))).toBeNull();
     expect(
       applyScreenPatch(
@@ -247,9 +264,9 @@ describe("world screen presenter", () => {
     // validator.
     const longGrapheme = `e${"\u0301".repeat(17)}`;
     expect(longGrapheme.length).toBe(18);
-    expect(renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(
-      true,
-    );
+    expect(
+      renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }])),
+    ).toBe(true);
   });
 
   it("measures U+FE0E text-presentation sequences as width 1, like Rust unicode-width 0.2.2 (#1581)", () => {

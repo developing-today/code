@@ -31,7 +31,7 @@
 //! - `link`: Hyperlink with `href` and `title` attributes
 //! - `strikethrough`: Strikethrough text (GFM `~~text~~`)
 
-use comrak::nodes::{AstNode, ListType, NodeValue};
+use comrak::nodes::{AstNode, ListDelimType, ListType, NodeValue};
 use comrak::{Arena, Options, format_commonmark, parse_document};
 use serde_json::{Value, json};
 
@@ -85,10 +85,17 @@ fn commonmark_options() -> Options<'static> {
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
     options.extension.table = true;
+    options.extension.autolink = true; // #998: bare URLs/emails become links
     options.extension.footnotes = true;
     options.extension.front_matter_delimiter = Some("---".to_owned());
     options.parse.smart = false; // Don't convert quotes/dashes
     options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
+    // #954: the CommonMark renderer saves an info-less code block as an
+    // indented block whenever it can (its fenced branch otherwise needs a
+    // non-empty info string or a literal edge case). Force the fenced
+    // spelling for every code block so info-less fences round-trip as
+    // fences. Render-only: parsing is unaffected.
+    options.render.prefer_fenced = true;
     options
 }
 
@@ -2312,6 +2319,10 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     // long as the opener — a shorter fence line inside a longer
     // fence is literal content, not the end of the block (#1707).
     let mut fence: Option<(u8, usize)> = None;
+    // Whether the current line is a fence line (opens, closes, or is
+    // checked against an open fence): its backticks are fence syntax,
+    // never an inline code span opener.
+    let mut fence_line = false;
     // The open inline code span's backtick run length, when inside
     // one: span content is literal text, so a destination-shaped
     // string inside it must not be protected (#1707).
@@ -2342,11 +2353,13 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             } else {
                 None
             };
+            let was_in_fence = fence.is_some();
             match (fence, fence_run) {
                 (None, Some(open)) => fence = Some(open),
                 (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
                 _ => {}
             }
+            fence_line = fence_run.is_some() && (was_in_fence || fence.is_some());
             // An indented code block starts on a 4+ indented line
             // after a blank line (or at the start, or continuing an
             // indented block); a 4+ indented line inside a paragraph
@@ -2355,7 +2368,7 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
             prev_line_blank = line_blank;
         }
-        let literal_line = fence.is_some() || in_indented;
+        let literal_line = fence.is_some() || in_indented || fence_line;
         if !literal_line && span.is_none() && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
             let lt = if markdown[i..].starts_with("](<") {
                 i + 2
@@ -3189,9 +3202,29 @@ fn is_end_list_separator<'a>(node: &'a AstNode<'a>) -> bool {
 /// so numbering renders unchanged; `tight` is carried from the source
 /// list to every run. Placement validation and the editor schema are
 /// untouched: every emitted list is pure.
+/// #1380: the PM `delimiter` attr spelling for a comrak ordered-list
+/// delimiter (`.` vs `)`). The editor schema mirrors these spellings.
+fn delimiter_attr(delimiter: ListDelimType) -> &'static str {
+    match delimiter {
+        ListDelimType::Period => "period",
+        ListDelimType::Paren => "paren",
+    }
+}
+
+/// #1380: read the PM `delimiter` attr back to a comrak delimiter.
+/// Absent or unknown (legacy PM docs stored by the old codec, which
+/// dropped the delimiter) defaults to Period - exactly how the old
+/// codec saved every ordered list.
+fn delimiter_from_attrs(json: &Value) -> ListDelimType {
+    match json["attrs"]["delimiter"].as_str() {
+        Some("paren") => ListDelimType::Paren,
+        _ => ListDelimType::Period,
+    }
+}
+
 fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    let (list_type, start, tight) = match &node.data.borrow().value {
-        NodeValue::List(list) => (list.list_type, list.start, list.tight),
+    let (list_type, start, tight, delimiter) = match &node.data.borrow().value {
+        NodeValue::List(list) => (list.list_type, list.start, list.tight, list.delimiter),
         _ => return Vec::new(),
     };
     // (is_task, items before this run, converted items)
@@ -3213,7 +3246,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
         .map(|(is_task, offset, content)| match (is_task, list_type) {
             (true, ListType::Ordered) => json!({
                 "type": "task_list",
-                "attrs": {"order": start + offset, "tight": tight},
+                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
                 "content": content
             }),
             (true, ListType::Bullet) => json!({
@@ -3223,7 +3256,7 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
             }),
             (false, ListType::Ordered) => json!({
                 "type": "ordered_list",
-                "attrs": {"order": start + offset, "tight": tight},
+                "attrs": {"order": start + offset, "tight": tight, "delimiter": delimiter_attr(delimiter)},
                 "content": content
             }),
             (false, ListType::Bullet) => json!({
@@ -3936,6 +3969,15 @@ fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
 
 /// Convert `ProseMirror` JSON document to markdown text.
 ///
+/// Unknown marks are skipped by design (#1045): marks outside the
+/// codec's vocabulary (`em`, `strong`, `strikethrough`, `link`, plus
+/// the `code` mark handled specially by `create_marked_text`) are
+/// dropped while the marked text itself is kept verbatim. This
+/// differs from unknown *nodes*, which return
+/// `ConversionError::UnknownType`, because an unknown inline style
+/// can be shed without corrupting the document text. Known marks
+/// render byte-identically whether or not unknown marks are present.
+///
 /// # Arguments
 ///
 /// * `doc` - The `ProseMirror` JSON document.
@@ -4197,8 +4239,8 @@ fn hoist_delimiter_edge_spaces<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) 
 /// fenced branch, and return the placeholders for stripping from the
 /// rendered output — the same placeholder-and-restore pattern as
 /// `substitute_spaced_destinations`. Code blocks outside blockquotes
-/// keep the renderer's own spelling (the lone-block fence/indent
-/// choice is #954's territory, deliberately untouched here).
+/// are fenced by the global `prefer_fenced` render option (#954); this
+/// placeholder is kept as belt-and-braces for the quoted shape.
 fn force_fenced_code_blocks_in_blockquotes<'a>(root: &'a AstNode<'a>) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut stack: Vec<(&AstNode<'a>, bool)> = vec![(root, false)];
@@ -4453,7 +4495,14 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 fence_length: 3,
                 fence_offset: 0,
                 info: info.to_owned(),
-                literal: format!("{content}\n"),
+                // #954: comrak's own empty-fence literal is empty; appending
+                // the usual trailing newline here renders a spurious blank
+                // line inside the fence ("```\n\n```").
+                literal: if content.is_empty() {
+                    String::new()
+                } else {
+                    format!("{content}\n")
+                },
                 closed: false,
             }))
         }
@@ -4480,10 +4529,13 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             #[allow(clippy::cast_possible_truncation)] // order is typically small
             let order = json["attrs"]["order"].as_u64().unwrap_or(1) as usize;
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
+            // #1380: carry the delimiter style; absent (legacy docs)
+            // defaults to Period in delimiter_from_attrs.
             NodeValue::List(comrak::nodes::NodeList {
                 list_type: ListType::Ordered,
                 start: order,
                 tight,
+                delimiter: delimiter_from_attrs(json),
                 ..Default::default()
             })
         }
@@ -4515,6 +4567,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     list_type: ListType::Ordered,
                     start,
                     tight,
+                    // #1380: same delimiter carry as ordered_list.
+                    delimiter: delimiter_from_attrs(json),
                     ..Default::default()
                 }),
                 None => NodeValue::List(comrak::nodes::NodeList {
@@ -5184,7 +5238,11 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                     title: title.to_owned(),
                 }))
             }
-            _ => continue, // Skip code (handled below) and unknown marks
+            // #1045: `code` is skipped here because it is handled
+            // below as the innermost node; any other unrecognized mark
+            // is skipped by design — the text survives, the unknown
+            // styling is shed (see `prosemirror_to_markdown`).
+            _ => continue,
         };
         wrappers.push(wrapper_value);
     }
@@ -5234,11 +5292,32 @@ fn build_mark_chain<'a>(
 
 /// Convert plain text to `ProseMirror` JSON document.
 ///
-/// Each line becomes a paragraph.
+/// Each line becomes a paragraph. The split is on the newline
+/// character (not `str::lines`), so a trailing newline yields a final
+/// empty paragraph and the save side (`extract_plain_text`, which joins
+/// paragraphs with a newline) reproduces it exactly: no-edit open/save
+/// is byte-stable for the trailing newline (#1307). A carriage return
+/// left by a CRLF ending is stripped, but only from segments the newline
+/// actually terminated: a lone trailing CR is content and survives. CRLF
+/// files are normalized to LF on save, with their trailing-newline state
+/// preserved (Raw mode stays byte-exact).
 #[must_use]
 pub fn plain_text_to_prosemirror(text: &str) -> Value {
-    let paragraphs: Vec<Value> = text
-        .lines()
+    let segments: Vec<&str> = text.split('\n').collect();
+    let last = segments.len() - 1;
+    let paragraphs: Vec<Value> = segments
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            // Only a segment actually terminated by '\n' can carry the
+            // CR of a CRLF ending; the final segment keeps a lone
+            // trailing CR verbatim (Codex finding on PR #4613).
+            if i < last {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            }
+        })
         .map(|line| {
             if line.is_empty() {
                 json!({"type": "paragraph"})
@@ -5476,6 +5555,73 @@ mod tests {
     }
 
     #[test]
+    fn test_bare_url_becomes_link_mark() {
+        // #998: with the autolink extension enabled, a bare URL parses
+        // to a text node carrying a link mark, like the angle form.
+        let doc = markdown_to_prosemirror("visit https://example.com/path?a=1 now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare URL has no link mark");
+        let link_mark = link_text.unwrap()["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(
+            link_mark["attrs"]["href"],
+            "https://example.com/path?a=1"
+        );
+    }
+
+    #[test]
+    fn test_bare_email_becomes_link_mark() {
+        // #998: a bare email address autolinks with a mailto: href.
+        let doc = markdown_to_prosemirror("mail me@example.com today");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_text = para_content.iter().find(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(link_text.is_some(), "bare email has no link mark");
+        let link = link_text.unwrap();
+        assert_eq!(link["text"], "me@example.com");
+        let link_mark = link["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .unwrap();
+        assert_eq!(link_mark["attrs"]["href"], "mailto:me@example.com");
+    }
+
+    #[test]
+    fn test_bare_url_fixpoint_and_code_span_negative() {
+        // #998: a bare URL round-trips to a stable fixpoint, and a URL
+        // inside a code span stays literal text with no link mark.
+        let (first, second) = two_saves("visit https://example.com/path?a=1 now\n");
+        assert_eq!(first, second, "no fixpoint for bare URL");
+        assert!(
+            first.contains("https://example.com/path?a=1"),
+            "URL lost in save: {first:?}"
+        );
+
+        let doc = markdown_to_prosemirror("run `https://example.com` now");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let has_link = para_content.iter().any(|n| {
+            n["marks"]
+                .as_array()
+                .is_some_and(|m| m.iter().any(|mark| mark["type"] == "link"))
+        });
+        assert!(!has_link, "code-span URL must not carry a link mark");
+    }
+
+    #[test]
     fn test_misplaced_nodes_return_error_not_panic() {
         // #1043: json_to_ast placed any known node type anywhere, so a
         // misplaced node built an ill-formed comrak AST — panicking the
@@ -5545,6 +5691,35 @@ mod tests {
         ));
         let ok = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]});
         assert_eq!(prosemirror_to_markdown(&ok).unwrap(), "hello\n");
+    }
+
+    #[test]
+    fn test_unknown_marks_are_skipped_by_design() {
+        // #1045: unknown marks are shed while their text survives —
+        // unlike unknown nodes, which error. Pins the documented
+        // skip policy on `prosemirror_to_markdown`.
+        let text = |marks: Value| {
+            json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+                {"type": "text", "text": "hi", "marks": marks}
+            ]}]})
+        };
+        // Bare unknown mark: text survives, mark vanishes.
+        let doc = text(json!([{"type": "underline"}]));
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), "hi\n");
+        // Mixed known + unknown: the known mark still renders.
+        let doc = text(json!([{"type": "strong"}, {"type": "underline"}]));
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), "**hi**\n");
+        // Unknown mark alongside code + link: code-mark special
+        // handling is unchanged.
+        let doc = text(json!([
+            {"type": "code"},
+            {"type": "link", "attrs": {"href": "http://e.com"}},
+            {"type": "underline"},
+        ]));
+        assert_eq!(
+            prosemirror_to_markdown(&doc).unwrap(),
+            "[`hi`](http://e.com)\n"
+        );
     }
 
     #[test]
@@ -8443,6 +8618,47 @@ mod tests {
     }
 
     #[test]
+    fn test_roundtrip_info_less_code_block_stays_fenced() {
+        // #954: info-less fenced blocks must save as fenced, not as
+        // 4-space indented blocks. Covers blank-line content,
+        // fence-containing content, list nesting, and blockquotes
+        // (the blockquote shape is also pinned by #1496).
+        for (original, opening_fence) in [
+            ("```\nline1\n\n\nline2\n```\n", "```"),
+            ("````\n```\ncode\n```\n````\n", "````"),
+            ("- ```\n  code\n  ```\n", "- ```"),
+            // Blockquote saves with leading empty quote lines (comrak's
+            // block separation); the shape pinned here is fenced, not
+            // indented.
+            ("> ```\n> code\n> ```\n", "> ```"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.lines().any(|l| l == opening_fence),
+                "info-less block lost its fence for {original:?}: {first:?}"
+            );
+            assert!(
+                !first.lines().any(|l| l.starts_with("    ")),
+                "info-less block saved indented for {original:?}: {first:?}"
+            );
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "round trip changed the doc for {original:?}"
+            );
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_empty_code_block_has_no_spurious_blank_line() {
+        // #954: an empty fenced block must not gain a blank line.
+        let (first, second) = two_saves("```\n```\n");
+        assert_eq!(first, "```\n```\n", "empty block grew: {first:?}");
+        assert_eq!(first, second, "no fixpoint for empty block");
+    }
+
+    #[test]
     fn test_roundtrip_list() {
         let original = "- Item 1\n- Item 2\n";
         let doc = markdown_to_prosemirror(original);
@@ -8632,6 +8848,65 @@ Some text
         assert_eq!(bullet["content"][0]["type"], "task_list");
         assert!(bullet["content"][0]["attrs"]["order"].is_null());
         assert_eq!(bullet["content"][0]["attrs"]["tight"], true);
+    }
+
+    #[test]
+    fn test_ordered_list_paren_delimiter_roundtrips() {
+        // #1380: the ordered-list delimiter style (`1)` vs `1.`) must
+        // survive the codec in both directions instead of every list
+        // being rewritten with periods.
+        let doc = markdown_to_prosemirror("1) one\n2) two\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "ordered_list");
+        assert_eq!(content[0]["attrs"]["delimiter"], "paren");
+
+        let (first, second) = two_saves("1) one\n2) two\n");
+        assert_eq!(first, "1) one\n2) two\n", "paren round-trip changed bytes");
+        assert_eq!(first, second, "no fixpoint for paren list");
+
+        // Period lists are unchanged and now carry the attr explicitly.
+        let doc = markdown_to_prosemirror("1. one\n2. two\n");
+        assert_eq!(doc["content"][0]["attrs"]["delimiter"], "period");
+        let (first, second) = two_saves("1. one\n2. two\n");
+        assert_eq!(first, "1. one\n2. two\n");
+        assert_eq!(first, second, "no fixpoint for period list");
+    }
+
+    #[test]
+    fn test_ordered_task_list_paren_delimiter_roundtrips() {
+        // #1380: ordered task lists keep their delimiter too.
+        let doc = markdown_to_prosemirror("1) [ ] todo\n2) [x] done\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "task_list");
+        assert_eq!(content[0]["attrs"]["order"], 1);
+        assert_eq!(content[0]["attrs"]["delimiter"], "paren");
+
+        let (first, second) = two_saves("1) [ ] todo\n2) [x] done\n");
+        assert_eq!(first, "1) [ ] todo\n2) [x] done\n");
+        assert_eq!(first, second, "no fixpoint for paren task list");
+    }
+
+    #[test]
+    fn test_legacy_ordered_list_without_delimiter_attr_saves_period() {
+        // #1380: legacy PM docs stored by the old codec carry no
+        // delimiter attr; they must save exactly as today (period).
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "ordered_list",
+                "attrs": {"order": 1, "tight": true},
+                "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "one"}]}
+                    ]},
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "two"}]}
+                    ]}
+                ]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(md, "1. one\n2. two\n", "legacy doc changed: {md:?}");
     }
 
     #[test]

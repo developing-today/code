@@ -48,7 +48,12 @@ export function parseDnsRegister(md: string): DnsEntry[] {
     const cells = line.split("|").slice(1, -1).map(cleanCell);
     if (cells.length < 10) continue;
     const [domain, registrar, dnsHost, renewal, autoRenew, price, priorYearCost, used, plan, review] = cells;
-    if (!domain || !/^\d{4}-\d{2}-\d{2}$/.test(renewal)) continue;
+    // Shape alone is not enough: an impossible calendar date (2026-02-30,
+    // 2026-13-01) must be refused like a malformed row, or it string-sorts
+    // into the register, counts toward the annual total, and poisons
+    // nextRenewal / renewingSoon (#2199). isIsoDate re-checks the
+    // components, so leap dates (2024-02-29) still parse.
+    if (!domain || !/^\d{4}-\d{2}-\d{2}$/.test(renewal) || !isIsoDate(renewal)) continue;
     out.push({
       domain,
       registrar,
@@ -178,12 +183,20 @@ export function isDnsSection(v: unknown): v is DnsSection {
         typeof (e as DnsEntry).renewal === "string" &&
         // priceUsd is number|null in the model: null/absent stays valid,
         // but a present value must be a finite number (#2412).
-        ((e as DnsEntry).priceUsd === null ||
-          (e as DnsEntry).priceUsd === undefined ||
-          (typeof (e as DnsEntry).priceUsd === "number" &&
-            Number.isFinite((e as DnsEntry).priceUsd) &&
-            // A present price must also be non-negative (#4226).
-            (e as DnsEntry).priceUsd >= 0)) &&
+        (() => {
+          // Bind once so the typeof guard narrows the same expression the
+          // comparison uses; re-reading (e as DnsEntry).priceUsd each time
+          // does not narrow and trips TS2531 (#4226).
+          const priceUsd = (e as DnsEntry).priceUsd;
+          return (
+            priceUsd === null ||
+            priceUsd === undefined ||
+            (typeof priceUsd === "number" &&
+              Number.isFinite(priceUsd) &&
+              // A present price must also be non-negative (#4226).
+              priceUsd >= 0)
+          );
+        })() &&
         // status feeds summarizeDns buckets; an unknown/missing status
         // under-counts silently, so the gate owns the enum (#2412).
         ((e as DnsEntry).status === "active" ||

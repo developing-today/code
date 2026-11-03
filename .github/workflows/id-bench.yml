@@ -1,7 +1,8 @@
 # Benchmark regression reporting for pkgs/id — F11.8 slice 3 (#1513).
 #
-# Runs the four slice-1 benchmarks (world_bench) and diffs their medians
-# against the committed slice-2 baselines in pkgs/id/benches/baseline.txt,
+# Runs the existing F11.8 workloads plus the #557 many-worlds measurement
+# (world_bench) and diffs their medians against the committed baselines in
+# pkgs/id/benches/baseline.txt,
 # using .github/scripts/id-bench-compare.sh. The report lands in the job
 # summary and as a run artifact.
 #

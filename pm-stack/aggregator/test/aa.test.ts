@@ -655,6 +655,8 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
     expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
+    expect(html).toContain("const pointY = py.toFixed(1)"); // do not shadow the lane's cy before computing py
+    expect(html).not.toContain("const cy = py.toFixed(1)");
     expect(html).toContain('class="xpl-band-lanes"');
     expect(html).toContain('bandGroup("Fastest within each score band"');
     expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
@@ -776,6 +778,18 @@ describe("aa routes (HTTP, fixtures)", () => {
     expect(section.coverage?.catalogNotPooledUnmeasured).toContain("commandcode/reflection/beam:free");
     expect(section.catalog?.some((e) => e.id === "commandcode/reflection/beam:free")).toBe(true);
     expect(section.catalog?.find((e) => e.id === "claude-code/claude-haiku-5-5")?.disabled).toBe(true);
+  });
+
+  test("/aa loads the same browser computation module imported by Bun tests", async () => {
+    const page = await (await fetch(`http://127.0.0.1:${port}/aa`)).text();
+    expect(page).toContain('<script type="module">');
+    expect(page).toContain('from "/assets/aa-explorer-computations.js"');
+    const response = await fetch(`http://127.0.0.1:${port}/assets/aa-explorer-computations.js`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/javascript");
+    const asset = await response.text();
+    expect(asset).toContain("export function computeRecommendations");
+    expect(asset).toContain("export function projectTask");
   });
 });
 
