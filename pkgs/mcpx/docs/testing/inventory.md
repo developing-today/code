@@ -1,123 +1,100 @@
 # mcpx test inventory (deliverable 1 of #1960)
 
-Recounted on current `main` at `dd2c88ff` (2026-10-30) for
-[#1960](https://github.com/developing-today/code/issues/1960).
-Supersedes the issue body's table, which was counted at `05c78b2`
-(735 tests, 64 files, nix tree, pre-re-home).
+Recounted on current `main` at `32d47f73b` (2026-11-03). This refresh supersedes the 2026-10-30 census at `dd2c88ff` and the older pre-re-home issue table.
 
-## How it was counted
+## Current census
 
-From `pkgs/mcpx/` on the commit above:
+Scope: Go `*_test.go` files under `pkgs/mcpx/`. The counts are a repeatable source scan, not a judgment that every marker is flaky or unsafe. Test subtests are not counted separately.
 
-- Test files: `find . -name '*_test.go' | wc -l` → **306 files**
-- Test functions: `grep -rhoE '^func (Test[A-Za-z0-9_]+)' --include='*_test.go' | wc -l` → **1626 `Test*` funcs**
-- Fuzz functions: `grep -rlE '^func Fuzz' --include='*_test.go' | wc -l` → **0**
-- Flags per package: files matching `time\.Sleep`, `time\.Now`,
-  `\[\]struct`, `math/rand`, `crypto/rand`, `net\.Listen`,
-  `httptest\.`, `t\.Parallel` in `*_test.go` (file-level counts).
+- Test files: **468**; `Test*` functions: **2561**; `Fuzz*` functions: **1**.
+- `time.Sleep`: **73 files / 178 calls**; `time.Now`: **87 files / 280 calls**; `[]struct` tables: **117 files / 235 matches**.
+- `math/rand`: **2 files**; `crypto/rand`: **10 files**; `net.Listen`: **8 files / 10 calls**; `httptest`: **70 files / 317 references**; `t.Parallel`: **0 files / 0 calls**.
+- The single native fuzz target is `internal/config/stripjsonc_fuzz_test.go:FuzzStripJSONC`; its corpus runs during ordinary `go test`, while mutation requires `-fuzz`. The package-level table below flags where to inspect; it does not classify every sleep or clock read as a flake.
 
-The old 735 vs new 1626 is growth plus method: the old count predates
-the re-home and several large suites (`daemon` 151, `cli` 103,
-`conformance` 18, `pool` 76). Subtests (`t.Run`) are not counted
-separately here.
+## Per-package census
 
-Headline deltas since 05c78b2: `time.Sleep` in **59 files** (was 9),
-`time.Now` in **60 files** (was 14), `[]struct` tables in **76 files**,
-still **zero** `t.Parallel()` and **zero** `Fuzz*` functions.
+Counts are `Test* functions / test files`. Marker columns are matching files/calls; randomness columns are files importing/referencing the package path. `—` means no match. Generator candidates are a shortlist, not implemented generators.
 
-## Per-package table
+| Package | Tests / files | Fuzz | Sleep files / calls | Now files / calls | Table files / matches | math/rand files | crypto/rand files | net.Listen files / calls | httptest files / refs | Generator candidate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `internal/e2e` | 356 / 62 | — | 15 / 33 | 14 / 47 | 24 / 49 | 1 | 1 | — | 2 / 2 | exec.flagset; api.v1request |
+| `internal/daemon` | 311 / 78 | — | 11 / 25 | 19 / 52 | 22 / 44 | 1 | 1 | 3 / 5 | 35 / 191 | request/operation shapes |
+| `internal/config` | 217 / 20 | 1 | — | — | 4 / 37 | — | — | — | — | config.layers; FuzzStripJSONC exists |
+| `internal/mcpserver` | 173 / 31 | — | 10 / 23 | 7 / 29 | 7 / 10 | — | 1 | — | 4 / 41 | request shapes |
+| `internal/cli` | 170 / 48 | — | 4 / 6 | 2 / 13 | 5 / 5 | — | 1 | 3 / 3 | 5 / 12 | — |
+| `internal/mcpclient` | 131 / 36 | — | 10 / 18 | 8 / 28 | 6 / 7 | — | — | 1 / 1 | 8 / 21 | — |
+| `internal/runner` | 111 / 7 | — | 1 / 1 | 3 / 5 | 4 / 11 | — | — | — | 1 / 1 | — |
+| `internal/pool` | 96 / 23 | — | 6 / 9 | 8 / 28 | 4 / 4 | — | 1 | — | 4 / 16 | — |
+| `internal/settings` | 72 / 20 | — | — | — | 5 / 8 | — | — | — | — | settings.precedence |
+| `internal/codegen` | 69 / 7 | — | — | — | 1 / 2 | — | — | — | 1 / 5 | codegen.jsonschema |
+| `internal/execsvc` | 46 / 11 | — | 2 / 2 | 1 / 1 | 3 / 3 | — | — | — | — | — |
+| `internal/logging` | 42 / 5 | — | — | 1 / 5 | 1 / 4 | — | 1 | — | — | redaction inputs |
+| `internal/elicit` | 39 / 8 | — | 1 / 2 | 3 / 16 | 2 / 2 | — | 1 | — | — | — |
+| `internal/launcher` | 38 / 2 | — | — | — | — | — | — | — | — | launcher.template |
+| `internal/artifacts` | 35 / 6 | — | 1 / 1 | 2 / 5 | 1 / 1 | — | 1 | — | — | artifact-name parsing |
+| `internal/deps` | 31 / 1 | — | — | — | 1 / 2 | — | — | — | — | — |
+| `internal/logstore` | 31 / 5 | — | — | 2 / 4 | — | — | — | — | — | — |
+| `internal/tasks` | 31 / 4 | — | 1 / 13 | 2 / 5 | 1 / 1 | — | 1 | — | — | — |
+| `internal/adapter` | 30 / 2 | — | — | — | — | — | — | — | — | — |
+| `internal/diagnose` | 30 / 3 | — | — | 1 / 8 | 1 / 2 | — | — | — | — | diagnostic parser inputs |
+| `internal/preflight` | 30 / 2 | — | — | — | — | — | — | — | — | — |
+| `internal/recipes` | 28 / 3 | — | — | — | 1 / 3 | — | — | — | — | — |
+| `internal/api` | 26 / 8 | — | — | — | — | — | — | — | — | — |
+| `tools/docs-history` | 25 / 1 | — | — | — | — | — | — | — | — | — |
+| `internal/registry` | 22 / 2 | — | 1 / 1 | 1 / 1 | 2 / 4 | — | — | — | 2 / 4 | — |
+| `internal/conformance` | 21 / 14 | — | 7 / 37 | 4 / 11 | 4 / 4 | — | — | — | 4 / 8 | — |
+| `internal/hooks` | 21 / 4 | — | 2 / 5 | 2 / 4 | — | — | — | — | — | — |
+| `internal/source` | 21 / 3 | — | — | — | 2 / 2 | — | — | 1 / 1 | — | — |
+| `internal/tui` | 21 / 2 | — | — | 1 / 2 | — | — | — | — | — | — |
+| `internal/openapi` | 20 / 1 | — | — | — | 1 / 1 | — | — | — | 1 / 5 | schema/parser shapes |
+| `internal/secrets` | 20 / 3 | — | — | 1 / 3 | 1 / 2 | — | — | — | — | — |
+| `internal/mcpauth` | 17 / 3 | — | — | — | 1 / 1 | — | — | — | — | — |
+| `internal/cache` | 16 / 2 | — | — | 1 / 4 | — | — | — | — | — | — |
+| `internal/events` | 16 / 3 | — | — | — | — | — | — | — | — | — |
+| `internal/model` | 15 / 1 | — | — | — | 1 / 2 | — | — | — | 1 / 8 | — |
+| `internal/searchpath` | 15 / 1 | — | — | — | — | — | — | — | — | path parser shapes |
+| `internal/testsupport` | 15 / 4 | — | — | 1 / 1 | 2 / 2 | — | — | — | — | — |
+| `internal/schemaval` | 13 / 1 | — | — | — | 1 / 2 | — | — | — | 1 / 1 | schema shapes |
+| `internal/progspec` | 12 / 1 | — | 1 / 2 | 1 / 2 | 1 / 1 | — | — | — | — | — |
+| `internal/testsupport/gen` | 12 / 2 | — | — | — | — | — | — | — | — | — |
+| `internal/catalog` | 11 / 4 | — | — | — | — | — | — | — | 1 / 2 | — |
+| `internal/mcpspec` | 11 / 1 | — | — | — | 1 / 3 | — | — | — | — | — |
+| `internal/plugin` | 11 / 1 | — | — | — | — | — | — | — | — | — |
+| `internal/scripting` | 9 / 1 | — | — | — | 1 / 3 | — | — | — | — | — |
+| `internal/wasmtools` | 9 / 1 | — | — | — | — | — | — | — | — | — |
+| `internal/eventstore` | 8 / 1 | — | — | — | — | — | — | — | — | — |
+| `internal/nearmiss` | 8 / 1 | — | — | — | 1 / 4 | — | — | — | — | — |
+| `internal/defaults` | 6 / 3 | — | — | — | — | — | — | — | — | — |
+| `internal/mcpheaders` | 6 / 1 | — | — | — | 1 / 4 | — | — | — | — | — |
+| `internal/opencode` | 5 / 2 | — | — | 1 / 4 | — | — | — | — | — | — |
+| `internal/policy` | 5 / 1 | — | — | — | 1 / 2 | — | — | — | — | — |
+| `internal/refdoc` | 5 / 1 | — | — | — | — | — | — | — | — | — |
+| `internal/spec` | 5 / 1 | — | — | — | 1 / 1 | — | — | — | — | — |
+| `internal/randsrc` | 4 / 1 | — | — | — | — | — | 1 | — | — | — |
+| `internal/sdnotify` | 4 / 1 | — | — | 1 / 2 | — | — | — | — | — | — |
+| `internal/buildcheck` | 2 / 2 | — | — | — | — | — | — | — | — | — |
+| `internal/probe` | 2 / 1 | — | — | — | 1 / 1 | — | — | — | — | — |
+| `internal/seedstore` | 2 / 1 | — | — | — | — | — | — | — | — | — |
+| `examples` | 1 / 1 | — | — | — | — | — | — | — | — | — |
+| `internal/dashboard` | 1 / 1 | — | — | — | — | — | — | — | — | — |
+| `internal/testsupport/taskmcp` | 1 / 1 | — | — | — | 1 / 1 | — | — | — | — | — |
 
-`tests` = `Test*` funcs / `files` = `*_test.go` files / `sleep|now|table`
-= files matching `time.Sleep` / `time.Now` / `[]struct`.
+## Generator and flake-review shortlist
 
-| Package | Tests / files | Generator candidates | Hidden time / randomness / ports | Flake-prone |
-| --- | --- | --- | --- | --- |
-| `internal/e2e` | 339 / 55 | `exec.flagset` (`TestEveryExecFlagChangesSomething` table); `api.v1request` (`v1ops_test.go`) | sleeps in 15 files; `time.Now` in 13; `consumer_test.go:328,368` 60 s `time.After` waits, `:389-400` 30 s deadline + 200 ms poll; `v1ops_test.go:421-430` 5 s deadline + 100 ms poll; `crypto/rand` input bytes (`cliops_test.go:111`, round-trip blob — input only, not asserted); `math/rand` jitter (`keepalive_takeover_test.go:253`, `rand.N(40ms)` sleep — unseeded) | yes — highest concentration; daemon-start timeouts under parallel `go build` load (see `testsupport` note) |
-| `internal/daemon` | 151 / 40 | request shapes | sleeps in 7 files; `math/rand` jitter (`handoff_conns_test.go:289`); unix-socket listens (`paths_resolve_test.go:56`, `routes_resolve_test.go:149` — no TCP ports) | sleep-jittered handoff timing |
-| `internal/mcpserver` | 126 / 23 | request shapes | `server_test.go:656-672,742`: 2 s `time.After` deadlines, 2 s poll loop with 20 ms sleeps (same shape as at 05c78b2, moved lines) | poll-loop deadlines |
-| `internal/config` | 133 / 14 | `config.layers` (merge/scope: `merge_test.go:54-177` hand-picked layer stacks, 7 focused tests) | none | no |
-| `internal/cli` | 103 / 31 | — | sleeps in 4 files; unix-socket listens (`stopall_test.go:88`, `ssh_endpoint_test.go:82`, `stdio_proxy_test.go:20` — no TCP ports) | daemon-lifecycle timing |
-| `internal/mcpclient` | 87 / 24 | — | sleeps in 7 files (`modern_test.go:365` 10 ms); one TCP listen on ephemeral port (`probe_test.go:605`, `127.0.0.1:0` — fine) | short-sleep sync (`modern_test`) |
-| `internal/pool` | 76 / 18 | — | `pool_test.go:519-520`: `Sleep(50ms)` then `ReapIdle(time.Now())` — still timing-dependent; `ReapIdle` already takes `now`, so a fixed clock is a one-line change (cheapest fix, unchanged since 05c78b2) | yes — `pool_test.go:519` |
-| `internal/settings` | 54 / 13 | `settings.precedence` (`registry_test.go` iterates the registry) | env reads | no |
-| `internal/codegen` | 48 / 5 | `codegen.jsonschema` (one schema per test) | none | no |
-| `internal/logging` | 38 / 4 | redaction inputs (`redact_test.go` table) | `file_test.go`: timestamps from `time.Now().Truncate(time.Hour)` — hour/day-boundary sensitivity stands | boundary-sensitive, not sleep-flaky |
-| `internal/launcher` | 31 / 2 | `launcher.template` (`define_test.go`, `template_test.go`) — smallest proposed first generator | none | no |
-| `internal/elicit` | 29 / 4 | — | `elicit_test.go:53` 50 ms, `:264` 600 ms, `:300` 450 ms sleeps | yes — three sleep-then-assert sites |
-| `internal/logstore` | 28 / 4 | — | `time.Now` in 2 files, no sleeps | no |
-| `internal/diagnose` | 21 / 2 | `diagnose` parsers | `time.Now` in 1 file | no |
-| `internal/recipes` | 20 / 3 | — | none | no |
-| `internal/registry` | 19 / 2 | — | `paging_test.go:57` `Sleep(f.delay)` (fault-injection delay — intentional, not flake) | no |
-| `internal/adapter` | 19 / 1 | — | none | no |
-| `internal/api` | 18 / 5 | — | none | no |
-| `internal/conformance` | 18 / 11 | — | sleeps in 7 files (client-features/lifecycle/messages suites) | sleep-then-assert across suites |
-| `internal/artifacts` | 16 / 2 | `artifacts/name` parsers | `time.Now` in 1 file | no |
-| `internal/openapi` | 16 / 1 | `openapi` parsers | `httptest` only (localhost, ephemeral — fine) | no |
-| `internal/secrets` | 15 / 3 | — | none | no |
-| `internal/tui` | 15 / 1 | — | `time.Now` in 1 file | no |
-| `internal/searchpath` | 14 / 1 | `searchpath` parsers | none | no |
-| `internal/schemaval` | 13 / 1 | schema shapes | none | no |
-| `internal/mcpauth` | 13 / 2 | — | none | no |
-| `internal/execsvc` | 13 / 2 | — | 1 sleep + `time.Now` file | watch timing |
-| `internal/source` | 12 / 1 | — | none | no |
-| `internal/hooks` | 11 / 2 | — | 1 sleep + `time.Now` file | mild |
-| `internal/mcpspec` | 11 / 1 | — | none | no |
-| `internal/plugin` | 11 / 2 | — | none | no |
-| `internal/runner` | 11 / 3 | — | `time.Now` in 1 file | no |
-| `internal/cache` | 9 / 1 | — | `time.Now` in 1 file (TTL — candidate for fixed clock) | no |
-| `internal/preflight` | 9 / 1 | — | none | no |
-| `internal/eventstore` | 8 / 1 | — | none | no |
-| `internal/tasks` | 7 / 1 | — | `tasks_test.go:16` 20 ms sleep | mild |
-| `internal/scripting` | 7 / 1 | — | none | no |
-| `internal/defaults` | 6 / 3 | — | none | no |
-| `internal/nearmiss` | 5 / 1 | — | none | no |
-| `internal/refdoc` | 5 / 1 | — | none | no |
-| `internal/spec` | 5 / 1 | — | none | no |
-| `internal/sdnotify` | 4 / 1 | — | unixgram listen (`sdnotify_test.go:16` — no ports) | no |
-| `internal/testsupport` (+`taskmcp`) | 3+3 / 1+1 | — | `build.go`: `FakeMCPBinary`/`MCPXBinary` compile once per test binary into `os.MkdirTemp("mcpx-fake-" …)` / `("mcpx-bin-" …)` dirs that are **never removed** (no `RemoveAll`, no `t.TempDir`) — the #129 temp-dir candidate stands; the file's own comment notes parallel `go build` load pushing start timeouts over the edge | load-induced timeouts (environmental) |
-| `internal/opencode` | 2 / 1 | — | none | no |
-| `internal/buildcheck` | 2 / 2 | — | none | no |
-| `internal/wasmtools` | 3 / 1 | — | none | no |
-| `internal/catalog`, `internal/events`, `internal/mcpheaders`, `internal/dashboard`, `examples` | 7/0/0/0/0 | — | none | no |
+- Pure/table-shaped candidates: `codegen.jsonschema`, `launcher.template`, `config.layers`, `settings.precedence`, redaction inputs, parsers (`openapi`, `searchpath`, `schemaval`, `artifacts/name`, `diagnose`), and request/operation shapes in `daemon`/`mcpserver`. Existing tables are candidates to generalize, not a request to fuzz every test.
+- Current sleep hotspots by calls/files: `internal/conformance` (37/7), `internal/e2e` (33/15), `internal/daemon` (25/11), `internal/mcpserver` (23/10), `internal/mcpclient` (18/10), `internal/tasks` (13/1), and `internal/pool` (9/6). Inspect each call site for sleep-then-assert before labeling it flaky; intentional delays and deadline polling are not automatically flakes.
+- `net.Listen` and `httptest` counts identify tests that bind local sockets. Confirm listeners use ephemeral ports or Unix sockets and are closed; counts alone do not show a port conflict.
 
-Totals: **1626 tests, 306 files**; 59 files `time.Sleep` (143 hits);
-60 files `time.Now` (203 hits); 76 files `[]struct` (120 hits);
-40 files `httptest` (all localhost/ephemeral — fine); 8 files
-`net.Listen` (7 unix/unixgram, 1 ephemeral TCP — fine); 2 files
-`math/rand` (sleep jitter); 1 file `crypto/rand` (test input, not
-asserted); 0 `t.Parallel`; 0 `Fuzz*`.
+## Counting command
 
-## Generator shortlist (unchanged direction, refreshed refs)
+Counts above use Go test declarations and simple regex scans of test-file contents. Re-run the named scans above after source changes; review flagged contexts before changing tests.
 
-Pure-function, table-shaped, highest yield first: `codegen.jsonschema`,
-`launcher.template`, `config.layers` (`merge_test.go:54-177`),
-`settings.precedence`, redaction inputs (`redact_test.go`), parsers
-(`openapi`, `searchpath`, `schemaval`, `artifacts/name`, `diagnose`),
-`exec.flagset`, `api.v1request`. No `Fuzz*` twins exist yet anywhere.
+## Seed and fuzz implementation references
 
-## Cheapest flake fixes (proof-the-inventory-pays candidates)
+- Seeded generators live in `internal/testsupport/gen`; stream derivation v1 is keyed by run seed, test name, and generator `name@version`. Generators draw only from `gen.Source`; native fuzz adapters use `gen.NewBytesSource(data)`.
+- CI run-seed records are stored under `testdata/seeds/v1`; the collector workflow is the writer. The seed-store README defines which run records are retained.
+- The fuzz corpus for `FuzzStripJSONC` is under `internal/config/testdata/fuzz/FuzzStripJSONC/`. Ordinary unit tests replay it; `.github/workflows/mcpx-test.yml` runs the bounded mutation smoke. Long fuzz/soak work remains separate.
 
-1. `internal/pool/pool_test.go:519-520` — pass a fixed `now` to
-   `ReapIdle` instead of sleeping 50 ms (one-line change; the seam
-   already exists).
-2. `internal/tasks/tasks_test.go:16`, `internal/mcpclient/modern_test.go:365`
-   — 10–20 ms sleep-then-assert; replace with channel/poll-with-deadline.
-3. `internal/testsupport/build.go` — the `mcpx-bin-*`/`mcpx-fake-*` dirs
-   are never removed (#129 candidate), but the fix is NOT
-   `t.Cleanup(RemoveAll)` inside the helpers: the binaries are cached
-   behind package-global `sync.Once`, so test-scoped cleanup would delete
-   the shared binary while later tests still need it. Per-test temp dirs
-   should use `t.TempDir`; the shared binaries need package-lifetime
-   cleanup (e.g. a `TestMain` hook) or a cache redesign first.
+## History
 
-## Not in this slice (per packet scope)
-
-Seed helper / wrapper / first generator (deliverable 2 — waits on
-#1949 seed format and #1956 engine choice); policy text (deliverable 3 —
-belongs with the #99-successor policy issue). No test or production code
-was changed for this inventory.
-
-## Open question for #99
-
-This file lives at `pkgs/mcpx/docs/testing/inventory.md` as the packet's
-fallback home. If #99 picks a different docs home, move it there.
+The prior detailed review was measured at `dd2c88ff` and is superseded by this recount. Its exact file/line references and classifications should be rechecked against current source before reuse.
