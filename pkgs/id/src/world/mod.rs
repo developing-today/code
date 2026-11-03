@@ -49,6 +49,10 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
+pub use replica::{
+    ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
+    restore_replica_journal, serve_replica,
+};
 pub use replication::{
     AcceptedFrame, MAX_REPLICATION_FRAME_BYTES, MAX_REPLICATION_PAYLOAD_BYTES, REPLICATION_DOMAIN,
     REPLICATION_ENVELOPE_VERSION, REPLICATION_FRAME_MAGIC, ReplicationCursor, ReplicationEnvelope,
@@ -60,7 +64,6 @@ pub use replication_receiver::{
     DurableReceiver, MAX_STAGED_TRANSFER_BYTES, REPLICA_JOURNAL_FILE, ReceiverError,
     ReceiverProgress,
 };
-pub use replica::{ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries, restore_replica_journal, serve_replica};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
     constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
@@ -1076,6 +1079,10 @@ pub struct RestoredWorld {
     /// Inputs committed after the install or checkpoint, in order, to replay
     /// through it.
     pub replay: Vec<WorldEvent>,
+    /// Live presence reconstructed from journaled `players` events. Writer
+    /// restore clears it after synthesizing the process-restart leaves;
+    /// replica restore retains it at the verified cursor.
+    pub presence: BTreeMap<u64, u64>,
 }
 
 /// The profile requested by the world admin and when it takes effect.

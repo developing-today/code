@@ -2721,8 +2721,21 @@ async fn handle_client_frame<I: SessionIo>(
         }
     };
     // Accepted events reach everyone, including the sender, through the
-    // broadcast branch, so only rejections are answered directly.
-    result.is_ok() || send_error(service.frame_meter(), io, "world event rejected").await
+    // broadcast branch, so only rejections are answered directly. A
+    // read-only replica names its mode: the refusal is the replica, not the
+    // spectator's capability.
+    if result.is_ok() {
+        return true;
+    }
+    if service.world().is_read_only() {
+        return send_error(
+            service.frame_meter(),
+            io,
+            "world is read-only (replica); local mutations are refused",
+        )
+        .await;
+    }
+    send_error(service.frame_meter(), io, "world event rejected").await
 }
 
 /// Serialize and send one server frame, metering its bytes into the

@@ -643,6 +643,29 @@ impl ArtifactLog {
         }
         Ok(log)
     }
+
+    /// Load and verify an artifact log without truncating a torn final
+    /// fragment. Used by read-only replicas, whose startup must never
+    /// rewrite local state.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let text = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error).context("reading the artifact file"),
+        };
+        let kept = text.rfind('\n').map_or(0, |index| index + 1);
+        let mut log = Self::default();
+        for (number, line) in text[..kept].lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let artifact: SignedArtifact = serde_json::from_str(line)
+                .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
+            log.store(artifact, false)
+                .with_context(|| format!("artifact line {} is refused", number + 1))?;
+        }
+        Ok(log)
+    }
 }
 
 /// Durably append one artifact to the file at `path`.

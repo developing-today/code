@@ -515,27 +515,23 @@ pub async fn open_replica(
     let journal_entries = entries.len();
     let subjects = replica_subjects(&entries);
     let directory_path = dir.join("directory.jsonl");
-    let (restored, petnames) = tokio::task::spawn_blocking({
+    let restored = tokio::task::spawn_blocking({
         let directory_path = directory_path.clone();
-        let dir_owned = dir.to_owned();
         move || {
             // Read-only replay: opening a replica must not truncate or
             // rewrite the directory sidecar.
-            let directory =
-                crate::directory::Directory::replay_read_only(&directory_path)
-                    .context("directory open")?;
-            let restored =
-                restore_replica_entries(&id, limits, entries, &directory, &subjects)?;
-            let petnames_path = dir_owned.join("petnames.jsonl");
-            let petnames =
-                crate::petname::Petnames::open(&petnames_path).context("petnames open")?;
-            Ok::<_, anyhow::Error>((restored, petnames))
+            let directory = crate::directory::Directory::replay_read_only(&directory_path)
+                .context("directory open")?;
+            let restored = restore_replica_entries(&id, limits, entries, &directory, &subjects)?;
+            Ok::<_, anyhow::Error>(restored)
         }
     })
     .await
     .context("replica restore task")??;
-    let mut core = restored.core;
-    core.set_petnames(petnames);
+    let core = restored.core;
+    // Petnames are explicitly outside F12.13's replication scope, and no
+    // local directory session can run in replica mode. Keep the default
+    // in-memory model instead of opening a mutating sidecar.
     let cursor = restored.cursor;
     let modules = ModuleDir::new(dir.join("modules"));
     let mut report = OpenReport {
@@ -572,10 +568,17 @@ pub async fn open_replica(
     };
     // No journal, no outbox: the replica appends nothing and queues nothing
     // for other servers. Directory writes are refused by the read-only
-    // actor, so the loaded directory facts stay exactly as verified.
-    let handle = WorldHandle::spawn_durable_read_only(core, program, None);
-    debug_assert!(handle.is_read_only());
-    let service = service(handle).with_module_dir(modules);
+    // actor, so directory facts stay fixed to the local replica sidecar.
+    let handle = WorldHandle::spawn_read_only(core, program, restored.presence)?;
+    let mut service = service(handle).with_module_dir(modules);
+    // Replica sessions are spectator-only; a configured writer admin token,
+    // mail sender, compiler, outbox or blob uploader must not leak into the
+    // replica service. The actor remains the authoritative enforcement layer.
+    service.admin_token = None;
+    service.mail = None;
+    service.outbox = None;
+    service.compiler = None;
+    service.blobs = None;
     if let Some(wasm) = restored_module {
         service.adopt_module(wasm).await?;
     }
@@ -589,7 +592,10 @@ fn replica_subjects(entries: &[JournalEntry]) -> std::collections::BTreeSet<Stri
     entries
         .iter()
         .filter_map(|entry| match entry {
-            JournalEntry::Issued { subject: Some(subject), .. } => Some(subject.clone()),
+            JournalEntry::Issued {
+                subject: Some(subject),
+                ..
+            } => Some(subject.clone()),
             _ => None,
         })
         .collect()
@@ -858,6 +864,292 @@ mod tests {
             }
         }
         world.shutdown().await.unwrap();
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn verified_replica_opens_offline_and_matches_writer_records_without_mutating_journal() {
+        use crate::world::{
+            DurableReceiver, JOURNAL_VERSION, ReplicationEnvelope, SignedReplicationEnvelope,
+            frame_digest,
+        };
+        use ed25519_dalek::SigningKey;
+        use iroh_blobs::store::mem::MemStore;
+
+        let writer_dir = TempDir::new().unwrap();
+        let replica_dir = TempDir::new().unwrap();
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let (writer, _) = open_world(
+            writer_dir.path(),
+            "replica-offline",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            move |handle| {
+                WorldService::new(handle, Some("writer-admin".to_owned())).with_blob_store(blobs)
+            },
+        )
+        .await
+        .unwrap();
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        writer
+            .install_wasm(Some("writer-admin"), wasm, 42, &hash)
+            .await
+            .unwrap();
+        let (_, spectator) = writer
+            .world()
+            .issue("spectator", WorldScopes::GUEST)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            writer
+                .world()
+                .input(spectator.clone(), b"inc".to_vec())
+                .await
+                .unwrap();
+        }
+        let (writer_sequence, writer_records) = writer.world().records();
+        assert_eq!(writer_sequence, 4);
+        assert_eq!(
+            writer_records
+                .get("count")
+                .and_then(serde_json::Value::as_i64),
+            Some(3)
+        );
+
+        // Copy the active content-addressed module to the replica directory;
+        // the journal receiver verifies only the journal bytes in this phase.
+        let replica_modules = replica_dir.path().join("modules");
+        std::fs::create_dir_all(&replica_modules).unwrap();
+        std::fs::copy(
+            writer_dir
+                .path()
+                .join("modules")
+                .join(format!("{hash}.wasm")),
+            replica_modules.join(format!("{hash}.wasm")),
+        )
+        .unwrap();
+        let journal_bytes = std::fs::read(writer_dir.path().join("journal.jsonl")).unwrap();
+        let receiver_key = SigningKey::from_bytes(&[81; 32]);
+        let pinned_source = *receiver_key.verifying_key().as_bytes();
+        let nonce = [19; crate::world::SESSION_NONCE_BYTES];
+        let mut receiver =
+            DurableReceiver::open(replica_dir.path(), "replica-offline", pinned_source).unwrap();
+        receiver.begin_session(nonce);
+        let snapshot = ReplicationEnvelope::snapshot(
+            "replica-offline",
+            pinned_source,
+            receiver.header_version().unwrap_or(JOURNAL_VERSION),
+            nonce,
+            [0; 32],
+            journal_bytes.clone(),
+        )
+        .unwrap();
+        let snapshot_cursor = snapshot.cursor_after;
+        let snapshot_frame = SignedReplicationEnvelope::sign(snapshot, &receiver_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        let previous = frame_digest(&snapshot_frame);
+        receiver.accept_frame(&snapshot_frame).unwrap();
+        let terminal = ReplicationEnvelope::terminal(
+            "replica-offline",
+            pinned_source,
+            JOURNAL_VERSION,
+            nonce,
+            snapshot_cursor,
+            previous,
+        );
+        let terminal_frame = SignedReplicationEnvelope::sign(terminal, &receiver_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        receiver.accept_frame(&terminal_frame).unwrap();
+        drop(receiver);
+
+        let expected_bytes = std::fs::read(replica_dir.path().join("journal.jsonl")).unwrap();
+        assert_eq!(expected_bytes, journal_bytes);
+        // The writer is unreachable before replica open.
+        writer.world().shutdown().await.unwrap();
+        let (replica, report, cursor) = open_replica(
+            replica_dir.path(),
+            "replica-offline",
+            pinned_source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("must-be-stripped")),
+        )
+        .await
+        .unwrap();
+        assert!(replica.world().is_read_only());
+        assert_eq!(report.program_error, None);
+        assert_eq!(report.sequence, writer_sequence);
+        assert_eq!(cursor.sequence, writer_sequence);
+        assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(report.replayed_inputs, 3);
+        let (replica_sequence, replica_records) = replica.world().records();
+        assert_eq!(replica_sequence, writer_sequence);
+        assert_eq!(*replica_records, *writer_records);
+        assert!(
+            replica
+                .world()
+                .input(spectator, b"no".to_vec())
+                .await
+                .is_err()
+        );
+        replica.world().shutdown().await.unwrap();
+        assert_eq!(
+            std::fs::read(replica_dir.path().join("journal.jsonl")).unwrap(),
+            expected_bytes,
+            "serving never mutates the verified journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_replica_serves_friend_delegation_from_directory_facts_without_writer() {
+        use crate::directory::Actor;
+        use crate::world::{
+            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
+            SignedReplicationEnvelope, WorldCore, frame_digest, journal_entry_line,
+        };
+        use ed25519_dalek::SigningKey;
+
+        let world_id = "replica-directory-offline";
+        let mut writer_core = WorldCore::new(world_id, WorldLimits::default()).unwrap();
+        let (ann_credential, _) = writer_core.directory_mut().sign_up("Ann").unwrap();
+        let ann = writer_core
+            .directory()
+            .account_for(&ann_credential)
+            .unwrap();
+        let (bo_credential, _) = writer_core.directory_mut().sign_up("Bo").unwrap();
+        let bo = writer_core.directory().account_for(&bo_credential).unwrap();
+        writer_core
+            .directory_mut()
+            .verify_account(Actor::Server, &ann)
+            .unwrap();
+        writer_core
+            .directory_mut()
+            .request_friend(&ann_credential, &bo, world_id, 1)
+            .unwrap();
+        writer_core
+            .directory_mut()
+            .accept_friend(&bo_credential, &ann, world_id, 2)
+            .unwrap();
+        let (owner, owner_token) = writer_core
+            .issue_for_account(
+                &ann_credential,
+                crate::world::WorldScopes::ALL,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let (spectator, spectator_token) = writer_core
+            .delegate_to_friend(
+                &owner_token,
+                &bo,
+                crate::world::WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "Bo spectator",
+            )
+            .unwrap();
+        let subjects = std::collections::BTreeSet::from([ann, bo]);
+        let directory_facts = writer_core
+            .directory()
+            .replica_facts_for(&subjects)
+            .unwrap();
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            writer_core.issued_entry(owner.id).unwrap(),
+            writer_core.issued_entry(spectator.id).unwrap(),
+        ];
+        let journal_bytes: Vec<u8> = entries.iter().flat_map(journal_entry_line).collect();
+        drop(writer_core);
+
+        let replica_dir = TempDir::new().unwrap();
+        let directory_path = replica_dir.path().join("directory.jsonl");
+        let mut directory_bytes = Vec::new();
+        for entry in &directory_facts {
+            serde_json::to_writer(&mut directory_bytes, entry).unwrap();
+            directory_bytes.push(b'\n');
+        }
+        // A crash-debris fragment is ignored in memory and is not repaired by
+        // the replica's read-only open path.
+        directory_bytes.extend_from_slice(b"{\"torn\":");
+        std::fs::write(&directory_path, &directory_bytes).unwrap();
+
+        let source_key = SigningKey::from_bytes(&[82; 32]);
+        let source = *source_key.verifying_key().as_bytes();
+        let nonce = [21; crate::world::SESSION_NONCE_BYTES];
+        let mut receiver = DurableReceiver::open(replica_dir.path(), world_id, source).unwrap();
+        receiver.begin_session(nonce);
+        let snapshot = ReplicationEnvelope::snapshot(
+            world_id,
+            source,
+            JOURNAL_VERSION,
+            nonce,
+            [0; 32],
+            journal_bytes.clone(),
+        )
+        .unwrap();
+        let cursor = snapshot.cursor_after;
+        let snapshot_frame = SignedReplicationEnvelope::sign(snapshot, &source_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        let previous = frame_digest(&snapshot_frame);
+        receiver.accept_frame(&snapshot_frame).unwrap();
+        let terminal = ReplicationEnvelope::terminal(
+            world_id,
+            source,
+            JOURNAL_VERSION,
+            nonce,
+            cursor,
+            previous,
+        );
+        let terminal_frame = SignedReplicationEnvelope::sign(terminal, &source_key)
+            .unwrap()
+            .encode_frame()
+            .unwrap();
+        receiver.accept_frame(&terminal_frame).unwrap();
+        drop(receiver);
+
+        // No writer world/handle is alive or reachable after this point.
+        let (replica, _, _) = open_replica(
+            replica_dir.path(),
+            world_id,
+            source,
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            service(Some("writer-admin")),
+        )
+        .await
+        .unwrap();
+        let snapshot = replica
+            .world()
+            .snapshot(spectator_token.clone())
+            .await
+            .unwrap();
+        assert_eq!(snapshot.current_sequence, 0);
+        assert!(
+            replica
+                .world()
+                .chat(spectator_token, "read only")
+                .await
+                .is_err()
+        );
+        replica.world().shutdown().await.unwrap();
+        assert_eq!(
+            std::fs::read(&directory_path).unwrap(),
+            directory_bytes,
+            "read-only startup must not repair the directory sidecar"
+        );
+        assert_eq!(
+            std::fs::read(replica_dir.path().join("journal.jsonl")).unwrap(),
+            journal_bytes
+        );
     }
 
     #[test]

@@ -537,9 +537,9 @@ impl Directory {
     /// must not rewrite even a damaged directory sidecar.
     ///
     /// A torn final fragment is ignored (like [`Self::replay`]); a malformed
-    /// newline-terminated entry remains fatal. The artifact log is not
-    /// opened or repaired: replica authorization exports only current facts
-    /// from complete journal entries.
+    /// newline-terminated entry remains fatal. The artifact log is verified
+    /// without repair, and a signed friend removal that was stored before a
+    /// crash but not journaled is applied in memory (like writer open).
     pub fn replay_read_only(path: &Path) -> Result<Self> {
         let mut directory = Self::new();
         let text = match std::fs::read_to_string(path) {
@@ -562,6 +562,23 @@ impl Directory {
                 .apply_replay(&entry)
                 .with_context(|| format!("directory journal line {} is refused", number + 1))?;
         }
+        let artifacts = ArtifactLog::open_read_only(&artifact_path(path))?;
+        let removals: Vec<(String, String, Vec<String>)> = artifacts
+            .all()
+            .filter_map(|artifact| match artifact.parsed() {
+                Ok(Some(Kind::FriendRemove(removal))) => {
+                    Some((removal.a, removal.b, removal.requests))
+                }
+                _ => None,
+            })
+            .collect();
+        for (a, b, requests) in removals {
+            let formed_by = directory.friend_requests.get(&pair(&a, &b));
+            if directory.are_friends(&a, &b) && formed_by.is_some_and(|id| requests.contains(id)) {
+                directory.apply_replay(&DirectoryEntry::FriendRemoved { a, b, requests })?;
+            }
+        }
+        directory.artifacts = artifacts;
         Ok(directory)
     }
 
@@ -1077,10 +1094,7 @@ impl Directory {
     /// such a prefix, so a gappy topology can never silently narrow a
     /// subject's ceiling. Worlds without group grants (like the phase-4
     /// friendship-delegation acceptance case) never hit this.
-    pub fn replica_facts_for(
-        &self,
-        subjects: &BTreeSet<String>,
-    ) -> Result<Vec<DirectoryEntry>> {
+    pub fn replica_facts_for(&self, subjects: &BTreeSet<String>) -> Result<Vec<DirectoryEntry>> {
         // Groups that grant a subject some level, closed under nesting: a
         // subject's level can flow through a nested group, and `MemberSet`
         // refuses an unknown group.
@@ -1093,9 +1107,10 @@ impl Directory {
             .collect();
         while let Some(id) = stack.pop() {
             if groups.insert(id) {
-                for ((_, member), _) in self.members.range(
-                    (id, Member::Group { id: 0 })..=(id, Member::Group { id: u64::MAX }),
-                ) {
+                for ((_, member), _) in self
+                    .members
+                    .range((id, Member::Group { id: 0 })..=(id, Member::Group { id: u64::MAX }))
+                {
                     if let Member::Group { id: nested } = member {
                         stack.push(*nested);
                     }
@@ -1108,7 +1123,7 @@ impl Directory {
         let contiguous = ordered
             .iter()
             .enumerate()
-            .all(|(index, id)| *id as usize == index + 1);
+            .all(|(index, id)| u64::try_from(index + 1).is_ok_and(|expected| expected == *id));
         ensure!(
             contiguous,
             "replica export cannot represent non-contiguous group IDs {ordered:?}"
@@ -1128,12 +1143,14 @@ impl Directory {
                     (*id, Member::Account { id: String::new() })
                         ..=(*id, Member::Group { id: u64::MAX }),
                 )
-                .filter(|((_, member), level)| {
-                    matches!(member, Member::Account { .. }) && **level == Level::Admin
-                })
-                .map(|((_, member), _)| match member {
-                    Member::Account { id } => id.clone(),
-                    Member::Group { .. } => unreachable!("filtered to accounts"),
+                .filter_map(|((_, member), level)| {
+                    if *level != Level::Admin {
+                        return None;
+                    }
+                    match member {
+                        Member::Account { id } => Some(id.clone()),
+                        Member::Group { .. } => None,
+                    }
                 })
                 .min();
             let Some(founder) = founder else {

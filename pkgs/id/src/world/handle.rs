@@ -41,35 +41,29 @@ impl WorldHandle {
     /// [`WorldCore::restore`]); the actor only appends.
     pub fn spawn_durable(
         core: WorldCore,
-        mut program: Box<dyn WorldProgram>,
-        journal: Option<Box<dyn WorldJournal>>,
-    ) -> Self {
-        Self::spawn_inner(core, program, journal, false)
-    }
-
-    /// Spawn a replica actor over a verified, already-restored world.
-    /// Local mutations and program side effects are refused; `journal`
-    /// must be absent because a replica never appends.
-    pub fn spawn_durable_read_only(
-        core: WorldCore,
         program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
     ) -> Self {
-        assert!(
-            journal.is_none(),
-            "a read-only replica carries no journal to append to"
-        );
-        assert!(
-            core.replica_mode,
-            "read-only actors require a replica-restored core"
-        );
-        Self::spawn_inner(core, program, None, true)
+        Self::spawn_inner(core, program, journal, false, HashMap::new())
     }
 
-    /// Spawn a read-only replica actor over an in-memory program, without
-    /// any journal. See [`Self::spawn_durable_read_only`].
-    pub fn spawn_read_only(core: WorldCore, program: Box<dyn WorldProgram>) -> Self {
-        Self::spawn_durable_read_only(core, program, None)
+    /// Spawn a replica actor over a verified, already-restored world.
+    /// Local mutations and program side effects are refused; the replica
+    /// carries no journal to append to. Only a core returned by
+    /// [`WorldCore::restore_replica`] may be served this way.
+    pub(crate) fn spawn_read_only(
+        core: WorldCore,
+        program: Box<dyn WorldProgram>,
+        restored_presence: BTreeMap<u64, u64>,
+    ) -> Result<Self> {
+        if !core.replica_mode {
+            anyhow::bail!("read-only actors require a replica-restored core");
+        }
+        let presence = restored_presence
+            .into_iter()
+            .map(|(id, count)| (id, usize::try_from(count).map_or(usize::MAX, |count| count)))
+            .collect();
+        Ok(Self::spawn_inner(core, program, None, true, presence))
     }
 
     /// Whether this handle fronts a read-only replica actor.
@@ -83,6 +77,7 @@ impl WorldHandle {
         mut program: Box<dyn WorldProgram>,
         journal: Option<Box<dyn WorldJournal>>,
         read_only: bool,
+        presence: HashMap<u64, usize>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(256);
         let (events, _) = broadcast::channel(256);
@@ -125,7 +120,7 @@ impl WorldHandle {
             records_sender,
             replication_sender,
             view_changed: view_changed_sender,
-            presence: HashMap::new(),
+            presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
             denied_subs: BTreeSet::new(),

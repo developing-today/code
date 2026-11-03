@@ -309,6 +309,7 @@ impl WorldCore {
                     core,
                     program,
                     replay,
+                    presence: BTreeMap::new(),
                 });
             }
         }
@@ -352,9 +353,7 @@ impl WorldCore {
                             && (participant.display_name
                                 == sanitize_display_name(&participant.display_name)
                                 || participant.display_name
-                                    == legacy_sanitize_display_name(
-                                        &participant.display_name
-                                    )),
+                                    == legacy_sanitize_display_name(&participant.display_name)),
                         "participant {} has a display name mint could not have produced",
                         participant.id
                     );
@@ -649,11 +648,9 @@ impl WorldCore {
                     );
                     ensure!(
                         events.last().is_none_or(|last| last.sequence == sequence)
-                            && events
-                                .windows(2)
-                                .all(|pair| {
-                                    pair[0].sequence.checked_add(1) == Some(pair[1].sequence)
-                                }),
+                            && events.windows(2).all(|pair| {
+                                pair[0].sequence.checked_add(1) == Some(pair[1].sequence)
+                            }),
                         "journal checkpoint events are out of order"
                     );
                     core.sequence = sequence;
@@ -708,7 +705,7 @@ impl WorldCore {
         // anyone the journal still shows present is gone by now. Replicas
         // (F12.13) skip this synthesis: see `restore_replica`.
         if !preserve_presence {
-            for participant in present.into_keys() {
+            for participant in present.keys().copied() {
                 let name = core
                     .participant(participant)
                     .map_or_else(|| participant.to_string(), |p| p.display_name);
@@ -721,11 +718,17 @@ impl WorldCore {
                 });
             }
         }
+        let presence = if preserve_presence {
+            present
+        } else {
+            BTreeMap::new()
+        };
         core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
             program,
             replay,
+            presence,
         })
     }
 
@@ -1325,11 +1328,7 @@ impl WorldCore {
     ///
     /// Fails if the capability does not authorize input, or a different
     /// key is already bound to the participant.
-    pub fn bind_author_key(
-        &mut self,
-        token: &JoinCapability,
-        author_key: [u8; 32],
-    ) -> Result<u64> {
+    pub fn bind_author_key(&mut self, token: &JoinCapability, author_key: [u8; 32]) -> Result<u64> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
         if let Some(bound) = self.author_keys.get(&participant_id) {
             ensure!(
@@ -1408,13 +1407,16 @@ impl WorldCore {
         signed: &crate::chain::Event,
     ) -> Result<()> {
         let participant_id = event.participant_id;
-        let author = self.author_keys.get(&participant_id).copied().ok_or_else(|| {
-            anyhow::anyhow!("participant {participant_id} has no bound author key")
-        })?;
+        let author = self
+            .author_keys
+            .get(&participant_id)
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!("participant {participant_id} has no bound author key")
+            })?;
         let chain = self.move_chains.entry(participant_id).or_default();
         ensure!(
-            signed.header.seq_num == chain.next_seq()
-                && signed.header.backlink == chain.frontier(),
+            signed.header.seq_num == chain.next_seq() && signed.header.backlink == chain.frontier(),
             "signed move is no longer the author's expected next move at commit"
         );
         chain.accept(signed);

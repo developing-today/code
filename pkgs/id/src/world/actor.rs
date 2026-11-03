@@ -1865,6 +1865,7 @@ impl WorldActor {
             program,
             journal,
             storage_failed: false,
+            read_only: false,
             program_healthy,
             view_failures: 0,
             compaction_off: false,
