@@ -298,6 +298,7 @@ async fn main() -> Result<()> {
             no_relay,
             no_mdns,
             node,
+            abuse,
         }) => {
             let options = PeersOptions {
                 gossip,
@@ -313,6 +314,7 @@ async fn main() -> Result<()> {
                 replace_defaults,
                 no_relay,
                 no_mdns,
+                abuse,
             };
             cmd_peers(node, options).await
         }
