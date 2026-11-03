@@ -10,8 +10,10 @@ import { join } from "node:path";
 import {
   ACTIVITY_SOURCE_COVERAGE,
   IngestionStore,
+  WatchdogEpisodeStabilizer,
   activityCoverageHtml,
   gapsHtml,
+  ingestActivity,
   kaneoChangeDeliveries,
   syncWatchdogGaps,
   watchdogDeliveries,
@@ -76,6 +78,85 @@ describe("activity writers (#3321)", () => {
     expect(deliveries[0]?.link).toContain("kaneo.security.cab");
     expect(deliveries[1]?.summary).toContain("appeared");
     expect(kaneoChangeDeliveries(new Map([[a.id, a]]), [a])).toEqual([]);
+  });
+});
+
+describe("codex findings on PR #5141 (#3321)", () => {
+  test("watchdog stabilizer pins an episode to its first-observed since until it clears", () => {
+    const stab = new WatchdogEpisodeStabilizer();
+    const first = stab.stabilize([watchdogItem("watchdog:fleet-feed", 300_000)]);
+    // A later derivation of the SAME breach carries a different
+    // (now-based) since; the delivery id must not move.
+    const laterItem = { ...watchdogItem("watchdog:fleet-feed", 60_000) };
+    const second = stab.stabilize([laterItem]);
+    expect(second[0]?.since).toBe(first[0]?.since);
+    expect(watchdogDeliveries(second)[0]?.sourceId).toBe(watchdogDeliveries(first)[0]?.sourceId);
+    // The episode clears; a genuinely new episode gets its own id.
+    stab.stabilize([]);
+    const third = stab.stabilize([laterItem]);
+    expect(third[0]?.since).toBe(laterItem.since);
+  });
+
+  test("undated kaneo transitions get per-transition ids; a re-diff keeps its id", () => {
+    const undated = (status: string, seq: number): KaneoCardSnapshot => ({
+      id: "kaneo:p/t1",
+      status,
+      title: "Card t1",
+      seq,
+    });
+    // in-progress (seq 0) -> in-review: first undated transition.
+    const d1 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 0)]]), [
+      undated("in-review", 0),
+    ]);
+    // Re-diffing the same observed transition (retry after a failed
+    // append, baseline not advanced) reproduces the same id.
+    const retry = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 0)]]), [
+      undated("in-review", 0),
+    ]);
+    expect(retry[0]?.sourceId).toBe(d1[0]?.sourceId);
+    // The cycle continues: in-review (seq 1) -> in-progress -> in-review.
+    const d2 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-review", 1)]]), [
+      undated("in-progress", 1),
+    ]);
+    const d3 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 2)]]), [
+      undated("in-review", 2),
+    ]);
+    expect(d2[0]?.sourceId).not.toBe(d1[0]?.sourceId);
+    // Same from->to as d1, but a distinct real transition: new id.
+    expect(d3[0]?.sourceId).not.toBe(d1[0]?.sourceId);
+    expect(d1[0]?.sourceId).toContain("undated:1");
+    expect(d3[0]?.sourceId).toContain("undated:3");
+  });
+
+  test("concurrent ingestion of the same delivery ingests it exactly once", async () => {
+    const { events, store } = tmpStores();
+    const deliveries = watchdogDeliveries([watchdogItem("watchdog:registry", 120_000)]);
+    let records = 0;
+    const slow = {
+      record: async (e: Parameters<EventsStore["record"]>[0]) => {
+        records++;
+        await new Promise((r) => setTimeout(r, 25));
+        return events.record(e);
+      },
+    };
+    const [a, b] = await Promise.all([store.ingest(slow, deliveries), store.ingest(slow, deliveries)]);
+    expect(records).toBe(1);
+    expect(a.ingested + b.ingested).toBe(1);
+    expect(a.duplicates + b.duplicates).toBe(1);
+    expect(await events.list()).toHaveLength(1);
+  });
+
+  test("ingestActivity reports failed appends so callers can retain deliveries", async () => {
+    const { store } = tmpStores();
+    const deliveries = watchdogDeliveries([watchdogItem("watchdog:registry", 60_000)]);
+    const failing = {
+      record: async () => {
+        throw new Error("disk full");
+      },
+    };
+    const result = await ingestActivity(store, failing, deliveries);
+    expect(result.failed).toBe(1);
+    expect(result.ingested).toBe(0);
   });
 });
 

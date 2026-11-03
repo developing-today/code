@@ -162,9 +162,16 @@ async function kaneoProjects(
   }));
 }
 
-async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
+async function kaneoBoard(cfg: Config, cookie: string): Promise<{ items: BoardItem[]; complete: boolean }> {
   const projects = await kaneoProjects(cfg, cookie);
   const out: BoardItem[] = [];
+  // #3321 (Codex P2, PR #5141): a poll is only `complete` when every
+  // project page read succeeded. A failed page breaks that project's
+  // loop and serves what was read, but the result is partial: cards
+  // from the failed reads are missing, so the caller must not treat
+  // the result as a full snapshot (activity diffing / baseline
+  // replacement) until a complete poll lands.
+  let complete = true;
   // A task read that fails on every project is a failed fetch, not a
   // successfully empty board (Codex review, PR #2430): board() must
   // reach its catch path and serve fixtures with that provenance,
@@ -175,7 +182,10 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
     const all: KaneoColumn[] = [];
     for (let page = 1; ; page++) {
       const r = await getJson(`${cfg.kaneo.baseUrl}/api/task/tasks/${p.id}?page=${page}`, { Cookie: cookie });
-      if (!r.ok) break;
+      if (!r.ok) {
+        complete = false;
+        break;
+      }
       anyTaskPageRead = true;
       const body = r.json as { data?: { columns?: KaneoColumn[] }; pagination?: { totalPages: number } };
       const cols = body.data?.columns ?? [];
@@ -225,7 +235,7 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
     }
   }
   if (projects.length > 0 && !anyTaskPageRead) throw new Error("kaneo task reads failed for every project");
-  return applyBoardDonePolicy(out);
+  return { items: applyBoardDonePolicy(out), complete };
 }
 
 // --- Grist --------------------------------------------------------------
@@ -673,7 +683,20 @@ export function liveSource(
     standingAuto?: () => Promise<boolean>;
     onEvent?: (event: NewStreamEvent) => void;
     hasEvent?: (kind: string, ref: string) => Promise<boolean>;
-    onActivity?: (deliveries: ActivityDelivery[]) => void;
+    // The handler's return is the ingestion acknowledgment (#3321,
+    // Codex P2 on PR #5141): `false`, or a result with failed > 0,
+    // means the deliveries are NOT durable and the board baseline
+    // must be retained so the next poll retries them. A handler
+    // returning void is treated as acknowledged (legacy callers).
+    onActivity?: (
+      deliveries: ActivityDelivery[],
+    ) => Promise<boolean | { failed: number } | void> | boolean | { failed: number } | void;
+    // Kaneo polling-gap sink (#3321, Codex P2 on PR #5141): called
+    // with (source, gapFrom, failureTime) while polls are failing or
+    // partial, and with (source, gapFrom, null) on the first complete
+    // poll after a gap, so the server can record the missed interval
+    // as an activity gap and resolve it on recovery.
+    onSourceGap?: (source: string, from: string, to: string | null) => Promise<void> | void;
   },
 ): Source {
   const fix = fixtureSource();
@@ -700,6 +723,55 @@ export function liveSource(
   // In-memory on purpose: a restart re-baselines silently, and the
   // ingestion store's persisted seen set is the durable dedupe.
   let prevKaneoCards: Map<string, KaneoCardSnapshot> | null = null;
+  // #3321: per-card ingested-transition counters (the `seq` on
+  // KaneoCardSnapshot), kept outside the snapshot map so a card that
+  // leaves the board and later reappears resumes its count instead
+  // of restarting at a colliding undated delivery id. A card's count
+  // only advances when its change delivery is acknowledged.
+  const kaneoCardSeq = new Map<string, number>();
+  // #3321: when the current Kaneo polling gap opened (first failed
+  // or partial poll), or null when polls are healthy.
+  let kaneoGapFrom: string | null = null;
+  async function noteKaneoGap(at: Date): Promise<void> {
+    if (!kaneoGapFrom) kaneoGapFrom = at.toISOString();
+    if (!opts?.onSourceGap) return;
+    try {
+      await opts.onSourceGap("kaneo", kaneoGapFrom, at.toISOString());
+    } catch (err) {
+      console.error(
+        `[activity] WARNING: kaneo gap record failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  async function noteKaneoRecovered(): Promise<void> {
+    if (!kaneoGapFrom) return;
+    const from = kaneoGapFrom;
+    kaneoGapFrom = null;
+    if (!opts?.onSourceGap) return;
+    try {
+      await opts.onSourceGap("kaneo", from, null);
+    } catch (err) {
+      console.error(
+        `[activity] WARNING: kaneo gap recovery record failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  /** Advance the Kaneo baseline to `cards` (whose `seq` fields carry
+   *  the pre-change counters): bump the stored counter for every card
+   *  that appeared or changed status vs the old baseline, keep it for
+   *  unchanged cards. Only call once the change deliveries for this
+   *  transition are acknowledged durable — or when there were none. */
+  function advanceKaneoBaseline(cards: readonly KaneoCardSnapshot[]): void {
+    const next = new Map<string, KaneoCardSnapshot>();
+    for (const c of cards) {
+      const before = prevKaneoCards?.get(c.id);
+      const changed = !before || before.status !== c.status;
+      const seq = changed ? (c.seq ?? 0) + 1 : (c.seq ?? 0);
+      if (changed) kaneoCardSeq.set(c.id, seq);
+      next.set(c.id, { ...c, seq: kaneoCardSeq.get(c.id) ?? seq });
+    }
+    prevKaneoCards = next;
+  }
   // #1739: the last orchestration run whose publish was recorded in
   // the event log, plus its tier membership — a new runId is a publish
   // step, and the tier diff between successive publishes is the
@@ -854,15 +926,40 @@ export function liveSource(
   return {
     async board() {
       try {
-        const cookie = await kaneoCookie();
-        const board = await kaneoBoard(cfg, cookie);
+        // A failed Kaneo poll (auth or task reads) is an activity
+        // gap, not just a fixtures fallback (#3321, Codex P2 on
+        // PR #5141): record the missed interval via onSourceGap
+        // before rethrowing into the fixtures path below.
+        let cookie: string;
+        let kaneoResult: { items: BoardItem[]; complete: boolean };
+        try {
+          cookie = await kaneoCookie();
+          kaneoResult = await kaneoBoard(cfg, cookie);
+        } catch (err) {
+          await noteKaneoGap(new Date());
+          throw err;
+        }
+        const board = kaneoResult.items;
         // #3321: Kaneo activity ingestion — diff this poll against the
         // previous one and hand the changes to the server's ingestion
         // hook. The first poll after start is a silent baseline (no
         // deliveries): pre-start changes are not claimed as history,
         // and dedupe lives in the ingestion store, so re-diffs of the
         // same change never re-emit. Fire-and-forget like onEvent.
-        if (opts?.onActivity) {
+        if (!kaneoResult.complete) {
+          // Partial poll (#3321, Codex P2 on PR #5141): cards from
+          // the failed reads are missing, so diffing would invent
+          // appearance events for them when the reads recover, and
+          // replacing the baseline would lose their last known
+          // state. Skip diffing AND baseline replacement, and record
+          // the poll as an activity gap; the next complete poll
+          // diffs against the preserved baseline.
+          console.error(
+            "[activity] WARNING: kaneo board poll was partial; activity diff skipped and baseline preserved",
+          );
+          await noteKaneoGap(new Date());
+        } else {
+          await noteKaneoRecovered();
           try {
             const cards: KaneoCardSnapshot[] = board
               .filter((b) => b.source === "kaneo")
@@ -870,14 +967,45 @@ export function liveSource(
                 id: b.id,
                 status: b.status,
                 title: b.title,
+                seq: kaneoCardSeq.get(b.id) ?? prevKaneoCards?.get(b.id)?.seq ?? 0,
                 ...(b.updatedAt ? { updatedAt: b.updatedAt } : {}),
                 ...(b.kaneoUrl ? { kaneoUrl: b.kaneoUrl } : {}),
               }));
-            if (prevKaneoCards) {
+            if (!prevKaneoCards) {
+              // First poll: silent baseline, no deliveries, and the
+              // seq counters do not advance (nothing was ingested).
+              prevKaneoCards = new Map(cards.map((c) => [c.id, c]));
+            } else if (opts?.onActivity) {
               const deliveries = kaneoChangeDeliveries(prevKaneoCards, cards);
-              if (deliveries.length) opts.onActivity(deliveries);
+              if (!deliveries.length) {
+                advanceKaneoBaseline(cards);
+              } else {
+                // Await the ingestion acknowledgment before
+                // discarding the previous snapshot (Codex P2,
+                // PR #5141): if the append failed, the baseline —
+                // and the seq counters — stay put, so the next poll
+                // re-diffs the same change with the same stable
+                // delivery ids and the ingestion store can retry it
+                // (deliveries it did persist dedupe as duplicates).
+                const ack = await opts.onActivity(deliveries);
+                const failed =
+                  ack === false
+                    ? deliveries.length
+                    : typeof ack === "object" && ack !== null
+                      ? (ack.failed ?? 0)
+                      : 0;
+                if (failed > 0) {
+                  console.error(
+                    `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
+                      "board baseline retained so the next poll retries them",
+                  );
+                } else {
+                  advanceKaneoBaseline(cards);
+                }
+              }
+            } else {
+              advanceKaneoBaseline(cards);
             }
-            prevKaneoCards = new Map(cards.map((c) => [c.id, c]));
           } catch (err) {
             console.error(
               `[activity] WARNING: kaneo change diff failed: ${err instanceof Error ? err.message : String(err)}`,

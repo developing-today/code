@@ -7,7 +7,16 @@
 //   (`watchdog:<input>@<since>` for a watchdog breach episode,
 //   `kaneo:<project>/<task>:status:<from>-><to>:<updatedAt>` for a
 //   Kaneo change). The same real-world change always produces the
-//   same id, which is what makes dedupe possible.
+//   same id, which is what makes dedupe possible. Two refinements
+//   from the Codex review of PR #5141: a Kaneo card with no
+//   `updatedAt` gets a per-card transition sequence instead of the
+//   constant `undated` stamp (so a later repeat of the same
+//   transition is a new delivery, while a retry of the same observed
+//   transition keeps its id), and watchdog episodes pass through
+//   WatchdogEpisodeStabilizer, because watchdogTierItems assigns
+//   `now` (or a refreshed probe time) as `since` for several breach
+//   kinds and the raw derivation would mint a new episode id on
+//   every render.
 // - A persisted per-source checkpoint + seen-id set (one JSON file,
 //   PM_AGG_ACTIVITY_FILE, following the events store's discipline:
 //   atomic temp+rename writes serialized through a promise chain, a
@@ -95,11 +104,11 @@ export const ACTIVITY_SOURCE_COVERAGE: readonly ActivityCoverage[] = [
 
 // -- writers: pure mappings from source observations to deliveries -------
 
-/** Map the current watchdog tier items to deliveries, one per breach
- *  episode. The watchdog derivation is already stable (same inputs ->
- *  same item id and since), so the delivery id `watchdog:<input>@
- *  <since>` is stable per episode: re-deriving the same breach on the
- *  next render produces the same delivery, which dedupe then drops. */
+/** Map watchdog tier items to deliveries, one per breach episode.
+ *  Callers whose items come from repeated live derivations should
+ *  pass them through WatchdogEpisodeStabilizer first (below): the
+ *  delivery id `watchdog:<input>@<since>` is only as stable as the
+ *  item's `since`, and not every breach kind derives a stable one. */
 export function watchdogDeliveries(items: readonly TierItem[]): ActivityDelivery[] {
   return items.map((item) => ({
     source: "watchdog" as const,
@@ -111,6 +120,33 @@ export function watchdogDeliveries(items: readonly TierItem[]): ActivityDelivery
   }));
 }
 
+/** Pins each watchdog breach episode to the `since` it was FIRST
+ *  observed with, until the episode clears (Codex P2, PR #5141).
+ *  watchdogTierItems is pure and, for absent/future-dated feeds and
+ *  absent/invalid orchestration sections, assigns the current `now`
+ *  as `since`; failing probes carry each refresh's probe timestamp.
+ *  Without this pin, every render of one continuous outage would mint
+ *  a different delivery id and flood the bounded stream with
+ *  duplicates of the same episode, evicting unrelated history. The
+ *  pin is per item id and is forgotten as soon as the id stops being
+ *  derived, so a later, genuinely new episode gets its own id. */
+export class WatchdogEpisodeStabilizer {
+  private firstSinceById = new Map<string, string>();
+
+  stabilize(items: readonly TierItem[]): TierItem[] {
+    const present = new Set(items.map((i) => i.id));
+    for (const id of [...this.firstSinceById.keys()]) {
+      if (!present.has(id)) this.firstSinceById.delete(id);
+    }
+    return items.map((item) => {
+      const first = this.firstSinceById.get(item.id);
+      if (first !== undefined) return first === item.since ? item : { ...item, since: first };
+      this.firstSinceById.set(item.id, item.since);
+      return item;
+    });
+  }
+}
+
 /** The board-diffable shape of one Kaneo card. */
 export interface KaneoCardSnapshot {
   id: string;
@@ -118,6 +154,11 @@ export interface KaneoCardSnapshot {
   title: string;
   updatedAt?: string;
   kaneoUrl?: string;
+  /** Per-card count of transitions the caller had already ingested
+   *  for this card as of this snapshot (maintained across snapshots
+   *  by the caller; see kaneoChangeDeliveries). Only used to key
+   *  UNDATED deliveries, where no source timestamp exists. */
+  seq?: number;
 }
 
 /** Diff two successive Kaneo board snapshots into change deliveries.
@@ -125,7 +166,17 @@ export interface KaneoCardSnapshot {
  *  status changed produces one; unchanged cards produce none. The
  *  delivery id embeds the card's updatedAt when the source provides
  *  it, so two distinct changes to the same card are distinct
- *  deliveries while a re-diff of the same change is a duplicate. */
+ *  deliveries while a re-diff of the same change is a duplicate.
+ *  When the source omits updatedAt (which the live reader explicitly
+ *  supports), the id instead carries the card's next transition
+ *  sequence, (prev snapshot's `seq`) + 1: successive observed moves
+ *  in-progress -> in-review -> in-progress -> in-review then get
+ *  distinct ids instead of colliding on a constant `undated` stamp
+ *  (Codex P2, PR #5141), while re-diffing the SAME observed
+ *  transition against the SAME prev snapshot reproduces the same
+ *  id, so a retry after a failed append stays a dedupe-safe replay.
+ *  Callers persist the bumped seq in their stored snapshot once the
+ *  delivery is acknowledged (see live.ts board()). */
 export function kaneoChangeDeliveries(
   prev: ReadonlyMap<string, KaneoCardSnapshot>,
   next: readonly KaneoCardSnapshot[],
@@ -133,7 +184,7 @@ export function kaneoChangeDeliveries(
   const out: ActivityDelivery[] = [];
   for (const card of next) {
     const before = prev.get(card.id);
-    const stamp = card.updatedAt ?? "undated";
+    const stamp = card.updatedAt ?? `undated:${(card.seq ?? 0) + 1}`;
     if (!before) {
       out.push({
         source: "kaneo",
@@ -145,9 +196,10 @@ export function kaneoChangeDeliveries(
         ...(card.kaneoUrl ? { link: card.kaneoUrl } : {}),
       });
     } else if (before.status !== card.status) {
+      const undatedSeq = (before.seq ?? card.seq ?? 0) + 1;
       out.push({
         source: "kaneo",
-        sourceId: `${card.id}:status:${before.status}->${card.status}:${stamp}`,
+        sourceId: `${card.id}:status:${before.status}->${card.status}:${card.updatedAt ?? `undated:${undatedSeq}`}`,
         at: card.updatedAt ?? new Date().toISOString(),
         kind: "kaneo-change",
         ref: card.id,
@@ -233,6 +285,7 @@ function isCheckpoint(v: unknown): v is SourceCheckpoint {
 export class IngestionStore {
   private data: IngestionFile = { version: 1, checkpoints: {}, seen: {}, gaps: [] };
   private loadPromise: Promise<void> | null = null;
+  private ingestChain: Promise<void> = Promise.resolve();
   private writeChain: Promise<void> = Promise.resolve();
   private writeSeq = 0;
 
@@ -336,7 +389,27 @@ export class IngestionStore {
    * seen set persist before returning, so a restart resumes exactly
    * here.
    */
+  /** Serialize whole ingest operations (Codex P2, PR #5141): the
+   *  dedupe check and the stream append are a check-and-act pair, so
+   *  two concurrent ingest calls carrying the same delivery must not
+   *  both pass the seen check before either appends. The persist
+   *  write chain alone does not prevent that — it serializes file
+   *  writes, not this operation. A failed operation does not wedge
+   *  the chain: later calls still run, and unappended deliveries stay
+   *  unseen so a replay can retry them. */
   async ingest(
+    events: Pick<EventsStore, "record">,
+    deliveries: readonly ActivityDelivery[],
+  ): Promise<{ ingested: number; duplicates: number; failed: number }> {
+    const run = this.ingestChain.then(() => this.ingestSerialized(events, deliveries));
+    this.ingestChain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
+  private async ingestSerialized(
     events: Pick<EventsStore, "record">,
     deliveries: readonly ActivityDelivery[],
   ): Promise<{ ingested: number; duplicates: number; failed: number }> {
@@ -429,21 +502,26 @@ export class IngestionStore {
   }
 }
 
-/** Fire-and-forget ingestion for call sites that must never block on
- *  it (page renders, board polls): failures are logged, never thrown. */
+/** Ingestion for call sites that must never throw on it (page
+ *  renders, board polls): failures are logged, never thrown — but
+ *  the outcome is RETURNED, so a caller that holds state it may only
+ *  discard once a delivery is durable (the live source's Kaneo
+ *  baseline, Codex P2 on PR #5141) can check `failed` and retain
+ *  the delivery for retry instead of dropping it. */
 export async function ingestActivity(
   store: IngestionStore,
   events: Pick<EventsStore, "record">,
   deliveries: readonly ActivityDelivery[],
-): Promise<void> {
-  if (!deliveries.length) return;
+): Promise<{ ingested: number; duplicates: number; failed: number }> {
+  if (!deliveries.length) return { ingested: 0, duplicates: 0, failed: 0 };
   try {
-    await store.ingest(events, deliveries);
+    return await store.ingest(events, deliveries);
   } catch (err) {
     console.error(
       `[activity] WARNING: ingestion failed (${err instanceof Error ? err.message : String(err)}); ` +
         `deliveries stay unseen and a later pass can retry them.`,
     );
+    return { ingested: 0, duplicates: 0, failed: deliveries.length };
   }
 }
 
