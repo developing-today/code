@@ -24,6 +24,7 @@ const health: HealthView = {
     checkout: { state: "unknown", reason: "test fixture" },
     sections: [],
   },
+  quotaGatherer: null,
   jobs: {
     orchestration: { state: "unknown" },
     collector: { generatedAt: null, fileMtime: null, ageMs: null },
@@ -32,6 +33,7 @@ const health: HealthView = {
   facets: null,
   itemsCoverage: null,
   comments: { pendingMessages: 0, pendingGithub: 0, total: 0 },
+  conflicts: null,
   rfa: { state: "fixtures", detail: "fixtures mode — no live harness read", repositories: [], backends: [] },
 };
 

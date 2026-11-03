@@ -108,7 +108,7 @@ import { extractCharges, extractPaygLines, extractSaasServices, extractSubscript
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
-import { fetchProjectPool } from "../src/projects.ts";
+import { fetchProjectPoolWithCount } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
@@ -524,8 +524,16 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
 async function main(): Promise<void> {
   const now = new Date();
   const sectionStatuses: NonNullable<FleetFeed["meta"]>["sections"] = {};
-  const markSection = (key: string, status: FeedSectionStatus, error?: unknown) => {
-    sectionStatuses[key] = feedSectionStatus(status, new Date().toISOString(), error);
+  const markSection = (
+    key: string,
+    status: FeedSectionStatus,
+    error?: unknown,
+    counts?: { reportedTotal?: number; emittedEntries: number },
+  ) => {
+    sectionStatuses[key] = {
+      ...feedSectionStatus(status, new Date().toISOString(), error),
+      ...(counts ?? {}),
+    };
   };
   const isMissingInput = (error: unknown): boolean =>
     typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
@@ -780,12 +788,16 @@ async function main(): Promise<void> {
       console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
       markSection("projects", "skipped");
     } else {
-      projects = await fetchProjectPool(token);
+      const read = await fetchProjectPoolWithCount(token);
+      projects = read.items;
       if (!projects.length) {
         console.error("collector: GitHub Project read returned zero items; projects section omitted");
         projects = undefined;
       }
-      markSection("projects", "ok");
+      markSection("projects", "ok", undefined, {
+        ...(read.reportedTotal !== null ? { reportedTotal: read.reportedTotal } : {}),
+        emittedEntries: read.items.length,
+      });
     }
   } catch (err) {
     console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);

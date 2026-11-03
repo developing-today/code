@@ -28,7 +28,7 @@ import {
   type FleetFeed,
   type SectionDiagnosis,
 } from "./feed.ts";
-import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
+import type { GhItem, ProvenanceDetail, QuotaView, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
 import { fetchRfaState, rfaHealthDown, rfaHealthFacet, type RfaHealthFacet, type RfaState } from "./sources/ready-for-agent.ts";
@@ -118,6 +118,22 @@ export interface FeedSectionHealth {
   generatedAt?: string;
   ageMs?: number;
   note?: string;
+  /** Provider-reported total minus emitted entries; null means no comparable total. */
+  behindBy: number | null;
+  /** Latest successful source read, not the feed file's write time. */
+  lastSyncAt: string | null;
+  lagNote: string | null;
+}
+
+export interface QuotaGathererProviderHealth {
+  providerId: string;
+  serviceId: string;
+  state: "ok" | "stale" | "error";
+  lastSyncAt: string;
+  /** Quota providers do not currently publish a comparable expected row total. */
+  behindBy: null;
+  lagNote: string;
+  credentialLabel?: string;
 }
 
 export interface PageHealth {
@@ -185,6 +201,12 @@ export interface HealthView {
     checkout: CheckoutDrift;
     sections: FeedSectionHealth[];
   };
+  quotaGatherer: {
+    generatedAt: string;
+    tickAt: string | null;
+    ok: boolean;
+    providers: QuotaGathererProviderHealth[];
+  } | null;
   jobs: {
     orchestration: {
       state: SectionDiagnosis["state"] | "unknown";
@@ -289,10 +311,46 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
         : outcome?.status === "skipped"
           ? "intentionally skipped by collector"
           : undefined;
+    const reportedTotal = outcome?.reportedTotal;
+    const emittedEntries = outcome?.emittedEntries;
+    const validReportedTotal =
+      typeof reportedTotal === "number" && Number.isSafeInteger(reportedTotal) && reportedTotal >= 0
+        ? reportedTotal
+        : undefined;
+    const validEmittedEntries =
+      typeof emittedEntries === "number" && Number.isSafeInteger(emittedEntries) && emittedEntries >= 0
+        ? emittedEntries
+        : undefined;
+    const behindBy =
+      outcome?.status === "ok" &&
+      validReportedTotal !== undefined &&
+      validEmittedEntries !== undefined &&
+      validReportedTotal >= validEmittedEntries
+        ? validReportedTotal - validEmittedEntries
+        : null;
+    const lastSyncAt =
+      outcome?.status === "ok"
+        ? outcome.at
+        : generatedAt && Number.isFinite(Date.parse(generatedAt))
+          ? generatedAt
+          : null;
+    const lagNote =
+      behindBy !== null
+        ? null
+        : outcome?.status === "error"
+          ? "latest collection failed; no successful sync time is retained"
+          : outcome?.status === "skipped"
+            ? "collection was skipped; no sync time is reported"
+            : validReportedTotal !== undefined && validEmittedEntries !== undefined && validReportedTotal < validEmittedEntries
+              ? "emitted entry count exceeds the provider-reported total; lag is unknown"
+              : "source does not report a comparable expected entry total";
     return {
       key,
       status: outcome?.status ?? "unknown",
       ...from(outcome?.at ?? generatedAt, present, outcomeNote ?? note),
+      behindBy,
+      lastSyncAt,
+      lagNote,
     } as FeedSectionHealth;
   };
   return [
@@ -324,6 +382,7 @@ export interface HealthInputs {
   cfg: Config;
   feed: FleetFeed | null;
   feedFileMtimeMs: number | null;
+  quota?: QuotaView;
   diagnosis?: SectionDiagnosis;
   detail?: ProvenanceDetail;
   itemsCoverage?: ItemsCoverage | null;
@@ -476,6 +535,22 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       checkout,
       sections: sectionHealth,
     },
+    quotaGatherer: inputs.quota?.gatherer
+      ? {
+          generatedAt: inputs.quota.gatherer.generatedAt,
+          tickAt: inputs.quota.gatherer.tickAt,
+          ok: inputs.quota.gatherer.ok,
+          providers: inputs.quota.gatherer.providers.map((provider) => ({
+            providerId: provider.providerId,
+            serviceId: provider.serviceId,
+            state: provider.state,
+            lastSyncAt: provider.measuredAt,
+            behindBy: null,
+            lagNote: "provider does not report a comparable expected entry total",
+            ...(provider.credentialLabel ? { credentialLabel: provider.credentialLabel } : {}),
+          })),
+        }
+      : null,
     jobs: {
       orchestration: {
         state: diagnosis?.state ?? "unknown",
