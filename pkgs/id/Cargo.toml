@@ -149,7 +149,7 @@ russh = { version = "=0.65.0", optional = true }
 # Paused-time session-driver tests. Dev only.
 tokio = { version = "1", features = ["test-util"] }
 # The root package's tests exercise dial deadlines using id-core's test-only helpers.
-id-core = { path = "crates/id-core", default-features = false, features = ["test-utils"] }
+id-core = { path = "crates/id-core", default-features = false, features = ["test-utils", "test-provider"] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"
