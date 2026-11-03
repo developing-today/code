@@ -1070,9 +1070,10 @@ impl WorldActor {
                 "deny"
             }
             .to_owned(),
-            catalog: crate::world_caps::CATALOG
-                .iter()
-                .map(|name| (*name).to_owned())
+            catalog: crate::world_caps::PROVIDER_REGISTRY
+                .ordered_names()
+                .into_iter()
+                .map(str::to_owned)
                 .collect(),
             ceiling: self.core.caps_ceiling.iter().cloned().collect(),
             effective,
