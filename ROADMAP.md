@@ -35,14 +35,14 @@ A row here records intent. It does not settle a product question and it is not a
 | Theme                                      | Where it shows up                                                                                                               |
 | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | A CI result people believe                 | `id` flakes and out-of-disk failures, Jules runs that skip, concurrency groups that drop runs                                   |
-| One source of truth per component          | `mcpx` lives only here; `dezren39/nix` builds it from a pinned input, and the OpenCode and OpenChamber forks consume the result |
+| One source of truth per component          | `mcpx` lives only here; `dezren39/darwin-nix` builds it from a pinned input, and the OpenCode and OpenChamber forks consume the result |
 | Handing a running service to its successor | `mcpx` daemon takeover, `id` takeover of idle connections, the OpenCode `serve` handover                                        |
 
 ## Related repositories
 
 | Repository                     | Relation                                                                                                                                 |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `dezren39/nix`                 | The macOS flake. Builds `mcpx` from here via a pinned source-only input; its vendored copy was deleted on 2026-10-19 (dezren39/nix#468). |
+| `dezren39/darwin-nix`                 | The macOS flake. Builds `mcpx` from here via a pinned source-only input; its vendored copy was deleted on 2026-10-19 (dezren39/darwin-nix#468). |
 | `developing-today/opencode`    | OpenCode fork. Calls the `mcpx` CLI and daemon.                                                                                          |
 | `developing-today/openchamber` | OpenChamber fork, built against the fork of OpenCode.                                                                                    |
 

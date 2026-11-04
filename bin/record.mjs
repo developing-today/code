@@ -2,7 +2,7 @@
 // record — append-only session-recording ingestion (#1853).
 //
 // Replaces the hand-append to ~/git/ai_recordings.jsonl that
-// dezren39/nix instructions/recordings.md used to prescribe. An agent
+// dezren39/darwin-nix instructions/recordings.md used to prescribe. An agent
 // that has just explained something worth keeping to the user sends the
 // same observation here instead:
 //
