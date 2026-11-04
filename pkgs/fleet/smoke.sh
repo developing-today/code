@@ -20,7 +20,8 @@
 #   * the proxy domain end to end, hermetically: broker auto-start,
 #     round-trips, shim materialization + stale-shim removal on a
 #     services-map change, init no-op, legacy proto-0 interop,
-#     idle exit
+#     idle exit, pool default rendering + a 32-concurrent burst
+#     on the default pool config (pool fix, #5563)
 #
 # Exits nonzero if any check fails. No network, no installs, no
 # state outside a mktemp dir.
@@ -239,6 +240,76 @@ print("legacy-ok")
 PYEOF
 run "proxy: legacy proto-0 client round-trips (no hello)" 0 "legacy-ok" \
   python3 "$PX/legacy.py" "$PX/broker.sock"
+
+# Pool sizing (#5563): this broker was auto-spawned by connect
+# with no LAPTOP_AGENT_POOL anywhere in its environment, so
+# its startup line must render the compiled default of 50.
+run "proxy: broker startup renders the effective pool size (default 50)" 0 \
+  "pool: 50 per port" grep "pool: 50 per port" "$PX/broker.log"
+
+# 32-concurrent burst against that default-config broker,
+# mirroring the #5412 benchmark method (hello-negotiated
+# framed requests, one untimed warm-up per worker, barrier
+# release, two timed requests each). Hermetically the
+# connections are loopback, so this asserts the bounded
+# wait's safety properties — 32 in flight at once, none hang,
+# none fail — plus a sane p50; the production cliff it
+# prevents was measured against real egress (see #5563).
+cat > "$PX/burst.py" <<'PYEOF'
+import json, socket, struct, sys, threading, time
+sock_path, port = sys.argv[1], int(sys.argv[2])
+lat, errors = [], []
+lock = threading.Lock()
+barrier = threading.Barrier(33)
+def readn(s, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk: raise ConnectionError("broker closed mid-frame")
+        buf += chunk
+    return buf
+def send_frame(s, obj):
+    data = json.dumps(obj).encode()
+    s.sendall(struct.pack(">Q", len(data)) + data)
+def read_frame(s):
+    (n,) = struct.unpack(">Q", readn(s, 8))
+    return json.loads(readn(s, n))
+def rpc(s, method, path, sport):
+    send_frame(s, {"method": method, "path": path, "port": sport})
+    return read_frame(s)
+def worker():
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(30)
+        s.connect(sock_path)
+        send_frame(s, {"hello": {"proto": 1, "client": "smoke-burst",
+                                 "capabilities": ["proxy-connect"]}})
+        read_frame(s)  # hello response
+        r = rpc(s, "GET", "/health", port)  # untimed warm-up
+        assert r["status"] == 200, r
+        barrier.wait(timeout=30)
+        for _ in range(2):
+            t0 = time.perf_counter()
+            r = rpc(s, "GET", "/health", port)
+            dt = (time.perf_counter() - t0) * 1000
+            assert r["status"] == 200, r
+            with lock: lat.append(dt)
+        s.close()
+    except Exception as e:
+        with lock: errors.append(repr(e))
+threads = [threading.Thread(target=worker) for _ in range(32)]
+for t in threads: t.start()
+barrier.wait(timeout=30)
+for t in threads: t.join()
+assert not errors, f"burst errors: {errors[:3]}"
+assert len(lat) == 64, len(lat)
+lat.sort()
+p50 = lat[len(lat) // 2]
+assert p50 < 1000, f"p50 {p50:.1f}ms"
+print(f"burst-ok n=64 errors=0 p50={p50:.1f}ms")
+PYEOF
+run "proxy: 32-concurrent burst on the default pool (no hang, no failure)" 0 "burst-ok" \
+  python3 "$PX/burst.py" "$PX/broker.sock" 14801
 
 # Services-map change: restart the broker with a smaller map; the
 # repo-queue shim must disappear, laptop-agent must stay.
