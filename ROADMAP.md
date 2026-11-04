@@ -16,14 +16,12 @@ A row here records intent. It does not settle a product question and it is not a
 
 ## Now, across the repo
 
-1. Settle how other flakes consume `mcpx` from this repo, its single source (#308), and move the backlog here (#309).
-2. Quiet the automation: stale PRs (#311).
+1. `mcpx` robustness: a supervisor for stdio children (#1384), session resume after a cold restart (#1414), JSON Schema validation.
+2. `id` Phase 11 tasks that make the code easier to change: split `world.rs`, injected clock, typed errors, journal format tooling.
 
 ## Next
 
-1. `id` Phase 11 tasks that make the code easier to change: split `world.rs`, injected clock, typed errors, journal format tooling.
-2. `id` sync protocol hardening from the Phase 3 to 5 issues (#178 to #195).
-3. `mcpx` robustness: a supervisor for stdio children, session resume after a cold restart, JSON Schema validation.
+1. `id` sync protocol hardening from the Phase 3 to 5 issues (#178 to #195).
 
 ## Later
 
