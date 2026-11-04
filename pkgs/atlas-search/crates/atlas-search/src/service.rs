@@ -191,6 +191,7 @@ fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result
     let mut envelope: Option<Json> = None;
     let mut results: Vec<Json> = Vec::new();
     let mut cursor: Option<String> = None;
+    let mut seen_cursors: std::collections::HashSet<String> = std::collections::HashSet::new();
     loop {
         if Instant::now() >= deadline {
             return Err("service job results did not finish paging within 330 seconds".to_string());
@@ -242,6 +243,15 @@ fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result
                 "service at {base} sent a malformed results page: next_cursor did not advance (repeats the cursor just used)"
             ));
         }
+        // A cycle with period >= 2 (A -> B -> A) passes the immediate-repeat
+        // check above on every page: the ranking still never advances, so
+        // any cursor already followed in this session is equally malformed
+        // (#5654).
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err(format!(
+                "service at {base} sent a malformed results page: next_cursor did not advance (repeats a cursor already seen in this paging session)"
+            ));
+        }
         cursor = Some(next_cursor);
     }
     let mut out = envelope.ok_or("service returned no results envelope")?;
@@ -283,6 +293,7 @@ mod tests {
 
     #[derive(Clone, Copy, PartialEq)]
     enum StubMode {
+        CyclingCursor,
         RepeatingCursor,
         EmptyPage,
         HappyPath,
@@ -342,6 +353,13 @@ mod tests {
                 } else if first.contains("/results") {
                     let has_cursor = first.contains("cursor=");
                     let (results, next): (&str, &str) = match mode {
+                        StubMode::CyclingCursor => {
+                            if first.contains("cursor=cursor-B") {
+                                (r#"[{"id":1}]"#, r#""cursor-A""#)
+                            } else {
+                                (r#"[{"id":1}]"#, r#""cursor-B""#)
+                            }
+                        }
                         StubMode::RepeatingCursor => (r#"[{"id":1}]"#, r#""same-cursor""#),
                         StubMode::EmptyPage => (r#"[]"#, r#""some-cursor""#),
                         StubMode::HappyPath => {
@@ -389,6 +407,20 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "repeating cursor was not rejected promptly"
+        );
+    }
+
+    #[test]
+    fn search_cycling_cursor_returns_err_promptly() {
+        // #5654: a period-2 cycle (A -> B -> A) passes the immediate-repeat
+        // check on every page; the seen-cursor set must reject it promptly.
+        let base = start_stub(StubMode::CyclingCursor);
+        let started = Instant::now();
+        let err = search_with_token(&base, &request_k(100_000), "test-token").unwrap_err();
+        assert!(err.contains("already seen"), "unexpected error: {err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "cycling cursor was not rejected promptly"
         );
     }
 
