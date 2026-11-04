@@ -397,7 +397,7 @@ pub enum AuditErrorV0 {
 /// The hash that participants sign before the first match input.
 pub fn header_hash(header: &HeaderV0) -> Result<Hash, AuditErrorV0> {
     let bytes = postcard::to_allocvec(header)?;
-    Ok(Hash::digest([HEADER_DOMAIN, &bytes].concat()))
+    Ok(hash_parts(&[HEADER_DOMAIN, &bytes]))
 }
 
 /// Signs the header with an ID player key.
@@ -412,12 +412,20 @@ pub fn sign_header(
 /// Builds a stream entry whose hash binds the previous entry and its body.
 pub fn chain_entry(previous_hash: Hash, body: EntryBodyV0) -> Result<ChainedEntryV0, AuditErrorV0> {
     let body_bytes = postcard::to_allocvec(&body)?;
-    let hash = Hash::digest([ENTRY_DOMAIN, previous_hash.as_bytes(), &body_bytes].concat());
+    let hash = hash_parts(&[ENTRY_DOMAIN, previous_hash.as_bytes(), &body_bytes]);
     Ok(ChainedEntryV0 {
         previous_hash,
         hash,
         body,
     })
+}
+
+fn hash_parts(parts: &[&[u8]]) -> Hash {
+    let mut hasher = blake3::Hasher::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    Hash::from_bytes(*hasher.finalize().as_bytes())
 }
 
 /// Signs the final chain, result claim, seed reveal, and metadata.
@@ -941,6 +949,12 @@ mod tests {
 
     fn key(seed: u8) -> IdSigningKey {
         IdSigningKey::from_bytes(&[seed; 32])
+    }
+
+    #[test]
+    fn streaming_hash_preserves_concatenated_v0_digest() {
+        let parts: [&[u8]; 3] = [b"domain", b"previous", b"payload"];
+        assert_eq!(hash_parts(&parts), Hash::digest(parts.concat()));
     }
 
     fn fixture() -> MatchLogV0 {

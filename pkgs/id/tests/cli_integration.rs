@@ -386,9 +386,12 @@ mod cli_tests {
             "export failed: {}",
             String::from_utf8_lossy(&exported.stderr)
         );
-        let exported_report = String::from_utf8_lossy(&exported.stdout);
-        assert!(exported_report.contains("RESULT CONFIRMED — full-history"));
-        assert!(exported_report.contains("INCONCLUSIVE — no observed metadata"));
+        let exported_report: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+        assert_eq!(
+            exported_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
+        assert_eq!(exported_report["actual"], "InconclusiveNoObservedMetadata");
 
         let verified = run_cmd(&["match-audit", "verify", log_path_arg], tmp.path());
         assert!(
@@ -396,7 +399,12 @@ mod cli_tests {
             "verify failed: {}",
             String::from_utf8_lossy(&verified.stderr)
         );
-        assert!(String::from_utf8_lossy(&verified.stdout).contains("valid on the pinned runtime"));
+        let verified_report: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+        assert!(verified_report.get("technical_verdict").is_some());
+        assert_eq!(
+            verified_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
 
         let mut tampered_input =
             id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
@@ -410,9 +418,12 @@ mod cli_tests {
         let tampered_input_arg = tampered_input_path.to_str().unwrap();
         let rejected_input = run_cmd(&["match-audit", "verify", tampered_input_arg], tmp.path());
         assert!(!rejected_input.status.success());
-        let rejected_input_report = String::from_utf8_lossy(&rejected_input.stdout);
-        assert!(rejected_input_report.contains("INVALID RECORD"));
-        assert!(rejected_input_report.contains("EntryHashMismatch"));
+        let rejected_input_report: serde_json::Value =
+            serde_json::from_slice(&rejected_input.stdout).unwrap();
+        assert_eq!(
+            rejected_input_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
 
         let mut tampered_checkpoint =
             id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
@@ -434,9 +445,12 @@ mod cli_tests {
             tmp.path(),
         );
         assert!(!rejected_checkpoint.status.success());
-        let rejected_checkpoint_report = String::from_utf8_lossy(&rejected_checkpoint.stdout);
-        assert!(rejected_checkpoint_report.contains("INVALID RECORD"));
-        assert!(rejected_checkpoint_report.contains("EntryHashMismatch"));
+        let rejected_checkpoint_report: serde_json::Value =
+            serde_json::from_slice(&rejected_checkpoint.stdout).unwrap();
+        assert_eq!(
+            rejected_checkpoint_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
     }
 
     #[test]
