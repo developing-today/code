@@ -55,7 +55,7 @@ import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/supabase";
 export const DEFAULT_PROJECT_REF = "keihfchslgjetkmnmzra"; // muse-dev2
-export const DEFAULT_SECRET_NAME = "supabase.access-token-muse-cli";
+export const DEFAULT_SECRET_NAME = "supabase.muse-dev2.access-token-muse-cli";
 export const API_BASE = "https://api.supabase.com/v1";
 
 /** Supabase Free-plan allowances (supabase.com/pricing, recorded 2026-10-29:

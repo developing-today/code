@@ -1,7 +1,7 @@
 // Supabase access for the aggregator — the exact path the fleet-feed
 // collector uses for muse-dev2 (scripts/collect-fleet-feed.ts): SQL
 // over the Management API query endpoint, authenticated with the
-// Bitwarden secret named `supabase.access-token-muse-cli` (the sbp_
+// Bitwarden secret named `supabase.muse-dev2.access-token-muse-cli` (the sbp_
 // management token), project ref from $SUPABASE_PROJECT_REF, else the
 // Bitwarden `supabase.muse-dev2.project-ref` secret, else the muse-dev2 ref.
 // The token is only ever sent to api.supabase.com; it is never logged.
@@ -50,7 +50,7 @@ let clientPromise: Promise<SupabaseClient | null> | null = null;
 export function getSupabaseClient(): Promise<SupabaseClient | null> {
   if (!clientPromise) {
     clientPromise = (async () => {
-      const token = await resolveBwsSecret("supabase.access-token-muse-cli");
+      const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
       if (!token) return null;
       const ref =
         process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.muse-dev2.project-ref")) ?? "keihfchslgjetkmnmzra";
