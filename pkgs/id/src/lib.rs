@@ -229,6 +229,7 @@ pub mod server_config;
 pub mod shell_contract;
 pub mod store;
 pub mod store_traits;
+pub mod structured_logging;
 pub use id_core::sync_method;
 pub mod tag_claims;
 pub mod tag_index;
