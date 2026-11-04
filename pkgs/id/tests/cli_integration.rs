@@ -368,6 +368,78 @@ mod cli_tests {
     }
 
     #[test]
+    fn match_audit_cli_exports_verifies_and_rejects_tampered_inputs_and_checkpoints() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("reference.malog");
+        let log_path_arg = log_path.to_str().unwrap();
+        let exported = run_cmd(
+            &[
+                "match-audit",
+                "export-tic-tac-toe",
+                "--output",
+                log_path_arg,
+            ],
+            tmp.path(),
+        );
+        assert!(
+            exported.status.success(),
+            "export failed: {}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        let exported_report = String::from_utf8_lossy(&exported.stdout);
+        assert!(exported_report.contains("RESULT CONFIRMED — full-history"));
+        assert!(exported_report.contains("INCONCLUSIVE — no observed metadata"));
+
+        let verified = run_cmd(&["match-audit", "verify", log_path_arg], tmp.path());
+        assert!(
+            verified.status.success(),
+            "verify failed: {}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+        assert!(String::from_utf8_lossy(&verified.stdout).contains("valid on the pinned runtime"));
+
+        let mut tampered_input =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::InputBlock(block) = &mut tampered_input.entries[0].body
+        else {
+            panic!("reference log starts with an input block")
+        };
+        block.records[0].payload[0] ^= 1;
+        let tampered_input_path = tmp.path().join("tampered-input.malog");
+        std::fs::write(&tampered_input_path, tampered_input.encode().unwrap()).unwrap();
+        let tampered_input_arg = tampered_input_path.to_str().unwrap();
+        let rejected_input = run_cmd(&["match-audit", "verify", tampered_input_arg], tmp.path());
+        assert!(!rejected_input.status.success());
+        let rejected_input_report = String::from_utf8_lossy(&rejected_input.stdout);
+        assert!(rejected_input_report.contains("INVALID RECORD"));
+        assert!(rejected_input_report.contains("EntryHashMismatch"));
+
+        let mut tampered_checkpoint =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::Checkpoint(checkpoint) =
+            &mut tampered_checkpoint.entries[1].body
+        else {
+            panic!("reference log's second entry is its first checkpoint")
+        };
+        checkpoint.state_hash = p2panda_core::Hash::digest(b"tampered checkpoint");
+        let tampered_checkpoint_path = tmp.path().join("tampered-checkpoint.malog");
+        std::fs::write(
+            &tampered_checkpoint_path,
+            tampered_checkpoint.encode().unwrap(),
+        )
+        .unwrap();
+        let tampered_checkpoint_arg = tampered_checkpoint_path.to_str().unwrap();
+        let rejected_checkpoint = run_cmd(
+            &["match-audit", "verify", tampered_checkpoint_arg],
+            tmp.path(),
+        );
+        assert!(!rejected_checkpoint.status.success());
+        let rejected_checkpoint_report = String::from_utf8_lossy(&rejected_checkpoint.stdout);
+        assert!(rejected_checkpoint_report.contains("INVALID RECORD"));
+        assert!(rejected_checkpoint_report.contains("EntryHashMismatch"));
+    }
+
+    #[test]
     fn test_subcommand_help() {
         let tmp = TempDir::new().unwrap();
 

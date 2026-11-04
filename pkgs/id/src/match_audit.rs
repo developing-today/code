@@ -9,11 +9,22 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use p2panda_core::{Hash, SigningKey as IdSigningKey};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "sandbox")]
+use crate::sandbox::{Sandbox, SandboxLimits};
+#[cfg(feature = "world")]
 use crate::world::signed::MoveChain;
 
 const HEADER_DOMAIN: &[u8] = b"id.match-audit.v0/header\0";
 const ENTRY_DOMAIN: &[u8] = b"id.match-audit.v0/entry\0";
 const FOOTER_DOMAIN: &[u8] = b"id.match-audit.v0/footer\0";
+
+/// Stable program identifier used by the bundled tic-tac-toe reference.
+pub const TIC_TAC_TOE_REFERENCE_ID: &str = "id.apps.tic-tac-toe/reference-v0";
+/// Bundled Wasm build used by the reference exporter and verifier.
+pub const TIC_TAC_TOE_REFERENCE_WASM: &[u8] =
+    include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+/// RNG identifier for the reference match's eight-byte little-endian seed.
+pub const U64_LE_RNG_V0: &str = "id.seed.u64-le/v0";
 
 /// The only format version currently defined.
 pub const FORMAT_VERSION_V0: u8 = 0;
@@ -39,7 +50,7 @@ pub struct HeaderV0 {
     pub match_id: String,
     /// World identifier used by the player-signed move events.
     pub world_id: String,
-    /// World/program identifier and immutable build digest.
+    /// Stable identifier for the program implementing the match rules.
     pub program_id: String,
     /// Hash of the exact world program build.
     pub program_hash: Hash,
@@ -135,8 +146,8 @@ pub struct ChainedEntryV0 {
     pub body: EntryBodyV0,
 }
 
-/// Metadata records retain their provenance instead of conflating claims with
-/// independent observations.
+/// Metadata records retain their claimed provenance instead of conflating
+/// participant reports with independent observations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetadataRecordV0 {
     /// Stable field name, e.g. `client_build` or `rtt_p95_ms`.
@@ -147,16 +158,16 @@ pub struct MetadataRecordV0 {
     pub source: MetadataSourceV0,
 }
 
-/// Provenance category for a match metadata value.
+/// Provenance category claimed for a match metadata value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetadataSourceV0 {
     /// Supplied by a participant; useful only as a consistency check.
     SelfReported,
-    /// Independently observed by another player.
+    /// Labeled as independently observed by another player.
     PeerObserved,
-    /// Independently observed by a relay.
+    /// Labeled as independently observed by a relay.
     RelayObserved,
-    /// Independently observed by a designated witness.
+    /// Labeled as independently observed by a designated witness.
     WitnessObserved,
     /// Derived from the authenticated input stream.
     Derived,
@@ -167,7 +178,8 @@ pub enum MetadataSourceV0 {
 pub struct MetadataV0 {
     /// Participant-supplied values, never evidence of fairness by themselves.
     pub self_reported: Vec<MetadataRecordV0>,
-    /// Independently observed or log-derived values, with provenance retained.
+    /// Values labeled as observed or log-derived, with provenance retained.
+    /// These labels are claims until separately countersigned by their source.
     pub evidence: Vec<MetadataRecordV0>,
 }
 
@@ -196,7 +208,7 @@ pub struct MatchLogV0 {
     pub header_signatures: Vec<PlayerSignatureV0>,
     /// Ordered, hash-chained inputs, events, and checkpoints.
     pub entries: Vec<ChainedEntryV0>,
-    /// Metadata with self-reported and independent evidence kept separate.
+    /// Metadata with self-reports and source-labeled records kept separate.
     pub metadata: MetadataV0,
     /// Signed final result claim and seed reveal.
     pub footer: FooterV0,
@@ -266,6 +278,8 @@ pub enum InconclusiveReasonV0 {
 pub enum ActualValidityV0 {
     /// No observed metadata was available to assess play plausibility.
     InconclusiveNoObservedMetadata,
+    /// Observations exist, but no L3 screening policy was applied.
+    InconclusiveScreeningUnavailable,
     /// Screening ran to the stated depth and found no flags.
     NoFlags {
         /// Screening depth at which no flags were found.
@@ -309,13 +323,15 @@ pub enum CheatingSignalV0 {
 pub struct AuditReportV0 {
     /// Cryptographic and replay validity of the log.
     pub technical: TechnicalVerdictV0,
-    /// Probabilistic assessment based on independently observed metadata.
+    /// Actual-play screening status, never inferred from technical validity.
     pub actual: ActualValidityV0,
 }
 
 /// Why an integrity check failed. These variants are safe to expose in a CLI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IntegrityFailureV0 {
+    /// The byte stream could not be decoded as a v0 log.
+    MalformedEncoding,
     /// The log uses a version this implementation does not understand.
     UnsupportedVersion,
     /// Roster is empty, duplicated, or inconsistent with signatures.
@@ -330,6 +346,12 @@ pub enum IntegrityFailureV0 {
     SignedInput,
     /// The footer's final tick does not match the ordered event stream.
     FooterTickMismatch,
+    /// An entry's tick ordering or block encoding is invalid.
+    EntryOrder,
+    /// An input refers to a player slot outside the signed roster.
+    PlayerSlot,
+    /// The seed reveal does not use the encoding named by the header.
+    SeedRevealEncoding,
     /// The revealed seed does not match the signed commitment.
     SeedCommitmentMismatch,
     /// Footer signatures are invalid or incomplete.
@@ -351,6 +373,9 @@ pub enum AuditErrorV0 {
     /// The participant list cannot be used as a signing roster.
     #[error("invalid match-audit roster")]
     Roster,
+    /// The reference exporter or verifier could not run its pinned module.
+    #[error("match-audit reference runtime failed: {0}")]
+    ReferenceRuntime(String),
     /// A log entry's tick precedes an earlier entry.
     #[error("match-audit entries are not ordered by tick")]
     EntryOrder,
@@ -431,6 +456,7 @@ impl MatchLogV0 {
 
         let mut previous = header_digest;
         let mut previous_tick = self.header.start_tick;
+        #[cfg(feature = "world")]
         let mut move_chains = vec![MoveChain::new(); self.header.players.len()];
         for entry in &self.entries {
             if entry.previous_hash != previous {
@@ -452,6 +478,12 @@ impl MatchLogV0 {
                     let Some(player) = self.header.players.get(slot) else {
                         return Err(AuditErrorV0::PlayerSlot);
                     };
+                    #[cfg(not(feature = "world"))]
+                    {
+                        let _ = player;
+                        return Err(AuditErrorV0::Integrity(IntegrityFailureV0::SignedInput));
+                    }
+                    #[cfg(feature = "world")]
                     move_chains[slot]
                         .verify_and_accept(
                             &input.signed_move,
@@ -486,6 +518,321 @@ impl MatchLogV0 {
         )
         .map_err(|_| AuditErrorV0::Integrity(IntegrityFailureV0::FooterSignature))?;
         Ok(previous)
+    }
+}
+
+/// Exports the bundled tic-tac-toe reference game as a signed v0 transcript.
+///
+/// The caller supplies the two players' ID keys. The exporter runs the exact
+/// checked-in Wasm build, signs each move using the existing #2814
+/// `world.move` format, and records a checkpoint after each move. The output
+/// contains no observed metadata; its actual-validity assessment therefore
+/// remains inconclusive.
+///
+/// # Errors
+///
+/// Returns an encoding or signing error, or a reference-runtime error if the
+/// bundled Wasm cannot run or does not expose the expected snapshot/records.
+#[cfg(feature = "sandbox")]
+pub fn export_tic_tac_toe_reference(
+    player_keys: [&IdSigningKey; 2],
+    match_id: impl Into<String>,
+    world_id: impl Into<String>,
+    seed: u64,
+) -> Result<MatchLogV0, AuditErrorV0> {
+    let runner = Sandbox::compile(TIC_TAC_TOE_REFERENCE_WASM, SandboxLimits::default())
+        .map_err(|error| AuditErrorV0::ReferenceRuntime(error.to_string()))?;
+    let mut world = runner
+        .instantiate(seed)
+        .map_err(|error| AuditErrorV0::ReferenceRuntime(error.to_string()))?;
+    let initial_snapshot = world
+        .snapshot()
+        .map_err(|error| AuditErrorV0::ReferenceRuntime(error.to_string()))?
+        .ok_or_else(|| AuditErrorV0::ReferenceRuntime("reference has no snapshots".to_owned()))?;
+
+    let seed_reveal = seed.to_le_bytes().to_vec();
+    let header = HeaderV0 {
+        version: FORMAT_VERSION_V0,
+        match_id: match_id.into(),
+        world_id: world_id.into(),
+        program_id: TIC_TAC_TOE_REFERENCE_ID.to_owned(),
+        program_hash: Hash::digest(TIC_TAC_TOE_REFERENCE_WASM),
+        rules_hash: Hash::digest(
+            b"tic-tac-toe/v0; cells=0..8; x-first; invalid-occupied-post-win-ignored",
+        ),
+        tick_rate: 1,
+        rng_algorithm: U64_LE_RNG_V0.to_owned(),
+        seed_commitment: Hash::digest(&seed_reveal),
+        initial_state_hash: Hash::digest(&initial_snapshot),
+        players: player_keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| PlayerV0 {
+                id: *key.verifying_key().as_bytes(),
+                role: if index == 0 { "x" } else { "o" }.to_owned(),
+            })
+            .collect(),
+        start_tick: 0,
+    };
+    let header_signatures = player_keys
+        .iter()
+        .map(|key| sign_header(key, &header))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut entries = Vec::new();
+    let mut previous = header_hash(&header)?;
+    let mut move_sequences = [0_u32; 2];
+    let mut move_frontiers: [Option<Hash>; 2] = [None, None];
+    let mut final_snapshot = initial_snapshot;
+
+    // X wins on the final move: X0, O3, X1, O4, X2.
+    for (index, cell) in [0_u8, 3, 1, 4, 2].into_iter().enumerate() {
+        let slot = index % 2;
+        let tick = u64::try_from(index + 1)
+            .map_err(|_| AuditErrorV0::ReferenceRuntime("tick overflow".to_owned()))?;
+        let payload = vec![b'0' + cell];
+        let signed_move = crate::world::signed::sign_move(
+            player_keys[slot],
+            &header.world_id,
+            move_sequences[slot],
+            move_frontiers[slot],
+            &payload,
+        )
+        .map_err(|error| AuditErrorV0::ReferenceRuntime(error.to_string()))?;
+        move_sequences[slot] += 1;
+        move_frontiers[slot] = Some(signed_move.id);
+
+        let input = InputRecordV0 {
+            tick_delta: 0,
+            player_slot: u16::try_from(slot)
+                .map_err(|_| AuditErrorV0::ReferenceRuntime("player slot overflow".to_owned()))?,
+            payload: payload.clone(),
+            signed_move: signed_move.bytes,
+        };
+        let input_entry = chain_entry(
+            previous,
+            EntryBodyV0::InputBlock(InputBlockV0 {
+                first_tick: tick,
+                records: vec![input],
+            }),
+        )?;
+        previous = input_entry.hash;
+        entries.push(input_entry);
+
+        world
+            .update(slot as u64, &payload)
+            .map_err(|error| AuditErrorV0::ReferenceRuntime(error.to_string()))?;
+        final_snapshot = world
+            .snapshot()
+            .map_err(|error| AuditErrorV0::ReferenceRuntime(error.to_string()))?
+            .ok_or_else(|| {
+                AuditErrorV0::ReferenceRuntime("reference has no snapshots".to_owned())
+            })?;
+        let checkpoint = chain_entry(
+            previous,
+            EntryBodyV0::Checkpoint(CheckpointV0 {
+                tick,
+                state_hash: Hash::digest(&final_snapshot),
+                snapshot: Some(final_snapshot.clone()),
+            }),
+        )?;
+        previous = checkpoint.hash;
+        entries.push(checkpoint);
+    }
+
+    let metadata = MetadataV0::default();
+    let result_claim = world
+        .records()
+        .map_err(|error| AuditErrorV0::ReferenceRuntime(error.to_string()))?
+        .ok_or_else(|| {
+            AuditErrorV0::ReferenceRuntime("reference has no result records".to_owned())
+        })?;
+    let mut footer = FooterV0 {
+        final_tick: 5,
+        final_state_hash: Hash::digest(&final_snapshot),
+        result_claim,
+        seed_reveal,
+        signatures: Vec::new(),
+    };
+    footer.signatures = player_keys
+        .iter()
+        .map(|key| sign_footer(key, &header, previous, &metadata, &footer))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(MatchLogV0 {
+        header,
+        header_signatures,
+        entries,
+        metadata,
+        footer,
+    })
+}
+
+/// Verifies a v0 log against the bundled tic-tac-toe Wasm build.
+///
+/// Cryptographic failures are `InvalidRecord`; snapshot/result disagreement is
+/// `ReplayDiverges`; unavailable builds or replay capabilities are
+/// `Inconclusive`. Successful L2 results are always scoped to the pinned
+/// runtime. The independent `actual` field remains inconclusive unless a
+/// separate L3 screening implementation is added.
+#[cfg(feature = "sandbox")]
+pub fn verify_tic_tac_toe_v0(bytes: &[u8]) -> AuditReportV0 {
+    let log = match MatchLogV0::decode(bytes) {
+        Ok(log) => log,
+        Err(error) => {
+            return report(
+                TechnicalVerdictV0::InvalidRecord {
+                    reason: integrity_reason(&error),
+                },
+                None,
+            );
+        }
+    };
+    let actual = actual_validity(&log.metadata);
+    if let Err(error) = log.verify_integrity() {
+        return AuditReportV0 {
+            technical: TechnicalVerdictV0::InvalidRecord {
+                reason: integrity_reason(&error),
+            },
+            actual,
+        };
+    }
+    let technical = replay_tic_tac_toe(&log);
+    AuditReportV0 { technical, actual }
+}
+
+#[cfg(feature = "sandbox")]
+fn replay_tic_tac_toe(log: &MatchLogV0) -> TechnicalVerdictV0 {
+    let inconclusive = |reason| TechnicalVerdictV0::Inconclusive { reason };
+    if log.header.program_id != TIC_TAC_TOE_REFERENCE_ID
+        || log.header.program_hash != Hash::digest(TIC_TAC_TOE_REFERENCE_WASM)
+    {
+        return inconclusive(InconclusiveReasonV0::MissingProgramBuild);
+    }
+    if log.header.tick_rate != 1 || log.header.rng_algorithm != U64_LE_RNG_V0 {
+        return inconclusive(InconclusiveReasonV0::MissingReplayCapability);
+    }
+    let seed_bytes: [u8; 8] = match log.footer.seed_reveal.as_slice().try_into() {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return TechnicalVerdictV0::InvalidRecord {
+                reason: IntegrityFailureV0::SeedRevealEncoding,
+            };
+        }
+    };
+    let seed = u64::from_le_bytes(seed_bytes);
+    let runner = match Sandbox::compile(TIC_TAC_TOE_REFERENCE_WASM, SandboxLimits::default()) {
+        Ok(runner) => runner,
+        Err(_) => return inconclusive(InconclusiveReasonV0::MissingReplayCapability),
+    };
+    let mut world = match runner.instantiate(seed) {
+        Ok(world) => world,
+        Err(_) => return inconclusive(InconclusiveReasonV0::MissingReplayCapability),
+    };
+    let Some(initial_snapshot) = snapshot(&mut world) else {
+        return inconclusive(InconclusiveReasonV0::MissingReplayCapability);
+    };
+    if Hash::digest(&initial_snapshot) != log.header.initial_state_hash {
+        return diverges(log.header.start_tick, log.header.start_tick);
+    }
+
+    let mut last_checkpoint_tick = log.header.start_tick;
+    for entry in &log.entries {
+        match &entry.body {
+            EntryBodyV0::InputBlock(block) => {
+                for input in &block.records {
+                    if world
+                        .update(u64::from(input.player_slot), &input.payload)
+                        .is_err()
+                    {
+                        return inconclusive(InconclusiveReasonV0::MissingReplayCapability);
+                    }
+                }
+            }
+            EntryBodyV0::Event(_) => {
+                return inconclusive(InconclusiveReasonV0::MissingReplayCapability);
+            }
+            EntryBodyV0::Checkpoint(checkpoint) => {
+                let Some(state) = snapshot(&mut world) else {
+                    return inconclusive(InconclusiveReasonV0::MissingReplayCapability);
+                };
+                if Hash::digest(&state) != checkpoint.state_hash
+                    || checkpoint
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|expected| expected != &state)
+                {
+                    return diverges(last_checkpoint_tick, checkpoint.tick);
+                }
+                last_checkpoint_tick = checkpoint.tick;
+            }
+        }
+    }
+
+    let Some(final_state) = snapshot(&mut world) else {
+        return inconclusive(InconclusiveReasonV0::MissingReplayCapability);
+    };
+    let interval_start = last_checkpoint_tick.min(log.footer.final_tick);
+    if Hash::digest(&final_state) != log.footer.final_state_hash {
+        return diverges(interval_start, log.footer.final_tick);
+    }
+    match world.records() {
+        Ok(Some(records)) if records == log.footer.result_claim => {}
+        Ok(_) => return inconclusive(InconclusiveReasonV0::MissingReplayCapability),
+        Err(_) => return inconclusive(InconclusiveReasonV0::MissingReplayCapability),
+    }
+    TechnicalVerdictV0::ResultConfirmed {
+        runtime: RuntimeScopeV0::PinnedRuntime,
+    }
+}
+
+#[cfg(feature = "sandbox")]
+fn snapshot(world: &mut crate::sandbox::WorldInstance) -> Option<Vec<u8>> {
+    world.snapshot().ok().flatten()
+}
+
+#[cfg(feature = "sandbox")]
+fn diverges(start_tick: u64, end_tick: u64) -> TechnicalVerdictV0 {
+    TechnicalVerdictV0::ReplayDiverges {
+        first_mismatching_interval: CheckpointIntervalV0 {
+            start_tick,
+            end_tick,
+        },
+    }
+}
+
+#[cfg(feature = "sandbox")]
+fn report(technical: TechnicalVerdictV0, metadata: Option<&MetadataV0>) -> AuditReportV0 {
+    AuditReportV0 {
+        technical,
+        actual: metadata.map_or(
+            ActualValidityV0::InconclusiveNoObservedMetadata,
+            actual_validity,
+        ),
+    }
+}
+
+#[cfg(feature = "sandbox")]
+fn actual_validity(_metadata: &MetadataV0) -> ActualValidityV0 {
+    // V0 records provenance labels but has no observer countersignature yet.
+    // Treating a participant-signed label as an independent observation would
+    // conflate a claim about play with evidence of play.
+    ActualValidityV0::InconclusiveNoObservedMetadata
+}
+
+#[cfg(feature = "sandbox")]
+fn integrity_reason(error: &AuditErrorV0) -> IntegrityFailureV0 {
+    match error {
+        AuditErrorV0::Wire(_) => IntegrityFailureV0::MalformedEncoding,
+        AuditErrorV0::UnsupportedVersion(_) => IntegrityFailureV0::UnsupportedVersion,
+        AuditErrorV0::Signature("header") => IntegrityFailureV0::HeaderSignature,
+        AuditErrorV0::Signature("footer") => IntegrityFailureV0::FooterSignature,
+        AuditErrorV0::Signature(_) => IntegrityFailureV0::HeaderSignature,
+        AuditErrorV0::Roster => IntegrityFailureV0::InvalidRoster,
+        AuditErrorV0::EntryOrder => IntegrityFailureV0::EntryOrder,
+        AuditErrorV0::PlayerSlot => IntegrityFailureV0::PlayerSlot,
+        AuditErrorV0::Integrity(reason) => *reason,
+        AuditErrorV0::ReferenceRuntime(_) => IntegrityFailureV0::MalformedEncoding,
     }
 }
 
@@ -577,7 +924,7 @@ fn footer_message(
     .concat())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sandbox"))]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -751,5 +1098,81 @@ mod tests {
                 IntegrityFailureV0::FooterTickMismatch
             ))
         ));
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn reference_export_replays_and_keeps_actual_validity_inconclusive() {
+        let players = [key(1), key(2)];
+        let log = export_tic_tac_toe_reference(
+            [&players[0], &players[1]],
+            "reference-match-1",
+            "reference-world-1",
+            7,
+        )
+        .unwrap();
+        let report = verify_tic_tac_toe_v0(&log.encode().unwrap());
+
+        assert_eq!(
+            report.technical,
+            TechnicalVerdictV0::ResultConfirmed {
+                runtime: RuntimeScopeV0::PinnedRuntime,
+            }
+        );
+        assert_eq!(
+            report.actual,
+            ActualValidityV0::InconclusiveNoObservedMetadata
+        );
+        assert!(log.entries.iter().any(|entry| matches!(
+            &entry.body,
+            EntryBodyV0::InputBlock(block)
+                if block.records.iter().all(|input| !input.signed_move.is_empty())
+        )));
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn replayed_checkpoint_tampering_uses_the_divergence_verdict() {
+        let players = [key(1), key(2)];
+        let mut log = export_tic_tac_toe_reference(
+            [&players[0], &players[1]],
+            "reference-match-2",
+            "reference-world-2",
+            7,
+        )
+        .unwrap();
+        let EntryBodyV0::Checkpoint(checkpoint) = &mut log.entries[1].body else {
+            panic!("second entry is the first checkpoint")
+        };
+        checkpoint.state_hash = Hash::digest(b"tampered checkpoint");
+        reseal(&mut log, &players);
+
+        let report = verify_tic_tac_toe_v0(&log.encode().unwrap());
+        assert!(matches!(
+            report.technical,
+            TechnicalVerdictV0::ReplayDiverges {
+                first_mismatching_interval: CheckpointIntervalV0 {
+                    start_tick: 0,
+                    end_tick: 1,
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn participant_signed_observation_labels_do_not_prove_actual_validity() {
+        let metadata = MetadataV0 {
+            self_reported: Vec::new(),
+            evidence: vec![MetadataRecordV0 {
+                key: "rtt_p95_ms".to_owned(),
+                value: "42".to_owned(),
+                source: MetadataSourceV0::WitnessObserved,
+            }],
+        };
+
+        assert_eq!(
+            actual_validity(&metadata),
+            ActualValidityV0::InconclusiveNoObservedMetadata
+        );
     }
 }
