@@ -155,9 +155,14 @@ test('antigravity-ls-proxy validates ANTIGRAVITY_LS_ADDRESS via the shared helpe
   assert.match(source, /p >= 1 && p <= 65535/, 'candidate add() should bound ports to 1-65535');
 });
 
-const runClef = (value) =>
-  spawnSync(process.execPath, [path.join(binDir, 'clef-proxy.mjs')], {
-    env: { ...process.env, CLEF_PROXY_PORT: value },
+const runCodex = (value) =>
+  spawnSync(process.execPath, [path.join(binDir, 'codex-proxy.mjs')], {
+    env: {
+      ...process.env,
+      CODEX_PROXY_PORT: value,
+      CODEX_PROXY_TOKEN_SYNC: '0',
+      CODEX_PROXY_CODEX_BIN: '/bin/true'
+    },
     encoding: 'utf8',
     timeout: 10000
   });
@@ -173,11 +178,11 @@ const runRelay = (value) =>
     timeout: 10000
   });
 
-test('clef-proxy exits at startup naming the var for abc / 0x… / 99999', () => {
+test('codex-proxy exits at startup naming the var for abc / 0x… / 99999', () => {
   for (const raw of ['abc', '0x4a38', '99999']) {
-    const result = runClef(raw);
+    const result = runCodex(raw);
     assert.equal(result.status, 1, `value ${raw}: ${result.stderr}`);
-    assert.match(result.stderr, /CLEF_PROXY_PORT/);
+    assert.match(result.stderr, /CODEX_PROXY_PORT/);
     assert.ok(result.stderr.includes(`"${raw}"`), result.stderr);
     assert.doesNotMatch(result.stdout, /listening/);
   }
@@ -267,14 +272,22 @@ test('proxy-relay starts with an ordered valid target list', async (t) => {
   assert.equal(endpoint.relayTo, '100.99.113.103:18745');
 });
 
-test('clef-proxy binds exactly the requested valid port', async (t) => {
+test('codex-proxy binds exactly the requested valid port', async (t) => {
   const probe = net.createServer();
   await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
   const port = probe.address().port;
   await new Promise((resolve) => probe.close(resolve));
 
-  const child = spawn(process.execPath, [path.join(binDir, 'clef-proxy.mjs')], {
-    env: { ...process.env, CLEF_PROXY_PORT: String(port) },
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-port-test-'));
+  const child = spawn(process.execPath, [path.join(binDir, 'codex-proxy.mjs')], {
+    env: {
+      ...process.env,
+      HOME: tmp,
+      XDG_STATE_HOME: path.join(tmp, 'state'),
+      CODEX_PROXY_PORT: String(port),
+      CODEX_PROXY_TOKEN_SYNC: '0',
+      CODEX_PROXY_CODEX_BIN: '/bin/true'
+    },
     stdio: ['ignore', 'pipe', 'pipe']
   });
   t.after(() => child.kill());
@@ -305,13 +318,12 @@ test('clef-proxy binds exactly the requested valid port', async (t) => {
   assert.equal((await res.json()).port, port);
 });
 
-test('every proxy port parse site in the six proxies uses the shared helper', () => {
+test('every proxy port parse site in the five proxies uses the shared helper', () => {
   // Per-file inventory, named, so a rework that moves a port from one proxy
   // to another has to update this list on purpose instead of drifting a bare
   // total. design-code-proxy owns the antigravity-direct port parses.
   const expected = {
     'codex-proxy.mjs': ['CODEX_PROXY_PORT'],
-    'clef-proxy.mjs': ['CLEF_PROXY_PORT'],
     'agy-proxy.mjs': ['AGY_PROXY_PORT'],
     'antigravity-ls-proxy.mjs': ['ANTIGRAVITY_LS_PROXY_PORT'],
     'design-code-proxy.mjs': [
@@ -344,20 +356,23 @@ test('every proxy port parse site in the six proxies uses the shared helper', ()
   }
 });
 
-test('home-manager launches the proxies from the bin directory', () => {
+test('home-manager launches codex-proxy from the bin directory', () => {
   // default.nix used to interpolate each script as a single store file
   // (${../../bin/<name>.mjs}); a sibling import like ./proxy-port.mjs
-  // cannot resolve from there. The directory form must stay.
+  // cannot resolve from there. The directory form must stay where it
+  // is used: today that is the codex-proxy PATH wrapper (the surviving
+  // doors' units exec the live checkout, $HOME/code/bin, which
+  // satisfies the same requirement by construction). The other
+  // entries this test once listed were removed with their launchers:
+  // agy-proxy + antigravity-ls-proxy (retired 2026-10-30),
+  // design-code-proxy (2026-11-03), clef-proxy (2026-11-04,
+  // opencode#1410).
   const nix = fs.readFileSync(
     path.join(binDir, '..', 'home', 'common', 'default.nix'),
     'utf8'
   );
   for (const file of [
-    'codex-proxy.mjs',
-    'clef-proxy.mjs',
-    'agy-proxy.mjs',
-    'antigravity-ls-proxy.mjs',
-    'design-code-proxy.mjs'
+    'codex-proxy.mjs'
   ]) {
     assert.ok(
       nix.includes('${../../bin}/' + file),
