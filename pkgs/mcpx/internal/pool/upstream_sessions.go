@@ -65,6 +65,13 @@ type SessionStore interface {
 	// re-saves the record when it completes.
 	Take(server, key string, legacyLane bool) (UpstreamSessionRecord, bool)
 	Put(rec UpstreamSessionRecord) error
+	// Remove discards the record for one instance identity, for when
+	// that instance's session has been definitively terminated (closed
+	// with a DELETE): the record could only ever resume a dead
+	// session, and for scope: call identities, which are never
+	// acquired again, it would otherwise be retained -- and the whole
+	// table rewritten on every save -- forever.
+	Remove(server, key string, legacyLane bool)
 }
 
 // sessionFingerprint is a hash over the server config fields that define
@@ -212,6 +219,20 @@ func (f *SessionFile) Take(server, key string, legacyLane bool) (UpstreamSession
 	return r, true
 }
 
+// Remove discards the persisted session for one instance identity.
+// Removing an identity the store does not hold is a no-op and does not
+// rewrite the file.
+func (f *SessionFile) Remove(server, key string, legacyLane bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := sessionStoreKey(server, key, legacyLane)
+	if _, ok := f.m[k]; !ok {
+		return
+	}
+	delete(f.m, k)
+	_ = f.writeLocked()
+}
+
 func (p *Pool) sessionStore() SessionStore {
 	if h := p.Hooks; h != nil {
 		return h.Sessions
@@ -254,6 +275,24 @@ func (p *Pool) saveUpstreamSession(eff *config.Resolved, key string, legacyLane 
 			"server": p.cfg.Name, "key": key, "reason": err.Error(),
 		})
 	}
+}
+
+// forgetUpstreamSession discards the persisted record for an instance
+// whose session is being definitively terminated -- the pool is about
+// to Close it, which DELETEs the upstream session. Call it at the
+// termination points that retire a live instance for good (capacity
+// eviction, ReleaseKey, the idle/orphan reap): without it the record
+// outlives its session, and a per-call (scope: call) key's record is
+// never Taken again, so it would be retained forever while every
+// subsequent save rewrites the whole table. Shutdown paths (Close and
+// friends) deliberately do NOT forget: surviving a restart is the
+// record's whole purpose.
+func (p *Pool) forgetUpstreamSession(in *Instance) {
+	store := p.sessionStore()
+	if store == nil || in == nil {
+		return
+	}
+	store.Remove(p.cfg.Name, in.key, in.legacyLane)
 }
 
 // sanitizedSessionURL strips everything credential-shaped from a

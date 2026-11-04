@@ -382,6 +382,7 @@ func (p *Pool) Acquire(ctx context.Context, rs config.ResolvedScope) (*Lease, er
 		if in := p.evictableLocked(legacy); in != nil {
 			p.removeLocked(in)
 			p.mu.Unlock()
+			p.forgetUpstreamSession(in)
 			_ = in.Client.Close()
 			p.mu.Lock()
 			continue
@@ -528,6 +529,7 @@ func (p *Pool) ReleaseKey(key string) int {
 	p.cond.Broadcast()
 	p.mu.Unlock()
 	p.stopped(in, "released")
+	p.forgetUpstreamSession(in)
 	_ = in.Client.Close()
 	return 1
 }
@@ -1620,6 +1622,7 @@ func (p *Pool) ReapIdle(now time.Time) int {
 
 	for _, in := range stop {
 		p.stopped(in, "idle")
+		p.forgetUpstreamSession(in)
 		_ = in.Client.Close()
 	}
 	return len(stop)

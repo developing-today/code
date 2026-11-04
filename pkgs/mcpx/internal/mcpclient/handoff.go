@@ -284,6 +284,7 @@ func Resume(t Transport, s Session, o Options) *Client {
 		onElicit:                 o.OnServerRequest,
 		onURLElicitationRequired: o.OnURLElicitationRequired,
 		roots:                    append([]Root(nil), o.Roots...),
+		root:                     o.Root,
 		modernVersions:           o.ModernVersions,
 		probeTimeout:             o.ProbeTimeout,
 		ServerInfo:               s.ServerInfo,

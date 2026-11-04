@@ -340,6 +340,24 @@ func TestActivateReopensTheLegacyListenStreamOnResume(t *testing.T) {
 // from the same Options: without it, a resumed 2025-11-25 upstream's
 // -32042 errors come back unanswered instead of opening the broker
 // interaction (Codex review on PR 5455).
+// Resume must carry the workspace root a fresh client gets from the
+// same Options: without it, a cold-resumed client that later recovers
+// from a session-expired 404 re-initializes with an empty root and the
+// replacement session loses the instance's workspace (Codex review on
+// PR 5455).
+func TestResumePreservesTheWorkspaceRoot(t *testing.T) {
+	tr := &listenFakeTransport{closed: make(chan struct{})}
+	defer func() { _ = tr.Close() }()
+	c := Resume(tr, Session{Era: EraLegacy, Negotiated: "2025-03-26"}, Options{Root: "/home/user/git/code"})
+	if c.root != "/home/user/git/code" {
+		t.Fatalf("Resume dropped Options.Root: root = %q", c.root)
+	}
+	uri, name, ok := c.workspaceRoot()
+	if !ok || uri != "file:///home/user/git/code" || name != "code" {
+		t.Fatalf("workspaceRoot = %q, %q, %v; want the resumed root rendered", uri, name, ok)
+	}
+}
+
 func TestResumePreservesTheURLElicitationHandler(t *testing.T) {
 	handler := func(context.Context, []URLElicitation) (bool, error) { return true, nil }
 	tr := &listenFakeTransport{closed: make(chan struct{})}

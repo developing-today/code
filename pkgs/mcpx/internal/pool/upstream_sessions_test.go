@@ -68,6 +68,42 @@ func TestAnUpstreamSessionSurvivesAColdRestart(t *testing.T) {
 	}
 }
 
+// A session the pool definitively terminates leaves no persisted
+// record behind: ReleaseKey closes the instance with a DELETE, so the
+// record could only resume a dead session -- and for a scope: call
+// key, which is never acquired again, it would otherwise be retained
+// (and the whole table rewritten on every save) forever (Codex review
+// on PR 5455).
+func TestATerminatedSessionLeavesNoPersistedRecord(t *testing.T) {
+	up := newSessionUpstream(t)
+	path := filepath.Join(t.TempDir(), pool.UpstreamSessionsFile)
+	store := pool.OpenSessionFile(path)
+	p := sessionPool(t, httpServerCfg(up.URL), store)
+	pingThrough(t, p, "k")
+
+	if _, ok := store.Get("remote", "k", false); !ok {
+		t.Fatal("no persisted record for the live session; the termination half of the test proves nothing")
+	}
+	if n := p.ReleaseKey("k"); n != 1 {
+		t.Fatalf("ReleaseKey stopped %d instances, want 1", n)
+	}
+	if _, ok := store.Get("remote", "k", false); ok {
+		t.Fatal("the persisted record survived the session's termination")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "sess-1") {
+		t.Fatalf("the persisted file still names the terminated session:\n%s", b)
+	}
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if up.deletes != 1 {
+		t.Fatalf("the upstream saw %d DELETE(s); the termination this guards is the one that ends the session", up.deletes)
+	}
+}
+
 // A record whose config fingerprint no longer matches the live config is
 // discarded: the restart initialises fresh and no error is surfaced.
 func TestAColdRestartDiscardsARecordWhoseConfigChanged(t *testing.T) {
