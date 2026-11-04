@@ -38,6 +38,24 @@ pub const DEFAULT_TARGET_HOST: &str = "100.99.113.103";
 /// `HTTPS_PROXY` — fixed by the tunnel setup, as in
 /// laptop-proxy-connect.py (the URL's own port is not used).
 pub const DEFAULT_EGRESS_PROXY_PORT: u16 = 3130;
+/// `[search]` — the search domain's routing view (step 5, #5433).
+/// All optional: the Q3 host default needs no config at all (the
+/// serving host's `service.json` marks the laptop seat). `via` is
+/// "service" or "standalone"; any other value is ignored by the
+/// domain's resolution (which then falls through to the host
+/// default) — the value shapes a *preference between two working
+/// routes*, not a disable, so unlike `[domains]` it is not a
+/// loud-error lever.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SearchConfig {
+    /// Routing preference: "service" | "standalone".
+    pub via: Option<String>,
+    /// Service base URL (`http://host[:port]`); the domain's own
+    /// resolution is flag → this → `ATLAS_SEARCH_URL` → default.
+    pub url: Option<String>,
+}
+
 /// The token file the session broker reads when a request names
 /// none — the laptop-agent token, exactly the Python broker's
 /// default (`la.TOKEN_FILE`).
@@ -68,6 +86,7 @@ pub struct Config {
     pub proxy: ProxyConfig,
     pub secrets: SecretsConfig,
     pub dispatch: DispatchConfig,
+    pub search: SearchConfig,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -347,6 +366,25 @@ impl Config {
         self.dispatch.port.unwrap_or(PORT_DISPATCH)
     }
 
+    /// The search domain's routing preference from `[search] via`
+    /// ("service" | "standalone"), when configured.
+    pub fn search_via(&self) -> Option<String> {
+        self.search
+            .via
+            .as_deref()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| v == "service" || v == "standalone")
+    }
+
+    /// The search service base URL from `[search] url`, when set.
+    pub fn search_url(&self) -> Option<String> {
+        self.search
+            .url
+            .as_deref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    }
+
     /// The secrets-broker token *file path* (never its contents).
     pub fn secrets_token_file(&self) -> PathBuf {
         match &self.secrets.token_file {
@@ -396,6 +434,19 @@ mod tests {
         let cfg = Config::load_from(&path).unwrap();
         assert!(!cfg.domain_enabled("queue"));
         assert!(cfg.domain_enabled("search"));
+    }
+
+    #[test]
+    fn search_section_parses() {
+        let (_dir, path) =
+            write_temp("[search]\nvia = \"service\"\nurl = \"http://127.0.0.1:18760\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.search_via().as_deref(), Some("service"));
+        assert_eq!(cfg.search_url().as_deref(), Some("http://127.0.0.1:18760"));
+        // An unrecognized via value is not a preference at all.
+        let (_dir2, path2) = write_temp("[search]\nvia = \"sideways\"\n");
+        let cfg2 = Config::load_from(&path2).unwrap();
+        assert_eq!(cfg2.search_via(), None);
     }
 
     #[test]

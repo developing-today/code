@@ -145,6 +145,7 @@ dependencies = [
  "fleet-proxy-proto",
  "fleet-queue",
  "fleet-registry",
+ "fleet-search",
  "fleet-secrets",
  "serde_json",
 ]
@@ -203,6 +204,16 @@ dependencies = [
 [[package]]
 name = "fleet-registry"
 version = "0.1.0"
+
+[[package]]
+name = "fleet-search"
+version = "0.1.0"
+dependencies = [
+ "fleet-config",
+ "serde",
+ "serde_json",
+ "ureq",
+]
 
 [[package]]
 name = "fleet-secrets"
