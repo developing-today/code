@@ -10,6 +10,65 @@ let
   # bakes hyprctl into its PATH must use the matching one, or it will ship the
   # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
   hyprland-master = inputs.hyprland.packages.${system}.hyprland;
+  # TEMPORARY (developing-today/code#5447, found via #2715): the
+  # nixpkgs-25 segment below takes activitywatch and
+  # haskellPackages.misfortune from this input, and on the current
+  # pin (1d060086, the nixos-unstable channel rev) misfortune's
+  # dependency haskellPackages.regex-pcre is marked broken under
+  # nixpkgs' problems framework -- honestly: nixpkgs' Haskell
+  # builder stopped adding the pkg-config wrapper and the
+  # pkgconfig-depends libraries to Haskell build environments, so
+  # regex-pcre's Cabal configure hard-fails (Cabal-7620) and its
+  # buildInputs no longer contain any pcre at all. Import the input
+  # with a problems handler that warns regex-pcre's broken marking
+  # through (handlers live in the importing config -- an .extend
+  # overlay on the raw legacyPackages cannot change it, and the
+  # stock segment refuses to evaluate) plus an overlay restoring
+  # regex-pcre's old build environment: pkg-config plus a minimal
+  # vendored pcre 8.45 (the version the old pins shipped; test
+  # suite disabled). Same override class as #3906, which tracks
+  # the master-pin instance. Drew ruled 2026-11-04 ("fix it or pin
+  # misfortune") to revive it here rather than keep nixpkgs-25
+  # frozen. Remove this binding and use the raw legacyPackages
+  # again once stock regex-pcre builds on the nixpkgs-25 pin; the
+  # removal test is in #5447.
+  nixpkgs-25-fixed = import inputs.nixpkgs-25 {
+    inherit system;
+    config.problems.handlers."regex-pcre".broken = "warn";
+    overlays = [
+      (
+        final: prev:
+        let
+          pcre_8_45 = prev.stdenv.mkDerivation {
+            pname = "pcre";
+            version = "8.45";
+            src = prev.fetchurl {
+              url = "mirror://sourceforge/project/pcre/pcre/8.45/pcre-8.45.tar.bz2";
+              sha256 = "sha256-Ta5v3NK7C7bDe1+Xwzwr6VTadDmFNpzdrDVG4yGL/7g=";
+            };
+            nativeBuildInputs = [ prev.updateAutotoolsGnuConfigScriptsHook ];
+            configureFlags = [
+              "--enable-unicode-properties"
+              "--disable-cpp"
+              "--enable-jit=auto"
+            ];
+            hardeningDisable = [ "shadowstack" ];
+            doCheck = false;
+          };
+        in
+        {
+          haskellPackages = prev.haskellPackages.override {
+            overrides = self: super: {
+              regex-pcre = super.regex-pcre.overrideAttrs (old: {
+                nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ prev.pkg-config ];
+                buildInputs = (old.buildInputs or [ ]) ++ [ pcre_8_45 ];
+              });
+            };
+          };
+        }
+      )
+    ];
+  };
   espIdf5 = inputs.esp-dev.packages.${system}.esp-idf-full;
   espIdf6 = inputs.esp-dev-6.packages.${system}.esp-idf-full;
   mkEspIdfSystemPackage =
@@ -698,7 +757,7 @@ in
       jdk21
       androidSdk.androidsdk
     ])
-    ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
+    ++ (with nixpkgs-25-fixed; [ activitywatch ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       # AI coding agents. Kept on the unstable channel rather than master
       # because unstable is cached (see the chromium note below) and these
@@ -954,9 +1013,11 @@ in
       gtk3
       gtk4
       #hackgen-nf-font
-      # misfortune is pinned to the nixpkgs-25 set: in the fleet-pinned unstable rev its
-      # regex-pcre dependency is marked broken, which refuses evaluation (#3327 pin exception).
-      (inputs.nixpkgs-25.legacyPackages.${system}.haskellPackages.misfortune)
+      # misfortune is pinned to the nixpkgs-25 set (via the nixpkgs-25-fixed binding
+      # above, which carries the regex-pcre override -- #5447): in the fleet-pinned
+      # unstable rev its regex-pcre dependency is marked broken, which refuses
+      # evaluation (#3327 pin exception).
+      nixpkgs-25-fixed.haskellPackages.misfortune
       hasklig
       hledger
       hledger-iadd
