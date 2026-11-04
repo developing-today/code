@@ -86,7 +86,7 @@ rec {
     };
     #arunoruto.url = "github:arunoruto/flake"; #?shallow=1";
     # # TODO: update! way out of date even as of 2026-03
-    unattended-installer.url = "github:developing-today-forks/nixos-unattended-installer"; # ?shallow=1";
+    unattended-installer.url = "github:developing-today-vendored/nixos-unattended-installer"; # ?shallow=1";
 
     # 2026-08-21: rebased fork patch (neededForBoot) onto latest master
     # neededForBoot patch applied via patches/nixpkgs/neededforboot-nixos-unstable.patch (see lib/default.nix)
