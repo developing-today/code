@@ -1,4 +1,9 @@
--- migration-0022.sql — issue #5001 / task 9043 (repo-health queue pilot)
+-- migration-0023.sql — issue #5001 / task 9043 (repo-health queue pilot)
+-- Renumbered 0022 -> 0023 for the repo record copy only: this migration was
+-- applied live on 2026-11-04 as the claimant session-binding fix, but main
+-- landed a different migration-0022.sql for issue #4758 (commit 89e951cc5,
+-- 2026-11-04T08:20Z) before this record copy merged. Function bodies below
+-- are unchanged from the live-applied SQL.
 --
 -- Problem: no queue transition cleared a claimant-bound session
 -- (agent.tasks.progress.session_id / launched_by and
