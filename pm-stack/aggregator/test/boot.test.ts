@@ -210,6 +210,46 @@ describe("server boots from fixtures", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("Linked issues / PRs");
+    expect(html).toContain("Activity stream");
+    expect(html).toContain("View these events in the global river");
+    expect(html).toContain("Freshness: unknown");
+    expect(html).toContain("Known activity gaps");
+    expect(html).toContain("Activity source coverage");
     expect(html).not.toContain("Planning notes");
+  });
+
+  test("events filters persist in page and machine-twin URLs", async () => {
+    const filters = {
+      project: "project-a",
+      epic: "developing-today/code#3323",
+      kind: "issue-comment",
+      actor: "drew",
+      ref: "developing-today/code#3323",
+      q: "coverage gaps",
+      limit: "25",
+    };
+    const query = new URLSearchParams(filters);
+    const page = await fetch(`http://127.0.0.1:${port}/events?${query}`);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain('name="project"');
+    expect(html).toContain("overflow-x:auto");
+    expect(html).toContain("flex-wrap:wrap");
+    expect(html).toContain('value="project-a" selected');
+    expect(html).toContain('value="developing-today/code#3323" selected');
+    expect(html).toContain('name="q" value="coverage gaps"');
+    expect(html).toContain('name="actor" value="drew"');
+
+    const apiHref = html.match(/href="([^"]+)">\/api\/events\.json/)?.[1];
+    expect(apiHref).toBeDefined();
+    const apiUrl = new URL(apiHref!.replaceAll("&amp;", "&"), `http://127.0.0.1:${port}`);
+    for (const [key, value] of Object.entries(filters)) expect(apiUrl.searchParams.get(key)).toBe(value);
+    const api = (await (await fetch(apiUrl)).json()) as {
+      pagination: { snapshotAt: string };
+      activity: { freshness: { status: string }; coverage: unknown[] };
+    };
+    expect(api.pagination.snapshotAt).toBeTruthy();
+    expect(api.activity.freshness.status).toBe("unknown");
+    expect(Array.isArray(api.activity.coverage)).toBe(true);
   });
 });

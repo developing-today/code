@@ -1188,7 +1188,8 @@ async function handler(req: Request): Promise<Response> {
     apiUrl.pathname = "/api/events.json";
     apiUrl.hash = "";
     return html(
-      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title></head><body>` +
+      `<!doctype html><html><head><meta charset="utf-8"><title>Events — pm-stack</title>` +
+        `<style>body{margin:1rem;font:16px system-ui,sans-serif}form{display:flex;flex-wrap:wrap;align-items:end;gap:.75rem}form label{display:grid;gap:.25rem}.tblwrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}table{border-collapse:collapse;min-width:36rem}th,td{border:1px solid #888;padding:.4rem .55rem;text-align:left;vertical-align:top}.muted{color:#666}</style></head><body>` +
         `<h1>Events</h1><p>Showing ${page.events.length} of ${filtered.length} matching events from a fixed snapshot, newest first. ` +
         `Machine twin: <a href="${esc(apiUrl.pathname + apiUrl.search)}">/api/events.json</a>.</p>` +
         `<p class="muted"><strong>Freshness: unknown.</strong> Ingestion checkpoints record deliveries, not successful source polls.</p>` +
@@ -1203,10 +1204,11 @@ async function handler(req: Request): Promise<Response> {
         `<button type="submit">Filter</button></form>` +
         eventTableHtml(page.events) +
         (nextUrl ? `<p><a rel="next" href="${esc(nextUrl.pathname + nextUrl.search)}">Next page →</a></p>` : "") +
-        `<h2>Activity gaps</h2>` +
+        `<h2>Activity gaps</h2><div class="tblwrap">` +
         gapsHtml(await activityStore.gaps()) +
-        `<h2>Activity source coverage</h2>` +
+        `</div><h2>Activity source coverage</h2><div class="tblwrap">` +
         activityCoverageHtml() +
+        `</div>` +
         `</body></html>`,
     );
   }
