@@ -156,6 +156,13 @@ h1 { font-size: 18px; } h2 { font-size: 15px; }
 a { color: #58a6ff; }
 .card { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: #161b22; overflow-wrap: anywhere; }
 .muted { color: #8b949e; font-size: 12px; }
+@media (max-width: 480px) {
+  .attention-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; margin-bottom: 4px; }
+  .attention-card-header > strong { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .attention-card-header .badge { white-space: normal; }
+  .item-session-records > .session-record-line { box-sizing: border-box; max-width: 100%; min-width: 0; }
+  .item-session-records .session-record-meta { display: block; max-width: 100%; overflow-wrap: anywhere; }
+}
 .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }
 .badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
 .badge.merged { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
@@ -2167,7 +2174,7 @@ export function renderItem(
       : "";
   const sessionSection =
     extras && extras.sessions.length
-      ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
+      ? `<h2>Sessions that worked this</h2><div class="item-session-records">${extras.sessions.map((r) => sessionRecordLine(r)).join("")}</div>`
       : "";
   const statusSection =
     extras?.statusRequest && extras.formOpts
@@ -2228,7 +2235,7 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -2657,7 +2664,7 @@ function sessionCard(
     act?.identities && act.commentOpts
       ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
       : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}</div><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -2727,7 +2734,7 @@ function tierItemCard(
   const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}</div><br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
 }
 
 export interface AttentionAct {
