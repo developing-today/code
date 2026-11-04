@@ -57,6 +57,8 @@ pub const FILE: &str = "artifacts.jsonl";
 pub const PAGE_BYTES: usize = 256 * 1024;
 /// Home servers one declaration may name.
 pub const MAX_HOME_SERVERS: usize = 8;
+/// The largest world ID one home server may carry, in bytes.
+pub const MAX_WORLD_ID_BYTES: usize = 64;
 /// Hashes one artifact may name in `after`.
 pub const MAX_AFTER: usize = 32;
 /// The largest content a document may carry, as serialized JSON.
@@ -330,6 +332,18 @@ impl SignedArtifact {
     /// Fails with [`Refusal::Forbidden`] when a known kind is malformed or its
     /// author may not make it.
     pub fn parsed(&self) -> Result<Option<Kind>> {
+        self.parsed_mode(false)
+    }
+
+    /// [`SignedArtifact::parsed`] for history a log already holds: the
+    /// `home_declared` bounds added for #3187 do not apply, so a declaration
+    /// accepted before them still replays (mirroring how replay skips the
+    /// frame check in `store`). New receipts always go through `parsed`.
+    fn parsed_for_replay(&self) -> Result<Option<Kind>> {
+        self.parsed_mode(true)
+    }
+
+    fn parsed_mode(&self, replay: bool) -> Result<Option<Kind>> {
         match self.kind.as_str() {
             FRIEND_REMOVE => {
                 let body: FriendRemove = self.decode()?;
@@ -372,11 +386,46 @@ impl SignedArtifact {
                         "a declaration names at most {MAX_HOME_SERVERS} servers"
                     )));
                 }
+                // Duplicate refusal compares the validated endpoint
+                // identities, not the raw strings: one node can be named
+                // by its bare ID or by an endpoint ticket for that ID.
+                let mut targets: Vec<EndpointAddr> = Vec::with_capacity(body.servers.len());
                 for server in &body.servers {
-                    check_target(&server.endpoint)
+                    let target = check_target(&server.endpoint)
                         .map_err(|error| forbidden(format!("{error:#}")))?;
+                    if !replay && targets.iter().any(|prior| prior.id == target.id) {
+                        return Err(forbidden(
+                            "a declaration names each endpoint at most once",
+                        ));
+                    }
+                    targets.push(target);
+                }
+                for server in &body.servers {
                     if server.world_id.is_empty() {
                         return Err(forbidden("a home server needs a world ID"));
+                    }
+                    if replay {
+                        continue;
+                    }
+                    if server.world_id.len() > MAX_WORLD_ID_BYTES {
+                        return Err(forbidden(format!(
+                            "a home server's world ID is 1 to {MAX_WORLD_ID_BYTES} bytes"
+                        )));
+                    }
+                    if server.world_id.trim().is_empty() {
+                        return Err(forbidden(
+                            "a home server's world ID must not be whitespace only",
+                        ));
+                    }
+                    if server.world_id.chars().any(char::is_control) {
+                        return Err(forbidden(
+                            "a home server's world ID must not contain control characters",
+                        ));
+                    }
+                    if server.world_id.chars().any(crate::is_format_char) {
+                        return Err(forbidden(
+                            "a home server's world ID must not contain format characters",
+                        ));
                     }
                 }
                 Ok(Some(Kind::HomeDeclared(body)))
@@ -461,7 +510,11 @@ impl ArtifactLog {
     /// before the check still loads.
     fn store(&mut self, artifact: SignedArtifact, frame_check: bool) -> Result<Stored> {
         artifact.verify()?;
-        artifact.parsed()?;
+        if frame_check {
+            artifact.parsed()?;
+        } else {
+            artifact.parsed_for_replay()?;
+        }
         let size = encoded_len(&artifact);
         if frame_check && page_frame_bytes().saturating_add(size) > MAX_FRAME_BYTES {
             return Err(forbidden(format!(
@@ -558,7 +611,7 @@ impl ArtifactLog {
             .get(account)?
             .iter()
             .rev()
-            .find_map(|artifact| match artifact.parsed() {
+            .find_map(|artifact| match artifact.parsed_for_replay() {
                 Ok(Some(Kind::HomeDeclared(declared))) => Some(declared),
                 _ => None,
             })
@@ -1939,6 +1992,91 @@ mod tests {
             .unwrap();
         assert_eq!(stored, Stored::New);
         assert_eq!(directory.artifacts().head_seq(&public(1)), 1);
+    }
+
+    fn home_declared_with(servers: Vec<HomeServer>) -> SignedArtifact {
+        ArtifactLog::default()
+            .sign(
+                &key(1),
+                &Kind::HomeDeclared(HomeDeclared {
+                    account: public(1),
+                    servers,
+                }),
+            )
+            .unwrap()
+    }
+
+    fn home_server(endpoint: String, world_id: &str) -> HomeServer {
+        HomeServer {
+            endpoint,
+            world_id: world_id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn parsed_home_world_id_is_bounded_and_clean() {
+        let control = home_declared_with(vec![home_server(endpoint_of(7), "home")]);
+        assert!(matches!(control.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        let at_bound = home_declared_with(vec![home_server(endpoint_of(7), &"w".repeat(64))]);
+        assert!(matches!(at_bound.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        for world_id in [
+            "w".repeat(65),
+            "   ".to_owned(),
+            "home\nFORGED".to_owned(),
+            "ho\u{1}me".to_owned(),
+            "home\u{202e}".to_owned(),
+        ] {
+            let refused = home_declared_with(vec![home_server(endpoint_of(7), &world_id)]);
+            assert!(refused.parsed().is_err(), "world_id {world_id:?} accepted");
+        }
+    }
+
+    #[test]
+    fn parsed_home_declaration_refuses_duplicate_endpoints() {
+        let distinct = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(endpoint_of(8), "lobby"),
+        ]);
+        assert!(matches!(distinct.parsed(), Ok(Some(Kind::HomeDeclared(_)))));
+
+        let duplicate = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(endpoint_of(7), "lobby"),
+        ]);
+        assert!(duplicate.parsed().is_err());
+
+        // The same node named once by bare ID and once by an endpoint
+        // ticket for that ID is still a duplicate.
+        let ticket = iroh_tickets::endpoint::EndpointTicket::new(EndpointAddr::from(
+            SecretKey::from_bytes(&[7; 32]).public(),
+        ))
+        .to_string();
+        let aliased = home_declared_with(vec![
+            home_server(endpoint_of(7), "home"),
+            home_server(ticket, "lobby"),
+        ]);
+        assert!(aliased.parsed().is_err());
+    }
+
+    #[test]
+    fn a_legacy_home_declaration_still_replays() {
+        // A declaration accepted before the #3187 bounds (here: a world ID
+        // past MAX_WORLD_ID_BYTES) must not brick reopening its log: replay
+        // is lenient, while a fresh receipt of the same artifact is refused.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let legacy = home_declared_with(vec![home_server(endpoint_of(7), &"w".repeat(65))]);
+        assert!(legacy.parsed().is_err());
+        assert!(ArtifactLog::default().insert(legacy.clone()).is_err());
+        append(&path, &legacy).unwrap();
+
+        let reopened = ArtifactLog::open(&path).unwrap();
+        assert_eq!(
+            reopened.declared(&public(1)).unwrap().servers[0].world_id,
+            "w".repeat(65)
+        );
     }
 
     #[test]
