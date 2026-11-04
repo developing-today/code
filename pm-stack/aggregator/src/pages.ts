@@ -217,6 +217,16 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "notifications",
+    title: "Notifications",
+    route: "/notifications",
+    api: "/api/notifications.json",
+    blurb:
+      "Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.",
+    group: "ops",
+    nav: "dropdown",
+  },
+  {
     id: "pages",
     title: "All pages",
     route: "/pages",

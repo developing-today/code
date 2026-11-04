@@ -565,24 +565,13 @@ fn hex_encode(bytes: &[u8]) -> String {
 pub(super) fn sanitize_name(name: Option<String>) -> Option<String> {
     name.map(|name| {
         name.chars()
-            .filter(|ch| !ch.is_control() && !is_bidi_override_or_isolate(*ch))
+            .filter(|ch| !ch.is_control() && !crate::is_format_char(*ch))
             .take(MAX_NAME_LENGTH)
             .collect::<String>()
             .trim()
             .to_owned()
     })
     .filter(|name| !name.is_empty())
-}
-
-fn is_bidi_override_or_isolate(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{061c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
-    )
 }
 
 /// Create a short display ID from a `client_id` (first 6 chars).
@@ -1029,6 +1018,10 @@ mod tests {
             sanitize_name(Some("Bob".to_owned())),
             Some("Bob".to_owned())
         );
+        assert_eq!(
+            sanitize_name(Some("Mary Jane-Smith".to_owned())),
+            Some("Mary Jane-Smith".to_owned())
+        );
 
         assert_eq!(
             sanitize_name(Some("A\n\t\u{001b}\u{202e}lice".to_owned())),
@@ -1039,8 +1032,12 @@ mod tests {
             Some("AB".to_owned())
         );
         assert_eq!(
+            sanitize_name(Some("a\u{200b}b\u{feff}c\u{00ad}d".to_owned())),
+            Some("abcd".to_owned())
+        );
+        assert_eq!(
             sanitize_name(Some("a\u{200d}b\u{200c}c".to_owned())),
-            Some("a\u{200d}b\u{200c}c".to_owned())
+            Some("abc".to_owned())
         );
         assert_eq!(
             sanitize_name(Some("こんにちは世界".to_owned())),

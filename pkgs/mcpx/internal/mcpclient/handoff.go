@@ -69,17 +69,23 @@ func (t *StdioTransport) Detach() (*StdioHandoff, error) {
 		return nil, fmt.Errorf("child %d: %w", t.pid, err)
 	}
 	t.writeMu.Lock()
-	if t.closed.Load() || t.detached {
+	if t.closed.Load() || t.detached.Load() {
 		t.writeMu.Unlock()
 		return nil, errors.New("stdio transport is not attached")
 	}
-	t.detached = true
+	t.detached.Store(true)
 	t.writeMu.Unlock()
 
 	_ = t.outR.SetReadDeadline(aLongTimeAgo)
 	_ = t.errR.SetReadDeadline(aLongTimeAgo)
+	// Hold readMu across the snapshot, not just as a wait for a read in
+	// progress: a read loop whose Recv just returned can start the next
+	// one and write pending while Detach reads it below -- the
+	// readLine/Detach data race in #2842. A loop still waiting on
+	// readMu when Detach returns meets the detached check in Recv
+	// instead of consuming the successor's frames.
 	t.readMu.Lock()
-	t.readMu.Unlock()
+	defer t.readMu.Unlock()
 	<-t.stderrDone
 
 	buffered, _ := t.stdout.Peek(t.stdout.Buffered())
@@ -98,7 +104,7 @@ func (t *StdioTransport) Detach() (*StdioHandoff, error) {
 // Reattach resumes reading after a Detach that was not handed on.
 func (t *StdioTransport) Reattach() {
 	t.writeMu.Lock()
-	t.detached = false
+	t.detached.Store(false)
 	t.writeMu.Unlock()
 	_ = t.outR.SetReadDeadline(time.Time{})
 	_ = t.errR.SetReadDeadline(time.Time{})

@@ -115,10 +115,20 @@ describe("buildHealth probes", () => {
     const stoppedAt = NOW;
     const dir = await mkdtemp(join(tmpdir(), "collector-stop-"));
     const path = join(dir, "feed.json");
-    const collector = spawn({ cmd: [process.execPath, "-e", "await Bun.write(process.argv[1], process.argv[2]); setInterval(() => {}, 1000)", path, JSON.stringify(feedAt(0))], stdout: "ignore", stderr: "inherit" });
+    const collector = spawn({
+      cmd: [
+        process.execPath,
+        "-e",
+        "await Bun.write(process.argv[1], process.argv[2]); setInterval(() => {}, 1000)",
+        path,
+        JSON.stringify(feedAt(0)),
+      ],
+      stdout: "ignore",
+      stderr: "inherit",
+    });
     try {
       for (let i = 0; i < 100 && !(await Bun.file(path).exists()); i++) await Bun.sleep(10);
-      const feed = await Bun.file(path).json() as FleetFeed;
+      const feed = (await Bun.file(path).json()) as FleetFeed;
       collector.kill();
       await collector.exited;
       const { fetcher } = fakeFetcher(allUp);

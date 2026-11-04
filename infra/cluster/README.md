@@ -49,7 +49,7 @@ Worked example: [`examples/node-file.yaml`](examples/node-file.yaml).
 
 - **System/boot disk** — `machine.install.diskSelector` with **`serial` or
   `wwid`**, never `size`/`model` alone. Serial/wwid are unique per physical
-  disk; `size: '>= 1TB'` or `model: 'WDC*'` can silently match a *different*
+  disk; `size: '>= 1TB'` or `model: 'WDC*'` can silently match a _different_
   disk when a node is reinstalled after a drive swap, and the install then
   wipes the wrong device.
 - **Data volumes (Talos ≥ v1.10)** — `UserVolumeConfig.spec.provisioning.diskSelector.match`
@@ -71,7 +71,7 @@ Worked example: [`examples/user-volume.yaml`](examples/user-volume.yaml).
 Talos itself is a small, frozen, read-only host image installed on each
 machine's NVMe boot drive. The rest of the boot NVMe is headroom: minor logs
 and wear-leveling slack across the consumer SSDs (990 Pro class). Nothing
-about the layout is per-node configuration — the *identity* of the boot
+about the layout is per-node configuration — the _identity_ of the boot
 drive is the only per-node fact, and it lives in the node file's
 `diskSelector` (above), nowhere else.
 

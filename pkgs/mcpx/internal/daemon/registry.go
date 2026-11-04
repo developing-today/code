@@ -1555,6 +1555,14 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 		if blocker, _ := r.blocked(p.Config()); blocker != nil {
 			continue
 		}
+		// A caller-scoped server (its definition references
+		// ${mcpx.root}/${mcpx.cwd}) cannot start from this background
+		// pass, which has no caller: defer it to the first
+		// caller-backed refresh rather than recording a guaranteed
+		// rootless-start failure as its error (PR #5135).
+		if p.CallerScoped() {
+			continue
+		}
 		wg.Add(1)
 		go func(p *pool.Pool) {
 			defer wg.Done()

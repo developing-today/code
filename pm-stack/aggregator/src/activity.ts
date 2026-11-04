@@ -470,7 +470,12 @@ export class IngestionStore {
         continue;
       }
       try {
+        // Stable id (#3322 v2 record contract): a persist failure queues
+        // the record in the retry outbox and rethrows; the replay of this
+        // delivery re-presents the same id and returns the landed record
+        // instead of appending a duplicate (the v1 rollback this replaces).
         await events.record({
+          id: `activity:${d.source}:${d.sourceId}`,
           at: d.at,
           actor: d.source,
           kind: d.kind,

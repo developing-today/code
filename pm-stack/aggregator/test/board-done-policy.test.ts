@@ -86,7 +86,7 @@ describe("board done policy (#1146)", () => {
     expect(html).not.toContain("Ancient finish");
     expect(html).not.toContain("ROADMAP Done table");
     // Collapsed expander with the surviving count, after the live lanes.
-    expect(html).toContain("<details class=\"donestrip\">");
+    expect(html).toContain('<details class="donestrip">');
     expect(html).toContain("Done recently (1)");
     expect(html).not.toContain("done (1)</h2>");
     expect(html.indexOf("Live work")).toBeLessThan(html.indexOf("Done recently"));
@@ -120,7 +120,9 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
               goal: "Keep the four repos healthy",
               momentum: "moving",
               summary: "",
-              linedUp: [{ title: "Live orchestrator task", status: "in-progress", horizon: "today", horizonWhy: "test" }],
+              linedUp: [
+                { title: "Live orchestrator task", status: "in-progress", horizon: "today", horizonWhy: "test" },
+              ],
               progressedSinceLastRun: [],
               stalled: [],
               gaps: [],
@@ -136,7 +138,10 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
       const json = (body: unknown, headers: Record<string, string> = {}) =>
-        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", ...headers } });
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...headers },
+        });
       if (url.includes("/api/auth/sign-in/email")) return json({}, { "set-cookie": "session=test; Path=/" });
       if (url.includes("/api/workspace")) return json([{ id: "ws1" }]);
       if (url.includes("/api/project?")) return json([{ id: "p1", slug: "code", name: "Code" }]);
@@ -148,9 +153,30 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
                 id: "done",
                 name: "Done",
                 tasks: [
-                  { id: "t-old", number: 1, title: "Ancient finish", status: "done", createdAt: oldDone, updatedAt: oldDone },
-                  { id: "t-ret", number: 2, title: "ROADMAP Done table omits merged PRs", status: "done", createdAt: recent, updatedAt: recent },
-                  { id: "t-future", number: 3, title: "Future finish", status: "done", createdAt: recent, updatedAt: new Date(Date.now() + 30 * DAY).toISOString() },
+                  {
+                    id: "t-old",
+                    number: 1,
+                    title: "Ancient finish",
+                    status: "done",
+                    createdAt: oldDone,
+                    updatedAt: oldDone,
+                  },
+                  {
+                    id: "t-ret",
+                    number: 2,
+                    title: "ROADMAP Done table omits merged PRs",
+                    status: "done",
+                    createdAt: recent,
+                    updatedAt: recent,
+                  },
+                  {
+                    id: "t-future",
+                    number: 3,
+                    title: "Future finish",
+                    status: "done",
+                    createdAt: recent,
+                    updatedAt: new Date(Date.now() + 30 * DAY).toISOString(),
+                  },
                 ],
               },
             ],
@@ -198,7 +224,10 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
       const json = (body: unknown, headers: Record<string, string> = {}) =>
-        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", ...headers } });
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...headers },
+        });
       if (url.includes("/api/auth/sign-in/email")) return json({}, { "set-cookie": "session=test; Path=/" });
       if (url.includes("/api/workspace")) return json([{ id: "ws1" }]);
       if (url.includes("/api/project?")) return json([{ id: "p1", slug: "code", name: "Code" }]);
