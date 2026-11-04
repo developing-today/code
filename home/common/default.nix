@@ -21,6 +21,49 @@ let
   opencodeRouteProxyPort = 18750;
   claudeCodeProxyPort = 18749;
   antigravityDirectProxyPort = 18751;
+  # Atlas search service port (code#5350 step 5, #5355): the fleet
+  # inventory entry for 18760. Unlike the proxy lets above, this
+  # value is NOT plumbed into a unit's Environment — it lives in
+  # the service's own config (~/.local/state/atlas-search/
+  # service.json, written by `atlas-search init`) and in the Rust
+  # defaults (server listen, CLI service URL), all 18760. The let
+  # exists so the reservation is recorded where the fleet looks
+  # for one; verified free against this file, the proxy-port
+  # guard (.github/scripts/check-proxy-port-fallbacks.sh), and
+  # the live listener table on 2026-11-04.
+  atlasSearchPort = 18760;
+  # The atlas-search package (pkgs/atlas-search), built with the
+  # toolchain pinned by its own rust-toolchain.toml (channel
+  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # pattern (cf. rustToolchain in nixos/environment/default.nix).
+  # Used as the atlas-search unit's ExecStart below and, since
+  # the step-6 cutover (#5356), as a home package below so the
+  # Rust binary is the resolved `atlas-search` CLI (the Python
+  # CLI is kept alongside as `atlas-search-py`). It was kept
+  # out of home.packages through step 5 so the Python CLI
+  # stayed resolved until the cutover said otherwise.
+  atlasSearchToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/atlas-search/rust-toolchain.toml;
+  atlasSearch = pkgs.callPackage ../../pkgs/atlas-search {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = atlasSearchToolchain;
+      rustc = atlasSearchToolchain;
+    };
+  };
+  # The fleet multicall package (pkgs/fleet), built with the
+  # toolchain pinned by its own rust-toolchain.toml — the
+  # atlas-search pattern above. Used as the broker units'
+  # ExecStart below (`fleet serve <role>`); deliberately not in
+  # home.packages — the resolved `repo-queue` on PATH stays the
+  # standalone artifact until the proxy step's shim dir (design
+  # note §4) supersedes the hand-maintained symlinks.
+  fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = fleetToolchain;
+      rustc = fleetToolchain;
+    };
+    sourceRev = inputs.self.rev or "dirty";
+  };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -632,6 +675,10 @@ in
       Environment = [
         "CODEX_PROXY_PORT=${toString codexProxyPort}"
         "CODEX_PROXY_HOST=127.0.0.1"
+        # Gate 1 cutover (opencode#1154): the in-fork codex credential
+        # sync (opencode#1468) owns the token copy now; the door must
+        # not overwrite the true JWT expiry with its synthetic one.
+        "CODEX_PROXY_TOKEN_SYNC=0"
       ];
     };
     # No Install: codex-proxy.socket owns the listener and activates this
@@ -846,6 +893,81 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
+  # Atlas search service (code#5350 step 5, #5355): the packaged
+  # atlas-search binary's serve mode — one resident Snowflake
+  # embedder shared by every client, the job protocol with its
+  # in-memory temp store + dedupe cache, and per-client ceiling
+  # caps enforced from ~/.local/state/atlas-search/service.json
+  # (0600, written by `atlas-search init`). Binds 127.0.0.1:18760
+  # (atlasSearchPort above); the tailnet exposure is the OpenCode
+  # pattern — a `tailscale serve` mapping on the MagicDNS name in
+  # front of the loopback port — and is created at activation
+  # (step 6), not here: a serve mapping in front of a service
+  # that has not started would be a live exposure change, and
+  # tailscale serve state is imperative tailscaled state in this
+  # fleet (no declarative precedent to land it in).
+  #
+  # Landed disabled in step 5 (no Install section, so the
+  # unit could not auto-start); step 6 (#5356, the cutover)
+  # added Install.WantedBy below, issued the real client
+  # tokens via `atlas-search init`, and created the
+  # tailscale serve mapping.
+  systemd.user.services.atlas-search = {
+    Unit = {
+      Description = "Atlas search service (hybrid corpus search, serve mode)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${atlasSearch}/bin/atlas-search serve";
+      Restart = "on-failure";
+      RestartSec = 3;
+    };
+    # Install added at the step-6 cutover (#5356): auto-start.
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
+  # Fleet broker roles (epic #5412 step 2, #5430): the secrets and
+  # queue brokers as `fleet serve <role>` units — one unit per role,
+  # as they have run since code#5362. This is the home-module
+  # pattern ported from dezren39/nix PR #1459 (closed as superseded
+  # by ruling D1) into this tree, now consuming this flake's own
+  # pkgs/fleet instead of a vendored copy. The unit files these
+  # definitions replace were hand-installed; home-manager converges
+  # them on the next activation, and the step-2 flips re-point the
+  # live files at the same artifact in the meantime.
+  systemd.user.services.secrets-broker = {
+    Unit = {
+      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
+      After = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.queue-broker = {
+    Unit = {
+      Description = "queue-broker — repo-health queue service (code#5362)";
+      After = [
+        "network-online.target"
+        "secrets-broker.service"
+      ];
+      Wants = [ "secrets-broker.service" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve queue-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   systemd.user.services.sync-models = {
     Unit = {
       Description = "Sync AI models for OpenCode providers from models.dev and agy";
@@ -969,6 +1091,22 @@ in
     # wrapper collided with this package on bin/opencode, and it
     # exec'd the root input's build besides (CLI/service skew).
     package = opencodeWrapped;
+
+    environment = {
+      # code#5490: the runtime overlay (code#4544) must be layered into
+      # the server process itself. As a home.sessionVariables entry it
+      # reached shells only; the systemd unit never saw it, and the
+      # standing server ran without the overlay after the 2026-11-04
+      # reboot (overlay-only models, e.g. all of antigravity-direct,
+      # unavailable) until a drop-in restored it live.
+      OPENCODE_CONFIG = "%h/.local/state/opencode/opencode-runtime.jsonc";
+      # opencode#1633: the fork agy client-secret extraction matches
+      # the nix agy build binary layout, not the self-updated
+      # ~/.gemini/bin build (1.4.11 moved the pairing secret). Pin the
+      # intel source to the nix build until the fork iterates
+      # candidates; remove then.
+      AGY_BIN = "/run/current-system/sw/bin/agy";
+    };
   };
 
   services.mcpx = {
@@ -1561,6 +1699,10 @@ in
       with pkgs;
       [
         libnotify
+        # Atlas search CLI + service binary (pkgs/atlas-search);
+        # step-6 cutover (#5356): the Rust binary is the resolved
+        # `atlas-search` (the Python CLI is kept as atlas-search-py).
+        atlasSearch
         (pkgs.writeShellScriptBin "clef-proxy" ''
           exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
         '')

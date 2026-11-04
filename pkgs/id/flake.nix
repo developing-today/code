@@ -667,6 +667,7 @@
             buildFeatures = [
               "web"
               "sandbox"
+              "ssh"
               "world"
             ];
 

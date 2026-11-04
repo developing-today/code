@@ -1477,9 +1477,19 @@ impl WorldActor {
                                                         Some(fallback_text)
                                                     };
                                                     match bounded {
-                                                        Some(text) if text.len() <= self.core.limits.presentation_bytes => Ok(Some(text)),
+                                                        Some(text)
+                                                            if text.len()
+                                                                <= self
+                                                                    .core
+                                                                    .limits
+                                                                    .presentation_bytes =>
+                                                        {
+                                                            Ok(Some(text))
+                                                        }
                                                         _ => {
-                                                            self.view_failures = self.view_failures.saturating_add(1);
+                                                            self.view_failures = self
+                                                                .view_failures
+                                                                .saturating_add(1);
                                                             Err(anyhow::anyhow!(
                                                                 "world presentation exceeds {} bytes",
                                                                 self.core.limits.presentation_bytes

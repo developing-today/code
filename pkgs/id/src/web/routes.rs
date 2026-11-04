@@ -22,7 +22,8 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
-use crate::fileops::{FileOpError, FileOps, claim_archive_name};
+use crate::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
+use crate::tags::TagStore;
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -78,6 +79,183 @@ fn mime_to_extension(mime: &str) -> &'static str {
         "image/x-icon" => "ico",
         _ => "bin",
     }
+}
+
+/// Verify that uploaded bytes actually look like the image type the
+/// multipart field declared (#5342). Before this check, `upload_handler`
+/// trusted the declared Content-Type alone, so any bytes (HTML, script,
+/// plain text) could be stored — and later served — as an image of the
+/// declared type. Raster formats are recognised by their magic
+/// signatures; SVG is text, so it is checked structurally by
+/// [`svg_document_starts`]. This is a signature check, not a full format
+/// decode: it stops type masquerading, it does not prove the rest of
+/// the file is well-formed.
+fn image_bytes_match_declared_type(content_type: &str, data: &[u8]) -> bool {
+    match content_type {
+        "image/png" => data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+        "image/jpeg" => data.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "image/gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
+        "image/webp" => data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP",
+        "image/bmp" => data.starts_with(b"BM"),
+        // ICO (type 1) and CUR (type 2) share the container header.
+        "image/x-icon" => {
+            data.starts_with(&[0x00, 0x00, 0x01, 0x00])
+                || data.starts_with(&[0x00, 0x00, 0x02, 0x00])
+        }
+        "image/svg+xml" => match decode_utf16_text(data) {
+            // An SVG encoded as UTF-16 (Codex P2 on PR #5357, round 3)
+            // is a valid image/svg+xml document whose markup is not
+            // ASCII bytes; decode it and run the same check on the text.
+            Some(decoded) => svg_document_starts(decoded.as_bytes()),
+            None => svg_document_starts(data),
+        },
+        _ => false,
+    }
+}
+
+/// Decode UTF-16 text when `data` carries one of its signatures: a
+/// UTF-16LE (`FF FE`) or UTF-16BE (`FE FF`) byte-order mark, or the
+/// UTF-16 spelling of an opening `<` (`3C 00` / `00 3C`) when there is
+/// no BOM. Returns `None` for anything else (the caller then treats
+/// the bytes as UTF-8/ASCII, as before). Lossy on unpaired surrogates —
+/// only the prolog/root prefix is inspected afterwards.
+fn decode_utf16_text(data: &[u8]) -> Option<String> {
+    let (body, little_endian) = if data.starts_with(&[0xFF, 0xFE]) {
+        (&data[2..], true)
+    } else if data.starts_with(&[0xFE, 0xFF]) {
+        (&data[2..], false)
+    } else if data.starts_with(&[0x3C, 0x00]) {
+        (data, true)
+    } else if data.starts_with(&[0x00, 0x3C]) {
+        (data, false)
+    } else {
+        return None;
+    };
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| {
+            if little_endian {
+                u16::from_le_bytes([c[0], c[1]])
+            } else {
+                u16::from_be_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    Some(String::from_utf16_lossy(&units))
+}
+
+/// Whether `data` is an SVG document: after an optional UTF-8 BOM and
+/// the legal XML prolog constructs — whitespace, `<?xml ... ?>` or
+/// another processing instruction, `<!-- ... -->` comments, and a
+/// `<!DOCTYPE ...>` declaration (real-world SVGs carry all of these:
+/// see `doc/database_structure_20231217_074440.svg`, a Graphviz export
+/// with a declaration, an SVG 1.1 DOCTYPE, and comments before the
+/// root) — the document must open with an `svg` root element (plain or namespace-prefixed).
+fn svg_document_starts(data: &[u8]) -> bool {
+    let mut rest = data;
+    if rest.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        rest = &rest[3..];
+    }
+    loop {
+        while rest.first().is_some_and(u8::is_ascii_whitespace) {
+            rest = &rest[1..];
+        }
+        if rest.starts_with(b"<?") {
+            // XML declaration or processing instruction.
+            match rest.windows(2).position(|w| w == b"?>") {
+                Some(end) => rest = &rest[end + 2..],
+                None => return false,
+            }
+        } else if rest.starts_with(b"<!--") {
+            match rest.windows(3).position(|w| w == b"-->") {
+                Some(end) => rest = &rest[end + 3..],
+                None => return false,
+            }
+        } else if rest.starts_with(b"<!DOCTYPE") || rest.starts_with(b"<!doctype") {
+            match doctype_end(rest) {
+                Some(end) => rest = &rest[end + 1..],
+                None => return false,
+            }
+        } else {
+            break;
+        }
+    }
+    svg_root_element_opens(rest)
+}
+
+/// Byte index of the `>` that ends a `<!DOCTYPE ...>` declaration at
+/// the start of `rest`. The declaration ends at the first `>` that is
+/// outside the `[ ... ]` internal subset, outside any quoted literal
+/// (`"..."` / `'...'`), and outside any `<!-- ... -->` comment —
+/// brackets and angle brackets inside quotes or comments are data,
+/// not delimiters (Codex P2 on PR #5357, round 4: an entity value of
+/// `"["` used to corrupt the subset depth and reject a legal SVG).
+fn doctype_end(rest: &[u8]) -> Option<usize> {
+    let mut subset_depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut in_comment = false;
+    let mut i = 0usize;
+    while i < rest.len() {
+        if in_comment {
+            if rest[i..].starts_with(b"-->") {
+                in_comment = false;
+                i += 3;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if let Some(q) = quote {
+            if rest[i] == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if rest[i..].starts_with(b"<!--") {
+            in_comment = true;
+            i += 4;
+            continue;
+        }
+        match rest[i] {
+            b'"' | b'\'' => quote = Some(rest[i]),
+            b'[' => subset_depth += 1,
+            b']' => subset_depth = subset_depth.saturating_sub(1),
+            b'>' if subset_depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether `rest` opens an element whose local name is `svg`: the
+/// plain `<svg ...>` spelling, or a namespace-prefixed root such as
+/// `<s:svg xmlns:s="http://www.w3.org/2000/svg"/>` (Codex P2 on
+/// PR #5357 — prefixed SVGs previously uploaded fine and the client
+/// allowlist still accepts them). The tag name is read whole, so
+/// `<svgx>` and `<x:html>` do not pass.
+fn svg_root_element_opens(rest: &[u8]) -> bool {
+    if !rest.starts_with(b"<")
+        || rest.starts_with(b"</")
+        || rest.starts_with(b"<!")
+        || rest.starts_with(b"<?")
+    {
+        return false;
+    }
+    let name = &rest[1..];
+    let end = name
+        .iter()
+        .position(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+        .unwrap_or(name.len());
+    if end == 0 {
+        return false;
+    }
+    let local_name = name[..end]
+        .rsplit(|b| *b == b':')
+        .next()
+        .unwrap_or(&name[..end]);
+    local_name == b"svg"
 }
 
 /// Query parameters for the file list (pagination + search).
@@ -1456,7 +1634,8 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
     let document_id = published.id.to_hex();
 
     // Archive the original blob under a timestamped tag
-    let archive_name = archive_original_tag(&state.store, &req.name, &req.doc_id).await;
+    let archive_name =
+        archive_original_tag(&state.store, &state.tag_store, &req.name, &req.doc_id).await;
 
     // Set the tag to point to the new blob
     let tag = iroh_blobs::api::Tag::from(req.name.clone());
@@ -1823,6 +2002,18 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
 
     if data.is_empty() {
         return (StatusCode::BAD_REQUEST, "Uploaded file is empty").into_response();
+    }
+
+    // #5342: the declared Content-Type above is caller-asserted; verify
+    // the bytes themselves carry that type's signature before storing,
+    // so the stored name/type metadata cannot claim a format the
+    // content does not have. A mismatch stores and tags nothing.
+    if !image_bytes_match_declared_type(&content_type, &data) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Uploaded bytes do not match the declared image type: {content_type}"),
+        )
+            .into_response();
     }
 
     tracing::info!(
@@ -2537,6 +2728,7 @@ fn extract_raw_text(doc: &serde_json::Value) -> String {
 /// creates a new tag `{name}.archive.{timestamp}` pointing to the same hash.
 async fn archive_original_tag(
     store: &iroh_blobs::api::Store,
+    tag_store: &TagStore,
     name: &str,
     expected_hash: &str,
 ) -> Option<String> {
@@ -2571,6 +2763,14 @@ async fn archive_original_tag(
     // concurrent same-second archives could collide (#2462).
     match claim_archive_name(store, name, timestamp, expected).await {
         Ok(archive_name) => {
+            // The archive alias keeps the source's recorded provenance
+            // (#5383), so listings report its real origin and origin
+            // filtering finds it.
+            if let Err(err) = snapshot_provenance_tags(tag_store, name, &archive_name).await {
+                tracing::warn!(
+                    "[routes] Failed to snapshot provenance {name} -> {archive_name}: {err:#}"
+                );
+            }
             tracing::info!(
                 "[routes] Archived original: {} -> {}",
                 archive_name,
@@ -2703,6 +2903,58 @@ mod save_publication_tests {
             .unwrap();
         assert!(state.local_events.lock().await.history(event_id).is_ok());
         assert!(state.local_events.lock().await.history(second_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn archive_original_tag_preserves_recorded_provenance() {
+        let (state, _endpoint, _docs) = state().await;
+        let outcome = state
+            .store
+            .blobs()
+            .add_bytes(b"original bytes".to_vec())
+            .await
+            .unwrap();
+        let hash = outcome.hash;
+        state
+            .store
+            .tags()
+            .set(iroh_blobs::api::Tag::from("doc.md".to_owned()), hash)
+            .await
+            .unwrap();
+        for (key, value) in [("origin", "node-alpha"), ("created", "1700000000")] {
+            state
+                .tag_store
+                .set_singleton(
+                    &state.tag_store.global,
+                    b"doc.md",
+                    key.as_bytes(),
+                    Some(value.as_bytes()),
+                    b"",
+                )
+                .await
+                .unwrap();
+        }
+
+        let archive =
+            archive_original_tag(&state.store, &state.tag_store, "doc.md", &hash.to_string())
+                .await
+                .unwrap();
+        assert!(archive.starts_with("doc.md.archive."), "{archive}");
+
+        // #5383: the archive alias carries the source's recorded
+        // provenance, so listings report its real origin.
+        for (key, expected) in [
+            (b"origin".as_slice(), "node-alpha"),
+            (b"created".as_slice(), "1700000000"),
+        ] {
+            let tags = state
+                .tag_store
+                .get_by_key(&state.tag_store.global, archive.as_bytes(), key)
+                .await
+                .unwrap();
+            assert_eq!(tags.len(), 1, "{key:?}: {tags:?}");
+            assert_eq!(tags[0].value.as_ref().unwrap().as_str(), Some(expected));
+        }
     }
 
     #[tokio::test]
@@ -2932,7 +3184,10 @@ mod upload_router_tests {
         let guard = state.upload_name_lock.lock().await;
         let barrier = Arc::new(tokio::sync::Barrier::new(3));
         let mut tasks = Vec::new();
-        for bytes in [b"first-bytes".as_slice(), b"second-bytes".as_slice()] {
+        for bytes in [
+            b"\x89PNG\r\n\x1a\nfirst-bytes".as_slice(),
+            b"\x89PNG\r\n\x1a\nsecond-bytes".as_slice(),
+        ] {
             let router = router.clone();
             let barrier = barrier.clone();
             let body = multipart_body_named("image.png", "image/png", bytes);
@@ -2958,10 +3213,10 @@ mod upload_router_tests {
         assert_ne!(images[0]["name"], images[1]["name"]);
         assert_ne!(images[0]["hash"], images[1]["hash"]);
         let listed = list_images(router.clone()).await;
-        for (image, bytes) in images
-            .iter()
-            .zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()])
-        {
+        for (image, bytes) in images.iter().zip([
+            b"\x89PNG\r\n\x1a\nfirst-bytes".as_slice(),
+            b"\x89PNG\r\n\x1a\nsecond-bytes".as_slice(),
+        ]) {
             let name = image["name"].as_str().unwrap();
             let hash = image["hash"].as_str().unwrap();
             assert_eq!(
@@ -3018,7 +3273,7 @@ mod upload_router_tests {
         let (router, _dir, _endpoint, _docs) = router().await;
         let (status, first) = upload(
             router.clone(),
-            multipart_body_named("image.png", "image/png", b"first-bytes"),
+            multipart_body_named("image.png", "image/png", b"\x89PNG\r\n\x1a\nfirst-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {first}");
@@ -3027,7 +3282,7 @@ mod upload_router_tests {
 
         let (status, second) = upload(
             router.clone(),
-            multipart_body_named("image.png", "image/png", b"second-bytes"),
+            multipart_body_named("image.png", "image/png", b"\x89PNG\r\n\x1a\nsecond-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {second}");
@@ -3041,7 +3296,7 @@ mod upload_router_tests {
 
         let (status, again) = upload(
             router.clone(),
-            multipart_body_named("image.png", "image/png", b"first-bytes"),
+            multipart_body_named("image.png", "image/png", b"\x89PNG\r\n\x1a\nfirst-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {again}");
@@ -3062,9 +3317,9 @@ mod upload_router_tests {
         assert_eq!(by_name("image-1.png")["hash"], second_hash);
 
         let (_, _, bytes) = get_blob(router.clone(), &format!("/blob/{first_hash}")).await;
-        assert_eq!(bytes, b"first-bytes");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\nfirst-bytes");
         let (_, _, bytes) = get_blob(router, &format!("/blob/{second_hash}")).await;
-        assert_eq!(bytes, b"second-bytes");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\nsecond-bytes");
     }
 
     // #1549: the nameless paste-{secs} fallback passes through the
@@ -3075,13 +3330,13 @@ mod upload_router_tests {
         let (router, _dir, _endpoint, _docs) = router().await;
         let (status, first) = upload(
             router.clone(),
-            multipart_body_noname("image/png", b"nameless-one"),
+            multipart_body_noname("image/png", b"\x89PNG\r\n\x1a\nnameless-one"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {first}");
         let (status, second) = upload(
             router.clone(),
-            multipart_body_noname("image/png", b"nameless-two"),
+            multipart_body_noname("image/png", b"\x89PNG\r\n\x1a\nnameless-two"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {second}");
@@ -3127,7 +3382,8 @@ mod upload_router_tests {
     #[tokio::test]
     async fn upload_exactly_max_image_size_succeeds() {
         let (router, _dir, _endpoint, _docs) = router().await;
-        let file = vec![b'y'; MAX_IMAGE_SIZE];
+        let mut file = b"\x89PNG\r\n\x1a\n".to_vec();
+        file.resize(MAX_IMAGE_SIZE, b'y');
         let (status, body) = upload(router, multipart_body(&file)).await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         assert!(body.contains("\"name\":\"photo.png\""), "body: {body}");
@@ -3161,13 +3417,17 @@ mod upload_router_tests {
     #[tokio::test]
     async fn blob_html_filename_param_is_not_served_as_html() {
         let (router, _dir, _endpoint, _docs) = router().await;
-        let (status, body) = upload(router.clone(), multipart_body(b"png-bytes")).await;
+        let (status, body) = upload(
+            router.clone(),
+            multipart_body(b"\x89PNG\r\n\x1a\npng-bytes"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let hash = uploaded_hash(&body);
         let (status, headers, bytes) =
             get_blob(router, &format!("/blob/{hash}?filename=evil.html")).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(bytes, b"png-bytes");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\npng-bytes");
         assert_eq!(
             header_str(&headers, "content-type"),
             Some("application/octet-stream")
@@ -3189,7 +3449,11 @@ mod upload_router_tests {
     #[tokio::test]
     async fn blob_png_is_served_inline_with_protective_headers() {
         let (router, _dir, _endpoint, _docs) = router().await;
-        let (status, body) = upload(router.clone(), multipart_body(b"png-bytes")).await;
+        let (status, body) = upload(
+            router.clone(),
+            multipart_body(b"\x89PNG\r\n\x1a\npng-bytes"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
         let hash = uploaded_hash(&body);
         let (status, headers, _bytes) =
@@ -3239,7 +3503,7 @@ mod upload_router_tests {
         let (router, _dir, _endpoint, _docs) = router().await;
         let (status, body) = upload(
             router,
-            multipart_body_named("evil.html", "image/png", b"png-bytes"),
+            multipart_body_named("evil.html", "image/png", b"\x89PNG\r\n\x1a\npng-bytes"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "body: {body}");
@@ -3284,6 +3548,215 @@ mod upload_router_tests {
             reconcile_upload_filename("archive.tar.gz", "gif"),
             "archive.tar.gif"
         );
+    }
+
+    #[test]
+    fn image_bytes_match_declared_type_accepts_real_headers_and_rejects_masquerades() {
+        assert!(image_bytes_match_declared_type(
+            "image/png",
+            b"\x89PNG\r\n\x1a\nrest"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/jpeg",
+            b"\xff\xd8\xff\xe0rest"
+        ));
+        assert!(image_bytes_match_declared_type("image/gif", b"GIF87a-rest"));
+        assert!(image_bytes_match_declared_type("image/gif", b"GIF89a-rest"));
+        assert!(image_bytes_match_declared_type(
+            "image/webp",
+            b"RIFF\x04\x00\x00\x00WEBPrest"
+        ));
+        assert!(image_bytes_match_declared_type("image/bmp", b"BM-rest"));
+        assert!(image_bytes_match_declared_type(
+            "image/x-icon",
+            b"\x00\x00\x01\x00rest"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"\xef\xbb\xbf  <?xml version=\"1.0\"?>\n<svg/>"
+        ));
+        // Codex P2 on PR #5357: legal prolog constructs — a DOCTYPE and
+        // comments, as in doc/database_structure_20231217_074440.svg —
+        // precede the root element of valid SVGs and must be accepted.
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"\n \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<!-- Generated by graphviz -->\n<!-- Pages: 1 -->\n<svg width=\"994pt\"></svg>"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!DOCTYPE svg [ <!ENTITY x \"a>b\"> ]>\n<svg/>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!-- only a comment, no root -->"
+        ));
+        // Codex P2 on PR #5357 (second round): a namespace-prefixed
+        // root is still an SVG root; lookalike tag names are not.
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<s:svg xmlns:s=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<svgx></svgx>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<x:html></x:html>"
+        ));
+        // Codex P2 on PR #5357 (round 3): UTF-16-encoded SVGs are valid
+        // image/svg+xml documents; LE and BE, with and without a BOM,
+        // are decoded before the prolog/root check.
+        fn utf16(text: &str, little_endian: bool, bom: bool) -> Vec<u8> {
+            let mut out = Vec::new();
+            if bom {
+                out.extend_from_slice(if little_endian {
+                    b"\xff\xfe"
+                } else {
+                    b"\xfe\xff"
+                });
+            }
+            for unit in text.encode_utf16() {
+                out.extend_from_slice(&if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            out
+        }
+        let svg_doc = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16(svg_doc, true, true)
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16(svg_doc, false, true)
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16("<svg/>", true, false)
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16("<html></html>", true, true)
+        ));
+        // Codex P2 on PR #5357 (round 4): brackets inside quoted
+        // literals or comments within the internal subset are data,
+        // not subset delimiters.
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!DOCTYPE svg [<!ENTITY label \"[\">]><svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!DOCTYPE svg [ <!-- [ ] --> <!ENTITY x 'a]b'> ]>\n<svg/>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!DOCTYPE svg [<!ENTITY label \"[\">]>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/png",
+            b"<html><script>alert(1)</script></html>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/jpeg",
+            b"plain text"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<html></html>"
+        ));
+        assert!(!image_bytes_match_declared_type("image/png", b""));
+        assert!(!image_bytes_match_declared_type(
+            "image/webp",
+            b"RIFF\x04\x00\x00\x00WAVErest"
+        ));
+    }
+
+    // #5342 (the probe that filed the issue): HTML/script bytes declared
+    // image/png were accepted, stored, and served as a PNG. They must
+    // now be refused 400, and nothing may be stored or listed.
+    #[tokio::test]
+    async fn upload_html_declared_as_png_is_refused_and_stores_nothing() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = upload(
+            router.clone(),
+            multipart_body_named(
+                "evil.png",
+                "image/png",
+                b"<html><script>alert(1)</script></html>",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        assert!(
+            body.contains("do not match the declared image type"),
+            "body: {body}"
+        );
+        assert!(list_images(router).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_mismatched_bytes_are_refused_for_other_declared_types() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        for (name, content_type, bytes) in [
+            ("photo.jpg", "image/jpeg", b"plain text".as_slice()),
+            ("icon.svg", "image/svg+xml", b"not an svg".as_slice()),
+            (
+                "anim.gif",
+                "image/gif",
+                b"\x89PNG\r\n\x1a\nnot-a-gif".as_slice(),
+            ),
+            (
+                "pic.webp",
+                "image/webp",
+                b"RIFF\x04\x00\x00\x00WAVErest".as_slice(),
+            ),
+        ] {
+            let (status, body) = upload(
+                router.clone(),
+                multipart_body_named(name, content_type, bytes),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{content_type}: {body}");
+        }
+        assert!(list_images(router).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn upload_real_headers_for_each_allowed_type_are_accepted() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        for (name, content_type, bytes) in [
+            ("a.png", "image/png", b"\x89PNG\r\n\x1a\nx".as_slice()),
+            ("a.jpg", "image/jpeg", b"\xff\xd8\xff\xe0x".as_slice()),
+            ("a.gif", "image/gif", b"GIF89ax".as_slice()),
+            (
+                "a.webp",
+                "image/webp",
+                b"RIFF\x04\x00\x00\x00WEBPx".as_slice(),
+            ),
+            ("a.bmp", "image/bmp", b"BMx".as_slice()),
+            ("a.ico", "image/x-icon", b"\x00\x00\x01\x00x".as_slice()),
+            (
+                "a.svg",
+                "image/svg+xml",
+                b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>".as_slice(),
+            ),
+        ] {
+            let (status, body) = upload(
+                router.clone(),
+                multipart_body_named(name, content_type, bytes),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{content_type}: {body}");
+        }
     }
 }
 

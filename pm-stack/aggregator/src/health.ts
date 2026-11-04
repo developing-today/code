@@ -306,7 +306,6 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
     section("attention", undefined, true),
     section("orchestration", feed.orchestration?.generatedAt, feed.orchestration !== undefined),
     section("dns", feed.dns?.generatedAt, feed.dns !== undefined),
-    section("julesSummary", undefined, feed.julesSummary !== undefined),
     section("registry", undefined, feed.registry !== undefined),
     section("projects", undefined, feed.projects !== undefined),
     section("coverage", undefined, feed.coverage !== undefined),
