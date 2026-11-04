@@ -1,0 +1,40 @@
+# fleet — one multicall binary for the fleet's tools (epic: developing-today/code#5412).
+# Design of record: doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/ (§1 layout).
+#
+# Self-contained workspace on the pkgs/atlas-search pattern: own Cargo.toml,
+# Cargo.lock and rust-toolchain.toml, no workspace relationship to the repo
+# root. Crates land one step at a time; step 1 (#5429) is the skeleton:
+# platform crates + the bin's dispatch/stub machinery + variant builds.
+[workspace]
+members = [
+  "crates/fleet-registry",
+  "crates/fleet-config",
+  "crates/fleet-secrets",
+  "crates/fleet-proxy-proto",
+  "crates/fleet",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+fleet-registry = { path = "crates/fleet-registry" }
+fleet-config = { path = "crates/fleet-config" }
+fleet-secrets = { path = "crates/fleet-secrets" }
+fleet-proxy-proto = { path = "crates/fleet-proxy-proto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+[profile.release]
+# Small artifacts are a build contract for the connect variant (§2 of the
+# design note: target <= 1.5 MiB, hard budget <= 2 MiB, stripped). Size —
+# not speed — is the release profile's job in this workspace.
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
