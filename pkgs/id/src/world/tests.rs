@@ -5885,6 +5885,61 @@ mod schedule_tests {
         );
     }
 
+    /// Item 10-2 (#796/#5239): a schedule test that sets a ceiling.
+    /// `schedule.at` is granted, but the world's capability ceiling excludes
+    /// it, so the use is refused (and counted) and nothing pends — the
+    /// grant itself is kept, so lifting the ceiling would restore it.
+    #[tokio::test]
+    async fn a_schedule_outside_the_ceiling_is_refused_and_pends_nothing() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("sched-ceiling", &["schedule.at"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        assert!(
+            actor.core.ledger.is_granted("schedule.at"),
+            "the grant is kept under the ceiling"
+        );
+        assert!(
+            !actor.core.ledger.effective().contains("schedule.at"),
+            "the ceiling excludes schedule.at from the effective set"
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "nap", "at": EPOCH_MS + 60_000}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "s1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["schedule.at"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.schedules.is_empty(),
+            "a ceiling-refused schedule pends nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::ScheduleSet { .. })),
+            "a ceiling-refused request journals no schedule set"
+        );
+    }
+
     #[tokio::test]
     async fn a_due_schedule_fires_once_and_the_program_receives_it() {
         let (mut actor, clock, token, journal) =
@@ -5932,6 +5987,42 @@ mod schedule_tests {
                 .filter(|entry| matches!(entry, JournalEntry::ScheduleFired { .. }))
                 .count(),
             1
+        );
+    }
+
+    /// Item 10-2 (#796/#5239): a schedule fire never reaches joiners.
+    /// The fire is a host `System` event delivered to the program; a
+    /// joiner's catch-up page (`events_after`) must not carry it, while a
+    /// genuine participant event on the same page still comes through.
+    #[test]
+    fn a_schedule_fire_never_reaches_joiners_via_events_after() {
+        let mut core = world(8);
+        let (_, token) = core
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        // Positive control: a participant event is visible to joiners.
+        assert_eq!(core.input(&token, b"move").unwrap().sequence, 1);
+        // A delivered fire, retained as host events are, carrying the
+        // schedule-fired payload for schedule "nap".
+        let fire = WorldEvent {
+            sequence: 2,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: schedule_fired_event("nap", false),
+            },
+        };
+        core.sequence = fire.sequence;
+        core.events.push_back(fire);
+        let page = core.events_after(&token, 0).unwrap();
+        assert_eq!(
+            page.events.len(),
+            1,
+            "only the participant event reaches a joiner: {page:?}"
+        );
+        assert!(matches!(page.events[0].kind, WorldEventKind::Input(_)));
+        assert!(
+            !format!("{page:?}").contains("nap"),
+            "the schedule fire leaked to a joiner via events_after"
         );
     }
 
