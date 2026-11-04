@@ -813,8 +813,7 @@ commands = ["play"]
             "a/./b",
             "",
         ] {
-            let source =
-                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            let source = format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
             let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
             let message = error.to_string();
             assert!(
@@ -825,8 +824,7 @@ commands = ["play"]
         // Confined entries — plain files, nested paths, and the design's
         // glob shapes — stay accepted.
         for entry in ["assets/logo.png", "web/templates/index.html", "assets/**"] {
-            let source =
-                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            let source = format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
             assert!(
                 parse_app_manifest(&source, "tic-tac-toe").is_ok(),
                 "confined entry {entry:?} is accepted"

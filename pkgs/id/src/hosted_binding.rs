@@ -74,7 +74,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -111,8 +111,7 @@ pub const CSE_OFFER_DISCLOSURE: &str = "Hosted storage is operator-readable at r
 /// Final-screen notice for the in-browser variant (§3.3a): a binding whose
 /// only key copy dies with a browser profile is a support incident scheduled
 /// in advance.
-pub const BROWSER_KEY_EXPORT_NOTICE: &str =
-    "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
+pub const BROWSER_KEY_EXPORT_NOTICE: &str = "Export your Iroh root key now and keep the copy somewhere safe. If this browser \
     profile is lost without an exported copy, the binding cannot be recovered except \
     through the delayed-rebind wait.";
 
@@ -585,11 +584,7 @@ pub fn rebind_authorization_bytes(
 ) -> Vec<u8> {
     canonical_fields(
         REBIND_AUTHORIZATION_DOMAIN,
-        &[
-            binding_id,
-            &hex_encode(new_iroh_id),
-            challenge_id,
-        ],
+        &[binding_id, &hex_encode(new_iroh_id), challenge_id],
     )
 }
 
@@ -1242,7 +1237,9 @@ impl HostedBindingService {
             return Err(error);
         };
         let verifying = VerifyingKey::from_bytes(&key_array).map_err(|_| error.clone())?;
-        verifying.verify_strict(message, &signature).map_err(|_| error)
+        verifying
+            .verify_strict(message, &signature)
+            .map_err(|_| error)
     }
 
     /// The binding for `sub`, requiring an `active` status for paths that
@@ -1311,8 +1308,7 @@ impl HostedBindingService {
                 .attest_bytes(&mutated)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings
-            .insert(mutated.binding_id.clone(), mutated);
+        self.bindings.insert(mutated.binding_id.clone(), mutated);
         let notice = RebindNotice {
             rebind_id: request.rebind_id.clone(),
             binding_id: request.binding_id.clone(),
@@ -1373,7 +1369,8 @@ impl HostedBindingService {
                 .attest_bytes(&binding)
                 .ok_or(RebindError::RecordEncoding)?,
         );
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         Ok(binding)
     }
 
@@ -1551,12 +1548,8 @@ impl HostedBindingService {
             return Err(RebindError::NewKeyBoundElsewhere);
         }
         let mut record = record.clone();
-        record.service_signature = hex_encode(
-            &self
-                .service_key
-                .sign(&record.canonical_bytes())
-                .to_bytes(),
-        );
+        record.service_signature =
+            hex_encode(&self.service_key.sign(&record.canonical_bytes()).to_bytes());
         let mut binding = self
             .bindings
             .get(&record.binding_id)
@@ -1582,7 +1575,8 @@ impl HostedBindingService {
         self.binding_by_iroh.remove(&record.old_iroh_id);
         self.binding_by_iroh
             .insert(record.new_iroh_id.clone(), record.binding_id.clone());
-        self.bindings.insert(binding.binding_id.clone(), binding.clone());
+        self.bindings
+            .insert(binding.binding_id.clone(), binding.clone());
         self.rebind_records.push(record.clone());
         Ok((binding, record))
     }
@@ -1855,7 +1849,7 @@ fn prune_before(log: &mut Vec<u64>, cutoff: u64) {
 mod tests {
     use super::*;
     use crate::groups::policy::{Policy, Template};
-    use crate::groups::{fold, Body, Create, DeviceOp, Event, Key, Role};
+    use crate::groups::{Body, Create, DeviceOp, Event, Key, Role, fold};
 
     const SUB: &str = "108204481453987112345678";
     const OTHER_SUB: &str = "209305592564098223456789";
@@ -2551,7 +2545,13 @@ mod tests {
             service.cancel_rebind(&request.rebind_id, &foreign.to_bytes()),
             Err(RebindError::BadOldKeySignature)
         );
-        assert_eq!(service.pending_rebind_for_binding(&binding.binding_id).unwrap().status, RebindRequestStatus::Pending);
+        assert_eq!(
+            service
+                .pending_rebind_for_binding(&binding.binding_id)
+                .unwrap()
+                .status,
+            RebindRequestStatus::Pending
+        );
 
         let old_key = root_key(21);
         let cancel = old_key.sign(&rebind_cancel_bytes(&request.rebind_id));
@@ -2690,7 +2690,10 @@ mod tests {
             Err(RebindError::NewKeyBoundElsewhere)
         );
         assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert_eq!(
@@ -2757,7 +2760,10 @@ mod tests {
             Err(RebindError::NewKeyBoundElsewhere)
         );
         assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert_eq!(
@@ -2796,7 +2802,10 @@ mod tests {
             Err(RebindError::NewKeyBoundElsewhere)
         );
         assert_eq!(service.binding(&binding.binding_id), Some(&binding_before));
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_before));
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_before)
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert!(service.rebind_records().is_empty());
@@ -2905,8 +2914,14 @@ mod tests {
             ),
             Err(RebindError::NewKeyBoundElsewhere)
         );
-        assert_eq!(service.binding(&other_binding.binding_id), Some(&other_binding));
-        assert_eq!(service.binding_for_sub(SUB).unwrap().binding_id, binding.binding_id);
+        assert_eq!(
+            service.binding(&other_binding.binding_id),
+            Some(&other_binding)
+        );
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().binding_id,
+            binding.binding_id
+        );
         assert_eq!(service.binding_by_sub, by_sub_before);
         assert_eq!(service.binding_by_iroh, by_iroh_before);
         assert_eq!(
@@ -2973,6 +2988,10 @@ mod tests {
         // Nothing pends and nothing changed.
         let stored = service.binding_for_sub(SUB).unwrap();
         assert_eq!(stored.status, BindingStatus::Active);
-        assert!(service.pending_rebind_for_binding(&stored.binding_id).is_none());
+        assert!(
+            service
+                .pending_rebind_for_binding(&stored.binding_id)
+                .is_none()
+        );
     }
 }

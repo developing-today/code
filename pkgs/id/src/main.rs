@@ -639,7 +639,10 @@ mod tests {
         // empty base filter silently muted every non-capped target in
         // environments that export RUST_LOG= , e.g. nix build sandboxes.)
         assert_eq!(resolve_log_level(false, None, Some(""), None, None), "warn");
-        assert_eq!(resolve_log_level(false, None, Some("  "), None, None), "warn");
+        assert_eq!(
+            resolve_log_level(false, None, Some("  "), None, None),
+            "warn"
+        );
         assert_eq!(
             resolve_log_level(false, None, Some(""), Some("info"), None),
             "info"
