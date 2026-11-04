@@ -302,8 +302,34 @@ fn url_decode(s: &str) -> String {
                 continue;
             }
         }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        // A path segment is not a form query: '+' is a literal plus
+        // here (RFC 3986), never a space. Only %XX decodes (issue #5584).
+        out.push(bytes[i]);
         i += 1;
     }
     String::from_utf8_lossy(&out).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::url_decode;
+
+    #[test]
+    fn url_decode_keeps_plus_literal_in_a_path_segment() {
+        // A secret name containing + is client-legal (fleet-secrets
+        // validate_name permits it) and reaches the broker raw; decoding
+        // it to a space looked the name up under the wrong spelling.
+        assert_eq!(url_decode("a+b"), "a+b");
+        assert_eq!(url_decode("+"), "+");
+    }
+
+    #[test]
+    fn url_decode_still_decodes_percent_escapes() {
+        assert_eq!(url_decode("a%2Bb"), "a+b");
+        assert_eq!(url_decode("a%20b"), "a b");
+        assert_eq!(url_decode("alpha"), "alpha");
+        // Malformed escapes stay literal.
+        assert_eq!(url_decode("a%2"), "a%2");
+        assert_eq!(url_decode("a%zz"), "a%zz");
+    }
 }
