@@ -173,9 +173,9 @@ proxy_env() {
 
 # connect auto-starts the broker and round-trips through it.
 run "proxy: connect auto-starts broker and round-trips /health" 0 '"status":200' \
-  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health
+  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
 run "proxy: round-trip reached the 14799 upstream" 0 '"port":14799' \
-  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health
+  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
 run "proxy: round-trip to the 14801 service" 0 '"port":14801' \
   proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14801
 
@@ -201,15 +201,15 @@ fi
 run "proxy: connect variant round-trips through the full broker" 0 '"status":200' \
   env HOME="$PX/home" FLEET_CONFIG="$PX/fleet.toml" \
       FLEET_BROKER_SOCKET="$PX/broker.sock" XDG_STATE_HOME="$PX/state-connect" \
-  "$CONNECT_OUT/bin/fleet" proxy connect --request GET /health
+  "$CONNECT_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
 if [ -L "$PX/state-connect/fleet/shims/repo-queue" ]; then
   ok "proxy: connect variant materialized its own shims"
 else
   bad "proxy: connect variant materialized its own shims"
 fi
-run "proxy: connect variant stubs serve at 69" 69 "does not include 'proxy-serve'" \
+run "proxy: connect variant stubs serve at 69" 69 "does not include 'proxy'" \
   "$CONNECT_OUT/bin/fleet" proxy serve
-run "proxy: connect variant stubs fleet init at 69 (no serve in build)" 69 "proxy-serve" \
+run "proxy: connect variant stubs fleet init at 69 (no serve in build)" 69 "does not include 'proxy'" \
   "$CONNECT_OUT/bin/fleet" init
 
 # Legacy (proto 0) client against the fleet broker: raw 8-byte
@@ -218,7 +218,7 @@ cat > "$PX/legacy.py" <<'PYEOF'
 import socket, struct, json, sys
 s = socket.socket(socket.AF_UNIX)
 s.connect(sys.argv[1])
-frame = json.dumps({"method": "GET", "path": "/health"}).encode()
+frame = json.dumps({"method": "GET", "path": "/health", "port": 14799}).encode()
 s.sendall(struct.pack(">Q", len(frame)) + frame)
 def readn(n):
     buf = b""
@@ -251,7 +251,7 @@ port = 14799
 name = "laptop-agent"
 EOF
 run "proxy: reconnect with the smaller map" 0 '"status":200' \
-  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health
+  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
 if [ ! -e "$PX/state/fleet/shims/repo-queue" ] && [ -L "$PX/state/fleet/shims/laptop-agent" ]; then
   ok "proxy: stale shim removed when the map shrank"
 else
