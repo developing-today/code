@@ -125,6 +125,17 @@ impl Filters {
         if let Some(u) = &until {
             let d = parse_iso_date(u)
                 .ok_or_else(|| Error::fatal(format!("--until must be YYYY-MM-DD, got {u}")))?;
+            // The exclusive bound is the following day, and the max
+            // ISO date has none: CPython raises OverflowError adding
+            // a day to date(9999, 12, 31). Computing it anyway would
+            // bind "10000-01-01", a five-digit year whose
+            // lexicographic order excludes every realistic
+            // created_at (#5394).
+            if d == (9999, 12, 31) {
+                return Err(Error::fatal(format!(
+                    "--until {u} is the last ISO date; it has no following day for the exclusive bound"
+                )));
+            }
             until_exclusive = Some(format_iso_date(add_one_day(d)));
         }
         // `since` is bound verbatim as the created_at >= parameter, and
@@ -566,6 +577,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(f.until_exclusive.as_deref(), Some("2026-11-01"));
+        // #5394: the max ISO date has no following day — both
+        // spellings are refused instead of binding "10000-01-01".
+        for u in ["9999-12-31", "99991231"] {
+            assert!(
+                Filters::new(
+                    vec![],
+                    vec![],
+                    vec![],
+                    vec![],
+                    "personal",
+                    None,
+                    Some(u.into())
+                )
+                .is_err(),
+                "until={u} must be refused"
+            );
+        }
     }
 
     #[test]
