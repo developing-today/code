@@ -528,7 +528,8 @@ export async function fileResponseForKey(
 // HTML numeric character-reference normalization: the same remapping
 // html.unescape applies for the container's HTMLParser. C1 controls
 // 0x80-0x9F map to their Windows-1252 characters; NUL, surrogates, and
-// out-of-range values become U+FFFD.
+// out-of-range values become U+FFFD. Other invalid controls and Unicode
+// noncharacters are dropped, matching html.unescape.
 const NUMERIC_REF_REMAP: Record<number, number> = {
   0x80: 0x20ac,
   0x81: 0x0081,
@@ -564,8 +565,19 @@ const NUMERIC_REF_REMAP: Record<number, number> = {
   0x9f: 0x0178,
 };
 
-function normalizeNumericRef(code: number): number {
+function normalizeNumericRef(code: number): number | null {
   if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return 0xfffd;
+  if (
+    (code >= 0x1 && code <= 0x8) ||
+    code === 0xb ||
+    (code >= 0xe && code <= 0x1f) ||
+    code === 0x7f ||
+    (code >= 0xfdd0 && code <= 0xfdef) ||
+    (code & 0xffff) === 0xfffe ||
+    (code & 0xffff) === 0xffff
+  ) {
+    return null;
+  }
   return NUMERIC_REF_REMAP[code] ?? code;
 }
 
@@ -587,7 +599,8 @@ export function decodeHtmlEntities(data: string): string {
         const body = numeric[1];
         const hex = body[0] === "x" || body[0] === "X";
         const code = Number.parseInt(body.slice(hex ? 1 : 0), hex ? 16 : 10);
-        decoded.push(data.slice(copyFrom, i), String.fromCodePoint(normalizeNumericRef(code)));
+        const normalized = normalizeNumericRef(code);
+        decoded.push(data.slice(copyFrom, i), normalized === null ? "" : String.fromCodePoint(normalized));
         i += numeric[0].length;
         copyFrom = i;
         continue;
