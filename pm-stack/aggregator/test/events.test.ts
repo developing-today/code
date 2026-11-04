@@ -212,6 +212,20 @@ describe("events store (#1739)", () => {
     expect(validateStreamEvent({ ...base, at: "2026-02-28" }).ok).toBe(true);
   });
 
+  test("legacy event files with impossible or non-ISO timestamps are quarantined", async () => {
+    for (const at of ["2026-02-30T10:00:00Z", "2026-04-31T10:00:00Z", "March 2, 2026", "03/02/2026"]) {
+      const dir = mkdtempSync(join(tmpdir(), "agg-events-invalid-at-"));
+      const file = join(dir, "events.json");
+      const original = JSON.stringify({ version: 1, events: [{ ...base, at }] }, null, 2);
+      writeFileSync(file, original);
+
+      expect(await new EventsStore(file).list()).toEqual([]);
+      const quarantined = readdirSync(dir).find((name) => name.startsWith("events.json.corrupt-"));
+      expect(quarantined).toBeDefined();
+      expect(readFileSync(join(dir, quarantined!), "utf8")).toBe(original);
+    }
+  });
+
   test("validateStreamEvent rejects malformed records", () => {
     expect(validateStreamEvent({ ...base, at: "2026-11-01T10:00:00.000Z" }).ok).toBe(true);
     expect(validateStreamEvent({ ...base, at: "not a date" }).ok).toBe(false);
