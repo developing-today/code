@@ -152,7 +152,8 @@ type Options struct {
 	// Phase lines and the launcher arrive as source: a path would name the
 	// daemon's filesystem, and the caller meant theirs.
 
-	// TypeCheck is off, on or strict; empty takes the daemon's default.
+	// TypeCheck is off, syntax, types or strict; on remains an alias for types.
+	// Empty takes the daemon's default.
 	TypeCheck string `json:"typecheck,omitempty"`
 	// Imports is off or report; empty takes the daemon's default.
 	Imports string `json:"imports,omitempty"`

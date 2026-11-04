@@ -48,6 +48,9 @@ func ConfigurationTable(all []Setting) string {
 				envs = append(envs, "`"+a+"`")
 			}
 			governs := set.Short
+			if len(set.PathAliases) > 0 {
+				governs += "; path alias: " + strings.Join(set.PathAliases, ", ")
+			}
 			if len(set.EnumAliases) > 0 {
 				// Only where aliases exist: the canonical names are what a
 				// reader should write, and the aliases are what they may
