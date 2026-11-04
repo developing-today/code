@@ -76,17 +76,21 @@ checked-in default is not proof the deployed instance is local SQLite.
 
 ## Registry backup legs and current coverage
 
-For `pmp_links`, the intended recovery legs are the PM dashboard archive's
-three destinations: local dated archive, Cloudflare R2, and Google Drive
-([backup destinations](../nixos/home/pm-dashboard-backup.sh#L1-L11),
-[R2/Drive uploads](../nixos/home/pm-dashboard-backup.sh#L522-L538)). But the
-current archive manifest stages aggregator files and does **not** include
-`projector.db` or a `pmp_links` export ([manifest](../nixos/home/pm-dashboard-backup.sh#L307-L334),
-[staged files](../nixos/home/pm-dashboard-backup.sh#L346-L354)). Thus no
-existing backup leg for the link registry is evidenced: adding it to and
-verifying all three legs is a prerequisite for a later migration, not a
-change made by this inventory slice. The aggregator's distinct `registry.json`
-is already a required archive member ([manifest lines 321-327](../nixos/home/pm-dashboard-backup.sh#L321-L327)).
+For `pmp_links`, the recovery legs are the PM dashboard archive's three
+destinations: local dated archive, Cloudflare R2, and Google Drive
+([backup destinations](../nixos/home/pm-dashboard-backup.sh#L1-L11)). As of
+the #1744 P0 slice (task 9251), every archive run stages a `pmp_links`-only
+export (`projector/pmp_links.sql`: schema + rows dumped from the ACTUAL
+configured projector database) as a conditionally-required manifest member —
+required whenever a projector DB is present at the configured path, so a
+missing or corrupt export fails the run before any upload. The rest of
+`projector.db` (a rebuildable projection) is deliberately NOT archived.
+Restore is replaying the SQL file into a scratch SQLite database;
+`nixos/home/pm-dashboard-backup-pmp-links.test.sh` proves export,
+manifest inclusion, links-only content, and restore integrity against
+fixture databases, and the three legs inherit coverage because all three
+copy the same sha256-verified archive tarball. The aggregator's distinct
+`registry.json` is already a required archive member.
 Kaneo/Grist/Pad dumps are only included when the optional external dump script
 exists ([conditional dump step](../nixos/home/pm-dashboard-backup.sh#L275-L299));
 the #3142 design also calls for their own verified native restore paths.
