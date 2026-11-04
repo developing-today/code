@@ -18,7 +18,7 @@ use id::{
 /// Priority order (first match wins):
 /// 1. `--debug` flag → "debug"
 /// 2. `--log-level <LEVEL>` flag → specified level
-/// 3. `RUST_LOG` env var → return empty string to signal use of `EnvFilter` default
+/// 3. `RUST_LOG` env var (non-empty) → return empty string to signal use of `EnvFilter` default
 /// 4. `LOG_LEVEL` env var → value
 /// 5. `DEBUG` env var (if truthy) → "debug"
 /// 6. Default → "warn"
@@ -34,10 +34,14 @@ fn get_log_level(cli: &Cli) -> String {
 
 /// Pure log-level resolution: the environment values are passed in (rather
 /// than read here) so tests can pin the full precedence table without
-/// mutating process environment in parallel. `Some("")` for `rust_log`
-/// means the variable is present, matching the previous `var().is_ok()`
-/// presence check; the empty-string result is the caller's signal to use
-/// the `RUST_LOG` value itself as the base filter.
+/// mutating process environment in parallel. A non-empty `rust_log` yields
+/// the empty-string sentinel: the caller's signal to use the `RUST_LOG`
+/// value itself as the base filter. An empty or whitespace-only `rust_log`
+/// (or `log_level_env`) carries no configuration and is treated as unset:
+/// build and CI environments routinely export these variables empty
+/// (nixpkgs' cargo hooks export `RUST_LOG=`), and an empty base filter
+/// would leave only the appended per-module caps in effect, silently
+/// discarding the documented default level for every other target.
 fn resolve_log_level(
     debug_flag: bool,
     log_level_flag: Option<&str>,
@@ -55,13 +59,14 @@ fn resolve_log_level(
         return level.to_owned();
     }
 
-    // 3. RUST_LOG env var - return empty to use EnvFilter's default behavior
-    if rust_log.is_some() {
+    // 3. RUST_LOG env var - return empty to use EnvFilter's default behavior.
+    //    Present-but-empty is not a filter specification; treat as unset.
+    if rust_log.is_some_and(|value| !value.trim().is_empty()) {
         return String::new();
     }
 
-    // 4. LOG_LEVEL env var
-    if let Some(level) = log_level_env {
+    // 4. LOG_LEVEL env var (likewise, empty means unconfigured)
+    if let Some(level) = log_level_env.filter(|value| !value.trim().is_empty()) {
         return level.to_owned();
     }
 
@@ -569,13 +574,24 @@ mod tests {
 
     #[test]
     fn test_log_level_rust_log_presence_signals_env_filter() {
-        // Present (even empty) RUST_LOG yields the empty sentinel; the
-        // caller then uses the RUST_LOG value itself as the base filter.
+        // A non-empty RUST_LOG yields the empty sentinel; the caller then
+        // uses the RUST_LOG value itself as the base filter.
         assert_eq!(
             resolve_log_level(false, None, Some("info"), Some("error"), Some("1")),
             ""
         );
-        assert_eq!(resolve_log_level(false, None, Some(""), None, None), "");
+        // Present-but-empty RUST_LOG is unconfigured, not a filter: it
+        // falls through to the remaining sources and the default. (An
+        // empty base filter silently muted every non-capped target in
+        // environments that export RUST_LOG= , e.g. nix build sandboxes.)
+        assert_eq!(resolve_log_level(false, None, Some(""), None, None), "warn");
+        assert_eq!(resolve_log_level(false, None, Some("  "), None, None), "warn");
+        assert_eq!(
+            resolve_log_level(false, None, Some(""), Some("info"), None),
+            "info"
+        );
+        // Empty LOG_LEVEL is likewise unconfigured.
+        assert_eq!(resolve_log_level(false, None, None, Some(""), None), "warn");
     }
 
     #[test]
