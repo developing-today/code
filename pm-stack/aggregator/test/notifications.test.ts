@@ -136,8 +136,8 @@ describe("notification transition policy", () => {
   });
 
   test("the 24-hour blocked-age reminder is digest-only; 48-hour escalation breaks through", () => {
-    const age24 = { ...base, class: "blocked-age", stateFingerprint: '{"step":24}', digestOnly: true, escalationStep: 24 as const };
-    const age48 = { ...age24, stateFingerprint: '{"step":48}', digestOnly: false, escalationStep: 48 as const, breakthrough: true };
+    const age24: NotificationCandidate = { ...base, class: "blocked-age", stateFingerprint: '{"step":24}', digestOnly: true, escalationStep: 24 as const };
+    const age48: NotificationCandidate = { ...age24, stateFingerprint: '{"step":48}', digestOnly: false, escalationStep: 48 as const, breakthrough: true };
     expect(decideNotification(age24, [], TASK_NOW, false)).toBe("digest");
     expect(decideNotification(age48, [], TASK_NOW, true)).toBe("send");
   });
