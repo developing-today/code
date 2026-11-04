@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { FleetFeed, SectionDiagnosis } from "../src/feed.ts";
 import {
@@ -13,6 +16,7 @@ import {
 import { pendingCommentCounts } from "../src/comments.ts";
 import type { DashComment } from "../src/model.ts";
 import { renderHealth } from "../src/render.ts";
+import type { RfaState } from "../src/sources/ready-for-agent.ts";
 
 // #1147/#1137: health assembly — service probes (injectable fetcher,
 // 60 s cache), feed section ages, job runs, the render registry, and
@@ -20,7 +24,7 @@ import { renderHealth } from "../src/render.ts";
 // fake fetchers; no service is ever killed on the laptop for a test.
 
 const NOW = Date.parse("2026-10-27T06:00:00Z");
-const cfg = loadConfig({});
+const cfg = loadConfig({ PM_AGG_DEV: "1" });
 
 function feedAt(ageMs: number): FleetFeed {
   const generatedAt = new Date(NOW - ageMs).toISOString();
@@ -56,7 +60,7 @@ function inputs(over: Partial<HealthInputs> = {}): HealthInputs {
   return {
     mode: "live",
     cfg,
-    feed: feedAt(5 * 60_000),
+    feed: feedAt(4 * 60_000),
     feedFileMtimeMs: NOW - 4 * 60_000,
     diagnosis: LIVE_DIAGNOSIS,
     ...over,
@@ -75,6 +79,26 @@ function fakeFetcher(handler: (url: string) => { status: number } | Error) {
   return { fetcher, calls };
 }
 
+/** #1203: an injectable harness read so buildHealth never depends on a
+ *  live :6056 in tests. Mirrors the ready-for-agent source's read model. */
+const RFA_STATE: RfaState = {
+  repositories: [
+    {
+      id: "repo-1",
+      projectPath: "developing-today/code",
+      localPath: "/home/user/pm-stack/ready-for-agent/repos/code",
+      paused: false,
+      mergePolicy: "OFF",
+      defaultModel: "opencode-go/kimi-k3.1-pro",
+    },
+  ],
+  backends: [{ id: "opencode", kind: "READY", reason: null }],
+  workItems: [
+    { repositoryId: "repo-1", issueNumber: 762, state: "RUNNING", statusLabel: "In progress", pullRequestNumber: null },
+  ],
+};
+const rfaUp = async (): Promise<RfaState> => RFA_STATE;
+
 const allUp = () => ({ status: 200 });
 
 function service(view: Awaited<ReturnType<typeof buildHealth>>, id: string) {
@@ -84,11 +108,50 @@ function service(view: Awaited<ReturnType<typeof buildHealth>>, id: string) {
 }
 
 describe("buildHealth probes", () => {
+  test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
+    // An isolated stand-in collector writes only a temporary feed. Freeze the
+    // observation clock immediately after its last write and advance it to the
+    // next interval: this tests the worst-case stop without a five-minute wait.
+    const stoppedAt = NOW;
+    const dir = await mkdtemp(join(tmpdir(), "collector-stop-"));
+    const path = join(dir, "feed.json");
+    const collector = spawn({
+      cmd: [
+        process.execPath,
+        "-e",
+        "await Bun.write(process.argv[1], process.argv[2]); setInterval(() => {}, 1000)",
+        path,
+        JSON.stringify(feedAt(0)),
+      ],
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+    try {
+      for (let i = 0; i < 100 && !(await Bun.file(path).exists()); i++) await Bun.sleep(10);
+      const feed = (await Bun.file(path).json()) as FleetFeed;
+      collector.kill();
+      await collector.exited;
+      const { fetcher } = fakeFetcher(allUp);
+      const opts = { fetcher, cache: createProbeCache() };
+      const before = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt });
+      expect(service(before, "fleet-feed").state).toBe("up");
+      const view = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 5 * 60_000 });
+      expect(service(view, "fleet-feed").state).toBe("stale");
+      expect(view.degraded).toBe(true);
+      const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+      expect(html).toContain("past the 5m freshness threshold");
+      expect(html).toContain("stale");
+    } finally {
+      collector.kill();
+      await collector.exited;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("all services up: 200s and Grist's 302 prove life; projector never probed", async () => {
     const { fetcher, calls } = fakeFetcher((url) =>
       url.startsWith("http://127.0.0.1:8484") ? { status: 302 } : allUp(),
     );
-    const view = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW });
+    const view = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW, rfaState: rfaUp });
     expect(service(view, "kaneo").state).toBe("up");
     expect(service(view, "grist").state).toBe("up");
     expect(service(view, "grist").statusCode).toBe(302);
@@ -103,6 +166,60 @@ describe("buildHealth probes", () => {
     expect(projector.ok).toBeNull();
     expect(calls.some((u) => u.includes("7801"))).toBe(false);
     expect(view.degraded).toBe(false);
+  });
+
+  test("the ready-for-agent facet is carried by the view and rendered on /health (#1203)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW, rfaState: rfaUp });
+    expect(view.rfa.state).toBe("up");
+    expect(view.rfa.repositories).toEqual([
+      { projectPath: "developing-today/code", paused: false, mergePolicy: "OFF", workItems: 1 },
+    ]);
+    expect(view.rfa.backends).toEqual([{ id: "opencode", kind: "READY", reason: null }]);
+    expect(view.degraded).toBe(false);
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain('id="ready-for-agent"');
+    expect(html).toContain("developing-today/code");
+    expect(html).toContain("Work items");
+    // Settings, work-item counts, and backend readiness all reach the page.
+    expect(html).toContain("opencode");
+  });
+
+  test("a failed harness read is reported down and degrades health (#1203)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs(), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: async () => {
+        throw new Error("connect ECONNREFUSED 127.0.0.1:6056");
+      },
+    });
+    expect(view.rfa.state).toBe("down");
+    expect(view.rfa.detail).toContain("ECONNREFUSED");
+    expect(view.rfa.repositories).toEqual([]);
+    // The new facet is not decoration: a harness that cannot be read
+    // is part of the aggregate degraded state.
+    expect(view.degraded).toBe(true);
+    const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("ECONNREFUSED");
+    expect(html).toContain("could not be read");
+  });
+
+  test("a harness backend that is not READY reports the facet down", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs(), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+      rfaState: async () => ({
+        ...RFA_STATE,
+        backends: [{ id: "opencode", kind: "UNAVAILABLE", reason: "opencode not found" }],
+      }),
+    });
+    expect(view.rfa.state).toBe("down");
+    expect(view.rfa.detail).toContain("opencode not found");
+    expect(view.degraded).toBe(true);
   });
 
   test("a throwing probe renders down with its error; the inferred service says unknown, not down", async () => {
@@ -180,6 +297,55 @@ describe("buildHealth probes", () => {
     expect(orchSection?.ageMs).toBe(20 * 60_000);
     const saas = view.feed.sections.find((s) => s.key === "saas");
     expect(saas?.present).toBe(false);
+  });
+
+  test("collector section errors and skips are explicit and degrade health", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const feed = feedAt(5 * 60_000);
+    delete feed.dns;
+    delete feed.projects;
+    feed.meta = {
+      sections: {
+        dns: { status: "error", at: new Date(NOW - 2 * 60_000).toISOString(), error: "register parse failed" },
+        projects: { status: "skipped", at: new Date(NOW - 2 * 60_000).toISOString() },
+      },
+    };
+    const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
+    const dns = view.feed.sections.find((section) => section.key === "dns");
+    const projects = view.feed.sections.find((section) => section.key === "projects");
+    expect(dns?.status).toBe("error");
+    expect(dns?.note).toContain("register parse failed");
+    expect(dns?.ageMs).toBe(2 * 60_000);
+    expect(projects?.status).toBe("skipped");
+    expect(view.degraded).toBe(true);
+
+    const html = renderHealth(view, {
+      board: "",
+      roadmap: "",
+      items: "",
+      comments: "",
+      quota: "",
+      usage: "",
+      attention: "",
+      orchestration: "",
+      dns: "error",
+      registry: "",
+      aa: "",
+    });
+    expect(html).toContain("error");
+    expect(html).toContain("register parse failed");
+    expect(html).toContain("skipped");
+  });
+
+  test("legacy feeds keep presence reporting without inventing collection status", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs({ feed: feedAt(5 * 60_000) }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    expect(view.feed.sections.find((section) => section.key === "dns")?.present).toBe(true);
+    expect(view.feed.sections.find((section) => section.key === "dns")?.status).toBe("unknown");
   });
 
   test("a feed stamped far in the future is stale, never up/fresh (#1564)", async () => {
@@ -343,17 +509,24 @@ describe("health page + extended /api/health (fixtures boot)", () => {
       status: string;
       source: { board: string };
       services: { id: string; state: string }[];
-      feed: { generatedAt: unknown };
+      feed: { generatedAt: unknown; sections: unknown[] };
       pages: { route: string; lastRenderedAt: unknown }[];
       jobs: { orchestration: { state: string } };
+      rfa: { state: string; detail: string; repositories: unknown[]; backends: unknown[] };
     };
     expect(body.status).toBe("ok");
     expect(body.source.board).toBe("fixtures");
     expect(Array.isArray(body.services)).toBe(true);
     expect(body.services.find((s) => s.id === "projector")?.state).toBe("fixtures");
     expect("generatedAt" in body.feed).toBe(true);
+    expect(Array.isArray(body.feed.sections)).toBe(true);
     expect(body.pages.some((p) => p.route === "/health")).toBe(true);
     expect(body.jobs.orchestration.state).toBeDefined();
+    // #1203: the harness facet reaches the machine surface, not only
+    // the rendered page — fixtures mode says so honestly.
+    expect(body.rfa.state).toBe("fixtures");
+    expect(Array.isArray(body.rfa.repositories)).toBe(true);
+    expect(Array.isArray(body.rfa.backends)).toBe(true);
   });
 
   test("/pages lists the health page from the manifest", async () => {

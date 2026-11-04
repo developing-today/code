@@ -140,6 +140,13 @@ describe("validate: real calendar dates", () => {
     "2026-01-31T23:59:59Z",
     "2026-10-25T17:00:00+02:00",
     "2026-10-25T17:00Z",
+    "0099-01-01",
+    "0099-01-01T00:00:00Z",
+    "0099-01-01T00:00:00+01:00",
+    "0000-02-29",
+    "0000-02-29T00:00:00Z",
+    "0000-02-29T12:00:00+01:00",
+    "0001-06-15T00:00:00-05:00",
   ];
   for (const v of valid) {
     test(`isIsoDate(${v}) === true`, () => {
@@ -155,6 +162,7 @@ describe("validate: real calendar dates", () => {
     "2026-10-00",
     "2026-10-32",
     "2026-04-31", // April has 30 days
+    "0099-02-29", // year 99 is not a leap year
     "2026-10-25T24:00:00Z",
     "2026-10-25T17:60:00Z",
     "2026-10-25T17:00:60Z",
@@ -179,6 +187,21 @@ describe("validate: real calendar dates", () => {
     expect(parseIsoDate("2026-10-25T17:00:00Z")?.getTime()).toBe(Date.UTC(2026, 9, 25, 17));
     expect(parseIsoDate("2026-10-25")?.getTime()).toBe(Date.UTC(2026, 9, 25));
     expect(parseIsoDate("2026-10-25T17:00:00+02:00")?.getTime()).toBe(Date.UTC(2026, 9, 25, 15));
+  });
+  test("parseIsoDate preserves literal small years and applies offsets", () => {
+    const cases: [string, string][] = [
+      ["0099-01-01", "0099-01-01T00:00:00.000Z"],
+      ["0099-01-01T00:00:00Z", "0099-01-01T00:00:00.000Z"],
+      ["0099-01-01T00:00:00+01:00", "0098-12-31T23:00:00.000Z"],
+      ["0000-02-29", "0000-02-29T00:00:00.000Z"],
+      ["0000-02-29T00:00:00Z", "0000-02-29T00:00:00.000Z"],
+      ["0000-02-29T12:00:00+01:00", "0000-02-29T11:00:00.000Z"],
+      ["0001-06-15T00:00:00-05:00", "0001-06-15T05:00:00.000Z"],
+    ];
+    for (const [input, expected] of cases) {
+      expect(parseIsoDate(input)?.toISOString()).toBe(expected);
+    }
+    expect(parseIsoDate("0099-02-29")).toBeNull();
   });
 });
 

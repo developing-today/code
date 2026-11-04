@@ -3,7 +3,13 @@ import { spawn, type Subprocess } from "bun";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorOptionsHtml, cardCommentHtml, commentFormHtml, renderBoardBody, statusRequestHtml } from "../src/render.ts";
+import {
+  authorOptionsHtml,
+  cardCommentHtml,
+  commentFormHtml,
+  renderBoardBody,
+  statusRequestHtml,
+} from "../src/render.ts";
 import type { BoardItem } from "../src/model.ts";
 import { STANDING_IDENTITIES, type AuthorIdentity } from "../src/registry.ts";
 import { FIXTURE_REGISTRY } from "../src/sources/fixtures.ts";
@@ -78,6 +84,7 @@ beforeAll(async () => {
     env: {
       ...Bun.env,
       PM_AGG_PORT: String(port),
+      PM_AGG_SOURCE: "fixtures",
       PM_AGG_FEED_FILE: join(dir, "no-feed.json"),
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
       PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
@@ -126,7 +133,7 @@ describe("/api/author-identities (#1179)", () => {
     const res = await fetch(`${base}/sessions`);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('data-author-picker');
+    expect(html).toContain("data-author-picker");
     expect(html).toContain("/api/author-identities");
     // A registry session must never appear as an inlined picker option.
     expect(html).not.toContain('<option value="agent|claude-2026-10-25-slice2-review|');

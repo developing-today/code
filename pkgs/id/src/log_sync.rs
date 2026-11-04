@@ -6,6 +6,10 @@
 //! if both agree on range sync, each side runs a range session (`event_store::sync`) on the same
 //! stream pair, over the same store (#179).
 //!
+//! A group-sync initiator is not built yet. When one calls `sync_with`, it must persist successful
+//! completion after that call returns successfully, keyed by topic and peer, for later selection.
+//! Completion recording is deferred until that initiator exists.
+//!
 //! Three decisions shape the session:
 //!
 //! - **Arrival order is the write path.** Each operation is handed to an ingest worker, which verifies
@@ -298,6 +302,15 @@ pub async fn answer(
         let request: Request = next_message(&mut recv).await?;
         // The pull policy decides before the method is agreed, so a refused peer gets no event.
         if !gate.admits(&peer) {
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
+            return Err(SyncError::PullRefused);
+        }
+        // A blocked topic tag is not pulled (#2245): the gate's block list
+        // is also checked against the requested topic's hash bytes, the
+        // form this seam names a topic in. Refused exactly as a pull
+        // refusal, before the method is agreed.
+        if gate.topic_tag_blocked(request.topic.as_bytes()) {
             send_message(&mut send, &Answer::Refuse).await?;
             finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::PullRefused);
@@ -700,6 +713,10 @@ mod tests {
                 tag: None,
                 document: None,
                 removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
             };
             events.push(sign(signer, seq, backlink, None, ext).unwrap());
         }
@@ -1203,6 +1220,10 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
@@ -1665,6 +1686,97 @@ mod tests {
         assert_eq!(
             applied(&store_a, &[&alice], 3),
             applied(&store_b, &[&alice], 3)
+        );
+    }
+
+    /// #2245: a peer blocked by key is refused by the responder's gate
+    /// before any event is sent, under the open policy included. The
+    /// dialer gets `Refuse`, the responder reports the refusal, and the
+    /// blocked peer's store does not change.
+    #[tokio::test]
+    async fn test_blocked_peer_log_session_is_refused_and_sends_no_event() {
+        let topic = group(14);
+        let alice = key(26);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let gate = testing::open_gate().with_blocks(testing::stub_blocks(
+            &[*testing::key(0xd5).public().as_bytes()],
+            &[],
+        ));
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed to the blocked peer"
+        );
+    }
+
+    /// #2245: a blocked topic tag is not pulled. The peer is not blocked
+    /// and the gate is open, but the requested topic's hash bytes are a
+    /// blocked tag, so the session is refused before the method is agreed.
+    #[tokio::test]
+    async fn test_blocked_topic_tag_log_session_is_refused_and_sends_no_event() {
+        let topic = group(15);
+        let alice = key(27);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        ingest_all(&store_a, &chain_of(&alice, 4, topic));
+        let before = applied(&store_b, &[&alice], 3);
+        let blocks = std::sync::Arc::new(testing::StubBlocks {
+            peers: Default::default(),
+            topics: [topic.as_bytes().to_vec()].into_iter().collect(),
+            ips: Default::default(),
+        });
+        let gate = testing::open_gate().with_blocks(blocks);
+        let (server, _router, mut results) = responder_gated(&store_a, gate).await;
+        let client = endpoint_as(testing::key(0xd5)).await;
+        let error = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap_err();
+        let answered = results.recv().await.unwrap();
+
+        assert!(
+            matches!(error, SyncError::Refused(SyncMethod::Log)),
+            "got {error}"
+        );
+        assert!(
+            matches!(answered, Err(SyncError::PullRefused)),
+            "got {answered:?}"
+        );
+        assert_eq!(
+            applied(&store_b, &[&alice], 3),
+            before,
+            "no event crossed for the blocked topic"
         );
     }
 

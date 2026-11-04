@@ -1,0 +1,15 @@
+[Unit]
+Description=PM daily digest — generate + archive + deliver the day's digest (pm-stack, #1278)
+After=network-online.target pm-aggregator.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+WorkingDirectory=%h/git/code/pm-stack/aggregator
+# Runs from the laptop's code checkout; the archive lives in the
+# stable state directory, never the checkout (same rule as the
+# quota gatherer's outputs).
+Environment=PM_AGG_SOURCE=live
+EnvironmentFile=%h/.local/state/pm-aggregator/.env
+Environment=PM_AGG_DIGESTS_DIR=%h/.local/state/pm-aggregator/digests
+ExecStart=/run/current-system/sw/bin/bun run %h/git/code/pm-stack/aggregator/scripts/generate-digest.ts --kind daily

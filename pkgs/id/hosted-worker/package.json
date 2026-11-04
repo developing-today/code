@@ -1,0 +1,16 @@
+{
+  "name": "id-hosted-worker",
+  "private": true,
+  "type": "module",
+  "description": "Hosted data-plane scaffold (#5199, slice 3 of #2852): binding-backed per-user Durable Object behind a jurisdiction-restricted Worker front door. Local-only; no deployment (gate #2285).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/routing.test.ts",
+    "smoke": "node smoke/smoke.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "wrangler": "^3.90.0"
+  }
+}

@@ -13,6 +13,8 @@ import {
   hasToolbar,
   initEditor,
   isEditable,
+  parseImageDimension,
+  parseOrderedListStart,
   rawSchema,
   richSchema,
 } from "./editor";
@@ -243,8 +245,167 @@ describe("richSchema list tight attrs (#1469)", () => {
       content: [{ type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] }],
     };
     const out = richSchema.nodeFromJSON(json).toJSON();
-    expect(out.content[0].attrs).toEqual({ order: 3, tight });
+    // #1380: the schema fills the delimiter default ("period") when the
+    // input omits it, so the round-tripped attrs carry it explicitly.
+    expect(out.content[0].attrs).toEqual({ order: 3, tight, delimiter: "period" });
     expect(out.content[0].content).toEqual([item("a"), item("b")]);
+  });
+});
+
+// ============================================================================
+// #1347: footnote_reference / footnote_definition round-trip (codec mirror)
+// ============================================================================
+
+describe("richSchema footnote nodes (#1347)", () => {
+  it("declares footnote_reference as an inline atom with a label attr", () => {
+    const spec = richSchema.nodes.footnote_reference.spec;
+    expect(spec.inline).toBe(true);
+    expect(spec.atom).toBe(true);
+    expect(spec.attrs?.label).toEqual({ default: "" });
+  });
+
+  it("declares footnote_definition as a block with a label attr and block content", () => {
+    const spec = richSchema.nodes.footnote_definition.spec;
+    expect(spec.group).toBe("block");
+    expect(spec.content).toBe("block+");
+    expect(spec.attrs?.label).toEqual({ default: "" });
+  });
+
+  it("parses a codec footnote doc through Node.fromJSON without throwing", () => {
+    const json = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "Text." },
+            { type: "footnote_reference", attrs: { label: "1" } },
+          ],
+        },
+        {
+          type: "footnote_definition",
+          attrs: { label: "1" },
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Body." }] }],
+        },
+      ],
+    };
+    const doc = richSchema.nodeFromJSON(json);
+    const out = doc.toJSON();
+    expect(out.content[1].type).toBe("footnote_definition");
+    expect(out.content[1].attrs).toEqual({ label: "1" });
+    expect(out.content[1].content).toEqual([{ type: "paragraph", content: [{ type: "text", text: "Body." }] }]);
+    const paragraph = out.content[0];
+    const reference = paragraph.content.find((n: { type: string }) => n.type === "footnote_reference");
+    expect(reference?.attrs).toEqual({ label: "1" });
+  });
+});
+
+// ============================================================================
+// #2005: ordered_list parseDOM start parsing — only non-negative safe
+// integers survive; everything else falls back to 1 (no reinterpretation)
+// ============================================================================
+
+describe("ordered_list start parsing (#2005)", () => {
+  it.each([
+    ["5", 5],
+    ["0", 0],
+    ["42", 42],
+  ])("preserves valid start=%s as order %i", (raw, expected) => {
+    expect(parseOrderedListStart(raw)).toBe(expected);
+  });
+
+  it.each(["abc", "2.5", "0x10", "1e3", "", "-3", "9007199254740993"])(
+    "falls back to 1 for invalid start=%s",
+    (raw) => {
+      expect(parseOrderedListStart(raw)).toBe(1);
+    },
+  );
+
+  it("falls back to 1 when the start attribute is absent", () => {
+    expect(parseOrderedListStart(null)).toBe(1);
+  });
+
+  it.each([
+    ["5", 5],
+    ["0", 0],
+    ["abc", 1],
+    ["2.5", 1],
+    ["0x10", 1],
+    ["", 1],
+    ["-3", 1],
+  ])("parseDOM getAttrs maps start=%s to order %i", (raw, expected) => {
+    const rule = richSchema.nodes.ordered_list.spec.parseDOM?.[0];
+    if (!rule || !("getAttrs" in rule) || typeof rule.getAttrs !== "function") {
+      throw new Error("ordered_list parseDOM rule has no getAttrs");
+    }
+    const el = document.createElement("ol");
+    el.setAttribute("start", raw);
+    expect(rule.getAttrs(el)).toEqual({ order: expected });
+  });
+
+  it("parseDOM getAttrs defaults order to 1 without a start attribute", () => {
+    const rule = richSchema.nodes.ordered_list.spec.parseDOM?.[0];
+    if (!rule || !("getAttrs" in rule) || typeof rule.getAttrs !== "function") {
+      throw new Error("ordered_list parseDOM rule has no getAttrs");
+    }
+    expect(rule.getAttrs(document.createElement("ol"))).toEqual({ order: 1 });
+  });
+});
+
+// ============================================================================
+// #4100: task_list parseDOM start parsing -- the <ol> rule reads its start
+// through parseOrderedListStart, like ordered_list (#2005): only plain
+// non-negative safe integers survive; everything else falls back to 1
+// instead of reaching the u64 markdown codec as a fraction/negative or a
+// reinterpreted hex/scientific value.
+// ============================================================================
+
+describe("task_list start parsing (#4100)", () => {
+  const olGetAttrs = () => {
+    const rules = richSchema.nodes.task_list.spec.parseDOM ?? [];
+    const rule = rules.find((r) => r.tag === "ol");
+    if (!rule || !("getAttrs" in rule) || typeof rule.getAttrs !== "function") {
+      throw new Error("task_list parseDOM has no ol getAttrs rule");
+    }
+    return rule.getAttrs;
+  };
+
+  it.each([
+    ["5", 5],
+    ["0", 0],
+    ["42", 42],
+  ])("preserves valid start=%s as order %i", (raw, expected) => {
+    const el = document.createElement("ol");
+    el.classList.add("contains-task-list");
+    el.setAttribute("start", raw);
+    expect(olGetAttrs()(el)).toEqual({ order: expected });
+  });
+
+  it.each(["abc", "2.5", "0x10", "1e3", "", "-3", "9007199254740993"])(
+    "falls back to 1 for invalid start=%s",
+    (raw) => {
+      const el = document.createElement("ol");
+      el.classList.add("contains-task-list");
+      el.setAttribute("start", raw);
+      expect(olGetAttrs()(el)).toEqual({ order: 1 });
+    },
+  );
+
+  it("defaults order to 1 without a start attribute", () => {
+    const el = document.createElement("ol");
+    el.classList.add("contains-task-list");
+    expect(olGetAttrs()(el)).toEqual({ order: 1 });
+  });
+
+  it("validates the start of a checkbox-detected ordered task list too", () => {
+    const el = document.createElement("ol");
+    el.setAttribute("start", "2.5");
+    const li = document.createElement("li");
+    const checkbox = document.createElement("input");
+    checkbox.setAttribute("type", "checkbox");
+    li.appendChild(checkbox);
+    el.appendChild(li);
+    expect(olGetAttrs()(el)).toEqual({ order: 1 });
   });
 });
 
@@ -546,5 +707,65 @@ describe("getSendableSteps", () => {
     expect(result).toHaveProperty("clientID");
     expect(Array.isArray(result!.steps)).toBe(true);
     expect(result!.steps.length).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
+// #2010: image parseDOM width/height parsing — only plain non-negative
+// safe integers survive; everything else is dropped to null at parse time
+// (no NaN, fractions, negatives, or reinterpreted hex/scientific values)
+// ============================================================================
+
+describe("image dimension parsing (#2010)", () => {
+  it.each([
+    ["200", 200],
+    ["0", 0],
+    ["42", 42],
+  ])("preserves valid dimension=%s as %i", (raw, expected) => {
+    expect(parseImageDimension(raw)).toBe(expected);
+  });
+
+  it.each(["200px", "50%", "2.5", "-5", "abc", "0x10", "1e3", "", "9007199254740993"])(
+    "drops invalid dimension=%s to null",
+    (raw) => {
+      expect(parseImageDimension(raw)).toBeNull();
+    },
+  );
+
+  it("drops an absent dimension to null", () => {
+    expect(parseImageDimension(null)).toBeNull();
+  });
+
+  const imgGetAttrs = () => {
+    const rule = richSchema.nodes.image.spec.parseDOM?.[0];
+    if (!rule || !("getAttrs" in rule) || typeof rule.getAttrs !== "function") {
+      throw new Error("image parseDOM rule has no getAttrs");
+    }
+    return rule.getAttrs;
+  };
+
+  it.each([
+    ["200", 200],
+    ["200px", null],
+    ["50%", null],
+    ["2.5", null],
+    ["-5", null],
+    ["0x10", null],
+  ])("parseDOM getAttrs maps width=%s to %s", (raw, expected) => {
+    const el = document.createElement("img");
+    el.setAttribute("src", "x.png");
+    el.setAttribute("width", raw);
+    el.setAttribute("height", raw);
+    const attrs = imgGetAttrs()(el) as { width: unknown; height: unknown };
+    expect(attrs.width).toBe(expected);
+    expect(attrs.height).toBe(expected);
+  });
+
+  it("parseDOM getAttrs defaults dimensions to null when absent", () => {
+    const el = document.createElement("img");
+    el.setAttribute("src", "x.png");
+    const attrs = imgGetAttrs()(el) as { width: unknown; height: unknown };
+    expect(attrs.width).toBeNull();
+    expect(attrs.height).toBeNull();
   });
 });
