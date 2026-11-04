@@ -54,9 +54,11 @@ fn resolve_log_level(
         return "debug".to_owned();
     }
 
-    // 2. --log-level flag
-    if let Some(level) = log_level_flag {
-        return level.to_owned();
+    // 2. --log-level flag (likewise, empty or blank means unconfigured:
+    //    an empty return is the RUST_LOG sentinel below, so a blank flag
+    //    must never produce it -- #5442)
+    if let Some(level) = log_level_flag.filter(|value| !value.trim().is_empty()) {
+        return level.trim().to_owned();
     }
 
     // 3. RUST_LOG env var - return empty to use EnvFilter's default behavior.
@@ -67,11 +69,12 @@ fn resolve_log_level(
 
     // 4. LOG_LEVEL env var (likewise, empty means unconfigured)
     if let Some(level) = log_level_env.filter(|value| !value.trim().is_empty()) {
-        return level.to_owned();
+        return level.trim().to_owned();
     }
 
     // 5. DEBUG env var (truthy check)
     if let Some(debug) = debug_env {
+        let debug = debug.trim();
         let is_truthy = !debug.is_empty() && debug != "0" && debug.to_lowercase() != "false";
         if is_truthy {
             return "debug".to_owned();
@@ -577,6 +580,53 @@ mod tests {
     }
 
     #[test]
+    fn test_log_level_flag_empty_or_blank_is_unset() {
+        // #5442: a blank flag must fall through like an empty RUST_LOG /
+        // LOG_LEVEL does -- the empty string is the RUST_LOG sentinel, so
+        // returning it here would silently log at debug (or RUST_LOG).
+        assert_eq!(resolve_log_level(false, Some(""), None, None, None), "warn");
+        assert_eq!(
+            resolve_log_level(false, Some("  "), None, None, None),
+            "warn"
+        );
+        assert_eq!(
+            resolve_log_level(false, Some(""), None, Some("info"), None),
+            "info"
+        );
+        assert_eq!(
+            resolve_log_level(false, Some("  "), Some("info"), None, None),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_log_level_flag_and_env_values_are_trimmed() {
+        assert_eq!(
+            resolve_log_level(false, Some(" info "), None, None, None),
+            "info"
+        );
+        assert_eq!(
+            resolve_log_level(false, None, None, Some(" info "), None),
+            "info"
+        );
+    }
+
+    #[test]
+    fn test_log_level_debug_env_padded_falsey_values_fall_through_to_warn() {
+        for value in [" false ", "0 ", " FALSE", "  false"] {
+            assert_eq!(
+                resolve_log_level(false, None, None, None, Some(value)),
+                "warn",
+                "DEBUG={value:?}"
+            );
+        }
+        assert_eq!(
+            resolve_log_level(false, None, None, None, Some(" true ")),
+            "debug"
+        );
+    }
+
+    #[test]
     fn test_log_level_rust_log_presence_signals_env_filter() {
         // A non-empty RUST_LOG yields the empty sentinel; the caller then
         // uses the RUST_LOG value itself as the base filter.
@@ -589,7 +639,10 @@ mod tests {
         // empty base filter silently muted every non-capped target in
         // environments that export RUST_LOG= , e.g. nix build sandboxes.)
         assert_eq!(resolve_log_level(false, None, Some(""), None, None), "warn");
-        assert_eq!(resolve_log_level(false, None, Some("  "), None, None), "warn");
+        assert_eq!(
+            resolve_log_level(false, None, Some("  "), None, None),
+            "warn"
+        );
         assert_eq!(
             resolve_log_level(false, None, Some(""), Some("info"), None),
             "info"

@@ -845,9 +845,7 @@ mod tests {
         // An oversized snapshot forces the bounded part entries, so the
         // header is version 6, above the open-presence and budget
         // requirements (#227).
-        let entries = core
-            .checkpoint_entries("state".repeat(50_000))
-            .unwrap();
+        let entries = core.checkpoint_entries("state".repeat(50_000)).unwrap();
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
@@ -1007,9 +1005,11 @@ mod tests {
         core.admin_history_complete = true;
 
         let entries = core.checkpoint_entries("\u{1f9ed}".to_owned()).unwrap();
-        assert!(entries
-            .iter()
-            .any(|entry| matches!(entry, JournalEntry::CheckpointSnapshotPart { .. })));
+        assert!(
+            entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::CheckpointSnapshotPart { .. }))
+        );
         assert!(entries.iter().all(|entry| {
             serde_json::to_vec(entry).is_ok_and(|bytes| bytes.len() <= MAX_CHECKPOINT_PART_BYTES)
         }));

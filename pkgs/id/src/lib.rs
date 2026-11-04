@@ -183,7 +183,6 @@ pub mod directory_mail;
 pub mod directory_view;
 pub use id_core::discovery;
 pub mod didit;
-mod peer_announcement;
 pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
@@ -205,6 +204,7 @@ pub(crate) mod key_envelope;
 pub mod local;
 pub mod local_events;
 pub mod log_sync;
+mod peer_announcement;
 pub use id_core::membership;
 pub mod match_audit;
 pub mod meta_client;
@@ -223,9 +223,9 @@ pub mod sandbox;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
-pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod server_config;
+pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod shell_contract;
 pub mod store;
@@ -293,9 +293,9 @@ pub use commands::{
     create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
 };
 pub use discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, PeerAnnouncement,
-    MAX_PEERS, MAX_PEER_NAME_BYTES, PeerDiscovery, PeerInfo, ResolvedConfig,
-    STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
+    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
+    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
 pub use helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,

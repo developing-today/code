@@ -11,9 +11,9 @@
 # regenerated; re-running on unchanged inputs yields a zero diff.
 version: 1
 overrides:
-  developing-today/openchamber:
+  developing-today-forks/openchamber:
     class: owned
-  developing-today/opencode:
+  developing-today-forks/opencode:
     class: owned
 repos:
   - name: aluhrs13/crosspoint-readwise-plugin
@@ -226,8 +226,8 @@ repos:
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: developing-today/kaneo
-    url: https://github.com/developing-today/kaneo
+  - name: developing-today-forks/kaneo
+    url: https://github.com/developing-today-forks/kaneo
     class: fork
     watch: inventory-only
     sources: [github, census]
@@ -266,13 +266,13 @@ repos:
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: developing-today/openchamber
-    url: https://github.com/developing-today/openchamber
+  - name: developing-today-forks/openchamber
+    url: https://github.com/developing-today-forks/openchamber
     class: owned
     watch: issues
     sources: [github, census]
-  - name: developing-today/opencode
-    url: https://github.com/developing-today/opencode
+  - name: developing-today-forks/opencode
+    url: https://github.com/developing-today-forks/opencode
     class: owned
     watch: issues
     sources: [github, census]

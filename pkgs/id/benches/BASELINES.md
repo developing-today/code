@@ -98,8 +98,8 @@ proof of a regression.
 
 The slice-2 `guest_replay` line above (median=0.146) was measured with a
 harness whose guest saw **zero** events: the journal was built from
-committed *chat* events, and `WorldCore::restore` applies committed chat
-to core state directly — only committed *input* (and journal system)
+committed _chat_ events, and `WorldCore::restore` applies committed chat
+to core state directly — only committed _input_ (and journal system)
 events are put in `RestoredWorld.replay`. The old number was therefore
 restore-only time divided by N, mislabeled as guest replay.
 

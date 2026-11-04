@@ -36,16 +36,33 @@ let
   # toolchain pinned by its own rust-toolchain.toml (channel
   # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
   # pattern (cf. rustToolchain in nixos/environment/default.nix).
-  # Used ONLY as the atlas-search unit's ExecStart below: the
-  # package is deliberately not in home.packages, so the Python
-  # CLI stays the resolved `atlas-search` until the step-6
-  # cutover (#5356) says otherwise.
+  # Used as the atlas-search unit's ExecStart below and, since
+  # the step-6 cutover (#5356), as a home package below so the
+  # Rust binary is the resolved `atlas-search` CLI (the Python
+  # CLI is kept alongside as `atlas-search-py`). It was kept
+  # out of home.packages through step 5 so the Python CLI
+  # stayed resolved until the cutover said otherwise.
   atlasSearchToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/atlas-search/rust-toolchain.toml;
   atlasSearch = pkgs.callPackage ../../pkgs/atlas-search {
     rustPlatform = pkgs.makeRustPlatform {
       cargo = atlasSearchToolchain;
       rustc = atlasSearchToolchain;
     };
+  };
+  # The fleet multicall package (pkgs/fleet), built with the
+  # toolchain pinned by its own rust-toolchain.toml — the
+  # atlas-search pattern above. Used as the broker units'
+  # ExecStart below (`fleet serve <role>`); deliberately not in
+  # home.packages — the resolved `repo-queue` on PATH stays the
+  # standalone artifact until the proxy step's shim dir (design
+  # note §4) supersedes the hand-maintained symlinks.
+  fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = fleetToolchain;
+      rustc = fleetToolchain;
+    };
+    sourceRev = inputs.self.rev or "dirty";
   };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
@@ -658,6 +675,10 @@ in
       Environment = [
         "CODEX_PROXY_PORT=${toString codexProxyPort}"
         "CODEX_PROXY_HOST=127.0.0.1"
+        # Gate 1 cutover (opencode#1154): the in-fork codex credential
+        # sync (opencode#1468) owns the token copy now; the door must
+        # not overwrite the true JWT expiry with its synthetic one.
+        "CODEX_PROXY_TOKEN_SYNC=0"
       ];
     };
     # No Install: codex-proxy.socket owns the listener and activates this
@@ -886,12 +907,11 @@ in
   # tailscale serve state is imperative tailscaled state in this
   # fleet (no declarative precedent to land it in).
   #
-  # LANDED DISABLED — no Install section, so home-manager
-  # creates no wants symlink and the unit cannot auto-start.
-  # Step 6 (#5356, the cutover) adds
-  # Install.WantedBy = [ "default.target" ], issues the real
-  # client tokens via `atlas-search init`, and creates the
-  # tailscale serve mapping, in one change.
+  # Landed disabled in step 5 (no Install section, so the
+  # unit could not auto-start); step 6 (#5356, the cutover)
+  # added Install.WantedBy below, issued the real client
+  # tokens via `atlas-search init`, and created the
+  # tailscale serve mapping.
   systemd.user.services.atlas-search = {
     Unit = {
       Description = "Atlas search service (hybrid corpus search, serve mode)";
@@ -903,7 +923,49 @@ in
       Restart = "on-failure";
       RestartSec = 3;
     };
-    # No Install: landed disabled (step 5) — see the note above.
+    # Install added at the step-6 cutover (#5356): auto-start.
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
+  # Fleet broker roles (epic #5412 step 2, #5430): the secrets and
+  # queue brokers as `fleet serve <role>` units — one unit per role,
+  # as they have run since code#5362. This is the home-module
+  # pattern ported from dezren39/nix PR #1459 (closed as superseded
+  # by ruling D1) into this tree, now consuming this flake's own
+  # pkgs/fleet instead of a vendored copy. The unit files these
+  # definitions replace were hand-installed; home-manager converges
+  # them on the next activation, and the step-2 flips re-point the
+  # live files at the same artifact in the meantime.
+  systemd.user.services.secrets-broker = {
+    Unit = {
+      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
+      After = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.queue-broker = {
+    Unit = {
+      Description = "queue-broker — repo-health queue service (code#5362)";
+      After = [
+        "network-online.target"
+        "secrets-broker.service"
+      ];
+      Wants = [ "secrets-broker.service" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve queue-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.sync-models = {
@@ -1621,6 +1683,10 @@ in
       with pkgs;
       [
         libnotify
+        # Atlas search CLI + service binary (pkgs/atlas-search);
+        # step-6 cutover (#5356): the Rust binary is the resolved
+        # `atlas-search` (the Python CLI is kept as atlas-search-py).
+        atlasSearch
         (pkgs.writeShellScriptBin "clef-proxy" ''
           exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
         '')

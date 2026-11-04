@@ -185,10 +185,7 @@ pub struct Rfc3339TzTimer {
 }
 
 impl FormatTime for Rfc3339TzTimer {
-    fn format_time(
-        &self,
-        writer: &mut Writer<'_>,
-    ) -> std::fmt::Result {
+    fn format_time(&self, writer: &mut Writer<'_>) -> std::fmt::Result {
         write!(writer, "{}", self.zone.format_timestamp(SystemTime::now()))
     }
 }

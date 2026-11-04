@@ -185,9 +185,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
         );
     }
     if page.show_deleted {
-        html.push_str(
-            "<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />",
-        );
+        html.push_str("<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />");
     }
     html.push_str("<select id=\"file-sort\" name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
     for (value, label) in [
