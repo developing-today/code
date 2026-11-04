@@ -451,7 +451,7 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 | `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                           |
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                                     |
-| `PM_AGG_ACTIVITY_FILE`     | `./activity-ingestion.json`                         | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                      |
+| `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json`                         | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                      |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
