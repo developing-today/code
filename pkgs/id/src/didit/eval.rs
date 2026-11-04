@@ -149,9 +149,25 @@ fn count_verdicts(
             .collect();
         matching.sort_by_key(|record| record.at);
         let count = matching.len() as u64;
+        // No record can count after the period's last active span closes:
+        // records are filtered to spans clipped to this period, so the last
+        // countable instant is the latest span end inside the period (for
+        // `Always` that is the period end itself, leaving it unchanged). A
+        // period with no active span at all is unmeetable from its start.
+        // A wrapping span is clipped at the period end, matching the
+        // `record.at < end` filter above.
+        let last_countable = spans
+            .iter()
+            .filter(|(span_start, span_end)| *span_start < end && *span_end > start)
+            .map(|(_, span_end)| (*span_end).min(end))
+            .max();
+        let unmeetable = match last_countable {
+            Some(deadline) => deadline <= now,
+            None => start <= now,
+        };
         let state = if count >= required {
             VerdictState::Satisfied
-        } else if end <= now {
+        } else if end <= now || unmeetable {
             VerdictState::Violated
         } else {
             VerdictState::Due

@@ -397,6 +397,85 @@ fn dst_day_is_twenty_three_hours() {
 }
 
 #[test]
+fn count_verdict_is_violated_after_last_active_span_closes() {
+    // #5049: CountPerPeriod 2/Day with the default active window
+    // (07:00-22:00 America/Chicago) and no records. Once the period's last
+    // active span closes, no further record can count in the period, so an
+    // unmet count is Violated, not Due until the period end.
+    let fed = expectation(
+        0x70,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 2,
+            period: Period::Day,
+        },
+    );
+    for (now, expected) in [
+        (chicago(2026, 6, 15, 23, 0), VerdictState::Violated),
+        // Exactly at the span close is already unmeetable.
+        (chicago(2026, 6, 15, 22, 0), VerdictState::Violated),
+        // Mid-span control: a record can still count, so still Due.
+        (chicago(2026, 6, 15, 12, 0), VerdictState::Due),
+    ] {
+        let verdicts = evaluate(&[fed.clone()], &[], now).expect("evaluate");
+        let today = current(&verdicts, midnight(2026, 6, 15));
+        assert_eq!(today.len(), 1);
+        assert_eq!(today[0].state, expected, "now={now}");
+        assert_eq!(today[0].count, 0);
+    }
+    // ActiveWindow::Always is unchanged: its span is the whole period, so
+    // late in the period an unmet count is still Due. (A Custom period is
+    // used here because `Always` periods are UTC-calendar based; the
+    // anchor pins the window start to the same Chicago midnight.)
+    let fed_always = always(expectation(
+        0x72,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 2,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
+        },
+    ));
+    let verdicts = evaluate(&[fed_always], &[], chicago(2026, 6, 15, 23, 0)).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 15));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Due);
+}
+
+#[test]
+fn count_verdict_wrapping_span_stays_due_while_a_record_can_still_count() {
+    // #5049 wrapping case: the active span wraps past midnight
+    // (20:00-06:00). At 07:00 the previous night's span has closed, but
+    // tonight's span still offers countable time inside today's period,
+    // so an unmet count stays Due.
+    let mut fed = expectation(
+        0x71,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Day,
+        },
+    );
+    fed.active = ActiveWindow::Hours {
+        hours: vec![HoursSpan {
+            from_minute: 1200,
+            to_minute: 360,
+            days: None,
+        }],
+        tz: CHICAGO.to_owned(),
+    };
+    let verdicts = evaluate(&[fed], &[], chicago(2026, 6, 16, 7, 0)).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 16));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Due);
+}
+
+#[test]
 fn wrapping_active_span_is_handled() {
     // "Which may not be daytime": 20:00–06:00 is one span across midnight.
     let outside = expectation(
@@ -686,7 +765,11 @@ fn interval_gap_inside_one_day_still_violates() {
     assert_eq!(verdicts.len(), 1);
     assert_eq!(verdicts[0].state, VerdictState::Violated);
     assert_eq!(verdicts[0].count, 47);
-    assert!(verdicts[0].detail.contains("7200"), "{}", verdicts[0].detail);
+    assert!(
+        verdicts[0].detail.contains("7200"),
+        "{}",
+        verdicts[0].detail
+    );
 }
 
 #[test]
