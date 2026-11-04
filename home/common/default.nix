@@ -886,12 +886,11 @@ in
   # tailscale serve state is imperative tailscaled state in this
   # fleet (no declarative precedent to land it in).
   #
-  # LANDED DISABLED — no Install section, so home-manager
-  # creates no wants symlink and the unit cannot auto-start.
-  # Step 6 (#5356, the cutover) adds
-  # Install.WantedBy = [ "default.target" ], issues the real
-  # client tokens via `atlas-search init`, and creates the
-  # tailscale serve mapping, in one change.
+  # Landed disabled in step 5 (no Install section, so the
+  # unit could not auto-start); step 6 (#5356, the cutover)
+  # added Install.WantedBy below, issued the real client
+  # tokens via `atlas-search init`, and created the
+  # tailscale serve mapping.
   systemd.user.services.atlas-search = {
     Unit = {
       Description = "Atlas search service (hybrid corpus search, serve mode)";
@@ -903,7 +902,10 @@ in
       Restart = "on-failure";
       RestartSec = 3;
     };
-    # No Install: landed disabled (step 5) — see the note above.
+    # Install added at the step-6 cutover (#5356): auto-start.
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
   };
 
   systemd.user.services.sync-models = {
