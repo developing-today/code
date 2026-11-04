@@ -520,7 +520,7 @@ async function enrichWithRegistryLinks<T extends { links: Link[] }>(
 const TITLE_REPO_ALIASES: Record<string, string> = {
   code: "developing-today/code",
   opencode: "developing-today/opencode",
-  openchamber: "developing-today/openchamber",
+  openchamber: "developing-today-forks/openchamber",
   nix: "dezren39/nix",
 };
 

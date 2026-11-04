@@ -11,7 +11,7 @@
 # regenerated; re-running on unchanged inputs yields a zero diff.
 version: 1
 overrides:
-  developing-today/openchamber:
+  developing-today-forks/openchamber:
     class: owned
   developing-today/opencode:
     class: owned
@@ -266,8 +266,8 @@ repos:
     class: fork
     watch: inventory-only
     sources: [github]
-  - name: developing-today/openchamber
-    url: https://github.com/developing-today/openchamber
+  - name: developing-today-forks/openchamber
+    url: https://github.com/developing-today-forks/openchamber
     class: owned
     watch: issues
     sources: [github, census]

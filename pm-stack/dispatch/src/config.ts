@@ -12,7 +12,7 @@ const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? 
 export const FLEET_REPOS = [
   "developing-today/code",
   "developing-today/opencode",
-  "developing-today/openchamber",
+  "developing-today-forks/openchamber",
   "dezren39/nix",
   "developing-today/zettel",
   "dezren39/dezren39",
@@ -22,7 +22,7 @@ export const FLEET_REPOS = [
 export const REPO_QUEUES: Record<string, string> = {
   "developing-today/code": "repo-health-code-pilot",
   "developing-today/opencode": "repo-health-opencode-pilot",
-  "developing-today/openchamber": "repo-health-openchamber-pilot",
+  "developing-today-forks/openchamber": "repo-health-openchamber-pilot",
   "dezren39/nix": "repo-health-nix-pilot",
   "developing-today/zettel": "repo-health-zettel-pilot",
   "dezren39/dezren39": "repo-health-dezren39-pilot",
@@ -32,7 +32,7 @@ export const REPO_QUEUES: Record<string, string> = {
 export const REPO_DIRS: Record<string, string> = {
   "developing-today/code": "/home/user/git/code",
   "developing-today/opencode": "/home/user/git/opencode",
-  "developing-today/openchamber": "/home/user/git/openchamber-fork",
+  "developing-today-forks/openchamber": "/home/user/git/openchamber-fork",
   "dezren39/nix": "/home/user/git/nix",
   "developing-today/zettel": "/home/user/git/zettel",
   "dezren39/dezren39": "/home/user/dezren39",
@@ -46,7 +46,6 @@ export const REPO_DIRS: Record<string, string> = {
 export const APP_INSTALLED_REPOS: ReadonlySet<string> = new Set([
   "developing-today/code",
   "developing-today/opencode",
-  "developing-today/openchamber",
   "dezren39/nix",
 ]);
 
