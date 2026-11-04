@@ -366,6 +366,16 @@ func TestADirectoryIsConcatenatedInNaturalOrderPastInt64(t *testing.T) {
 			want:  "f8999999999999999999.ts,f9999999999999999999.ts",
 		},
 		{
+			name:  "leading zeros in overflow run",
+			files: []string{"f00000000000000000000000002.ts", "f10.ts"},
+			want:  "f00000000000000000000000002.ts,f10.ts",
+		},
+		{
+			name:  "mixed int64 and overflow runs differ from lexical order",
+			files: []string{"f10000000000000000000.ts", "f9000000000000000000.ts"},
+			want:  "f9000000000000000000.ts,f10000000000000000000.ts",
+		},
+		{
 			name:  "equal length overflow runs compare lexically",
 			files: []string{"f20000000000000000000000.ts", "f10000000000000000000000.ts"},
 			want:  "f10000000000000000000000.ts,f20000000000000000000000.ts",
