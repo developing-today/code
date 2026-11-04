@@ -672,6 +672,14 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
         }
         Some("help") => match args.get(1).and_then(|name| domain(name)) {
             Some(d) => {
+                // `help` takes exactly one argument — the domain name.
+                // Anything after it is a usage error naming the first
+                // extra, like the other root built-ins (#5572); this arm
+                // was the one the #5572 sweep missed because its first
+                // argument is legitimate (#5652).
+                if let Some(extra) = args.get(2) {
+                    return usage_error(&format!("unexpected argument '{extra}' for 'fleet help'"));
+                }
                 print_domain_help(surface, d);
                 EXIT_OK
             }
@@ -872,6 +880,38 @@ mod tests {
                 "bare {cmd} stays accepted"
             );
         }
+    }
+
+    #[test]
+    fn root_help_rejects_arguments_after_the_domain_name() {
+        // #5652: `fleet help queue --bogus` printed the queue help and
+        // exited 0 — the help arm resolved args[1] as the domain and
+        // never looked at args[2..], unlike every sibling built-in.
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_root(&surface, &args(&["help", "queue", "--bogus"]), "fleet"),
+            EXIT_USAGE,
+            "help must reject an argument after the domain name"
+        );
+        assert_eq!(
+            run_root(
+                &surface,
+                &args(&["help", "queue", "claim", "extra"]),
+                "fleet"
+            ),
+            EXIT_USAGE,
+            "help must reject the first of several extra arguments"
+        );
+        assert_eq!(
+            run_root(&surface, &args(&["help", "queue"]), "fleet"),
+            EXIT_OK,
+            "help with exactly one domain name stays accepted"
+        );
+        assert_eq!(
+            run_root(&surface, &args(&["help", "nosuchdomain"]), "fleet"),
+            EXIT_USAGE,
+            "an unknown domain name stays a usage error"
+        );
     }
 
     #[test]
