@@ -31,6 +31,14 @@ use fleet_proxy_proto::{Request, Response};
 pub struct SecretValue(String);
 
 impl SecretValue {
+    /// Wrap a value a [`SecretSource`] has just resolved from its
+    /// backend. Source implementations outside this crate construct
+    /// values only here, so every resolved secret immediately sits
+    /// behind the redacted newtype.
+    pub fn from_resolved(value: String) -> SecretValue {
+        SecretValue(value)
+    }
+
     pub fn expose(&self) -> &str {
         &self.0
     }

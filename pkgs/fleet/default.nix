@@ -106,6 +106,59 @@ in
     sizeGate = true;
   };
 
+  # The standalone broker artifacts (queue domain, step 2 #5430):
+  # repo-queue / queue-broker / secrets-broker built from the same
+  # workspace under their historical names — the migration's
+  # rollback inventory (design note §7). While the queue pilot's
+  # flips proceed, a unit or symlink can always be re-pointed at
+  # one of these; they retire only at the epic's close, not before.
+  fleet-brokers = rustPlatform.buildRustPackage {
+    pname = "fleet-brokers";
+    version = "0.1.0";
+    src = ./.;
+    cargoLock.lockFile = ./Cargo.lock;
+
+    cargoBuildFlags = [
+      "-p"
+      "fleet-queue"
+      "--features"
+      "client,queue-broker,secrets-broker"
+      "--bins"
+    ];
+    cargoTestFlags = [
+      "-p"
+      "fleet-queue"
+      "--features"
+      "client,queue-broker,secrets-broker"
+    ];
+
+    # Same explicit full strip as mkFleet (nixpkgs fixup leaves the
+    # symbol table in).
+    postFixup = ''
+      ${binutils}/bin/strip $out/bin/repo-queue $out/bin/queue-broker $out/bin/secrets-broker
+    '';
+
+    meta = {
+      description = "Fleet queue-domain standalone artifacts (repo-queue, queue-broker, secrets-broker): the queue pilot's rollback inventory";
+      license = with lib.licenses; [
+        mit
+        asl20
+      ];
+    };
+  };
+
+  # Full profile, musl static: the same capability set as `fleet`,
+  # linked for foreign soil (refinement B: linkage is a per-context
+  # choice). This is the artifact non-nix hosts install — the queue
+  # pilot's sandbox `repo-queue` symlink flip (#5430) points at a
+  # copy of it, because a glibc-dynamic laptop build names store
+  # paths the sandbox does not have.
+  fleet-static = mkFleet {
+    pname = "fleet-static";
+    features = null; # workspace default features = full profile
+    platform = pkgsStatic.rustPlatform;
+  };
+
   # Connect profile, musl static: runs anywhere, no libc coupling.
   fleet-connect-static = mkFleet {
     pname = "fleet-connect-static";

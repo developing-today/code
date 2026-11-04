@@ -2,13 +2,15 @@
 //! (epic developing-today/code#5412; design note
 //! doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/).
 //!
-//! Step 1 (#5429) is the skeleton: the platform crates, this dispatch
-//! layer, the capability-stub machinery, and the variant builds. No
-//! domain is implemented yet — a compiled-in domain answers with the
-//! "not implemented yet" form of the stub — but the *surface* is
-//! complete and honest: every variant renders the full registry, and
-//! every missing capability answers with a branchable stub, never a
-//! parser error.
+//! Step 1 (#5429) built the skeleton: the platform crates, this
+//! dispatch layer, the capability-stub machinery, and the variant
+//! builds. Step 2 (#5430) landed the first real domain — queue: the
+//! repo-queue client and the queue-broker / secrets-broker serve
+//! roles run for real below. A compiled-in domain that has not
+//! landed yet answers with the "not implemented yet" form of the
+//! stub — but the *surface* is complete and honest: every variant
+//! renders the full registry, and every missing capability answers
+//! with a branchable stub, never a parser error.
 //!
 //! Dispatch order (§3), extended by Refinement A (name-scoping):
 //!
@@ -345,9 +347,14 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
         println!("Commands: {}", d.subcommands.join(", "));
     }
     let status = match surface.domain_state(d) {
-        CapState::Available => {
-            "included in this build (implementation lands in a later step of epic #5412)"
-        }
+        CapState::Available => match d.name {
+            "queue" => "included in this build",
+            "serve" => {
+                "included in this build (queue-broker and secrets-broker roles; \
+                 the search role lands in a later step)"
+            }
+            _ => "included in this build (implementation lands in a later step of epic #5412)",
+        },
         CapState::NotInBuild => {
             "not in this build — invoking it prints the capability stub (exit 69)"
         }
@@ -413,6 +420,36 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
     };
     match surface.cap_state(cap, d.name) {
         CapState::Available => {
+            // Step 2 (#5430): the queue domain runs for real — the
+            // repo-queue client surface and the two broker roles.
+            // `--version` through the argv0 route is the census fix:
+            // repo-queue had no version surface at all before this.
+            #[cfg(feature = "queue")]
+            if d.name == "queue" {
+                if matches!(
+                    args.first().map(|s| s.as_str()),
+                    Some("--version") | Some("-V")
+                ) {
+                    println!(
+                        "{} {VERSION}",
+                        if invoked_as == "repo-queue" {
+                            "repo-queue"
+                        } else {
+                            "fleet"
+                        }
+                    );
+                    return EXIT_OK;
+                }
+                return fleet_queue::client::run(args);
+            }
+            #[cfg(feature = "queue-broker")]
+            if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("queue-broker") {
+                return fleet_queue::queue_broker::run();
+            }
+            #[cfg(feature = "secrets-broker")]
+            if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("secrets-broker") {
+                return fleet_queue::secrets_broker::run();
+            }
             if args.is_empty() && d.name != "serve" && d.name != "proxy" {
                 // A bare compiled-in domain is a usage error, like the
                 // tools being replaced — but say what it will be.

@@ -47,6 +47,21 @@ let
       rustc = atlasSearchToolchain;
     };
   };
+  # The fleet multicall package (pkgs/fleet), built with the
+  # toolchain pinned by its own rust-toolchain.toml — the
+  # atlas-search pattern above. Used as the broker units'
+  # ExecStart below (`fleet serve <role>`); deliberately not in
+  # home.packages — the resolved `repo-queue` on PATH stays the
+  # standalone artifact until the proxy step's shim dir (design
+  # note §4) supersedes the hand-maintained symlinks.
+  fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = fleetToolchain;
+      rustc = fleetToolchain;
+    };
+    sourceRev = inputs.self.rev or "dirty";
+  };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -910,6 +925,45 @@ in
     Install = {
       WantedBy = [ "default.target" ];
     };
+  };
+
+  # Fleet broker roles (epic #5412 step 2, #5430): the secrets and
+  # queue brokers as `fleet serve <role>` units — one unit per role,
+  # as they have run since code#5362. This is the home-module
+  # pattern ported from dezren39/nix PR #1459 (closed as superseded
+  # by ruling D1) into this tree, now consuming this flake's own
+  # pkgs/fleet instead of a vendored copy. The unit files these
+  # definitions replace were hand-installed; home-manager converges
+  # them on the next activation, and the step-2 flips re-point the
+  # live files at the same artifact in the meantime.
+  systemd.user.services.secrets-broker = {
+    Unit = {
+      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
+      After = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.queue-broker = {
+    Unit = {
+      Description = "queue-broker — repo-health queue service (code#5362)";
+      After = [
+        "network-online.target"
+        "secrets-broker.service"
+      ];
+      Wants = [ "secrets-broker.service" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve queue-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.sync-models = {
