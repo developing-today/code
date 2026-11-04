@@ -34,7 +34,8 @@ export interface NotificationHistoryEntry {
   class: NotificationCandidate["class"];
   objectRef: string;
   stateFingerprint: string;
-  outcome: "sent" | "suppressed-quiet" | "suppressed-dedupe" | "suppressed-cooldown" | "error";
+  outcome: "sent" | "suppressed-quiet" | "suppressed-dedupe" | "suppressed-cooldown" | "gone" | "error";
+  subscriptionId?: string;
 }
 
 export type NotificationDecision = "send" | "digest" | "suppress-dedupe" | "suppress-cooldown";

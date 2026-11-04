@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildNotificationCandidates,
   decideNotification,
@@ -9,6 +12,7 @@ import {
 } from "../src/notifications.ts";
 import { AlertsStore, type NotificationSendRow } from "../src/alerts.ts";
 import { renderNotifications } from "../src/render.ts";
+import { JsonlNotificationHistory } from "../src/notification-history.ts";
 import type { Provenance } from "../src/model.ts";
 import type { SupabaseClient } from "../src/supabase.ts";
 
@@ -140,6 +144,29 @@ describe("notification transition policy", () => {
     const age48: NotificationCandidate = { ...age24, stateFingerprint: '{"step":48}', digestOnly: false, escalationStep: 48 as const, breakthrough: true };
     expect(decideNotification(age24, [], TASK_NOW, false)).toBe("digest");
     expect(decideNotification(age48, [], TASK_NOW, true)).toBe("send");
+  });
+});
+
+describe("JsonlNotificationHistory", () => {
+  test("records a decision durably and reloads it after store recreation", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "notification-history-"));
+    const file = join(dir, "notifications.jsonl");
+    const entry = {
+      at: "2026-11-04T12:00:00.000Z",
+      class: "needs-drew" as const,
+      objectRef: "item:task-1",
+      stateFingerprint: "entered-needs-drew",
+      outcome: "sent" as const,
+      subscriptionId: "sub-1",
+    };
+    try {
+      const history = new JsonlNotificationHistory(file);
+      await history.append(entry);
+
+      expect(await new JsonlNotificationHistory(file).read()).toEqual([entry]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

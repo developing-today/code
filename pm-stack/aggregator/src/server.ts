@@ -128,7 +128,7 @@ import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotifications, renderDigest, esc } from "./render.ts";
-import { rollupNotificationSends } from "./notifications.ts";
+import { rollupNotificationSends, type NotificationSnapshot } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import { searchWork } from "./search-view.ts";
@@ -2407,4 +2407,11 @@ if (source.ingestSnapshots) {
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
-startAlertEngine(cfg);
+startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
+  const [attention, quota, health] = await Promise.all([
+    attentionContext(),
+    source.quota().catch(() => emptyQuotaView()),
+    healthContext(false),
+  ]);
+  return { attention: attention.view, quota, health };
+});

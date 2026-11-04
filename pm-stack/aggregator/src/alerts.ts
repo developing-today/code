@@ -23,7 +23,14 @@
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
-import { NOTIFICATION_CLASS_DEFAULTS } from "./notifications.ts";
+import {
+  buildNotificationCandidates,
+  decideNotification,
+  NOTIFICATION_CLASS_DEFAULTS,
+  type NotificationHistoryEntry,
+  type NotificationSnapshot,
+} from "./notifications.ts";
+import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -724,7 +731,102 @@ async function deliverToAll(
  * incident stays undelivered (and unescalated) until someone
  * subscribes — a later subscription still gets the push.
  */
-export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSender = sendPush): Promise<void> {
+export interface AlertTickOptions {
+  dashboardSnapshot?: () => Promise<NotificationSnapshot>;
+  notificationHistory?: NotificationHistoryStore;
+  now?: number;
+}
+
+async function runDashboardNotificationTick(
+  cfg: Config,
+  store: AlertsStore,
+  subscriptions: PushSubscriptionRow[],
+  push: PushSender,
+  options: AlertTickOptions,
+): Promise<void> {
+  if (!options.dashboardSnapshot || subscriptions.length === 0) return;
+  const now = options.now ?? Date.now();
+  const historyStore = options.notificationHistory ?? new JsonlNotificationHistory(cfg.notificationsFile);
+  const [snapshot, history] = await Promise.all([options.dashboardSnapshot(), historyStore.read()]);
+  const candidates = buildNotificationCandidates(snapshot, now);
+
+  for (const candidate of candidates) {
+    for (const sub of subscriptions) {
+      if (!classEnabled(sub, candidate.class)) continue;
+      const subHistory = history.filter((entry) => entry.subscriptionId === sub.id);
+      const decision = decideNotification(candidate, subHistory, now, inQuietHours(sub.quiet, new Date(now)));
+      const outcome: NotificationHistoryEntry["outcome"] =
+        decision === "digest"
+          ? "suppressed-quiet"
+          : decision === "suppress-dedupe"
+            ? "suppressed-dedupe"
+            : decision === "suppress-cooldown"
+              ? "suppressed-cooldown"
+              : "sent";
+      if (decision !== "send") {
+        // One durable suppression marker per item state and reason; do not
+        // append the same unchanged state on every 60-second engine tick.
+        if (
+          !subHistory.some(
+            (entry) =>
+              entry.class === candidate.class &&
+              entry.objectRef === candidate.objectRef &&
+              entry.stateFingerprint === candidate.stateFingerprint &&
+              entry.outcome === outcome,
+          )
+        ) {
+          const entry: NotificationHistoryEntry = {
+            at: new Date(now).toISOString(),
+            class: candidate.class,
+            objectRef: candidate.objectRef,
+            stateFingerprint: candidate.stateFingerprint,
+            outcome,
+            subscriptionId: sub.id,
+          };
+          await historyStore.append(entry);
+          history.push(entry);
+        }
+        continue;
+      }
+
+      const url = /^https?:\/\//.test(candidate.url) ? candidate.url : `${cfg.publicOrigin}${candidate.url}`;
+      const payload: PushPayload = {
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        url,
+        title: candidate.title,
+        body: candidate.body,
+        ...(candidate.escalationStep ? { escalation: true } : {}),
+      };
+      const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+      const result = await push(target, payload);
+      const entry: NotificationHistoryEntry = {
+        at: new Date(now).toISOString(),
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        stateFingerprint: candidate.stateFingerprint,
+        outcome: result.ok ? "sent" : result.gone ? "gone" : "error",
+        subscriptionId: sub.id,
+      };
+      await historyStore.append(entry);
+      history.push(entry);
+      await store.logSend({
+        class: candidate.class,
+        objectRef: candidate.objectRef,
+        outcome: result.ok ? "sent" : result.gone ? "gone" : "error",
+      });
+      if (result.ok) await store.noteSubscriptionAlive(sub.endpoint);
+      else if (result.gone) await store.noteSubscriptionGone(sub.endpoint);
+    }
+  }
+}
+
+export async function runAlertTick(
+  cfg: Config,
+  store: AlertsStore,
+  push: PushSender = sendPush,
+  options: AlertTickOptions = {},
+): Promise<void> {
   const subs = await store.listSubscriptions();
   const targets = subs.filter((s) => classEnabled(s, "incident"));
   if (targets.length > 0) {
@@ -749,12 +851,13 @@ export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSe
       }
     }
   }
+  await runDashboardNotificationTick(cfg, store, subs, push, options);
 }
 
 let engineStarted = false;
 
 /** Start the ~60s engine loop (live mode only; fail-soft per tick). */
-export function startAlertEngine(cfg: Config): void {
+export function startAlertEngine(cfg: Config, dashboardSnapshot?: () => Promise<NotificationSnapshot>): void {
   if (engineStarted || cfg.source !== "live") return;
   engineStarted = true;
   let ticking = false;
@@ -763,7 +866,7 @@ export function startAlertEngine(cfg: Config): void {
     ticking = true;
     try {
       const store = await getAlertsStore();
-      if (store) await runAlertTick(cfg, store);
+      if (store) await runAlertTick(cfg, store, sendPush, { dashboardSnapshot });
     } catch (err) {
       console.error(`alerts engine: tick failed (${err instanceof Error ? err.message : "error"})`);
     } finally {

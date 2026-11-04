@@ -23,6 +23,7 @@ import {
   validateNewIncident,
   validateNewSubscription,
   AlertsStore,
+  type AlertTickOptions,
   type AlertsStore as AlertsStoreType,
   type Incident,
   type PushSubscriptionRow,
@@ -32,6 +33,7 @@ import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
 import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
 import type { Config } from "../src/config.ts";
+import type { NotificationHistoryEntry, NotificationSnapshot } from "../src/notifications.ts";
 
 describe("getAlertsStore retry-after-null memoization", () => {
   test("retries a null client, shares the next in-flight attempt, and caches success", async () => {
@@ -485,6 +487,55 @@ describe("pending alert batch fairness", () => {
 });
 
 describe("alert tick delivery state", () => {
+  test("dashboard candidates are delivered once and their state is persisted for dedupe", async () => {
+    const now = Date.parse("2026-11-03T18:00:00Z");
+    const { store } = alertTickStore({ deliveries: [], escalations: [] });
+    const sub: PushSubscriptionRow = {
+      id: "sub-dashboard",
+      endpoint: "https://push.example/sub-dashboard",
+      p256dh: "p256dh",
+      auth: "auth",
+      classes: { incident: true, "needs-drew": true },
+      quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+      user_agent: null,
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T00:00:00Z",
+      gone_count: 0,
+    };
+    store.listSubscriptions = async () => [sub];
+    const historyRows: NotificationHistoryEntry[] = [];
+    const notificationHistory: NonNullable<AlertTickOptions["notificationHistory"]> = {
+      read: async () => [...historyRows],
+      append: async (entry) => {
+        historyRows.push(entry);
+      },
+    };
+    let dashboardPushes = 0;
+    const push: typeof successfulSend = async (_target, payload) => {
+      if ((payload as { class: string }).class === "needs-drew") dashboardPushes += 1;
+      return successfulSend(_target, payload);
+    };
+    const item = {
+      id: "task-1",
+      kind: "task",
+      title: "Needs-Drew task",
+      since: new Date(now - 60_000).toISOString(),
+      state: "open",
+    };
+    const dashboardSnapshot = async (): Promise<NotificationSnapshot> => ({
+      attention: { drew: [item], drewExtra: [] } as unknown as NotificationSnapshot["attention"],
+      quota: { pools: [] } as unknown as NotificationSnapshot["quota"],
+      health: { services: [] },
+    });
+
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now });
+    await runAlertTick(tickConfig, store, push, { dashboardSnapshot, notificationHistory, now: now + 60_000 });
+
+    expect(dashboardPushes).toBe(1);
+    expect(historyRows.map((row) => row.outcome)).toEqual(["sent", "suppressed-dedupe"]);
+    expect(historyRows.every((row) => row.subscriptionId === sub.id)).toBe(true);
+  });
+
   test("all-error delivery stays pending and a later successful tick marks it delivered once", async () => {
     const { store, calls } = alertTickStore();
 
