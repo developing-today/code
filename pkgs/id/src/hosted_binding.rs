@@ -238,7 +238,7 @@ pub fn parse_rfc3339(text: &str) -> Option<u64> {
     let hour = num(11, 13)?;
     let minute = num(14, 16)?;
     let second = num(17, 19)?;
-    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 60 {
+    if !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
     let leap = is_leap_year(year);
@@ -2351,6 +2351,11 @@ mod tests {
         assert_eq!(parse_rfc3339("2023-02-29T00:00:00Z"), None);
         assert_eq!(parse_rfc3339("2024-02-29T00:00:00Z"), Some(1_709_164_800));
         assert_eq!(parse_rfc3339("not-a-time"), None);
+        // A leap second is not modelled (#756, the same ruling
+        // parse_iso_timestamp follows): second 60 is refused on every
+        // date instead of aliasing to the next minute (#5416).
+        assert_eq!(parse_rfc3339("2016-12-31T23:59:60Z"), None);
+        assert_eq!(parse_rfc3339("2023-06-15T12:30:60Z"), None);
     }
 
     #[test]
