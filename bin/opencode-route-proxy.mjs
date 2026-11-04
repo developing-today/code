@@ -12,7 +12,7 @@
 // OpenCode server uses (.opencode/opencode.jsonc: model_routes +
 // provider blocks), picks the actual pool member (ordered / round-robin
 // / weighted selection, variant remaps, disabled providers skipped,
-// quota demotion from the route_attempt ledger), expands provider
+// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295), expands provider
 // routes (experimental.provider_routes, #3256) into their member
 // providers, and makes ONE plain
 // chat-completions call to that member's endpoint with the member's
@@ -349,6 +349,118 @@ const demotedPairs = () => {
       db?.close();
     } catch {}
   }
+};
+
+// The reset instant a quota detail promises, if it carries one
+// (#5295): a Retry-After-derived relative wait (the shape
+// classifyHttp records for 429s), or an absolute reset recorded under
+// any of the equivalent field names. A quota record with no reset
+// (e.g. a bare paymentRequired) cannot gate: how long it lasts is
+// unknown, and demotion remains its only handling.
+const quotaResetMs = (timeStarted, quotaText) => {
+  let q;
+  try {
+    q = JSON.parse(quotaText);
+  } catch {
+    return null;
+  }
+  if (!q || typeof q !== "object") return null;
+  if (Number.isFinite(q.retryAfterMs) && q.retryAfterMs > 0)
+    return timeStarted + q.retryAfterMs;
+  for (const k of ["resetsAtMs", "resetAtMs", "retryAtMs"])
+    if (Number.isFinite(q[k]) && q[k] > 0) return q[k];
+  for (const k of ["resetsAt", "resetAt", "retryAt"]) {
+    const ms = Date.parse(q[k]);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+};
+
+// (provider,model) pairs whose binding quota window is KNOWN
+// exhausted (#5295, #4370 acceptance (c)): the pair's latest
+// quota-bearing failure in the ledger carries a reset still in the
+// future, and no success has been recorded for the pair since that
+// failure. Unlike demotion — reactive (>=3 failures in 4h) and
+// reorder-only — this is a seating-time exclusion known BEFORE the
+// next failure: a monthly-walled leg at a known 100% must not be a
+// first-choice candidate while any live candidate exists. The ledger
+// is the only source (no new network dependency in the hot path);
+// the lookback bounds the scan while covering monthly resets.
+const EXHAUSTED_LOOKBACK_MS = 40 * 24 * 60 * 60 * 1000;
+const knownExhaustedPairs = (now) => {
+  let db = null;
+  try {
+    db = openDb();
+    const since = now - EXHAUSTED_LOOKBACK_MS;
+    const quotaRows = db
+      .prepare(
+        `SELECT provider_id, model_id, time_started, quota FROM route_attempt
+         WHERE quota IS NOT NULL AND outcome != 'success' AND time_started > ?
+           AND time_started = (
+             SELECT MAX(time_started) FROM route_attempt r2
+             WHERE r2.provider_id = route_attempt.provider_id
+               AND r2.model_id = route_attempt.model_id
+               AND r2.quota IS NOT NULL AND r2.outcome != 'success'
+               AND r2.time_started > ?
+           )`,
+      )
+      .all(since, since);
+    const successRows = db
+      .prepare(
+        `SELECT provider_id, model_id, MAX(time_started) AS latest
+         FROM route_attempt
+         WHERE outcome = 'success' AND time_started > ?
+         GROUP BY provider_id, model_id`,
+      )
+      .all(since);
+    const latestSuccess = new Map(
+      successRows.map((r) => [`${r.provider_id}/${r.model_id}`, r.latest]),
+    );
+    const out = new Map();
+    for (const r of quotaRows) {
+      const reset = quotaResetMs(r.time_started, r.quota);
+      if (reset === null || reset <= now) continue;
+      const key = `${r.provider_id}/${r.model_id}`;
+      const successAt = latestSuccess.get(key);
+      if (successAt !== undefined && successAt > r.time_started) continue;
+      out.set(key, reset);
+    }
+    return out;
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// Exclude known-exhausted candidates (#5295), following the
+// credential-less exclusion pattern (#3228) — but fail-safe: if the
+// gate would empty the candidate list, the demoted order is kept as
+// it was, because a known-exhausted leg as last resort beats no
+// route at all. Gate decisions are recorded on stderr, the proxy's
+// diagnostics stream.
+const applyKnownExhaustedGate = (candidates) => {
+  if (!candidates.length) return candidates;
+  const exhausted = knownExhaustedPairs(nowMs());
+  if (!exhausted.size) return candidates;
+  const key = (c) => `${c.providerId}/${c.modelKey}`;
+  const kept = candidates.filter((c) => !exhausted.has(key(c)));
+  if (!kept.length) {
+    console.error(
+      "opencode-route-proxy: known-exhausted gate bypassed — every candidate is " +
+        "known-exhausted; keeping the demoted order (#5295)",
+    );
+    return candidates;
+  }
+  for (const c of candidates)
+    if (exhausted.has(key(c)))
+      console.error(
+        `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
+          `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
+      );
+  return kept;
 };
 
 const recordAttempt = (a) => {
@@ -802,6 +914,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
   const wantStream = Boolean(body.stream);
   let candidates = resolveRoute(cfg, routeId, hooks.variantIn ?? null);
   candidates = applyDemotion(candidates, demotedPairs());
+  candidates = applyKnownExhaustedGate(candidates);
   if (!candidates.length)
     throw new LeafError(`route ${routeId} has no available members`, {
       tag: "UnknownProvider",

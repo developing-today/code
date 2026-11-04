@@ -275,7 +275,7 @@ const startProxy = async (arg = {}) => {
     leafA.server.close();
     leafB.server.close();
   };
-  return { base, post, attempts, leafA, leafB, cleanup, log: () => log };
+  return { base, post, attempts, leafA, leafB, cleanup, dbPath, log: () => log };
 };
 
 const MSGS = [
@@ -766,6 +766,174 @@ test("config load names invalid windows instead of silently evaluating them", as
     assert.ok(log.includes("bad-wrap-99"), `log names the window:\n${log}`);
     assert.ok(log.includes("99:99"), `log names the bad value:\n${log}`);
     assert.ok(log.includes("bad-start-2400"), `log names each bad window:\n${log}`);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------------------ #5295 gate
+
+// Seed one quota-bearing failure for a (provider, model) pair, as if
+// the leaf had answered 429 with a Retry-After `retryAfterMs` long at
+// `atMs`. Written straight into the fixture ledger the proxy reads.
+const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs }) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    atMs,
+    atMs + 50,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "failure",
+    "RateLimit",
+    null,
+    429,
+    "leaf HTTP 429: quota",
+    1,
+    0,
+    null,
+    JSON.stringify({ retryAfterMs }),
+  );
+  db.close();
+};
+
+// A Monday noon UTC, pinned via OPENCODE_ROUTE_PROXY_NOW_MS so the
+// gate's clock is deterministic.
+const GATE_NOW = Date.UTC(2026, 0, 5, 12, 0, 0);
+
+test("known-exhausted pair is excluded while a live pair exists (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // One minute ago the leaf said: retry after an hour. The pair is
+    // known exhausted for another ~59 minutes — one failure is
+    // enough; demotion's >=3 must not be required.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "the exhausted leaf must not be attempted");
+    const rows = p.attempts().filter((r) => r.route_id === "t-ordered");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+    assert.ok(
+      p.log().includes("known-exhausted gate excluded leafA/m-a"),
+      `gate decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("known-exhausted pair returns after its reset passes (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // Two hours ago the leaf said retry after an hour: the reset is
+    // an hour in the past at the pinned now, so the gate has lifted.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 7_200_000,
+      retryAfterMs: 3_600_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.equal(p.leafB.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("all candidates known-exhausted: route still walks in order (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafB",
+      model: "m-b",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    // Fail-safe: a known-exhausted leg as last resort beats no route,
+    // so the walk keeps the (demoted) order and leaf A still serves.
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("known-exhausted gate bypassed"),
+      `bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("a success after the quota failure clears the gate (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      retryAfterMs: 3_600_000,
+    });
+    // The pair served successfully a minute after that failure
+    // (another door sharing the ledger): the exhaustion is stale.
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt (
+         time_started, time_ended, session_id, assistant_message_id,
+         route_id, provider_id, model_id, variant, outcome,
+         error_tag, error_code, error_status, error_message, retryable,
+         output_started, failed_over_to, quota
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      GATE_NOW - 60_000,
+      GATE_NOW - 59_000,
+      null,
+      null,
+      "seed",
+      "leafA",
+      "m-a",
+      null,
+      "success",
+      null,
+      null,
+      null,
+      null,
+      1,
+      0,
+      null,
+      null,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
   } finally {
     await p.cleanup();
   }
