@@ -61,22 +61,23 @@ impl Petnames {
             names: BTreeMap::new(),
             journal: Some(path.to_path_buf()),
         };
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(store),
             Err(error) => return Err(error.into()),
         };
         let mut kept = 0;
-        for (number, line) in text.split_inclusive('\n').enumerate() {
-            let complete = line.ends_with('\n');
-            if !complete {
+        for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if !line.ends_with(b"\n") {
                 break;
             }
-            if line.trim().is_empty() {
+            let text = std::str::from_utf8(line)
+                .with_context(|| format!("petname journal line {} is malformed", number + 1))?;
+            if text.trim().is_empty() {
                 kept += line.len();
                 continue;
             }
-            match serde_json::from_str::<Record>(line.trim_end()) {
+            match serde_json::from_str::<Record>(text.trim_end()) {
                 Ok(record) => {
                     store.apply(record);
                     kept += line.len();
@@ -88,7 +89,7 @@ impl Petnames {
                 }
             }
         }
-        if kept < text.len() {
+        if kept < bytes.len() {
             std::fs::OpenOptions::new()
                 .write(true)
                 .open(path)?
@@ -608,24 +609,30 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("petnames.jsonl");
         let mut store = Petnames::open(&path).unwrap();
-        store.set(OWNER, ALICE, "Ali", names()).unwrap();
+        store.set(OWNER, ALICE, "José", names()).unwrap();
         drop(store);
-        let good = std::fs::read_to_string(&path).unwrap();
-        // A crash mid-append leaves a partial record, no trailing newline.
+        let good = std::fs::read(&path).unwrap();
+        // A crash after the first byte of a multibyte name leaves invalid
+        // UTF-8 in the unterminated final record.
         let mut torn = good.clone();
-        torn.push_str(&format!(
-            "{{\"op\":\"set\",\"owner\":\"{OWNER}\",\"account\":\"{CAROL}\",\"name\":\"Car"
-        ));
+        torn.extend_from_slice(
+            format!(
+                "{{\"op\":\"set\",\"owner\":\"{OWNER}\",\"account\":\"{CAROL}\",\"name\":\"Jos"
+            )
+            .as_bytes(),
+        );
+        torn.push(0xc3); // First byte of "é".
         std::fs::write(&path, torn).unwrap();
         let mut store = Petnames::open(&path).unwrap();
-        assert_eq!(store.get(OWNER, ALICE), Some("Ali"));
+        assert_eq!(store.get(OWNER, ALICE), Some("José"));
         assert!(store.get(OWNER, CAROL).is_none());
         // The torn bytes are truncated, so the next append is not glued
         // onto them and replays cleanly on the next open.
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        assert_eq!(std::fs::read(&path).unwrap(), good);
         store.set(OWNER, CAROL, "Carol", names()).unwrap();
         drop(store);
         let store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("José"));
         assert_eq!(store.get(OWNER, CAROL), Some("Carol"));
     }
 
