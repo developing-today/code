@@ -50,7 +50,11 @@ type Registry struct {
 	paths Paths
 	hash  string
 
-	mu sync.RWMutex
+	// reloadMu serializes configuration swaps with asynchronous cleanup from
+	// earlier swaps. A cleanup must not remove sessions created by a later
+	// reload that re-adds the same server name.
+	reloadMu sync.Mutex
+	mu       sync.RWMutex
 	// pools may be shared between names; views never are. A view carries the
 	// per-name presentation -- namespace, tool subset, prelude, profiles --
 	// that must not follow the shared process.

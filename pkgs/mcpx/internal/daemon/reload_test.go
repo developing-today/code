@@ -126,6 +126,68 @@ func TestReloadKeepsUnchangedChildAndReplacesChangedOne(t *testing.T) {
 	waitGone(t, pidB)
 }
 
+func TestReloadRemovedServerDeletesPersistedSessionOnceWithLastConfig(t *testing.T) {
+	upstream := newOrphanUpstream(t)
+	dir := t.TempDir()
+	initial := &config.Config{MCPServers: map[string]*config.Server{
+		"remote": {
+			Name:    "remote",
+			URL:     upstream.URL + "/mcp",
+			Headers: map[string]string{"X-Reload-Marker": "last-live-config"},
+		},
+	}}
+	r, err := NewRegistry(initial, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	r.InstallHooks(nil, nil, nil)
+
+	p, ok := r.Pool("remote")
+	if !ok {
+		t.Fatal("no pool for remote")
+	}
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: "global"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Client().Ping(context.Background()); err != nil {
+		lease.Release()
+		t.Fatalf("ping: %v", err)
+	}
+	lease.Release()
+	if _, ok := r.hooks.Sessions.Get("remote", "global", false); !ok {
+		t.Fatal("started upstream session was not persisted")
+	}
+
+	if _, removed, err := r.Reload(&config.Config{MCPServers: map[string]*config.Server{}}); err != nil {
+		t.Fatal(err)
+	} else if len(removed) != 1 || removed[0] != "remote" {
+		t.Fatalf("removed servers = %v, want [remote]", removed)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, recordExists := r.hooks.Sessions.Get("remote", "global", false)
+		deletes, _ := upstream.counts()
+		if !recordExists && deletes > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	p.WaitDrained()
+	if _, ok := r.hooks.Sessions.Get("remote", "global", false); ok {
+		t.Fatal("removed server's persisted session survived reload")
+	}
+	deletes, sessions := upstream.counts()
+	if deletes != 1 {
+		t.Fatalf("reload sent %d upstream DELETEs for one session, want one (sessions %v)", deletes, sessions)
+	}
+	if got := upstream.deletedMarkers(); len(got) != 1 || got[0] != "last-live-config" {
+		t.Fatalf("DELETE config markers = %v, want [last-live-config]", got)
+	}
+}
+
 func TestReloadRenamedNamespaceKeepsChildAndResolvesNewName(t *testing.T) {
 	fake := testsupport.FakeMCPBinary(t)
 	dir := t.TempDir()

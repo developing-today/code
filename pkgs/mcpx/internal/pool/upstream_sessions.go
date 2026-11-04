@@ -56,6 +56,8 @@ type UpstreamSessionRecord struct {
 // daemon over the state directory.
 type SessionStore interface {
 	Get(server, key string, legacyLane bool) (UpstreamSessionRecord, bool)
+	// List returns a snapshot of every persisted record, for reload cleanup.
+	List() []UpstreamSessionRecord
 	// Take is Get plus removal, atomically: a persisted session has
 	// exactly one resumer. Two concurrent starts for the same identity
 	// must never both resume the same upstream session -- when Acquire
@@ -172,6 +174,17 @@ func (f *SessionFile) Get(server, key string, legacyLane bool) (UpstreamSessionR
 	return r, ok
 }
 
+// List returns a stable snapshot of the session table.
+func (f *SessionFile) List() []UpstreamSessionRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]UpstreamSessionRecord, 0, len(f.m))
+	for _, rec := range f.m {
+		out = append(out, rec)
+	}
+	return out
+}
+
 // writeLocked rewrites the file atomically from the in-memory table: a
 // temporary file in place beside it, then a rename, so a crash mid-write
 // leaves the old file or the new one and never half of each.
@@ -247,6 +260,11 @@ func (p *Pool) sessionStore() SessionStore {
 // optimisation, so a failed save is logged and non-fatal -- the daemon
 // behaves exactly as one that never persisted.
 func (p *Pool) saveUpstreamSession(eff *config.Resolved, key string, legacyLane bool, ref *instanceRef) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+	if p.sessionsClosing.Load() {
+		return
+	}
 	store := p.sessionStore()
 	if store == nil {
 		return
@@ -288,11 +306,73 @@ func (p *Pool) saveUpstreamSession(eff *config.Resolved, key string, legacyLane 
 // friends) deliberately do NOT forget: surviving a restart is the
 // record's whole purpose.
 func (p *Pool) forgetUpstreamSession(in *Instance) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
 	store := p.sessionStore()
 	if store == nil || in == nil {
 		return
 	}
 	store.Remove(p.cfg.Name, in.key, in.legacyLane)
+}
+
+// CleanupRemovedSessionRecords runs after a removed pool has drained. It
+// terminates each persisted session using credentials re-derived from the
+// pool's last live config, then removes the record. A stale record is never
+// sent to a potentially changed endpoint.
+func (p *Pool) CleanupRemovedSessionRecords() {
+	store := p.sessionStore()
+	if store == nil {
+		return
+	}
+	opts, optsErr := p.httpOptions()
+	for _, rec := range store.List() {
+		if rec.Server != p.cfg.Name {
+			continue
+		}
+		var terminateErr error
+		switch {
+		case optsErr != nil:
+			terminateErr = optsErr
+		case rec.Fingerprint != sessionFingerprint(p.cfg, p.Preference()) || rec.URL != sanitizedSessionURL(opts.URL):
+			terminateErr = fmt.Errorf("last live config no longer matches the persisted session")
+		default:
+			terminateErr = mcpclient.TerminateHTTPSession(mcpclient.HTTPHandoff{
+				SessionID: rec.SessionID, Negotiated: rec.Negotiated,
+				URL: opts.URL, Headers: opts.Headers,
+			})
+		}
+		store.Remove(rec.Server, rec.Key, rec.LegacyLane)
+		if terminateErr != nil {
+			lifecycle("upstream.session.leftToExpire", map[string]any{
+				"server": rec.Server, "key": rec.Key, "session": rec.SessionID,
+				"reason": terminateErr.Error(),
+			})
+			continue
+		}
+		lifecycle("upstream.session.terminated", map[string]any{
+			"server": rec.Server, "key": rec.Key, "session": rec.SessionID,
+			"reason": "server removed from configuration",
+		})
+	}
+}
+
+// DiscardUnconfiguredSessionRecords removes records for servers that were
+// already absent from the registry before this reload, so there is no last
+// live config from which to re-derive credentials for a DELETE.
+func DiscardUnconfiguredSessionRecords(store SessionStore, configured map[string]bool) {
+	if store == nil {
+		return
+	}
+	for _, rec := range store.List() {
+		if configured[rec.Server] {
+			continue
+		}
+		store.Remove(rec.Server, rec.Key, rec.LegacyLane)
+		lifecycle("upstream.session.leftToExpire", map[string]any{
+			"server": rec.Server, "key": rec.Key, "session": rec.SessionID,
+			"reason": "server absent from the last live configuration",
+		})
+	}
 }
 
 // sanitizedSessionURL strips everything credential-shaped from a

@@ -27,6 +27,8 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 		return nil, nil, err
 	}
 
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -84,26 +86,56 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 		keep[p] = true
 	}
 	var orphans []*pool.Pool
+	removedPools := map[*pool.Pool]bool{}
 	for name, p := range r.pools {
 		if _, still := pools[name]; !still {
 			removed = append(removed, name)
+			removedPools[p] = true
 		}
 		if !keep[p] {
 			orphans = append(orphans, p)
 		}
 	}
 	sort.Strings(removed)
-
 	r.cfg = cfg
 	r.pools, r.views, r.order = pools, views, order
 	r.hash = HashConfig(mustJSON(cfg.MCPServers))
+	// Mark orphans closed before the replacement map is visible. A later
+	// reload must not resume a record whose old client is still draining and
+	// will DELETE that upstream session.
+	for _, p := range orphans {
+		p.CloseDrained()
+	}
 
 	// Drained, not closed: a call running on an orphan finishes on it, as it
 	// does on a lazy restart. Close would cut one that ran past its grace.
 	go func() {
 		for _, p := range orphans {
-			p.CloseDrained()
+			p.WaitDrained()
+			if removedPools[p] {
+				r.reloadMu.Lock()
+				r.mu.RLock()
+				_, reconfigured := r.pools[p.Name()]
+				r.mu.RUnlock()
+				if !reconfigured {
+					p.CleanupRemovedSessionRecords()
+				}
+				r.reloadMu.Unlock()
+			}
 		}
+		r.reloadMu.Lock()
+		r.mu.RLock()
+		configured := make(map[string]bool, len(r.pools))
+		for name := range r.pools {
+			configured[name] = true
+		}
+		var sessions pool.SessionStore
+		if r.hooks != nil {
+			sessions = r.hooks.Sessions
+		}
+		r.mu.RUnlock()
+		pool.DiscardUnconfiguredSessionRecords(sessions, configured)
+		r.reloadMu.Unlock()
 	}()
 	return added, removed, nil
 }
