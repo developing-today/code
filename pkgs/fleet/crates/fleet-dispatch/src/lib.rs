@@ -445,7 +445,24 @@ fn bearer_token(config: &Config) -> Result<SecretValue> {
 // Verbs
 // ---------------------------------------------------------------------------
 
-fn verb_status(config: &Config) -> Result<Value> {
+const STATUS_USAGE: &str = "\
+Usage: fleet dispatch status
+
+GET /health on pm-dispatch: is the service up, and which build.
+Prints the service's health body plus the transport it arrived by.
+
+Takes no arguments.";
+
+fn verb_status(config: &Config, args: &[String]) -> Result<Value> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{STATUS_USAGE}");
+        return Ok(Value::Null);
+    }
+    if let Some(arg) = args.first() {
+        return Err(usage(format!(
+            "status takes no arguments, got {arg:?}\n\n{STATUS_USAGE}"
+        )));
+    }
     let transport_sel = pick_transport(config)?;
     let described = transport_sel.describe();
     let body = finish(
@@ -736,7 +753,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     let verb = args.first().map(|s| s.as_str());
     let rest = if args.is_empty() { &[][..] } else { &args[1..] };
     let result = match verb {
-        Some("status") => verb_status(config),
+        Some("status") => verb_status(config, rest),
         Some("launch") => verb_launch(config, rest),
         Some("enqueue") => verb_enqueue(config, rest),
         Some(other) => Err(usage(format!(
@@ -834,6 +851,27 @@ mod tests {
         assert_eq!(dechunk(wire), b"Wikipedia");
         assert_eq!(dechunked_len(wire), Some(9));
         assert_eq!(dechunked_len(b"4\r\nWi"), None);
+    }
+
+    #[test]
+    fn status_help_and_rejection_need_no_service() {
+        // Help and argument rejection return before any transport is
+        // opened (the default config's transport would try the
+        // loopback probe / proxy egress), so these calls double as
+        // the no-network pins: a regression that dials out first
+        // fails or hangs here instead of returning promptly.
+        let config = Config::default();
+        assert_eq!(
+            verb_status(&config, &strings(&["--help"])).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            verb_status(&config, &strings(&["-h"])).unwrap(),
+            Value::Null
+        );
+        let err = verb_status(&config, &strings(&["--bogus"])).unwrap_err();
+        assert_eq!(err.exit_code(), EXIT_USAGE);
+        assert!(err.message().contains("--bogus"));
     }
 
     #[test]
