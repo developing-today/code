@@ -24,6 +24,7 @@ rec {
       lib.make-mcpx-overlay
       lib.make-mcpx-modules
       lib.make-laptop-backups-checks
+      lib.make-fleet
     ];
   inputs = {
     nixgl = {
