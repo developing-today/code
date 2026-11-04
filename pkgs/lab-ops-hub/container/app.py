@@ -534,13 +534,26 @@ def validate_crawl_url(raw):
                     ).decode("ascii")
                 except (UnicodeError, ValueError):
                     # Preserve the permissive fallback for labels
-                    # python-idna declines. NFKC supplies compatibility
-                    # mappings before punycode:
-                    # NFKC maps e.g. the fullwidth digit in an RTL
-                    # label the codec's Unicode 3.2 bidi rules refuse
-                    # (the alef + fullwidth-1 label returns the
-                    # Worker's xn--1-zhc, not the unmapped
-                    # xn--4db2378j) - Codex round 2 on PR #3781.
+                    # python-idna declines — but apply the UTS-46
+                    # mapping FIRST, independently of the strict
+                    # IDNA2008 validation that just failed, and only
+                    # then let NFKC supply any remaining compatibility
+                    # mappings before punycode. NFKC alone maps
+                    # U+03F2 (lunate sigma) to U+03C2 (final sigma)
+                    # where UTS-46 maps it to U+03C3, so a label the
+                    # codec refuses over an underscore (ϲ_.com) came
+                    # back as the final-sigma host xn--_-xmb instead
+                    # of the WHATWG xn--_-zmb — a different hostname
+                    # than the Worker certified (Codex review of
+                    # PR #5231). uts46_remap is mapping only (no
+                    # validity checks), so the permissive reach of
+                    # the fallback is unchanged.
+                    try:
+                        candidate = idna.core.uts46_remap(
+                            candidate, std3_rules=False, transitional=False
+                        )
+                    except (UnicodeError, ValueError):
+                        pass
                     return "xn--" + unicodedata.normalize("NFKC", candidate).encode(
                         "punycode"
                     ).decode("ascii")

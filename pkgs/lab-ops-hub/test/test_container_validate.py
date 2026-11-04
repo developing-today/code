@@ -819,6 +819,25 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://\u05d0\u06611.com/")
         self.assertRefused("http://\u0661\u0627.com/")
 
+    def test_fallback_return_applies_uts46_mapping_before_nfkc(self):
+        # Codex review of PR #5231: a label python-idna refuses
+        # (here over the underscore) fell back to raw NFKC, which
+        # maps U+03F2 (lunate sigma) to U+03C2 (final sigma) where
+        # UTS-46 — and the Worker — map it to U+03C3, so ϲ_.com
+        # returned the final-sigma host xn--_-xmb instead of the
+        # WHATWG host xn--_-zmb. The fallback now remaps with
+        # UTS-46 before NFKC.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ_.com/"),
+            "http://xn--_-zmb.com/",
+        )
+        # Control: the plain lunate-sigma label takes the primary
+        # codec path and returns the same sigma mapping.
+        self.assertEqual(
+            validate_crawl_url("http://ϲ.com/"),
+            "http://xn--4xa.com/",
+        )
+
     def test_judges_u0345_by_its_uts46_mapping(self):
         # UTS-46 maps U+0345 (combining Greek ypogegrammeni) to
         # U+03B9 (ι, bidi class L), but NFKC leaves it unchanged, so
