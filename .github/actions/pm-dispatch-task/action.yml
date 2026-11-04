@@ -16,7 +16,7 @@ description: >-
   `permissions: id-token: write` — the starter/queuer steps mint a GitHub
   Actions OIDC token (audience pm-dispatch) to authenticate. For
   `task: ci-fix` the calling job MUST also provide a GH_TOKEN in the job
-  environment (for example `GH_TOKEN: ${{ github.token }}`) whose token can
+  environment (for example `GH_TOKEN` set to the workflow GITHUB_TOKEN) whose token can
   read issues in the target repo (for example `permissions: issues: read`),
   which the dedupe step uses to search for an existing open tracking issue.
 inputs:
