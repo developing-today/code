@@ -13,7 +13,8 @@
 //! - `ID_LOG_FORMAT` — `text` (default) or `json`. `json` emits one
 //!   JSON object per line (JSON-lines) including the event's fields and,
 //!   for events inside a span, the current span's name and fields as
-//!   trace context.
+//!   trace context. An unrecognized value falls back to `text` and the
+//!   caller warns about the fallback (as `ID_LOG_TZ` does).
 //! - `ID_LOG_FILE` — path of a second destination. Events are appended
 //!   to the file in the same format as the console destination, without
 //!   ANSI escapes.
@@ -207,6 +208,10 @@ pub struct LogConfig {
     pub zone: LogZone,
     /// True when `ID_LOG_TZ` was set but unrecognized (zone is UTC).
     pub tz_fell_back: bool,
+    /// True when `ID_LOG_FORMAT` was set to a non-empty value that is
+    /// neither `text` nor `json` (format is `Text`); the caller warns
+    /// about the fallback, mirroring `tz_fell_back`.
+    pub format_fell_back: bool,
 }
 
 impl LogConfig {
@@ -222,6 +227,10 @@ impl LogConfig {
         let tz = resolve_zone(tz);
         Self {
             format: LogFormat::parse(format),
+            format_fell_back: format.is_some_and(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                !value.is_empty() && value != "text" && value != "json"
+            }),
             file: file
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -345,6 +354,7 @@ mod tests {
         assert_eq!(config.file_filter, None);
         assert_eq!(config.zone, LogZone::Local);
         assert!(!config.tz_fell_back);
+        assert!(!config.format_fell_back);
     }
 
     #[test]
@@ -354,6 +364,32 @@ mod tests {
         assert_eq!(LogFormat::parse(Some("text")), LogFormat::Text);
         assert_eq!(LogFormat::parse(Some("yaml")), LogFormat::Text);
         assert_eq!(LogFormat::parse(None), LogFormat::Text);
+    }
+
+    #[test]
+    fn test_structured_logging_unrecognized_format_falls_back_with_flag() {
+        // An unrecognized ID_LOG_FORMAT still resolves to Text (the
+        // lenient parse is unchanged), but the config now records the
+        // fallback so the caller can warn — mirroring tz_fell_back.
+        for spec in ["josn", "yaml", "jsonl", "structured"] {
+            let config = LogConfig::resolve(Some(spec), None, None, None);
+            assert_eq!(config.format, LogFormat::Text, "spec {spec:?}");
+            assert!(config.format_fell_back, "spec {spec:?}");
+        }
+        // Recognized values (any case, padded) and unset/blank values
+        // never set the flag.
+        for spec in [
+            None,
+            Some(""),
+            Some("  "),
+            Some("text"),
+            Some("Text"),
+            Some("json"),
+            Some(" JSON "),
+        ] {
+            let config = LogConfig::resolve(spec, None, None, None);
+            assert!(!config.format_fell_back, "spec {spec:?}");
+        }
     }
 
     #[test]
