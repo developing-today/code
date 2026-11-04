@@ -2,7 +2,7 @@
 
 The Supabase half of the usage hub's file-export family (#1151 gatherer,
 #1048 Cloudflare adapter shape). Runs on the laptop tick, probes the Supabase
-Management API for project `muse-dev`, and writes the document the aggregator
+Management API for project `muse-dev2`, and writes the document the aggregator
 prefers over `quota-view.md` prose on the Supabase card.
 
 ```
@@ -18,8 +18,8 @@ prefers over `quota-view.md` prose on the Supabase card.
   "source": "file-export/supabase",
   "status": "ok | partial",
   "measuredAt": "2026-10-29T15:55:00Z",
-  "project": "muse-dev",
-  "ref": "nltgxorqwxhgfzseiirt",
+  "project": "muse-dev2",
+  "ref": "keihfchslgjetkmnmzra",
   "metrics": [
     { "id": "db-size", "used": 1.154, "limit": 0.5, "unit": "gb",
       "source": "management-api:/database/query pg_database_size",
@@ -45,7 +45,7 @@ guessing around it.
 |---|---|---|
 | `db-size` | `POST /database/query` → `pg_database_size(current_database())` | 0.5 GB |
 | `egress` | **no endpoint reports bytes** — gap recorded, request counts as context | 5 GB |
-| `storage` | `GET /storage/buckets` (0 buckets on muse-dev → 0 GB) | 1 GB |
+| `storage` | `GET /storage/buckets` (0 buckets on muse-dev2 → 0 GB) | 1 GB |
 
 Limits are the Supabase Free-plan allowances recorded on 2026-10-29
 (supabase.com/pricing); the API measures usage, it does not publish the numbers.
