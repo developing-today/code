@@ -647,8 +647,10 @@ Phase B home for it, the managed fallback subset stays deliberately
 small (this audit confirms it is — the whole KEEP set fits in
 ~45 MB), and Turso's corpus/staging tiers are unchanged. The
 → Turso / → D1 rows above are design-level recommendations only;
-each gets its own design issue in this repo, and no data moves in
-this pass. The `agent.events` move in particular must be sequenced
+each gets its own design issue in this repo — #5690 (`agent`
+append streams), #5691 (`agent` mirror analytics), #5692
+(sheet-derived domains), #5693 (`ci.events`), #5695 (D1 config
+candidates, gated on §9.4 Q2) — and no data moves in this pass. The `agent.events` move in particular must be sequenced
 behind a consumer audit — at 54M cumulative index scans since
 2026-10-29 it is the heaviest-read table in the project — and
 not treated as a lift-and-shift.
