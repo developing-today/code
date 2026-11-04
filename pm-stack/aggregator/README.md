@@ -452,9 +452,26 @@ Everything defaults to **fixtures** and works with no configuration:
 | `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                           |
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                                     |
+| `PM_AGG_ACTIVITY_FILE`     | `./activity-ingestion.json`                       | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                       |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
+
+### Activity ingestion into the event stream (#3321)
+
+Watchdog breach episodes and Kaneo board changes are ingested into the
+#1739 event stream by `src/activity.ts`, with persisted per-source
+checkpoints: replaying a duplicate delivery is a no-op, and a restart
+resumes from the checkpoint instead of re-emitting. Known source
+outages are recorded as gap records (source + time range) and rendered
+on `/events` as holes in the history — never as complete coverage; a
+backfill/recovery pass flips a gap's status. Per-source coverage
+(supported / unsupported / historical ranges) is documented in
+`ACTIVITY_SOURCE_COVERAGE` in `src/activity.ts`, rendered on `/events`,
+and served at `/api/activity.json` together with the checkpoints and
+gaps. GitHub activity is explicitly **unsupported** until the #2072
+webhook/hot-list ingestion lands — #3321's boundary forbids a
+competing receiver.
 
 ## Capability provenance matrix (#1200)
 
