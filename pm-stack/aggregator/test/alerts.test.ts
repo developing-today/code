@@ -18,14 +18,18 @@ import {
   runAlertTick,
   sendTestPush,
   TEST_OBJECT_REF,
+  toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
-  type AlertsStore,
+  AlertsStore,
+  type AlertsStore as AlertsStoreType,
   type Incident,
   type PushSubscriptionRow,
 } from "../src/alerts.ts";
 import { isForeignSwScript, type PushOutcome, type PushTarget } from "../src/push.ts";
-import { sqlInt, sqlJson, sqlStr } from "../src/supabase.ts";
+import { renderAlerts } from "../src/render.ts";
+import type { Provenance } from "../src/model.ts";
+import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
 import type { Config } from "../src/config.ts";
 
 describe("sql literals", () => {
@@ -69,6 +73,40 @@ describe("class + quiet merges (design §1/§2)", () => {
       tz: "America/Chicago",
       enabled: true,
     });
+  });
+  test("out-of-range quiet times fall back per field (#3686)", () => {
+    // 99:99 and 24:60 keep the shape but are not real clock times —
+    // each malformed field independently retains its DEFAULT_QUIET value.
+    expect(mergeQuiet({ start: "99:99" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "24:60" }).end).toBe("07:00");
+    expect(mergeQuiet({ start: "24:00" }).start).toBe("23:00");
+    expect(mergeQuiet({ end: "12:60" }).end).toBe("07:00");
+    // Mixed: one bad field falls back while the good field is kept.
+    expect(mergeQuiet({ start: "99:99", end: "23:59" })).toEqual({
+      start: "23:00",
+      end: "23:59",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
+  test("boundary clock times 00:00 and 23:59 are accepted (#3686)", () => {
+    expect(mergeQuiet({ start: "00:00" }).start).toBe("00:00");
+    expect(mergeQuiet({ end: "23:59" }).end).toBe("23:59");
+    expect(mergeQuiet({ start: "00:00", end: "23:59" })).toEqual({
+      start: "00:00",
+      end: "23:59",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+  });
+  test("invalid quiet timezone falls back to the default", () => {
+    expect(mergeQuiet({ tz: "Not/AZone" }).tz).toBe("America/Chicago");
+  });
+  test("valid non-default timezone is preserved and used", () => {
+    const quiet = mergeQuiet({ tz: "UTC" });
+    expect(quiet.tz).toBe("UTC");
+    // 2026-01-15T04:00Z is 04:00 UTC (inside), but 22:00 CST (outside).
+    expect(inQuietHours(quiet, new Date("2026-01-15T04:00:00Z"))).toBe(true);
   });
   test("inQuietHours wraps midnight and honors the window edges", () => {
     const q = { start: "23:00", end: "07:00", tz: "America/Chicago" };
@@ -228,7 +266,60 @@ function alertTickStore(
     noteSubscriptionAlive: async () => {},
     noteSubscriptionGone: async () => "marked" as const,
   };
-  return { store: store as unknown as AlertsStore, calls };
+  return { store: store as unknown as AlertsStoreType, calls };
+}
+
+function pendingIncidentStore(rows: Incident[]): AlertsStore {
+  const db: SupabaseClient = {
+    ref: "test",
+    async query<T>(sql: string): Promise<T[]> {
+      const orderColumn = /order by (first_seen_at|delivered_at)/i.exec(sql)?.[1] as
+        | "first_seen_at"
+        | "delivered_at"
+        | undefined;
+      if (!orderColumn) throw new Error(`unexpected query: ${sql}`);
+      const isDeliveryQuery = /delivered_at is null/i.test(sql);
+      const limit = Number(/limit (\d+)/i.exec(sql)?.[1]);
+      const cursorMatch = /and \((first_seen_at|delivered_at), id\) (>|<=) \('([^']+)', '([^']+)'\)/i.exec(sql);
+      const candidates = rows
+        .filter((row) => (isDeliveryQuery ? row.delivered_at === null : row.delivered_at !== null))
+        .filter((row) => {
+          if (!cursorMatch) return true;
+          const [, column, operator, timestamp, id] = cursorMatch;
+          const value = column === "first_seen_at" ? row.first_seen_at : row.delivered_at!;
+          const comparison = value.localeCompare(timestamp) || row.id.localeCompare(id);
+          return operator === ">" ? comparison > 0 : comparison <= 0;
+        })
+        .sort((a, b) => {
+          const aValue = orderColumn === "first_seen_at" ? a.first_seen_at : a.delivered_at!;
+          const bValue = orderColumn === "first_seen_at" ? b.first_seen_at : b.delivered_at!;
+          return aValue.localeCompare(bValue) || a.id.localeCompare(b.id);
+        })
+        .slice(0, limit);
+      return candidates as T[];
+    },
+  };
+  const store = new AlertsStore(db);
+  Object.assign(store, {
+    listSubscriptions: async () => [
+      {
+        id: "sub-1",
+        endpoint: "https://push.example/sub-1",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+        user_agent: null,
+        created_at: "2026-11-01T00:00:00Z",
+        last_seen_at: "2026-11-01T00:00:00Z",
+        gone_count: 0,
+      },
+    ],
+    logSend: async () => {},
+    noteSubscriptionAlive: async () => {},
+    noteSubscriptionGone: async () => "marked" as const,
+  });
+  return store;
 }
 
 const failedSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
@@ -239,6 +330,49 @@ const failedSend = async (_target: PushTarget, _payload: unknown): Promise<PushO
 const successfulSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
   ok: true,
   status: 201,
+});
+
+describe("pending alert batch fairness", () => {
+  const incidents = (delivered: boolean) =>
+    Array.from({ length: 21 }, (_, index) => {
+      const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
+      return {
+        ...incident,
+        id: `00000000-0000-0000-0000-${String(index + 1).padStart(12, "0")}`,
+        first_seen_at: timestamp,
+        delivered_at: delivered ? timestamp : null,
+      };
+    });
+
+  test("a newer incident gets a delivery attempt after the oldest batch keeps failing", async () => {
+    const rows = incidents(false);
+    const store = pendingIncidentStore(rows);
+    const attempted: string[] = [];
+
+    const failingPush = async (_target: PushTarget, payload: unknown): Promise<PushOutcome> => {
+      attempted.push((payload as { objectRef: string }).objectRef);
+      return failedSend(_target, payload);
+    };
+    await runAlertTick(tickConfig, store, failingPush);
+    await runAlertTick(tickConfig, store, failingPush);
+
+    expect(attempted).toContain(`incident:${rows[20].id}`);
+  });
+
+  test("a newer incident gets an escalation attempt after the oldest batch keeps failing", async () => {
+    const rows = incidents(true);
+    const store = pendingIncidentStore(rows);
+    const attempted: string[] = [];
+
+    const failingPush = async (_target: PushTarget, payload: unknown): Promise<PushOutcome> => {
+      attempted.push((payload as { objectRef: string }).objectRef);
+      return failedSend(_target, payload);
+    };
+    await runAlertTick(tickConfig, store, failingPush);
+    await runAlertTick(tickConfig, store, failingPush);
+
+    expect(attempted).toContain(`incident:${rows[20].id}`);
+  });
 });
 
 describe("alert tick delivery state", () => {
@@ -353,5 +487,140 @@ describe("test push (Drew 2026-11-01: the /alerts test button)", () => {
     expect(summary).toEqual({ subscriptions: 1, sent: 0, gone: 1, errors: 0 });
     expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone" }]);
     expect(gone).toEqual([row.endpoint]);
+  });
+});
+
+describe("alerts page push panel (Drew 2026-11-01: load-order race + saved state)", () => {
+  const PROV: Provenance = {
+    board: "test",
+    roadmap: "test",
+    items: "test",
+    comments: "test",
+    quota: "test",
+    usage: "test",
+    attention: "test",
+    orchestration: "test",
+    dns: "test",
+    registry: "test",
+    aa: "test",
+  };
+  const subRow = (
+    quiet: PushSubscriptionRow["quiet"],
+    classes: Record<string, boolean> = { incident: true },
+  ): PushSubscriptionRow => ({
+    id: "11111111-2222-3333-4444-555555555555",
+    endpoint: "https://push.example.test/send/xyz",
+    p256dh: "p",
+    auth: "a",
+    classes,
+    quiet,
+    user_agent: "test",
+    created_at: "2026-11-01T00:00:00Z",
+    last_seen_at: "2026-11-01T12:00:00Z",
+    gone_count: 0,
+  });
+  const page = (subs: PushSubscriptionRow[]) =>
+    renderAlerts(
+      { available: true, incidents: [], events: [], subscriptions: subs, ackWindowMin: 15 },
+      PROV,
+      "VAPIDKEY",
+    );
+
+  test("stored quiet-hours OFF renders unchecked with the time inputs disabled (no client JS needed)", () => {
+    const html = page([subRow({ start: "22:30", end: "06:15", tz: "America/Chicago", enabled: false })]);
+    expect(html).toContain('id="push-quiet-enabled">');
+    expect(html).not.toContain('id="push-quiet-enabled" checked');
+    expect(html).toContain('id="push-quiet-start" value="22:30" disabled');
+    expect(html).toContain('id="push-quiet-end" value="06:15" disabled');
+  });
+
+  test("stored incident-class OFF renders its checkbox unchecked", () => {
+    const html = page([
+      subRow({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true }, { incident: false }),
+    ]);
+    expect(html).toContain('id="push-class-incident">');
+    expect(html).not.toContain('id="push-class-incident" checked');
+  });
+
+  test("stored quiet-hours ON renders checked with the stored window", () => {
+    const html = page([subRow({ start: "22:30", end: "06:15", tz: "America/Chicago", enabled: true })]);
+    expect(html).toContain('id="push-quiet-enabled" checked>');
+    expect(html).toContain('id="push-quiet-start" value="22:30">');
+  });
+
+  test("no subscriptions: defaults render (quiet on, 23:00-07:00)", () => {
+    const html = page([]);
+    expect(html).toContain('id="push-quiet-enabled" checked>');
+    expect(html).toContain('id="push-quiet-start" value="23:00"');
+  });
+
+  test("support is judged from the window, not from the deferred push client", () => {
+    const html = page([]);
+    expect(html).toContain("function pushSupportedHere()");
+    expect(html).toContain('"PushManager" in window');
+    expect(html).toContain("waitForPmPush");
+    expect(html).not.toContain("!window.pmPush || !window.pmPush.supported()");
+  });
+
+  test("prefs application falls back to the single stored subscription (endpoint rotation)", () => {
+    const html = page([subRow({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: false })]);
+    expect(html).toContain("SUBS.length === 1 ? SUBS[0] : null");
+  });
+
+  test("Save preferences confirms in place instead of reloading", () => {
+    const html = page([]);
+    expect(html).toContain("Saved \u2014 quiet hours off, no time-of-day limit.");
+    expect(html).not.toContain("updatePrefs(prefs()); location.reload()");
+  });
+});
+
+describe("push subscription redaction (#3693)", () => {
+  test("GET/POST serialization omits p256dh/auth values and keys, keeps non-secret fields", () => {
+    const sentinelP256dh = "SENTINEL-p256dh-4f8e2c9a";
+    const sentinelAuth = "SENTINEL-auth-7b1d5e3f";
+    const row: PushSubscriptionRow = {
+      id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      endpoint: "https://push.example.test/send/sentinel-3693",
+      p256dh: sentinelP256dh,
+      auth: sentinelAuth,
+      classes: { incident: true },
+      quiet: { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true },
+      user_agent: "sentinel-ua",
+      created_at: "2026-11-01T00:00:00Z",
+      last_seen_at: "2026-11-01T12:00:00Z",
+      gone_count: 0,
+    };
+    // Serialize exactly as the /api/push/subscriptions handlers do.
+    const getBody = JSON.stringify({ subscriptions: [row].map(toPublicSubscription) });
+    const postBody = JSON.stringify({ subscription: toPublicSubscription(row) });
+    const expectedFields = [
+      "id",
+      "endpoint",
+      "classes",
+      "quiet",
+      "user_agent",
+      "created_at",
+      "last_seen_at",
+      "gone_count",
+    ];
+    for (const body of [getBody, postBody]) {
+      expect(body).not.toContain(sentinelP256dh);
+      expect(body).not.toContain(sentinelAuth);
+      expect(body).not.toContain("p256dh");
+      // "auth" as a JSON key; the word also appears inside "user_agent"
+      // only as a substring, so match the quoted key.
+      expect(body).not.toContain('"auth"');
+      expect(body).toContain(row.endpoint);
+      expect(body).toContain("sentinel-ua");
+      expect(body).toContain(row.id);
+      const parsed = JSON.parse(body);
+      const subscription = parsed.subscriptions?.[0] ?? parsed.subscription;
+      expect(Object.keys(subscription).sort()).toEqual(expectedFields.sort());
+    }
+    // The verbatim rows the handlers used to return still carry the
+    // secrets — the old shape fails this redaction by construction.
+    const verbatim = JSON.stringify({ subscriptions: [row] });
+    expect(verbatim).toContain(sentinelP256dh);
+    expect(verbatim).toContain(sentinelAuth);
   });
 });

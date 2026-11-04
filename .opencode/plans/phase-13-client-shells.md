@@ -31,7 +31,7 @@ Exit tests for the whole phase, each measurable.
 ### The three layers (unchanged, restated once)
 
 1. **Transport envelope** — SSH channel bytes, iroh QUIC stream frames, WebSocket messages.
-2. **Session protocol** — `ClientFrame` / `ServerFrame` JSON (`world_session.rs:107`, `:264`). Identical under every transport.
+2. **Session protocol** — `ClientFrame` / `ServerFrame` JSON (the `ClientFrame` and `ServerFrame` enums in `pkgs/id/src/world_session/types.rs`). Identical under every transport.
 3. **Guest ABI** — the `plaza_*` Wasm exports (`sandbox.rs:1-8`), a server↔guest layer separate from the client protocol.
 
 Phase 13 works almost entirely in layers 1 and 2, and names layer 3 only as the F12.7 dependency beneath the contract.
@@ -47,7 +47,7 @@ A *shell* is anything that speaks layer 2 and renders a world. Four variants sha
 
 ### Capability-provider model
 
-Host capability providers are the hard-coded `CATALOG` (`world_caps.rs:55`) executed by a string `match`; F12.4 turns them into manifested, registered components. Phase 13 extends the *same* model to the client:
+Host capability providers are the hard-coded `CATALOG` (the `CATALOG` constant in `pkgs/id/src/world_caps.rs`) executed by a string `match`; F12.4 turns them into manifested, registered components. Phase 13 extends the *same* model to the client:
 
 - A client capability is a **named provider** with a manifest (name, version, argument schema, bounds, required scope, default ceiling), exactly like an F12.4 host provider.
 - It is **granted** by the world/admin and **ceilinged** per world, and each use carries an **audit entry** — the Phase 12 rule "no new authority path except through a named, ceilinged provider" applies unchanged to local resources (files, GPU, network beyond the p2p link).
@@ -56,7 +56,7 @@ Host capability providers are the hard-coded `CATALOG` (`world_caps.rs:55`) exec
 
 ### Data and sync touchpoints with the existing platform
 
-- **Events.** `Input`, `Resize`, `Paste` are client frames (`world_session.rs`); guest events (`Input` bytes, `System`) are the durable journaled kind (`sandbox.rs:677-685`). The contract must keep the two kinds distinct: ephemeral per-connection context (viewport, focus, partial-line typing) never enters the journal; committed program events do. This is the same separation Phase 9 (P9.2) established and F11.11's projection enforces.
+- **Events.** `Input`, `Resize`, `Paste` are client frames (the `ClientFrame` enum in `pkgs/id/src/world_session/types.rs`); guest events (`Input` bytes, `System`) are the durable journaled kind (`sandbox.rs:677-685`). The contract must keep the two kinds distinct: ephemeral per-connection context (viewport, focus, partial-line typing) never enters the journal; committed program events do. This is the same separation Phase 9 (P9.2) established and F11.11's projection enforces.
 - **Worlds.** Many worlds already live in one process through `WorldHub` (lazy open, single-flight restore, idle eviction, bounds — `world_hub.rs`). Multi-server/multi-client (F13.8) is a *client* affordance on top of this, not a new server model: a client names a world per session, and each session holds a lease.
 - **Providers.** Phase 13 client providers depend on the F12.4 registry for the manifest shape, and on F12.6 audit for the audit-entry contract. Without those two, client providers would reinvent manifesting and auditing on the client; with them, the client reuses the same types.
 - **Frames vs journal.** Frames are the ephemeral transport; the journal is the durable record. F13.2 (SSH transport) must transport frames without touching the journal; F13.4/5 (presentation) may only change how a *view* is rendered, never what is recorded.

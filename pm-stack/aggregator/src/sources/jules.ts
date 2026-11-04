@@ -20,9 +20,49 @@ export interface JulesItem {
 }
 
 export interface JulesReviewState {
-  items?: Record<string, JulesItem>;
+  items?: unknown;
   last_run?: string;
   [key: string]: unknown;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validJulesEntries(state: unknown): {
+  entries: [string, JulesItem][];
+  droppedCount: number;
+} {
+  if (!isPlainObject(state) || !isPlainObject(state.items)) {
+    return { entries: [], droppedCount: 0 };
+  }
+
+  const entries: [string, JulesItem][] = [];
+  let droppedCount = 0;
+  for (const [id, value] of Object.entries(state.items)) {
+    if (!isPlainObject(value)) {
+      droppedCount += 1;
+      continue;
+    }
+    entries.push([
+      id,
+      {
+        state: typeof value.state === "string" ? value.state : undefined,
+        title: typeof value.title === "string" ? value.title : undefined,
+        source: typeof value.source === "string" ? value.source : undefined,
+        created: typeof value.created === "string" ? value.created : undefined,
+        last_action: typeof value.last_action === "string" ? value.last_action : undefined,
+        last_action_at: typeof value.last_action_at === "string" ? value.last_action_at : undefined,
+        note: typeof value.note === "string" ? value.note : undefined,
+      },
+    ]);
+  }
+  return { entries, droppedCount };
+}
+
+/** Number of malformed per-session values in the keeper's items object. */
+export function droppedJulesItemCount(state: JulesReviewState): number {
+  return validJulesEntries(state).droppedCount;
 }
 
 function repoOf(item: JulesItem): string | undefined {
@@ -40,7 +80,7 @@ function askedQuestion(note: string | undefined): string | null {
 /** Map the keeper's tracked Jules sessions to feed entries. */
 export function mapJulesItems(state: JulesReviewState): SessionFeedEntry[] {
   const out: SessionFeedEntry[] = [];
-  for (const [id, item] of Object.entries(state.items ?? {})) {
+  for (const [id, item] of validJulesEntries(state).entries) {
     const entry: SessionFeedEntry = {
       sessionId: id,
       source: "jules",
@@ -100,14 +140,16 @@ function hhmmOf(iso: string | undefined): string | null {
  * to the last run rather than attributing another run's numbers to it.
  */
 export function julesSummary(state: JulesReviewState): JulesSummary {
+  const objectState = isPlainObject(state) ? state : {};
+  const lastRun = typeof objectState.last_run === "string" ? objectState.last_run : undefined;
   const summary: JulesSummary = {
-    at: state.last_run ?? null,
-    tracked: Object.keys(state.items ?? {}).length,
+    at: lastRun ?? null,
+    tracked: validJulesEntries(state).entries.length,
   };
-  const target = hhmmOf(state.last_run);
+  const target = hhmmOf(lastRun);
   let bestText = "";
   if (target != null) {
-    for (const [k, v] of Object.entries(state)) {
+    for (const [k, v] of Object.entries(objectState)) {
       const m = /^jules_note_(\d+)$/.exec(k);
       if (m && typeof v === "string" && m[1].padStart(4, "0") === target) {
         bestText = v;

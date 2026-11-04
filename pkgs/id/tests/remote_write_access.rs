@@ -38,7 +38,7 @@ async fn client() -> Client {
 
 async fn names_on(server: &LocalNode) -> Vec<String> {
     match server.request(MetaRequest::List).await {
-        MetaResponse::List { items } => items.into_iter().map(|(_, n)| n).collect(),
+        MetaResponse::List { items } => items.into_iter().map(|e| e.name).collect(),
         other => panic!("{other:?}"),
     }
 }
@@ -157,7 +157,7 @@ async fn reads_stay_open_to_unlisted_nodes() {
     match request_over(&conn, &MetaRequest::List).await.unwrap() {
         MetaResponse::List { items } => {
             assert_eq!(items.len(), 1);
-            assert_eq!(items[0].1, "pub.txt");
+            assert_eq!(items[0].name, "pub.txt");
         }
         other => panic!("{other:?}"),
     }

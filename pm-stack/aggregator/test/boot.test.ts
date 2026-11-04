@@ -159,9 +159,31 @@ describe("server boots from fixtures", () => {
     expect(week.includes("Next 3 days")).toBe(true);
   });
 
+  test("queue page, fragment, and API expose the same four lists (#1160)", async () => {
+    const shell = await (await fetch(`http://127.0.0.1:${port}/queue`)).text();
+    expect(shell).toContain("Queue visibility");
+    expect(shell).toContain("/frag/queue");
+    const full = await (await fetch(`http://127.0.0.1:${port}/queue?full=1`)).text();
+    for (const heading of ["In progress", "Blocked", "Done recently", "Next up"]) expect(full).toContain(heading);
+    const fragment = await (await fetch(`http://127.0.0.1:${port}/frag/queue`)).text();
+    expect(fragment).toContain("datastar-patch-elements");
+    expect(fragment).toContain('id="queue-main"');
+    const api = (await (await fetch(`http://127.0.0.1:${port}/api/queue.json`)).json()) as {
+      inProgress: unknown[];
+      blocked: unknown[];
+      doneRecently: unknown[];
+      nextUp: unknown[];
+    };
+    for (const key of ["inProgress", "blocked", "doneRecently", "nextUp"] as const)
+      expect(Array.isArray(api[key])).toBe(true);
+  });
+
   test("machine-first JSON endpoints", async () => {
-    const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as { board: unknown[] };
+    const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
+      board: Record<string, unknown>[];
+    };
     expect(board.board.length).toBeGreaterThan(0);
+    expect(board.board.every((item) => !("notes" in item))).toBe(true);
     const quota = (await (await fetch(`http://127.0.0.1:${port}/api/quota.json`)).json()) as { pools: unknown[] };
     expect(quota.pools.length).toBeGreaterThan(0);
     const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as unknown[];
@@ -186,6 +208,8 @@ describe("server boots from fixtures", () => {
     const id = encodeURIComponent(board.board[0].id);
     const res = await fetch(`http://127.0.0.1:${port}/item/${id}`);
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Linked issues / PRs");
+    const html = await res.text();
+    expect(html).toContain("Linked issues / PRs");
+    expect(html).not.toContain("Planning notes");
   });
 });
