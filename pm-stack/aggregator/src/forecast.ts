@@ -225,6 +225,13 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
       .map((i) => i.ref);
   const childSet = new Set(childRefs);
   const children = latest.items.filter((i) => childSet.has(i.ref) && i.kind !== "pr");
+  // Explicitly requested children absent from the latest complete
+  // cutoff are unknown, not complete: a complete cutoff establishes
+  // coverage of the fetched pool, not the presence of every requested
+  // ref. They surface as a scope limitation below and block the
+  // nothing-left branch.
+  const missingRefs =
+    input.childRefs === undefined ? [] : childRefs.filter((ref) => !children.some((i) => i.ref === ref));
   const completedUnits = children.filter((i) => i.state !== "open").length;
   // A reopened child is open at the latest cutoff: it is remaining
   // work, not a completion, whatever earlier weeks observed.
@@ -240,6 +247,11 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
       byEffort[item.effort] = (byEffort[item.effort] ?? 0) + 1;
       if (item.effort === "l" || item.effort === "xl") openEnded++;
     }
+  }
+  if (missingRefs.length > 0) {
+    limitations.push(
+      `${missingRefs.length} explicitly requested child(ren) absent from the latest complete cutoff; state unknown: ${missingRefs.join(", ")}`,
+    );
   }
   if (unsized > 0) limitations.push(`${unsized} remaining unit(s) are unsized; no size was inferred`);
   if (openEnded > 0) {
@@ -278,6 +290,17 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
     confidence: "unavailable",
     limitations,
   };
+
+  if (remainingUnits === 0 && missingRefs.length > 0) {
+    // Every observed child is complete, but requested children are
+    // unobserved: the subject cannot be declared complete while their
+    // state is unknown, and no completion date is defensible.
+    result.status = "not_enough_history";
+    limitations.push(
+      "explicitly requested child(ren) are unobserved; the subject is not declared complete while their state is unknown",
+    );
+    return result;
+  }
 
   if (remainingUnits === 0 && completedUnits > 0) {
     // Nothing left: the ETA is the as-of instant itself.
@@ -430,6 +453,12 @@ export function deriveStallRisk(input: StallRiskInput): StallRisk {
   const complete = completeCutoffs(scopedCutoffs);
   const latest = complete[complete.length - 1];
   const asOf = input.asOf ?? latest?.cutoffAt ?? new Date(0).toISOString();
+  // The blocked-edge helper measures age through the last cutoff it is
+  // given. Bound its history to the effective asOf: when asOf is
+  // omitted, scopedCutoffs can contain later, unavailable cutoffs, and
+  // observations from them must not age an edge inside a result dated
+  // at the latest complete cutoff.
+  const boundedCutoffs = scopedCutoffs.filter((c) => atOrBefore(c.cutoffAt, asOf));
   const signals: StallSignal[] = [];
 
   // Blocked edge age: lower bound from first observation of the
@@ -448,7 +477,7 @@ export function deriveStallRisk(input: StallRiskInput): StallRisk {
         resolvedBlockers++;
         continue;
       }
-      const first = blockerFirstObserved(scopedCutoffs, input.ref, blocker);
+      const first = blockerFirstObserved(boundedCutoffs, input.ref, blocker);
       if (first && first.lowerBoundAgeDays >= 7) {
         fired = {
           code: "blocked_edge_age",

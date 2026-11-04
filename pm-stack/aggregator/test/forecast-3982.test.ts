@@ -67,6 +67,30 @@ describe("deriveEpicEta", () => {
     expect(eta.modelVersion).toBe(FORECAST_MODEL_VERSION);
   });
 
+  test("explicit childRefs absent from the latest cutoff are unknown, not complete", () => {
+    // Requested child #2 is never observed in any cutoff; requested
+    // child #1 is closed throughout. The epic must not be declared
+    // complete (no p50 = p80 = asOf) while #2's state is unknown.
+    const cutoffs = history(1, [0]);
+    const eta = deriveEpicEta({
+      subjectRef: EPIC,
+      cutoffs,
+      childRefs: [`${REPO}#1`, `${REPO}#2`],
+    });
+    expect(eta.remainingUnits).toBe(0);
+    expect(eta.completedUnits).toBe(1);
+    expect(eta.status).toBe("not_enough_history");
+    expect(eta.p50).toBeNull();
+    expect(eta.p80).toBeNull();
+    expect(eta.limitations.join(" ")).toContain("state unknown");
+    expect(eta.limitations.join(" ")).toContain(`${REPO}#2`);
+    // Control: with only the observed child requested, nothing-left
+    // still returns the as-of instant itself.
+    const complete = deriveEpicEta({ subjectRef: EPIC, cutoffs, childRefs: [`${REPO}#1`] });
+    expect(complete.p50).toBe(complete.asOf);
+    expect(complete.p80).toBe(complete.asOf);
+  });
+
   test("incomplete cutoffs are excluded, never read as zero weeks", () => {
     const cutoffs = history(6, [null, null, null, null, null, null]).map((c, i) =>
       i % 2 === 1 ? { ...c, coverage: { ...c.coverage, complete: false, unavailable: true } } : c,
@@ -310,6 +334,23 @@ describe("deriveStallRisk", () => {
     const signal = risk.signals.find((s) => s.code === "blocked_edge_age")!;
     expect(signal.contribution).toBe(0);
     expect(signal.detail).toContain("resolved");
+    expect(risk.score).toBe(0);
+  });
+
+  test("default asOf bounds blocker age to the latest complete cutoff", () => {
+    // The edge is first observed at the complete Sep 7 cutoff (W[0]);
+    // a later UNAVAILABLE Sep 14 cutoff (W[1]) also lists it. With no
+    // explicit asOf the result is dated at the latest complete cutoff
+    // (Sep 7), where the edge's lower-bound age is 0 days: the later
+    // unavailable observation must not fire blocked-edge points.
+    const cutoffs = [
+      cutoff(W[0]!, [item(7, { blockedBy: [BLOCKER] })]),
+      cutoff(W[1]!, [item(7, { blockedBy: [BLOCKER] })], false),
+    ];
+    const risk = deriveStallRisk({ ref: REF, cutoffs });
+    expect(risk.asOf).toBe(W[0]!);
+    const signal = risk.signals.find((s) => s.code === "blocked_edge_age")!;
+    expect(signal.contribution).toBe(0);
     expect(risk.score).toBe(0);
   });
 
