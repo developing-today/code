@@ -403,14 +403,29 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
     }
 }
 
+fn is_help_flag(arg: &str) -> bool {
+    matches!(arg, "--help" | "-h" | "help")
+}
+
+/// Does this domain invocation ask for the domain help? The plain form
+/// puts the flag first (`fleet queue --help`). The `serve` domain's
+/// first argument is a role, so its help flag sits one position later
+/// (`fleet serve queue-broker --help`) — and the argv0 aliases
+/// (`queue-broker --help`) land in exactly that shape after the implied
+/// arg is prepended. The broker entry points take no arguments, so a
+/// help flag they never see would otherwise start the daemon (#5488).
+fn wants_domain_help(d: &Domain, args: &[String]) -> bool {
+    if args.first().is_some_and(|a| is_help_flag(a)) {
+        return true;
+    }
+    d.name == "serve" && args.get(1).is_some_and(|a| is_help_flag(a))
+}
+
 /// Run one domain invocation (also the argv0-alias landing pad).
 fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) -> i32 {
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
-    if matches!(
-        args.first().map(|s| s.as_str()),
-        Some("--help") | Some("-h") | Some("help")
-    ) {
+    if wants_domain_help(d, args) {
         print_domain_help(surface, d);
         return EXIT_OK;
     }
@@ -568,4 +583,39 @@ fn _platform_linkage() {
     let _ = std::mem::size_of::<fleet_proxy_proto::Hello>();
     #[cfg(feature = "queue")]
     let _ = std::mem::size_of::<fleet_secrets::Resolver>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn help_flag_after_a_serve_role_asks_for_domain_help() {
+        let serve = domain("serve").expect("serve domain exists");
+        for flag in ["--help", "-h", "help"] {
+            assert!(wants_domain_help(serve, &args(&["queue-broker", flag])));
+            assert!(wants_domain_help(serve, &args(&["secrets-broker", flag])));
+            assert!(wants_domain_help(serve, &args(&["search", flag])));
+        }
+        // A bare role still starts the daemon; extra args after the
+        // flag position are the role's own business.
+        assert!(!wants_domain_help(serve, &args(&["queue-broker"])));
+        assert!(!wants_domain_help(
+            serve,
+            &args(&["queue-broker", "--bind", "--help"])
+        ));
+    }
+
+    #[test]
+    fn help_flag_positions_for_other_domains_are_unchanged() {
+        let queue = domain("queue").expect("queue domain exists");
+        assert!(wants_domain_help(queue, &args(&["--help"])));
+        // A subcommand's own --help belongs to the domain's parser.
+        assert!(!wants_domain_help(queue, &args(&["enqueue", "--help"])));
+        assert!(!wants_domain_help(queue, &args(&[])));
+    }
 }

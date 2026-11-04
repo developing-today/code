@@ -21,17 +21,6 @@ name: mcpx test
 # vendorHash repair.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".github/workflows/mcpx-test.yml"
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".github/workflows/mcpx-test.yml"
   workflow_dispatch:
 
 concurrency:
