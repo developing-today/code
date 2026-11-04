@@ -153,7 +153,17 @@ fn parse_fixed_offset(value: &str) -> Option<FixedOffset> {
         b'-' => (-1, &value[1..]),
         _ => return None,
     };
-    let digits: String = rest.chars().filter(|c| *c != ':').collect();
+    // Accept only `HHMM` or `HH:MM`: a colon is valid solely as the single
+    // separator between the hour and minute pairs (#5369). Stripping every
+    // colon first let malformed shapes such as `+05::30` and `+0:5:30`
+    // silently resolve as `+05:30`.
+    let digits: String = if rest.len() == 4 {
+        rest.to_string()
+    } else if rest.len() == 5 && rest.as_bytes()[2] == b':' {
+        format!("{}{}", &rest[..2], &rest[3..])
+    } else {
+        return None;
+    };
     if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -377,6 +387,25 @@ mod tests {
             compact.zone.format_timestamp(probe_time()),
             "2026-11-04T00:00:00.123456789-04:00"
         );
+    }
+
+    #[test]
+    fn test_structured_logging_malformed_fixed_offset_falls_back_to_utc() {
+        // #5369: only signed `HHMM` or `HH:MM` are valid fixed offsets.
+        // Doubled, shifted, or trailing colons (and out-of-range parts)
+        // are malformed and must fall back to UTC with the flag set.
+        for spec in [
+            "+05::30", "+0:5:30", "+0530:", "+05:300", "+5:30", "+24:00", "+05:60",
+        ] {
+            let zone = resolve_zone(Some(spec));
+            assert!(zone.fell_back_to_utc, "spec {spec:?}");
+            assert_eq!(zone.zone, LogZone::Utc, "spec {spec:?}");
+        }
+        // Valid controls keep resolving without the fallback flag.
+        for spec in ["+05:30", "-0400", "+0000"] {
+            let zone = resolve_zone(Some(spec));
+            assert!(!zone.fell_back_to_utc, "spec {spec:?}");
+        }
     }
 
     #[test]
