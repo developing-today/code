@@ -146,6 +146,7 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
     // symmetric with no save-side mirror needed.
     let protected = escape_table_code_span_pipes(&protected);
     let root = parse_document(&arena, &protected, &options);
+    preserve_github_alert_marker_breaks(root);
     let mut doc = convert_node(root, &[]);
     if let Some(token) = &newline_token {
         restore_attr_newlines(&mut doc, &token);
@@ -160,6 +161,90 @@ fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value
         preserve_unreferenced_footnote_definitions(&mut doc, &protected, newline_token.as_deref());
     }
     doc
+}
+
+/// Keep the line break after an exact GitHub alert marker in a blockquote.
+/// The editor normally turns CommonMark soft breaks into spaces, which would
+/// make an alert marker followed by its body indistinguishable from ordinary
+/// text such as `[!NOTE] extra words` when the document is saved again.
+///
+/// Only a blockquote whose FIRST child is a paragraph can open with an
+/// alert marker: when the first child is another block (a nested quote, a
+/// list, a fence), GitHub does not treat a later `[!NOTE]` line as an
+/// alert, so promoting its break would change authored plain text
+/// (Codex P2 on the first cut).
+fn preserve_github_alert_marker_breaks<'a>(node: &'a AstNode<'a>) {
+    if matches!(&node.data.borrow().value, NodeValue::BlockQuote) {
+        if let Some(first_block) = node.children().next()
+            && matches!(&first_block.data.borrow().value, NodeValue::Paragraph)
+        {
+            let mut first_line = String::new();
+            for child in first_block.children() {
+                let (text, is_break, is_other) = {
+                    let data = child.data.borrow();
+                    match &data.value {
+                        NodeValue::Text(text) => (Some(text.to_string()), false, false),
+                        NodeValue::SoftBreak | NodeValue::LineBreak => (None, true, false),
+                        _ => (None, false, true),
+                    }
+                };
+
+                if let Some(text) = text {
+                    first_line.push_str(&text);
+                } else if is_break {
+                    if is_github_alert_marker(&first_line) {
+                        child.data.borrow_mut().value = NodeValue::LineBreak;
+                    }
+                    break;
+                } else if is_other {
+                    break;
+                }
+            }
+        }
+    }
+
+    for child in node.children() {
+        preserve_github_alert_marker_breaks(child);
+    }
+}
+
+fn is_github_alert_marker(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[!NOTE]" | "[!TIP]" | "[!IMPORTANT]" | "[!WARNING]" | "[!CAUTION]"
+    )
+}
+
+/// Split a line's leading blockquote markers from its content: returns the
+/// marker depth and the remainder. Each level is one `>` plus at most one
+/// following space or tab, matching how comrak renders nested quotes.
+fn split_quote_prefix(line: &str) -> (usize, &str) {
+    let mut rest = line;
+    let mut depth = 0;
+    while let Some(after) = rest.strip_prefix('>') {
+        depth += 1;
+        rest = after
+            .strip_prefix(' ')
+            .or_else(|| after.strip_prefix('\t'))
+            .unwrap_or(after);
+    }
+    (depth, rest)
+}
+
+/// The content of `line` as seen by the container that opened at
+/// `depth` quote levels: exactly that many markers are stripped and any
+/// deeper ones stay in place. Returns None when the line is outside that
+/// container, which ends a fence or HTML block opened inside it.
+fn strip_quote_depth(line: &str, depth: usize) -> Option<&str> {
+    let mut rest = line;
+    for _ in 0..depth {
+        let after = rest.strip_prefix('>')?;
+        rest = after
+            .strip_prefix(' ')
+            .or_else(|| after.strip_prefix('\t'))
+            .unwrap_or(after);
+    }
+    Some(rest)
 }
 
 /// Fence tracking for the source scans below: a fence opens with a
@@ -4081,7 +4166,162 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for token in fence_tokens {
         output = strip_fence_placeholder(&output, &token);
     }
-    Ok(output)
+    Ok(restore_github_alert_markers(&output))
+}
+
+/// Undo the CommonMark renderer's escaping of a GitHub alert marker when
+/// the marker is the first content of its blockquote. Markers elsewhere
+/// (for example, followed by words on the same line) remain ordinary
+/// escaped text. GitHub requires the marker to be the first thing in the
+/// blockquote.
+///
+/// The scan skips fenced code blocks and raw HTML blocks: those are
+/// literal content, so a line like `> \[\!NOTE\]` inside one is authored
+/// text, not a renderer-escaped marker, and rewriting it would silently
+/// change the code (Codex P2 on the first cut).
+fn restore_github_alert_markers(markdown: &str) -> String {
+    let mut output = String::with_capacity(markdown.len());
+    let mut quote_has_content = [false; 64];
+    let mut fence = FenceTracker::default();
+    let mut fence_depth: Option<usize> = None;
+    let mut html = HtmlBlockTracker::default();
+    let mut html_depth: Option<usize> = None;
+    let mut at_block_start = true;
+
+    for line in markdown.split_inclusive('\n') {
+        let content_start = line.trim_start_matches(' ');
+        let leading_spaces = line.len() - content_start.len();
+        let (depth, rest) = split_quote_prefix(content_start);
+
+        // Four columns of indentation is code, and the markers below only
+        // apply inside a blockquote. A quote nested deeper than the table
+        // is left untouched rather than risking an out-of-range walk.
+        if leading_spaces > 3 || depth >= quote_has_content.len() {
+            quote_has_content.fill(false);
+            fence.reset();
+            fence_depth = None;
+            html.reset();
+            html_depth = None;
+            output.push_str(line);
+            at_block_start = leading_spaces > 3 || rest.trim().is_empty();
+            continue;
+        }
+
+        // An open fence or HTML block owns every following line of its
+        // container, including lines that look like quote markers: that
+        // is exactly the literal-code case above.
+        if let Some(opened_at) = fence_depth {
+            match strip_quote_depth(content_start, opened_at) {
+                Some(body) => {
+                    fence.feed(fence_feed_line(body));
+                    if !fence.in_fence() {
+                        fence_depth = None;
+                    }
+                    output.push_str(line);
+                    at_block_start = false;
+                    continue;
+                }
+                None => {
+                    fence.reset();
+                    fence_depth = None;
+                }
+            }
+        }
+        if let Some(opened_at) = html_depth {
+            match strip_quote_depth(content_start, opened_at) {
+                Some(body) => {
+                    html.feed(body, at_block_start);
+                    if !html.in_html() {
+                        html_depth = None;
+                    }
+                    output.push_str(line);
+                    at_block_start = false;
+                    continue;
+                }
+                None => {
+                    html.reset();
+                    html_depth = None;
+                }
+            }
+        }
+
+        // A fence or HTML block opening on this line makes its interior
+        // literal from here on.
+        if fence.feed(fence_feed_line(rest)) {
+            fence_depth = Some(depth);
+            output.push_str(line);
+            at_block_start = false;
+            continue;
+        }
+        if html.feed(rest, at_block_start) {
+            html_depth = Some(depth);
+            output.push_str(line);
+            at_block_start = false;
+            continue;
+        }
+
+        // Nothing outside a blockquote can open an alert, and a line
+        // outside one ends every quote that was open.
+        if depth == 0 {
+            quote_has_content.fill(false);
+            output.push_str(line);
+            at_block_start = rest.trim().is_empty() || starts_new_block(rest);
+            continue;
+        }
+
+        for seen in quote_has_content.iter_mut().skip(depth + 1) {
+            *seen = false;
+        }
+
+        let trimmed = rest.trim();
+        // Comrak emits a hard break with a trailing backslash. Ignore that
+        // renderer syntax while recognizing the marker; the suffix is kept
+        // intact when replacing the escaped marker below.
+        let hardbreak = trimmed.ends_with('\\');
+        let marker_token = trimmed.strip_suffix('\\').unwrap_or(trimmed);
+        let marker = match marker_token {
+            r"\[\!NOTE\]" => Some("[!NOTE]"),
+            r"\[\!TIP\]" => Some("[!TIP]"),
+            r"\[\!IMPORTANT\]" => Some("[!IMPORTANT]"),
+            r"\[\!WARNING\]" => Some("[!WARNING]"),
+            r"\[\!CAUTION\]" => Some("[!CAUTION]"),
+            _ => None,
+        };
+        // A marker only opens an alert when nothing above it in the
+        // quote -- at any depth -- has content yet. Marking ancestors
+        // when a deeper line carries content keeps the marker of a
+        // later paragraph in an outer quote escaped (Codex P2).
+        let quote_is_empty = depth > 0 && !quote_has_content[..=depth].iter().any(|seen| *seen);
+        if quote_is_empty
+            && !rest.starts_with(' ')
+            && !rest.starts_with('\t')
+            && let Some(marker) = marker
+        {
+            let marker_start = line.find(marker_token).unwrap_or(0);
+            let marker_end = marker_start + marker_token.len();
+            output.push_str(&line[..marker_start]);
+            output.push_str(marker);
+            let suffix = &line[marker_end..];
+            output.push_str(if hardbreak {
+                suffix.strip_prefix('\\').unwrap_or(suffix)
+            } else {
+                suffix
+            });
+            for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
+                *seen = true;
+            }
+        } else {
+            output.push_str(line);
+            if !trimmed.is_empty() {
+                for seen in quote_has_content.iter_mut().take(depth + 1).skip(1) {
+                    *seen = true;
+                }
+            }
+        }
+        at_block_start = trimmed.is_empty() || starts_new_block(rest);
+    }
+
+    output
 }
 
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
@@ -6090,6 +6330,74 @@ mod tests {
         let first = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
         let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
         (first, second)
+    }
+
+    #[test]
+    fn test_github_alert_markers_roundtrip_fixpoint() {
+        for marker in ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"] {
+            let original = format!("> [!{marker}]\n> First paragraph.\n>\n> Second paragraph.\n");
+            let (first, second) = two_saves(&original);
+
+            assert!(
+                first.starts_with(&format!("> [!{marker}]\n")),
+                "alert marker must remain unescaped: {first:?}"
+            );
+            assert!(first.contains("First paragraph."), "{first:?}");
+            assert!(first.contains("Second paragraph."), "{first:?}");
+            assert_eq!(first, second, "alert must be a save fixpoint: {marker}");
+        }
+    }
+
+    #[test]
+    fn test_non_alert_blockquote_markers_remain_plain() {
+        for (original, escaped) in [
+            (
+                "> [!NOTE] extra words\n> Body.\n",
+                r"\[\!NOTE\] extra words",
+            ),
+            ("> [see appendix]\n", r"\[see appendix\]"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(escaped),
+                "non-alert text should keep normal escaping: {first:?}"
+            );
+            assert_eq!(first, second, "non-alert blockquote must be stable");
+        }
+    }
+
+    #[test]
+    fn test_alert_marker_text_inside_code_fence_is_untouched() {
+        // A literal `> \[\!NOTE\]` line inside a fenced block is code, not
+        // a renderer-escaped marker: rewriting it would change the code
+        // (Codex P2).
+        for original in [
+            "```\n> \\[\\!NOTE\\]\n```\n",
+            "> ```\n> > \\[\\!NOTE\\]\n> ```\n",
+            "~~~~\n> \\[\\!NOTE\\]\n~~~~\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(r"> \[\!NOTE\]"),
+                "code fence interior must stay verbatim: {first:?}"
+            );
+            assert_eq!(first, second, "code fence must be a save fixpoint");
+        }
+    }
+
+    #[test]
+    fn test_nested_first_block_does_not_make_alert() {
+        // The outer quote starts with a nested quote, so its later
+        // `[!NOTE]` line is ordinary escaped text even with a hard break
+        // (Codex P2): unescaping it would make the text look like an alert
+        // marker on reload and lose the author's break syntax.
+        let original = "> > Nested.\n>\n> \\[\\!NOTE\\]\\\n> Body.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains(r"\[\!NOTE\]"),
+            "marker in a non-leading paragraph must stay escaped: {first:?}"
+        );
+        assert_eq!(first, second, "nested-quote text must be a save fixpoint");
     }
 
     #[test]
