@@ -9,7 +9,7 @@
 export const REPOS = [
   "developing-today/code",
   "developing-today/opencode",
-  "developing-today/openchamber",
+  "developing-today-forks/openchamber",
   "dezren39/nix",
 ] as const;
 

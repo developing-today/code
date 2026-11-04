@@ -32,7 +32,7 @@ describe("fleet config", () => {
     expect([...FLEET_REPOS]).toEqual([
       "developing-today/code",
       "developing-today/opencode",
-      "developing-today/openchamber",
+      "developing-today-forks/openchamber",
       "dezren39/nix",
       "developing-today/zettel",
       "dezren39/dezren39",

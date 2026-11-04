@@ -29,7 +29,7 @@ SECTIONS = ("epics", "roadmaps", "projects", "stalled-prs", "loose-ends")
 FLEET_REPOS = (
     "developing-today/code",
     "developing-today/opencode",
-    "developing-today/openchamber",
+    "developing-today-forks/openchamber",
     "developing-today/nix",
 )
 

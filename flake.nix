@@ -274,7 +274,7 @@ rec {
     # OpenChamber's own lock file, so the modules and the packages
     # they manage always come from the same, upstream-paired pins.
     openchamber = {
-      url = "github:developing-today/openchamber";
+      url = "github:developing-today-forks/openchamber";
     };
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer
     # intelligence source on the laptop). Home Manager module + overlay;

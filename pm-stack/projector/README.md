@@ -57,7 +57,7 @@ locally against a SQLite file (`file:` URL) or remotely via
 
 `PM_REPOS` is a comma-separated allow-list of `owner/repo` names for intake and
 reconcile (e.g. `developing-today/code,developing-today/opencode,
-developing-today/openchamber,dezren39/nix`).
+developing-today-forks/openchamber,dezren39/nix`).
 
 ## Run it locally
 
