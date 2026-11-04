@@ -13,7 +13,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
 /// The strict, version-one description of one unpacked app folder.
@@ -133,33 +133,19 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             !cli.commands.is_empty(),
             "interfaces.cli.commands must list at least one command"
         );
-        ensure!(
-            cli.commands
-                .iter()
-                .all(|command| !command.trim().is_empty()),
-            "interfaces.cli.commands must not contain empty command names"
-        );
+        ensure_distinct_entries(&cli.commands, "interfaces.cli.commands")?;
     }
     if let Some(capabilities) = &manifest.capabilities {
-        ensure!(
-            capabilities
-                .request
-                .iter()
-                .all(|capability| !capability.trim().is_empty()),
-            "capabilities.request must not contain empty entries"
-        );
-        // Duplicate requests are rejected, not deduplicated: the manifest is
-        // the strict record of what an app asks for, and a repeated entry is
-        // an authoring mistake the gate should name rather than silently
-        // absorb. (Rule pinned by rejects_blank_and_duplicate_capability_requests.)
-        let mut seen = std::collections::HashSet::new();
-        ensure!(
-            capabilities
-                .request
-                .iter()
-                .all(|capability| seen.insert(capability)),
-            "capabilities.request must not contain duplicates"
-        );
+        ensure_distinct_entries(&capabilities.request, "capabilities.request")?;
+    }
+    if let Some(resources) = &manifest.resources {
+        ensure_distinct_entries(&resources.files, "resources.files")?;
+        for entry in &resources.files {
+            ensure!(
+                is_confined_relative_path(entry),
+                "resources.files entry {entry:?} must be a relative path inside the app folder"
+            );
+        }
     }
     if let Some(program) = &manifest.program {
         ensure!(
@@ -194,9 +180,15 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
             "interfaces.web.mode must be adapter or direct"
         );
         ensure!(
-            web.route.starts_with('/'),
-            "interfaces.web.route must start with /"
+            is_safe_web_path(&web.route),
+            "interfaces.web.route must be an absolute path without traversal segments, whitespace, ? or #"
         );
+        if let Some(socket) = &web.socket {
+            ensure!(
+                is_safe_web_path(socket),
+                "interfaces.web.socket must be an absolute path without traversal segments, whitespace, ? or #"
+            );
+        }
     }
     Ok(manifest)
 }
@@ -296,6 +288,44 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
                         continue;
                     }
                 }
+                if let Some(web) = manifest.interfaces.web.as_ref() {
+                    if let Some(existing) = discovery.apps.iter().find(|app| {
+                        app.manifest
+                            .interfaces
+                            .web
+                            .as_ref()
+                            .map(|existing| existing.route.as_str())
+                            == Some(web.route.as_str())
+                    }) {
+                        discovery.errors.push(format!(
+                            "{}: app {:?} duplicates interfaces.web.route {:?} already registered by app {:?}; app not registered",
+                            manifest_path.display(),
+                            manifest.app.id,
+                            web.route,
+                            existing.manifest.app.id
+                        ));
+                        continue;
+                    }
+                    if let Some(socket) = &web.socket {
+                        if let Some(existing) = discovery.apps.iter().find(|app| {
+                            app.manifest
+                                .interfaces
+                                .web
+                                .as_ref()
+                                .and_then(|existing| existing.socket.as_deref())
+                                == Some(socket.as_str())
+                        }) {
+                            discovery.errors.push(format!(
+                                "{}: app {:?} duplicates interfaces.web.socket {:?} already registered by app {:?}; app not registered",
+                                manifest_path.display(),
+                                manifest.app.id,
+                                socket,
+                                existing.manifest.app.id
+                            ));
+                            continue;
+                        }
+                    }
+                }
                 discovery.apps.push(DiscoveredApp {
                     path: folder,
                     manifest,
@@ -307,6 +337,65 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
         }
     }
     discovery
+}
+
+fn is_safe_web_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.chars().any(char::is_whitespace)
+        && !path.contains('?')
+        && !path.contains('#')
+        && !path.split('/').any(|segment| segment == "..")
+}
+
+/// One consistent list-entry rule for manifest string lists
+/// (`interfaces.cli.commands`, `capabilities.request`, `resources.files`):
+/// every entry must be non-blank with no leading or trailing whitespace, and
+/// no entry may repeat. Duplicate and blank comparisons use the trimmed form,
+/// so a whitespace-padded entry can neither evade the duplicate gate nor be
+/// stored verbatim — padded entries are rejected, not silently trimmed.
+/// Rejections name the field: like the #4082 duplicate gate this extends, a
+/// repeated or padded entry is an authoring mistake the gate should name
+/// rather than silently absorb.
+fn ensure_distinct_entries(entries: &[String], field: &str) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        let trimmed = entry.trim();
+        ensure!(
+            !trimmed.is_empty(),
+            "{field} must not contain empty entries"
+        );
+        ensure!(
+            entry.as_str() == trimmed,
+            "{field} must not contain entries with leading or trailing whitespace: {entry:?}"
+        );
+        ensure!(
+            seen.insert(trimmed.to_owned()),
+            "{field} must not contain duplicates"
+        );
+    }
+    Ok(())
+}
+
+/// Folder confinement for `[resources].files` entries (#4059): the design
+/// rule is that everything is relative to the app folder — no absolute
+/// paths, no references outside the folder. The check mirrors the
+/// `program.source` rule above: the entry must be non-empty and every
+/// path component must be a plain name, so a root, `.` or `..` component
+/// anywhere in the entry rejects it. Glob segments such as `**` are
+/// ordinary components and stay legal (`assets/**`, `web/templates/**`).
+fn is_confined_relative_path(entry: &str) -> bool {
+    // Segment-level, not only component-level: `Path::components`
+    // normalizes an internal `.` away (`a/./b` yields just `a`, `b`),
+    // so the raw segments are checked as well. An empty segment rejects
+    // doubled or trailing separators along with the empty entry itself.
+    !entry.is_empty()
+        && !Path::new(entry).is_absolute()
+        && Path::new(entry)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+        && entry
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 fn is_kebab_id(id: &str) -> bool {
@@ -339,6 +428,21 @@ mode = "adapter"
 route = "/tic-tac-toe"
 "#;
 
+    fn manifest_with_web(id: &str, route: &str, socket: Option<&str>) -> String {
+        let socket = socket
+            .map(|socket| format!("socket = {socket:?}\n"))
+            .unwrap_or_default();
+        format!(
+            "[app]\nid = {id:?}\nname = {id:?}\nversion = \"0.1.0\"\n\n[program]\nkind = \"roc-world\"\nsource = \"program/\"\n\n[interfaces.web]\nmode = \"adapter\"\nroute = {route:?}\n{socket}"
+        )
+    }
+
+    fn write_discoverable_app(root: &Path, folder: &str, manifest: &str) {
+        let app = root.join(folder);
+        fs::create_dir_all(app.join("program")).unwrap();
+        fs::write(app.join("app.toml"), manifest).unwrap();
+    }
+
     #[test]
     fn parses_app_manifest_and_matches_folder() {
         let manifest = parse_app_manifest(MANIFEST, "tic-tac-toe").unwrap();
@@ -347,6 +451,85 @@ route = "/tic-tac-toe"
             manifest.program.unwrap().source,
             Some(PathBuf::from("program/"))
         );
+    }
+
+    #[test]
+    fn web_route_and_socket_must_be_safe_absolute_paths() {
+        for route in ["/a/../b", "/a b", "/a?query", "/a#fragment"] {
+            let source =
+                MANIFEST.replace("route = \"/tic-tac-toe\"", &format!("route = {route:?}"));
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(error.to_string().contains("interfaces.web.route"));
+        }
+
+        let absolute_url_socket = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"https://example.test/socket\"",
+        );
+        let error = parse_app_manifest(&absolute_url_socket, "tic-tac-toe").unwrap_err();
+        assert!(error.to_string().contains("interfaces.web.socket"));
+
+        let valid_socket = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"/ws/world\"",
+        );
+        assert!(parse_app_manifest(&valid_socket, "tic-tac-toe").is_ok());
+    }
+
+    #[test]
+    fn checked_in_tic_tac_toe_manifest_remains_valid() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("apps/tic-tac-toe/app.toml");
+        let source = fs::read_to_string(path).unwrap();
+        let manifest = parse_app_manifest(&source, "tic-tac-toe").unwrap();
+        assert_eq!(manifest.interfaces.web.unwrap().route, "/tic-tac-toe");
+    }
+
+    #[test]
+    fn discovery_keeps_first_duplicate_route_and_names_loser() {
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-first",
+            &manifest_with_web("a-first", "/same", None),
+        );
+        write_discoverable_app(
+            root.path(),
+            "b-second",
+            &manifest_with_web("b-second", "/same", None),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 1);
+        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("b-second"));
+        assert!(discovery.errors[0].contains("interfaces.web.route"));
+        assert!(discovery.errors[0].contains("/same"));
+    }
+
+    #[test]
+    fn discovery_keeps_first_duplicate_socket_and_names_loser() {
+        let root = tempfile::tempdir().unwrap();
+        write_discoverable_app(
+            root.path(),
+            "a-first",
+            &manifest_with_web("a-first", "/first", Some("/ws/shared")),
+        );
+        write_discoverable_app(
+            root.path(),
+            "b-second",
+            &manifest_with_web("b-second", "/second", Some("/ws/shared")),
+        );
+
+        let discovery = discover_apps(root.path());
+
+        assert_eq!(discovery.apps.len(), 1);
+        assert_eq!(discovery.apps[0].manifest.app.id, "a-first");
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("b-second"));
+        assert!(discovery.errors[0].contains("interfaces.web.socket"));
+        assert!(discovery.errors[0].contains("/ws/shared"));
     }
 
     #[test]
@@ -402,6 +585,47 @@ commands = ["play"]
     }
 
     #[test]
+    fn rejects_duplicate_and_padded_cli_commands() {
+        // Exact duplicate commands are rejected, naming the field.
+        let duplicate =
+            CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \"play\"]");
+        let error = parse_app_manifest(&duplicate, "tic-tac-toe").unwrap_err();
+        assert!(
+            error.to_string().contains("interfaces.cli.commands"),
+            "duplicate error names the field: {error:#}"
+        );
+        // A whitespace-padded entry cannot evade the duplicate gate.
+        let padded_duplicate =
+            CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\"play\", \" play \"]");
+        let error = parse_app_manifest(&padded_duplicate, "tic-tac-toe").unwrap_err();
+        assert!(
+            error.to_string().contains("interfaces.cli.commands"),
+            "padded-duplicate error names the field: {error:#}"
+        );
+        // A lone padded entry is rejected rather than stored verbatim.
+        let padded = CLI_MANIFEST.replace("commands = [\"play\"]", "commands = [\" play \"]");
+        assert!(parse_app_manifest(&padded, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn rejects_padded_capability_requests() {
+        // A padded duplicate cannot evade the #4082 duplicate gate.
+        let padded_duplicate =
+            format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\", \" store.read \"]\n");
+        let error = parse_app_manifest(&padded_duplicate, "tic-tac-toe").unwrap_err();
+        assert!(
+            error.to_string().contains("capabilities.request"),
+            "padded-duplicate error names the field: {error:#}"
+        );
+        // A lone padded entry is rejected rather than stored untrimmed.
+        let padded = format!("{MANIFEST}\n[capabilities]\nrequest = [\" store.read \"]\n");
+        assert!(parse_app_manifest(&padded, "tic-tac-toe").is_err());
+        // The unpadded baseline still parses.
+        let valid = format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\"]\n");
+        assert!(parse_app_manifest(&valid, "tic-tac-toe").is_ok());
+    }
+
+    #[test]
     fn rejects_blank_and_duplicate_capability_requests() {
         // Duplicate rule: duplicates are REJECTED, not deduplicated — a
         // repeated request entry is an authoring mistake the gate names.
@@ -412,6 +636,72 @@ commands = ["play"]
         let duplicate =
             format!("{MANIFEST}\n[capabilities]\nrequest = [\"store.read\", \"store.read\"]\n");
         assert!(parse_app_manifest(&duplicate, "tic-tac-toe").is_err());
+    }
+
+    #[test]
+    fn rejects_blank_duplicate_and_padded_resource_files() {
+        for files in [
+            r#"["", "assets/**"]"#,
+            r#"["  ", "assets/**"]"#,
+            r#"["assets/**", "assets/**"]"#,
+            r#"["assets/**", " assets/**"]"#,
+        ] {
+            let source = format!("{MANIFEST}\n[resources]\nfiles = {files}\n");
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(
+                error.to_string().contains("resources.files"),
+                "resource-file validation error names the field: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unconfined_resource_files() {
+        // Folder confinement (#4059): [resources].files entries are paths
+        // the pack step will read, so absolute paths, parent traversal
+        // anywhere in the entry, and dot paths are rejected with an error
+        // naming the offending entry.
+        for entry in [
+            "/etc/passwd",
+            "../../etc/passwd",
+            "../secret",
+            "a/../../b",
+            ".",
+            "./assets",
+            "a/./b",
+            "",
+        ] {
+            let source =
+                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains("resources.files") && message.contains(entry),
+                "rejection of {entry:?} names the field and the entry: {message}"
+            );
+        }
+        // Confined entries — plain files, nested paths, and the design's
+        // glob shapes — stay accepted.
+        for entry in ["assets/logo.png", "web/templates/index.html", "assets/**"] {
+            let source =
+                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            assert!(
+                parse_app_manifest(&source, "tic-tac-toe").is_ok(),
+                "confined entry {entry:?} is accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_design_resource_files_and_empty_optional_list() {
+        let design_example =
+            format!("{MANIFEST}\n[resources]\nfiles = [\"assets/**\", \"web/templates/**\"]\n");
+        assert!(parse_app_manifest(&design_example, "tic-tac-toe").is_ok());
+
+        // The resources section is optional, and an explicitly empty files
+        // list remains legal.
+        let empty = format!("{MANIFEST}\n[resources]\nfiles = []\n");
+        assert!(parse_app_manifest(&empty, "tic-tac-toe").is_ok());
     }
 
     #[test]

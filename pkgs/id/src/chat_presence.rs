@@ -47,7 +47,7 @@
 //! the table: [`Liveness::Live`] when a heartbeat for that channel is within TTL,
 //! [`Liveness::Offline`] when the member was never seen or its heartbeat went stale.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -75,29 +75,6 @@ pub const TYPING_TTL_SECS: u64 = 12;
 /// The most channels one heartbeat may name. Bounds the frame size and the work a
 /// single received heartbeat can make the table do.
 pub const MAX_HEARTBEAT_CHANNELS: usize = 64;
-
-/// Canonicalizes channel claims consistently for both locally built and received
-/// heartbeats: first-seen deduplication, optional receipt-side membership
-/// filtering, then a cap on distinct channels.
-fn canonicalize_channels(
-    channels: impl IntoIterator<Item = Hash>,
-    mut is_member: impl FnMut(&Hash) -> bool,
-) -> Vec<Hash> {
-    let mut seen = HashSet::new();
-    let mut canonical = Vec::new();
-    for channel in channels {
-        if !seen.insert(channel.clone()) {
-            continue;
-        }
-        if is_member(&channel) {
-            canonical.push(channel);
-            if canonical.len() == MAX_HEARTBEAT_CHANNELS {
-                break;
-            }
-        }
-    }
-    canonical
-}
 
 /// Frame prefix distinguishing presence frames from peer-discovery announcements on
 /// the shared gossip topic. A frame without this prefix is not a presence frame, and
@@ -127,15 +104,27 @@ pub struct PresenceHeartbeat {
 }
 
 impl PresenceHeartbeat {
-    /// Builds a heartbeat for `node` at `ts`, dropping duplicate channels and typing
-    /// claims for channels the heartbeat does not also claim presence in.
+    /// Builds a heartbeat for `node` at `ts`, dropping duplicate channels, duplicate
+    /// typing claims, and typing claims for channels the heartbeat does not also
+    /// claim presence in — so `typing` is always a duplicate-free subset of
+    /// `channels` and can never outgrow it.
     #[must_use]
     pub fn new(node: AuthorKey, channels: Vec<Hash>, typing: Vec<Hash>, ts: u64) -> Self {
-        let channels = canonicalize_channels(channels, |_| true);
-        let typing: Vec<Hash> = typing
-            .into_iter()
-            .filter(|channel| channels.contains(channel))
-            .collect();
+        let mut unique: Vec<Hash> = Vec::new();
+        for channel in channels {
+            if !unique.contains(&channel) {
+                unique.push(channel);
+            }
+        }
+        unique.truncate(MAX_HEARTBEAT_CHANNELS);
+        let channels = unique;
+        let mut unique_typing: Vec<Hash> = Vec::new();
+        for channel in typing {
+            if channels.contains(&channel) && !unique_typing.contains(&channel) {
+                unique_typing.push(channel);
+            }
+        }
+        let typing = unique_typing;
         Self {
             node,
             channels,
@@ -271,7 +260,10 @@ impl PresenceTable {
     ///   same heartbeat never extends its life, and no claim can outlive its
     ///   stamp's freshness bound no matter when copies of it arrive.
     /// - **Scoping.** Channels (and typing claims) the sender is not a member of,
-    ///   per `is_member`, are filtered out before the heartbeat is stored.
+    ///   per `is_member`, are filtered out before the heartbeat is stored, and
+    ///   duplicates are dropped: a wire-decoded heartbeat bypasses
+    ///   [`PresenceHeartbeat::new`], so the constructor's dedupe/bound on
+    ///   channels and typing is enforced here too.
     ///
     /// Returns whether the heartbeat was accepted (inserted or replacing).
     pub fn update_at(
@@ -286,15 +278,21 @@ impl PresenceTable {
             return false;
         }
         let node = heartbeat.node;
-        let channels = canonicalize_channels(heartbeat.channels.iter().cloned(), |channel| {
-            is_member(&node, channel)
-        });
-        let typing: Vec<Hash> = heartbeat
-            .typing
-            .iter()
-            .filter(|channel| channels.contains(channel))
-            .cloned()
-            .collect();
+        let mut channels: Vec<Hash> = Vec::new();
+        for channel in &heartbeat.channels {
+            if channels.len() >= MAX_HEARTBEAT_CHANNELS {
+                break;
+            }
+            if !channels.contains(channel) && is_member(&node, channel) {
+                channels.push(channel.clone());
+            }
+        }
+        let mut typing: Vec<Hash> = Vec::new();
+        for channel in &heartbeat.typing {
+            if channels.contains(channel) && !typing.contains(channel) {
+                typing.push(channel.clone());
+            }
+        }
         let heartbeat = PresenceHeartbeat {
             channels,
             typing,
@@ -758,6 +756,60 @@ mod tests {
     }
 
     #[test]
+    fn constructor_deduplicates_and_bounds_typing_claims() {
+        let chan = channel("general");
+        let other = channel("random");
+        let alice = key(1);
+        // 100,000 duplicate typing entries for one retained channel collapse to
+        // the single claim; a claim for a channel the heartbeat does not claim
+        // presence in drops too.
+        let mut typing = vec![chan; 100_000];
+        typing.push(other);
+        let hb = PresenceHeartbeat::new(alice, vec![chan], typing, 10_000);
+        assert_eq!(hb.typing, vec![chan]);
+        assert!(hb.typing.len() <= hb.channels.len());
+        // The encoded frame stays small: the ~3.3 MB duplicate blowup is gone.
+        assert!(encode_frame(&hb).len() < 1_000);
+    }
+
+    #[test]
+    fn wire_decoded_heartbeat_typing_is_deduplicated_and_bounded_on_store() {
+        // A heartbeat decoded off the wire bypasses PresenceHeartbeat::new, so
+        // update_at must enforce the same dedupe/bound before storing it.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let mut hb = heartbeat(alice, vec![chan], 11_000);
+        hb.typing = vec![chan; 50_000];
+        let frame = encode_frame(&hb);
+        let decoded = decode_frame(&frame).expect("presence frame decodes");
+        assert_eq!(
+            decoded.typing.len(),
+            50_000,
+            "decode itself does not sanitize"
+        );
+        assert!(table.update_at(decoded, 11_000, &|_, _| true));
+        let entries = table.entries.read().unwrap();
+        let stored = &entries.get(&alice).expect("heartbeat stored").heartbeat;
+        assert_eq!(stored.typing, vec![chan]);
+        assert!(stored.typing.len() <= stored.channels.len());
+    }
+
+    #[test]
+    fn wire_decoded_duplicate_channels_are_deduplicated_on_store() {
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let mut hb = heartbeat(alice, vec![chan], 12_000);
+        hb.channels = vec![chan; 500];
+        hb.typing = vec![chan; 500];
+        assert!(table.update_at(hb, 12_000, &|_, _| true));
+        let entries = table.entries.read().unwrap();
+        let stored = &entries.get(&alice).expect("heartbeat stored").heartbeat;
+        assert_eq!(stored.channels, vec![chan]);
+        assert_eq!(stored.typing, vec![chan]);
+    }
+    #[test]
     fn update_at_dedups_wire_channels_before_the_cap() {
         // #4404: a decoded wire heartbeat may repeat a channel (the constructor
         // dedups, but the wire carries the raw signed list). Duplicates must not
@@ -811,4 +863,5 @@ mod tests {
             assert_eq!(table.liveness_at(&alice, &chan, 4_200), Liveness::Live);
         }
     }
+
 }

@@ -47,10 +47,11 @@
  *   egres bytes        no endpoint exists (request counts only) — documented gap
  */
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import { appendFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const SOURCE = "file-export/supabase";
 export const DEFAULT_PROJECT_REF = "nltgxorqwxhgfzseiirt"; // muse-dev (#1050)
@@ -396,6 +397,14 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (isMain) {
   await main();
 }

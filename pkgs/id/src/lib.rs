@@ -128,7 +128,7 @@
 //!
 //! Two protocols are used:
 //! - **Blobs Protocol** (`/iroh-blobs/1`): For blob data transfer
-//! - **Meta Protocol** (`/iroh-meta/2`): For metadata operations (list, find, delete, etc.)
+//! - **Meta Protocol** (`/iroh-meta/3`): For metadata operations (list, find, delete, etc.)
 //!
 //! ## Features
 //!
@@ -182,6 +182,7 @@ pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
 pub use id_core::discovery;
+pub mod didit;
 mod peer_announcement;
 pub mod documents;
 #[cfg(feature = "world")]
@@ -196,6 +197,7 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
+pub mod hosted_binding;
 pub mod idset;
 pub mod invite;
 pub mod invites;
@@ -209,6 +211,7 @@ pub mod notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
 pub mod protocol;
+pub mod publications;
 pub mod pull_policy;
 pub mod references;
 pub mod rejection;
@@ -218,6 +221,7 @@ pub mod sandbox;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
+pub mod session_checkpoint;
 #[cfg(feature = "world")]
 pub mod server_config;
 #[cfg(feature = "world")]
@@ -256,6 +260,8 @@ pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;
 #[cfg(feature = "world")]
+pub mod world_replication_net;
+#[cfg(feature = "world")]
 pub use id_core::world_presentation;
 #[cfg(feature = "world")]
 pub mod world_records;
@@ -265,6 +271,8 @@ pub mod world_session;
 pub mod world_ssh;
 #[cfg(feature = "world")]
 pub mod world_store;
+#[cfg(feature = "world")]
+pub(crate) mod world_terminal;
 
 #[cfg(feature = "web")]
 pub use id_core::qr;
@@ -336,10 +344,15 @@ pub const SERVE_LOCK: &str = ".iroh-serve.lock";
 /// and `Error`. It is not wire-compatible with `/iroh-meta/1`; the ALPN bump
 /// makes old and new nodes fail the handshake cleanly instead of mis-decoding.
 ///
+/// **Version 3** changes the `List` response item from `(hash, name)` pairs
+/// to `ListEntry` records carrying the file's origin node and upload time
+/// (#4973). That payload change is not wire-compatible with `/iroh-meta/2`
+/// under postcard, so it takes this ALPN bump per the rule below.
+///
 /// Compatibility rule: within a version, only **append** enum variants. Any
 /// other change to [`protocol::MetaRequest`] / [`protocol::MetaResponse`]
 /// requires a new ALPN. `protocol::tests` pins every discriminant.
-pub const META_ALPN: &[u8] = b"/iroh-meta/2";
+pub const META_ALPN: &[u8] = b"/iroh-meta/3";
 
 // ============================================================================
 // Utility Functions
@@ -723,7 +736,7 @@ mod tests {
         assert_eq!(CLIENT_KEY_FILE, ".iroh-key-client");
         assert_eq!(STORE_PATH, ".iroh-store");
         assert_eq!(SERVE_LOCK, ".iroh-serve.lock");
-        assert_eq!(META_ALPN, b"/iroh-meta/2");
+        assert_eq!(META_ALPN, b"/iroh-meta/3");
     }
 
     #[tokio::test]

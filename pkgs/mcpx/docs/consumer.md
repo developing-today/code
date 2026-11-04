@@ -252,6 +252,16 @@ a provider error returns the deterministic result plus a note that the
 model was unavailable. A `Generate` function is not an agent; the harness
 mcpx sits under still owns the loop, the tools and the session.
 
+Provider credentials remain opt-in: `model.apiKeyEnv` names the variable for
+the singular provider, while `model.providers` can map provider names to their
+own `baseURL` and `apiKeyEnv`. mcpx never scans the environment for key names.
+`model.profiles` names ordered lists of `provider/model` ids, so a failure or
+unconfigured entry falls through to the next configured provider. A profile
+can set its own token budget and per-attempt timeout. `model.default` and an
+operation's model override may each name either a profile or a provider/model
+id; when every profile entry is unavailable, generation stays on its
+deterministic path.
+
 **Trust — "generated code runs with the user's credentials."** Return the
 script by default (`prompt.autonomy: propose`, one level of the dial in
 [decisions/0002](decisions/0002-autonomy-dial.md)); run only on explicit request.

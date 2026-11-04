@@ -91,6 +91,12 @@ pub struct FileListQuery {
     pub search: Option<String>,
     /// Whether to show soft-deleted files. Defaults to false.
     pub show_deleted: Option<bool>,
+    /// Sort order (#4973): `uploaded` (newest upload first) or `origin`
+    /// (origin node A-Z, unknown last). Absent keeps the default order.
+    pub sort: Option<String>,
+    /// Filter to one origin node id, or `unknown` for files with no
+    /// recorded origin (#4973).
+    pub origin: Option<String>,
 }
 
 /// Paginated file list result.
@@ -107,6 +113,10 @@ pub struct FileListPage {
     pub search: Option<String>,
     /// Whether deleted files are shown.
     pub show_deleted: bool,
+    /// The sort order applied, echoed for rendering (#4973).
+    pub sort: Option<String>,
+    /// The origin filter applied, echoed for rendering (#4973).
+    pub origin_filter: Option<String>,
 }
 
 /// Classification of a file based on its tag name pattern.
@@ -143,6 +153,10 @@ pub struct FileInfo {
     pub created_at: Option<u64>,
     /// Last modification timestamp from metadata tags (unix seconds).
     pub modified_at: Option<u64>,
+    /// Node that first wrote the file (#4973), from the `origin` metadata
+    /// tag. `None` for files written before origin stamping existed;
+    /// listings render it as unknown and never guess.
+    pub origin_node: Option<String>,
     /// User-visible tags (excludes system tags like created/modified/deleted/archive.*).
     pub tags: Vec<(String, Option<String>)>,
     /// Whether this file is soft-deleted.
@@ -223,9 +237,8 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
     // only (#4329). parse::<u64>() alone accepts any width and a leading
     // '+', so non-canonical spellings like "2026-3-2T6:4:2Z" or a
     // "+2026" year used to map onto the canonical instant.
-    let canonical = |s: &str, width: usize| {
-        s.len() == width && s.bytes().all(|b| b.is_ascii_digit())
-    };
+    let canonical =
+        |s: &str, width: usize| s.len() == width && s.bytes().all(|b| b.is_ascii_digit());
     if !canonical(date_strs[0], 4)
         || !date_strs[1..].iter().all(|p| canonical(p, 2))
         || !time_strs.iter().all(|p| canonical(p, 2))
@@ -821,7 +834,9 @@ async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
 }
 
 /// System tag keys that are excluded from user-visible tags display.
-const SYSTEM_TAG_KEYS: &[&str] = &["created", "modified", "deleted", "name", "file", "path"];
+const SYSTEM_TAG_KEYS: &[&str] = &[
+    "created", "modified", "deleted", "name", "file", "path", "origin",
+];
 
 /// Check if a tag key is a system/internal key that shouldn't be shown in tag pills.
 fn is_system_tag_key(key: &[u8]) -> bool {
@@ -861,6 +876,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         .unwrap_or_default();
     let mut created_map: HashMap<String, u64> = HashMap::new();
     let mut modified_map: HashMap<String, u64> = HashMap::new();
+    let mut origin_map: HashMap<String, String> = HashMap::new();
     let mut deleted_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut user_tags_map: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
     let mut display_name_map: HashMap<String, (u8, String)> = HashMap::new();
@@ -871,6 +887,12 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
                 && let Ok(ts) = s.parse::<u64>()
             {
                 created_map.insert(tag.subject.display_lossy(), ts);
+            }
+        } else if tag.key == "origin" {
+            if let Some(ref v) = tag.value
+                && let Some(s) = v.as_str()
+            {
+                origin_map.insert(tag.subject.display_lossy(), s.to_owned());
             }
         } else if tag.key == "modified" {
             if let Some(ref v) = tag.value
@@ -943,6 +965,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
 
         let created_at = created_map.get(&name).copied();
         let modified_at = modified_map.get(&name).copied();
+        let origin_node = origin_map.get(&name).cloned();
         let tags = user_tags_map.remove(&name).unwrap_or_default();
         let display_name = display_name_map
             .get(&name)
@@ -958,6 +981,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
             timestamp,
             created_at,
             modified_at,
+            origin_node,
             tags,
             is_deleted,
         });
@@ -1102,6 +1126,58 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         });
     }
 
+    // Origin filter (#4973): an exact node id, or `unknown` for files
+    // with no recorded origin.
+    let origin_filter = query
+        .origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    if let Some(ref origin) = origin_filter {
+        if origin == "unknown" {
+            files.retain(|f| f.origin_node.is_none());
+        } else {
+            files.retain(|f| f.origin_node.as_deref() == Some(origin.as_str()));
+        }
+    }
+
+    // Sort (#4973): the default order from get_file_list stands unless a
+    // sort is requested. `uploaded` is the file's created stamp (falling
+    // back to modified, then the tag-parsed timestamp), newest first;
+    // `origin` is A-Z with unknown origins last.
+    let sort = query
+        .sort
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    match sort.as_deref() {
+        Some("uploaded") => {
+            files.sort_by(|a, b| {
+                let ta = a.created_at.or(a.modified_at).or(a.timestamp).unwrap_or(0);
+                let tb = b.created_at.or(b.modified_at).or(b.timestamp).unwrap_or(0);
+                tb.cmp(&ta)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+        }
+        Some("origin") => {
+            files.sort_by(|a, b| {
+                let ka = (
+                    a.origin_node.is_none(),
+                    a.origin_node.as_deref().unwrap_or(""),
+                );
+                let kb = (
+                    b.origin_node.is_none(),
+                    b.origin_node.as_deref().unwrap_or(""),
+                );
+                ka.cmp(&kb)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+        }
+        _ => {}
+    }
+
     let total = files.len();
     let (page_files, page, per_page) = paginate(&files, query.page, query.per_page);
 
@@ -1112,6 +1188,8 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         per_page,
         search,
         show_deleted,
+        sort,
+        origin_filter,
     }
 }
 
@@ -1389,7 +1467,11 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
 
     // Update metadata tags: set created (if first save) and modified
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1400,7 +1482,29 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
+
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                req.name.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
     if let Err(err) = state
         .tag_store
@@ -1502,7 +1606,11 @@ async fn new_file_handler(
 
     // Set metadata tags: created + modified
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1513,7 +1621,29 @@ async fn new_file_handler(
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
+
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                req.name.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
     if let Err(err) = state
         .tag_store
@@ -1747,7 +1877,11 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
 
     // Set metadata tags (created, modified, content-type)
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1758,7 +1892,29 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
+
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                filename.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
     if let Err(err) = state
         .tag_store
@@ -1898,6 +2054,11 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
         )
             .into_response(),
         Err(FileOpError::NotFound(_)) => (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(FileOpError::InvalidName(_)) => (
+            StatusCode::BAD_REQUEST,
+            "New name must be a safe relative path without padding",
+        )
+            .into_response(),
         Err(err) => {
             tracing::error!("[routes] rename failed: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to rename file").into_response()
@@ -1942,6 +2103,11 @@ async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest
         Err(FileOpError::NotFound(_)) => {
             (StatusCode::NOT_FOUND, "Source file not found").into_response()
         }
+        Err(FileOpError::InvalidName(_)) => (
+            StatusCode::BAD_REQUEST,
+            "New name must be a safe relative path without padding",
+        )
+            .into_response(),
         Err(err) => {
             tracing::error!("[routes] copy failed: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to copy file").into_response()
@@ -2220,6 +2386,13 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// recurses into any other inline node's `content` rather than
 /// dropping it. The pre-#1306 version handled only top-level
 /// paragraphs/headings and silently deleted everything else on save.
+///
+/// Line endings: plain-mode load (`plain_text_to_prosemirror`) strips
+/// the CR of CRLF endings and this join emits LF only, so a CRLF file
+/// is normalized to LF on save - a deliberate, documented choice
+/// (#1307), pinned by the round-trip tests below; the file's
+/// trailing-newline state is preserved through the load/save pair.
+/// Byte-exact CRLF round-trips remain available in Raw mode.
 ///
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
@@ -2605,7 +2778,19 @@ mod upload_router_tests {
         // binding through the public API alone (Codex P2 on PR #3894):
         // parse [interfaces.web] with the re-exported parser and build
         // the app router with the re-exported constructor.
-        let (_, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        // The world page handler 404s when no world is hosted; host
+        // one so the assertions below measure routing (the configured
+        // route registered, the default route absent), not hosting.
+        state.world = Some(crate::world_hub::WorldHub::single(
+            crate::world_session::WorldService::new(
+                crate::world::WorldHandle::spawn(
+                    crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())
+                        .unwrap(),
+                ),
+                None,
+            ),
+        ));
         let interface = crate::web::web_interface_from_app_toml(
             "[interfaces.web]\nmode = \"adapter\"\nroute = \"/arena\"\nsocket = \"/ws/arena\"\n",
         )
@@ -3318,6 +3503,40 @@ mod tests {
     }
 
     #[test]
+    fn test_plain_mode_roundtrip_preserves_trailing_newline() {
+        // #1307 pinned policy: the real load/save pair is byte-stable
+        // for the common shapes, including the trailing newline.
+        for text in ["a\nb\n", "a\nb", "a\n", "\n", ""] {
+            let doc = super::super::markdown::plain_text_to_prosemirror(text);
+            assert_eq!(extract_plain_text(&doc), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_normalizes_crlf_to_lf() {
+        // #1307 pinned policy: CRLF normalizes to LF on save, and the
+        // trailing-newline state survives the normalization.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\n");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta");
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_preserves_lone_terminal_cr() {
+        // Codex finding on PR #4613: a carriage return that is NOT part
+        // of a CRLF ending is content. Only segments terminated by '\n'
+        // may have their CR stripped; the final segment keeps it.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\r");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\r");
+        // A CR-only line ending mid-file is likewise preserved.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\rbeta\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\rbeta\n");
+    }
+
+    #[test]
     fn test_extract_plain_text_paragraph_heading_byte_identical() {
         // Pre-#1306 behaviour for paragraph/heading-only docs is unchanged.
         let doc = plain_doc(vec![
@@ -3950,7 +4169,7 @@ mod collab_route_tests {
         doc_id
     }
 
-    async fn get(uri: &str) -> (StatusCode, String) {
+    async fn get_doc(uri: &str) -> (StatusCode, String) {
         let app = Router::new().route("/ws/collab/{doc_id}", get(echo_doc_id));
         let response = app
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -3964,7 +4183,7 @@ mod collab_route_tests {
     #[tokio::test]
     async fn encoded_slash_round_trips_to_the_exact_filename() {
         assert_eq!(
-            get("/ws/collab/a%2Fb.md").await,
+            get_doc("/ws/collab/a%2Fb.md").await,
             (StatusCode::OK, "a/b.md".to_owned())
         );
     }
@@ -3973,21 +4192,21 @@ mod collab_route_tests {
     async fn encoded_percent_names_round_trip() {
         // a%20b.md the file, not "a b.md": the client sends a%2520b.md.
         assert_eq!(
-            get("/ws/collab/a%2520b.md").await,
+            get_doc("/ws/collab/a%2520b.md").await,
             (StatusCode::OK, "a%20b.md".to_owned())
         );
         assert_eq!(
-            get("/ws/collab/100%25.md").await,
+            get_doc("/ws/collab/100%25.md").await,
             (StatusCode::OK, "100%.md".to_owned())
         );
         assert_eq!(
-            get("/ws/collab/notes.md").await,
+            get_doc("/ws/collab/notes.md").await,
             (StatusCode::OK, "notes.md".to_owned())
         );
     }
 
     #[tokio::test]
     async fn a_real_second_segment_does_not_match() {
-        assert_eq!(get("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get_doc("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
     }
 }

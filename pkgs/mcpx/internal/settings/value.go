@@ -3,6 +3,7 @@ package settings
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -449,7 +450,10 @@ func dedupe(in []string) []string {
 // nobody configure a log file. Negative sizes and magnitudes that do not
 // fit in an int64 are refused (#1697): a size is spent as a byte count or a
 // slice capacity downstream, where a negative is a panic and an overflowed
-// one silently becomes the most negative int64 there is.
+// one silently becomes the most negative int64 there is. Non-finite spellings
+// (NaN, Inf, bare or suffixed) are refused explicitly (#3521): without the
+// guard they are caught only incidentally, by float-to-int conversion for
+// NaN and by the magnitude check for infinities.
 func ParseBytes(v string) (int64, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -479,6 +483,9 @@ func ParseBytes(v string) (int64, error) {
 		return 0, fmt.Errorf("not a size: %q", v)
 	}
 	scaled := f * float64(mult)
+	if math.IsNaN(scaled) || math.IsInf(scaled, 0) {
+		return 0, fmt.Errorf("size must be finite: %q", orig)
+	}
 	if scaled >= 9223372036854775808.0 { // 2^63: the first magnitude int64 cannot hold
 		return 0, fmt.Errorf("size too large: %q", orig)
 	}
@@ -543,6 +550,9 @@ func Validate(set Setting, raw string) error {
 			// and artifacts.gcInterval / transport.sseKeepAlive fall back
 			// to a default when non-positive, so they keep accepting it.
 			return fmt.Errorf("%s must be a positive duration, got %q", set.Path, raw)
+		}
+		if set.Path == "proxy.timeout" && d <= 0 {
+			return fmt.Errorf("proxy.timeout must be greater than zero, got %q", raw)
 		}
 		if set.Path == "protoTasks.maxTTL" && d > 0 && d < time.Millisecond {
 			// Store.Start clamps in whole milliseconds; a positive

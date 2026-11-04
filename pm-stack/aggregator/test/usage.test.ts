@@ -550,14 +550,14 @@ describe("hub renders", () => {
     const usage = await src.usage();
     const rec: SnapshotRecord = {
       ts: "2026-10-25T12:00:00Z",
-      serviceId: "deepseek:api",
+      serviceId: "deepseek",
       metricId: "credits_balance",
       value: 44.63,
       unit: "cny",
       source: "api",
       observedBy: "backfill:quota-view.md",
     };
-    usage.history = { ...usage.history, "deepseek:api": [rec] };
+    usage.history = { ...usage.history, deepseek: [rec] };
     const html = renderQuota(await src.quota(), src.provenance(), usage);
     expect(html).toContain("DeepSeek PAYG reserve balance");
     expect(html).toContain("¥44.63");
