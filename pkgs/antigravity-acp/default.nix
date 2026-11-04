@@ -102,8 +102,16 @@ stdenv.mkDerivation {
     # loading path -- the #4759 failure segfaulted inside ld.so before
     # main ever ran -- so verify that path through the dynamic linker's
     # --list mode, which resolves the patched interpreter and RUNPATH
-    # without running program initializers.
-    "${stdenv.cc.bintools.dynamicLinker}" --list "$out/bin/agy_acp_server.par" > /dev/null
+    # without running program initializers. Two corrections from review:
+    # on Linux the public path is the makeBinaryWrapper launcher that
+    # postFixup's wrapProgram installs, and the patchelf-rewritten
+    # payload is the hidden .agy_acp_server.par-wrapped executable next
+    # to it, so --list the payload, not the launcher; and the check is
+    # ELF-specific, so it is Linux-only (Darwin's /usr/lib/dyld cannot
+    # be invoked this way).
+    ${lib.optionalString stdenv.hostPlatform.isLinux ''
+      "${stdenv.cc.bintools.dynamicLinker}" --list "$out/bin/.agy_acp_server.par-wrapped" > /dev/null
+    ''}
     runHook postInstallCheck
   '';
 
