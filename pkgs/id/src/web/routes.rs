@@ -2651,7 +2651,8 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
 /// text verbatim when non-empty, otherwise its `src` verbatim when
-/// non-empty, otherwise nothing. Known remaining gap: `footnote_reference`
+/// non-empty, otherwise nothing; a `front_matter` block contributes
+/// its `text` attr verbatim (#5639). Known remaining gap: `footnote_reference`
 /// atoms are not yet rendered — they contribute nothing; that is
 /// explicitly out of scope for the #1491 fix.
 fn extract_plain_text(doc: &serde_json::Value) -> String {
@@ -2685,6 +2686,24 @@ fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>
                             }
                         }
                     }
+                }
+            }
+            // Front matter (#1369) carries no PM child content: its
+            // payload is the `text` attr, fences included, so the
+            // catch-all below (which needs a content array or a
+            // top-level text field) would drop the whole block - the
+            // block-level twin of the #1491 image-atom loss (#5639).
+            // Render it verbatim as one block entry: the authored
+            // text's trailing newline is the block terminator the
+            // line join re-adds.
+            "front_matter" => {
+                if let Some(text) = node
+                    .get("attrs")
+                    .and_then(|attrs| attrs.get("text"))
+                    .and_then(|text| text.as_str())
+                    && !text.is_empty()
+                {
+                    lines.push(text.strip_suffix("\n").unwrap_or(text).to_owned());
                 }
             }
             // Lists, list items, blockquote, table rows/cells reached
@@ -4198,6 +4217,37 @@ mod tests {
 
     fn para(text: &str) -> serde_json::Value {
         serde_json::json!({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn test_extract_plain_text_front_matter_renders_verbatim() {
+        // #5639: a front_matter block's payload is its text attr
+        // (#1369 node shape); extraction must keep it, fences and
+        // all, at its document position - not drop the block whole.
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "front_matter", "attrs": {"text": "---\ntitle: Hello\n---\n"}}),
+            para("Body"),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "---\ntitle: Hello\n---\nBody");
+        // Front matter as the only block.
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "front_matter", "attrs": {"text": "---\ntitle: Hello\n---\n"}}),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "---\ntitle: Hello\n---");
+    }
+
+    #[test]
+    fn test_extract_plain_text_front_matter_missing_or_empty_text_is_nothing() {
+        // #5639: no attrs, no text attr, or an empty one contributes
+        // nothing and does not panic (the #1491 empty-payload rule).
+        for fm in [
+            serde_json::json!({"type": "front_matter"}),
+            serde_json::json!({"type": "front_matter", "attrs": {}}),
+            serde_json::json!({"type": "front_matter", "attrs": {"text": ""}}),
+        ] {
+            let doc = plain_doc(vec![fm, para("Body")]);
+            assert_eq!(extract_plain_text(&doc), "Body");
+        }
     }
 
     #[test]
