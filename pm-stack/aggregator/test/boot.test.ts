@@ -152,7 +152,7 @@ describe("server boots from fixtures", () => {
       coverage: { source: string; wired: boolean }[];
       expired: number;
     };
-    expect(coverage.coverage.find((c) => c.source === "jules")?.wired).toBe(true);
+    expect(coverage.coverage.find((c) => c.source === "jules")).toBeUndefined(); // source retired (code#5098)
     expect(coverage.coverage.find((c) => c.source === "claude-code")?.wired).toBe(false);
     expect(coverage.expired).toBeGreaterThan(0); // the finished fixture probe
     const week = await (await fetch(`http://127.0.0.1:${port}/roadmap?h=week`)).text();

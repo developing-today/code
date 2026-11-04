@@ -447,20 +447,6 @@ export interface SourceCoverage {
   detail: string;
 }
 
-/** Keeper run totals for Jules, parsed from jules-review-state.json. */
-export interface JulesSummary {
-  /** When the keeper last ran (its `last_run`). */
-  at: string | null;
-  /** Sessions the keeper currently tracks in its `items` map. */
-  tracked: number;
-  /** Totals from the note written by the keeper's last run, when it parses. */
-  total?: number;
-  completed?: number;
-  failed?: number;
-  inProgress?: number;
-  awaitingFeedback?: number;
-  awaitingPlan?: number;
-}
 
 export function refKey(ref: GhRef): RefKey {
   return `${ref.repo}#${ref.number}`;

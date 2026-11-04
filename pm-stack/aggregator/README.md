@@ -63,16 +63,13 @@ that is plumbing, not links).
   its tiers win for anything they name, reason verbatim) → a keeper
   "escalate" supervision note → a decision-shaped question → a
   destructive permission request → a credential/sign-in wall. Routine
-  questions, errors, and tool permissions are the orchestrator's —
-  and so are Jules' questions (the keeper answers those itself).
+  questions, errors, and tool permissions are the orchestrator's.
 - **Expiry**: a finished run (the runtime reported an outcome) expires
   2 h after its last activity; anything expires at 24 h. The page counts
   what expired.
 - **Sources**: every entry is stamped `opencode-sandbox` /
-  `opencode-laptop` / `jules` / `claude-code`; OpenCode sub-sessions
-  carry `parentId` and collapse under their parent. **Jules is wired**
-  via the keeper's `jules-review-state.json` (collector-side,
-  `src/sources/jules.ts`). **Muse** has no runtime registry to
+  `opencode-laptop` / `claude-code`; OpenCode sub-sessions
+  carry `parentId` and collapse under their parent. **Muse** has no runtime registry to
   read; slice 3 (#906) wires it via launch records instead — a Muse
   session that never wrote one stays invisible, and the coverage note
   on the page says which (see "Session identity registry" above).
@@ -213,9 +210,7 @@ Kinds and consumers (one consumer per kind/source slice):
   its single writer, #910 — applies it and its run log names
   "requested via dashboard, action da-…".
 - **session** — routed by the recorded `sessionSource`: `poke` /
-  `answer` / `stop` on live sessions. Jules sessions are
-  keeper-mediated (the jules-review job consumes their `answer`
-  actions; poke/stop render disabled with the reason), OpenCode
+  `answer` / `stop` on live sessions. OpenCode
   sessions are consumed by the orchestration pass, and sources with
   no live control channel (Muse, cron) render no enabled
   controls. Stop sits behind a two-step confirm.
@@ -288,7 +283,6 @@ token total so counts never go backwards):
 - **OpenCode** (laptop live + sandbox via the feed): session id,
   parent id, agent identity (`opencode:<agent>`, `opencode (sub)` for
   unnamed sub-sessions), status, per-session token totals.
-- **Jules**: keeper state, via the feed.
 - **Muse**: launch records appended at spawn to a JSONL the
   collector carries — `scripts/record-claude-launch.ts` writes them,
   `CLAUDE_LAUNCH_RECORDS_PATH` locates the file; a record is
@@ -502,7 +496,7 @@ the load-bearing claims against the code and configuration (see
 | Quota (#851)                 | Fleet feed file (`fleet-feed.json`), overlaid by the quota gatherer's `quota-current.json`                                                                              | fixtures when no feed exists                               | collector (sandbox) + gatherer timer                                                                                                                                                                                          |
 | Attention (#852)             | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed                                                                                            | fixtures when neither is reachable                         | OpenCode servers (both hosts)                                                                                                                                                                                                 |
 | DNS (#906)                   | Fleet feed `dns` section, parsed collector-side from the #902 register                                                                                                  | fixtures when no section exists                            | collector (sandbox)                                                                                                                                                                                                           |
-| Registry (#906)              | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file                                  | fixtures when the feed is absent                           | aggregator unit + collector                                                                                                                                                                                                   |
+| Registry (#906)              | Feed registry records (sandbox OpenCode, Muse launches) merged with live laptop OpenCode records into the durable registry file                                  | fixtures when the feed is absent                           | aggregator unit + collector                                                                                                                                                                                                   |
 | **Projector** (service)      | GitHub projection + link registry at `PM_PROJECTOR_URL` (default `http://127.0.0.1:7801`); 15-minute reconcile timer keeps it fresh (no public webhook route by design) | facets fall back per the rows above when it is unreachable | **Deployed**: `pm-projector` user unit declared in `nixos/services/pm-stack`; the aggregator unit `Wants`/`After` it and pins `PM_PROJECTOR_URL` to it                                                                        |
 | **Pad** (service)            | — (the aggregator reads no Pad data; Pad is not a facet source)                                                                                                         | —                                                          | **Deployed as the planning layer only**: NixOS OCI container `pm-pad`, declared by `services.pm-apps` (`nixos/services/pm-apps/default.nix`); named here so its absence from the facet rows is a stated fact, not an omission |
 
@@ -639,11 +633,7 @@ tick visible on /quota.
 
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
-  parent/agent/outcome; keeper supervision entries from
-  `jules-review-state.json` annotate matching sessions.
-- **Jules attention** (slice 2) — the keeper's tracked Jules sessions
-  from the same state file, mapped by `src/sources/jules.ts`, plus the
-  keeper's run totals as `julesSummary`.
+  parent/agent/outcome.
 - **Orchestration section** (slice 2, #899 — the unified contract) —
   the orchestration job republishes
   `~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json`
@@ -683,8 +673,8 @@ tick visible on /quota.
   says why).
 - **Registry records** (slice 3, #906) — normalized session records
   (`src/registry.ts`) for sandbox OpenCode sessions (with per-session
-  token totals read off the server at collection time), Jules
-  sessions, and Muse launch records (JSONL at
+  token totals read off the server at collection time) and
+  Muse launch records (JSONL at
   `CLAUDE_LAUNCH_RECORDS_PATH`, written by
   `scripts/record-claude-launch.ts`). The aggregator merges them with
   live laptop records into its durable registry.
@@ -824,7 +814,6 @@ src/
     fixtures.ts   fixture data (real Grist seed + design-record refs)
     live.ts       Kaneo/Grist/projector readers with per-facet fallback
     opencode.ts   OpenCode v2 server -> SessionFeedEntry mapper (shared)
-    jules.ts      keeper state -> Jules SessionFeedEntry mapper (shared)
 opencode-tools/
   session-identity.ts  OpenCode tool: a session reports its own id (#906)
 scripts/
@@ -839,7 +828,7 @@ test/
   projector.test.ts projector wire-schema mapping + stub-server reads
   opencode.test.ts  mapper against a stub OpenCode v2 server
   quota.test.ts     extractors + guidance against the dated-read format
-  slice2.test.ts    tiers, expiry, hierarchy, Jules mapping, roadmap
+  slice2.test.ts    tiers, expiry, hierarchy, roadmap
                     grains, today derivation, slice-2 render smoke
   slice3.test.ts    dns parser, registry normalization, comment store,
                     page manifest, slice-3 renders + HTTP flows

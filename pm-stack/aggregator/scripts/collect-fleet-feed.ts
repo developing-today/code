@@ -21,8 +21,6 @@
 //     state.json persists the keys already shown. Absent file = the
 //     pre-#1057 hand-fed charges only. No balances or debt data ever
 //     pass through: candidates are charge evidence only.
-//   - jules-review-state.json — keeper supervision entries annotate
-//     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
 //     (#899: tiers, dependencies, goal measurements), embedded only
 //     after normalizeOrchestrationSection accepts it (the collector
@@ -60,7 +58,7 @@
 //     leaves); an unreadable config omits only the coverage.
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
-// Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, OPENCODE_SERVER_URL
+// Env overrides: QUOTA_VIEW_PATH, OPENCODE_SERVER_URL
 // (SANDBOX_OPENCODE_URL legacy alias), OPENCODE_SESSION_SOURCE,
 // OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH, DNS_REGISTER_PATH,
 // CLAUDE_LAUNCH_RECORDS_PATH, QUOTA_REGISTRY_PATH (the hub's PAYG/charges
@@ -94,7 +92,6 @@ import type {
   AaFeedSection,
   AaSection,
   DnsSection,
-  JulesSummary,
   OrchestrationSection,
   QuotaPool,
   SessionFeedEntry,
@@ -115,7 +112,6 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -156,7 +152,6 @@ const quotaViewPath =
     HOME,
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
-const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
 const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
 const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
@@ -211,25 +206,6 @@ function poolFor(provider: string, model: string): string | null {
       // visible from the session list alone.
       return null;
   }
-}
-
-/** sessionId -> "keeper <action> <at>" from jules-review-state.json. */
-async function supervisionNotes(): Promise<Map<string, string>> {
-  const notes = new Map<string, string>();
-  try {
-    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as {
-      opencode_supervision?: { at?: string; action?: string; error?: string; outcome?: string }[];
-    };
-    for (const entry of state.opencode_supervision ?? []) {
-      const text = `${entry.error ?? ""}\n${entry.outcome ?? ""}`;
-      for (const m of text.matchAll(/ses_[A-Za-z0-9]+/g)) {
-        notes.set(m[0], `keeper ${entry.action ?? "assessed"} ${entry.at ?? ""}`.trim());
-      }
-    }
-  } catch {
-    /* annotations are best-effort */
-  }
-  return notes;
 }
 
 /**
@@ -622,11 +598,6 @@ async function main(): Promise<void> {
       for (const e of mapped.entries) {
         registry.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
       }
-      const notes = await supervisionNotes();
-      for (const e of attention) {
-        const note = notes.get(e.sessionId);
-        if (note) e.supervisionNote = note;
-      }
       // Burn attribution: sessions the server holds active right now.
       const simple = mapped.entries.map((e) => ({
         id: e.sessionId,
@@ -651,32 +622,6 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error(`collector: OpenCode server read failed (${sanitizeCollectionError(err)}); attention empty`);
     markSection("attention", "error", err);
-  }
-
-  // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
-  let jules: JulesSummary | undefined;
-  let julesState: unknown;
-  let julesReadable = false;
-  try {
-    julesState = JSON.parse(await readFile(julesStatePath, "utf8")) as unknown;
-    julesReadable = true;
-  } catch (err) {
-    console.error("collector: jules-review state unreadable; no Jules sessions this run");
-    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
-  }
-  if (julesReadable) {
-    const state = julesState as JulesReviewState;
-    const entries = mapJulesItems(state);
-    if (entries.length) attention = [...attention, ...entries];
-    for (const e of entries) registry.push(recordFromSessionEntry(e));
-    jules = julesSummary(state);
-    const dropped = droppedJulesItemCount(state);
-    if (dropped > 0) {
-      console.error(
-        `collector: jules-review state malformed; skipped ${dropped} item(s), kept ${entries.length} session(s)`,
-      );
-    }
-    markSection("julesSummary", "ok");
   }
 
   // --- Muse launch records (#906 §3) --------------------------------
@@ -911,7 +856,6 @@ async function main(): Promise<void> {
     meta: { sections: sectionStatuses },
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
-    julesSummary: jules,
     ...(orchestration ? { orchestration } : {}),
     ...(dns ? { dns } : {}),
     ...(registry.length ? { registry } : {}),
@@ -928,7 +872,7 @@ async function main(): Promise<void> {
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource} + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
       (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
       (saas

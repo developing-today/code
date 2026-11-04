@@ -394,7 +394,7 @@ describe("dashboard actions validation", () => {
       verb: "answer",
       objectRef: "session:ses_1",
       sessionId: "ses_1",
-      sessionSource: "jules",
+      sessionSource: "opencode-laptop",
       author: drew,
       payload: { text: "proceed" },
     });
@@ -578,16 +578,16 @@ describe("attention action controls (#1152/#1156)", () => {
     expect(html).toContain('data-verb="snooze"'); // the unsnooze control rides the strip
   });
 
-  test("jules session card: answer enabled, poke/stop disabled keeper-mediated", async () => {
+  test("retired jules source: no keeper-mediated session cards", async () => {
     const src = fixtureSource();
     const view = buildAttention(await src.attention(), SECTION, NOW);
     const html = renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
       identities,
       actionsByObject: new Map(),
     });
-    // The fixture feed carries Jules sessions; their cards must show
-    // the keeper-mediated honesty, not enabled poke/stop buttons.
-    expect(html).toContain("keeper-mediated — answer only");
+    // Jules was retired (code#5098): the fixture feed carries no
+    // jules sessions and the keeper-mediated treatment is gone.
+    expect(html).not.toContain("keeper-mediated");
   });
 });
 
@@ -628,7 +628,7 @@ describe("status-request + session renders (#1154/#1156)", () => {
     expect(html).toContain("A request, not a write");
   });
 
-  test("live jules registry row: answer only; a stale row gets no controls", () => {
+  test("retired jules registry row: renders as history, without controls", () => {
     const live: SessionRecord = {
       id: "jules-live-1",
       source: "jules",
@@ -645,8 +645,12 @@ describe("status-request + session renders (#1154/#1156)", () => {
       identities,
       actionsByObject: new Map(),
     });
-    expect(html).toContain('data-session-id="jules-live-1"');
-    expect(html).toContain("keeper-mediated — answer only");
+    expect(html).toContain("jules-live-1");
+    expect(html).not.toContain("keeper-mediated");
+    // No action box for either row (data-session-id rides the box):
+    // the retired source has no verb support, and a stale row never
+    // gets controls.
+    expect(html).not.toContain('data-session-id="jules-live-1"');
     expect(html).not.toContain('data-session-id="jules-old-1"');
   });
 });
@@ -773,7 +777,7 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
       verb: "answer",
       objectRef: "session:duplicate-answer",
       sessionId: "duplicate-answer",
-      sessionSource: "jules",
+      sessionSource: "opencode-laptop",
       author: drew,
       payload: { text: "continue" },
     };

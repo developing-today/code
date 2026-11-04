@@ -1636,7 +1636,7 @@ export function liveSource(
       return null;
     },
     async registry(): Promise<SessionRecord[]> {
-      // Slice 3 (#906 §3): feed records (sandbox OpenCode + Jules +
+      // Slice 3 (#906 §3): feed records (sandbox OpenCode +
       // Muse launches) merged with the laptop server's live
       // sessions, accumulated into the durable store.
       const incoming: SessionRecord[] = [];
@@ -1691,19 +1691,6 @@ export function liveSource(
             : laptopSeen === false
               ? "unreachable on the last read — laptop sessions may be missing"
               : "not read yet this process",
-      });
-      const j = feed?.julesSummary;
-      out.push({
-        source: "jules",
-        label: "Jules",
-        wired: Boolean(j),
-        detail: j
-          ? `via the keeper's state (jules-review) · ${j.tracked} tracked now · last keeper run ${j.at ?? "unknown"}${
-              j.total != null
-                ? ` · last run totals: ${j.total} sessions — ${j.completed ?? 0} completed, ${j.failed ?? 0} failed, ${j.inProgress ?? 0} in progress, ${j.awaitingFeedback ?? 0} awaiting feedback (completed runs are pruned by the keeper)`
-                : ""
-            }`
-          : "keeper state not in the feed — Jules sessions are not visible",
       });
       const claudeRecords = (feed?.registry ?? []).filter((r) => r.source === "claude-code");
       out.push({
