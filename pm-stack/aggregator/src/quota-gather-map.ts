@@ -268,7 +268,7 @@ export function entryFromFileExport(
     entry.error = "file-export stale (latest.json older than the staleness bound — producer unreachable)";
     return entry;
   }
-  const measuredMs = doc.measuredAt ? Date.parse(doc.measuredAt) : Number.NaN;
+  const measuredMs = isIsoDate(doc.measuredAt) ? Date.parse(doc.measuredAt) : Number.NaN;
   if (doc.status !== "ok" || Number.isNaN(measuredMs)) {
     entry.error = `file-export status: ${doc.status ?? "unknown"}`;
     return entry;
