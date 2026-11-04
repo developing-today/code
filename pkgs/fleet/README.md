@@ -9,9 +9,15 @@ config, secrets-by-name and proxy-protocol platform crates. Step 2
 queue-broker / secrets-broker serve roles are real below. Step 3
 (#5431) landed the proxy domain — the session broker, its client,
 the hello negotiation and the PATH shims. Step 4 (#5432) landed
-the dispatch domain — a thin client over pm-stack dispatch. The
-remaining domain is a capability stub until its own step lands
-(search #5433).
+the dispatch domain — a thin client over pm-stack dispatch. Step 5
+(#5433) landed the search domain — the atlas-search client surface
+over the live Atlas service, gated on the #5350 step-6 cutover.
+Step 6 (#5554) landed the secrets verb. With search in, every
+domain in the registry runs for real in the full build; the one
+remaining stub is the search *serve role* (`fleet serve search`):
+the atlas user unit still points at the standalone atlas-search
+service, and re-pointing it is tracked separately from this epic's
+client-surface step.
 
 ## Layout
 
@@ -53,6 +59,27 @@ crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             repo-queue / queue-broker / secrets-broker
                             artifacts (the `fleet-brokers` package):
                             the migration's rollback inventory.
+crates/fleet-search/        the search domain (step 5): the
+                            atlas-search CLIENT surface over the
+                            live Atlas service's job protocol —
+                            `search` (hybrid FTS+vector with the
+                            classification filters) and `get-chunk`.
+                            Routing is the Atlas Q3 ruling: sandbox
+                            seat via-service by default (through the
+                            laptop-ssh loopback forward, the
+                            deployed wrapper's pattern; loud
+                            standalone fallback), laptop seat
+                            standalone by default. Standalone means
+                            the kept `atlas-search` artifact on
+                            PATH — this workspace carries no second
+                            embedder/backend. Ceilings are enforced
+                            server-side against the host's atlas
+                            client identity (client.json); the wire
+                            types mirror atlas-proto (the contract
+                            of record, untouched), and the output
+                            writers are ported verbatim from the
+                            atlas-search bin so service envelopes
+                            print byte-identically.
 crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
                             client over pm-stack's pm-dispatch —
                             `dispatch status` (GET /health),
@@ -82,8 +109,9 @@ their domain through argv0.
 
 | nix attr              | profile | capabilities                                                        |
 | --------------------- | ------- | ------------------------------------------------------------------- |
-| `fleet`               | full    | all nine                                                            |
+| `fleet`               | full    | all ten                                                            |
 | `fleet-serve`         | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve |
+| `fleet-static`        | full    | all nine (musl static; the sandbox's artifact)              |
 | `fleet-connect`       | connect | proxy-connect (dynamic)                                             |
 | `fleet-connect-static`| connect | proxy-connect (musl static, runs anywhere)                          |
 | `fleet-brokers`       | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)  |

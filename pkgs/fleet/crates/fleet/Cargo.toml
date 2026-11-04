@@ -16,6 +16,7 @@ fleet-config = { workspace = true }
 fleet-proxy-proto = { workspace = true }
 fleet-queue = { workspace = true, optional = true }
 fleet-dispatch = { workspace = true, optional = true }
+fleet-search = { workspace = true, optional = true }
 # The proxy CLIENT is part of every variant's registry (the
 # connect capability ships in all three builds); only the broker
 # half (fleet-proxy's `serve` feature) is variant-gated, through
@@ -50,7 +51,9 @@ proxy-serve = ["fleet-proxy/serve"]
 queue = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client"]
 queue-broker = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/queue-broker"]
 secrets-broker = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/secrets-broker"]
-search = ["dep:fleet-secrets"]
+# The search domain (step 5, #5433): the client crate carries its
+# own token chain (atlas's client.json), so no fleet-secrets link.
+search = ["dep:fleet-search"]
 search-serve = ["dep:fleet-secrets"]
 dispatch = ["dep:fleet-dispatch"]
 # The secrets verb (step 6, #5554): in full and serve (§2 puts the

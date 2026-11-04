@@ -2,7 +2,8 @@
 # Per-variant smoke suite for the fleet workspace
 # (step 1, developing-today/code#5429; queue-domain sections added
 # by step 2, #5430; proxy-domain sections by step 3, #5431;
-# dispatch-domain sections by step 4, #5432).
+# dispatch-domain sections by step 4, #5432; search-domain
+# sections by step 5, #5433).
 #
 # Usage:
 #   smoke.sh <fleet-out> <fleet-serve-out> <fleet-connect-out> <fleet-connect-static-out>
@@ -42,7 +43,8 @@ UP_PID=""
 IDLE_PID=""
 DS_PID=""
 SECB_PID=""
-trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID $DS_PID $SECB_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+SRCH_PID=""
+trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID $DS_PID $SECB_PID $SRCH_PID 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
@@ -101,6 +103,9 @@ run "serve: fleet dispatch stubs" 69 "this build does not include 'dispatch'" \
   "$SERVE_OUT/bin/fleet" dispatch
 run "serve: fleet laptop-agent stubs" 69 "this build does not include 'laptop-agent'" \
   "$SERVE_OUT/bin/fleet" laptop-agent
+run "serve: fleet search (client) stubs — serve carries search-serve only" 69 \
+  "this build does not include 'search'" \
+  "$SERVE_OUT/bin/fleet" search
 run "connect: fleet secrets stubs" 69 "this build does not include 'secrets'" \
   "$CONNECT_OUT/bin/fleet" secrets get smoke.secret
 
@@ -588,6 +593,172 @@ run "secrets: broker down, list fails loud (no bws substitution)" 3 "unavailable
   secrets_env "$FULL_OUT/bin/fleet" secrets list
 run "secrets: unknown name fails clean through both legs" 3 "unresolved" \
   secrets_env "$FULL_OUT/bin/fleet" secrets get absent.name
+
+
+echo "== search domain: via-service client over a stub atlas service (step 5, #5433) =="
+# Hermetic search world: a stub atlas service speaking the job
+# protocol (atlas-proto shapes) on a scratch loopback port. The
+# stub is the service-parity oracle for this suite: it owns a
+# canonical ranking per effective ceiling, implements the
+# server-side clamp (token cap ∧ requested ceiling), and plants
+# the step-6 canary — chunk 537, secret-bearing, rank 1 only when
+# the effective ceiling is secret-bearing. The client's contract
+# is to reproduce the stub's ranking exactly and to surface the
+# clamp; the LIVE oracle (the real service vs the real
+# atlas-search) is exercised in the step's live proofs on #5433.
+# A stub `atlas-search` on PATH stands in for the kept standalone
+# artifact: delegation cases assert fleet hands it the caller's
+# arguments in atlas-search's own shape.
+SRCH="$TMP/search"
+mkdir -p "$SRCH/bin" "$SRCH/home" "$SRCH/home-laptop/.local/state/atlas-search"
+touch "$SRCH/home-laptop/.local/state/atlas-search/service.json"
+cat > "$SRCH/stub.py" <<'PYEOF'
+import json, re
+from http.server import BaseHTTPRequestHandler, HTTPServer
+CAPS = {"smoke-personal-token": "personal", "smoke-secret-token": "secret-bearing"}
+LADDER = ["shareable", "personal", "local-only", "secret-bearing"]
+def clamp(requested, cap):
+    return LADDER[min(LADDER.index(requested), LADDER.index(cap))]
+def ranking(effective):
+    ids = [537, 11, 12] if effective == "secret-bearing" else [11, 12, 13]
+    return [{"chunk_id": i, "rank": n + 1} for n, i in enumerate(ids)]
+JOBS = {}
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        if self.path == "/health":
+            self._send(200, {"status": "ok", "embedder_state": "ready",
+                             "queue_depth": 0, "active_branch_executions": 0,
+                             "active_jobs": 0})
+            return
+        m = re.match(r"^/v1/search/jobs/([^/]+)$", self.path)
+        if m and m.group(1) in JOBS:
+            eff, _query = JOBS[m.group(1)]
+            self._send(200, {"job_id": m.group(1), "status": "done",
+                             "branch_states": {"fts": "done", "vector": "done"},
+                             "effective_ceiling": eff, "pool": 100, "notes": [],
+                             "submitted_at_ms": 0, "expires_at_ms": 999999999})
+            return
+        m = re.match(r"^/v1/search/jobs/([^/]+)/results", self.path)
+        if m and m.group(1) in JOBS:
+            eff, query = JOBS[m.group(1)]
+            results = ranking(eff)
+            envelope = {"query": query, "mode": "hybrid",
+                        "filters": {"max_sensitivity": eff}, "results": []}
+            self._send(200, {"job_id": m.group(1), "status": "done",
+                             "effective_ceiling": eff, "envelope": envelope,
+                             "results": results, "next_cursor": None,
+                             "total_results": len(results)})
+            return
+        self._send(404, {"error": {"code": "not_found", "message": "no such route"}})
+    def do_POST(self):
+        if self.path != "/v1/search/jobs":
+            self._send(404, {"error": {"code": "not_found", "message": "no such route"}})
+            return
+        token = (self.headers.get("Authorization") or "").removeprefix("Bearer ")
+        cap = CAPS.get(token)
+        if cap is None:
+            self._send(401, {"error": {"code": "unauthorized", "message": "unknown client"}})
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        req = json.loads(self.rfile.read(length) or b"{}")
+        eff = clamp(req.get("ceiling", "personal"), cap)
+        JOBS["job-smoke"] = (eff, req.get("query", ""))
+        self._send(202, {"job_id": "job-smoke", "job_token": "job-token",
+                         "status": "queued", "effective_ceiling": eff,
+                         "queue_depth": 0, "submitted_at_ms": 0,
+                         "expires_at_ms": 999999999})
+HTTPServer(("127.0.0.1", 14877), H).serve_forever()
+PYEOF
+python3 "$SRCH/stub.py" >"$SRCH/stub.log" 2>&1 &
+SRCH_PID=$!
+cat > "$SRCH/bin/atlas-search" <<'EOF'
+#!/bin/sh
+# The kept standalone artifact, stubbed: echo the argv it was
+# handed so delegation is provable from the output alone.
+echo "stub-atlas-search: $*"
+EOF
+chmod +x "$SRCH/bin/atlas-search"
+sleep 1
+search_env() {
+  env HOME="$SRCH/home" PATH="$SRCH/bin:$PATH" \
+      ATLAS_SEARCH_URL=http://127.0.0.1:14877 "$@"
+}
+# Ceiling invariant, personal client: requesting secret-bearing is
+# clamped by the server; the canary chunk is absent and the
+# applied filter says personal.
+search_env ATLAS_SEARCH_TOKEN=smoke-personal-token \
+  "$FULL_OUT/bin/fleet" search "smoke query" --max-sensitivity secret-bearing \
+  > "$SRCH/personal.out" 2> "$SRCH/personal.err"
+if python3 -c "
+import json, sys
+doc = json.load(open('$SRCH/personal.out'))
+ids = [r['chunk_id'] for r in doc['results']]
+assert ids == [11, 12, 13], ids
+assert doc['filters']['max_sensitivity'] == 'personal', doc['filters']
+" && ! grep -q '"chunk_id": 537' "$SRCH/personal.out"; then
+  ok "search: personal client is clamped; canary 537 absent; ranking is the service's"
+else
+  bad "search: personal client is clamped; canary 537 absent; ranking is the service's"
+  head -5 "$SRCH/personal.out" | sed 's/^/       /'
+fi
+# Ceiling, secret-bearing client (drew-cli's shape): the canary
+# leads the ranking.
+search_env ATLAS_SEARCH_TOKEN=smoke-secret-token \
+  "$FULL_OUT/bin/fleet" search "smoke query" --max-sensitivity secret-bearing \
+  > "$SRCH/secret.out" 2> "$SRCH/secret.err"
+if python3 -c "
+import json
+doc = json.load(open('$SRCH/secret.out'))
+ids = [r['chunk_id'] for r in doc['results']]
+assert ids == [537, 11, 12], ids
+assert doc['filters']['max_sensitivity'] == 'secret-bearing', doc['filters']
+"; then
+  ok "search: secret-bearing client sees the canary at rank 1"
+else
+  bad "search: secret-bearing client sees the canary at rank 1"
+  head -5 "$SRCH/secret.out" | sed 's/^/       /'
+fi
+# The atlas-search argv0 route lands on the same client.
+ln -s "$FULL_OUT/bin/fleet" "$SRCH/atlas-search"
+search_env ATLAS_SEARCH_TOKEN=smoke-personal-token \
+  "$SRCH/atlas-search" search "smoke query" > "$SRCH/argv0.out" 2>/dev/null
+if python3 -c "
+import json
+doc = json.load(open('$SRCH/argv0.out'))
+assert [r['chunk_id'] for r in doc['results']] == [11, 12, 13]
+"; then
+  ok "search: argv0 atlas-search route reproduces the service ranking"
+else
+  bad "search: argv0 atlas-search route reproduces the service ranking"
+fi
+# get-chunk delegates to the standalone artifact, arguments intact.
+run "search: get-chunk delegates to the standalone artifact" 0 \
+  "stub-atlas-search: get-chunk 42 --neighbors 2" \
+  search_env ATLAS_SEARCH_TOKEN=smoke-personal-token \
+  "$FULL_OUT/bin/fleet" search get-chunk 42 --neighbors 2
+# Laptop seat (the serving host's marker exists): standalone is
+# the default route.
+run "search: laptop seat defaults to standalone (delegates)" 0 \
+  "stub-atlas-search: search laptop query" \
+  env HOME="$SRCH/home-laptop" PATH="$SRCH/bin:$PATH" \
+  "$FULL_OUT/bin/fleet" search "laptop query"
+# Sandbox seat, service down: the fallback is LOUD and standalone
+# still serves the query.
+run "search: service down falls back loudly to standalone" 0 \
+  "falling back to standalone" \
+  env HOME="$SRCH/home" PATH="$SRCH/bin:$PATH" \
+      ATLAS_SEARCH_URL=http://127.0.0.1:9 \
+  "$FULL_OUT/bin/fleet" search "fallback query"
+kill "$SRCH_PID" 2>/dev/null
+SRCH_PID=""
 
 echo "== name narrowing: full build invoked as fleet-connect =="
 ln -s "$FULL_OUT/bin/fleet" "$TMP/fleet-connect"

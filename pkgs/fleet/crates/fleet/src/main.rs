@@ -7,7 +7,8 @@
 //! builds. Step 2 (#5430) landed the first real domain — queue: the
 //! repo-queue client and the queue-broker / secrets-broker serve
 //! roles run for real below; step 3 (#5431) the proxy domain; step 4
-//! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb. A compiled-in domain that has
+//! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb;
+//! step 5 (#5433) the search client domain. A compiled-in domain that has
 //! not landed yet answers with the "not implemented yet" form of
 //! the stub — but the *surface* is complete and honest: every
 //! variant renders the full registry, and every missing capability
@@ -361,6 +362,7 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "queue" => "included in this build",
             "dispatch" => "included in this build",
             "secrets" => "included in this build",
+            "search" => "included in this build",
             "proxy" => "included in this build",
             "serve" => {
                 "included in this build (queue-broker and secrets-broker roles; \
@@ -489,6 +491,14 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "secrets")]
             if d.name == "secrets" {
                 return secrets::run(&surface.config, args);
+            }
+            // Step 5 (#5433): the search domain runs for real —
+            // the atlas-search client surface over the live Atlas
+            // service (full build only; the serve build carries
+            // search-serve, so the client stubs 69 there, §2).
+            #[cfg(feature = "search")]
+            if d.name == "search" {
+                return fleet_search::run(&surface.config, args);
             }
             if d.name == "proxy" {
                 return run_proxy(surface, args);
