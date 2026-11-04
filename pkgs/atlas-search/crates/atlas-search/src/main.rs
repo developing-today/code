@@ -1,0 +1,524 @@
+//! atlas-search — the Atlas access layer: hybrid search over the corpus.
+//!
+//! The one-shot CLI (epic developing-today/code#5350, step 3,
+//! #5353): a surface-parity port of the Python `atlas_search.py`'s
+//! front-end over atlas-core (step 2) and atlas-embed (step 1).
+//! Standalone is the default and is complete — embed the query
+//! in-process, talk to Turso or a local publish file directly.
+//! `--via-service` prefers a running service and falls back to
+//! standalone loudly until the step-4 protocol lands (#5354).
+//!
+//! Exit behavior mirrors the Python: `die()` fatals print
+//! `atlas-search: <msg>` on stderr and exit 2 (argparse errors
+//! likewise exit 2 via clap); get-chunk's not-found exits 1, as do
+//! backend/transport failures (Python tracebacks, also exit 1 —
+//! the binary prints the message instead of the traceback).
+
+mod pyjson;
+mod render;
+mod service;
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::OnceLock;
+
+use atlas_core::filters::{Filters, split_csv};
+use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
+use atlas_core::{
+    AtlasEmbedder, Error as CoreError, FixedEmbedder, LocalBackend, QueryEmbedder, SearchBackend,
+    SearchMode, SearchOptions, TursoBackend, VectorBackend, run_get_chunk, run_search,
+};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde_json::Value as Json;
+
+// ---------------------------------------------------------------- args --
+
+#[derive(Parser)]
+#[command(
+    name = "atlas-search",
+    version,
+    about = "atlas-search — the Atlas access layer: hybrid search over the corpus."
+)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// hybrid FTS+vector search with classification filters
+    Search(Box<SearchArgs>),
+    /// one chunk with provenance
+    GetChunk(GetChunkArgs),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum BackendChoice {
+    Auto,
+    Turso,
+    Local,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ModeChoice {
+    Hybrid,
+    Fts,
+    Vector,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum EmbedderChoice {
+    Auto,
+    Fastembed,
+    St,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum VectorBackendChoice {
+    Scan,
+    IndexFill,
+    IndexFixed,
+}
+
+/// Backend selection + via-service routing, shared by both
+/// subcommands (the Python's `add_backend_args` + step 3's
+/// service routing).
+#[derive(Args, Clone)]
+struct BackendArgs {
+    /// data backend (auto: turso when a token resolves, else local)
+    #[arg(long, value_enum, default_value_t = BackendChoice::Auto)]
+    backend: BackendChoice,
+    /// local backend: SQLite DB path (default: canonical atlas.db)
+    #[arg(long)]
+    db: Option<String>,
+    /// local backend: comma-separated vector DB path(s) if the corpus DB has no vec table
+    #[arg(long)]
+    vecdb: Option<String>,
+    /// prefer a running atlas service; fall back to standalone, loudly
+    #[arg(long)]
+    via_service: bool,
+    /// service base URL for --via-service (env ATLAS_SEARCH_URL)
+    #[arg(long)]
+    service_url: Option<String>,
+}
+
+/// The Python's `add_vector_args` (search only).
+#[derive(Args, Clone)]
+struct VectorArgs {
+    /// embedding model (default Snowflake/snowflake-arctic-embed-m-v2.0; env ATLAS_SEARCH_MODEL)
+    #[arg(long, env = "ATLAS_SEARCH_MODEL", default_value = atlas_core::DEFAULT_MODEL)]
+    model: String,
+    /// vector table name (default vec_snowflake_m_v2_768_f32; env ATLAS_VEC_TABLE)
+    #[arg(long, env = "ATLAS_VEC_TABLE", default_value = atlas_core::DEFAULT_VEC_TABLE)]
+    vec_table: String,
+    /// query embedder: fastembed (bge) or st = sentence-transformers with prompt_name='query' (Snowflake); auto picks by model name
+    #[arg(long, value_enum, default_value_t = EmbedderChoice::Auto)]
+    embedder: EmbedderChoice,
+    /// truncate query+doc vectors to N dims (Matryoshka; 0 = full)
+    #[arg(long, default_value_t = 0)]
+    trunc: i64,
+    /// turso vector branch: scan = exact vector_distance_cos over the filtered set; index-fixed = one vector_top_k lookup at pool depth, filtered afterwards; index-fill = vector_top_k with escalating depth until the pool fills after filtering (cap 3200)
+    #[arg(long, value_enum, default_value_t = VectorBackendChoice::Scan)]
+    vector_backend: VectorBackendChoice,
+}
+
+#[derive(Args)]
+struct SearchArgs {
+    query: String,
+    /// final results (default 10)
+    #[arg(long, default_value_t = 10)]
+    k: i64,
+    /// per-branch candidates (default 100)
+    #[arg(long, default_value_t = 100)]
+    pool: i64,
+    #[arg(long, value_enum, default_value_t = ModeChoice::Hybrid)]
+    mode: ModeChoice,
+    #[arg(long)]
+    kind: Option<String>,
+    #[arg(long)]
+    topic: Option<String>,
+    #[arg(long)]
+    project: Option<String>,
+    #[arg(long)]
+    client: Option<String>,
+    /// YYYY-MM-DD, on sessions.created_at (inclusive)
+    #[arg(long)]
+    since: Option<String>,
+    /// YYYY-MM-DD, on sessions.created_at (inclusive)
+    #[arg(long)]
+    until: Option<String>,
+    /// ceiling in shareable<personal<local-only<secret-bearing (default personal; secret-bearing must be spelled out)
+    #[arg(long, default_value = "personal")]
+    max_sensitivity: String,
+    /// roll chunk hits up to sessions (score = best chunk, plus hit count)
+    #[arg(long)]
+    group_by_session: bool,
+    /// include N neighboring chunks (same message) around each hit
+    #[arg(long, default_value_t = 0)]
+    expand: i64,
+    /// include the parent message text (truncated at 50000 chars)
+    #[arg(long)]
+    with_message: bool,
+    /// human-readable output instead of JSON
+    #[arg(long)]
+    text: bool,
+    #[command(flatten)]
+    backend: BackendArgs,
+    #[command(flatten)]
+    vector: VectorArgs,
+}
+
+#[derive(Args)]
+struct GetChunkArgs {
+    chunk_id: i64,
+    #[arg(long, default_value_t = 0)]
+    neighbors: i64,
+    /// human-readable output instead of JSON
+    #[arg(long)]
+    text: bool,
+    #[command(flatten)]
+    backend: BackendArgs,
+}
+
+// -------------------------------------------------------------- errors --
+
+/// (exit code, message) — main prints `atlas-search: <message>`.
+type CliError = (u8, String);
+
+fn map_err(e: CoreError) -> CliError {
+    match e {
+        CoreError::Fatal(m) => (2, m),
+        CoreError::Backend(m) | CoreError::Embed(m) => (1, m),
+    }
+}
+
+/// get-chunk's not-found is the Python's one `die(..., code=1)`.
+fn map_get_chunk_err(e: CoreError, chunk_id: i64) -> CliError {
+    if let CoreError::Fatal(m) = &e
+        && *m == format!("chunk {chunk_id} not found")
+    {
+        return (1, m.clone());
+    }
+    map_err(e)
+}
+
+// ------------------------------------------------------------ backends --
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("~"))
+}
+
+/// The Python's `default_db_path`.
+fn default_db_path() -> String {
+    if let Ok(env) = std::env::var("ATLAS_DB")
+        && !env.is_empty()
+    {
+        return env;
+    }
+    let laptop = home_dir().join("atlas/turso-atlas/data/atlas.db");
+    if laptop.exists() {
+        return laptop.to_string_lossy().into_owned();
+    }
+    // The Python's script-relative ../data/atlas.db; the binary's
+    // analogue is its own directory's ../data.
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent().and_then(|p| p.parent())
+    {
+        let cand = dir.join("data/atlas.db");
+        if cand.exists() {
+            return cand.to_string_lossy().into_owned();
+        }
+    }
+    laptop.to_string_lossy().into_owned()
+}
+
+/// The Python's `pick_backend`: explicit turso/local, else turso
+/// when a token resolves through the standard chain, else local.
+fn pick_backend(
+    args: &BackendArgs,
+    vec_table: &str,
+    trunc: usize,
+) -> Result<Box<dyn SearchBackend>, CliError> {
+    let local = |args: &BackendArgs| -> Result<Box<dyn SearchBackend>, CliError> {
+        let db = args.db.clone().unwrap_or_else(default_db_path);
+        LocalBackend::new(&db, args.vecdb.as_deref(), vec_table, trunc)
+            .map(|b| Box::new(b) as Box<dyn SearchBackend>)
+            .map_err(map_err)
+    };
+    match args.backend {
+        BackendChoice::Turso => TursoBackend::new(vec_table)
+            .map(|b| Box::new(b) as Box<dyn SearchBackend>)
+            .map_err(map_err),
+        BackendChoice::Local => local(args),
+        BackendChoice::Auto => match resolve_turso_token() {
+            Ok((token, _source)) => Ok(Box::new(TursoBackend::with_token(
+                TURSO_HOST, token, vec_table,
+            ))),
+            Err(_) => local(args),
+        },
+    }
+}
+
+// ------------------------------------------------------------ embedder --
+
+/// The pinned model revision (fixtures/README.md; step 5 fetches
+/// it into the state dir — design section 4, Q1 as ruled).
+const MODEL_REV: &str = "95c2741480856aa9666782eb4afe11959938017f";
+
+fn resolve_model_dir() -> Option<PathBuf> {
+    if let Ok(d) = std::env::var("ATLAS_MODEL_DIR")
+        && !d.is_empty()
+    {
+        let p = PathBuf::from(&d);
+        return if p.is_dir() { Some(p) } else { None };
+    }
+    let home = home_dir();
+    let state = home.join(format!(".local/state/atlas-search/model/{MODEL_REV}"));
+    if state.is_dir() {
+        return Some(state);
+    }
+    let hf = home.join(format!(
+        ".cache/huggingface/hub/models--Snowflake--snowflake-arctic-embed-m-v2.0/snapshots/{MODEL_REV}"
+    ));
+    if hf.is_dir() {
+        return Some(hf);
+    }
+    None
+}
+
+fn resolve_ort_lib() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("ATLAS_ORT_LIB")
+        && !p.is_empty()
+    {
+        let pb = PathBuf::from(&p);
+        return if pb.is_file() { Some(pb) } else { None };
+    }
+    let cand = home_dir().join(".local/state/atlas-search/ort/libonnxruntime.so");
+    if cand.is_file() {
+        return Some(cand);
+    }
+    None
+}
+
+enum LoadedEmbedder {
+    Real(Box<AtlasEmbedder>),
+    Fixed(FixedEmbedder),
+}
+
+/// The CLI's lazy query embedder: loads the ONNX session on first
+/// use only, so FTS-only searches and get-chunk never pay for (or
+/// fail on) a missing model — the Python's degradation shape.
+///
+/// Test hook: `ATLAS_SEARCH_QVEC_FILE` (a JSON array of floats)
+/// substitutes a fixed query vector — the same monkeypatch the
+/// Python fixture generator applies to `embed_query`; used by the
+/// CLI parity tests, meaningless in production.
+struct CliEmbedder {
+    cell: OnceLock<Result<LoadedEmbedder, String>>,
+    model: String,
+    embedder: EmbedderChoice,
+}
+
+impl CliEmbedder {
+    fn new(model: String, embedder: EmbedderChoice) -> CliEmbedder {
+        CliEmbedder {
+            cell: OnceLock::new(),
+            model,
+            embedder,
+        }
+    }
+
+    fn load(&self) -> Result<&LoadedEmbedder, CoreError> {
+        self.cell
+            .get_or_init(|| {
+                if let Ok(f) = std::env::var("ATLAS_SEARCH_QVEC_FILE")
+                    && !f.is_empty()
+                {
+                    let text = std::fs::read_to_string(&f)
+                        .map_err(|e| format!("ATLAS_SEARCH_QVEC_FILE: cannot read {f}: {e}"))?;
+                    let raw: Vec<f32> = serde_json::from_str::<Vec<f64>>(&text)
+                        .map(|v| v.into_iter().map(|x| x as f32).collect())
+                        .map_err(|e| {
+                            format!("ATLAS_SEARCH_QVEC_FILE: bad JSON vector in {f}: {e}")
+                        })?;
+                    return Ok(LoadedEmbedder::Fixed(FixedEmbedder { raw }));
+                }
+                load_embedder(&self.model, self.embedder).map(|e| LoadedEmbedder::Real(Box::new(e)))
+            })
+            .as_ref()
+            .map_err(|m| CoreError::fatal(m.clone()))
+    }
+}
+
+impl QueryEmbedder for CliEmbedder {
+    fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, CoreError> {
+        match self.load()? {
+            LoadedEmbedder::Real(e) => e.embed_query(text, trunc),
+            LoadedEmbedder::Fixed(e) => e.embed_query(text, trunc),
+        }
+    }
+}
+
+/// Build the production embedder, with the Python's loud-failure
+/// shape for the combinations it also refuses (an embedder it
+/// cannot construct is a die(), never a silent downgrade).
+fn load_embedder(model: &str, embedder: EmbedderChoice) -> Result<AtlasEmbedder, String> {
+    if embedder == EmbedderChoice::Fastembed {
+        return Err(
+            "vector/hybrid modes with a fastembed embedder are not available in this \
+             binary (the bge/fastembed fallback lives in the Python CLI); use --mode fts \
+             or the Python atlas-search"
+                .to_string(),
+        );
+    }
+    if model != atlas_core::DEFAULT_MODEL {
+        return Err(format!(
+            "vector/hybrid modes: this binary embeds only {} (atlas-embed); \
+             model {model} needs the Python CLI",
+            atlas_core::DEFAULT_MODEL
+        ));
+    }
+    let model_dir = resolve_model_dir().ok_or_else(|| {
+        "Snowflake model not found (looked in ATLAS_MODEL_DIR, \
+         ~/.local/state/atlas-search/model/<rev>, and the HF cache snapshot); \
+         FTS-only search and get-chunk work without it"
+            .to_string()
+    })?;
+    let ort_lib = resolve_ort_lib().ok_or_else(|| {
+        "ONNX Runtime library not found: set ATLAS_ORT_LIB (the packaged \
+         binary resolves it from its nix closure — step 5, #5355); \
+         FTS-only search and get-chunk work without it"
+            .to_string()
+    })?;
+    let emb = atlas_embed::Embedder::load(&model_dir, &ort_lib)
+        .map_err(|e| format!("embedder load failed: {e}"))?;
+    Ok(AtlasEmbedder::new(emb))
+}
+
+// ------------------------------------------------------------- service --
+
+/// When via-service is in play: probe, warn loudly on stderr, and
+/// return the envelope note. Standalone proceeds regardless —
+/// step 4 swaps the probe for the real protocol client.
+fn via_service_note(args: &BackendArgs) -> Option<String> {
+    if !(args.via_service || service::via_env()) {
+        return None;
+    }
+    let base = service::base_url(args.service_url.as_deref());
+    let att = service::attempt(&base);
+    eprintln!(
+        "atlas-search: warning: --via-service: {}; falling back to standalone",
+        att.detail
+    );
+    Some(format!("via-service: {}; served standalone", att.detail))
+}
+
+fn push_note(out: &mut Json, note: String) {
+    if let Some(obj) = out.as_object_mut() {
+        match obj.get_mut("notes") {
+            Some(Json::Array(notes)) => notes.push(Json::String(note)),
+            _ => {
+                obj.insert("notes".to_string(), Json::Array(vec![Json::String(note)]));
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------- output --
+
+fn print_output(out: &Json, text: bool) {
+    if text {
+        println!("{}", render::render_text(out));
+    } else {
+        println!("{}", pyjson::dumps_pretty(out));
+    }
+}
+
+fn u(v: i64) -> usize {
+    usize::try_from(v).unwrap_or(0)
+}
+
+// -------------------------------------------------------------- commands --
+
+fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
+    let note = via_service_note(&args.backend);
+    let filters = Filters::new(
+        split_csv(args.kind.as_deref()),
+        split_csv(args.topic.as_deref()),
+        split_csv(args.project.as_deref()),
+        split_csv(args.client.as_deref()),
+        &args.max_sensitivity,
+        args.since.clone(),
+        args.until.clone(),
+    )
+    .map_err(map_err)?;
+    let trunc = u(args.vector.trunc);
+    let backend = pick_backend(&args.backend, &args.vector.vec_table, trunc)?;
+    let embedder = CliEmbedder::new(args.vector.model.clone(), args.vector.embedder);
+    let opts = SearchOptions {
+        query: args.query.clone(),
+        mode: match args.mode {
+            ModeChoice::Hybrid => SearchMode::Hybrid,
+            ModeChoice::Fts => SearchMode::Fts,
+            ModeChoice::Vector => SearchMode::Vector,
+        },
+        k: u(args.k),
+        pool: u(args.pool),
+        group_by_session: args.group_by_session,
+        expand: u(args.expand),
+        with_message: args.with_message,
+        model: args.vector.model.clone(),
+        embedder_label: match args.vector.embedder {
+            EmbedderChoice::Auto => "auto",
+            EmbedderChoice::Fastembed => "fastembed",
+            EmbedderChoice::St => "st",
+        }
+        .to_string(),
+        trunc,
+        vector_backend: match args.vector.vector_backend {
+            VectorBackendChoice::Scan => VectorBackend::Scan,
+            VectorBackendChoice::IndexFill => VectorBackend::IndexFill,
+            VectorBackendChoice::IndexFixed => VectorBackend::IndexFixed,
+        },
+    };
+    let mut out = run_search(backend.as_ref(), &embedder, &filters, &opts).map_err(map_err)?;
+    if let Some(note) = note {
+        push_note(&mut out, note);
+    }
+    print_output(&out, args.text);
+    Ok(())
+}
+
+fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
+    let note = via_service_note(&args.backend);
+    // The Python's get-chunk takes no vector args: pick_backend
+    // sees the defaults (getattr fallbacks in its main()).
+    let backend = pick_backend(&args.backend, atlas_core::DEFAULT_VEC_TABLE, 0)?;
+    let mut out = run_get_chunk(backend.as_ref(), args.chunk_id, u(args.neighbors))
+        .map_err(|e| map_get_chunk_err(e, args.chunk_id))?;
+    if let Some(note) = note {
+        push_note(&mut out, note);
+    }
+    print_output(&out, args.text);
+    Ok(())
+}
+
+fn run(cli: Cli) -> Result<(), CliError> {
+    match cli.cmd {
+        Cmd::Search(args) => cmd_search(*args),
+        Cmd::GetChunk(args) => cmd_get_chunk(args),
+    }
+}
+
+fn main() -> ExitCode {
+    let cli = <Cli as clap::Parser>::parse();
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err((code, msg)) => {
+            eprintln!("atlas-search: {msg}");
+            ExitCode::from(code)
+        }
+    }
+}
