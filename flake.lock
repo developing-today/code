@@ -2905,13 +2905,13 @@
       "locked": {
         "lastModified": 1724352083,
         "narHash": "sha256-GP8YzfLFOFcSSRqGkzG7HGu/hT749saBgRUMSClkqwU=",
-        "owner": "developing-today-forks",
+        "owner": "developing-today-vendored",
         "repo": "nixos-unattended-installer",
         "rev": "25936f740d57d43a05adbb0e667deabd641d9ebc",
         "type": "github"
       },
       "original": {
-        "owner": "developing-today-forks",
+        "owner": "developing-today-vendored",
         "repo": "nixos-unattended-installer",
         "type": "github"
       }
