@@ -635,7 +635,12 @@ function initWorld(): void {
       if (frame.type === "upload_ready" && !uploadStarted) {
         uploadStarted = true;
         const chunkBytes = frame.chunk_bytes;
-        if (typeof chunkBytes !== "number" || !Number.isInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > 6 * 1024) {
+        if (
+          typeof chunkBytes !== "number" ||
+          !Number.isInteger(chunkBytes) ||
+          chunkBytes < 1 ||
+          chunkBytes > 6 * 1024
+        ) {
           setStatus("Host returned an invalid module chunk size", "error");
           upload.close();
           return;
