@@ -1620,13 +1620,6 @@ export function sessionVerbSupport(source: string): { verb: "poke" | "answer" | 
   if (source === "opencode-sandbox" || source === "opencode-laptop") {
     return [{ verb: "poke" }, { verb: "answer" }, { verb: "stop" }];
   }
-  if (source === "jules") {
-    return [
-      { verb: "poke", reason: "Jules sessions are keeper-mediated — answer only" },
-      { verb: "answer" },
-      { verb: "stop", reason: "Jules sessions are keeper-mediated — answer only" },
-    ];
-  }
   if (source === "claude-code") {
     const reason = "No live control channel for Muse sessions — launch records only";
     return [
@@ -6060,7 +6053,7 @@ export function renderSessions(
   }
   const body = `<h1>Sessions — identity registry</h1>
 ${viewHtml}<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records shown · ${totalTokens.toLocaleString()} tokens recorded on this page. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
-<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
+<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
   return layout(
     "Sessions",

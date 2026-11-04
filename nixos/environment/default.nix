@@ -226,11 +226,6 @@ let
   # online lives in home/common.
   desktop-commander = pkgs.callPackage (lib.from-root "pkgs/desktop-commander") { };
 
-  # Jules Tools, the CLI for Google's async coding agent. Not in nixpkgs; the
-  # npm package is a stub that downloads a dynamically linked Go binary, which
-  # will not exec on NixOS without autoPatchelfHook. See the derivation header.
-  jules = pkgs.callPackage (lib.from-root "pkgs/jules") { };
-
   # Antigravity ACP server and Hub. Both vendored from nixpkgs master rather
   # than taken from a channel: neither exists in ANY nixpkgs revision this flake
   # pins (stable, unstable or master-as-pinned), and bumping an input to reach
@@ -246,10 +241,6 @@ let
   # Cursor, Gemini CLI and others. 18.6k stars, no declared licence upstream.
   cockpit-tools = pkgs.callPackage (lib.from-root "pkgs/cockpit-tools") { };
 
-  # Google's experimental Jules orchestration pair. Fleet drives goal files ->
-  # analyzer sessions -> labelled issues -> worker sessions; Merge reconciles
-  # the overlapping PRs that result. Google's own words on Fleet: "very
-  # experimental, just for fun".
   # Grok CLI (superagent-ai/grok-cli, published to npm as `grok-dev`).
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
@@ -260,8 +251,6 @@ let
   # Claude Code 2.1.293 (nixpkgs has 2.1.234 in both channel and unstable).
   claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
 
-  jules-fleet = pkgs.callPackage (lib.from-root "pkgs/jules-fleet") { };
-  jules-merge = pkgs.callPackage (lib.from-root "pkgs/jules-merge") { };
   antigravity-hub = pkgs.callPackage (lib.from-root "pkgs/antigravity-hub") { };
 
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
@@ -406,14 +395,11 @@ in
       command-code
       desktop-commander
       mcpx
-      jules
       antigravity-acp
       antigravity-hub
       claude-code
       cockpit-tools
       grok-cli
-      jules-fleet
-      jules-merge
       latestCli.codex
       opencode-v2-compat
       openchamber
@@ -731,8 +717,7 @@ in
       # Pro/Ultra users: Gemini CLI was replaced by Antigravity CLI"), which is
       # an eval *warning*, not a build failure -- 0.47.0 builds and runs fine.
       # Installed deliberately: upstream google-gemini/gemini-cli is very much
-      # alive, and the `gemini` binary is required by the official
-      # gemini-cli-extensions/jules extension.
+      # alive.
       gemini-cli
     ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [

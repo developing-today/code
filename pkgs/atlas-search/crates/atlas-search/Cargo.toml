@@ -1,0 +1,22 @@
+[package]
+name = "atlas-search"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The Atlas search binary: one-shot CLI (search, get-chunk) at Python surface parity, standalone-first with a prefer-service mode; the serve subcommand lands in step 4. Epic developing-today/code#5350, step 3 (#5353)."
+
+[[bin]]
+name = "atlas-search"
+path = "src/main.rs"
+
+[dependencies]
+atlas-core = { path = "../atlas-core" }
+atlas-embed = { path = "../atlas-embed" }
+clap = { version = "4", features = ["derive", "env"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "3", features = ["rustls"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = { version = "1", features = ["preserve_order"] }

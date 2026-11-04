@@ -3,7 +3,7 @@
 # (developing-today/code#1050). Copies the producer beside its output
 # directory and enables the 15-minute timer beside the #1151 gatherer tick.
 # The management token is resolved BY NAME from Bitwarden at runtime
-# (SUPABASE_TOKEN_SECRET_NAME, default supabase.access-token-muse-cli);
+# (SUPABASE_TOKEN_SECRET_NAME, default supabase.muse-dev2.access-token-muse-cli);
 # this script never reads, prints, or stores its value.
 set -euo pipefail
 
