@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Per-variant smoke suite for the fleet workspace
 # (step 1, developing-today/code#5429; queue-domain sections added
-# by step 2, #5430).
+# by step 2, #5430; proxy-domain sections by step 3, #5431).
 #
 # Usage:
 #   smoke.sh <fleet-out> <fleet-serve-out> <fleet-connect-out> <fleet-connect-static-out>
@@ -16,6 +16,10 @@
 #   * a config-disabled domain stubs with exit 69, config wording
 #   * both connect flavors run under `env -i`
 #   * both connect flavors are within the D7 size gate (<= 2 MiB)
+#   * the proxy domain end to end, hermetically: broker auto-start,
+#     round-trips, shim materialization + stale-shim removal on a
+#     services-map change, init no-op, legacy proto-0 interop,
+#     idle exit
 #
 # Exits nonzero if any check fails. No network, no installs, no
 # state outside a mktemp dir.
@@ -31,7 +35,10 @@ FAIL=0
 TMP=$(mktemp -d)
 SB_PID=""
 QB_PID=""
-trap 'kill $SB_PID $QB_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+PB_PID=""
+UP_PID=""
+IDLE_PID=""
+trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
@@ -100,11 +107,192 @@ run "connect as atlas-search stubs 69" 69 "this build does not include 'search'"
 run "serve as queue-broker reaches the real broker role (missing token file: exit 3)" 3 "cannot read token file" \
   env QUEUE_BROKER_TOKEN_FILE="$TMP/no-such-token" "$TMP/queue-broker"
 
-echo "== compiled in but not implemented yet (exit 69) =="
-run "full: fleet proxy connect is the skeleton stub" 69 "not implemented yet" \
-  "$FULL_OUT/bin/fleet" proxy connect
-run "connect: fleet proxy connect is the skeleton stub" 69 "not implemented yet" \
-  "$CONNECT_OUT/bin/fleet" proxy connect
+echo "== proxy domain: serve + connect + init + shims (step 3, #5431) =="
+# Hermetic proxy world: a scratch HOME (token file), scratch socket,
+# scratch state dirs, and a stub HTTP upstream on loopback ports. The
+# broker runs with direct = true, so no CONNECT tunnel is involved;
+# the tunnel path itself is exercised against the real system in the
+# step's live proofs, not in per-variant smoke.
+PX="$TMP/proxy"
+mkdir -p "$PX/home/tools" "$PX/state" "$PX/state-connect"
+printf 'smoke-broker-token\n' > "$PX/home/tools/laptop-agent-token"
+
+cat > "$PX/upstream.py" <<'PYEOF'
+import socket, threading, json, time
+def handle(conn, port):
+    f = conn.makefile("rb")
+    try:
+        while True:
+            line = f.readline()
+            if not line: return
+            length = 0
+            while True:
+                h = f.readline()
+                if h in (b"\r\n", b"\n", b""): break
+                if h.lower().startswith(b"content-length:"):
+                    length = int(h.split(b":", 1)[1])
+            if length: f.read(length)
+            body = json.dumps({"ok": True, "port": port}).encode()
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                         b"Content-Length: %d\r\n\r\n%s" % (len(body), body))
+    except Exception:
+        return
+def serve(port):
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port)); srv.listen(16)
+    while True:
+        conn, _ = srv.accept()
+        threading.Thread(target=handle, args=(conn, port), daemon=True).start()
+for p in (14799, 14801):
+    threading.Thread(target=serve, args=(p,), daemon=True).start()
+while True: time.sleep(3600)
+PYEOF
+python3 "$PX/upstream.py" >"$PX/upstream.log" 2>&1 &
+UP_PID=$!
+
+cat > "$PX/fleet.toml" <<'EOF'
+[proxy]
+direct = true
+target_host = "127.0.0.1"
+idle_exit_secs = 3600
+
+[[proxy.services]]
+port = 14799
+name = "laptop-agent"
+
+[[proxy.services]]
+port = 14801
+name = "queue-broker"
+EOF
+
+proxy_env() {
+  env HOME="$PX/home" FLEET_CONFIG="$PX/fleet.toml" \
+      FLEET_BROKER_SOCKET="$PX/broker.sock" XDG_STATE_HOME="$PX/state" "$@"
+}
+
+# connect auto-starts the broker and round-trips through it.
+run "proxy: connect auto-starts broker and round-trips /health" 0 '"status":200' \
+  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
+run "proxy: round-trip reached the 14799 upstream" 0 '"port":14799' \
+  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
+run "proxy: round-trip to the 14801 service" 0 '"port":14801' \
+  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14801
+
+# Shims materialized from the negotiated services map.
+if [ -L "$PX/state/fleet/shims/repo-queue" ] && [ -L "$PX/state/fleet/shims/laptop-agent" ]; then
+  ok "proxy: shims materialized from the services map (repo-queue, laptop-agent)"
+else
+  bad "proxy: shims materialized from the services map (repo-queue, laptop-agent)"
+fi
+
+# init is a strict no-op against the running broker.
+PB_PID=$(pgrep -f "bin/fleet proxy serve" | head -1)
+run "proxy: fleet init is a no-op when the broker runs" 0 "already running" \
+  proxy_env "$FULL_OUT/bin/fleet" init
+if [ -n "$PB_PID" ] && kill -0 "$PB_PID" 2>/dev/null && [ "$(pgrep -f 'bin/fleet proxy serve' | wc -l)" -eq 1 ]; then
+  ok "proxy: init left the same single broker alive"
+else
+  bad "proxy: init left the same single broker alive"
+fi
+
+# The connect variant speaks to the same broker and materializes its
+# own shims; it cannot serve (69), and neither can its init.
+run "proxy: connect variant round-trips through the full broker" 0 '"status":200' \
+  env HOME="$PX/home" FLEET_CONFIG="$PX/fleet.toml" \
+      FLEET_BROKER_SOCKET="$PX/broker.sock" XDG_STATE_HOME="$PX/state-connect" \
+  "$CONNECT_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
+if [ -L "$PX/state-connect/fleet/shims/repo-queue" ]; then
+  ok "proxy: connect variant materialized its own shims"
+else
+  bad "proxy: connect variant materialized its own shims"
+fi
+run "proxy: connect variant stubs serve at 69" 69 "does not include 'proxy'" \
+  "$CONNECT_OUT/bin/fleet" proxy serve
+run "proxy: connect variant stubs fleet init at 69 (no serve in build)" 69 "does not include 'proxy'" \
+  "$CONNECT_OUT/bin/fleet" init
+
+# Legacy (proto 0) client against the fleet broker: raw 8-byte
+# frames, no hello — the Python clients' dialect, still served.
+cat > "$PX/legacy.py" <<'PYEOF'
+import socket, struct, json, sys
+s = socket.socket(socket.AF_UNIX)
+s.connect(sys.argv[1])
+frame = json.dumps({"method": "GET", "path": "/health", "port": 14799}).encode()
+s.sendall(struct.pack(">Q", len(frame)) + frame)
+def readn(n):
+    buf = b""
+    while len(buf) < n:
+        chunk = s.recv(n - len(buf))
+        if not chunk: raise SystemExit("closed")
+        buf += chunk
+    return buf
+n = struct.unpack(">Q", readn(8))[0]
+resp = json.loads(readn(n))
+assert resp["status"] == 200, resp
+print("legacy-ok")
+PYEOF
+run "proxy: legacy proto-0 client round-trips (no hello)" 0 "legacy-ok" \
+  python3 "$PX/legacy.py" "$PX/broker.sock"
+
+# Services-map change: restart the broker with a smaller map; the
+# repo-queue shim must disappear, laptop-agent must stay.
+kill "$PB_PID" 2>/dev/null
+sleep 0.5
+rm -f "$PX/broker.sock"
+cat > "$PX/fleet.toml" <<'EOF'
+[proxy]
+direct = true
+target_host = "127.0.0.1"
+idle_exit_secs = 3600
+
+[[proxy.services]]
+port = 14799
+name = "laptop-agent"
+EOF
+run "proxy: reconnect with the smaller map" 0 '"status":200' \
+  proxy_env "$FULL_OUT/bin/fleet" proxy connect --request GET /health --service-port 14799
+if [ ! -e "$PX/state/fleet/shims/repo-queue" ] && [ -L "$PX/state/fleet/shims/laptop-agent" ]; then
+  ok "proxy: stale shim removed when the map shrank"
+else
+  bad "proxy: stale shim removed when the map shrank"
+fi
+PB_PID=$(pgrep -f "bin/fleet proxy serve" | head -1)
+kill "$PB_PID" 2>/dev/null
+PB_PID=""
+
+# Idle exit: a broker with an 8-second idle span exits on its own
+# even though its keepalive loop is running (keepalive != use).
+mkdir -p "$PX/idle"
+cat > "$PX/idle.toml" <<'EOF'
+[proxy]
+direct = true
+target_host = "127.0.0.1"
+idle_exit_secs = 8
+
+[[proxy.services]]
+port = 14799
+name = "laptop-agent"
+EOF
+env HOME="$PX/home" FLEET_CONFIG="$PX/idle.toml" \
+    FLEET_BROKER_SOCKET="$PX/idle/broker.sock" XDG_STATE_HOME="$PX/state" \
+    "$FULL_OUT/bin/fleet" proxy serve >"$PX/idle.log" 2>&1 &
+IDLE_PID=$!
+sleep 1
+if kill -0 "$IDLE_PID" 2>/dev/null; then
+  ok "proxy: idle broker alive inside its span"
+else
+  bad "proxy: idle broker alive inside its span"
+fi
+for i in $(seq 1 40); do kill -0 "$IDLE_PID" 2>/dev/null || break; sleep 1; done
+if kill -0 "$IDLE_PID" 2>/dev/null; then
+  bad "proxy: idle broker exits after its span (keepalive does not reset it)"
+else
+  ok "proxy: idle broker exits after its span (keepalive does not reset it)"
+fi
+IDLE_PID=""
+kill "$UP_PID" 2>/dev/null
+UP_PID=""
 
 echo "== queue domain: serve roles bind + answer; client surface (step 2, #5430) =="
 # Scratch token files: the roles refuse to start without them. The
@@ -150,8 +338,8 @@ ln -s "$FULL_OUT/bin/fleet" "$TMP/fleet-connect"
 run "narrowed: version lists only the connect set" 0 "$CONNECT_CAPS" "$TMP/fleet-connect" version
 run "narrowed: queue stubs with narrowed wording" 69 "invoked as 'fleet-connect'" \
   "$TMP/fleet-connect" queue health
-run "narrowed: proxy connect still reaches the skeleton stub" 69 "not implemented yet" \
-  "$TMP/fleet-connect" proxy connect
+run "narrowed: proxy serve stubs with narrowed wording" 69 "invoked as 'fleet-connect'" \
+  "$TMP/fleet-connect" proxy serve
 run "narrowed: --help marks queue as narrowed out" 0 "[narrowed out by this name]" \
   "$TMP/fleet-connect" --help
 

@@ -52,15 +52,6 @@ name: mcpx
 # (#297).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      # The seed store is data the collector bot files (#1953): its
-      # commits must never re-trigger this workflow (the collector
-      # also marks its commits [skip ci] — both addendum fixes).
-      - "!pkgs/mcpx/testdata/seeds/**"
-      - ".opencode/plugin/**"
   schedule:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"

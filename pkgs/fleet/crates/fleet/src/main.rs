@@ -327,6 +327,9 @@ fn help_text(surface: &Surface) -> String {
         ));
     }
     out.push_str("\nBuilt-in commands:\n");
+    out.push_str(
+        "  init           Autostart the session proxy if it is not running (no-op when it is)\n",
+    );
     out.push_str("  version        Print version, enabled capabilities, and source rev\n");
     out.push_str("  capabilities   Print the registry and this build's capabilities as JSON\n");
     out.push_str("  help [domain]  Show this help, or one domain's help\n\n");
@@ -349,6 +352,7 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
     let status = match surface.domain_state(d) {
         CapState::Available => match d.name {
             "queue" => "included in this build",
+            "proxy" => "included in this build",
             "serve" => {
                 "included in this build (queue-broker and secrets-broker roles; \
                  the search role lands in a later step)"
@@ -465,6 +469,9 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "serve" && args.first().map(|s| s.as_str()) == Some("secrets-broker") {
                 return fleet_queue::secrets_broker::run();
             }
+            if d.name == "proxy" {
+                return run_proxy(surface, args);
+            }
             if args.is_empty() && d.name != "serve" && d.name != "proxy" {
                 // A bare compiled-in domain is a usage error, like the
                 // tools being replaced — but say what it will be.
@@ -474,6 +481,72 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             stub(surface, d.name, &CapState::Available, invoked_as)
         }
         state => stub(surface, d.name, &state, invoked_as),
+    }
+}
+
+/// The proxy domain's leaves (step 3, #5431). `required_capability`
+/// has already mapped serve → ProxyServe and connect/init →
+/// ProxyConnect, and cap_state has already stubbed at 69 where the
+/// capability is unusable, so `serve` here implies the broker half
+/// is compiled in.
+fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
+    let config = &surface.config;
+    let client = format!("fleet {} ({})", VERSION, build_name(&surface.compiled));
+    let capabilities = fleet_proxy_proto::capability_ids(&surface.usable());
+    match args.first().map(|s| s.as_str()) {
+        Some("serve") => {
+            #[cfg(feature = "proxy-serve")]
+            {
+                fleet_proxy::serve::run(config)
+            }
+            #[cfg(not(feature = "proxy-serve"))]
+            {
+                unreachable!("proxy serve dispatched without the proxy-serve capability")
+            }
+        }
+        Some("connect") => {
+            let parsed = match fleet_proxy::client::ConnectArgs::parse(&args[1..]) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    return e.exit_code();
+                }
+            };
+            match fleet_proxy::client::run_connect(&parsed, config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
+        Some("init") => run_init_call(surface, &args[1..]),
+        _ => unreachable!("required_capability rejects other proxy commands first"),
+    }
+}
+
+fn run_init_call(surface: &Surface, argv: &[String]) -> i32 {
+    let client = format!("fleet {} ({})", VERSION, build_name(&surface.compiled));
+    let capabilities = fleet_proxy_proto::capability_ids(&surface.usable());
+    match fleet_proxy::client::run_init(argv, &surface.config, &client, &capabilities) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("fleet: {e}");
+            e.exit_code()
+        }
+    }
+}
+
+/// `fleet init` — the autostart door (design note §8): ensure the
+/// session proxy is up, a strict no-op when it already answers.
+/// (The verb went missing in step 2's dispatch rework; step 3
+/// restores it — the note and #5431 both name it as the entry.)
+/// The ladder mirrors the capability rules: a build whose usable
+/// surface lacks proxy-serve can only stub (69).
+fn cmd_init(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
+    match surface.cap_state(Capability::ProxyServe, "proxy") {
+        CapState::Available => run_init_call(surface, args),
+        state => stub(surface, "proxy", &state, invoked_as),
     }
 }
 
@@ -514,6 +587,7 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             print_capabilities(surface, invoked_as);
             EXIT_OK
         }
+        Some("init") => cmd_init(surface, &args[1..], invoked_as),
         Some(name) => match domain(name) {
             Some(d) => run_domain(surface, d, &args[1..], invoked_as),
             None => usage_error(&format!("unrecognized subcommand '{name}'")),

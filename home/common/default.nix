@@ -20,7 +20,8 @@ let
   commandcodeProxyPort = 18748;
   opencodeRouteProxyPort = 18750;
   claudeCodeProxyPort = 18749;
-  antigravityDirectProxyPort = 18751;
+  # antigravityDirectProxyPort (18751) retired 2026-11-04 (opencode#1414):
+  # the in-fork native provider replaced the door; the port is free.
   # Atlas search service port (code#5350 step 5, #5355): the fleet
   # inventory entry for 18760. Unlike the proxy lets above, this
   # value is NOT plumbed into a unit's Environment — it lives in
@@ -620,42 +621,14 @@ in
     Install.WantedBy = [ "sockets.target" ];
   };
 
-  # Antigravity Direct (agy CLI wire clone) Local Proxy Bridge. Speaks
-  # the agy CLI's own wire protocol directly -- the keyring OAuth
-  # credential (service "gemini", username "antigravity"), the CLI's
-  # embedded OAuth client for refresh, and its exact v1internal envelope
-  # to daily-cloudcode-pa.googleapis.com -- with no spawned CLI and no
-  # spawned language_server (bin/antigravity-direct.mjs; the CLI's wire
-  # behavior was captured live, see the header in that file). Since
-  # 2026-10-30 (Drew) this is the fleet's single Antigravity door: it
-  # replaces agy-proxy (CLI spawn, :18743, formerly in this spot) and
-  # antigravity-ls-proxy (language-server spawn, :18745, formerly below
-  # codex-proxy), whose unit definitions are removed in the same change
-  # so a switch stops them and they stay off. Must run inside the user
-  # session: Secret Service keyring access is how it authenticates,
-  # exactly like the CLI itself.
-  systemd.user.services.antigravity-direct = {
-    Unit = {
-      Description = "Antigravity Direct (CLI wire clone) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "antigravity-direct-start" ''
-          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:/run/current-system/sw/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/antigravity-direct.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "ANTIGRAVITY_DIRECT_PORT=${toString antigravityDirectProxyPort}"
-        "ANTIGRAVITY_DIRECT_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Antigravity Direct door retired 2026-11-04 (opencode#1414): the
+  # provider block in .opencode/opencode.jsonc names the in-fork
+  # native provider (@opencode/ai/providers/antigravity, opencode#1457)
+  # under the same antigravity-direct id, and a zero-traffic window
+  # on :18751 preceded this removal. bin/antigravity-direct.mjs and
+  # its wrapper/test were removed in the same change; the agy CLI
+  # remains the keyring credential owner and the native provider
+  # refreshes in memory, in place.
 
   systemd.user.services.codex-proxy = {
     Unit = {
@@ -1649,7 +1622,6 @@ in
       # opencode.jsonc reads them via {env:...} substitution.
       CLEF_PROXY_PORT = toString clefProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
-      ANTIGRAVITY_DIRECT_PORT = toString antigravityDirectProxyPort;
       # The three below were missing: their {env:...} templates in
       # opencode.jsonc resolved to an empty port in the OpenChamber serve
       # (2026-10-25 audit) because the variables never reached its

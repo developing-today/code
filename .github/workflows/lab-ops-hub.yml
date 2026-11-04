@@ -20,15 +20,6 @@ name: lab-ops-hub
 # package's npm dependencies installed.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/lab-ops-hub/**"
-      - ".github/workflows/lab-ops-hub.yml"
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/lab-ops-hub/**"
-      - ".github/workflows/lab-ops-hub.yml"
   workflow_dispatch:
 
 permissions:

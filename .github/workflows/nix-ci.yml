@@ -2,8 +2,6 @@ name: nix ci
 
 # CI tier policy: see .github/ci-policy.md
 on:
-  push:
-    branches: [main]
   schedule:
     # Nightly backstop: the full flake check runs on main + nightly, not PRs.
     - cron: "17 8 * * *"
