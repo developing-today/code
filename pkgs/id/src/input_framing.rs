@@ -171,7 +171,7 @@ pub struct InputAssembler {
 impl InputAssembler {
     /// Create an assembler with explicit limits.
     #[must_use]
-    pub fn new(limits: Limits) -> Self {
+    pub const fn new(limits: Limits) -> Self {
         Self {
             limits,
             pending: Vec::new(),
@@ -268,13 +268,13 @@ impl InputAssembler {
 
     /// Bytes currently buffered for the incomplete token.
     #[must_use]
-    pub fn pending_len(&self) -> usize {
+    pub const fn pending_len(&self) -> usize {
         self.pending.len()
     }
 
     /// Whether no bytes are pending.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 
