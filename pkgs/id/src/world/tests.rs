@@ -149,6 +149,7 @@ mod tests {
                 caps_ceiling: None,
                 schedules: None,
                 transfers: None,
+                lease: None,
                 snapshot: "s".to_owned(),
                 events,
                 open_presence: None,
@@ -314,6 +315,7 @@ mod tests {
                 caps_ceiling: None,
                 schedules: None,
                 transfers: Some(transfers),
+                lease: None,
                 snapshot: "state".to_owned(),
                 events: Vec::new(),
                 open_presence: None,
@@ -379,6 +381,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             transfers: None,
+            lease: None,
             admin_history: None,
             open_presence: None,
             snapshot: "s".to_owned(),
@@ -458,6 +461,404 @@ mod tests {
         ));
         let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
         assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
+    }
+
+    fn lease_header() -> JournalEntry {
+        JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_WRITE_LEASE,
+        }
+    }
+
+    fn spill_handoff() -> JournalEntry {
+        JournalEntry::LeaseHandedOff {
+            from: DO_WRITE_LEASE_HOLDER.to_owned(),
+            to: "native-1".to_owned(),
+            epoch: 1,
+            expires_at_ms: Some(30_000),
+        }
+    }
+
+    fn spill_renewal() -> JournalEntry {
+        JournalEntry::LeaseRenewed {
+            holder: "native-1".to_owned(),
+            epoch: 1,
+            expires_at_ms: 40_000,
+        }
+    }
+
+    fn stale_rejection() -> JournalEntry {
+        // The native holder presenting its pre-handoff epoch: the gate
+        // refuses it as stale, and the authority journals the attempt.
+        JournalEntry::LeaseWriteRejected {
+            writer: "native-1".to_owned(),
+            presented_epoch: 0,
+            operation_id: "op-1".to_owned(),
+            observed_epoch: 1,
+            reason: LeaseRejectionReason::StaleEpoch,
+            received_at_ms: 35_000,
+        }
+    }
+
+    #[test]
+    fn write_lease_entries_require_journal_version_7() {
+        // Design #2819 phase 2 (#3804): lease kinds are the first
+        // entries a version-6 binary cannot read, so they pin the
+        // header to version 7 under the #227 bump-on-first-write
+        // contract.
+        for entry in [
+            JournalEntry::LeaseGranted {
+                holder: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: Some(30_000),
+            },
+            spill_renewal(),
+            spill_handoff(),
+            JournalEntry::LeaseRevoked {
+                former_holder: "native-1".to_owned(),
+                epoch: 2,
+                reason: "expired".to_owned(),
+            },
+            stale_rejection(),
+        ] {
+            assert_eq!(
+                journal_version_required_by(&entry),
+                JOURNAL_VERSION_WRITE_LEASE,
+                "{entry:?}"
+            );
+        }
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_WRITE_LEASE);
+        // A checkpoint carrying a non-bootstrap lease also requires
+        // version 7; one without a lease keeps its existing version.
+        let mut lease = WriteLease::bootstrap();
+        lease
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000))
+            .unwrap();
+        let checkpoint = |lease: Option<WriteLease>| JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            lease,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+            open_presence: None,
+            admin_history: None,
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint(Some(lease))),
+            JOURNAL_VERSION_WRITE_LEASE
+        );
+        assert_eq!(
+            journal_version_required_by(&checkpoint(None)),
+            JOURNAL_VERSION
+        );
+    }
+
+    #[test]
+    fn write_lease_wire_shape_round_trips() {
+        for entry in [spill_handoff(), spill_renewal(), stale_rejection()] {
+            let json = serde_json::to_string(&entry).unwrap();
+            assert_eq!(
+                serde_json::from_str::<JournalEntry>(&json).unwrap(),
+                entry,
+                "{json}"
+            );
+        }
+        // A lease entry in a journal whose header predates version 7 is
+        // refused at restore, never applied mid-read.
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION_CHECKPOINT_PARTS,
+                },
+                spill_handoff(),
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("requires version 7"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn write_lease_replay_walks_grant_renew_revoke_handoff() {
+        // Bootstrap: an untouched world is DO-owned at epoch 0.
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            }],
+        )
+        .unwrap();
+        assert_eq!(restored.core.write_lease(), &WriteLease::bootstrap());
+        assert_eq!(
+            restored
+                .core
+                .write_lease()
+                .check_writer(DO_WRITE_LEASE_HOLDER, 0, u64::MAX),
+            Ok(())
+        );
+
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                spill_renewal(),
+                JournalEntry::LeaseRevoked {
+                    former_holder: "native-1".to_owned(),
+                    epoch: 2,
+                    reason: "term expired without renewal".to_owned(),
+                },
+                JournalEntry::LeaseGranted {
+                    holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    epoch: 3,
+                    expires_at_ms: None,
+                },
+            ],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some(DO_WRITE_LEASE_HOLDER));
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(lease.expires_at_ms, None);
+        assert_eq!(lease.transitions.len(), 4);
+        assert_eq!(lease.transitions[0].kind, LeaseTransitionKind::HandedOff);
+        assert_eq!(lease.transitions[1].kind, LeaseTransitionKind::Renewed);
+        assert_eq!(lease.transitions[2].kind, LeaseTransitionKind::Revoked);
+        assert_eq!(lease.transitions[3].kind, LeaseTransitionKind::Granted);
+        // The ex-holder is fenced at the new epoch, and the returned
+        // holder presenting an old epoch is stale.
+        assert_eq!(
+            lease.check_writer("native-1", 1, 0),
+            Err(LeaseRejectionReason::NotHolder)
+        );
+        assert_eq!(
+            lease.check_writer(DO_WRITE_LEASE_HOLDER, 2, 0),
+            Err(LeaseRejectionReason::StaleEpoch)
+        );
+        assert_eq!(
+            lease.check_writer(DO_WRITE_LEASE_HOLDER, 3, u64::MAX),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn write_lease_gate_fences_an_expired_holder_before_any_revoke() {
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [lease_header(), spill_handoff(), spill_renewal()],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.check_writer("native-1", 1, 39_999), Ok(()));
+        // Expiry alone fences the holder: no revocation entry needs to
+        // land first, because the gate judges the term at append time.
+        assert_eq!(
+            lease.check_writer("native-1", 1, 40_000),
+            Err(LeaseRejectionReason::Expired)
+        );
+        assert!(lease.is_expired(40_000));
+        assert!(!lease.is_expired(39_999));
+    }
+
+    #[test]
+    fn write_lease_rejected_attempt_is_audited_and_never_applied() {
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [lease_header(), spill_handoff(), stale_rejection()],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease();
+        // The audit landed; the attempted write did not change the
+        // holder, the epoch, or any program state.
+        assert_eq!(lease.holder.as_deref(), Some("native-1"));
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(lease.rejections.len(), 1);
+        assert_eq!(lease.rejections[0].operation_id, "op-1");
+        assert_eq!(restored.core.current_sequence(), 0);
+        assert!(restored.replay.is_empty());
+
+        // A second audit of the same attempt is a duplicate.
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                stale_rejection(),
+                stale_rejection(),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("twice"), "{error:#}");
+
+        // An audit whose stated reason disagrees with the gate is
+        // refused: at 35s the native term (40s after renewal) had not
+        // expired, so this attempt was stale, not expired.
+        let lying = JournalEntry::LeaseWriteRejected {
+            writer: "native-1".to_owned(),
+            presented_epoch: 0,
+            operation_id: "op-1".to_owned(),
+            observed_epoch: 1,
+            reason: LeaseRejectionReason::Expired,
+            received_at_ms: 35_000,
+        };
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [lease_header(), spill_handoff(), lying],
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("disagrees with the lease gate"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn write_lease_transitions_refuse_epoch_reuse_skips_and_non_holders() {
+        let cases: Vec<(Vec<JournalEntry>, &str)> = vec![
+            (
+                // A handoff that skips epoch 1.
+                vec![JournalEntry::LeaseHandedOff {
+                    from: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    to: "native-1".to_owned(),
+                    epoch: 2,
+                    expires_at_ms: Some(30_000),
+                }],
+                "advances the write lease epoch from 0 to 2",
+            ),
+            (
+                // A grant while the DO still holds the lease.
+                vec![JournalEntry::LeaseGranted {
+                    holder: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: None,
+                }],
+                "while",
+            ),
+            (
+                // A renewal by someone who does not hold the lease.
+                vec![
+                    spill_handoff(),
+                    JournalEntry::LeaseRenewed {
+                        holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                        epoch: 1,
+                        expires_at_ms: 50_000,
+                    },
+                ],
+                "held by",
+            ),
+            (
+                // A renewal that moves the expiry backwards.
+                vec![
+                    spill_handoff(),
+                    spill_renewal(),
+                    JournalEntry::LeaseRenewed {
+                        holder: "native-1".to_owned(),
+                        epoch: 1,
+                        expires_at_ms: 35_000,
+                    },
+                ],
+                "backwards",
+            ),
+            (
+                // A revocation naming the wrong former holder.
+                vec![
+                    spill_handoff(),
+                    JournalEntry::LeaseRevoked {
+                        former_holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                        epoch: 2,
+                        reason: "operator".to_owned(),
+                    },
+                ],
+                "held by",
+            ),
+            (
+                // A handoff from someone who does not hold the lease.
+                vec![JournalEntry::LeaseHandedOff {
+                    from: "native-9".to_owned(),
+                    to: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: None,
+                }],
+                "held by",
+            ),
+        ];
+        for (entries, needle) in cases {
+            let mut journal = vec![lease_header()];
+            journal.extend(entries);
+            let error = WorldCore::restore("w", WorldLimits::default(), journal).unwrap_err();
+            assert!(error.to_string().contains(needle), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn write_lease_survives_restore_and_checkpoint_compaction() {
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                spill_renewal(),
+                stale_rejection(),
+            ],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease().clone();
+
+        // Compaction carries the lease whole on the checkpoint: the
+        // header rises to version 7 and a restore of the compacted
+        // journal rebuilds the identical lease — epoch, holder, term,
+        // transition history and rejection audit all preserved.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            compacted[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_WRITE_LEASE,
+                ..
+            }
+        ));
+        let checkpoint_lease = compacted.iter().find_map(|entry| match entry {
+            JournalEntry::Checkpoint { lease, .. } => lease.clone(),
+            _ => None,
+        });
+        assert_eq!(checkpoint_lease, Some(lease.clone()));
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted.clone()).unwrap();
+        assert_eq!(restored.core.write_lease(), &lease);
+
+        // A checkpoint whose carried history does not reproduce its
+        // claimed state (here: the epoch was bumped without a matching
+        // transition) is refused whole.
+        let mut tampered = compacted;
+        for entry in &mut tampered {
+            if let JournalEntry::Checkpoint {
+                lease: Some(lease), ..
+            } = entry
+            {
+                lease.epoch += 1;
+            }
+        }
+        let error = WorldCore::restore("w", WorldLimits::default(), tampered).unwrap_err();
+        assert!(error.to_string().contains("write lease"), "{error:#}");
     }
 
     #[test]
@@ -778,6 +1179,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             transfers: None,
+            lease: None,
             snapshot: "s".to_owned(),
             events: vec![],
             open_presence: None,
@@ -796,6 +1198,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             transfers: None,
+            lease: None,
             snapshot: "s".to_owned(),
             events: vec![],
             open_presence: None,
@@ -6556,6 +6959,7 @@ mod schedule_tests {
             caps_ceiling: None,
             schedules,
             transfers: None,
+            lease: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
             admin_history: None,

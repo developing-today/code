@@ -188,6 +188,12 @@ pub struct WorldCore {
     /// rebuilt by journal replay and preserved across compaction by the
     /// checkpoint's `transfers` field.
     pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+    /// The journal-resident native-spill write lease (design #2819,
+    /// phase 2 of issue #3804): rebuilt by journal replay from the
+    /// lease control entries and preserved across compaction by the
+    /// checkpoint's `lease` field. Bootstrap (DO holder, epoch 0) for
+    /// every world that has never spilled.
+    pub(crate) write_lease: WriteLease,
     /// Author keys bound to participants for signed move capture (#2814):
     /// participant id to the player's ed25519 verifying key bytes. A bound
     /// participant's inputs must arrive player-signed (see
@@ -341,6 +347,7 @@ impl WorldCore {
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
+            write_lease: WriteLease::bootstrap(),
             author_keys: HashMap::new(),
             move_chains: HashMap::new(),
             signed_moves: Vec::new(),
@@ -811,6 +818,61 @@ impl WorldCore {
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
+                JournalEntry::LeaseGranted {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_grant(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRenewed {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_renew(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseHandedOff {
+                    from,
+                    to,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_handoff(&from, &to, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRevoked {
+                    former_holder,
+                    epoch,
+                    reason,
+                } => {
+                    core.write_lease
+                        .apply_revoke(&former_holder, epoch, &reason)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseWriteRejected {
+                    writer,
+                    presented_epoch,
+                    operation_id,
+                    observed_epoch,
+                    reason,
+                    received_at_ms,
+                } => {
+                    core.write_lease.apply_rejection(LeaseWriteRejection {
+                        writer,
+                        presented_epoch,
+                        operation_id,
+                        observed_epoch,
+                        reason,
+                        received_at_ms,
+                    })?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
                 JournalEntry::CheckpointSnapshotPart {
                     sequence,
                     part_index,
@@ -913,6 +975,7 @@ impl WorldCore {
                     caps_ceiling,
                     schedules,
                     transfers,
+                    lease,
                     mut snapshot,
                     mut events,
                     mut admin_history,
@@ -1056,6 +1119,24 @@ impl WorldCore {
                         validated_transfers.push(transfer);
                     }
                     core.handoff_transfers = validated_transfers;
+                    // A checkpoint stands in for the journal it
+                    // compacted, so its lease field is the whole lease
+                    // state: validate the carried history reproduces
+                    // the claimed state before adopting it, exactly as
+                    // replaying the un-compacted lease entries would.
+                    // Lease entries are never written before their
+                    // checkpoint, so the lease here must still be the
+                    // bootstrap state the checkpoint replaces.
+                    if let Some(lease) = lease {
+                        ensure!(
+                            core.write_lease.is_bootstrap(),
+                            "journal checkpoint carries a write lease after lease entries"
+                        );
+                        lease
+                            .validate_history()
+                            .context("invalid write lease in journal checkpoint")?;
+                        core.write_lease = lease;
+                    }
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
@@ -1234,6 +1315,7 @@ impl WorldCore {
                     caps_ceiling: caps_ceiling.clone(),
                     schedules: schedules.clone(),
                     transfers: transfers.clone(),
+                    lease: (!self.write_lease.is_bootstrap()).then(|| self.write_lease.clone()),
                     snapshot,
                     events,
                     admin_history: Some(JournalAdminHistory {
@@ -1414,6 +1496,13 @@ impl WorldCore {
     #[must_use]
     pub(crate) fn handoff_transfers(&self) -> &[HandoffTransferState] {
         &self.handoff_transfers
+    }
+
+    /// The world's journal-resident native-spill write lease
+    /// (design #2819, phase 2 of issue #3804).
+    #[must_use]
+    pub(crate) fn write_lease(&self) -> &WriteLease {
+        &self.write_lease
     }
 
     /// The per-world resource requests, independent of current server ceilings.
