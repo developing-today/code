@@ -386,7 +386,7 @@ in
     variables = {
       EDITOR = "nvim";
       NIX_REMOTE = "daemon";
-      PLAYWRIGHT_BROWSERS_PATH = "${inputs.nixpkgs-master.legacyPackages.${system}.playwright-driver.browsers
+      PLAYWRIGHT_BROWSERS_PATH = "${inputs.nixpkgs-unstable.legacyPackages.${system}.playwright-driver.browsers
       }";
     };
     # things should end up in systempackages if
@@ -713,7 +713,6 @@ in
       androidSdk.androidsdk
     ])
     ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
-    ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       # AI coding agents. Kept on the unstable channel rather than master
       # because unstable is cached (see the chromium note below) and these
@@ -736,12 +735,12 @@ in
       # gemini-cli-extensions/jules extension.
       gemini-cli
     ])
-    ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
+    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       ghostty
       zed-editor
       # opencode
     ])
-    ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
+    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       # rclone   # fish completions broke 2025-04-03
       # rclone-browser   # fish completions broke 2025-04-03
       # rclone-ui   # fish completions broke 2025-04-03
@@ -782,7 +781,7 @@ in
       bun
       nodejs # npm, npx
       (mise.overrideAttrs (old: {
-        # 29 unit tests fail in sandbox (network-dependent); raw master input bypasses nixpkgs.overlays
+        # 29 unit tests fail in sandbox (network-dependent); raw nixpkgs-unstable input bypasses nixpkgs.overlays
         doCheck = false;
         # libz-ng-sys build script requires cmake
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.cmake ];
@@ -932,7 +931,7 @@ in
       # lsix
       # mesa.drivers
       # cargo / rustc come from `rustToolchain` below (1.99.0 + clippy /
-      # rust-analyzer / llvm-tools), not the nixpkgs-master build.
+      # rust-analyzer / llvm-tools), not the nixpkgs build.
       rustup
       # simple-http-server
       timg
@@ -970,7 +969,9 @@ in
       gtk3
       gtk4
       #hackgen-nf-font
-      haskellPackages.misfortune
+      # misfortune is pinned to the nixpkgs-25 set: in the fleet-pinned unstable rev its
+      # regex-pcre dependency is marked broken, which refuses evaluation (#3327 pin exception).
+      (inputs.nixpkgs-25.legacyPackages.${system}.haskellPackages.misfortune)
       hasklig
       hledger
       hledger-iadd

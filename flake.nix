@@ -95,7 +95,6 @@ rec {
     # the two can never drift apart again.
     nixpkgs.follows = "nixpkgs-unstable";
     nixpkgs-25.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
-    nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
     # 2026-11-02: nixpkgs-unstable now follows the fleet-wide pin in
     # dezren39/fleet, so code, opencode and openchamber all build
     # against the SAME nixpkgs revision and share one store closure.
@@ -106,7 +105,9 @@ rec {
     # update dezren39/fleet's flake, then re-lock here.
     fleet.url = "github:dezren39/fleet";
     nixpkgs-unstable.follows = "fleet/nixpkgs";
-    nixpkgs-master.url = "github:NixOS/nixpkgs"; # ?shallow=1";
+    # No master or stable-channel nixpkgs inputs (#3327, Drew directive 2026-10-31):
+    # amd draws only from the nixos-unstable set (nixpkgs-unstable, fleet-pinned).
+    # Master revs skip Hydra and force source builds; do not re-add a master input.
 
     sops-nix = {
       # TODO: update! way out of date even as of 2026-03
