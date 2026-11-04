@@ -17,9 +17,7 @@
 # This script fails, naming the offender, when any copy disagrees with
 # the let-block definition, when a baseURL loses its :- fallback, or
 # when a bare {env:<VAR>} or a literal proxy port reappears in
-# opencode.jsonc. Clef has no opencode.jsonc consumer (its models ride
-# the Cloudflare gateway), so only its script fallback is checked; the
-# route proxy likewise has no baseURL in this repo.
+# opencode.jsonc. The route proxy has no baseURL in this repo.
 #
 # Retired 2026-10-30 (bce524fc): agy-proxy (:18743) and
 # antigravity-ls-proxy (:18745) — their lets and units were removed and
@@ -32,6 +30,13 @@
 # the retirement note in home/common/default.nix. They are deliberately
 # NOT rows here — restoring one means restoring its let from git
 # history and re-adding its row in the same change (#2961).
+#
+# Retired 2026-11-04 (opencode#1410): the clef door (:18742) is gone
+# the same way — let, unit + socket, session var, bin program and
+# this row removed in one change; the OpenChamber classifier rides
+# the in-fork facade's /v1/systemone on the opencode server
+# (127.0.0.1:13420), proven byte-identical to the door on the
+# recorded classifier probe before the repoint.
 #
 # Retired 2026-11-03 (#5240): the design-code door (:18746) was removed
 # outright (7b51087cc removed its let and unit; a0755459e removed its
@@ -50,7 +55,6 @@ config_file="$repo_root/.opencode/opencode.jsonc"
 
 # var | let binding | proxy script | has an opencode.jsonc baseURL
 proxies=(
-  "CLEF_PROXY_PORT|clefProxyPort|bin/clef-proxy.mjs|no"
   "CODEX_PROXY_PORT|codexProxyPort|bin/codex-proxy.mjs|no"
   "MUSE_PROXY_PORT|museProxyPort|bin/muse-proxy.mjs|yes"
   "COMMANDCODE_PROXY_PORT|commandcodeProxyPort|bin/commandcode-proxy.mjs|yes"

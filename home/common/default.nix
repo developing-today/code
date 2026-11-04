@@ -14,7 +14,9 @@ let
   # apart and a new device that applies this config gets consistent ports
   # automatically. The bin/*.mjs proxies keep the same numbers as fallback
   # defaults when the env var is absent.
-  clefProxyPort = 18742;
+  # clefProxyPort (18742) retired 2026-11-04 (opencode#1410):
+  # the OpenChamber classifier rides the in-fork facade's
+  # /v1/systemone (127.0.0.1:13420); the port is free.
   codexProxyPort = 18744;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
@@ -588,38 +590,15 @@ in
   # change (its timer/service/config are removed below the proxy units):
   # exactly one owner per canonical port. Consumers (openchamber,
   # openclaw-gateway) Wants these units with Wants+After soft semantics.
-  systemd.user.services.clef-proxy = {
-    Unit = {
-      Description = "Clef System One Local Proxy for OpenChamber";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "clef-proxy-start" ''
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/clef-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CLEF_PROXY_PORT=${toString clefProxyPort}"
-        "CLEF_PROXY_HOST=127.0.0.1"
-      ];
-    };
-    # No Install: clef-proxy.socket owns the listener and activates this
-    # service on first connection (#1821). Enabling the service directly
-    # as well would race the socket for the same port.
-  };
-
-  systemd.user.sockets.clef-proxy = {
-    Unit.Description = "Clef proxy listener";
-    Socket = {
-      ListenStream = "127.0.0.1:${toString clefProxyPort}";
-      Service = "clef-proxy.service";
-    };
-    Install.WantedBy = [ "sockets.target" ];
-  };
+  # Clef door retired 2026-11-04 (opencode#1410): the OpenChamber
+  # classifier's endpoint file (~/.config/openchamber/
+  # classifier-endpoint.json) names the in-fork facade's
+  # /v1/systemone on the standing opencode server
+  # (127.0.0.1:13420); live probe parity against the door
+  # (byte-identical responses, including the shared upstream
+  # Cloudflare auth failure) was proven before this removal.
+  # bin/clef-proxy.mjs and its wrapper/test were removed in the
+  # same change.
 
   # Antigravity Direct door retired 2026-11-04 (opencode#1414): the
   # provider block in .opencode/opencode.jsonc names the in-fork
@@ -1620,7 +1599,6 @@ in
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
       # Single source for the local proxy ports (see the let block):
       # opencode.jsonc reads them via {env:...} substitution.
-      CLEF_PROXY_PORT = toString clefProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
       # The three below were missing: their {env:...} templates in
       # opencode.jsonc resolved to an empty port in the OpenChamber serve
@@ -1675,9 +1653,6 @@ in
         # step-6 cutover (#5356): the Rust binary is the resolved
         # `atlas-search` (the Python CLI is kept as atlas-search-py).
         atlasSearch
-        (pkgs.writeShellScriptBin "clef-proxy" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
-        '')
         # No "agy-proxy" / "antigravity-ls-proxy" launchers here: both
         # doors were retired 2026-10-30 and their units removed above.
         # The .mjs files remain in bin/ as history, uninvoked — a PATH
