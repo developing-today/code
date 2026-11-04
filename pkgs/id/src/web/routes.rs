@@ -101,9 +101,46 @@ fn image_bytes_match_declared_type(content_type: &str, data: &[u8]) -> bool {
             data.starts_with(&[0x00, 0x00, 0x01, 0x00])
                 || data.starts_with(&[0x00, 0x00, 0x02, 0x00])
         }
-        "image/svg+xml" => svg_document_starts(data),
+        "image/svg+xml" => match decode_utf16_text(data) {
+            // An SVG encoded as UTF-16 (Codex P2 on PR #5357, round 3)
+            // is a valid image/svg+xml document whose markup is not
+            // ASCII bytes; decode it and run the same check on the text.
+            Some(decoded) => svg_document_starts(decoded.as_bytes()),
+            None => svg_document_starts(data),
+        },
         _ => false,
     }
+}
+
+/// Decode UTF-16 text when `data` carries one of its signatures: a
+/// UTF-16LE (`FF FE`) or UTF-16BE (`FE FF`) byte-order mark, or the
+/// UTF-16 spelling of an opening `<` (`3C 00` / `00 3C`) when there is
+/// no BOM. Returns `None` for anything else (the caller then treats
+/// the bytes as UTF-8/ASCII, as before). Lossy on unpaired surrogates —
+/// only the prolog/root prefix is inspected afterwards.
+fn decode_utf16_text(data: &[u8]) -> Option<String> {
+    let (body, little_endian) = if data.starts_with(&[0xFF, 0xFE]) {
+        (&data[2..], true)
+    } else if data.starts_with(&[0xFE, 0xFF]) {
+        (&data[2..], false)
+    } else if data.starts_with(&[0x3C, 0x00]) {
+        (data, true)
+    } else if data.starts_with(&[0x00, 0x3C]) {
+        (data, false)
+    } else {
+        return None;
+    };
+    let units: Vec<u16> = body
+        .chunks_exact(2)
+        .map(|c| {
+            if little_endian {
+                u16::from_le_bytes([c[0], c[1]])
+            } else {
+                u16::from_be_bytes([c[0], c[1]])
+            }
+        })
+        .collect();
+    Some(String::from_utf16_lossy(&units))
 }
 
 /// Whether `data` is an SVG document: after an optional UTF-8 BOM and
@@ -3475,6 +3512,44 @@ mod upload_router_tests {
         assert!(!image_bytes_match_declared_type(
             "image/svg+xml",
             b"<x:html></x:html>"
+        ));
+        // Codex P2 on PR #5357 (round 3): UTF-16-encoded SVGs are valid
+        // image/svg+xml documents; LE and BE, with and without a BOM,
+        // are decoded before the prolog/root check.
+        fn utf16(text: &str, little_endian: bool, bom: bool) -> Vec<u8> {
+            let mut out = Vec::new();
+            if bom {
+                out.extend_from_slice(if little_endian {
+                    b"\xff\xfe"
+                } else {
+                    b"\xfe\xff"
+                });
+            }
+            for unit in text.encode_utf16() {
+                out.extend_from_slice(&if little_endian {
+                    unit.to_le_bytes()
+                } else {
+                    unit.to_be_bytes()
+                });
+            }
+            out
+        }
+        let svg_doc = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16(svg_doc, true, true)
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16(svg_doc, false, true)
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16("<svg/>", true, false)
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            &utf16("<html></html>", true, true)
         ));
         assert!(!image_bytes_match_declared_type(
             "image/png",
