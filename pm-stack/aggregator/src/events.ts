@@ -305,7 +305,7 @@ function isAuditEvent(value: unknown): value is AuditEvent {
   return (
     v.version === 2 &&
     typeof v.id === "string" && v.id !== "" &&
-    typeof v.ingestedAt === "string" && Number.isFinite(Date.parse(v.ingestedAt)) &&
+    typeof v.ingestedAt === "string" && isIsoDate(v.ingestedAt) &&
     typeof v.prevHash === "string" && typeof v.hash === "string"
   );
 }
