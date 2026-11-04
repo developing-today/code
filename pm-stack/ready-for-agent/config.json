@@ -12,13 +12,13 @@
       "projectPath": "developing-today/code"
     },
     {
-      "cloneUrl": "https://github.com/developing-today/opencode.git",
+      "cloneUrl": "https://github.com/developing-today-forks/opencode.git",
       "defaultModel": "opencode-go/kimi-k3.1-pro",
       "includeAllIssueAuthors": true,
       "localDir": "opencode",
       "mergePolicy": "OFF",
       "paused": false,
-      "projectPath": "developing-today/opencode"
+      "projectPath": "developing-today-forks/opencode"
     },
     {
       "cloneUrl": "https://github.com/developing-today-forks/openchamber.git",

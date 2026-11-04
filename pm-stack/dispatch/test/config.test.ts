@@ -31,7 +31,7 @@ describe("fleet config", () => {
   test("the allowlist default is exactly the six fleet repos", () => {
     expect([...FLEET_REPOS]).toEqual([
       "developing-today/code",
-      "developing-today/opencode",
+      "developing-today-forks/opencode",
       "developing-today-forks/openchamber",
       "dezren39/nix",
       "developing-today/zettel",

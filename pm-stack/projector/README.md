@@ -56,7 +56,7 @@ locally against a SQLite file (`file:` URL) or remotely via
 | `DATABASE_URL`           | libSQL connection URL (defaults to `file:data/projector.db`)              |
 
 `PM_REPOS` is a comma-separated allow-list of `owner/repo` names for intake and
-reconcile (e.g. `developing-today/code,developing-today/opencode,
+reconcile (e.g. `developing-today/code,developing-today-forks/opencode,
 developing-today-forks/openchamber,dezren39/nix`).
 
 ## Run it locally
