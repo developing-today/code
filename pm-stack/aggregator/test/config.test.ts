@@ -73,7 +73,10 @@ describe("loadConfig PM_AGG_HOSTS", () => {
   });
 
   test("trims and preserves configured hosts", () => {
-    expect(loadConfig({ PM_AGG_DEV: "1", PM_AGG_HOSTS: "localhost, 127.0.0.1" }).hosts).toEqual(["localhost", "127.0.0.1"]);
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_AGG_HOSTS: "localhost, 127.0.0.1" }).hosts).toEqual([
+      "localhost",
+      "127.0.0.1",
+    ]);
   });
 
   test("rejects lists that contain no non-empty host", () => {

@@ -323,7 +323,12 @@ describe("render smoke (fixtures)", () => {
         formRef: item.id,
         formOpts: { identities: [] },
         sessions: [],
-        activity: { events: [event], globalHref: "/events?ref=developing-today%2Fopenchamber%23210", gaps: [], coverage: [] },
+        activity: {
+          events: [event],
+          globalHref: "/events?ref=developing-today%2Fopenchamber%23210",
+          gaps: [],
+          coverage: [],
+        },
       },
     );
     expect(html).toContain("watchdog-event");

@@ -548,10 +548,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             // verb after the flag () was
             // swallowed whole with exit 0 (#5607).
             if let Some(extra) = args.get(1) {
-                eprintln!(
-                    "fleet search: unexpected argument {extra} for {}",
-                    args[0]
-                );
+                eprintln!("fleet search: unexpected argument {extra} for {}", args[0]);
                 eprintln!("{SEARCH_USAGE}");
                 return EXIT_USAGE;
             }

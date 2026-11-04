@@ -102,9 +102,7 @@ describe("deriveEpicEta", () => {
 
   test("steady pace over 8 weeks: forecast with P50 <= P80 and a real sample", () => {
     // 2 closures per week for 8 weeks (16 units), 8 children remain.
-    const closes: (number | null)[] = Array.from({ length: 24 }, (_, i) =>
-      i < 16 ? Math.floor(i / 2) + 1 : null,
-    );
+    const closes: (number | null)[] = Array.from({ length: 24 }, (_, i) => (i < 16 ? Math.floor(i / 2) + 1 : null));
     const eta = deriveEpicEta({ subjectRef: EPIC, cutoffs: history(24, closes) });
     expect(eta.status).toBe("forecast");
     expect(eta.completedUnits).toBe(16);
@@ -163,9 +161,7 @@ describe("deriveEpicEta", () => {
   test("merged PR children never count as units", () => {
     const cutoffs = history(4, [1, 2, null, null]).slice(0, 5);
     for (const c of cutoffs) {
-      c.items.push(
-        item(900, { kind: "pr", state: "merged" }),
-      );
+      c.items.push(item(900, { kind: "pr", state: "merged" }));
     }
     const eta = deriveEpicEta({ subjectRef: EPIC, cutoffs });
     expect(eta.completedUnits).toBe(2);
@@ -187,11 +183,7 @@ describe("deriveEpicEta", () => {
 
   test("inferred scope counts direct children only, not grandchildren via epicRef", () => {
     const cutoffs = [
-      cutoff(W[0]!, [
-        item(1),
-        item(2, { parentRef: `${REPO}#1`, epicRef: EPIC }),
-        item(3, { state: "closed" }),
-      ]),
+      cutoff(W[0]!, [item(1), item(2, { parentRef: `${REPO}#1`, epicRef: EPIC }), item(3, { state: "closed" })]),
     ];
     const eta = deriveEpicEta({ subjectRef: EPIC, cutoffs });
     expect(eta.remainingUnits).toBe(1);
@@ -209,7 +201,7 @@ describe("deriveEpicEta", () => {
     expect(eta.remainingUnits).toBe(3);
   });
 
-test("asOf compares as an instant: equal instant in another representation is included", () => {
+  test("asOf compares as an instant: equal instant in another representation is included", () => {
     // W[8] is "2026-11-02T00:00:00Z"; asOf writes the same instant with
     // fractional seconds. String order would exclude the W[8] cutoff
     // ("Z" > "."), instant order includes it.
@@ -256,10 +248,7 @@ describe("deriveStallRisk", () => {
   const BLOCKER = `${REPO}#9`;
 
   function blockedHistory(): ItemHistoryCutoff[] {
-    return [
-      cutoff(W[0]!, [item(7, { blockedBy: [BLOCKER] })]),
-      cutoff(W[2]!, [item(7, { blockedBy: [BLOCKER] })]),
-    ];
+    return [cutoff(W[0]!, [item(7, { blockedBy: [BLOCKER] })]), cutoff(W[2]!, [item(7, { blockedBy: [BLOCKER] })])];
   }
 
   test("blocked edge unresolved 14 days (lower bound): +30 with the bound labelled", () => {
@@ -354,7 +343,7 @@ describe("deriveStallRisk", () => {
     expect(risk.score).toBe(0);
   });
 
-test("asOf compares as an instant: same instant, fractional-second representation", () => {
+  test("asOf compares as an instant: same instant, fractional-second representation", () => {
     // W[2] is "2026-09-21T00:00:00Z"; asOf writes the same instant as
     // "2026-09-21T00:00:00.000Z". String order would scope the history
     // to W[0] only (blocked age 0, no points); instant order keeps

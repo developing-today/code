@@ -1,1573 +1,1291 @@
 {
- "comment": "Recorded from the production Python atlas_search.py by gen_core_fixtures.py. atlas-core's parity tests must reproduce every envelope and SQL string here.",
- "qvec_raw": [
-  0.9,
-  0.3,
-  0.1,
-  0.0,
-  0.2,
-  0.0,
-  0.1,
-  0.0
- ],
- "search_cases": [
-  {
-   "name": "hybrid_default",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal"
-    },
-    "results": [
-     {
-      "chunk_id": 1,
-      "session_id": "sA",
-      "score": 0.181818,
-      "rank_sources": {
-       "fts": 1,
-       "vector": 1
-      },
-      "text": "how do we back up the database with restic",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.001881
-     },
-     {
-      "chunk_id": 8,
-      "session_id": "sA",
-      "score": 0.166667,
-      "rank_sources": {
-       "fts": 2,
-       "vector": 2
-      },
-      "text": "database backup verification steps",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.056255
-     },
-     {
-      "chunk_id": 2,
-      "session_id": "sA",
-      "score": 0.076923,
-      "rank_sources": {
-       "vector": 3
-      },
-      "text": "restic snapshots go to the turso bucket nightly",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.227317
-     },
-     {
-      "chunk_id": 4,
-      "session_id": "sB",
-      "score": 0.071429,
-      "rank_sources": {
-       "vector": 4
-      },
-      "text": "refactoring the rust parser for speed",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.377201
-     },
-     {
-      "chunk_id": 3,
-      "session_id": "sA",
-      "score": 0.066667,
-      "rank_sources": {
-       "vector": 5
-      },
-      "text": "the backup script uses restic and rclone",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.673401
-     },
-     {
-      "chunk_id": 7,
-      "session_id": "sB",
-      "score": 0.0625,
-      "rank_sources": {
-       "vector": 6
-      },
-      "text": "cargo test failures in the queue worker",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.941876
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_secret_ceiling",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "secret-bearing"
-    },
-    "results": [
-     {
-      "chunk_id": 1,
-      "session_id": "sA",
-      "score": 0.174242,
-      "rank_sources": {
-       "fts": 1,
-       "vector": 2
-      },
-      "text": "how do we back up the database with restic",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.001881
-     },
-     {
-      "chunk_id": 5,
-      "session_id": "sC",
-      "score": 0.167832,
-      "rank_sources": {
-       "fts": 3,
-       "vector": 1
-      },
-      "text": "secret backup database master plan",
-      "session": {
-       "title": "Secret plans",
-       "client": "claude-code",
-       "created_at": "2026-11-02T03:04:05Z",
-       "kind": "chat",
-       "topics": [
-        "plans"
-       ],
-       "projects": [],
-       "sensitivity": "secret-bearing"
-      },
-      "vector_distance": 0.0
-     },
-     {
-      "chunk_id": 8,
-      "session_id": "sA",
-      "score": 0.154762,
-      "rank_sources": {
-       "fts": 2,
-       "vector": 4
-      },
-      "text": "database backup verification steps",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.056255
-     },
-     {
-      "chunk_id": 6,
-      "session_id": "sD",
-      "score": 0.148352,
-      "rank_sources": {
-       "fts": 4,
-       "vector": 3
-      },
-      "text": "local notes about database backup",
-      "session": {
-       "title": "Local scratch",
-       "client": "opencode",
-       "created_at": "2026-09-15T22:40:10Z",
-       "kind": "chat",
-       "topics": [
-        "nixos"
-       ],
-       "projects": [],
-       "sensitivity": "local-only"
-      },
-      "vector_distance": 0.010672
-     },
-     {
-      "chunk_id": 2,
-      "session_id": "sA",
-      "score": 0.066667,
-      "rank_sources": {
-       "vector": 5
-      },
-      "text": "restic snapshots go to the turso bucket nightly",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.227317
-     },
-     {
-      "chunk_id": 4,
-      "session_id": "sB",
-      "score": 0.0625,
-      "rank_sources": {
-       "vector": 6
-      },
-      "text": "refactoring the rust parser for speed",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.377201
-     },
-     {
-      "chunk_id": 3,
-      "session_id": "sA",
-      "score": 0.058824,
-      "rank_sources": {
-       "vector": 7
-      },
-      "text": "the backup script uses restic and rclone",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.673401
-     },
-     {
-      "chunk_id": 7,
-      "session_id": "sB",
-      "score": 0.055556,
-      "rank_sources": {
-       "vector": 8
-      },
-      "text": "cargo test failures in the queue worker",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.941876
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_shareable_ceiling",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "shareable"
-    },
-    "results": [
-     {
-      "chunk_id": 4,
-      "session_id": "sB",
-      "score": 0.090909,
-      "rank_sources": {
-       "vector": 1
-      },
-      "text": "refactoring the rust parser for speed",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.377201
-     },
-     {
-      "chunk_id": 7,
-      "session_id": "sB",
-      "score": 0.083333,
-      "rank_sources": {
-       "vector": 2
-      },
-      "text": "cargo test failures in the queue worker",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.941876
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "fts_default",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "fts",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal"
-    },
-    "results": [
-     {
-      "chunk_id": 1,
-      "session_id": "sA",
-      "score": 0.090909,
-      "rank_sources": {
-       "fts": 1
-      },
-      "text": "how do we back up the database with restic",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      }
-     },
-     {
-      "chunk_id": 8,
-      "session_id": "sA",
-      "score": 0.083333,
-      "rank_sources": {
-       "fts": 2
-      },
-      "text": "database backup verification steps",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      }
-     }
-    ]
-   }
-  },
-  {
-   "name": "vector_default",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "vector",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal"
-    },
-    "results": [
-     {
-      "chunk_id": 1,
-      "session_id": "sA",
-      "score": 0.090909,
-      "rank_sources": {
-       "vector": 1
-      },
-      "text": "how do we back up the database with restic",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.001881
-     },
-     {
-      "chunk_id": 8,
-      "session_id": "sA",
-      "score": 0.083333,
-      "rank_sources": {
-       "vector": 2
-      },
-      "text": "database backup verification steps",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.056255
-     },
-     {
-      "chunk_id": 2,
-      "session_id": "sA",
-      "score": 0.076923,
-      "rank_sources": {
-       "vector": 3
-      },
-      "text": "restic snapshots go to the turso bucket nightly",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.227317
-     },
-     {
-      "chunk_id": 4,
-      "session_id": "sB",
-      "score": 0.071429,
-      "rank_sources": {
-       "vector": 4
-      },
-      "text": "refactoring the rust parser for speed",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.377201
-     },
-     {
-      "chunk_id": 3,
-      "session_id": "sA",
-      "score": 0.066667,
-      "rank_sources": {
-       "vector": 5
-      },
-      "text": "the backup script uses restic and rclone",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.673401
-     },
-     {
-      "chunk_id": 7,
-      "session_id": "sB",
-      "score": 0.0625,
-      "rank_sources": {
-       "vector": 6
-      },
-      "text": "cargo test failures in the queue worker",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.941876
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_kind_code",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal",
-     "kind": [
-      "code"
-     ]
-    },
-    "results": [
-     {
-      "chunk_id": 4,
-      "session_id": "sB",
-      "score": 0.090909,
-      "rank_sources": {
-       "vector": 1
-      },
-      "text": "refactoring the rust parser for speed",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.377201
-     },
-     {
-      "chunk_id": 7,
-      "session_id": "sB",
-      "score": 0.083333,
-      "rank_sources": {
-       "vector": 2
-      },
-      "text": "cargo test failures in the queue worker",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.941876
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_topic_nixos",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal",
-     "topic": [
-      "nixos"
-     ]
-    },
-    "results": [
-     {
-      "chunk_id": 1,
-      "session_id": "sA",
-      "score": 0.181818,
-      "rank_sources": {
-       "fts": 1,
-       "vector": 1
-      },
-      "text": "how do we back up the database with restic",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.001881
-     },
-     {
-      "chunk_id": 8,
-      "session_id": "sA",
-      "score": 0.166667,
-      "rank_sources": {
-       "fts": 2,
-       "vector": 2
-      },
-      "text": "database backup verification steps",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.056255
-     },
-     {
-      "chunk_id": 2,
-      "session_id": "sA",
-      "score": 0.076923,
-      "rank_sources": {
-       "vector": 3
-      },
-      "text": "restic snapshots go to the turso bucket nightly",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.227317
-     },
-     {
-      "chunk_id": 3,
-      "session_id": "sA",
-      "score": 0.071429,
-      "rank_sources": {
-       "vector": 4
-      },
-      "text": "the backup script uses restic and rclone",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.673401
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_client_codex_dates",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal",
-     "client": [
-      "codex"
-     ],
-     "since": "2026-10-01",
-     "until": "2026-10-31"
-    },
-    "results": [
-     {
-      "chunk_id": 4,
-      "session_id": "sB",
-      "score": 0.090909,
-      "rank_sources": {
-       "vector": 1
-      },
-      "text": "refactoring the rust parser for speed",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.377201
-     },
-     {
-      "chunk_id": 7,
-      "session_id": "sB",
-      "score": 0.083333,
-      "rank_sources": {
-       "vector": 2
-      },
-      "text": "cargo test failures in the queue worker",
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "vector_distance": 0.941876
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_until_before_sB",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal",
-     "client": [
-      "codex"
-     ],
-     "until": "2026-10-19"
-    },
-    "results": [],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_grouped",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal"
-    },
-    "results": [
-     {
-      "session_id": "sA",
-      "score": 0.181818,
-      "hit_count": 4,
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "chunks": [
-       {
-        "chunk_id": 1,
-        "score": 0.181818,
-        "rank_sources": {
-         "fts": 1,
-         "vector": 1
+  "comment": "Recorded from the production Python atlas_search.py by gen_core_fixtures.py. atlas-core's parity tests must reproduce every envelope and SQL string here.",
+  "qvec_raw": [0.9, 0.3, 0.1, 0.0, 0.2, 0.0, 0.1, 0.0],
+  "search_cases": [
+    {
+      "name": "hybrid_default",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal"
         },
-        "text": "how do we back up the database with restic",
-        "vector_distance": 0.001881
-       },
-       {
-        "chunk_id": 8,
-        "score": 0.166667,
-        "rank_sources": {
-         "fts": 2,
-         "vector": 2
-        },
-        "text": "database backup verification steps",
-        "vector_distance": 0.056255
-       },
-       {
-        "chunk_id": 2,
-        "score": 0.076923,
-        "rank_sources": {
-         "vector": 3
-        },
-        "text": "restic snapshots go to the turso bucket nightly",
-        "vector_distance": 0.227317
-       },
-       {
-        "chunk_id": 3,
-        "score": 0.066667,
-        "rank_sources": {
-         "vector": 5
-        },
-        "text": "the backup script uses restic and rclone",
-        "vector_distance": 0.673401
-       }
-      ]
-     },
-     {
-      "session_id": "sB",
-      "score": 0.071429,
-      "hit_count": 2,
-      "session": {
-       "title": "Rust refactor session",
-       "client": "codex",
-       "created_at": "2026-10-20T09:12:00Z",
-       "kind": "code",
-       "topics": [
-        "rust"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "shareable"
-      },
-      "chunks": [
-       {
-        "chunk_id": 4,
-        "score": 0.071429,
-        "rank_sources": {
-         "vector": 4
-        },
-        "text": "refactoring the rust parser for speed",
-        "vector_distance": 0.377201
-       },
-       {
-        "chunk_id": 7,
-        "score": 0.0625,
-        "rank_sources": {
-         "vector": 6
-        },
-        "text": "cargo test failures in the queue worker",
-        "vector_distance": 0.941876
-       }
-      ]
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_expand_message",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal"
-    },
-    "results": [
-     {
-      "chunk_id": 1,
-      "session_id": "sA",
-      "score": 0.181818,
-      "rank_sources": {
-       "fts": 1,
-       "vector": 1
-      },
-      "text": "how do we back up the database with restic",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.001881,
-      "context": {
-       "before": [],
-       "after": [
-        {
-         "chunk_id": 2,
-         "text": "restic snapshots go to the turso bucket nightly"
+        "results": [
+          {
+            "chunk_id": 1,
+            "session_id": "sA",
+            "score": 0.181818,
+            "rank_sources": {
+              "fts": 1,
+              "vector": 1
+            },
+            "text": "how do we back up the database with restic",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.001881
+          },
+          {
+            "chunk_id": 8,
+            "session_id": "sA",
+            "score": 0.166667,
+            "rank_sources": {
+              "fts": 2,
+              "vector": 2
+            },
+            "text": "database backup verification steps",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.056255
+          },
+          {
+            "chunk_id": 2,
+            "session_id": "sA",
+            "score": 0.076923,
+            "rank_sources": {
+              "vector": 3
+            },
+            "text": "restic snapshots go to the turso bucket nightly",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.227317
+          },
+          {
+            "chunk_id": 4,
+            "session_id": "sB",
+            "score": 0.071429,
+            "rank_sources": {
+              "vector": 4
+            },
+            "text": "refactoring the rust parser for speed",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.377201
+          },
+          {
+            "chunk_id": 3,
+            "session_id": "sA",
+            "score": 0.066667,
+            "rank_sources": {
+              "vector": 5
+            },
+            "text": "the backup script uses restic and rclone",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.673401
+          },
+          {
+            "chunk_id": 7,
+            "session_id": "sB",
+            "score": 0.0625,
+            "rank_sources": {
+              "vector": 6
+            },
+            "text": "cargo test failures in the queue worker",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.941876
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
         }
-       ]
-      },
-      "message": {
-       "id": "mA1",
-       "role": "user",
-       "text": "how do we back up the database with restic and check the secret backup database master plan",
-       "truncated": false
       }
-     },
-     {
-      "chunk_id": 8,
-      "session_id": "sA",
-      "score": 0.166667,
-      "rank_sources": {
-       "fts": 2,
-       "vector": 2
-      },
-      "text": "database backup verification steps",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.056255,
-      "context": {
-       "before": [
-        {
-         "chunk_id": 3,
-         "text": "the backup script uses restic and rclone"
+    },
+    {
+      "name": "hybrid_secret_ceiling",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "secret-bearing"
+        },
+        "results": [
+          {
+            "chunk_id": 1,
+            "session_id": "sA",
+            "score": 0.174242,
+            "rank_sources": {
+              "fts": 1,
+              "vector": 2
+            },
+            "text": "how do we back up the database with restic",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.001881
+          },
+          {
+            "chunk_id": 5,
+            "session_id": "sC",
+            "score": 0.167832,
+            "rank_sources": {
+              "fts": 3,
+              "vector": 1
+            },
+            "text": "secret backup database master plan",
+            "session": {
+              "title": "Secret plans",
+              "client": "claude-code",
+              "created_at": "2026-11-02T03:04:05Z",
+              "kind": "chat",
+              "topics": ["plans"],
+              "projects": [],
+              "sensitivity": "secret-bearing"
+            },
+            "vector_distance": 0.0
+          },
+          {
+            "chunk_id": 8,
+            "session_id": "sA",
+            "score": 0.154762,
+            "rank_sources": {
+              "fts": 2,
+              "vector": 4
+            },
+            "text": "database backup verification steps",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.056255
+          },
+          {
+            "chunk_id": 6,
+            "session_id": "sD",
+            "score": 0.148352,
+            "rank_sources": {
+              "fts": 4,
+              "vector": 3
+            },
+            "text": "local notes about database backup",
+            "session": {
+              "title": "Local scratch",
+              "client": "opencode",
+              "created_at": "2026-09-15T22:40:10Z",
+              "kind": "chat",
+              "topics": ["nixos"],
+              "projects": [],
+              "sensitivity": "local-only"
+            },
+            "vector_distance": 0.010672
+          },
+          {
+            "chunk_id": 2,
+            "session_id": "sA",
+            "score": 0.066667,
+            "rank_sources": {
+              "vector": 5
+            },
+            "text": "restic snapshots go to the turso bucket nightly",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.227317
+          },
+          {
+            "chunk_id": 4,
+            "session_id": "sB",
+            "score": 0.0625,
+            "rank_sources": {
+              "vector": 6
+            },
+            "text": "refactoring the rust parser for speed",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.377201
+          },
+          {
+            "chunk_id": 3,
+            "session_id": "sA",
+            "score": 0.058824,
+            "rank_sources": {
+              "vector": 7
+            },
+            "text": "the backup script uses restic and rclone",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.673401
+          },
+          {
+            "chunk_id": 7,
+            "session_id": "sB",
+            "score": 0.055556,
+            "rank_sources": {
+              "vector": 8
+            },
+            "text": "cargo test failures in the queue worker",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.941876
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
         }
-       ],
-       "after": []
-      },
-      "message": {
-       "id": "mA2",
-       "role": "assistant",
-       "text": "the backup script uses restic and rclone; database backup verification steps follow",
-       "truncated": false
       }
-     },
-     {
-      "chunk_id": 2,
-      "session_id": "sA",
-      "score": 0.076923,
-      "rank_sources": {
-       "vector": 3
-      },
-      "text": "restic snapshots go to the turso bucket nightly",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.227317,
-      "context": {
-       "before": [
-        {
-         "chunk_id": 1,
-         "text": "how do we back up the database with restic"
+    },
+    {
+      "name": "hybrid_shareable_ceiling",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "shareable"
+        },
+        "results": [
+          {
+            "chunk_id": 4,
+            "session_id": "sB",
+            "score": 0.090909,
+            "rank_sources": {
+              "vector": 1
+            },
+            "text": "refactoring the rust parser for speed",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.377201
+          },
+          {
+            "chunk_id": 7,
+            "session_id": "sB",
+            "score": 0.083333,
+            "rank_sources": {
+              "vector": 2
+            },
+            "text": "cargo test failures in the queue worker",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.941876
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
         }
-       ],
-       "after": []
-      },
-      "message": {
-       "id": "mA1",
-       "role": "user",
-       "text": "how do we back up the database with restic and check the secret backup database master plan",
-       "truncated": false
       }
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 100,
-     "vector_backend": "scan"
-    }
-   }
-  },
-  {
-   "name": "hybrid_pool2_k2",
-   "envelope": {
-    "query": "how do we back up the database",
-    "mode": "hybrid",
-    "backend": "local",
-    "filters_applied": {
-     "max_sensitivity": "personal"
     },
-    "results": [
-     {
-      "chunk_id": 1,
-      "session_id": "sA",
-      "score": 0.181818,
-      "rank_sources": {
-       "fts": 1,
-       "vector": 1
-      },
-      "text": "how do we back up the database with restic",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.001881
-     },
-     {
-      "chunk_id": 8,
-      "session_id": "sA",
-      "score": 0.166667,
-      "rank_sources": {
-       "fts": 2,
-       "vector": 2
-      },
-      "text": "database backup verification steps",
-      "session": {
-       "title": "NixOS backup chat",
-       "client": "claude-code",
-       "created_at": "2026-10-05T14:23:00Z",
-       "kind": "chat",
-       "topics": [
-        "nixos",
-        "backup"
-       ],
-       "projects": [
-        "atlas"
-       ],
-       "sensitivity": "personal"
-      },
-      "vector_distance": 0.056255
-     }
-    ],
-    "vector": {
-     "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
-     "table": "vec_snowflake_m_v2_768_f32",
-     "embedder": "auto",
-     "trunc": null,
-     "pool": 2,
-     "vector_backend": "scan"
-    }
-   }
-  }
- ],
- "get_chunk_cases": [
-  {
-   "name": "get_chunk_secret",
-   "envelope": {
-    "chunk_id": 5,
-    "text": "secret backup database master plan",
-    "chunk_idx": 0,
-    "message": {
-     "id": "mC1",
-     "role": "user",
-     "session_id": "sC"
-    },
-    "session": {
-     "title": "Secret plans",
-     "client": "claude-code",
-     "created_at": "2026-11-02T03:04:05Z",
-     "kind": "chat",
-     "topics": [
-      "plans"
-     ],
-     "projects": [],
-     "sensitivity": "secret-bearing"
-    },
-    "session_id": "sC"
-   }
-  },
-  {
-   "name": "get_chunk_neighbors",
-   "envelope": {
-    "chunk_id": 2,
-    "text": "restic snapshots go to the turso bucket nightly",
-    "chunk_idx": 1,
-    "message": {
-     "id": "mA1",
-     "role": "user",
-     "session_id": "sA"
-    },
-    "session": {
-     "title": "NixOS backup chat",
-     "client": "claude-code",
-     "created_at": "2026-10-05T14:23:00Z",
-     "kind": "chat",
-     "topics": [
-      "nixos",
-      "backup"
-     ],
-     "projects": [
-      "atlas"
-     ],
-     "sensitivity": "personal"
-    },
-    "session_id": "sA",
-    "context": {
-     "before": [
-      {
-       "chunk_id": 1,
-       "text": "how do we back up the database with restic"
+    {
+      "name": "fts_default",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "fts",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal"
+        },
+        "results": [
+          {
+            "chunk_id": 1,
+            "session_id": "sA",
+            "score": 0.090909,
+            "rank_sources": {
+              "fts": 1
+            },
+            "text": "how do we back up the database with restic",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            }
+          },
+          {
+            "chunk_id": 8,
+            "session_id": "sA",
+            "score": 0.083333,
+            "rank_sources": {
+              "fts": 2
+            },
+            "text": "database backup verification steps",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            }
+          }
+        ]
       }
-     ],
-     "after": []
+    },
+    {
+      "name": "vector_default",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "vector",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal"
+        },
+        "results": [
+          {
+            "chunk_id": 1,
+            "session_id": "sA",
+            "score": 0.090909,
+            "rank_sources": {
+              "vector": 1
+            },
+            "text": "how do we back up the database with restic",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.001881
+          },
+          {
+            "chunk_id": 8,
+            "session_id": "sA",
+            "score": 0.083333,
+            "rank_sources": {
+              "vector": 2
+            },
+            "text": "database backup verification steps",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.056255
+          },
+          {
+            "chunk_id": 2,
+            "session_id": "sA",
+            "score": 0.076923,
+            "rank_sources": {
+              "vector": 3
+            },
+            "text": "restic snapshots go to the turso bucket nightly",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.227317
+          },
+          {
+            "chunk_id": 4,
+            "session_id": "sB",
+            "score": 0.071429,
+            "rank_sources": {
+              "vector": 4
+            },
+            "text": "refactoring the rust parser for speed",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.377201
+          },
+          {
+            "chunk_id": 3,
+            "session_id": "sA",
+            "score": 0.066667,
+            "rank_sources": {
+              "vector": 5
+            },
+            "text": "the backup script uses restic and rclone",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.673401
+          },
+          {
+            "chunk_id": 7,
+            "session_id": "sB",
+            "score": 0.0625,
+            "rank_sources": {
+              "vector": 6
+            },
+            "text": "cargo test failures in the queue worker",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.941876
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
+        }
+      }
+    },
+    {
+      "name": "hybrid_kind_code",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal",
+          "kind": ["code"]
+        },
+        "results": [
+          {
+            "chunk_id": 4,
+            "session_id": "sB",
+            "score": 0.090909,
+            "rank_sources": {
+              "vector": 1
+            },
+            "text": "refactoring the rust parser for speed",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.377201
+          },
+          {
+            "chunk_id": 7,
+            "session_id": "sB",
+            "score": 0.083333,
+            "rank_sources": {
+              "vector": 2
+            },
+            "text": "cargo test failures in the queue worker",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.941876
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
+        }
+      }
+    },
+    {
+      "name": "hybrid_topic_nixos",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal",
+          "topic": ["nixos"]
+        },
+        "results": [
+          {
+            "chunk_id": 1,
+            "session_id": "sA",
+            "score": 0.181818,
+            "rank_sources": {
+              "fts": 1,
+              "vector": 1
+            },
+            "text": "how do we back up the database with restic",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.001881
+          },
+          {
+            "chunk_id": 8,
+            "session_id": "sA",
+            "score": 0.166667,
+            "rank_sources": {
+              "fts": 2,
+              "vector": 2
+            },
+            "text": "database backup verification steps",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.056255
+          },
+          {
+            "chunk_id": 2,
+            "session_id": "sA",
+            "score": 0.076923,
+            "rank_sources": {
+              "vector": 3
+            },
+            "text": "restic snapshots go to the turso bucket nightly",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.227317
+          },
+          {
+            "chunk_id": 3,
+            "session_id": "sA",
+            "score": 0.071429,
+            "rank_sources": {
+              "vector": 4
+            },
+            "text": "the backup script uses restic and rclone",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.673401
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
+        }
+      }
+    },
+    {
+      "name": "hybrid_client_codex_dates",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal",
+          "client": ["codex"],
+          "since": "2026-10-01",
+          "until": "2026-10-31"
+        },
+        "results": [
+          {
+            "chunk_id": 4,
+            "session_id": "sB",
+            "score": 0.090909,
+            "rank_sources": {
+              "vector": 1
+            },
+            "text": "refactoring the rust parser for speed",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.377201
+          },
+          {
+            "chunk_id": 7,
+            "session_id": "sB",
+            "score": 0.083333,
+            "rank_sources": {
+              "vector": 2
+            },
+            "text": "cargo test failures in the queue worker",
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "vector_distance": 0.941876
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
+        }
+      }
+    },
+    {
+      "name": "hybrid_until_before_sB",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal",
+          "client": ["codex"],
+          "until": "2026-10-19"
+        },
+        "results": [],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
+        }
+      }
+    },
+    {
+      "name": "hybrid_grouped",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal"
+        },
+        "results": [
+          {
+            "session_id": "sA",
+            "score": 0.181818,
+            "hit_count": 4,
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "chunks": [
+              {
+                "chunk_id": 1,
+                "score": 0.181818,
+                "rank_sources": {
+                  "fts": 1,
+                  "vector": 1
+                },
+                "text": "how do we back up the database with restic",
+                "vector_distance": 0.001881
+              },
+              {
+                "chunk_id": 8,
+                "score": 0.166667,
+                "rank_sources": {
+                  "fts": 2,
+                  "vector": 2
+                },
+                "text": "database backup verification steps",
+                "vector_distance": 0.056255
+              },
+              {
+                "chunk_id": 2,
+                "score": 0.076923,
+                "rank_sources": {
+                  "vector": 3
+                },
+                "text": "restic snapshots go to the turso bucket nightly",
+                "vector_distance": 0.227317
+              },
+              {
+                "chunk_id": 3,
+                "score": 0.066667,
+                "rank_sources": {
+                  "vector": 5
+                },
+                "text": "the backup script uses restic and rclone",
+                "vector_distance": 0.673401
+              }
+            ]
+          },
+          {
+            "session_id": "sB",
+            "score": 0.071429,
+            "hit_count": 2,
+            "session": {
+              "title": "Rust refactor session",
+              "client": "codex",
+              "created_at": "2026-10-20T09:12:00Z",
+              "kind": "code",
+              "topics": ["rust"],
+              "projects": ["atlas"],
+              "sensitivity": "shareable"
+            },
+            "chunks": [
+              {
+                "chunk_id": 4,
+                "score": 0.071429,
+                "rank_sources": {
+                  "vector": 4
+                },
+                "text": "refactoring the rust parser for speed",
+                "vector_distance": 0.377201
+              },
+              {
+                "chunk_id": 7,
+                "score": 0.0625,
+                "rank_sources": {
+                  "vector": 6
+                },
+                "text": "cargo test failures in the queue worker",
+                "vector_distance": 0.941876
+              }
+            ]
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
+        }
+      }
+    },
+    {
+      "name": "hybrid_expand_message",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal"
+        },
+        "results": [
+          {
+            "chunk_id": 1,
+            "session_id": "sA",
+            "score": 0.181818,
+            "rank_sources": {
+              "fts": 1,
+              "vector": 1
+            },
+            "text": "how do we back up the database with restic",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.001881,
+            "context": {
+              "before": [],
+              "after": [
+                {
+                  "chunk_id": 2,
+                  "text": "restic snapshots go to the turso bucket nightly"
+                }
+              ]
+            },
+            "message": {
+              "id": "mA1",
+              "role": "user",
+              "text": "how do we back up the database with restic and check the secret backup database master plan",
+              "truncated": false
+            }
+          },
+          {
+            "chunk_id": 8,
+            "session_id": "sA",
+            "score": 0.166667,
+            "rank_sources": {
+              "fts": 2,
+              "vector": 2
+            },
+            "text": "database backup verification steps",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.056255,
+            "context": {
+              "before": [
+                {
+                  "chunk_id": 3,
+                  "text": "the backup script uses restic and rclone"
+                }
+              ],
+              "after": []
+            },
+            "message": {
+              "id": "mA2",
+              "role": "assistant",
+              "text": "the backup script uses restic and rclone; database backup verification steps follow",
+              "truncated": false
+            }
+          },
+          {
+            "chunk_id": 2,
+            "session_id": "sA",
+            "score": 0.076923,
+            "rank_sources": {
+              "vector": 3
+            },
+            "text": "restic snapshots go to the turso bucket nightly",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.227317,
+            "context": {
+              "before": [
+                {
+                  "chunk_id": 1,
+                  "text": "how do we back up the database with restic"
+                }
+              ],
+              "after": []
+            },
+            "message": {
+              "id": "mA1",
+              "role": "user",
+              "text": "how do we back up the database with restic and check the secret backup database master plan",
+              "truncated": false
+            }
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 100,
+          "vector_backend": "scan"
+        }
+      }
+    },
+    {
+      "name": "hybrid_pool2_k2",
+      "envelope": {
+        "query": "how do we back up the database",
+        "mode": "hybrid",
+        "backend": "local",
+        "filters_applied": {
+          "max_sensitivity": "personal"
+        },
+        "results": [
+          {
+            "chunk_id": 1,
+            "session_id": "sA",
+            "score": 0.181818,
+            "rank_sources": {
+              "fts": 1,
+              "vector": 1
+            },
+            "text": "how do we back up the database with restic",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.001881
+          },
+          {
+            "chunk_id": 8,
+            "session_id": "sA",
+            "score": 0.166667,
+            "rank_sources": {
+              "fts": 2,
+              "vector": 2
+            },
+            "text": "database backup verification steps",
+            "session": {
+              "title": "NixOS backup chat",
+              "client": "claude-code",
+              "created_at": "2026-10-05T14:23:00Z",
+              "kind": "chat",
+              "topics": ["nixos", "backup"],
+              "projects": ["atlas"],
+              "sensitivity": "personal"
+            },
+            "vector_distance": 0.056255
+          }
+        ],
+        "vector": {
+          "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+          "table": "vec_snowflake_m_v2_768_f32",
+          "embedder": "auto",
+          "trunc": null,
+          "pool": 2,
+          "vector_backend": "scan"
+        }
+      }
     }
-   }
-  }
- ],
- "turso": {
-  "branch_queries": [
-   {
-    "name": "defaults",
-    "stmts": [
-     {
-      "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
-      "params": [
-       "\"back\" OR \"database\"",
-       "shareable",
-       "personal",
-       100
-      ]
-     },
-     {
-      "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
-      "params": [
-       "[0.5, 0.25]",
-       "shareable",
-       "personal",
-       100
-      ]
-     }
-    ]
-   },
-   {
-    "name": "all_filters_secret",
-    "stmts": [
-     {
-      "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) AND l.kind IN (?) AND s.client IN (?) AND l.topics LIKE ? AND s.created_at >= ? AND s.created_at < ? ORDER BY bm25(chunks_fts) LIMIT ?",
-      "params": [
-       "\"back\" OR \"database\"",
-       "shareable",
-       "personal",
-       "local-only",
-       "secret-bearing",
-       "code",
-       "codex",
-       "%\"rust\"%",
-       "2026-10-01",
-       "2026-11-01",
-       100
-      ]
-     },
-     {
-      "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) AND v.chunk_id IN (SELECT c2.id FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?) AND s2.client IN (?) AND l2.topics LIKE ? AND s2.created_at >= ? AND s2.created_at < ?) ORDER BY dist ASC LIMIT ?",
-      "params": [
-       "[0.5, 0.25]",
-       "shareable",
-       "personal",
-       "local-only",
-       "secret-bearing",
-       "code",
-       "codex",
-       "%\"rust\"%",
-       "2026-10-01",
-       "2026-11-01",
-       100
-      ]
-     }
-    ]
-   },
-   {
-    "name": "fts_only",
-    "stmts": [
-     {
-      "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
-      "params": [
-       "\"back\" OR \"database\"",
-       "shareable",
-       "personal",
-       100
-      ]
-     }
-    ]
-   },
-   {
-    "name": "vector_only",
-    "stmts": [
-     {
-      "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
-      "params": [
-       "[0.5, 0.25]",
-       "shareable",
-       "personal",
-       100
-      ]
-     }
-    ]
-   }
   ],
-  "allowed_ids_plain": {
-   "calls": [
+  "get_chunk_cases": [
     {
-     "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-     "params": [
-      "shareable",
-      "personal"
-     ]
+      "name": "get_chunk_secret",
+      "envelope": {
+        "chunk_id": 5,
+        "text": "secret backup database master plan",
+        "chunk_idx": 0,
+        "message": {
+          "id": "mC1",
+          "role": "user",
+          "session_id": "sC"
+        },
+        "session": {
+          "title": "Secret plans",
+          "client": "claude-code",
+          "created_at": "2026-11-02T03:04:05Z",
+          "kind": "chat",
+          "topics": ["plans"],
+          "projects": [],
+          "sensitivity": "secret-bearing"
+        },
+        "session_id": "sC"
+      }
+    },
+    {
+      "name": "get_chunk_neighbors",
+      "envelope": {
+        "chunk_id": 2,
+        "text": "restic snapshots go to the turso bucket nightly",
+        "chunk_idx": 1,
+        "message": {
+          "id": "mA1",
+          "role": "user",
+          "session_id": "sA"
+        },
+        "session": {
+          "title": "NixOS backup chat",
+          "client": "claude-code",
+          "created_at": "2026-10-05T14:23:00Z",
+          "kind": "chat",
+          "topics": ["nixos", "backup"],
+          "projects": ["atlas"],
+          "sensitivity": "personal"
+        },
+        "session_id": "sA",
+        "context": {
+          "before": [
+            {
+              "chunk_id": 1,
+              "text": "how do we back up the database with restic"
+            }
+          ],
+          "after": []
+        }
+      }
     }
-   ],
-   "result": [
-    1,
-    2,
-    3,
-    4,
-    7,
-    8
-   ]
-  },
-  "allowed_ids_kind": {
-   "calls": [
-    {
-     "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-     "params": [
-      "shareable",
-      "personal"
-     ]
-    },
-    {
-     "sql": "SELECT c2.id AS cid FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?)",
-     "params": [
-      "code"
-     ]
-    }
-   ],
-   "result": [
-    4,
-    7
-   ]
-  },
-  "index_fill": {
-   "calls": [
-    {
-     "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-     "params": [
-      "shareable",
-      "personal"
-     ]
-    },
-    {
-     "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
-     "params": [
-      "vec_snowflake_m_v2_768_f32_idx",
-      "[0.5, 0.25]",
-      3
-     ]
-    },
-    {
-     "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
-     "params": [
-      "vec_snowflake_m_v2_768_f32_idx",
-      "[0.5, 0.25]",
-      6
-     ]
-    },
-    {
-     "sql": "SELECT chunk_id AS cid, vector_distance_cos(vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 WHERE chunk_id IN (?,?,?)",
-     "params": [
-      "[0.5, 0.25]",
-      1,
-      2,
-      8
-     ]
-    }
-   ],
-   "result": [
-    [
-     1,
-     0.01
+  ],
+  "turso": {
+    "branch_queries": [
+      {
+        "name": "defaults",
+        "stmts": [
+          {
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
+            "params": ["\"back\" OR \"database\"", "shareable", "personal", 100]
+          },
+          {
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
+            "params": ["[0.5, 0.25]", "shareable", "personal", 100]
+          }
+        ]
+      },
+      {
+        "name": "all_filters_secret",
+        "stmts": [
+          {
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?,?,?) AND l.kind IN (?) AND s.client IN (?) AND l.topics LIKE ? AND s.created_at >= ? AND s.created_at < ? ORDER BY bm25(chunks_fts) LIMIT ?",
+            "params": [
+              "\"back\" OR \"database\"",
+              "shareable",
+              "personal",
+              "local-only",
+              "secret-bearing",
+              "code",
+              "codex",
+              "%\"rust\"%",
+              "2026-10-01",
+              "2026-11-01",
+              100
+            ]
+          },
+          {
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?,?,?) AND v.chunk_id IN (SELECT c2.id FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?) AND s2.client IN (?) AND l2.topics LIKE ? AND s2.created_at >= ? AND s2.created_at < ?) ORDER BY dist ASC LIMIT ?",
+            "params": [
+              "[0.5, 0.25]",
+              "shareable",
+              "personal",
+              "local-only",
+              "secret-bearing",
+              "code",
+              "codex",
+              "%\"rust\"%",
+              "2026-10-01",
+              "2026-11-01",
+              100
+            ]
+          }
+        ]
+      },
+      {
+        "name": "fts_only",
+        "stmts": [
+          {
+            "sql": "SELECT c.id AS cid FROM chunks c JOIN chunks_fts f ON f.rowid = c.id JOIN messages m ON m.id = c.message_id JOIN sessions s ON s.id = m.session_id LEFT JOIN session_labels l ON l.session_id = s.id  WHERE chunks_fts MATCH ? AND c.sensitivity IN (?,?) ORDER BY bm25(chunks_fts) LIMIT ?",
+            "params": ["\"back\" OR \"database\"", "shareable", "personal", 100]
+          }
+        ]
+      },
+      {
+        "name": "vector_only",
+        "stmts": [
+          {
+            "sql": "SELECT v.chunk_id AS cid, vector_distance_cos(v.vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 v JOIN chunks c ON c.id = v.chunk_id WHERE c.sensitivity IN (?,?) ORDER BY dist ASC LIMIT ?",
+            "params": ["[0.5, 0.25]", "shareable", "personal", 100]
+          }
+        ]
+      }
     ],
-    [
-     2,
-     0.3
-    ],
-    [
-     8,
-     0.07
-    ]
-   ]
-  },
-  "index_fixed": {
-   "calls": [
-    {
-     "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
-     "params": [
-      "shareable",
-      "personal"
-     ]
+    "allowed_ids_plain": {
+      "calls": [
+        {
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
+          "params": ["shareable", "personal"]
+        }
+      ],
+      "result": [1, 2, 3, 4, 7, 8]
     },
-    {
-     "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
-     "params": [
-      "vec_snowflake_m_v2_768_f32_idx",
-      "[0.5, 0.25]",
-      3
-     ]
+    "allowed_ids_kind": {
+      "calls": [
+        {
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
+          "params": ["shareable", "personal"]
+        },
+        {
+          "sql": "SELECT c2.id AS cid FROM chunks c2 JOIN messages m2 ON m2.id = c2.message_id JOIN sessions s2 ON s2.id = m2.session_id LEFT JOIN session_labels l2 ON l2.session_id = s2.id WHERE l2.kind IN (?)",
+          "params": ["code"]
+        }
+      ],
+      "result": [4, 7]
     },
-    {
-     "sql": "SELECT chunk_id AS cid, vector_distance_cos(vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 WHERE chunk_id IN (?)",
-     "params": [
-      "[0.5, 0.25]",
-      1
-     ]
+    "index_fill": {
+      "calls": [
+        {
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
+          "params": ["shareable", "personal"]
+        },
+        {
+          "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
+          "params": ["vec_snowflake_m_v2_768_f32_idx", "[0.5, 0.25]", 3]
+        },
+        {
+          "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
+          "params": ["vec_snowflake_m_v2_768_f32_idx", "[0.5, 0.25]", 6]
+        },
+        {
+          "sql": "SELECT chunk_id AS cid, vector_distance_cos(vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 WHERE chunk_id IN (?,?,?)",
+          "params": ["[0.5, 0.25]", 1, 2, 8]
+        }
+      ],
+      "result": [[1, 0.01], [2, 0.3], [8, 0.07]]
+    },
+    "index_fixed": {
+      "calls": [
+        {
+          "sql": "SELECT c.id AS cid FROM chunks c WHERE c.sensitivity IN (?,?)",
+          "params": ["shareable", "personal"]
+        },
+        {
+          "sql": "SELECT id FROM vector_top_k(?, vector32(?), ?)",
+          "params": ["vec_snowflake_m_v2_768_f32_idx", "[0.5, 0.25]", 3]
+        },
+        {
+          "sql": "SELECT chunk_id AS cid, vector_distance_cos(vec, vector32(?)) AS dist FROM vec_snowflake_m_v2_768_f32 WHERE chunk_id IN (?)",
+          "params": ["[0.5, 0.25]", 1]
+        }
+      ],
+      "result": [[1, 0.01]]
     }
-   ],
-   "result": [
-    [
-     1,
-     0.01
-    ]
-   ]
   }
- }
 }

@@ -172,9 +172,7 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   // uses only cutoffs observed at or before that instant \u2014 later
   // cutoffs are future outcomes and must not leak into scope,
   // transitions, or coverage.
-  const scopedCutoffs = input.asOf
-    ? input.cutoffs.filter((c) => atOrBefore(c.cutoffAt, input.asOf!))
-    : input.cutoffs;
+  const scopedCutoffs = input.asOf ? input.cutoffs.filter((c) => atOrBefore(c.cutoffAt, input.asOf!)) : input.cutoffs;
   const complete = completeCutoffs(scopedCutoffs);
   const latest = complete[complete.length - 1];
   const asOf = input.asOf ?? latest?.cutoffAt ?? new Date(0).toISOString();
@@ -220,9 +218,7 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   // would count grandchildren as independent units.
   const childRefs =
     input.childRefs ??
-    latest.items
-      .filter((i) => i.kind !== "pr" && i.parentRef === input.subjectRef)
-      .map((i) => i.ref);
+    latest.items.filter((i) => i.kind !== "pr" && i.parentRef === input.subjectRef).map((i) => i.ref);
   const childSet = new Set(childRefs);
   const children = latest.items.filter((i) => childSet.has(i.ref) && i.kind !== "pr");
   // Explicitly requested children absent from the latest complete
@@ -357,9 +353,7 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
     // date indefensible \u2014 an EPSILON pace overflows the Date range
     // and throws.
     result.p80 = null;
-    limitations.push(
-      "conservative (lower-quartile) weekly pace is zero in the pace window; no P80 date is defensible",
-    );
+    limitations.push("conservative (lower-quartile) weekly pace is zero in the pace window; no P80 date is defensible");
   } else {
     result.p80 = etaDate(asOf, remainingUnits, paceP80);
     if (result.p80 === null) {
@@ -370,10 +364,8 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   if (result.status === "forecast") {
     const comparisonRate = comparison.length > 0 ? completionsComparison / comparison.length : 0;
     const primaryRate = completionsPrimary / primary.length;
-    const stable =
-      comparisonRate > 0 && Math.abs(primaryRate - comparisonRate) / comparisonRate <= 0.25;
-    result.confidence =
-      completionsComparison >= 12 && comparison.length >= 8 && stable ? "high" : "medium";
+    const stable = comparisonRate > 0 && Math.abs(primaryRate - comparisonRate) / comparisonRate <= 0.25;
+    result.confidence = completionsComparison >= 12 && comparison.length >= 8 && stable ? "high" : "medium";
     if (!stable) limitations.push("4-week and 8-week rates differ materially; confidence capped");
   }
   return result;
@@ -406,11 +398,7 @@ export interface StallRiskInput {
 }
 
 export interface StallSignal {
-  code:
-    | "blocked_edge_age"
-    | "no_meaningful_activity"
-    | "queue_heartbeat"
-    | "queue_requeues";
+  code: "blocked_edge_age" | "no_meaningful_activity" | "queue_heartbeat" | "queue_requeues";
   /** Points contributed (0 when the signal did not fire). */
   contribution: number;
   /** False when no source supplied this signal: it contributed
@@ -447,9 +435,7 @@ const STALL_WEIGHTS = {
 export function deriveStallRisk(input: StallRiskInput): StallRisk {
   // Same rolling-origin rule as deriveEpicEta: only cutoffs observed
   // at or before asOf take part.
-  const scopedCutoffs = input.asOf
-    ? input.cutoffs.filter((c) => atOrBefore(c.cutoffAt, input.asOf!))
-    : input.cutoffs;
+  const scopedCutoffs = input.asOf ? input.cutoffs.filter((c) => atOrBefore(c.cutoffAt, input.asOf!)) : input.cutoffs;
   const complete = completeCutoffs(scopedCutoffs);
   const latest = complete[complete.length - 1];
   const asOf = input.asOf ?? latest?.cutoffAt ?? new Date(0).toISOString();
@@ -545,7 +531,10 @@ export function deriveStallRisk(input: StallRiskInput): StallRisk {
 
   // Queue heartbeat / lease signals: known only when a queue source
   // supplied them for this item.
-  if (input.queue && (input.queue.missedHeartbeatIntervals !== undefined || input.queue.leaseNearExpiryWithoutProgress !== undefined)) {
+  if (
+    input.queue &&
+    (input.queue.missedHeartbeatIntervals !== undefined || input.queue.leaseNearExpiryWithoutProgress !== undefined)
+  ) {
     const missed = input.queue.missedHeartbeatIntervals ?? 0;
     const nearExpiry = input.queue.leaseNearExpiryWithoutProgress === true;
     signals.push({

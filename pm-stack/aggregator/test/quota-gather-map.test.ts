@@ -99,10 +99,7 @@ describe("entryFromResult", () => {
 
   test("maps a valid ISO credential expiry string", () => {
     const tick = "2026-10-27T05:00:00.000Z";
-    const validIso = entryFromResult(
-      { ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" },
-      tick,
-    );
+    const validIso = entryFromResult({ ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" }, tick);
     expect(validIso.credentialExpiresAt).toBe("2027-01-15T00:00:00.000Z");
   });
 

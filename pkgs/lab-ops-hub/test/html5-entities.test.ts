@@ -11,9 +11,7 @@ interface Corpus {
   cases: Array<{ input: string; expected: string }>;
 }
 
-const corpus = JSON.parse(
-  readFileSync(new URL("./html5-entity-corpus.json", import.meta.url), "utf8"),
-) as Corpus;
+const corpus = JSON.parse(readFileSync(new URL("./html5-entity-corpus.json", import.meta.url), "utf8")) as Corpus;
 
 test("decodeHtmlEntities matches the generated Python html.unescape corpus", () => {
   assert.equal(corpus.oracle, "Python html.unescape");

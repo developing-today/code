@@ -11,22 +11,22 @@ it lands, no host serves a fix; nothing is fabricated.
 
 ## Capabilities
 
-| Name | Kind | Arguments / spec |
-| --- | --- | --- |
-| `loc.position` | request | optional `max_accuracy_m` (whole metres) |
-| `loc.watch` | subscription | `loc.watch` or `loc.watch:<milliseconds>` |
+| Name           | Kind         | Arguments / spec                          |
+| -------------- | ------------ | ----------------------------------------- |
+| `loc.position` | request      | optional `max_accuracy_m` (whole metres)  |
+| `loc.watch`    | subscription | `loc.watch` or `loc.watch:<milliseconds>` |
 
 Both are **sensor caps**: they are excluded from default ceilings, a
 wildcard (`*`) grant never reaches them, and grant-on-use never mints a
 durable grant for them. A world reaches them only through an explicit
-ceiling entry *and* an explicit grant, and each use still passes consent.
+ceiling entry _and_ an explicit grant, and each use still passes consent.
 
 ## Readings
 
 Every result and watch delivery carries the typed reading:
 
 ```json
-{"lat": 30.2672, "lon": -97.7431, "accuracy_m": 5.0, "fix_age_ms": 250, "source": "gnss"}
+{ "lat": 30.2672, "lon": -97.7431, "accuracy_m": 5.0, "fix_age_ms": 250, "source": "gnss" }
 ```
 
 `source` is one of `gnss | network | ip | caller_supplied`. The source is
@@ -35,12 +35,12 @@ never silently degraded to look like a GNSS fix.
 
 ## Refusals (existing codes, specific reasons)
 
-| Code | Reason | Meaning |
-| --- | --- | --- |
-| `outside_ceiling` | `precision_ceiling` | the fix is less precise than the requested/allowed ceiling — consumers can refuse imprecise data instead of receiving a plausible-looking wrong point |
-| `cap_denied` | `consent_required` | no per-use consent on record |
-| `cap_denied` | `os_permission_denied` | the OS refused the location permission |
-| `failed` | `no_fix` | no fix available (e.g. no sky view) |
+| Code              | Reason                 | Meaning                                                                                                                                               |
+| ----------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outside_ceiling` | `precision_ceiling`    | the fix is less precise than the requested/allowed ceiling — consumers can refuse imprecise data instead of receiving a plausible-looking wrong point |
+| `cap_denied`      | `consent_required`     | no per-use consent on record                                                                                                                          |
+| `cap_denied`      | `os_permission_denied` | the OS refused the location permission                                                                                                                |
+| `failed`          | `no_fix`               | no fix available (e.g. no sky view)                                                                                                                   |
 
 Consent withdrawal is an event, not just the next refusal: an open
 `loc.watch` receives

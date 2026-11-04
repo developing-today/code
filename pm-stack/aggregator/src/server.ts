@@ -779,7 +779,10 @@ function eventContextByRef(pool: readonly ProjectPoolItem[]): Map<string, { proj
   return context;
 }
 
-function eventFilterFromUrl(url: URL, itemContext: ReadonlyMap<string, { project?: string | null; epic?: string | null }>) {
+function eventFilterFromUrl(
+  url: URL,
+  itemContext: ReadonlyMap<string, { project?: string | null; epic?: string | null }>,
+) {
   return {
     kind: url.searchParams.get("kind") ?? undefined,
     refs: url.searchParams.getAll("ref"),
@@ -1180,7 +1183,10 @@ async function handler(req: Request): Promise<Response> {
         checkpoints,
         gaps,
         coverage: ACTIVITY_SOURCE_COVERAGE,
-        freshness: { status: "unknown", reason: "ingestion checkpoints record deliveries, not successful source polls" },
+        freshness: {
+          status: "unknown",
+          reason: "ingestion checkpoints record deliveries, not successful source polls",
+        },
       },
     });
   }
@@ -1197,7 +1203,8 @@ async function handler(req: Request): Promise<Response> {
     const epics = new Map<string, string>();
     for (const item of pool) {
       if (item.kind?.toLowerCase() === "epic") epics.set(item.ref, item.title);
-      if (item.epicRef) epics.set(item.epicRef, pool.find((candidate) => candidate.ref === item.epicRef)?.title ?? item.epicRef);
+      if (item.epicRef)
+        epics.set(item.epicRef, pool.find((candidate) => candidate.ref === item.epicRef)?.title ?? item.epicRef);
     }
     const refs = url.searchParams.getAll("ref");
     const option = (value: string, label: string, selected: string) =>

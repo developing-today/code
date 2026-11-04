@@ -78,7 +78,8 @@ export const PAGES: PageDef[] = [
     title: "Digest",
     route: "/digest",
     api: "/api/digest.json",
-    blurb: "The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.",
+    blurb:
+      "The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.",
     group: "overview",
     nav: "dropdown",
   },

@@ -837,12 +837,7 @@ export function applyCloudflareExport(
     // null fallback instead of stamping a negative used/percent.
     doc.metrics
       .filter(
-        (m) =>
-          m &&
-          typeof m.id === "string" &&
-          typeof m.used === "number" &&
-          Number.isFinite(m.used) &&
-          m.used >= 0,
+        (m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used) && m.used >= 0,
       )
       .map((m) => [m.id, m]),
   );

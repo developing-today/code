@@ -447,7 +447,6 @@ export interface SourceCoverage {
   detail: string;
 }
 
-
 export function refKey(ref: GhRef): RefKey {
   return `${ref.repo}#${ref.number}`;
 }

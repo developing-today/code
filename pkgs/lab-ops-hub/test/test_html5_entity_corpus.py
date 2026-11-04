@@ -18,7 +18,12 @@ class Html5EntityCorpusTest(unittest.TestCase):
         inputs = {case["input"] for case in CORPUS["cases"]}
         self.assertLessEqual({f"&{key}" for key in html.entities.html5}, inputs)
         self.assertLessEqual(
-            {f"&{key}{suffix}" for key in html.entities.html5 if not key.endswith(";") for suffix in ("x", "=")},
+            {
+                f"&{key}{suffix}"
+                for key in html.entities.html5
+                if not key.endswith(";")
+                for suffix in ("x", "=")
+            },
             inputs,
         )
         self.assertLessEqual(

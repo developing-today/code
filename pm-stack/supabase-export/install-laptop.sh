@@ -26,7 +26,7 @@ if [[ -z $bun_bin ]]; then
   echo "install-laptop: bun not found on PATH or at ~/.bun/bin/bun" >&2
   exit 1
 fi
-sed -e "s|@EXPORT_DIR@|$target|g" -e "s|@BUN@|$bun_bin|g" -e "s|@BASH@|$bash_bin|g" "$here/supabase-quota-export.service" > "$units/supabase-quota-export.service"
+sed -e "s|@EXPORT_DIR@|$target|g" -e "s|@BUN@|$bun_bin|g" -e "s|@BASH@|$bash_bin|g" "$here/supabase-quota-export.service" >"$units/supabase-quota-export.service"
 chmod 0644 "$units/supabase-quota-export.service"
 if grep -q '@EXPORT_DIR@\|@BUN@\|@BASH@' "$units/supabase-quota-export.service"; then
   echo "install-laptop: service unit still contains an unrendered placeholder after rendering" >&2

@@ -607,11 +607,7 @@ export function decodeHtmlEntities(data: string): string {
       }
     } else {
       let end = i + 1;
-      while (
-        end < data.length &&
-        end - (i + 1) < MAX_HTML5_ENTITY_KEY_LENGTH &&
-        /[A-Za-z0-9;]/.test(data[end])
-      ) {
+      while (end < data.length && end - (i + 1) < MAX_HTML5_ENTITY_KEY_LENGTH && /[A-Za-z0-9;]/.test(data[end])) {
         end += 1;
       }
       let matched = false;

@@ -17,6 +17,7 @@ Run on the laptop (amd-6), never the sandbox:
 
 Output: fixtures/core-expectations.json (committed; the .db is not).
 """
+
 import argparse
 import importlib.util
 import json
@@ -70,11 +71,23 @@ A.embed_query = fixture_embed_query
 def mkargs(**over):
     base = dict(
         query="how do we back up the database",
-        mode="hybrid", k=10, pool=100,
-        kind=None, topic=None, project=None, client=None,
-        since=None, until=None, max_sensitivity="personal",
-        group_by_session=False, expand=0, with_message=False,
-        model=A.MODEL, embedder="auto", trunc=0, vector_backend="scan",
+        mode="hybrid",
+        k=10,
+        pool=100,
+        kind=None,
+        topic=None,
+        project=None,
+        client=None,
+        since=None,
+        until=None,
+        max_sensitivity="personal",
+        group_by_session=False,
+        expand=0,
+        with_message=False,
+        model=A.MODEL,
+        embedder="auto",
+        trunc=0,
+        vector_backend="scan",
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -82,9 +95,11 @@ def mkargs(**over):
 
 def search_cases(be):
     cases = []
+
     def add(name, **over):
         out = A.run_search(be, mkargs(**over))
         cases.append({"name": name, "envelope": out})
+
     add("hybrid_default")
     add("hybrid_secret_ceiling", max_sensitivity="secret-bearing")
     add("hybrid_shareable_ceiling", max_sensitivity="shareable")
@@ -92,8 +107,12 @@ def search_cases(be):
     add("vector_default", mode="vector")
     add("hybrid_kind_code", kind="code")
     add("hybrid_topic_nixos", topic="nixos")
-    add("hybrid_client_codex_dates", client="codex",
-        since="2026-10-01", until="2026-10-31")
+    add(
+        "hybrid_client_codex_dates",
+        client="codex",
+        since="2026-10-01",
+        until="2026-10-31",
+    )
     add("hybrid_until_before_sB", client="codex", until="2026-10-19")
     add("hybrid_grouped", group_by_session=True, k=2)
     add("hybrid_expand_message", expand=1, with_message=True, k=3)
@@ -103,8 +122,10 @@ def search_cases(be):
 
 def get_chunk_cases(be):
     cases = []
-    for name, cid, neighbors in (("get_chunk_secret", 5, 0),
-                                 ("get_chunk_neighbors", 2, 1)):
+    for name, cid, neighbors in (
+        ("get_chunk_secret", 5, 0),
+        ("get_chunk_neighbors", 2, 1),
+    ):
         ns = argparse.Namespace(chunk_id=cid, neighbors=neighbors)
         cases.append({"name": name, "envelope": A.run_get_chunk(be, ns)})
     return cases
@@ -121,22 +142,33 @@ def turso_fixtures():
     bq = []
     for name, fover, me, qj, pool in (
         ("defaults", {}, '"back" OR "database"', "[0.5, 0.25]", 100),
-        ("all_filters_secret", dict(kind="code", topic="rust", client="codex",
-                                    since="2026-10-01", until="2026-10-31",
-                                    max_sensitivity="secret-bearing"),
-         '"back" OR "database"', "[0.5, 0.25]", 100),
+        (
+            "all_filters_secret",
+            dict(
+                kind="code",
+                topic="rust",
+                client="codex",
+                since="2026-10-01",
+                until="2026-10-31",
+                max_sensitivity="secret-bearing",
+            ),
+            '"back" OR "database"',
+            "[0.5, 0.25]",
+            100,
+        ),
         ("fts_only", {}, '"back" OR "database"', None, 100),
         ("vector_only", {}, None, "[0.5, 0.25]", 100),
     ):
         stmts = A.branch_queries(stub, filters_for(**fover), me, qj, pool)
-        bq.append({"name": name,
-                   "stmts": [{"sql": s, "params": p} for s, p in stmts]})
+        bq.append({"name": name, "stmts": [{"sql": s, "params": p} for s, p in stmts]})
     out["branch_queries"] = bq
 
     class FakeBe:
         vec_table = A.VEC_TABLE
+
         def __init__(self):
             self.calls = []
+
         def execute(self, sql, args=()):
             self.calls.append({"sql": sql, "params": list(args)})
             if "vector_top_k" in sql:
@@ -161,15 +193,13 @@ def turso_fixtures():
 
     fb = FakeBe()
     ranked = A.turso_index_branch(fb, filters_for(), "[0.5, 0.25]", 3, "index-fill")
-    out["index_fill"] = {"calls": fb.calls,
-                         "result": [[c, d] for c, d in ranked]}
+    out["index_fill"] = {"calls": fb.calls, "result": [[c, d] for c, d in ranked]}
 
     fb = FakeBe()
     # index-fixed at pool 3 would call depth 3; reuse the scripted depth-3
     # response: survivors = [1] after filtering.
     ranked = A.turso_index_branch(fb, filters_for(), "[0.5, 0.25]", 3, "index-fixed")
-    out["index_fixed"] = {"calls": fb.calls,
-                          "result": [[c, d] for c, d in ranked]}
+    out["index_fixed"] = {"calls": fb.calls, "result": [[c, d] for c, d in ranked]}
     return out
 
 
@@ -179,9 +209,11 @@ def main():
     build_db(db)
     be = A.LocalBackend(db)
     doc = {
-        "comment": ("Recorded from the production Python atlas_search.py "
-                    "by gen_core_fixtures.py. atlas-core's parity tests "
-                    "must reproduce every envelope and SQL string here."),
+        "comment": (
+            "Recorded from the production Python atlas_search.py "
+            "by gen_core_fixtures.py. atlas-core's parity tests "
+            "must reproduce every envelope and SQL string here."
+        ),
         "qvec_raw": QVEC_RAW,
         "search_cases": search_cases(be),
         "get_chunk_cases": get_chunk_cases(be),

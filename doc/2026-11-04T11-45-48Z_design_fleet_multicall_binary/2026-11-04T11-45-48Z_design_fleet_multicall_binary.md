@@ -15,7 +15,7 @@ open packaging PR), not from memory. Where the census
 contradicts the epic's framing, §1 says so plainly. Two census
 limits, stated once: the laptop was unreachable over SSH for
 part of the census window (the tailnet tunnel was dropping
-CONNECTs), so laptop *runtime* state is quoted from the unit
+CONNECTs), so laptop _runtime_ state is quoted from the unit
 files and from states verified earlier the same evening; every
 repo-side and sandbox-side fact below was read directly.
 Measurements quoted are the ones the live artifacts carry;
@@ -28,16 +28,16 @@ problem. It is a set of programs with **three different source
 homes, two languages, and one program family that lives in no
 published repo at all**:
 
-| Component | Source home today | Shape | Launched / distributed today |
-|---|---|---|---|
-| `repo-queue` CLI | sandbox `~/tools/fleet-brokers/crates/repo-queue` (1,155 LOC) | Rust, 956,800 B unstripped dynamic ELF | built in `~/tools/fleet-brokers/target`, hardlinked to `~/tools/repo-queue`, symlinked from `~/tools/bin/repo-queue` |
-| `queue-broker` | same workspace (610 + 467 LOC) | Rust (tiny_http/ureq), 4,080,672 B | laptop systemd **user** unit, `ExecStart=~/fleet-brokers/bin/queue-broker`, binds tailnet IP `100.99.113.103:4801` |
-| `secrets-broker` | same workspace (276 LOC) | Rust, 1,255,464 B | laptop systemd user unit, binds `100.99.113.103:4800`; resident Bitwarden cache, TTL 900 s |
-| `laptop-agent` daemon | Python stdlib; vendored copy in dezren39/nix PR #1459 `pkgs/laptop-agent/src/` | Python | laptop systemd user unit, binds `100.99.113.103:4799`; client is sandbox `~/tools/laptop-agent.py` (223 lines) |
-| Sandbox session proxy | sandbox `~/tools/` — inside the sandbox home tree, **not a published source repo** | Python trio: `laptop-agent-broker.py` (168 lines), `laptop-proxy-connect.py` (88), `laptop-ssh.sh` | auto-started by clients when its Unix socket is missing; exits after 1 h idle |
-| pm-stack incl. **pm-dispatch** | developing-today/code `pm-stack/` | TypeScript/Bun service suite (aggregator, dispatch, projector, opencode-claimant, …) | its own systemd units (`pm-stack/systemd`); state rendered from SOPS into `~/.local/state/pm-dispatch/<project>/` |
-| `atlas-search` | developing-today/code `pkgs/atlas-search/` | Rust workspace, 4 crates (atlas-core, atlas-embed, atlas-proto, atlas-search) | packaging (default.nix, user service on :18760) landing in epic #5350 step 5, in flight at census time; sandbox also carries a `~/tools/bin/atlas-search` |
-| `pkgs/id` | developing-today/code `pkgs/id/` | full product workspace (P2P file-sharing CLI on Iroh; crate-split in progress; vendored p2panda crates) | its own `default.nix`; a product with its own users and cadence |
+| Component                      | Source home today                                                                  | Shape                                                                                                   | Launched / distributed today                                                                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repo-queue` CLI               | sandbox `~/tools/fleet-brokers/crates/repo-queue` (1,155 LOC)                      | Rust, 956,800 B unstripped dynamic ELF                                                                  | built in `~/tools/fleet-brokers/target`, hardlinked to `~/tools/repo-queue`, symlinked from `~/tools/bin/repo-queue`                                      |
+| `queue-broker`                 | same workspace (610 + 467 LOC)                                                     | Rust (tiny_http/ureq), 4,080,672 B                                                                      | laptop systemd **user** unit, `ExecStart=~/fleet-brokers/bin/queue-broker`, binds tailnet IP `100.99.113.103:4801`                                        |
+| `secrets-broker`               | same workspace (276 LOC)                                                           | Rust, 1,255,464 B                                                                                       | laptop systemd user unit, binds `100.99.113.103:4800`; resident Bitwarden cache, TTL 900 s                                                                |
+| `laptop-agent` daemon          | Python stdlib; vendored copy in dezren39/nix PR #1459 `pkgs/laptop-agent/src/`     | Python                                                                                                  | laptop systemd user unit, binds `100.99.113.103:4799`; client is sandbox `~/tools/laptop-agent.py` (223 lines)                                            |
+| Sandbox session proxy          | sandbox `~/tools/` — inside the sandbox home tree, **not a published source repo** | Python trio: `laptop-agent-broker.py` (168 lines), `laptop-proxy-connect.py` (88), `laptop-ssh.sh`      | auto-started by clients when its Unix socket is missing; exits after 1 h idle                                                                             |
+| pm-stack incl. **pm-dispatch** | developing-today/code `pm-stack/`                                                  | TypeScript/Bun service suite (aggregator, dispatch, projector, opencode-claimant, …)                    | its own systemd units (`pm-stack/systemd`); state rendered from SOPS into `~/.local/state/pm-dispatch/<project>/`                                         |
+| `atlas-search`                 | developing-today/code `pkgs/atlas-search/`                                         | Rust workspace, 4 crates (atlas-core, atlas-embed, atlas-proto, atlas-search)                           | packaging (default.nix, user service on :18760) landing in epic #5350 step 5, in flight at census time; sandbox also carries a `~/tools/bin/atlas-search` |
+| `pkgs/id`                      | developing-today/code `pkgs/id/`                                                   | full product workspace (P2P file-sharing CLI on Iroh; crate-split in progress; vendored p2panda crates) | its own `default.nix`; a product with its own users and cadence                                                                                           |
 
 How the pieces connect today, because the proxy design (§4)
 inherits it: sandbox clients talk **length-prefixed JSON**
@@ -56,7 +56,7 @@ laptop rides the same CONNECT construction via
 `laptop-proxy-connect.py` as ProxyCommand.
 
 The queue path end-to-end: `repo-queue` (client) → session
-proxy *or* direct HTTP on the laptop (`REPO_QUEUE_BROKER_URL`
+proxy _or_ direct HTTP on the laptop (`REPO_QUEUE_BROKER_URL`
 / `~/.config/repo-queue/broker-url`) → `queue-broker`
 (`POST /<command>`, JSON envelope `{ok, …}` / `{ok:false,
 exit, error}`) → Postgres RPCs in Supabase. All queue semantics
@@ -69,7 +69,7 @@ its exit codes mirror the retired Python: 2 validation,
 
 ### Where the census contradicts the epic
 
-1. **There is no single source tree to consolidate *from*.**
+1. **There is no single source tree to consolidate _from_.**
    The broker family's canonical workspace sits in the
    sandbox's `~/tools/fleet-brokers` — files inside the sandbox
    home tree, not a published repo. A second, vendored copy of
@@ -79,9 +79,9 @@ its exit codes mirror the retired Python: 2 validation,
    no machine enables that module yet — the live units are the
    hand-installed ones with the same names and ports). The
    laptop runs a third copy from `~/fleet-brokers/bin`. Drew's
-   standing rules decide the destination — *all services and
+   standing rules decide the destination — _all services and
    binaries come from the code repo; no laptop services from
-   dezren39/nix* — so the fleet workspace's home is code (§2),
+   dezren39/nix_ — so the fleet workspace's home is code (§2),
    and PR #1459's fate is a go/no-go decision (D1), not a
    detail.
 2. **`repo-queue` has no `--help` and no `--version`** — both
@@ -105,7 +105,7 @@ its exit codes mirror the retired Python: 2 validation,
    `~/tools` copies are entangled with the sandbox home tree,
    so retiring them is an archive operation, not a delete.
 
-None of this contradicts the epic's *conclusion* — one
+None of this contradicts the epic's _conclusion_ — one
 distribution unit is worth more, not less, when the starting
 point is three copies in three homes. It changes what step 1
 is: giving these programs their first real source home, then
@@ -113,18 +113,18 @@ consolidating.
 
 ## Decision summary
 
-| # | Question | Recommendation |
-|---|----------|----------|
-| 1 | Workspace home | `pkgs/fleet/` in developing-today/code, self-contained Cargo workspace (atlas pattern). Close dezren39/nix PR #1459; port its home-module pattern into code's home tree against the code flake. **(D1)** |
-| 2 | Variant matrix | Three shipped variants: `fleet` (full), `fleet-serve`, `fleet-connect` (tiny). Config domain-disable shapes roles inside `full`. **(D2)** |
-| 3 | Stub exit code | **69** (`EX_UNAVAILABLE`, sysexits.h). **(D3)** |
-| 4 | pkgs/id | Stays its own binary; not a fleet domain. **(D4)** |
-| 5 | Broker daemons | `fleet serve <role>` subcommands, one systemd user unit per role. |
-| 6 | laptop-agent daemon | Keep the Python daemon in v1; fleet manages lifecycle/health. Rust rewrite is a named post-v1 candidate. **(D5)** |
-| 7 | Dispatch | v1 is a thin client domain over pm-stack's existing interfaces; pm-stack is not rewritten. **(D6)** |
-| 8 | Proxy protocol | Keep length-prefixed JSON framing; add a versioned hello/capability frame as the first frame per pooled connection. Broker supports protocol majors N and N−1. |
-| 9 | fleet-connect linkage | Static musl, decided by measurement in step 1 (size + runs-anywhere smoke). **(D7)** |
-| 10 | Migration | Additive-first: skeleton → queue pilot → proxy → dispatch (thin) → search last (after #5350 step 6). Per-domain rollback = re-point one symlink/unit to the kept standalone artifact. |
+| #   | Question              | Recommendation                                                                                                                                                                                           |
+| --- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Workspace home        | `pkgs/fleet/` in developing-today/code, self-contained Cargo workspace (atlas pattern). Close dezren39/nix PR #1459; port its home-module pattern into code's home tree against the code flake. **(D1)** |
+| 2   | Variant matrix        | Three shipped variants: `fleet` (full), `fleet-serve`, `fleet-connect` (tiny). Config domain-disable shapes roles inside `full`. **(D2)**                                                                |
+| 3   | Stub exit code        | **69** (`EX_UNAVAILABLE`, sysexits.h). **(D3)**                                                                                                                                                          |
+| 4   | pkgs/id               | Stays its own binary; not a fleet domain. **(D4)**                                                                                                                                                       |
+| 5   | Broker daemons        | `fleet serve <role>` subcommands, one systemd user unit per role.                                                                                                                                        |
+| 6   | laptop-agent daemon   | Keep the Python daemon in v1; fleet manages lifecycle/health. Rust rewrite is a named post-v1 candidate. **(D5)**                                                                                        |
+| 7   | Dispatch              | v1 is a thin client domain over pm-stack's existing interfaces; pm-stack is not rewritten. **(D6)**                                                                                                      |
+| 8   | Proxy protocol        | Keep length-prefixed JSON framing; add a versioned hello/capability frame as the first frame per pooled connection. Broker supports protocol majors N and N−1.                                           |
+| 9   | fleet-connect linkage | Static musl, decided by measurement in step 1 (size + runs-anywhere smoke). **(D7)**                                                                                                                     |
+| 10  | Migration             | Additive-first: skeleton → queue pilot → proxy → dispatch (thin) → search last (after #5350 step 6). Per-domain rollback = re-point one symlink/unit to the kept standalone artifact.                    |
 
 ## 1. Workspace and crate layout
 
@@ -153,17 +153,17 @@ tree, consuming code's own flake packages. What has to move:
 **Crates** (domain crates consume platform crates; the bin
 crate consumes domains; nothing consumes the bin):
 
-| Crate | Contents |
-|---|---|
-| `fleet-registry` | The full domain registry: names, one-line descriptions, argv0 aliases, per-domain help pointers. std-only, no I/O. Compiled into **every** variant (§5). |
-| `fleet-config` | Config file (`~/.config/fleet/fleet.toml`) + env resolution; the domain enable/disable table (§7); state-dir paths. |
-| `fleet-secrets` | Secrets-by-name client: secrets-broker protocol first, `bws` CLI fallback; token-file handling identical to today's (read per request, never stored, never logged). |
-| `fleet-proxy-proto` | Proxy framing (length-prefixed JSON) + the hello/capability frame (§4). The fleet analogue of atlas-proto: the wire contract lives here and nowhere else. |
-| `fleet-proxy` | `proxy serve` (the broker: socket, per-port pools, idle exit) and `proxy connect`/`init` (client, shim materialization, autostart). |
-| `fleet-queue` | The repo-queue client surface and the queue-broker + secrets-broker server roles (the three moved crates, refactored onto the platform crates). Client and broker stay separable features of one domain crate. |
-| `fleet-dispatch` | Thin client over pm-stack dispatch interfaces (§6). Lands after the pilot. |
-| `fleet-search` | The atlas-search bin crate rehomed as a domain; atlas-core/atlas-embed/atlas-proto are untouched and consumed as-is. Lands last (§7). |
-| `fleet` (bin) | Multicall dispatch (argv0 + subcommand), the stub machinery, variant feature selection, `version` / `capabilities` / `help`. |
+| Crate               | Contents                                                                                                                                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fleet-registry`    | The full domain registry: names, one-line descriptions, argv0 aliases, per-domain help pointers. std-only, no I/O. Compiled into **every** variant (§5).                                                       |
+| `fleet-config`      | Config file (`~/.config/fleet/fleet.toml`) + env resolution; the domain enable/disable table (§7); state-dir paths.                                                                                            |
+| `fleet-secrets`     | Secrets-by-name client: secrets-broker protocol first, `bws` CLI fallback; token-file handling identical to today's (read per request, never stored, never logged).                                            |
+| `fleet-proxy-proto` | Proxy framing (length-prefixed JSON) + the hello/capability frame (§4). The fleet analogue of atlas-proto: the wire contract lives here and nowhere else.                                                      |
+| `fleet-proxy`       | `proxy serve` (the broker: socket, per-port pools, idle exit) and `proxy connect`/`init` (client, shim materialization, autostart).                                                                            |
+| `fleet-queue`       | The repo-queue client surface and the queue-broker + secrets-broker server roles (the three moved crates, refactored onto the platform crates). Client and broker stay separable features of one domain crate. |
+| `fleet-dispatch`    | Thin client over pm-stack dispatch interfaces (§6). Lands after the pilot.                                                                                                                                     |
+| `fleet-search`      | The atlas-search bin crate rehomed as a domain; atlas-core/atlas-embed/atlas-proto are untouched and consumed as-is. Lands last (§7).                                                                          |
+| `fleet` (bin)       | Multicall dispatch (argv0 + subcommand), the stub machinery, variant feature selection, `version` / `capabilities` / `help`.                                                                                   |
 
 Two platform rules carry over from tonight's lessons.
 **Secrets are resolved by name through one crate** — no
@@ -182,11 +182,11 @@ bin crate. Unselected domains are **absent from the artifact**
 shipped variants (the testing rule: the shipped matrix is
 tested, the feature power set is not):
 
-| Variant | Flake attr | Features (domains compiled in) | For |
-|---|---|---|---|
-| `fleet` | `packages.fleet` | registry, config, secrets, proxy serve+connect, queue client+brokers, dispatch, search | the laptop and the sandbox — every full client and every daemon |
-| `fleet-serve` | `packages.fleet-serve` | registry, config, secrets, proxy serve+connect, queue brokers, search **serve only** | a host that runs daemons but is not a working seat |
-| `fleet-connect` | `packages.fleet-connect` | registry, config (minimal), proxy connect/init — **nothing else** | drop on any box: codespaces, CI runners, a borrowed shell |
+| Variant         | Flake attr               | Features (domains compiled in)                                                         | For                                                             |
+| --------------- | ------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `fleet`         | `packages.fleet`         | registry, config, secrets, proxy serve+connect, queue client+brokers, dispatch, search | the laptop and the sandbox — every full client and every daemon |
+| `fleet-serve`   | `packages.fleet-serve`   | registry, config, secrets, proxy serve+connect, queue brokers, search **serve only**   | a host that runs daemons but is not a working seat              |
+| `fleet-connect` | `packages.fleet-connect` | registry, config (minimal), proxy connect/init — **nothing else**                      | drop on any box: codespaces, CI runners, a borrowed shell       |
 
 Why a serve variant at all, when the census shows the laptop
 runs everything and the sandbox runs clients: it is the
@@ -207,7 +207,7 @@ networking, no async runtime — is 0.91 MiB unstripped,
 dynamically linked. The connect client needs the framing,
 the hello, the shim writer, and the registry (strings):
 **target ≤ 1.5 MiB, hard budget ≤ 2 MiB**, stripped, and the
-budget is a *build-time contract* — the nix check for
+budget is a _build-time contract_ — the nix check for
 `packages.fleet-connect` fails if the artifact exceeds it,
 so size regressions block the release instead of surprising a
 codespace. Linkage (D7): a glibc-dynamic binary still assumes
@@ -245,15 +245,15 @@ symlinks flip, because call sites (45 cron bodies, hooks,
 worker instruction files, units) invoke these names, not
 `fleet <domain>`:
 
-| argv0 | Routes to | Notes |
-|---|---|---|
-| `fleet` | subcommand dispatch | `fleet <domain> …` |
-| `repo-queue` | `queue` client | the pilot's compat promise |
-| `queue-broker` | `serve queue-broker` | unit ExecStart name today |
-| `secrets-broker` | `serve secrets-broker` | unit ExecStart name today |
-| `laptop-agent` | the laptop-agent **client** | today's `~/tools/laptop-agent.py` CLI shape; the daemon keeps its unit and is not argv0-invoked (§6) |
-| `atlas-search` | `search` | after the search domain lands (§7) |
-| `laptop-agent-broker` | `proxy serve` | the sandbox broker's current process name |
+| argv0                 | Routes to                   | Notes                                                                                                |
+| --------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `fleet`               | subcommand dispatch         | `fleet <domain> …`                                                                                   |
+| `repo-queue`          | `queue` client              | the pilot's compat promise                                                                           |
+| `queue-broker`        | `serve queue-broker`        | unit ExecStart name today                                                                            |
+| `secrets-broker`      | `serve secrets-broker`      | unit ExecStart name today                                                                            |
+| `laptop-agent`        | the laptop-agent **client** | today's `~/tools/laptop-agent.py` CLI shape; the daemon keeps its unit and is not argv0-invoked (§6) |
+| `atlas-search`        | `search`                    | after the search domain lands (§7)                                                                   |
+| `laptop-agent-broker` | `proxy serve`               | the sandbox broker's current process name                                                            |
 
 **The registry is in every build.** `fleet-registry` is
 strings and a table — kilobytes — so even `fleet-connect`
@@ -279,12 +279,12 @@ capability is not in this artifact. The justification is the
 collision table; every nearby code already means something an
 agent must not confuse with "wrong build":
 
-| Code | Already means |
-|---|---|
-| 0 / 1 | success / generic failure |
-| 2 | clap usage error; repo-queue validation failure |
-| 3 | repo-queue: broker path / config unavailable — **transport down, retry or repair** |
-| 4 / 5 | queue-broker HTTP failure / no row |
+| Code      | Already means                                                                                                    |
+| --------- | ---------------------------------------------------------------------------------------------------------------- |
+| 0 / 1     | success / generic failure                                                                                        |
+| 2         | clap usage error; repo-queue validation failure                                                                  |
+| 3         | repo-queue: broker path / config unavailable — **transport down, retry or repair**                               |
+| 4 / 5     | queue-broker HTTP failure / no row                                                                               |
 | 126 / 127 | shell: not executable / command not found; the omnibin dispatcher uses 127 for an unresolvable `program@version` |
 
 69 is distinct from all of them, is a documented standard
@@ -305,10 +305,10 @@ first frame, and outlives any variant's feature set.**
 
 **Topology (unchanged in v1).** Two hops, because they solve
 two different problems: the sandbox broker's Unix socket is
-the *warmth* layer (it holds the pooled CONNECT tunnels so
+the _warmth_ layer (it holds the pooled CONNECT tunnels so
 clients skip the ~1.8 s handshake), and the CONNECT tunnel
 through the egress proxy to the laptop's tailnet IP is the
-*reach* layer. `fleet proxy serve` is the broker; `fleet
+_reach_ layer. `fleet proxy serve` is the broker; `fleet
 proxy connect` is the client half; `fleet proxy serve` on
 the laptop side is a no-op role in v1 (the laptop's services
 bind their tailnet ports directly, as today) — the role
@@ -332,7 +332,7 @@ broker → { "hello": { "proto": 1,
 
 Requests then keep today's shape (`{method, path, body,
 port?, token_file?}`). **Versioning policy:** the integer is
-the protocol *major*; a broker must accept majors N and N−1
+the protocol _major_; a broker must accept majors N and N−1
 (the window is one major — a client older than that gets a
 clean `proto_too_old` error naming the minimum, not a hung
 socket); fields are additive within a major (unknown fields
@@ -340,7 +340,7 @@ ignored, the JSON rule the queue envelope already follows).
 **Capability negotiation is the services map**: it is the
 broker's actual routing table, not a promise — a serve build
 without the queue broker advertises a map without 4801, and
-clients must treat an unadvertised port as *not here* (the
+clients must treat an unadvertised port as _not here_ (the
 proxy-level analogue of the 69 stub). Per-service version
 strings ride the map so a client can feature-detect a broker
 capability instead of guessing from the fleet version.
@@ -356,7 +356,7 @@ fleet binary, and `connect` prints (and with `--print-path`,
 emits) the PATH prefix to use. Regeneration-from-negotiation
 is the point: tonight's drift came from hand-maintained stubs
 in `~/tools/bin` that silently aged; a shim dir rebuilt from
-what the broker *actually advertises* cannot advertise a
+what the broker _actually advertises_ cannot advertise a
 service that is not there. Shims for domains the local build
 lacks still materialize — invoking one produces the 69 stub,
 which is the correct, branchable answer.
@@ -403,7 +403,7 @@ census's own evidence: the roles have different blast radii
 holds the Supabase service-role key it fetched; the search
 service holds 1.6 GB of embedder) and different restart
 reasons, and the current three-unit shape has never been the
-problem. The problem was three *source homes*; the units
+problem. The problem was three _source homes_; the units
 were fine.
 
 ## 6. Domain scope calls
@@ -414,10 +414,10 @@ in-flight crate-split, vendored third-party crates, and a
 release cadence that answers to its roadmap, not to fleet
 operations. Fleet is infrastructure Drew's agents run the
 fleet with. Merging them couples a product's releases to the
-ops toolchain's — the exact coupling the epic accepts *among
-ops tools* because they share distribution pain; id does not
+ops toolchain's — the exact coupling the epic accepts _among
+ops tools_ because they share distribution pain; id does not
 share that pain (its `default.nix` ships fine). The transfer
-from id to fleet is the *pattern* (workspace factoring,
+from id to fleet is the _pattern_ (workspace factoring,
 one optimized graph), already taken. Fleet's shim layer may
 advertise `id` on PATH like any external tool; it does not
 own it.
@@ -427,7 +427,7 @@ own it.
 agents act on the laptop, and its semantics are delicate in
 ways the fleet has already paid to learn (no client-visible
 exec timeout — code#5405; batch/job edge cases). A Rust
-rewrite inside this epic would make the *pilot's* critical
+rewrite inside this epic would make the _pilot's_ critical
 path depend on the riskiest single port. v1: the daemon keeps
 running byte-identical (the copy vendored in PR #1459 was
 sha256-verified against the live daemon — that verification
@@ -449,7 +449,7 @@ the stack they talk to stays untouched. Absorbing pm-stack
 into Rust is a rewrite decision about a different stack,
 taken (if ever) on its own evidence — the epic's mistake to
 avoid is letting "dispatch" silently balloon this program.
-What fleet *does* absorb is the queue-side meaning of
+What fleet _does_ absorb is the queue-side meaning of
 dispatch: enqueue/claim/park are already the queue domain.
 
 **Search — joins last, unchanged.** The atlas workspace's
@@ -498,7 +498,7 @@ flip is a single symlink or unit re-point that flips back.
    verbs — no cron is rewritten by this epic.
 5. **Search (last).** After #5350 step 6: atlas bin crate
    rehomes; the atlas user unit re-points at `fleet serve
-   search`; standalone `atlas-search` argv0 keeps working
+search`; standalone `atlas-search` argv0 keeps working
    from the same workspace.
 
 **Config-level domain disable.** `fleet.toml` carries a
@@ -518,7 +518,7 @@ workspace (the migration's standing inventory — standalones
 are built and published alongside the variants until the
 epic closes); (c) roll the whole fleet package back one
 version (one derivation flip in the home config). (b) is
-why the standalones stay buildable *during* migration; when
+why the standalones stay buildable _during_ migration; when
 they retire is an epic-close decision, not a step decision.
 
 **Release mechanics.** One workspace, one version
@@ -552,7 +552,7 @@ a scratch queue before the tag.
 - **Protocol freeze.** The hello frame makes the proxy
   protocol a public contract the day `fleet-connect` ships
   to codespaces. The N/N−1 window and additive-fields rule
-  are the mitigation; the risk is freezing a *bad* shape —
+  are the mitigation; the risk is freezing a _bad_ shape —
   which is why the framing is today's proven framing, not a
   redesign.
 - **The Python island.** laptop-agent stays Python inside a
@@ -561,7 +561,7 @@ a scratch queue before the tag.
   this epic) is the one being avoided.
 - **Scope gravity.** "One binary for everything" will attract
   every tool in `~/tools/bin` (there are dozens, most of them
-  omnibin-resolved third-party programs that are *not* fleet
+  omnibin-resolved third-party programs that are _not_ fleet
   tools). The registry is for fleet domains; the shim layer
   advertising external tools (id, omnibin programs) must not
   become ownership of them.

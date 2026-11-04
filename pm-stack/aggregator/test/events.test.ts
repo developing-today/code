@@ -181,16 +181,21 @@ describe("events store (#1739)", () => {
       { ...base, at: "2026-11-01T09:00:00Z", ref: "developing-today/code#8", summary: "Closed" },
     ];
     const itemContext = new Map([
-      ["developing-today/code#7", { project: "https://github.com/orgs/developing-today/projects/1", epic: "developing-today/code#1" }],
+      [
+        "developing-today/code#7",
+        { project: "https://github.com/orgs/developing-today/projects/1", epic: "developing-today/code#1" },
+      ],
       ["developing-today/code#8", { project: "https://github.com/orgs/developing-today/projects/2", epic: null }],
     ]);
-    expect(filterEvents(events, {
-      refs: ["developing-today/code#7"],
-      project: "https://github.com/orgs/developing-today/projects/1",
-      epic: "developing-today/code#1",
-      search: "REVIEW",
-      itemContext,
-    }).map((event) => event.ref)).toEqual(["gh:developing-today/code#7"]);
+    expect(
+      filterEvents(events, {
+        refs: ["developing-today/code#7"],
+        project: "https://github.com/orgs/developing-today/projects/1",
+        epic: "developing-today/code#1",
+        search: "REVIEW",
+        itemContext,
+      }).map((event) => event.ref),
+    ).toEqual(["gh:developing-today/code#7"]);
   });
 
   test("cursor pages use stable id ordering and exclude events ingested after the snapshot", async () => {
@@ -205,7 +210,12 @@ describe("events store (#1739)", () => {
 
     // A late-arriving old event sorts behind the cursor by event time,
     // but its ingestion time is beyond the first page's fixed snapshot.
-    await store.record({ ...base, id: "late-event", at: new Date(now - 5 * 60_000).toISOString(), summary: "arrived late" });
+    await store.record({
+      ...base,
+      id: "late-event",
+      at: new Date(now - 5 * 60_000).toISOString(),
+      summary: "arrived late",
+    });
     const second = pageEvents(await store.list(), { limit: 2, cursor: first.nextCursor });
     expect(second.events.map((event) => event.id)).toEqual(["event-c"]);
     expect(second.events.map((event) => event.id)).not.toContain("late-event");

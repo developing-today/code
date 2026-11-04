@@ -83,7 +83,7 @@ def ack_events(cfg, ids):
     """
     path = cfg["worker"]["queue_poll_path"] + "/ack"
     for i in range(0, len(ids), ACK_BATCH_SIZE):
-        worker_req(path, {"ids": ids[i:i + ACK_BATCH_SIZE]})
+        worker_req(path, {"ids": ids[i : i + ACK_BATCH_SIZE]})
 
 
 def queue_events(queue_poll_path):

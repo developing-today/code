@@ -1,7 +1,15 @@
 // The projector: turn GitHub webhook events (and reconciliation payloads) into
 // registry + read-model rows. Pure transformation + store writes. No network,
 // no writes back to GitHub. The store is the only side effect.
-import type { upsertItem, upsertComment, markCommentDeleted, recordPush, ItemRow, CommentRow, HotEventInput } from "./store";
+import type {
+  upsertItem,
+  upsertComment,
+  markCommentDeleted,
+  recordPush,
+  ItemRow,
+  CommentRow,
+  HotEventInput,
+} from "./store";
 
 // A thin store interface keeps the projector testable against an in-memory
 // fake, independent of libSQL.
@@ -62,15 +70,7 @@ function fromIssueOrPr(repo: string, obj: Record<string, any>, kind: "issue" | "
   // (only the single-PR get and webhook payloads carry both), so derive
   // merged from merged_at when the boolean is absent (#4528, salvaged
   // from the duplicate PR #4687; fixes the Codex P1 on PR #4597).
-  const merged = !carriesMergeFields
-    ? null
-    : obj.merged != null
-      ? obj.merged
-        ? 1
-        : 0
-      : obj.merged_at != null
-        ? 1
-        : 0;
+  const merged = !carriesMergeFields ? null : obj.merged != null ? (obj.merged ? 1 : 0) : obj.merged_at != null ? 1 : 0;
   return {
     ref: itemRef(repo, number),
     repo,

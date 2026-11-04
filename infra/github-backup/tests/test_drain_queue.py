@@ -306,22 +306,35 @@ check("foreign-chronic: no DRAIN-CHRONIC", "DRAIN-CHRONIC" not in h.fetch_log())
 #     only the successful repository is acked.
 failing_events = [ev(f"failed-{i}", "owner/failing") for i in range(500)]
 healthy_event = ev("healthy-later", "owner/healthy")
-h = Harness([], ["owner/failing", "owner/healthy"],
-            {"owner/failing": "fail", "owner/healthy": "ok"})
+h = Harness(
+    [],
+    ["owner/failing", "owner/healthy"],
+    {"owner/failing": "fail", "owner/healthy": "ok"},
+)
 h.queue_pages = {
-    "/queue": {"events": failing_events, "cursor": "page two/+", "list_complete": False},
+    "/queue": {
+        "events": failing_events,
+        "cursor": "page two/+",
+        "list_complete": False,
+    },
     "/queue?cursor=page+two%2F%2B": {
-        "events": [healthy_event], "cursor": None, "list_complete": True},
+        "events": [healthy_event],
+        "cursor": None,
+        "list_complete": True,
+    },
 }
 buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc = h.run()
 check("pagination: exit 0", rc == 0)
-check("pagination: requests both cursor pages",
-      h.queue_paths == ["/queue", "/queue?cursor=page+two%2F%2B"])
+check(
+    "pagination: requests both cursor pages",
+    h.queue_paths == ["/queue", "/queue?cursor=page+two%2F%2B"],
+)
 check("pagination: healthy later repo fetched", "owner/healthy" in h.fetch_calls)
-check("pagination: all retained failures stay unacked",
-      h.acked_ids() == ["healthy-later"])
+check(
+    "pagination: all retained failures stay unacked", h.acked_ids() == ["healthy-later"]
+)
 summary = json.loads(buf.getvalue().strip().splitlines()[-1])
 check("pagination: all 501 events handled in one run", summary["events"] == 501)
 
@@ -332,10 +345,11 @@ check("pagination: all 501 events handled in one run", summary["events"] == 501)
 h = Harness([ev(f"bulk-{i}", f"owner/bulk-{i}") for i in range(1200)], [], {})
 check("ack batching: exit 0", h.run() == 0)
 check("ack batching: every event acked", len(h.acked_ids()) == 1200)
-check("ack batching: no request exceeds the batch bound",
-      all(len(call) <= drain_queue.ACK_BATCH_SIZE for call in h.ack_calls))
-check("ack batching: backlog split across multiple requests",
-      len(h.ack_calls) == 3)
+check(
+    "ack batching: no request exceeds the batch bound",
+    all(len(call) <= drain_queue.ACK_BATCH_SIZE for call in h.ack_calls),
+)
+check("ack batching: backlog split across multiple requests", len(h.ack_calls) == 3)
 
 
 # 16. non-dict repository.owner (#3331): a string/list/number/bool owner is

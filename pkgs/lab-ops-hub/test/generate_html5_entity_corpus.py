@@ -94,7 +94,9 @@ def main() -> None:
         + "\n",
         encoding="utf-8",
     )
-    print(f"Wrote {len(cases)} cases for {len(html.entities.html5)} HTML5 keys to {OUTPUT}")
+    print(
+        f"Wrote {len(cases)} cases for {len(html.entities.html5)} HTML5 keys to {OUTPUT}"
+    )
 
 
 if __name__ == "__main__":

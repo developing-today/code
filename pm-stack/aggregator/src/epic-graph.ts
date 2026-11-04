@@ -58,10 +58,7 @@ export function epicSelector(pool: readonly ProjectPoolItem[]): EpicSelectorEntr
       doneCount: rollup.done,
     });
   }
-  entries.sort(
-    (a, b) =>
-      b.blockedCount - a.blockedCount || b.itemCount - a.itemCount || a.ref.localeCompare(b.ref),
-  );
+  entries.sort((a, b) => b.blockedCount - a.blockedCount || b.itemCount - a.itemCount || a.ref.localeCompare(b.ref));
   return entries;
 }
 
@@ -206,9 +203,7 @@ export function epicGraph(
   const ordered: { item: ProjectPoolItem | null; ref: RefKey }[] = [
     { item: epicItem, ref: epicRef },
     ...[...members].sort((a, b) => byRefOrder(a.ref, b.ref)).map((m) => ({ item: m, ref: m.ref })),
-    ...[...oneHopPool.values()]
-      .sort((a, b) => byRefOrder(a.ref, b.ref))
-      .map((m) => ({ item: m, ref: m.ref })),
+    ...[...oneHopPool.values()].sort((a, b) => byRefOrder(a.ref, b.ref)).map((m) => ({ item: m, ref: m.ref })),
     ...[...externalRefs].sort(byRefOrder).map((ref) => ({ item: null, ref })),
   ];
   const totalNodes = ordered.length;
@@ -269,9 +264,7 @@ export function epicGraph(
       const blocker = byRef.get(b);
       return blocker === undefined || blocker.state === "open";
     });
-  const blockedCount = members.filter(
-    (m) => m.state === "open" && unresolvedBlockersOf(m).length > 0,
-  ).length;
+  const blockedCount = members.filter((m) => m.state === "open" && unresolvedBlockersOf(m).length > 0).length;
   const rankedBlocked = members
     .filter((m) => m.ref !== epicRef && m.state === "open")
     .map((m) => ({ ref: m.ref, issueUrl: m.issueUrl, blockers: unresolvedBlockersOf(m) }))
