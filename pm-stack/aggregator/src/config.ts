@@ -53,6 +53,8 @@ export interface Config {
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
   snapshotsDir: string;
+  /** Scheduled-digest archive (#1278): one JSON file per digest. */
+  digestsDir: string;
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
@@ -138,6 +140,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     activityFile: s(env.PM_AGG_ACTIVITY_FILE, join(process.cwd(), "activity-ingestion.json")),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
+    digestsDir: s(env.PM_AGG_DIGESTS_DIR, join(process.cwd(), "digests")),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
       join(

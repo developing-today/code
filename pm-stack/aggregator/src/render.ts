@@ -23,6 +23,7 @@ import {
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
 import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
+import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
@@ -7142,4 +7143,60 @@ ${
 }
 ${proposalHtml}`;
   return layout("Notifications", body, provenance, "/notifications");
+}
+
+/** The digest page (#1278): renders a Digest verbatim — the archived
+ * JSON is the page's data, so a re-read shows exactly what was
+ * delivered to chat. /digest?date=<date> renders that day's archive;
+ * /digest renders today's live build with the archive index. */
+export function renderDigest(
+  digest: Digest,
+  archives: { kind: DigestKind; date: string; route: string }[],
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const freshness = digest.freshness.length
+    ? `<p class="muted">Data freshness: ${digest.freshness
+        .map((f) => `${esc(f.facet)}=${esc(f.state)}${f.ageMs !== null ? ` (${esc(ageTextDigest(f.ageMs))})` : ""}`)
+        .join(" · ")}</p>`
+    : `<p class="muted">Data freshness: not measured by this source — treat every section as unverified.</p>`;
+  const sections = digest.sections
+    .map((s) => {
+      const items = s.items.length
+        ? `<ul>${s.items
+            .map(
+              (i) =>
+                `<li><a href="${esc(i.url)}">${esc(i.title)}</a> <span class="muted">${esc(i.ref)} — ${esc(i.note)}</span></li>`,
+            )
+            .join("")}</ul>${s.truncated ? `<p class="muted">… capped at ${DIGEST_SECTION_LIMIT} items</p>` : ""}`
+        : `<p class="muted">${s.stale ? "(unavailable — see the stale note)" : "(nothing)"}</p>`;
+      return `<h2>${esc(s.title)}${s.stale ? ` — <span class="stale">STALE: ${esc(s.staleNote ?? "source degraded")}</span>` : ""}</h2>${items}`;
+    })
+    .join("\n");
+  const archiveLinks = archives.length
+    ? `<h2>Archive</h2><ul>${archives
+        .map((a) => `<li><a href="${esc(a.route)}">${esc(a.date)}</a> <span class="muted">${esc(a.kind)}</span></li>`)
+        .join("")}</ul>`
+    : `<h2>Archive</h2><p class="muted">No digests archived yet — the generator (scripts/generate-digest.ts) writes one per day.</p>`;
+  const body = `<h1>PM ${esc(digest.kind)} digest — ${esc(digest.date)}</h1>
+<p class="muted">Generated ${esc(digest.generatedAt)} from the canonical projection · window ${digest.windowHours}h from ${esc(digest.windowStart)} · machine twin: <a href="${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}">${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}</a></p>
+${freshness}
+${sections}
+${archiveLinks}`;
+  return layout(
+    `Digest ${digest.date}`,
+    body,
+    provenance,
+    "/digest",
+    "",
+    detail ? freshnessChips(detail, ["items", "quota"]) : "",
+  );
+}
+
+function ageTextDigest(ageMs: number): string {
+  const mins = Math.max(0, Math.round(ageMs / 60000));
+  if (mins < 60) return `${mins}m old`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours}h ${mins % 60}m old`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h old`;
 }
