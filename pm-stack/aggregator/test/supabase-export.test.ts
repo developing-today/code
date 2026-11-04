@@ -16,12 +16,12 @@ const VIEW = `
 
 | Service | Plan / price | Allowance sketch | Usage / status | Next date recorded |
 |---|---|---|---|---|
-| Supabase | Free plan (muse-dev) | DB + egress + storage | manual dashboard read needed | unknown |
+| Supabase | Free plan (muse-dev2) | DB + egress + storage | manual dashboard read needed | unknown |
 
 ## Service details (b)
 
 ### Supabase
-- **Plan / price:** Free plan (muse-dev); numerical quotas unknown in local records.
+- **Plan / price:** Free plan (muse-dev2); numerical quotas unknown in local records.
 - **Usage / dates:** Not measured — manual dashboard read needed.
 - **Last checked:** 2026-10-28.
 `;
@@ -34,8 +34,8 @@ function freshDoc(overrides: Partial<SupabaseExportDoc> = {}): SupabaseExportDoc
     source: "file-export/supabase",
     status: "partial",
     measuredAt: "2026-10-29T14:55:00Z",
-    project: "muse-dev",
-    ref: "nltgxorqwxhgfzseiirt",
+    project: "muse-dev2",
+    ref: "fixture-project-ref",
     metrics: [
       {
         id: "db-size",
