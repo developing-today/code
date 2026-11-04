@@ -452,6 +452,16 @@ mod cli_tests {
             rejected_checkpoint_report["technical"]["InvalidRecord"]["reason"],
             "EntryHashMismatch"
         );
+
+        let oversized_path = tmp.path().join("oversized.malog");
+        std::fs::File::create(&oversized_path)
+            .unwrap()
+            .set_len(128_u64 * 1024 * 1024 + 1)
+            .unwrap();
+        let oversized_arg = oversized_path.to_str().unwrap();
+        let oversized = run_cmd(&["match-audit", "verify", oversized_arg], tmp.path());
+        assert!(!oversized.status.success());
+        assert!(String::from_utf8_lossy(&oversized.stderr).contains("maximum is 134217728"));
     }
 
     #[test]

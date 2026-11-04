@@ -411,13 +411,21 @@ pub fn sign_header(
 
 /// Builds a stream entry whose hash binds the previous entry and its body.
 pub fn chain_entry(previous_hash: Hash, body: EntryBodyV0) -> Result<ChainedEntryV0, AuditErrorV0> {
-    let body_bytes = postcard::to_allocvec(&body)?;
-    let hash = hash_parts(&[ENTRY_DOMAIN, previous_hash.as_bytes(), &body_bytes]);
+    let hash = entry_hash(previous_hash, &body)?;
     Ok(ChainedEntryV0 {
         previous_hash,
         hash,
         body,
     })
+}
+
+fn entry_hash(previous_hash: Hash, body: &EntryBodyV0) -> Result<Hash, AuditErrorV0> {
+    let body_bytes = postcard::to_allocvec(body)?;
+    Ok(hash_parts(&[
+        ENTRY_DOMAIN,
+        previous_hash.as_bytes(),
+        &body_bytes,
+    ]))
 }
 
 fn hash_parts(parts: &[&[u8]]) -> Hash {
@@ -481,7 +489,7 @@ impl MatchLogV0 {
             if first_tick < previous_tick {
                 return Err(AuditErrorV0::EntryOrder);
             }
-            let expected = chain_entry(previous, entry.body.clone())?.hash;
+            let expected = entry_hash(previous, &entry.body)?;
             if entry.hash != expected {
                 return Err(AuditErrorV0::Integrity(
                     IntegrityFailureV0::EntryHashMismatch,
@@ -895,9 +903,10 @@ fn verify_signature_set(
     if signatures.len() != players.len() {
         return Err(AuditErrorV0::Signature(kind));
     }
+    let roster: std::collections::HashSet<_> = players.iter().map(|player| player.id).collect();
     let mut seen = std::collections::HashSet::with_capacity(signatures.len());
     for signed in signatures {
-        if !players.iter().any(|player| player.id == signed.player) || !seen.insert(signed.player) {
+        if !roster.contains(&signed.player) || !seen.insert(signed.player) {
             return Err(AuditErrorV0::Signature(kind));
         }
         let key =
