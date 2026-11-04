@@ -1918,7 +1918,7 @@ mod tests {
         let path = dir.path().join("ssh_host_key");
         let winner = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         let pem = winner.to_openssh(LineEnding::LF).unwrap();
-        let pem_text = pem.as_str();
+        let pem_text = pem.as_str().to_owned();
         tokio::fs::write(&path, &pem_text[..pem_text.len() / 2])
             .await
             .unwrap();
