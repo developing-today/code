@@ -448,7 +448,16 @@ fn grouped_output(
     vec_dist: &HashMap<i64, Option<f64>>,
     notes: &[String],
 ) -> Result<Json> {
-    let consideration = &ranked[..(opts.k * 10).max(opts.pool).min(ranked.len())];
+    // The consideration window is k * 10, but k is unbounded at
+    // every boundary that reaches this function (CLI, service), so
+    // the multiplication must saturate: a wrap-range k would
+    // otherwise wrap the window to near zero in release builds
+    // (silently truncating the grouped results) and panic in
+    // debug builds (#5423). Saturation makes a huge k behave as
+    // "consider everything", which the .min(ranked.len()) then
+    // bounds to the actual candidate list.
+    let window = opts.k.saturating_mul(10).max(opts.pool).min(ranked.len());
+    let consideration = &ranked[..window];
     let ids: Vec<i64> = consideration.iter().map(|e| e.chunk_id).collect();
     let details = details_map(backend, &ids)?;
     let mut order: Vec<String> = Vec::new();
