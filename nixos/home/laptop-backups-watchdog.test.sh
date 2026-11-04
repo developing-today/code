@@ -52,6 +52,23 @@ with open(__import__("os").environ["RECORD_OUT"], "w") as fh:
 PYEOF
 }
 
+# stub bws: `bws secret list` prints dummy entries for the three R2 keys
+# (values are never used - the rclone stub does not dial out)
+{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+printf '%s' '[{"key":"cloudflare.r2-backups-access-key-id","value":"stub-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"stub-secret"},{"key":"cloudflare.r2-endpoint","value":"stub.r2.example"}]'
+STUB
+} >"$BIN/bws"
+chmod +x "$BIN/bws"
+
+# stub rclone: `rclone lsf <path>` prints the fixture listing in
+# $WATCHDOG_STUB_R2_LISTING (an absent/empty file = empty offsite)
+{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+[[ -n "${WATCHDOG_STUB_R2_LISTING:-}" && -f "$WATCHDOG_STUB_R2_LISTING" ]] && cat "$WATCHDOG_STUB_R2_LISTING"
+exit 0
+STUB
+} >"$BIN/rclone"
+chmod +x "$BIN/rclone"
+
 RECORD="$TMP_ROOT/record.json"
 run_watchdog() {
   LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
@@ -126,6 +143,30 @@ run_watchdog; expect_named_failure future-record pm-dashboard-backup
 RECORD_OUT="$RECORD" write_record complete "1 hour ago"
 set_triggers "1 hour ago" "2 hours"
 run_watchdog; expect_named_failure future-timer repo-archive-backup
+
+# offsite check: record date is 2026-10-28 (write_record pins it).
+R2_LISTING="$TMP_ROOT/r2-listing.txt"
+run_watchdog_offsite() {
+  LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    WATCHDOG_STUB_R2_LISTING="$R2_LISTING" LAPTOP_BACKUPS_OFFSITE_CHECK=1 \
+    PATH="$BIN:$PATH" bash "$SCRIPT" 26 >"$TMP_ROOT/out.log" 2>&1
+  RC=$?
+}
+
+# offsite present for the record date -> 0
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+set_triggers "1 hour ago" "1 hour ago"
+printf 'dashboard-2026-10-28.tar.zst\n' >"$R2_LISTING"
+run_watchdog_offsite; expect_ok offsite-present
+
+# offsite absent (planted) while the record says complete -> non-zero
+# naming the R2 absence: this is the #3914 failure shape
+printf '' >"$R2_LISTING"
+run_watchdog_offsite; expect_named_failure offsite-absent R2
+
+# offsite check disabled -> the same absence is not a violation
+# (pre-#3914 behavior for jobs/hosts without the opt-in)
+run_watchdog; expect_ok offsite-check-disabled
 
 if (( failures > 0 )); then
   echo "laptop-backups-watchdog tests: $failures failure(s)" >&2
