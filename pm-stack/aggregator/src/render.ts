@@ -111,6 +111,7 @@ import { buildItemBrief, type ItemBrief } from "./brief.ts";
 import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
+import { EPIC_GRAPH_DEFAULT_CAP, epicGraph, epicSelector } from "./epic-graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 import type { SearchResult } from "./search-view.ts";
 
@@ -156,6 +157,13 @@ h1 { font-size: 18px; } h2 { font-size: 15px; }
 a { color: #58a6ff; }
 .card { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 8px 0; background: #161b22; overflow-wrap: anywhere; }
 .muted { color: #8b949e; font-size: 12px; }
+@media (max-width: 480px) {
+  .attention-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; margin-bottom: 4px; }
+  .attention-card-header > strong { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .attention-card-header .badge { white-space: normal; }
+  .item-session-records > .session-record-line { box-sizing: border-box; max-width: 100%; min-width: 0; }
+  .item-session-records .session-record-meta { display: block; max-width: 100%; overflow-wrap: anywhere; }
+}
 .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #30363d; margin: 1px 2px 1px 0; white-space: nowrap; }
 .badge.open { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
 .badge.merged { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
@@ -432,6 +440,14 @@ body.xp-plan .xpl-costcol { display: none; }
   .qblock { border-top-color: #d1d9e0; }
   .cbox { border-top-color: #d1d9e0; }
 }
+  .epic-graph-flex { display: flex; gap: 16px; align-items: flex-start; }
+  .epic-graph-svg { flex: 1 1 auto; min-width: 0; overflow-x: auto; }
+  .epic-graph-side { flex: 0 0 320px; max-width: 100%; }
+  .epic-graph-list { margin: 0; padding-left: 18px; }
+  .epic-graph-list li { margin: 4px 0; }
+  .epic-graph-selector { position: static; }
+  .epic-graph-selector a { white-space: normal; display: inline; min-height: 0; padding: 0; }
+  @media (max-width: 720px) { .epic-graph-flex { flex-direction: column; } .epic-graph-side { flex: none; width: 100%; } }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   body { overflow-x: clip; }
@@ -1613,13 +1629,6 @@ export function sessionVerbSupport(source: string): { verb: "poke" | "answer" | 
   if (source === "opencode-sandbox" || source === "opencode-laptop") {
     return [{ verb: "poke" }, { verb: "answer" }, { verb: "stop" }];
   }
-  if (source === "jules") {
-    return [
-      { verb: "poke", reason: "Jules sessions are keeper-mediated — answer only" },
-      { verb: "answer" },
-      { verb: "stop", reason: "Jules sessions are keeper-mediated — answer only" },
-    ];
-  }
   if (source === "claude-code") {
     const reason = "No live control channel for Muse sessions — launch records only";
     return [
@@ -2167,7 +2176,7 @@ export function renderItem(
       : "";
   const sessionSection =
     extras && extras.sessions.length
-      ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
+      ? `<h2>Sessions that worked this</h2><div class="item-session-records">${extras.sessions.map((r) => sessionRecordLine(r)).join("")}</div>`
       : "";
   const statusSection =
     extras?.statusRequest && extras.formOpts
@@ -2228,7 +2237,7 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -2657,7 +2666,7 @@ function sessionCard(
     act?.identities && act.commentOpts
       ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
       : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}</div><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -2727,7 +2736,7 @@ function tierItemCard(
   const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><div class="attention-card-header"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}</div><br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
 }
 
 export interface AttentionAct {
@@ -6053,7 +6062,7 @@ export function renderSessions(
   }
   const body = `<h1>Sessions — identity registry</h1>
 ${viewHtml}<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records shown · ${totalTokens.toLocaleString()} tokens recorded on this page. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
-<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
+<p class="muted">Coverage honesty: OpenCode sessions register from their servers; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
   return layout(
     "Sessions",
@@ -6688,6 +6697,152 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
   return `<h3>Blocked + depth graph</h3>${blockedHtml}${svg}`;
 }
 
+
+/** The #3973 per-epic dependency graph section of a project page
+ * (design doc/2026-11-01T21-05-00Z_design_aggregator_dependency_graph_1257.md):
+ * an epic selector with item/blocked counts, then per epic a summary +
+ * ranked blocked list beside the graph SVG and a vertical,
+ * keyboard-readable dependency list. The list is the primary surface
+ * on narrow screens (the flex column stacks it full-width; the SVG
+ * may scroll horizontally as a secondary detail). Dependency edges
+ * are dashed amber, hierarchy edges solid grey, and every node's
+ * state is written as text — color is never the only signal. Empty
+ * or unavailable graph data says so; it is never an empty success. */
+/** Section anchor for one epic's graph, derived from the canonical ref
+ * (owner/repo#number), never the bare issue number: two repositories
+ * can hold epics with the same number, and bare-number ids collide. */
+function epicGraphAnchor(ref: RefKey): string {
+  return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+}
+
+function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+  // Selector entries and rendered sections are scoped to the project's
+  // own pool (selectorItems = detail.poolItems): on a normal project
+  // request the caller passes the entire org pool as `items` for
+  // membership and blocker resolution, and rendering every eligible
+  // epic from every Area would bury this project's section in unrelated
+  // projects (Codex round-2 on #3973). Resolution inside each section
+  // still runs against the full `items` pool.
+  // The selector rollups are computed from the full `items` pool too,
+  // then filtered to this project's epic refs (Codex round-3 on
+  // #3973): computing them from the scoped pool made a member whose
+  // blocker lives in another Area count as blocked in the selector
+  // while its section — resolving against the full pool — correctly
+  // reported it unblocked.
+  const projectEpicRefs = new Set(
+    selectorItems.filter((i) => i.kind === "Epic").map((i) => i.ref),
+  );
+  const selector = epicSelector(items).filter((e) => projectEpicRefs.has(e.ref));
+  if (!selector.length) {
+    return `<h3>Per-epic dependency graph</h3><div class="banner">Dependency graph unavailable: no epic in this pool has items yet, so there is no per-epic graph to draw — this is an unavailable state, not an empty graph.</div>`;
+  }
+  const selectorHtml = `<nav class="epic-graph-selector" aria-label="Epic graph selector"><ul class="epic-graph-list">${selector
+    .map(
+      (e) =>
+        `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
+    )
+    .join("")}</ul></nav>`;
+  const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
+  return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
+}
+
+function epicGraphOneHtml(
+  items: ProjectPoolItem[],
+  entry: ReturnType<typeof epicSelector>[number],
+): string {
+  const g = epicGraph(items, entry.ref);
+  const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
+  if (g.status === "unavailable" || !g.epic) {
+    return `<section>${heading}<div class="banner">Dependency graph unavailable: ${esc(g.reason ?? "no graph data for this epic")}.</div></section>`;
+  }
+  const poolByRef = new Map(items.map((p) => [p.ref, p]));
+  const unresolvedOf = (ref: RefKey): boolean => {
+    const held = poolByRef.get(ref);
+    return held === undefined || held.state === "open";
+  };
+  const summary = `<p class="muted"><strong>${g.memberCount} item${g.memberCount === 1 ? "" : "s"} in this epic</strong> · ${g.blockedCount} blocked on an unresolved blocker · ${g.externalCount} one-hop reference${g.externalCount === 1 ? "" : "s"} outside this pool (unresolved — status unknown, never counted as resolved).</p>`;
+  const truncatedHtml = g.truncated
+    ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
+    : "";
+
+  // Ranked summary: open member items by how many unresolved blockers
+  // they wait on, from the graph's pre-cap ranking (the full transitive
+  // unblock ranking is #3974; this is the per-epic blocked summary
+  // beside the graph). Never derived from the capped node list: a
+  // member the cap hid is still waiting.
+  const ranked = g.rankedBlocked;
+  const rankedHtml = ranked.length
+    ? `<ul class="epic-graph-list">${ranked
+        .map(
+          (r) =>
+            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+
+  // SVG: hierarchy edges solid grey, dependency edges dashed amber —
+  // distinct by dash and color, and named in the legend text.
+  const pos = new Map(g.nodes.map((n) => [n.ref, n]));
+  const X = (depth: number) => 16 + depth * 180;
+  const Y = (row: number) => 16 + row * 26;
+  const width = X(g.maxDepth) + 340;
+  const height = g.nodes.length ? Y(g.nodes.length - 1) + 16 : 32;
+  // Dependency edges carry an arrowhead marker pointing at the blocker
+  // (the `to` node): hierarchy depth alone does not show which sibling
+  // blocks which (Codex round-2 on #3973). The marker id is per-epic --
+  // several epic sections share one page, and duplicate ids would make
+  // every edge reference the first section's marker.
+  const depMarkerId = `dep-arrow-${epicGraphAnchor(g.epic.ref)}`;
+  const depDefs = g.edges.some((e) => e.type === "dependency")
+    ? `<defs><marker id="${depMarkerId}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d29922"/></marker></defs>`
+    : "";
+  const edgeLines = g.edges
+    .map((e) => {
+      const a = pos.get(e.from)!;
+      const b = pos.get(e.to)!;
+      return e.type === "dependency"
+        ? `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#d29922" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#${depMarkerId})"/>`
+        : `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#8b949e" stroke-width="1"/>`;
+    })
+    .join("");
+  const nodeShapes = g.nodes
+    .map((n) => {
+      const label = n.title
+        ? `#${n.number} ${n.title.length > 34 ? `${n.title.slice(0, 33)}…` : n.title}`
+        : `${n.ref} (outside this pool)`;
+      const x = X(n.depth);
+      const y = Y(n.row);
+      const shape = n.unresolved
+        ? `<polygon points="${x},${y - 7} ${x + 7},${y} ${x},${y + 7} ${x - 7},${y}" fill="none" stroke="#d29922" stroke-width="1.5" stroke-dasharray="3 2"/>`
+        : n.epic
+          ? `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`
+          : `<circle cx="${x}" cy="${y}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="1.5"/>`;
+      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${x + 11}" y="${y + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+    })
+    .join("");
+  const svg = g.edges.length
+    ? `<div class="epic-graph-svg"><svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Dependency graph for epic ${esc(g.epic.ref)}" style="max-width:100%;height:auto">${depDefs}${edgeLines}${nodeShapes}</svg><p class="muted">Solid grey lines are sub-issue hierarchy (parent → child); dashed amber lines are dependency edges, with an arrowhead pointing at the blocker (item → blocker). Squares are epics; diamonds are references outside this pool whose status is unknown. Every node's state is also written as text in the list — color is never the only signal.</p></div>`
+    : `<p class="muted">Not yet graphed: this epic's items carry no parent / blocked-by edges yet, so there is no graph to draw. The items are listed below.</p>`;
+
+  const listHtml = `<ul class="epic-graph-list">${g.nodes
+    .map((n) => {
+      const stateText = n.unresolved
+        ? "not in this pool / status unknown — unresolved"
+        : `issue ${esc(n.state ?? "unknown")}`;
+      const blockedBy = n.blockers.length
+        ? `blocked by: ${n.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>${unresolvedOf(b) ? " (unresolved)" : " (resolved)"}`).join(", ")}`
+        : "blocked by: none observed";
+      const blocks = n.dependents.length
+        ? `blocks: ${n.dependents.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}`
+        : "blocks: none observed";
+      const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
+      return `<li><a href="${esc(n.issueUrl)}">${esc(n.ref)}</a> ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+    })
+    .join("")}</ul>`;
+
+  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Blocked in this epic</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -6759,7 +6914,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
   }
 
   let roadmapHtml: string;

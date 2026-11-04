@@ -59,8 +59,10 @@
 //!    `is_safe_web_path` now rejects empty segments, so route `/`
 //!    (no non-empty segment), a trailing slash (`/app/`), and
 //!    doubled separators (`/a//b`) all fail the manifest gate for
-//!    `route` and `socket` alike. `/` is additionally a
-//!    host-registered route (disposition 6). Ordinary spellings
+//!    `route` and `socket` alike. Dot segments are rejected on the
+//!    same rule (#5427): `/a/./b`, `/./a`, and `/a/.` normalize onto
+//!    other paths, so they are alternate spellings, not new routes.
+//!    `/` is additionally a host-registered route (disposition 6). Ordinary spellings
 //!    (`/tic-tac-toe`, `/ws/world`) are unchanged.
 //! 4. **App-`id` uniqueness.** Structural, no extra check added:
 //!    `app.id` must equal the folder (entry) name, and one
@@ -261,12 +263,12 @@ pub fn parse_app_manifest(source: &str, folder_name: &str) -> Result<AppManifest
         );
         ensure!(
             is_safe_web_path(&web.route),
-            "interfaces.web.route must be an absolute path without traversal or empty segments, whitespace, ? or #"
+            "interfaces.web.route must be an absolute path without traversal, empty or dot segments, whitespace, ? or #"
         );
         if let Some(socket) = &web.socket {
             ensure!(
                 is_safe_web_path(socket),
-                "interfaces.web.socket must be an absolute path without traversal or empty segments, whitespace, ? or #"
+                "interfaces.web.socket must be an absolute path without traversal, empty or dot segments, whitespace, ? or #"
             );
         }
     }
@@ -429,6 +431,12 @@ fn is_safe_web_path(path: &str) -> bool {
         // segment, so `/` itself, a trailing slash, and doubled
         // separators are rejected, not just traversal segments.
         && !path.split('/').skip(1).any(|segment| segment.is_empty())
+        // Dot segments (#5427): a `.` segment is the remaining RFC 3986
+        // dot segment -- `/a/./b`, `/./a`, and `/a/.` pass the checks
+        // above but normalize onto `/a/b`, `/a`, and `/a/`, so one
+        // normalized path would pass as two distinct routes/sockets
+        // past the exact-string uniqueness checks downstream.
+        && !path.split('/').skip(1).any(|segment| segment == ".")
 }
 
 /// One consistent list-entry rule for manifest string lists
@@ -579,6 +587,35 @@ route = "/tic-tac-toe"
         );
         let error = parse_app_manifest(&trailing_socket, "tic-tac-toe").unwrap_err();
         assert!(error.to_string().contains("interfaces.web.socket"));
+    }
+
+    #[test]
+    fn test_web_route_dot_segments_are_rejected() {
+        // #5427: a `.` segment is an alternate spelling of the path
+        // without it (RFC 3986 remove_dot_segments), so it fails the
+        // shape rule for route and socket alike, while a dotted name
+        // that is not a whole segment stays legal.
+        for route in ["/./tic-tac-toe", "/tic-tac-toe/./x", "/tic-tac-toe/."] {
+            let source =
+                MANIFEST.replace("route = \"/tic-tac-toe\"", &format!("route = {route:?}"));
+            let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
+            assert!(
+                error.to_string().contains("interfaces.web.route"),
+                "route {route:?} rejection names the field: {error:#}"
+            );
+        }
+        let dot_socket = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"/ws/./world\"",
+        );
+        let error = parse_app_manifest(&dot_socket, "tic-tac-toe").unwrap_err();
+        assert!(error.to_string().contains("interfaces.web.socket"));
+
+        let dotted_names = MANIFEST.replace(
+            "route = \"/tic-tac-toe\"",
+            "route = \"/tic-tac-toe\"\nsocket = \"/ws/world.min\"",
+        );
+        assert!(parse_app_manifest(&dotted_names, "tic-tac-toe").is_ok());
     }
 
     #[test]
@@ -776,8 +813,7 @@ commands = ["play"]
             "a/./b",
             "",
         ] {
-            let source =
-                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            let source = format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
             let error = parse_app_manifest(&source, "tic-tac-toe").unwrap_err();
             let message = error.to_string();
             assert!(
@@ -788,8 +824,7 @@ commands = ["play"]
         // Confined entries — plain files, nested paths, and the design's
         // glob shapes — stay accepted.
         for entry in ["assets/logo.png", "web/templates/index.html", "assets/**"] {
-            let source =
-                format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
+            let source = format!("{MANIFEST}\n[resources]\nfiles = [\"{entry}\"]\n");
             assert!(
                 parse_app_manifest(&source, "tic-tac-toe").is_ok(),
                 "confined entry {entry:?} is accepted"

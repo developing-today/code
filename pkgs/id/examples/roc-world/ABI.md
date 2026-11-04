@@ -42,22 +42,22 @@ returned value to negotiate versions.
 Signatures below are Wasm signatures; `i32` pointers and lengths refer to the
 guest's linear memory.
 
-| Export | Signature | Contract |
-| --- | --- | --- |
-| `plaza_abi_version` | `() -> i32` | Returns `1` for this ABI specification. New v1 host builds export it; older guest modules may omit it. |
-| `plaza_alloc` | `(i32 byte_len) -> i32 ptr` | Allocates guest-owned memory for host-provided input bytes. The host writes the input before calling the guest operation and releases the allocation with `plaza_free`. |
-| `plaza_free` | `(i32 ptr, i32 allocation_len) -> ()` | Releases a matching allocation made by `plaza_alloc`. The length is the allocation length; for an empty logical input the runner allocates and later frees one byte while passing logical length zero to the operation. |
-| `plaza_init` | `(i64 seed) -> i32 model` | Creates the initial model from the host-provided `u64` seed. Called once for a newly instantiated world. |
-| `plaza_update` | `(i32 model, i32 participant, i32 event_ptr, i32 event_len) -> i32 model` | Applies one UTF-8 serialized world event and returns the next model. `participant` is the sender's ID; host-generated events use participant `0`. The runner commits the returned model only when the call succeeds. |
-| `plaza_view` | `(i32 model) -> i32 output_ptr` | Returns UTF-8 text or a portable screen JSON document for the current model. |
-| `plaza_layout` | `(i32 model, i64 width, i64 height) -> i32 output_ptr` | Optional viewport-specific rendering. Width and height are the connection's viewport dimensions. When absent, the host falls back to `plaza_view`. |
-| `plaza_records` | `(i32 model) -> i32 output_ptr` | Optional structured projection. The returned bytes are a JSON object of string keys to JSON values; the host validates and publishes it. |
-| `plaza_wants` | `(i32 model) -> i32 output_ptr` | Optional capability request/subscription document, as specified below. |
-| `plaza_snapshot` | `(i32 model) -> i32 output_ptr` | Optional UTF-8 serialization of the model for a journal checkpoint. Must be paired with `plaza_restore`. |
-| `plaza_restore` | `(i32 snapshot_ptr, i32 snapshot_len) -> i32 model` | Reconstructs a model from bytes produced by `plaza_snapshot`. The input is allocated by the host and released after the call. A Roc program should return a sensible model for invalid snapshot text rather than trap. |
-| `plaza_out_len` | `() -> i32 byte_len` | Returns the byte length of the most recent output from `view`, `layout`, `records`, `wants`, or `snapshot`. It is one shared output slot. |
-| `plaza_error_ptr` | `() -> i32 ptr` | Optional diagnostic pointer exposed after a guest trap. In the Roc host it points to the captured Roc crash message in guest memory. |
-| `plaza_error_len` | `() -> i32 byte_len` | Optional diagnostic length paired with `plaza_error_ptr`; the Roc host captures at most 4096 bytes. The bytes are not NUL-terminated and are diagnostic only, not a result/status channel. |
+| Export              | Signature                                                                 | Contract                                                                                                                                                                                                                |
+| ------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plaza_abi_version` | `() -> i32`                                                               | Returns `1` for this ABI specification. New v1 host builds export it; older guest modules may omit it.                                                                                                                  |
+| `plaza_alloc`       | `(i32 byte_len) -> i32 ptr`                                               | Allocates guest-owned memory for host-provided input bytes. The host writes the input before calling the guest operation and releases the allocation with `plaza_free`.                                                 |
+| `plaza_free`        | `(i32 ptr, i32 allocation_len) -> ()`                                     | Releases a matching allocation made by `plaza_alloc`. The length is the allocation length; for an empty logical input the runner allocates and later frees one byte while passing logical length zero to the operation. |
+| `plaza_init`        | `(i64 seed) -> i32 model`                                                 | Creates the initial model from the host-provided `u64` seed. Called once for a newly instantiated world.                                                                                                                |
+| `plaza_update`      | `(i32 model, i32 participant, i32 event_ptr, i32 event_len) -> i32 model` | Applies one UTF-8 serialized world event and returns the next model. `participant` is the sender's ID; host-generated events use participant `0`. The runner commits the returned model only when the call succeeds.    |
+| `plaza_view`        | `(i32 model) -> i32 output_ptr`                                           | Returns UTF-8 text or a portable screen JSON document for the current model.                                                                                                                                            |
+| `plaza_layout`      | `(i32 model, i64 width, i64 height) -> i32 output_ptr`                    | Optional viewport-specific rendering. Width and height are the connection's viewport dimensions. When absent, the host falls back to `plaza_view`.                                                                      |
+| `plaza_records`     | `(i32 model) -> i32 output_ptr`                                           | Optional structured projection. The returned bytes are a JSON object of string keys to JSON values; the host validates and publishes it.                                                                                |
+| `plaza_wants`       | `(i32 model) -> i32 output_ptr`                                           | Optional capability request/subscription document, as specified below.                                                                                                                                                  |
+| `plaza_snapshot`    | `(i32 model) -> i32 output_ptr`                                           | Optional UTF-8 serialization of the model for a journal checkpoint. Must be paired with `plaza_restore`.                                                                                                                |
+| `plaza_restore`     | `(i32 snapshot_ptr, i32 snapshot_len) -> i32 model`                       | Reconstructs a model from bytes produced by `plaza_snapshot`. The input is allocated by the host and released after the call. A Roc program should return a sensible model for invalid snapshot text rather than trap.  |
+| `plaza_out_len`     | `() -> i32 byte_len`                                                      | Returns the byte length of the most recent output from `view`, `layout`, `records`, `wants`, or `snapshot`. It is one shared output slot.                                                                               |
+| `plaza_error_ptr`   | `() -> i32 ptr`                                                           | Optional diagnostic pointer exposed after a guest trap. In the Roc host it points to the captured Roc crash message in guest memory.                                                                                    |
+| `plaza_error_len`   | `() -> i32 byte_len`                                                      | Optional diagnostic length paired with `plaza_error_ptr`; the Roc host captures at most 4096 bytes. The bytes are not NUL-terminated and are diagnostic only, not a result/status channel.                              |
 
 ### Buffer lifetime and errors
 
@@ -94,7 +94,7 @@ subscriptions and outstanding one-shot requests. Version 1 uses this shape:
 {
   "v": 1,
   "subscribe": ["players", "time.tick:5000"],
-  "requests": [{"id": "r1", "cap": "time.now"}]
+  "requests": [{ "id": "r1", "cap": "time.now" }]
 }
 ```
 
@@ -118,19 +118,19 @@ accepts them, so replay feeds the same events back through `plaza_update`.
 
 The runtime provider catalog is:
 
-| Capability | Behavior |
-| --- | --- |
-| `time.now` | One-shot current Unix time in milliseconds (`{"now": ...}`). |
-| `time.tick` | Subscribe as `time.tick:<milliseconds>` with a positive interval; periodic host events while a participant is present, subject to the world's configured minimum interval and the four-interval limit. |
-| `random.u64` | One-shot random unsigned 64-bit value (`{"value": ...}`). |
-| `players` | Subscribe to participant join/leave events. |
-| `players.list` | One-shot participant list, including ID, display name, and presence. |
-| `chat.say` | Commit a chat line from `args.text`; result contains its sequence. |
-| `chat.history` | Read recent chat lines; `args.count` defaults to 16 and is capped at 64. |
-| `records.read` | Read a byte-bounded, key-ordered page of published records. `args.prefix` filters keys and `args.after` is an exclusive cursor; continue with `next_after`. |
-| `schedule.at` | Schedule one event using printable-ASCII `args.id` (1–64 bytes) and Unix-millisecond `args.at`; at most 64 schedules may be pending, past times fire on the next wakeup, and times more than 30 days ahead are refused. |
-| `schedule.cancel` | Cancel a pending schedule by printable-ASCII `args.id`; result reports `{"cancelled": bool}`. |
-| `world.info` | Read the world ID and current sequence. |
+| Capability        | Behavior                                                                                                                                                                                                                |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `time.now`        | One-shot current Unix time in milliseconds (`{"now": ...}`).                                                                                                                                                            |
+| `time.tick`       | Subscribe as `time.tick:<milliseconds>` with a positive interval; periodic host events while a participant is present, subject to the world's configured minimum interval and the four-interval limit.                  |
+| `random.u64`      | One-shot random unsigned 64-bit value (`{"value": ...}`).                                                                                                                                                               |
+| `players`         | Subscribe to participant join/leave events.                                                                                                                                                                             |
+| `players.list`    | One-shot participant list, including ID, display name, and presence.                                                                                                                                                    |
+| `chat.say`        | Commit a chat line from `args.text`; result contains its sequence.                                                                                                                                                      |
+| `chat.history`    | Read recent chat lines; `args.count` defaults to 16 and is capped at 64.                                                                                                                                                |
+| `records.read`    | Read a byte-bounded, key-ordered page of published records. `args.prefix` filters keys and `args.after` is an exclusive cursor; continue with `next_after`.                                                             |
+| `schedule.at`     | Schedule one event using printable-ASCII `args.id` (1–64 bytes) and Unix-millisecond `args.at`; at most 64 schedules may be pending, past times fire on the next wakeup, and times more than 30 days ahead are refused. |
+| `schedule.cancel` | Cancel a pending schedule by printable-ASCII `args.id`; result reports `{"cancelled": bool}`.                                                                                                                           |
+| `world.info`      | Read the world ID and current sequence.                                                                                                                                                                                 |
 
 The `Key`, `Screen`, `RocJson`, `RocGrid`, `RocCap`, and `RocText` names are
 platform modules exposed to Roc source, not runtime request providers. The

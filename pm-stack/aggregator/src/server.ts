@@ -959,7 +959,7 @@ async function handler(req: Request): Promise<Response> {
   }
   // --- Dashboard action writes (#1152/#1154/#1156) -----------------------
   // The triage write path: forms POST DashActions here; the fleet
-  // consumers (orchestration pass, Jules keeper) poll state=new and
+  // consumers (orchestration pass) poll state=new and
   // report outcomes to /api/actions/result. The dashboard itself never
   // writes GitHub, the Project, or a session server.
   if (req.method === "POST" && path === "/api/actions") {

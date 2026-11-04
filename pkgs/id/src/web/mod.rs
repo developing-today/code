@@ -74,12 +74,12 @@ use tokio::sync::Mutex;
 use crate::discovery::PeerDiscovery;
 use crate::tags::TagStore;
 
+pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
 pub use collab::CollabState;
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
-pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use routes::{create_router, create_router_for_app};
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
@@ -152,8 +152,10 @@ impl SaveRateLimiter {
     /// so a failed save never strands the filename.
     pub async fn acquire(&self, name: &str) -> Result<SavePermit, Duration> {
         self.check(name).await?;
-        let mut flight =
-            self.in_flight.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !flight.insert(name.to_owned()) {
             return Err(self.cooldown);
         }
@@ -481,7 +483,15 @@ pub async fn web_routers(
             .await?
         }
         None => {
-            AppState::new(store, peers, node_id, tag_store, secret_key, identity_db_path).await?
+            AppState::new(
+                store,
+                peers,
+                node_id,
+                tag_store,
+                secret_key,
+                identity_db_path,
+            )
+            .await?
         }
     };
     Ok(securities
@@ -531,7 +541,11 @@ mod tests {
         let limiter = SaveRateLimiter::new(Duration::from_secs(5));
         let _permit = limiter.acquire("a.txt").await.expect("first save proceeds");
         let remaining = limiter.acquire("a.txt").await.unwrap_err();
-        assert_eq!(remaining, Duration::from_secs(5), "in-flight refusal quotes the cooldown");
+        assert_eq!(
+            remaining,
+            Duration::from_secs(5),
+            "in-flight refusal quotes the cooldown"
+        );
         assert!(
             limiter.acquire("b.txt").await.is_ok(),
             "a different file is not refused"
@@ -541,10 +555,7 @@ mod tests {
     #[tokio::test]
     async fn test_save_limiter_concurrent_acquires_admit_exactly_one() {
         let limiter = SaveRateLimiter::new(Duration::from_secs(5));
-        let (first, second) = tokio::join!(
-            limiter.acquire("a.txt"),
-            limiter.acquire("a.txt")
-        );
+        let (first, second) = tokio::join!(limiter.acquire("a.txt"), limiter.acquire("a.txt"));
         let admitted = [first.is_ok(), second.is_ok()]
             .into_iter()
             .filter(|ok| *ok)

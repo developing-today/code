@@ -26,12 +26,11 @@
 //   Project's single writer (#910), so it performs the Status write
 //   itself and its run log names "requested via dashboard, action
 //   da-…".
-// - kind "session" — routed by the action's sessionSource: the Jules
-//   keeper (jules-review) consumes source "jules" (answer only —
-//   poke/stop render disabled on Jules cards); the orchestration pass
-//   consumes the OpenCode sources ("opencode-sandbox",
-//   "opencode-laptop") for poke/answer/stop. Sources with no live
-//   control channel (claude-code, cron) render no enabled controls.
+// - kind "session" — routed by the action's sessionSource: the
+//   orchestration pass consumes the OpenCode sources
+//   ("opencode-sandbox", "opencode-laptop") for poke/answer/stop.
+//   Sources with no live control channel (claude-code, cron) render
+//   no enabled controls.
 // - kind "preference" — the orchestration pass: set-delegation-default
 //   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
 //   is the initial record). The aggregator also reads these records to
@@ -285,7 +284,7 @@ function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[
   return [...ids];
 }
 
-const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "jules", "claude-code", "cron"]);
+const SESSION_SOURCES = new Set(["opencode-sandbox", "opencode-laptop", "claude-code", "cron"]);
 
 function cleanText(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined;

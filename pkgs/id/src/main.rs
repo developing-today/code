@@ -18,7 +18,7 @@ use id::{
 /// Priority order (first match wins):
 /// 1. `--debug` flag → "debug"
 /// 2. `--log-level <LEVEL>` flag → specified level
-/// 3. `RUST_LOG` env var → return empty string to signal use of `EnvFilter` default
+/// 3. `RUST_LOG` env var (non-empty) → return empty string to signal use of `EnvFilter` default
 /// 4. `LOG_LEVEL` env var → value
 /// 5. `DEBUG` env var (if truthy) → "debug"
 /// 6. Default → "warn"
@@ -34,10 +34,14 @@ fn get_log_level(cli: &Cli) -> String {
 
 /// Pure log-level resolution: the environment values are passed in (rather
 /// than read here) so tests can pin the full precedence table without
-/// mutating process environment in parallel. `Some("")` for `rust_log`
-/// means the variable is present, matching the previous `var().is_ok()`
-/// presence check; the empty-string result is the caller's signal to use
-/// the `RUST_LOG` value itself as the base filter.
+/// mutating process environment in parallel. A non-empty `rust_log` yields
+/// the empty-string sentinel: the caller's signal to use the `RUST_LOG`
+/// value itself as the base filter. An empty or whitespace-only `rust_log`
+/// (or `log_level_env`) carries no configuration and is treated as unset:
+/// build and CI environments routinely export these variables empty
+/// (nixpkgs' cargo hooks export `RUST_LOG=`), and an empty base filter
+/// would leave only the appended per-module caps in effect, silently
+/// discarding the documented default level for every other target.
 fn resolve_log_level(
     debug_flag: bool,
     log_level_flag: Option<&str>,
@@ -50,23 +54,27 @@ fn resolve_log_level(
         return "debug".to_owned();
     }
 
-    // 2. --log-level flag
-    if let Some(level) = log_level_flag {
-        return level.to_owned();
+    // 2. --log-level flag (likewise, empty or blank means unconfigured:
+    //    an empty return is the RUST_LOG sentinel below, so a blank flag
+    //    must never produce it -- #5442)
+    if let Some(level) = log_level_flag.filter(|value| !value.trim().is_empty()) {
+        return level.trim().to_owned();
     }
 
-    // 3. RUST_LOG env var - return empty to use EnvFilter's default behavior
-    if rust_log.is_some() {
+    // 3. RUST_LOG env var - return empty to use EnvFilter's default behavior.
+    //    Present-but-empty is not a filter specification; treat as unset.
+    if rust_log.is_some_and(|value| !value.trim().is_empty()) {
         return String::new();
     }
 
-    // 4. LOG_LEVEL env var
-    if let Some(level) = log_level_env {
-        return level.to_owned();
+    // 4. LOG_LEVEL env var (likewise, empty means unconfigured)
+    if let Some(level) = log_level_env.filter(|value| !value.trim().is_empty()) {
+        return level.trim().to_owned();
     }
 
     // 5. DEBUG env var (truthy check)
     if let Some(debug) = debug_env {
+        let debug = debug.trim();
         let is_truthy = !debug.is_empty() && debug != "0" && debug.to_lowercase() != "false";
         if is_truthy {
             return "debug".to_owned();
@@ -93,6 +101,9 @@ fn init_logging(filter: &str, config: &id::structured_logging::LogConfig) {
 
     if config.tz_fell_back {
         eprintln!("warning: ID_LOG_TZ value not recognized; log timestamps use UTC");
+    }
+    if config.format_fell_back {
+        eprintln!("warning: ID_LOG_FORMAT value not recognized; logs use text format");
     }
     let timer = Rfc3339TzTimer { zone: config.zone };
 
@@ -274,52 +285,54 @@ async fn main() -> Result<()> {
     match cli.command {
         None => run_repl(None).await,
         Some(Command::Repl { node }) => run_repl(node).await,
-        Some(Command::Serve {
-            ephemeral,
-            server_config,
-            no_relay,
-            no_gossip,
-            web,
-            port,
-            bootstrap,
-            topic,
-            topic_secret,
-            no_default_bootstrap,
-            no_default_topic,
-            replace_defaults,
-            no_mdns,
-            dht,
-            iroh_port,
-            bind,
-            web_listen,
-            web_token,
-            web_cookie_secure,
-            world,
-            world_admin_token,
-            world_module,
-            world_mail_outbox,
-            world_mail_command,
-            world_mail_smtp,
-            world_mail_from,
-            world_name,
-            world_ssh_port,
-            world_checkpoint_every,
-            world_max_open,
-            world_max_sessions,
-            world_idle_secs,
-            world_boot_window_secs,
-            world_caps,
-            world_cap_policy,
-            world_allowed_caps,
-            roc_bin,
-            roc_platform,
-            world_native,
-            world_source_only,
-            world_module_trust_keys,
-            world_runtime,
-            allow_node,
-            open_writes,
-        }) => {
+        Some(Command::Serve(args)) => {
+            let id::cli::ServeArgs {
+                ephemeral,
+                server_config,
+                no_relay,
+                no_gossip,
+                web,
+                port,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
+                dht,
+                iroh_port,
+                bind,
+                web_listen,
+                web_token,
+                web_cookie_secure,
+                world,
+                world_admin_token,
+                world_module,
+                world_mail_outbox,
+                world_mail_command,
+                world_mail_smtp,
+                world_mail_from,
+                world_name,
+                world_ssh_port,
+                world_checkpoint_every,
+                world_max_open,
+                world_max_sessions,
+                world_idle_secs,
+                world_boot_window_secs,
+                world_caps,
+                world_cap_policy,
+                world_allowed_caps,
+                roc_bin,
+                roc_platform,
+                world_native,
+                world_source_only,
+                world_module_trust_keys,
+                world_runtime,
+                allow_node,
+                open_writes,
+                ..
+            } = args;
             cmd_serve(ServeOptions {
                 ephemeral,
                 server_config,
@@ -372,6 +385,7 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Command::Id { client }) => cmd_id(client).await,
+        Some(Command::Key { command }) => id::commands::cmd_key(command).await,
         Some(Command::Peers {
             gossip,
             rpc,
@@ -566,14 +580,75 @@ mod tests {
     }
 
     #[test]
+    fn test_log_level_flag_empty_or_blank_is_unset() {
+        // #5442: a blank flag must fall through like an empty RUST_LOG /
+        // LOG_LEVEL does -- the empty string is the RUST_LOG sentinel, so
+        // returning it here would silently log at debug (or RUST_LOG).
+        assert_eq!(resolve_log_level(false, Some(""), None, None, None), "warn");
+        assert_eq!(
+            resolve_log_level(false, Some("  "), None, None, None),
+            "warn"
+        );
+        assert_eq!(
+            resolve_log_level(false, Some(""), None, Some("info"), None),
+            "info"
+        );
+        assert_eq!(
+            resolve_log_level(false, Some("  "), Some("info"), None, None),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_log_level_flag_and_env_values_are_trimmed() {
+        assert_eq!(
+            resolve_log_level(false, Some(" info "), None, None, None),
+            "info"
+        );
+        assert_eq!(
+            resolve_log_level(false, None, None, Some(" info "), None),
+            "info"
+        );
+    }
+
+    #[test]
+    fn test_log_level_debug_env_padded_falsey_values_fall_through_to_warn() {
+        for value in [" false ", "0 ", " FALSE", "  false"] {
+            assert_eq!(
+                resolve_log_level(false, None, None, None, Some(value)),
+                "warn",
+                "DEBUG={value:?}"
+            );
+        }
+        assert_eq!(
+            resolve_log_level(false, None, None, None, Some(" true ")),
+            "debug"
+        );
+    }
+
+    #[test]
     fn test_log_level_rust_log_presence_signals_env_filter() {
-        // Present (even empty) RUST_LOG yields the empty sentinel; the
-        // caller then uses the RUST_LOG value itself as the base filter.
+        // A non-empty RUST_LOG yields the empty sentinel; the caller then
+        // uses the RUST_LOG value itself as the base filter.
         assert_eq!(
             resolve_log_level(false, None, Some("info"), Some("error"), Some("1")),
             ""
         );
-        assert_eq!(resolve_log_level(false, None, Some(""), None, None), "");
+        // Present-but-empty RUST_LOG is unconfigured, not a filter: it
+        // falls through to the remaining sources and the default. (An
+        // empty base filter silently muted every non-capped target in
+        // environments that export RUST_LOG= , e.g. nix build sandboxes.)
+        assert_eq!(resolve_log_level(false, None, Some(""), None, None), "warn");
+        assert_eq!(
+            resolve_log_level(false, None, Some("  "), None, None),
+            "warn"
+        );
+        assert_eq!(
+            resolve_log_level(false, None, Some(""), Some("info"), None),
+            "info"
+        );
+        // Empty LOG_LEVEL is likewise unconfigured.
+        assert_eq!(resolve_log_level(false, None, None, Some(""), None), "warn");
     }
 
     #[test]

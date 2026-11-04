@@ -65,10 +65,18 @@ export function userStub(
   try {
     restricted = ns.jurisdiction(jurisdiction);
   } catch {
-    throw new FailClosed(503, "jurisdiction_unavailable", "jurisdiction-restricted namespace unavailable; failing closed");
+    throw new FailClosed(
+      503,
+      "jurisdiction_unavailable",
+      "jurisdiction-restricted namespace unavailable; failing closed",
+    );
   }
   if (!restricted || typeof restricted.idFromName !== "function" || typeof restricted.get !== "function") {
-    throw new FailClosed(503, "jurisdiction_unavailable", "jurisdiction-restricted namespace unavailable; failing closed");
+    throw new FailClosed(
+      503,
+      "jurisdiction_unavailable",
+      "jurisdiction-restricted namespace unavailable; failing closed",
+    );
   }
   const id = restricted.idFromName(bindingId);
   return restricted.get(id);

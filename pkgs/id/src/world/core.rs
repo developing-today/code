@@ -13,332 +13,12 @@ use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-/// Which variable-size checkpoint field a sequence of parts carries.
-#[derive(Clone, Copy)]
-enum CheckpointEventPartKind {
-    Retained,
-    Admin,
-}
+mod checkpoint_parts;
 
-fn checkpoint_part_json_len(entry: &JournalEntry) -> Result<usize> {
-    Ok(serde_json::to_vec(entry)
-        .context("serialize checkpoint part")?
-        .len())
-}
-
-fn checkpoint_event_part(
-    kind: CheckpointEventPartKind,
-    sequence: u64,
-    part_index: u32,
-    part_count: u32,
-    events: Vec<WorldEvent>,
-) -> JournalEntry {
-    match kind {
-        CheckpointEventPartKind::Retained => JournalEntry::CheckpointEventsPart {
-            sequence,
-            part_index,
-            part_count,
-            events,
-        },
-        CheckpointEventPartKind::Admin => JournalEntry::CheckpointAdminPart {
-            sequence,
-            part_index,
-            part_count,
-            events,
-        },
-    }
-}
-
-fn checkpoint_part_count(count: usize) -> Result<u32> {
-    u32::try_from(count).context("checkpoint has too many parts")
-}
-
-fn split_checkpoint_snapshot(sequence: u64, snapshot: &str) -> Result<Vec<JournalEntry>> {
-    let mut chunks = Vec::new();
-    if snapshot.is_empty() {
-        chunks.push(String::new());
-    } else {
-        let mut start = 0;
-        while start < snapshot.len() {
-            let max_end = floor_char_boundary(
-                snapshot,
-                start
-                    .saturating_add(MAX_CHECKPOINT_PART_BYTES)
-                    .min(snapshot.len()),
-            );
-            let mut low = start + 1;
-            let mut high = max_end;
-            let mut best_end = start;
-            while low <= high {
-                let middle = low + (high - low) / 2;
-                let end = floor_char_boundary(snapshot, middle);
-                if end <= start {
-                    // The midpoint fell inside the first character, so the
-                    // floored prefix is empty: this says nothing about the
-                    // size limit, and the search must advance to a larger
-                    // endpoint instead of excluding the character's end.
-                    low = middle.saturating_add(1);
-                    continue;
-                }
-                let fits = checkpoint_part_json_len(&JournalEntry::CheckpointSnapshotPart {
-                    sequence,
-                    // Maximal-width placeholders ensure the final indices
-                    // and count can only make the serialized entry smaller.
-                    part_index: u32::MAX,
-                    part_count: u32::MAX,
-                    bytes: snapshot[start..end].to_owned(),
-                })? <= MAX_CHECKPOINT_PART_BYTES;
-                if fits {
-                    best_end = end;
-                    low = middle.saturating_add(1);
-                } else {
-                    high = middle.saturating_sub(1);
-                }
-            }
-            ensure!(
-                best_end > start,
-                "one UTF-8 character cannot fit in a checkpoint snapshot part"
-            );
-            chunks.push(snapshot[start..best_end].to_owned());
-            start = best_end;
-        }
-    }
-
-    let part_count = checkpoint_part_count(chunks.len())?;
-    chunks
-        .into_iter()
-        .enumerate()
-        .map(|(part_index, bytes)| {
-            let entry = JournalEntry::CheckpointSnapshotPart {
-                sequence,
-                part_index: u32::try_from(part_index).context("checkpoint part index overflow")?,
-                part_count,
-                bytes,
-            };
-            ensure!(
-                checkpoint_part_json_len(&entry)? <= MAX_CHECKPOINT_PART_BYTES,
-                "checkpoint snapshot part exceeds the encoded size limit"
-            );
-            Ok(entry)
-        })
-        .collect()
-}
-
-fn split_checkpoint_events(
-    sequence: u64,
-    events: &[WorldEvent],
-    kind: CheckpointEventPartKind,
-) -> Result<Vec<JournalEntry>> {
-    // Size each event once and accumulate: re-serializing the growing
-    // candidate chunk per event would make splitting quadratic in the
-    // window size. The accumulated length is conservative -- maximal-width
-    // index placeholders for the entry overhead and one comma byte per
-    // event -- and every finished part is re-checked exactly below.
-    let overhead = checkpoint_part_json_len(&checkpoint_event_part(
-        kind,
-        sequence,
-        u32::MAX,
-        u32::MAX,
-        Vec::new(),
-    ))?;
-    let mut chunks: Vec<Vec<WorldEvent>> = Vec::new();
-    let mut current: Vec<WorldEvent> = Vec::new();
-    let mut current_len = overhead;
-    for event in events {
-        let event_len = serde_json::to_vec(event)
-            .context("serialize checkpoint event")?
-            .len()
-            + 1;
-        ensure!(
-            overhead + event_len <= MAX_CHECKPOINT_PART_BYTES,
-            "one event cannot fit in a checkpoint part"
-        );
-        if current_len + event_len > MAX_CHECKPOINT_PART_BYTES {
-            chunks.push(std::mem::take(&mut current));
-            current_len = overhead;
-        }
-        current.push(event.clone());
-        current_len += event_len;
-    }
-    if !current.is_empty() || chunks.is_empty() {
-        chunks.push(current);
-    }
-
-    let part_count = checkpoint_part_count(chunks.len())?;
-    chunks
-        .into_iter()
-        .enumerate()
-        .map(|(part_index, events)| {
-            let entry = checkpoint_event_part(
-                kind,
-                sequence,
-                u32::try_from(part_index).context("checkpoint part index overflow")?,
-                part_count,
-                events,
-            );
-            ensure!(
-                checkpoint_part_json_len(&entry)? <= MAX_CHECKPOINT_PART_BYTES,
-                "checkpoint event part exceeds the encoded size limit"
-            );
-            Ok(entry)
-        })
-        .collect()
-}
-
-fn floor_char_boundary(text: &str, mut index: usize) -> usize {
-    while !text.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
-#[derive(Default)]
-struct CheckpointPartAccumulator<T> {
-    part_count: Option<u32>,
-    next_index: u32,
-    parts: Vec<T>,
-}
-
-impl<T> CheckpointPartAccumulator<T> {
-    fn push(&mut self, part_index: u32, part_count: u32, part: T, field: &str) -> Result<()> {
-        ensure!(
-            part_count > 0,
-            "checkpoint {field} part_count must be positive"
-        );
-        ensure!(
-            part_index < part_count,
-            "checkpoint {field} part index is outside part_count"
-        );
-        if let Some(expected) = self.part_count {
-            ensure!(
-                part_count == expected,
-                "checkpoint {field} part_count does not match"
-            );
-        } else {
-            self.part_count = Some(part_count);
-        }
-        ensure!(
-            part_index == self.next_index,
-            "checkpoint {field} parts are duplicate or out of order"
-        );
-        self.next_index = self
-            .next_index
-            .checked_add(1)
-            .context("checkpoint part index overflow")?;
-        self.parts.push(part);
-        Ok(())
-    }
-
-    fn is_complete(&self) -> bool {
-        self.part_count == Some(self.next_index)
-    }
-}
-
-#[derive(Default)]
-struct PendingCheckpointParts {
-    sequence: Option<u64>,
-    phase: u8,
-    snapshot: CheckpointPartAccumulator<String>,
-    events: CheckpointPartAccumulator<Vec<WorldEvent>>,
-    admin: CheckpointPartAccumulator<Vec<WorldEvent>>,
-}
-
-impl PendingCheckpointParts {
-    fn has_parts(&self) -> bool {
-        self.sequence.is_some()
-    }
-
-    fn record_sequence(&mut self, sequence: u64) -> Result<()> {
-        if let Some(expected) = self.sequence {
-            ensure!(
-                sequence == expected,
-                "checkpoint part sequence does not match"
-            );
-        } else {
-            self.sequence = Some(sequence);
-        }
-        Ok(())
-    }
-
-    fn push_snapshot(
-        &mut self,
-        sequence: u64,
-        part_index: u32,
-        part_count: u32,
-        bytes: String,
-    ) -> Result<()> {
-        ensure!(self.phase <= 1, "checkpoint parts are out of order");
-        self.phase = 1;
-        self.record_sequence(sequence)?;
-        self.snapshot
-            .push(part_index, part_count, bytes, "snapshot")
-    }
-
-    fn push_events(
-        &mut self,
-        sequence: u64,
-        part_index: u32,
-        part_count: u32,
-        events: Vec<WorldEvent>,
-    ) -> Result<()> {
-        if self.phase == 1 {
-            ensure!(
-                self.snapshot.is_complete(),
-                "checkpoint snapshot parts are missing"
-            );
-            self.phase = 2;
-        }
-        ensure!(self.phase == 2, "checkpoint parts are out of order");
-        self.record_sequence(sequence)?;
-        self.events.push(part_index, part_count, events, "events")
-    }
-
-    fn push_admin(
-        &mut self,
-        sequence: u64,
-        part_index: u32,
-        part_count: u32,
-        events: Vec<WorldEvent>,
-    ) -> Result<()> {
-        if self.phase == 2 {
-            ensure!(
-                self.events.is_complete(),
-                "checkpoint retained-event parts are missing"
-            );
-            self.phase = 3;
-        }
-        ensure!(self.phase == 3, "checkpoint parts are out of order");
-        self.record_sequence(sequence)?;
-        self.admin.push(part_index, part_count, events, "admin")
-    }
-
-    fn assemble(self, sequence: u64) -> Result<(String, Vec<WorldEvent>, Vec<WorldEvent>)> {
-        ensure!(
-            self.sequence == Some(sequence),
-            "checkpoint part sequence does not match checkpoint"
-        );
-        ensure!(
-            self.phase == 3,
-            "checkpoint is missing one or more part groups"
-        );
-        ensure!(
-            self.snapshot.is_complete(),
-            "checkpoint snapshot parts are missing"
-        );
-        ensure!(
-            self.events.is_complete(),
-            "checkpoint retained-event parts are missing"
-        );
-        ensure!(
-            self.admin.is_complete(),
-            "checkpoint admin-history parts are missing"
-        );
-        let snapshot = self.snapshot.parts.join("");
-        let events = self.events.parts.into_iter().flatten().collect();
-        let admin = self.admin.parts.into_iter().flatten().collect();
-        Ok((snapshot, events, admin))
-    }
-}
+use checkpoint_parts::{
+    CheckpointEventPartKind, PendingCheckpointParts, checkpoint_part_json_len,
+    split_checkpoint_events, split_checkpoint_snapshot,
+};
 
 /// Encoded byte size of one admin-history event, or `None` when the event
 /// cannot be serialized at all. Serialization failure is deliberate in the
@@ -508,6 +188,12 @@ pub struct WorldCore {
     /// rebuilt by journal replay and preserved across compaction by the
     /// checkpoint's `transfers` field.
     pub(crate) handoff_transfers: Vec<HandoffTransferState>,
+    /// The journal-resident native-spill write lease (design #2819,
+    /// phase 2 of issue #3804): rebuilt by journal replay from the
+    /// lease control entries and preserved across compaction by the
+    /// checkpoint's `lease` field. Bootstrap (DO holder, epoch 0) for
+    /// every world that has never spilled.
+    pub(crate) write_lease: WriteLease,
     /// Author keys bound to participants for signed move capture (#2814):
     /// participant id to the player's ed25519 verifying key bytes. A bound
     /// participant's inputs must arrive player-signed (see
@@ -661,6 +347,7 @@ impl WorldCore {
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
             handoff_transfers: Vec::new(),
+            write_lease: WriteLease::bootstrap(),
             author_keys: HashMap::new(),
             move_chains: HashMap::new(),
             signed_moves: Vec::new(),
@@ -1131,6 +818,61 @@ impl WorldCore {
                     replay.push(destination_event);
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
+                JournalEntry::LeaseGranted {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_grant(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRenewed {
+                    holder,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_renew(&holder, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseHandedOff {
+                    from,
+                    to,
+                    epoch,
+                    expires_at_ms,
+                } => {
+                    core.write_lease
+                        .apply_handoff(&from, &to, epoch, expires_at_ms)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseRevoked {
+                    former_holder,
+                    epoch,
+                    reason,
+                } => {
+                    core.write_lease
+                        .apply_revoke(&former_holder, epoch, &reason)?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::LeaseWriteRejected {
+                    writer,
+                    presented_epoch,
+                    operation_id,
+                    observed_epoch,
+                    reason,
+                    received_at_ms,
+                } => {
+                    core.write_lease.apply_rejection(LeaseWriteRejection {
+                        writer,
+                        presented_epoch,
+                        operation_id,
+                        observed_epoch,
+                        reason,
+                        received_at_ms,
+                    })?;
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
                 JournalEntry::CheckpointSnapshotPart {
                     sequence,
                     part_index,
@@ -1233,6 +975,7 @@ impl WorldCore {
                     caps_ceiling,
                     schedules,
                     transfers,
+                    lease,
                     mut snapshot,
                     mut events,
                     mut admin_history,
@@ -1376,6 +1119,24 @@ impl WorldCore {
                         validated_transfers.push(transfer);
                     }
                     core.handoff_transfers = validated_transfers;
+                    // A checkpoint stands in for the journal it
+                    // compacted, so its lease field is the whole lease
+                    // state: validate the carried history reproduces
+                    // the claimed state before adopting it, exactly as
+                    // replaying the un-compacted lease entries would.
+                    // Lease entries are never written before their
+                    // checkpoint, so the lease here must still be the
+                    // bootstrap state the checkpoint replaces.
+                    if let Some(lease) = lease {
+                        ensure!(
+                            core.write_lease.is_bootstrap(),
+                            "journal checkpoint carries a write lease after lease entries"
+                        );
+                        lease
+                            .validate_history()
+                            .context("invalid write lease in journal checkpoint")?;
+                        core.write_lease = lease;
+                    }
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
@@ -1535,6 +1296,15 @@ impl WorldCore {
         // entity, forget an import receipt, or drop an owner epoch.
         let transfers: Option<Vec<HandoffTransferState>> =
             (!self.handoff_transfers.is_empty()).then(|| self.handoff_transfers.clone());
+        // Never compact a lease history that would fail restore
+        // validation into the replacement journal: refuse the
+        // compaction and keep the un-compacted journal instead
+        // (Codex review on PR #5571).
+        if !self.write_lease.is_bootstrap() {
+            self.write_lease
+                .validate_history()
+                .context("write lease history does not validate; keep the journal untrimmed")?;
+        }
         let checkpoint_events: Vec<WorldEvent> = self.events.iter().cloned().collect();
         let checkpoint_admin_events: Vec<WorldEvent> = self.admin_history.iter().cloned().collect();
         // A checkpoint that already fits the per-entry bound stays a single
@@ -1543,30 +1313,30 @@ impl WorldCore {
         // binaries keep reading it. Only a checkpoint whose assembled
         // encoding exceeds the bound is split into part entries (which bump
         // the journal to version 6 via `journal_version_required_by`).
-        let make_checkpoint = |snapshot: String,
-                               events: Vec<WorldEvent>,
-                               admin_events: Vec<WorldEvent>| {
-            JournalEntry::Checkpoint {
-                sequence: self.sequence,
-                module_hash: module_hash.clone(),
-                seed: self.active_seed,
-                provenance: self.active_module_provenance.clone(),
-                execution_profile: Some(self.execution_profile),
-                caps_ceiling: caps_ceiling.clone(),
-                schedules: schedules.clone(),
-                transfers: transfers.clone(),
-                snapshot,
-                events,
-                admin_history: Some(JournalAdminHistory {
-                    events: admin_events,
-                    complete: self.admin_history_complete,
-                }),
-                // `Some(empty)` means the writer knows no participants are
-                // open; `None` is reserved for legacy checkpoints whose
-                // state is unknown.
-                open_presence: Some(self.open_presence.iter().copied().collect()),
-            }
-        };
+        let make_checkpoint =
+            |snapshot: String, events: Vec<WorldEvent>, admin_events: Vec<WorldEvent>| {
+                JournalEntry::Checkpoint {
+                    sequence: self.sequence,
+                    module_hash: module_hash.clone(),
+                    seed: self.active_seed,
+                    provenance: self.active_module_provenance.clone(),
+                    execution_profile: Some(self.execution_profile),
+                    caps_ceiling: caps_ceiling.clone(),
+                    schedules: schedules.clone(),
+                    transfers: transfers.clone(),
+                    lease: (!self.write_lease.is_bootstrap()).then(|| self.write_lease.clone()),
+                    snapshot,
+                    events,
+                    admin_history: Some(JournalAdminHistory {
+                        events: admin_events,
+                        complete: self.admin_history_complete,
+                    }),
+                    // `Some(empty)` means the writer knows no participants are
+                    // open; `None` is reserved for legacy checkpoints whose
+                    // state is unknown.
+                    open_presence: Some(self.open_presence.iter().copied().collect()),
+                }
+            };
         let inline_checkpoint = make_checkpoint(
             snapshot.clone(),
             checkpoint_events.clone(),
@@ -1735,6 +1505,13 @@ impl WorldCore {
     #[must_use]
     pub(crate) fn handoff_transfers(&self) -> &[HandoffTransferState] {
         &self.handoff_transfers
+    }
+
+    /// The world's journal-resident native-spill write lease
+    /// (design #2819, phase 2 of issue #3804).
+    #[must_use]
+    pub(crate) fn write_lease(&self) -> &WriteLease {
+        &self.write_lease
     }
 
     /// The per-world resource requests, independent of current server ceilings.
