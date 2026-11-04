@@ -128,7 +128,9 @@ pub fn resolve_zone(spec: Option<&str>) -> TzResolution {
     match spec.map(str::trim) {
         None | Some("") => ok(LogZone::Local),
         Some(value) if value.eq_ignore_ascii_case("local") => ok(LogZone::Local),
-        Some(value) if value.eq_ignore_ascii_case("utc") || value == "Z" => ok(LogZone::Utc),
+        Some(value) if value.eq_ignore_ascii_case("utc") || value.eq_ignore_ascii_case("z") => {
+            ok(LogZone::Utc)
+        }
         Some(value) => {
             if let Ok(tz) = value.parse::<chrono_tz::Tz>() {
                 ok(LogZone::Named(tz))
@@ -390,6 +392,23 @@ mod tests {
         let local = resolve_zone(Some("local"));
         assert!(!local.fell_back_to_utc);
         assert_eq!(local.zone, LogZone::Local);
+    }
+
+    #[test]
+    fn structured_logging_lowercase_z_is_utc_without_fallback() {
+        // RFC 3339 allows the lowercase designator, and the neighbouring
+        // recognized words are already case-insensitive, so `z` resolves
+        // to UTC without the fallback flag that warns the operator (#5395).
+        for spec in ["z", "Z", "utc", "Utc", "UTC"] {
+            let zone = resolve_zone(Some(spec));
+            assert_eq!(zone.zone, LogZone::Utc, "spec {spec:?}");
+            assert!(!zone.fell_back_to_utc, "spec {spec:?}");
+        }
+        for spec in ["local", "Local", "LOCAL"] {
+            let zone = resolve_zone(Some(spec));
+            assert_eq!(zone.zone, LogZone::Local, "spec {spec:?}");
+            assert!(!zone.fell_back_to_utc, "spec {spec:?}");
+        }
     }
 
     #[test]
