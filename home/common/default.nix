@@ -14,13 +14,61 @@ let
   # apart and a new device that applies this config gets consistent ports
   # automatically. The bin/*.mjs proxies keep the same numbers as fallback
   # defaults when the env var is absent.
-  clefProxyPort = 18742;
+  # clefProxyPort (18742) retired 2026-11-04 (opencode#1410):
+  # the OpenChamber classifier rides the in-fork facade's
+  # /v1/systemone (127.0.0.1:13420); the port is free.
   codexProxyPort = 18744;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
-  opencodeRouteProxyPort = 18750;
+  # opencodeRouteProxyPort (18750) retired 2026-11-04
+  # (opencode#1153): OpenClaw repointed to the server facade
+  # (127.0.0.1:13420/v1); the port is free.
   claudeCodeProxyPort = 18749;
-  antigravityDirectProxyPort = 18751;
+  # antigravityDirectProxyPort (18751) retired 2026-11-04 (opencode#1414):
+  # the in-fork native provider replaced the door; the port is free.
+  # Atlas search service port (code#5350 step 5, #5355): the fleet
+  # inventory entry for 18760. Unlike the proxy lets above, this
+  # value is NOT plumbed into a unit's Environment — it lives in
+  # the service's own config (~/.local/state/atlas-search/
+  # service.json, written by `atlas-search init`) and in the Rust
+  # defaults (server listen, CLI service URL), all 18760. The let
+  # exists so the reservation is recorded where the fleet looks
+  # for one; verified free against this file, the proxy-port
+  # guard (.github/scripts/check-proxy-port-fallbacks.sh), and
+  # the live listener table on 2026-11-04.
+  atlasSearchPort = 18760;
+  # The atlas-search package (pkgs/atlas-search), built with the
+  # toolchain pinned by its own rust-toolchain.toml (channel
+  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # pattern (cf. rustToolchain in nixos/environment/default.nix).
+  # Used as the atlas-search unit's ExecStart below and, since
+  # the step-6 cutover (#5356), as a home package below so the
+  # Rust binary is the resolved `atlas-search` CLI (the Python
+  # CLI is kept alongside as `atlas-search-py`). It was kept
+  # out of home.packages through step 5 so the Python CLI
+  # stayed resolved until the cutover said otherwise.
+  atlasSearchToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/atlas-search/rust-toolchain.toml;
+  atlasSearch = pkgs.callPackage ../../pkgs/atlas-search {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = atlasSearchToolchain;
+      rustc = atlasSearchToolchain;
+    };
+  };
+  # The fleet multicall package (pkgs/fleet), built with the
+  # toolchain pinned by its own rust-toolchain.toml — the
+  # atlas-search pattern above. Used as the broker units'
+  # ExecStart below (`fleet serve <role>`); deliberately not in
+  # home.packages — the resolved `repo-queue` on PATH stays the
+  # standalone artifact until the proxy step's shim dir (design
+  # note §4) supersedes the hand-maintained symlinks.
+  fleetToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/fleet/rust-toolchain.toml;
+  fleetPkgs = pkgs.callPackage ../../pkgs/fleet {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = fleetToolchain;
+      rustc = fleetToolchain;
+    };
+    sourceRev = inputs.self.rev or "dirty";
+  };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -378,7 +426,7 @@ in
     # };
     activitywatch = {
       enable = true;
-      package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
+      package = inputs.nixpkgs-unstable.legacyPackages.${pkgs.system}.activitywatch;
     };
   };
   # Every opencode on this machine is the 2.x fork (CLI and server), whose
@@ -544,75 +592,24 @@ in
   # change (its timer/service/config are removed below the proxy units):
   # exactly one owner per canonical port. Consumers (openchamber,
   # openclaw-gateway) Wants these units with Wants+After soft semantics.
-  systemd.user.services.clef-proxy = {
-    Unit = {
-      Description = "Clef System One Local Proxy for OpenChamber";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "clef-proxy-start" ''
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/clef-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "CLEF_PROXY_PORT=${toString clefProxyPort}"
-        "CLEF_PROXY_HOST=127.0.0.1"
-      ];
-    };
-    # No Install: clef-proxy.socket owns the listener and activates this
-    # service on first connection (#1821). Enabling the service directly
-    # as well would race the socket for the same port.
-  };
+  # Clef door retired 2026-11-04 (opencode#1410): the OpenChamber
+  # classifier's endpoint file (~/.config/openchamber/
+  # classifier-endpoint.json) names the in-fork facade's
+  # /v1/systemone on the standing opencode server
+  # (127.0.0.1:13420); live probe parity against the door
+  # (byte-identical responses, including the shared upstream
+  # Cloudflare auth failure) was proven before this removal.
+  # bin/clef-proxy.mjs and its wrapper/test were removed in the
+  # same change.
 
-  systemd.user.sockets.clef-proxy = {
-    Unit.Description = "Clef proxy listener";
-    Socket = {
-      ListenStream = "127.0.0.1:${toString clefProxyPort}";
-      Service = "clef-proxy.service";
-    };
-    Install.WantedBy = [ "sockets.target" ];
-  };
-
-  # Antigravity Direct (agy CLI wire clone) Local Proxy Bridge. Speaks
-  # the agy CLI's own wire protocol directly -- the keyring OAuth
-  # credential (service "gemini", username "antigravity"), the CLI's
-  # embedded OAuth client for refresh, and its exact v1internal envelope
-  # to daily-cloudcode-pa.googleapis.com -- with no spawned CLI and no
-  # spawned language_server (bin/antigravity-direct.mjs; the CLI's wire
-  # behavior was captured live, see the header in that file). Since
-  # 2026-10-30 (Drew) this is the fleet's single Antigravity door: it
-  # replaces agy-proxy (CLI spawn, :18743, formerly in this spot) and
-  # antigravity-ls-proxy (language-server spawn, :18745, formerly below
-  # codex-proxy), whose unit definitions are removed in the same change
-  # so a switch stops them and they stay off. Must run inside the user
-  # session: Secret Service keyring access is how it authenticates,
-  # exactly like the CLI itself.
-  systemd.user.services.antigravity-direct = {
-    Unit = {
-      Description = "Antigravity Direct (CLI wire clone) Local Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "antigravity-direct-start" ''
-          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:/run/current-system/sw/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/antigravity-direct.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "ANTIGRAVITY_DIRECT_PORT=${toString antigravityDirectProxyPort}"
-        "ANTIGRAVITY_DIRECT_HOST=127.0.0.1"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Antigravity Direct door retired 2026-11-04 (opencode#1414): the
+  # provider block in .opencode/opencode.jsonc names the in-fork
+  # native provider (@opencode/ai/providers/antigravity, opencode#1457)
+  # under the same antigravity-direct id, and a zero-traffic window
+  # on :18751 preceded this removal. bin/antigravity-direct.mjs and
+  # its wrapper/test were removed in the same change; the agy CLI
+  # remains the keyring credential owner and the native provider
+  # refreshes in memory, in place.
 
   systemd.user.services.codex-proxy = {
     Unit = {
@@ -632,6 +629,10 @@ in
       Environment = [
         "CODEX_PROXY_PORT=${toString codexProxyPort}"
         "CODEX_PROXY_HOST=127.0.0.1"
+        # Gate 1 cutover (opencode#1154): the in-fork codex credential
+        # sync (opencode#1468) owns the token copy now; the door must
+        # not overwrite the true JWT expiry with its synthetic one.
+        "CODEX_PROXY_TOKEN_SYNC=0"
       ];
     };
     # No Install: codex-proxy.socket owns the listener and activates this
@@ -816,32 +817,88 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  # OpenAI-compatible front for the OpenCode server (:13420): exposes the
-  # opencode-route pool models (workhorse et al.) in the chat-completions
-  # shape OpenClaw providers use (code#2229). Runs the repo checkout's
-  # start script -- the same invocation the proxy-supervisor ran for its
-  # transient unit -- so the routing-only door (bin/opencode-route-proxy.mjs)
-  # is owned by exactly one unit. Enrolled as an automatic service under
-  # the #2104 redesign (this unit landed on main after that branch was
-  # cut): retiring the supervisor must not strand :18750, and the
-  # openclaw-gateway unit Wants this service.
-  systemd.user.services.opencode-route-proxy = {
+  # Route proxy retired 2026-11-04 (opencode#1153): the door's
+  # only live consumer, OpenClaw's opencode-route provider, was
+  # repointed to the OpenCode server facade (127.0.0.1:13420/v1)
+  # and verified live (four-part proof on opencode#1146: all five
+  # route ids answered through the direct path, a workhorse turn
+  # completed with this unit stopped and :18750 refusing
+  # connections). Demotion lives in the fork (routes.settings
+  # .demotion + ledger counts, opencode#1151), so nothing of the
+  # door's behaviour is lost. bin/opencode-route-proxy.mjs, its
+  # start script and test were removed in the same change.
+
+  # Atlas search service (code#5350 step 5, #5355): the packaged
+  # atlas-search binary's serve mode — one resident Snowflake
+  # embedder shared by every client, the job protocol with its
+  # in-memory temp store + dedupe cache, and per-client ceiling
+  # caps enforced from ~/.local/state/atlas-search/service.json
+  # (0600, written by `atlas-search init`). Binds 127.0.0.1:18760
+  # (atlasSearchPort above); the tailnet exposure is the OpenCode
+  # pattern — a `tailscale serve` mapping on the MagicDNS name in
+  # front of the loopback port — and is created at activation
+  # (step 6), not here: a serve mapping in front of a service
+  # that has not started would be a live exposure change, and
+  # tailscale serve state is imperative tailscaled state in this
+  # fleet (no declarative precedent to land it in).
+  #
+  # Landed disabled in step 5 (no Install section, so the
+  # unit could not auto-start); step 6 (#5356, the cutover)
+  # added Install.WantedBy below, issued the real client
+  # tokens via `atlas-search init`, and created the
+  # tailscale serve mapping.
+  systemd.user.services.atlas-search = {
     Unit = {
-      Description = "OpenCode route proxy (OpenAI-compatible front for the OpenCode server)";
+      Description = "Atlas search service (hybrid corpus search, serve mode)";
       After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
     };
     Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "opencode-route-proxy-start-unit" ''
-          exec /run/current-system/sw/bin/bash "$HOME/code/bin/opencode-route-proxy-start.sh"
-        ''
-      );
-      Restart = "always";
+      ExecStart = "${atlasSearch}/bin/atlas-search serve";
+      Restart = "on-failure";
       RestartSec = 3;
-      Environment = [
-        "OPENCODE_ROUTE_PROXY_PORT=${toString opencodeRouteProxyPort}"
+    };
+    # Install added at the step-6 cutover (#5356): auto-start.
+    Install = {
+      WantedBy = [ "default.target" ];
+    };
+  };
+
+  # Fleet broker roles (epic #5412 step 2, #5430): the secrets and
+  # queue brokers as `fleet serve <role>` units — one unit per role,
+  # as they have run since code#5362. This is the home-module
+  # pattern ported from dezren39/nix PR #1459 (closed as superseded
+  # by ruling D1) into this tree, now consuming this flake's own
+  # pkgs/fleet instead of a vendored copy. The unit files these
+  # definitions replace were hand-installed; home-manager converges
+  # them on the next activation, and the step-2 flips re-point the
+  # live files at the same artifact in the meantime.
+  systemd.user.services.secrets-broker = {
+    Unit = {
+      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
+      After = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.queue-broker = {
+    Unit = {
+      Description = "queue-broker — repo-health queue service (code#5362)";
+      After = [
+        "network-online.target"
+        "secrets-broker.service"
       ];
+      Wants = [ "secrets-broker.service" ];
+    };
+    Service = {
+      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve queue-broker";
+      Restart = "on-failure";
+      RestartSec = 5;
     };
     Install.WantedBy = [ "default.target" ];
   };
@@ -969,6 +1026,22 @@ in
     # wrapper collided with this package on bin/opencode, and it
     # exec'd the root input's build besides (CLI/service skew).
     package = opencodeWrapped;
+
+    environment = {
+      # code#5490: the runtime overlay (code#4544) must be layered into
+      # the server process itself. As a home.sessionVariables entry it
+      # reached shells only; the systemd unit never saw it, and the
+      # standing server ran without the overlay after the 2026-11-04
+      # reboot (overlay-only models, e.g. all of antigravity-direct,
+      # unavailable) until a drop-in restored it live.
+      OPENCODE_CONFIG = "%h/.local/state/opencode/opencode-runtime.jsonc";
+      # opencode#1633: the fork agy client-secret extraction matches
+      # the nix agy build binary layout, not the self-updated
+      # ~/.gemini/bin build (1.4.11 moved the pairing secret). Pin the
+      # intel source to the nix build until the fork iterates
+      # candidates; remove then.
+      AGY_BIN = "/run/current-system/sw/bin/agy";
+    };
   };
 
   services.mcpx = {
@@ -1198,7 +1271,7 @@ in
     # };
     ghostty = {
       enable = true;
-      package = inputs.nixpkgs-master.legacyPackages.${system}.ghostty;
+      package = inputs.nixpkgs-unstable.legacyPackages.${system}.ghostty;
       settings = {
         # ghostty +list-themes
         theme = "Synthwave";
@@ -1509,9 +1582,7 @@ in
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
       # Single source for the local proxy ports (see the let block):
       # opencode.jsonc reads them via {env:...} substitution.
-      CLEF_PROXY_PORT = toString clefProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
-      ANTIGRAVITY_DIRECT_PORT = toString antigravityDirectProxyPort;
       # The three below were missing: their {env:...} templates in
       # opencode.jsonc resolved to an empty port in the OpenChamber serve
       # (2026-10-25 audit) because the variables never reached its
@@ -1561,9 +1632,10 @@ in
       with pkgs;
       [
         libnotify
-        (pkgs.writeShellScriptBin "clef-proxy" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
-        '')
+        # Atlas search CLI + service binary (pkgs/atlas-search);
+        # step-6 cutover (#5356): the Rust binary is the resolved
+        # `atlas-search` (the Python CLI is kept as atlas-search-py).
+        atlasSearch
         # No "agy-proxy" / "antigravity-ls-proxy" launchers here: both
         # doors were retired 2026-10-30 and their units removed above.
         # The .mjs files remain in bin/ as history, uninvoked — a PATH

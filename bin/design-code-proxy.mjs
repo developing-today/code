@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import https from 'node:https';
-import { parseProxyPort } from './proxy-port.mjs';
+import { parseProxyMillis, parseProxyPort } from './proxy-port.mjs';
 import { createRequestBodyCollector } from './request-body.mjs';
 import { createStreamDecoder } from './stream-decode.mjs';
 
@@ -31,10 +31,13 @@ const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxS
 // slow-but-alive streams are never killed. Pinned at 60s — generous for a
 // slow first byte from a local language-server backend — and overridable
 // via DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS (tests pin it short).
-const BACKEND_TIMEOUT_MS = (() => {
-  const raw = Number(process.env.DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 60_000;
-})();
+// Strict parse via the house helper (#4225): the previous hand-rolled
+// Number() guard admitted values above 2^31-1, which Node's timer layer
+// silently truncates to 2147483647 ms (~24.8 days) — defeating this
+// timeout entirely — and non-decimal spellings like 0x10 (16 ms).
+// parseProxyMillis refuses anything outside integer 1..2147483647 at
+// startup, naming the variable; unset/empty keeps the 60s default.
+const BACKEND_TIMEOUT_MS = parseProxyMillis('DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS', 60_000);
 
 const DESIGN_SYSTEM_PROMPT = `You are an elite Code & Systems Design Architect.
 Your core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.`;

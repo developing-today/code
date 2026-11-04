@@ -462,7 +462,7 @@ impl Directory {
         let removals: Vec<(String, String, Vec<String>)> = directory
             .artifacts
             .all()
-            .filter_map(|artifact| match artifact.parsed() {
+            .filter_map(|artifact| match artifact.parsed_for_replay() {
                 Ok(Some(Kind::FriendRemove(removal))) => {
                     Some((removal.a, removal.b, removal.requests))
                 }
@@ -566,7 +566,7 @@ impl Directory {
         let artifacts = ArtifactLog::open_read_only(&artifact_path(path))?;
         let removals: Vec<(String, String, Vec<String>)> = artifacts
             .all()
-            .filter_map(|artifact| match artifact.parsed() {
+            .filter_map(|artifact| match artifact.parsed_for_replay() {
                 Ok(Some(Kind::FriendRemove(removal))) => {
                     Some((removal.a, removal.b, removal.requests))
                 }
@@ -1581,11 +1581,11 @@ impl Directory {
         servers: Vec<HomeServer>,
     ) -> Result<SignedArtifact> {
         let (account, _) = self.authenticate(credential)?;
-        self.publish(
-            credential,
-            &Kind::HomeDeclared(HomeDeclared { account, servers }),
-            Vec::new(),
-        )
+        let declared = HomeDeclared { account, servers };
+        // Refuse here what receipt would refuse (#3187): the same check
+        // `SignedArtifact::parsed` runs, before anything is signed.
+        artifact::check_home_declared(&declared.account, &declared, false)?;
+        self.publish(credential, &Kind::HomeDeclared(declared), Vec::new())
     }
 
     /// Publish structured JSON as the signed document of the credential's account.
@@ -1838,8 +1838,9 @@ impl Directory {
                 );
             }
             DirectoryEntry::AccountEmailConfirmed { id, email } => {
+                let holder = self.account_for_email(email);
                 refuse_unless!(
-                    self.account_for_email(email).is_none(),
+                    holder.is_none() || holder.as_deref() == Some(id.as_str()),
                     Conflict,
                     "that address already belongs to an account"
                 );
@@ -2669,6 +2670,26 @@ mod tests {
     }
 
     #[test]
+    fn declare_home_refuses_what_receipt_would_refuse() {
+        let mut home = Directory::new();
+        let (ann, ann_credential) = account(&mut home, "Ann");
+        // The same endpoint named twice.
+        assert!(
+            home.declare_home(&ann_credential, vec![home_server(1), home_server(1)])
+                .is_err()
+        );
+        // A world ID past the receipt bound.
+        let mut oversized = home_server(1);
+        oversized.world_id = "w".repeat(65);
+        assert!(home.declare_home(&ann_credential, vec![oversized]).is_err());
+        assert_eq!(home.artifacts().head_seq(&ann), 0);
+        // A well-formed declaration still publishes.
+        home.declare_home(&ann_credential, vec![home_server(1)])
+            .unwrap();
+        assert_eq!(home.artifacts().head_seq(&ann), 1);
+    }
+
+    #[test]
     fn a_removal_survives_a_restart_and_is_reapplied_when_its_directory_line_was_lost() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("directory.jsonl");
@@ -2695,6 +2716,46 @@ mod tests {
         let crashed = Directory::open(&path).unwrap();
         assert!(!crashed.are_friends(&ann, &bo));
         assert_eq!(crashed.artifacts().head_seq(&ann), 1);
+    }
+
+    #[test]
+    fn a_legacy_removal_with_duplicate_request_ids_still_ends_the_friendship_on_recovery() {
+        // Codex P2 on PR #5576: a removal stored before receipt refused
+        // duplicate request IDs (#3146) must still take effect when its
+        // journal entry was lost to a crash. Strict `parsed` rejects the
+        // legacy artifact, so both recovery scans (writer open and
+        // read-only replay) must interpret it with `parsed_for_replay`,
+        // like the artifact log's own replay path.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let (home, _away, ann, bo, ann_credential) = friends_across_servers(Some(&path));
+        let requests = home.friendship_requests(&ann, &bo);
+        assert_eq!(requests.len(), 1);
+        let request = requests[0].clone();
+        drop(home);
+
+        let legacy = SignedArtifact::sign(
+            &key_of(&ann_credential),
+            1,
+            "",
+            artifact::FRIEND_REMOVE,
+            json!({
+                "a": ann,
+                "b": bo,
+                "requests": [request.clone(), request.clone()]
+            }),
+        )
+        .unwrap();
+        assert!(legacy.parsed().is_err());
+        artifact::append(&artifact_path(&path), &legacy).unwrap();
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(!replayed.are_friends(&ann, &bo));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(!reopened.are_friends(&ann, &bo));
+        assert!(reopened.removed_requests.contains(&request));
     }
 
     #[test]
@@ -3515,6 +3576,30 @@ mod tests {
             .unwrap_err();
         assert!(matches!(refusal(&error), Refusal::Conflict(_)));
         assert!(!directory.is_verified(&bo));
+    }
+
+    #[test]
+    fn reconfirming_the_same_accounts_email_is_an_idempotent_no_op() {
+        let mut directory = Directory::new();
+        let (ann, _) = account(&mut directory, "Ann");
+        let (bo, _) = account(&mut directory, "Bo");
+        directory
+            .confirm_email(Actor::Server, &ann, "ann@example.com")
+            .unwrap();
+        let emails_before = directory.account(&ann).unwrap().emails.clone();
+        directory
+            .confirm_email(Actor::Server, &ann, "ANN@example.com")
+            .unwrap();
+        assert_eq!(directory.account(&ann).unwrap().emails, emails_before);
+        assert_eq!(
+            directory.account_for_email("ann@example.com"),
+            Some(ann.clone())
+        );
+
+        let error = directory
+            .confirm_email(Actor::Server, &bo, "ann@example.com")
+            .unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Conflict(_)));
     }
 
     #[test]

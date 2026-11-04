@@ -156,8 +156,11 @@ impl LocalNode {
     }
 
     /// File operations (put/rename/copy/delete) over this node's stores.
+    ///
+    /// Writes through this handle stamp this node as the file's origin
+    /// (#4973).
     pub fn ops(&self) -> FileOps<'_> {
-        FileOps::new(&self.blobs, &self.tags)
+        FileOps::new(&self.blobs, &self.tags).with_origin(self.node_id.to_string())
     }
 
     /// Answer a meta-protocol request in-process, exactly as a server would.

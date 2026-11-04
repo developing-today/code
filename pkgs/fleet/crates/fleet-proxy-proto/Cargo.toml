@@ -1,0 +1,12 @@
+[package]
+name = "fleet-proxy-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet proxy wire contract: length-prefixed JSON framing plus the hello/capability frame types. The contract lives here and nowhere else."
+
+[dependencies]
+fleet-registry = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

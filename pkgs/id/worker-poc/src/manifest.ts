@@ -13,14 +13,9 @@ export interface HostedManifest {
 
 export function assertHostable(manifest: HostedManifest): void {
   if (manifest.portability === "native") {
-    throw new Error(
-      `manifest ${manifest.name}: portability=native is not hostable in a Worker isolate`,
-    );
+    throw new Error(`manifest ${manifest.name}: portability=native is not hostable in a Worker isolate`);
   }
-  if (
-    manifest.wasm_memory_bytes !== undefined &&
-    manifest.wasm_memory_bytes > HOSTED_MEMORY_CEILING_BYTES
-  ) {
+  if (manifest.wasm_memory_bytes !== undefined && manifest.wasm_memory_bytes > HOSTED_MEMORY_CEILING_BYTES) {
     throw new Error(
       `manifest ${manifest.name}: declared memory ${manifest.wasm_memory_bytes} exceeds hosted ceiling ${HOSTED_MEMORY_CEILING_BYTES} (64MB)`,
     );

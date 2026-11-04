@@ -10,6 +10,65 @@ let
   # bakes hyprctl into its PATH must use the matching one, or it will ship the
   # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
   hyprland-master = inputs.hyprland.packages.${system}.hyprland;
+  # TEMPORARY (developing-today/code#5447, found via #2715): the
+  # nixpkgs-25 segment below takes activitywatch and
+  # haskellPackages.misfortune from this input, and on the current
+  # pin (1d060086, the nixos-unstable channel rev) misfortune's
+  # dependency haskellPackages.regex-pcre is marked broken under
+  # nixpkgs' problems framework -- honestly: nixpkgs' Haskell
+  # builder stopped adding the pkg-config wrapper and the
+  # pkgconfig-depends libraries to Haskell build environments, so
+  # regex-pcre's Cabal configure hard-fails (Cabal-7620) and its
+  # buildInputs no longer contain any pcre at all. Import the input
+  # with a problems handler that warns regex-pcre's broken marking
+  # through (handlers live in the importing config -- an .extend
+  # overlay on the raw legacyPackages cannot change it, and the
+  # stock segment refuses to evaluate) plus an overlay restoring
+  # regex-pcre's old build environment: pkg-config plus a minimal
+  # vendored pcre 8.45 (the version the old pins shipped; test
+  # suite disabled). Same override class as #3906, which tracks
+  # the master-pin instance. Drew ruled 2026-11-04 ("fix it or pin
+  # misfortune") to revive it here rather than keep nixpkgs-25
+  # frozen. Remove this binding and use the raw legacyPackages
+  # again once stock regex-pcre builds on the nixpkgs-25 pin; the
+  # removal test is in #5447.
+  nixpkgs-25-fixed = import inputs.nixpkgs-25 {
+    inherit system;
+    config.problems.handlers."regex-pcre".broken = "warn";
+    overlays = [
+      (
+        final: prev:
+        let
+          pcre_8_45 = prev.stdenv.mkDerivation {
+            pname = "pcre";
+            version = "8.45";
+            src = prev.fetchurl {
+              url = "mirror://sourceforge/project/pcre/pcre/8.45/pcre-8.45.tar.bz2";
+              sha256 = "sha256-Ta5v3NK7C7bDe1+Xwzwr6VTadDmFNpzdrDVG4yGL/7g=";
+            };
+            nativeBuildInputs = [ prev.updateAutotoolsGnuConfigScriptsHook ];
+            configureFlags = [
+              "--enable-unicode-properties"
+              "--disable-cpp"
+              "--enable-jit=auto"
+            ];
+            hardeningDisable = [ "shadowstack" ];
+            doCheck = false;
+          };
+        in
+        {
+          haskellPackages = prev.haskellPackages.override {
+            overrides = self: super: {
+              regex-pcre = super.regex-pcre.overrideAttrs (old: {
+                nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ prev.pkg-config ];
+                buildInputs = (old.buildInputs or [ ]) ++ [ pcre_8_45 ];
+              });
+            };
+          };
+        }
+      )
+    ];
+  };
   espIdf5 = inputs.esp-dev.packages.${system}.esp-idf-full;
   espIdf6 = inputs.esp-dev-6.packages.${system}.esp-idf-full;
   mkEspIdfSystemPackage =
@@ -226,11 +285,6 @@ let
   # online lives in home/common.
   desktop-commander = pkgs.callPackage (lib.from-root "pkgs/desktop-commander") { };
 
-  # Jules Tools, the CLI for Google's async coding agent. Not in nixpkgs; the
-  # npm package is a stub that downloads a dynamically linked Go binary, which
-  # will not exec on NixOS without autoPatchelfHook. See the derivation header.
-  jules = pkgs.callPackage (lib.from-root "pkgs/jules") { };
-
   # Antigravity ACP server and Hub. Both vendored from nixpkgs master rather
   # than taken from a channel: neither exists in ANY nixpkgs revision this flake
   # pins (stable, unstable or master-as-pinned), and bumping an input to reach
@@ -246,10 +300,6 @@ let
   # Cursor, Gemini CLI and others. 18.6k stars, no declared licence upstream.
   cockpit-tools = pkgs.callPackage (lib.from-root "pkgs/cockpit-tools") { };
 
-  # Google's experimental Jules orchestration pair. Fleet drives goal files ->
-  # analyzer sessions -> labelled issues -> worker sessions; Merge reconciles
-  # the overlapping PRs that result. Google's own words on Fleet: "very
-  # experimental, just for fun".
   # Grok CLI (superagent-ai/grok-cli, published to npm as `grok-dev`).
   # Provides `grok`, which t3code's `grok` driver shells out to.
   grok-cli = pkgs.callPackage (lib.from-root "pkgs/grok-cli") { };
@@ -260,8 +310,6 @@ let
   # Claude Code 2.1.293 (nixpkgs has 2.1.234 in both channel and unstable).
   claude-code = pkgs.callPackage (lib.from-root "pkgs/claude-code") { };
 
-  jules-fleet = pkgs.callPackage (lib.from-root "pkgs/jules-fleet") { };
-  jules-merge = pkgs.callPackage (lib.from-root "pkgs/jules-merge") { };
   antigravity-hub = pkgs.callPackage (lib.from-root "pkgs/antigravity-hub") { };
 
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
@@ -316,6 +364,16 @@ in
     # mise: 29 unit tests fail in sandbox (network-dependent tests)
     (final: prev: {
       mise = prev.mise.overrideAttrs (_: {
+        doCheck = false;
+      });
+    })
+    # cargo-llvm-cov 0.9.0 (code#5275): its integration tests emit profraw
+    # that the pinned llvm-22.1.8 llvm-profdata refuses to merge
+    # ("no profile can be merged") -- package-vs-LLVM drift at the
+    # current nixpkgs pin, same class as zulip-term/mise above.
+    # Package stays in the system; only its check phase is skipped.
+    (final: prev: {
+      cargo-llvm-cov = prev.cargo-llvm-cov.overrideAttrs (_: {
         doCheck = false;
       });
     })
@@ -376,7 +434,7 @@ in
     variables = {
       EDITOR = "nvim";
       NIX_REMOTE = "daemon";
-      PLAYWRIGHT_BROWSERS_PATH = "${inputs.nixpkgs-master.legacyPackages.${system}.playwright-driver.browsers
+      PLAYWRIGHT_BROWSERS_PATH = "${inputs.nixpkgs-unstable.legacyPackages.${system}.playwright-driver.browsers
       }";
     };
     # things should end up in systempackages if
@@ -396,14 +454,11 @@ in
       command-code
       desktop-commander
       mcpx
-      jules
       antigravity-acp
       antigravity-hub
       claude-code
       cockpit-tools
       grok-cli
-      jules-fleet
-      jules-merge
       latestCli.codex
       opencode-v2-compat
       openchamber
@@ -702,8 +757,7 @@ in
       jdk21
       androidSdk.androidsdk
     ])
-    ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
-    ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])
+    ++ (with nixpkgs-25-fixed; [ activitywatch ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       # AI coding agents. Kept on the unstable channel rather than master
       # because unstable is cached (see the chromium note below) and these
@@ -722,16 +776,15 @@ in
       # Pro/Ultra users: Gemini CLI was replaced by Antigravity CLI"), which is
       # an eval *warning*, not a build failure -- 0.47.0 builds and runs fine.
       # Installed deliberately: upstream google-gemini/gemini-cli is very much
-      # alive, and the `gemini` binary is required by the official
-      # gemini-cli-extensions/jules extension.
+      # alive.
       gemini-cli
     ])
-    ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
+    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       ghostty
       zed-editor
       # opencode
     ])
-    ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
+    ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       # rclone   # fish completions broke 2025-04-03
       # rclone-browser   # fish completions broke 2025-04-03
       # rclone-ui   # fish completions broke 2025-04-03
@@ -772,7 +825,7 @@ in
       bun
       nodejs # npm, npx
       (mise.overrideAttrs (old: {
-        # 29 unit tests fail in sandbox (network-dependent); raw master input bypasses nixpkgs.overlays
+        # 29 unit tests fail in sandbox (network-dependent); raw nixpkgs-unstable input bypasses nixpkgs.overlays
         doCheck = false;
         # libz-ng-sys build script requires cmake
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.cmake ];
@@ -922,7 +975,7 @@ in
       # lsix
       # mesa.drivers
       # cargo / rustc come from `rustToolchain` below (1.99.0 + clippy /
-      # rust-analyzer / llvm-tools), not the nixpkgs-master build.
+      # rust-analyzer / llvm-tools), not the nixpkgs build.
       rustup
       # simple-http-server
       timg
@@ -960,7 +1013,11 @@ in
       gtk3
       gtk4
       #hackgen-nf-font
-      haskellPackages.misfortune
+      # misfortune is pinned to the nixpkgs-25 set (via the nixpkgs-25-fixed binding
+      # above, which carries the regex-pcre override -- #5447): in the fleet-pinned
+      # unstable rev its regex-pcre dependency is marked broken, which refuses
+      # evaluation (#3327 pin exception).
+      nixpkgs-25-fixed.haskellPackages.misfortune
       hasklig
       hledger
       hledger-iadd

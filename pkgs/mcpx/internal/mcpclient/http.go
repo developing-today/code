@@ -33,6 +33,11 @@ type HTTPTransport struct {
 
 	sessionMu sync.RWMutex
 	sessionID string
+	// onSessionAdopted, when set, runs after a response installs a
+	// session id this transport did not already hold. The pool uses it
+	// to persist the session for a cold restart (#1415). Set before the
+	// transport serves calls; read and written under sessionMu.
+	onSessionAdopted func(string)
 	// negotiated is the legacy version initialize settled on; it is what
 	// MCP-Protocol-Version carries on every later legacy request.
 	negotiated string
@@ -183,8 +188,13 @@ func (t *HTTPTransport) Send(ctx context.Context, msg []byte) error {
 
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		t.sessionMu.Lock()
+		adopted := sid != t.sessionID
 		t.sessionID = sid
+		hook := t.onSessionAdopted
 		t.sessionMu.Unlock()
+		if adopted && hook != nil {
+			hook(sid)
+		}
 	}
 
 	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
@@ -734,6 +744,16 @@ func (t *HTTPTransport) Handoff() HTTPHandoff {
 		}
 	}
 	return HTTPHandoff{SessionID: t.sessionID, Negotiated: t.negotiated, URL: t.url, Headers: headers}
+}
+
+// SetSessionAdoptedHook registers fn to run whenever a response installs
+// a session id this transport did not already hold: a session established
+// by initialize, or one an upstream rotates in mid-flight. It is the seam
+// the pool's cold-restart persistence (#1415) saves through.
+func (t *HTTPTransport) SetSessionAdoptedHook(fn func(string)) {
+	t.sessionMu.Lock()
+	t.onSessionAdopted = fn
+	t.sessionMu.Unlock()
 }
 
 // Resume continues a session a predecessor process established. Nothing is

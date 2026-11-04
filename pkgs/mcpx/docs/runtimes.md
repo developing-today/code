@@ -65,19 +65,19 @@ plus package-resolution and type-check probes run per runtime; if a
 runtime's behaviour changes, the probe test fails and this table must
 be updated in the same change.
 
-| Capability | deno | bun | node |
-| --- | --- | --- | --- |
-| Environment access (`Deno.env` / `process.env`) | yes | yes | yes |
-| `fetch` global | yes | yes | yes |
-| `node:` builtins (e.g. `node:fs`) | yes | yes | yes |
-| JSON parse/stringify | yes | yes | yes |
-| Script-chosen exit code (`Deno.exit` / `process.exit`) | yes | yes | yes |
-| Bare package resolution from `node_modules` | yes | yes | yes |
-| Static type checking before run | yes (`deno check`) | no — types are stripped unchecked | no — types are stripped unchecked |
-| Permission enforcement (profiles below) | full model | none (`all` only) | partial (`--permission`) |
-| Python runtime ([#1917](https://github.com/developing-today/code/issues/1917)) | pending | pending | pending |
-| Flake environments ([#1921](https://github.com/developing-today/code/issues/1921)) | pending | pending | pending |
-| Dependency management ([#1913](https://github.com/developing-today/code/issues/1913)) | pending | pending | pending |
+| Capability                                                                            | deno               | bun                               | node                              |
+| ------------------------------------------------------------------------------------- | ------------------ | --------------------------------- | --------------------------------- |
+| Environment access (`Deno.env` / `process.env`)                                       | yes                | yes                               | yes                               |
+| `fetch` global                                                                        | yes                | yes                               | yes                               |
+| `node:` builtins (e.g. `node:fs`)                                                     | yes                | yes                               | yes                               |
+| JSON parse/stringify                                                                  | yes                | yes                               | yes                               |
+| Script-chosen exit code (`Deno.exit` / `process.exit`)                                | yes                | yes                               | yes                               |
+| Bare package resolution from `node_modules`                                           | yes                | yes                               | yes                               |
+| Static type checking before run                                                       | yes (`deno check`) | no — types are stripped unchecked | no — types are stripped unchecked |
+| Permission enforcement (profiles below)                                               | full model         | none (`all` only)                 | partial (`--permission`)          |
+| Python runtime ([#1917](https://github.com/developing-today/code/issues/1917))        | pending            | pending                           | pending                           |
+| Flake environments ([#1921](https://github.com/developing-today/code/issues/1921))    | pending            | pending                           | pending                           |
+| Dependency management ([#1913](https://github.com/developing-today/code/issues/1913)) | pending            | pending                           | pending                           |
 
 ### Which runtime should I choose?
 

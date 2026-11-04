@@ -25,7 +25,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
-import { refUrl } from "./model.ts";
+import { isValidRef, refUrl } from "./model.ts";
 import {
   archiveStoreBytes,
   quarantineUnreadableStore,
@@ -40,7 +40,6 @@ export interface CommentsFile {
   comments: DashComment[];
 }
 
-const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
 // Result URLs are rendered as link hrefs on the dashboard (#950):
 // only https://github.com/ result links are storable — a stored
 // javascript:/data: URL would render as a clickable script link.
@@ -66,7 +65,7 @@ function commentRecordProblem(value: unknown): string | null {
     return "message triageState must be new or triaged";
   }
   if (value.kind === "github") {
-    if (value.githubRef !== undefined && (typeof value.githubRef !== "string" || !GH_REF.test(value.githubRef))) {
+    if (value.githubRef !== undefined && !isValidRef(value.githubRef)) {
       return "githubRef must be owner/repo#N";
     }
     if (
@@ -120,7 +119,7 @@ export function validateNewComment(body: unknown): { ok: true; value: NewComment
   if (!author) return { ok: false, error: "author must be {kind: drew|muse|agent, id, label}" };
   if (typeof b.body !== "string" || b.body.trim() === "") return { ok: false, error: "body must be non-empty text" };
   if (b.kind === "github") {
-    if (typeof b.githubRef !== "string" || !GH_REF.test(b.githubRef)) {
+    if (!isValidRef(b.githubRef)) {
       return { ok: false, error: "kind github requires githubRef as owner/repo#N" };
     }
   }
