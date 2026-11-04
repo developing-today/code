@@ -373,7 +373,7 @@ in
         ownership = "explicit";
         entries = {
           main = {
-            name = "OpenClaw (laptop node)";
+            name = "Shed";
           };
           # The ACP-runtime agent entry (opencode-acp, #2229 mechanism 1)
           # is removed for now: the nix-openclaw generated schema types an
