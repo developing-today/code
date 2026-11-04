@@ -8,8 +8,8 @@
 /** The four working repositories (design record, "Request and intent"). */
 export const REPOS = [
   "developing-today/code",
-  "developing-today/opencode",
-  "developing-today/openchamber",
+  "developing-today-forks/opencode",
+  "developing-today-forks/openchamber",
   "dezren39/nix",
 ] as const;
 
