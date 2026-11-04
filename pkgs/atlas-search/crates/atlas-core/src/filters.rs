@@ -454,6 +454,13 @@ pub fn parse_iso_date(s: &str) -> Option<(i32, u32, u32)> {
     } else {
         return None;
     }
+    // CPython dates have no year 0: fromisoformat refuses years
+    // outside 1..=9999 (#5387). The 4-digit spellings cap the top end
+    // already; the bottom end needs this explicit check, or 0000-02-29
+    // passes the leap rule below (0 is a multiple of 400).
+    if !(1..=9999).contains(&y) {
+        return None;
+    }
     if !(1..=12).contains(&m) {
         return None;
     }
@@ -563,6 +570,14 @@ mod tests {
 
     #[test]
     fn dates() {
+        // #5387: CPython has no year 0 — fromisoformat refuses it, so
+        // both spellings of a year-0000 date are refused here too,
+        // while the boundary years 1 and 9999 stay accepted.
+        assert_eq!(parse_iso_date("0000-01-01"), None);
+        assert_eq!(parse_iso_date("0000-02-29"), None);
+        assert_eq!(parse_iso_date("00000101"), None);
+        assert_eq!(parse_iso_date("0001-01-01"), Some((1, 1, 1)));
+        assert_eq!(parse_iso_date("9999-12-31"), Some((9999, 12, 31)));
         assert_eq!(parse_iso_date("2026-02-29"), None);
         assert_eq!(parse_iso_date("2028-02-29"), Some((2028, 2, 29)));
         assert_eq!(parse_iso_date("20261031"), Some((2026, 10, 31)));
