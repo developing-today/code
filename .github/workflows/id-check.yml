@@ -1,6 +1,6 @@
 # CI for pkgs/id — P2P file sharing CLI
 #
-# Runs on push to main and PRs that touch pkgs/id/ files.
+# Runs on schedule and explicit dispatch; it has no automatic push or PR trigger.
 # Uses nix flake checks to run all sandboxed CI checks:
 #   - Rust: fmt, clippy, cargo-check, unit tests, integration tests, doc
 #   - Web: biome fmt, biome lint, bun unit tests, TypeScript typecheck
@@ -221,7 +221,6 @@ jobs:
   # job, id-e2e-nightly, and the PR matrix covers it.
   full-flake-check:
     name: "full (main tier): nix flake check"
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

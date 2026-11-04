@@ -1,94 +1,96 @@
-# CI tier policy — fast PR tier, full main tier
+# CI trigger policy — no push/PR CI
 
-Design: developing-today/code#1779 (ci-fast-pr-full-main). Phases:
-#1780 (cancel-in-progress), #1781 (this policy), #1782 (main-breakage
-chain, .github/workflows/main-broken.yml). Tracker: #1599.
+Design history: developing-today/code#1779 (ci-fast-pr-full-main),
+#1780 (cancel-in-progress), #1781 (the former PR-tier policy), #1782
+(main-breakage chain, `.github/workflows/main-broken.yml`). Tracker: #1599.
 
-Every workflow touched by the tier redesign carries the header
-comment `CI tier policy: see .github/ci-policy.md`. Tuning the tiers
-means editing THIS table by PR — never ad-hoc pipeline changes.
+**Superseded 2026-11-04 by the owner ruling recorded in #5501: there is
+no commit- or PR-triggered CI.** That PR removed `push:` and
+`pull_request:` entries from the workflows. CI is requested through
+`workflow_dispatch`/placement, schedules, and the remaining explicit
+events (`workflow_call`, `merge_group`, `workflow_run`, `release`, and
+`issues`). The #1779/#1781 model is history; this file describes the
+trigger model now in force.
+
+Every workflow carrying the header comment
+`CI tier policy: see .github/ci-policy.md` is governed by this file.
+Change triggers and this policy in the same PR; do not change a
+workflow's event behavior ad hoc.
 
 ## Merge requirement
 
-**Merge requirement: the basic-validation (PR) tier only. The full
-suite runs on main and is NOT a merge gate.**
+**There is no merge gate produced by GitHub Actions.**
 
-In this repo the PR tier is named **basic**: job display names in
-the check list carry the tier — PR-tier jobs are prefixed
-`basic: ` (`basic: proxy port fallbacks`, `basic: spec parity`,
-`basic: nix flake check (<check>)`, `basic: go build`, ...), and
-jobs that run only on main/nightly are prefixed
-`full (main tier): `. One deliberate exception: the `id`
-workflow's aggregator job keeps its historical status name
-`nix flake check` — the required status context branch protection
-has always used — while the matrix jobs under it carry the tier
-prefix (the same exception opencode made for its branch-required
-aggregator).
+Verified 2026-11-04 against current `main`: branch protection reports
+`required_status_checks: null`, and
+`gh api 'repos/developing-today/code/rulesets?includes_parents=true'`
+returns no rulesets. The 2026-10-29 merge-queue pilot is not configured.
+Do not call a check "required" until branch protection or a ruleset
+actually names it.
 
-**Formatting is not a merge gate.** No treefmt/format context is
-in the basic tier or the required checks. Formatting is
-auto-fixed on main instead: the `auto-format` workflow
-(`.github/workflows/auto-format.yml`) runs treefmt on every
-push to main (plus a nightly sweep) and commits any fixes
-directly to main as the github-actions bot
-(`style(treefmt): auto-format on main`). The fix lands within
-seconds of the merge that introduced the drift — well before
-the main-tier full check would file a breakage for it.
+The `basic: ` and `full (main tier): ` job-name prefixes remain labels
+for a verification profile, not merge gates. The `id` workflow's
+aggregator keeps its historical status name `nix flake check`.
 
-Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
-`mcpx nix build`, `go modules build`, `identity build`,
-`map build`, `id bench`) are deliberately NOT renamed:
-`main-broken.yml` (the Phase 3 watcher) and `jules.yml` reference
-them by name in their `workflow_run` triggers. If branch rules
-ever require checks by name, require the `basic`-prefixed names
-(plus `nix flake check` for `id`) — full main-tier jobs must
-never become merge requirements.
+Formatting is not a gate either. `auto-format.yml` runs on schedule or
+dispatch; no treefmt context runs per change.
 
-## Merge queue (pilot, 2026-10-29)
+## Requesting verification
 
-`main` runs a merge queue (ruleset `main: merge queue pilot`):
-merge method MERGE (merge commits only), grouping HEADGREEN
-(only the group's combined head must pass the required checks),
-min entries to merge 1 with a 1-minute wait (a lone PR is never
-held for a batch), max entries to merge 100, max entries to build
-100, check response timeout 30 minutes. The queue enforces the
-same required check as branch protection — `basic: proxy port
-fallbacks` — which is why the dedicated
-`.github/workflows/proxy-port-fallbacks.yml` runs on both
-`pull_request` and `merge_group` events. The queue validates the
-combined merge-group head, never the PR head alone. Operationally:
-`gh pr merge` now ENQUEUES a
-PR instead of merging it; "in the merge queue" is merge-pending,
-not a failure.
+Dispatch the relevant workflow against the branch or SHA being reviewed
+(by hand, through `org-run.yml`, or through the queue tooling), then
+read that run's result. A change with no run is **not** evidence of a
+passing check; report "not run" rather than treating an empty check
+list as green.
 
-## mcpx fix-test guard (#1969)
+Some workflows are `disabled_manually` in GitHub Actions. Before
+dispatching, verify that the workflow is enabled: an `on:` declaration
+alone does not mean GitHub will run it. A disabled workflow is not
+verification.
 
-`.github/workflows/mcpx-fix-test-guard.yml` is a **basic-tier** check
-(job `basic: mcpx fix carries a test (#1969)`): on pull requests
-touching `pkgs/mcpx/**` it fails a fix PR — title starting with `fix`,
-or a body `Fixes`/`Closes`/`Resolves` link to a `bug`/`kind/bug`
-issue — that changes no `*_test.go` / `*.test.ts` file under
-`pkgs/mcpx/`, unless the body carries `No test: <reason>` (the reason
-is echoed in the check output and job summary). This is the option-C
-enforcement of the failing-first rule in
-`pkgs/mcpx/docs/testing.md` ("A test per bug"); the match logic lives
-in `.github/scripts/check-mcpx-fix-test.sh` with shell contract tests
-in `.github/scripts/check-mcpx-fix-test.test.sh`, which also run on
-pushes to main. PRs outside the workflow's `pkgs/mcpx/**` path filter
-never fire the check.
+Each workflow's `on:` block is the source of truth for its exact
+events, filters and inputs. As of #5501, no workflow has a `push`,
+`pull_request` or `pull_request_target` trigger. `proxy-port-fallbacks`
+and `opencode-config-guard` retain `merge_group`; those checks run only
+if a merge queue is enabled. Check the workflow file rather than
+duplicating its trigger inventory here.
 
-## OpenCode metered-provider config guard
+The design's change classes remain an advisory guide to what to
+dispatch; they do not trigger anything:
 
-`.github/workflows/opencode-config-guard.yml` runs the static guard and
-its fixtures on pull requests, merge groups, and pushes to `main`. The
-guard checks known metered selections (`cloudflare-*` and the direct
-PAYG `deepseek` provider) in model-route targets/fallbacks, provider-route
-selections, top-level defaults, and agent model/fallback fields. Disabled
-providers are still checked: disabling a seat today must not make a later
-re-enable silently restore metered exposure.
+| class                        | examples                                                                         | verification to dispatch                                                  |
+| ---------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 0 — prose                    | `**.md`, docs/, comments-only                                                    | none, or markdown lint for generated docs                                  |
+| 1 — config/data              | non-build `**.json/yaml/toml`, `.github/**` (non-workflow)                        | syntax parse + lint of changed files                                      |
+| 2 — package source (default) | one package's src + tests                                                        | `id-check`, `mcpx-test`, `mcpx-conformance`, `pm-*`, `scripts-test`        |
+| 3 — elevated                 | lockfiles, `go.mod`/`go.sum`, `flake.nix`/`flake.lock`, `package.nix`, workflows | class 2 plus affected-package build (`*-build`, `mcpx-nixbuild`)            |
+| 4 — nix expressions          | `**.nix`                                                                         | `nix-ci` (flake evaluation)                                                |
 
-An explicitly approved one-off use must carry a standalone comment directly
-above that specific selection, with a non-empty reason:
+Default when a change spans classes: use the highest class.
+
+## Workflow-specific notes
+
+### mcpx fix-test guard (#1969)
+
+`.github/workflows/mcpx-fix-test-guard.yml` preserves the failing-first
+policy in `pkgs/mcpx/docs/testing.md` ("A test per bug"). On dispatch,
+it runs the guard's shell contract tests
+(`.github/scripts/check-mcpx-fix-test.test.sh`). The PR-attestation
+step (a `fix` PR touching `pkgs/mcpx/**` must carry a test or a
+`No test: <reason>` line) requires a `pull_request` payload and is
+therefore inert under the current triggers.
+
+### OpenCode metered-provider config guard
+
+`.github/workflows/opencode-config-guard.yml` runs its static guard and
+fixtures on `merge_group` and dispatch. It checks known metered
+selections (`cloudflare-*` and direct PAYG `deepseek`) in model-route
+targets/fallbacks, provider-route selections, top-level defaults, and
+agent model/fallback fields. Disabled providers are still checked: a
+later re-enable must not silently restore metered exposure.
+
+An explicitly approved one-off use must carry a standalone comment
+directly above that selection, with a non-empty reason:
 
 ```jsonc
 "targets": [
@@ -97,80 +99,45 @@ above that specific selection, with a non-empty reason:
 ]
 ```
 
-The marker is per selection; stale, malformed, or misplaced markers fail.
-This is a static check of the canonical file, not enforcement of runtime,
-machine-local, or environment overrides, and it does not claim to classify
-every provider as metered or unmetered.
+The marker is per selection; stale, malformed, or misplaced markers
+fail. This is a static check of the canonical file, not enforcement of
+runtime, machine-local, or environment overrides, and it does not
+classify every provider as metered or unmetered.
 
-## Change classes (§3.3 of the design)
+### Event-specific job guards
 
-| class                        | trigger paths (examples)                                                                                                                       | PR tier                                                                         |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| 0 — prose                    | `**.md`, docs/, comments-only changes                                                                                                          | nothing, or markdown lint only                                                  |
-| 1 — config/data              | `**.json/yaml/toml` non-build, `.github/**` (non-workflow)                                                                                     | syntax parse + lint of changed files                                            |
-| 2 — package source (default) | one package's src + tests                                                                                                                      | lint/format + typecheck/syntax of affected packages + affected unit tests       |
-| 3 — elevated                 | lockfiles, `go.mod`/`go.sum` roots, `flake.nix`/`flake.lock`, build definitions (`package.nix`), `.github/workflows/**`, shared/core libraries | class 2 + compile check of affected packages                                    |
-| 4 — nix expressions          | `**.nix`                                                                                                                                       | class 1 + parse/eval of the changed files only (never full flake check on a PR) |
+Some job/step-level `if:` expressions still refer to `push` or
+`pull_request`. They are not workflow triggers and do not make those
+events run. Keep a guard when it prevents a dispatch from entering a
+step that requires an event payload (for example PR number/title/body);
+remove redundant guards only when behavior on every remaining event is
+unchanged. A guard is not a substitute for dispatched verification.
 
-Default when a change spans classes: the highest class wins. The
-policy ships conservative (more class 3) and loosens as the
-main-breakage rate (issues labelled `main-broken`) proves out.
+## Concurrency
 
-## Tier assignment in this repo (after #1781)
+The #1780 standard block (group keyed by `run_id` for push-to-main, by
+`github.ref` otherwise, `cancel-in-progress: true`) no longer applies
+to push/PR runs because those events are gone. It remains in place:
+dispatch runs key by ref, so a later dispatch of the same ref
+supersedes the earlier one. `jules.yml` keeps its load-bearing
+`cancel-in-progress: false` (#304), and singleton/deploy workflows stay
+serialized.
 
-| workflow                                                       | PR tier                                                                                             | main tier                                                                    | nightly                                                          |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| nix ci                                                         | — (PR and merge-group proxy check is in the dedicated workflow below)                              | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
-| proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request` and `merge_group`                                   | — (main copy remains in nix-ci.yml)                                           | —                                                                |
-| id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                       | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
-| mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                 | — (main covers it)                                               |
-| id bench                                                       | — (removed)                                                                                         | yes                                                                          | —                                                                |
-| go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                        | —                                                                |
-| mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                 | —                                                                |
-| mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                           | same full sharded suite on push to main                                      | — (main covers it)                                               |
-| mcpx fix-test guard (#1969)                                    | fix PRs touching `pkgs/mcpx/**` must carry a test or a `No test: <reason>` attestation (basic tier) | contract tests for the guard script only                                     | —                                                                |
-
-## Coverage rule
-
-Nothing removed from PRs may vanish: the union of main-tier +
-nightly jobs must cover the old PR matrix. For pkgs/id the full
-flake check runs on main (id-check full-flake-check job) and
-nightly twice over (id-check schedule, id-e2e-nightly). For nix ci
-the flake-check job runs on main and on the nix-ci nightly
-schedule. mcpx conformance legs run on every mcpx-touching merge
-to main.
-
-## Dedup rule
-
-A commit must not run the same suite twice via push +
-pull_request. Standard shape: `pull_request` for PRs, `push`
-restricted to `branches: [main]` (plus tags where already
-applicable, e.g. goreleaser).
-
-## Concurrency rule (#1780)
-
-Standard block (design §4): group keyed by `run_id` for
-push-to-main, by `github.ref` otherwise, `cancel-in-progress: true`
-— PR/branch runs cancel on supersede; main runs are never
-cancelled. Exceptions: `jules.yml` (load-bearing cip=false, #304)
-and scheduled singleton/deploy workflows (cip=false) are NOT
-touched. Issue/PR management is NOT event-triggered: `repo-sweeper.yml`
-runs every 15 minutes (`*/15 * * * *`, one live run: group
-`repo-sweeper`, `cancel-in-progress: true` — safe because the
-sweeper is schedule/dispatch-only) and performs the management
-duties in one deterministic pass. It replaced `auto-assign.yml`
-(assign the maintainer to open issues/PRs). Kept event-based,
-deliberately: `jules.yml` — a human applies the `jules` label
-and waits for Jules to start, and its `workflow_run` leg is
-the ci-failure-fix remediation chain (#304); a synchronous
-human-initiated handoff, not management bookkeeping. Never
-pair `queue: max` with a cancel-in-progress expression that
-can evaluate true for `issues`/`pull_request_target` events
-(a GitHub validation error, openchamber#84) — the sweeper
-stays schedule-only for this reason.
+Issue/PR management is not commit-triggered: `repo-sweeper.yml` runs
+its management pass on schedule. `jules.yml` remains `issues`-triggered
+deliberately: a human applies the `jules` label, and its `workflow_run`
+leg is the ci-failure-fix remediation chain (#304).
 
 ## Nix cache backend reliability (#774)
 
-Magic Nix Cache is a performance optimization, not a CI verdict. The eight `DeterminateSystems/magic-nix-cache-action` steps in `id-check.yml`, `id-bench.yml`, `id-e2e-nightly.yml`, `mcpx-docs.yml`, `mcpx-nixbuild.yml`, and `mcpx-realsoftware-nightly.yml` are best-effort (`continue-on-error: true`): a cache service throttle (including HTTP 418) or 5xx must fall through to a cold build, while the subsequent build/check remains authoritative.
+Magic Nix Cache is a performance optimization, not a CI verdict. The
+`DeterminateSystems/magic-nix-cache-action` steps in `id-check.yml`,
+`id-bench.yml`, `id-e2e-nightly.yml`, `mcpx-docs.yml`,
+`mcpx-nixbuild.yml`, and `mcpx-realsoftware-nightly.yml` are best-effort
+(`continue-on-error: true`): a cache throttle or 5xx must fall through
+to a cold build; the subsequent build/check remains authoritative.
 
-The required `nix flake check` in `nix-ci.yml` intentionally has no shared cache. The October 2026 #774 incidents on PRs #771 and #747 showed that cache-backend failures can masquerade as code failures. This change keeps the current Magic Nix Cache / GitHub Actions cache choice and does not migrate to Cachix or another backend; evaluate that separately.
+The `nix flake check` in `nix-ci.yml` intentionally has no shared cache.
+The October 2026 #774 incidents on PRs #771 and #747 showed that cache
+backend failures can masquerade as code failures. This choice is
+unchanged; evaluate another backend separately.

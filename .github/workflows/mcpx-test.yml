@@ -3,8 +3,8 @@ name: mcpx test
 # CI tier policy: see .github/ci-policy.md
 #
 # First measured CI iteration for mcpx (#1998, design #1985): the serial
-# `go test ./...` in mcpx.yml's push-only test job is complemented here by
-# a sharded suite that also runs on PRs — init generates a static e2e
+# `go test ./...` in mcpx.yml's main test job is complemented here by an
+# explicitly dispatched sharded suite — init generates a static e2e
 # matrix from the test names actually present in the tree, unit and lint
 # run as their own legs, and ci-ok aggregates everything and prints the
 # #140 measurement table. The shard partition is re-decided for the
@@ -33,7 +33,6 @@ permissions:
 jobs:
   init:
     name: "basic: mcpx-test init (static e2e matrix)"
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -75,7 +74,6 @@ jobs:
 
   unit:
     name: "basic: mcpx-test unit"
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -112,7 +110,6 @@ jobs:
 
   lint:
     name: "basic: mcpx-test lint"
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -134,7 +131,6 @@ jobs:
   e2e:
     name: "basic: mcpx-test e2e (shard ${{ matrix.shard }})"
     needs: init
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -170,7 +166,7 @@ jobs:
   ci-ok:
     name: "mcpx-test ci-ok"
     needs: [init, unit, lint, e2e]
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

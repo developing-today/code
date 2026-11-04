@@ -84,9 +84,7 @@ jobs:
 
   flake-check:
     name: "full (main tier): Nix flake evaluation"
-    # Main tier only (Phase 2, #1781): PRs keep the basic proxy-port
-    # fallback check above; formatting is auto-fixed on main, never a gate.
-    if: github.event_name != 'pull_request'
+    # Runs on schedule or explicit dispatch; no PR-head trigger is configured.
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

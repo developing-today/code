@@ -31,7 +31,7 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - Perform quick or selective tests during iteration. Only run full exhaustive test suites preemptively for very large changes or known critical issues.
   - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
   - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
-  - **CI-first verification:** Review the checks actually triggered on the PR and use [`.github/ci-policy.md`](.github/ci-policy.md) to distinguish the basic merge-gating PR tier from the full main tier; formatting is not a merge gate. Run targeted local checks on the laptop when useful; sandboxed workers use CI and must not run builds or tests in the sandbox. If a policy-listed check is missing from the PR, inspect the workflow trigger and report the coverage gap instead of assuming it ran.
+  - **CI-first verification:** Use [`.github/ci-policy.md`](.github/ci-policy.md) for the current trigger model. Since #5501 there is no commit- or PR-triggered CI and no Actions merge gate: verification is a dispatched, scheduled or merge-group run, so read the run for the branch/SHA you are validating. Run targeted local checks on the laptop when useful; sandboxed workers must not run builds or tests in the sandbox. If a check was not run, say "not run" and report the coverage gap instead of treating an empty check list as green.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
 
 ## Worker Git preflight
