@@ -39,10 +39,31 @@ export const STALL_AT_RISK_THRESHOLD = 60;
 
 const DAY_MS = 86_400_000;
 
+/** True when instant `a` is at or before instant `b`, compared as
+ * instants, not strings: the same instant can be written with or
+ * without fractional seconds or with a timezone offset, and string
+ * order disagrees with instant order across such representations
+ * (e.g. "2026-11-02T00:00:00Z" sorts AFTER "2026-11-02T00:00:00.000Z"
+ * as a string but is the same instant). Unparseable values fall back
+ * to string order so behaviour stays deterministic. */
+function atOrBefore(a: string, b: string): boolean {
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  return Number.isNaN(x) || Number.isNaN(y) ? a <= b : x <= y;
+}
+
+/** Instant order for cutoff sorting, string order as tie-break. */
+function instantOrder(a: string, b: string): number {
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  if (Number.isNaN(x) || Number.isNaN(y) || x === y) return a.localeCompare(b);
+  return x - y;
+}
+
 function completeCutoffs(cutoffs: ItemHistoryCutoff[]): ItemHistoryCutoff[] {
   return [...cutoffs]
     .filter((c) => c.coverage.complete && !c.coverage.unavailable)
-    .sort((a, b) => a.cutoffAt.localeCompare(b.cutoffAt));
+    .sort((a, b) => instantOrder(a.cutoffAt, b.cutoffAt));
 }
 
 function addDays(iso: string, days: number): string {
@@ -152,7 +173,7 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   // cutoffs are future outcomes and must not leak into scope,
   // transitions, or coverage.
   const scopedCutoffs = input.asOf
-    ? input.cutoffs.filter((c) => c.cutoffAt <= input.asOf!)
+    ? input.cutoffs.filter((c) => atOrBefore(c.cutoffAt, input.asOf!))
     : input.cutoffs;
   const complete = completeCutoffs(scopedCutoffs);
   const latest = complete[complete.length - 1];
@@ -404,7 +425,7 @@ export function deriveStallRisk(input: StallRiskInput): StallRisk {
   // Same rolling-origin rule as deriveEpicEta: only cutoffs observed
   // at or before asOf take part.
   const scopedCutoffs = input.asOf
-    ? input.cutoffs.filter((c) => c.cutoffAt <= input.asOf!)
+    ? input.cutoffs.filter((c) => atOrBefore(c.cutoffAt, input.asOf!))
     : input.cutoffs;
   const complete = completeCutoffs(scopedCutoffs);
   const latest = complete[complete.length - 1];

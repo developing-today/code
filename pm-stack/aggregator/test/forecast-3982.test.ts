@@ -185,6 +185,35 @@ describe("deriveEpicEta", () => {
     expect(eta.remainingUnits).toBe(3);
   });
 
+test("asOf compares as an instant: equal instant in another representation is included", () => {
+    // W[8] is "2026-11-02T00:00:00Z"; asOf writes the same instant with
+    // fractional seconds. String order would exclude the W[8] cutoff
+    // ("Z" > "."), instant order includes it.
+    const eta = deriveEpicEta({
+      subjectRef: EPIC,
+      cutoffs: history(3, [4, null, null]),
+      asOf: "2026-11-02T00:00:00.000Z",
+    });
+    expect(eta.inputCoverage.completeWeeks).toBe(9);
+    expect(eta.completedUnits).toBe(1);
+  });
+
+  test("asOf compares as an instant: an offset cutoff later than asOf is excluded", () => {
+    // The last cutoff written with a -05:00 offset is 05:00Z — after
+    // asOf at 00:00Z — although its string sorts before "Z".
+    const cutoffs = history(3, [4, null, null]);
+    cutoffs[cutoffs.length - 1] = {
+      ...cutoffs[cutoffs.length - 1]!,
+      cutoffAt: "2026-11-02T00:00:00-05:00",
+    };
+    const eta = deriveEpicEta({
+      subjectRef: EPIC,
+      cutoffs,
+      asOf: "2026-11-02T00:00:00Z",
+    });
+    expect(eta.inputCoverage.completeWeeks).toBe(8);
+  });
+
   test("effort stays explicit: unsized and open-ended remaining work are named, not sized", () => {
     const cutoffs = history(4, [null, null, null, null]).slice(0, 5);
     const latest = cutoffs[cutoffs.length - 1]!;
@@ -282,6 +311,19 @@ describe("deriveStallRisk", () => {
     expect(signal.contribution).toBe(0);
     expect(signal.detail).toContain("resolved");
     expect(risk.score).toBe(0);
+  });
+
+test("asOf compares as an instant: same instant, fractional-second representation", () => {
+    // W[2] is "2026-09-21T00:00:00Z"; asOf writes the same instant as
+    // "2026-09-21T00:00:00.000Z". String order would scope the history
+    // to W[0] only (blocked age 0, no points); instant order keeps
+    // W[2], where the lower-bound age is 14 days.
+    const risk = deriveStallRisk({
+      ref: REF,
+      cutoffs: blockedHistory(),
+      asOf: "2026-09-21T00:00:00.000Z",
+    });
+    expect(risk.signals.find((s) => s.code === "blocked_edge_age")!.contribution).toBe(30);
   });
 
   test("all signals firing caps at 100", () => {
