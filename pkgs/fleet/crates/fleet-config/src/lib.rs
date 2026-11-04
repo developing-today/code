@@ -90,31 +90,56 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// An env var read as a path, with an empty value treated as unset.
+/// Empty-string env vars are a routine artifact (systemd units,
+/// templated exports), and the XDG base-directory spec treats an
+/// empty base as invalid; taking one literally here would turn the
+/// config file, the state dir, and the broker socket into
+/// CWD-relative paths (issue #5473).
+fn non_empty_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    value.filter(|p| !p.as_os_str().is_empty())
+}
+
+fn env_path(var: &str) -> Option<PathBuf> {
+    non_empty_path(std::env::var_os(var).map(PathBuf::from))
+}
+
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    env_path("HOME").unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_under(home: &std::path::Path, path: &std::path::Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        home.join(path)
+    }
 }
 
 fn resolve_under_home(path: &str) -> PathBuf {
-    let p = PathBuf::from(path);
-    if p.is_absolute() {
-        p
-    } else {
-        home_dir().join(p)
-    }
+    resolve_under(&home_dir(), &PathBuf::from(path))
 }
 
 impl Config {
     /// The config file path: `$FLEET_CONFIG`, else
     /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
     pub fn file_path() -> PathBuf {
-        if let Some(p) = std::env::var_os("FLEET_CONFIG") {
-            return PathBuf::from(p);
+        Self::file_path_from(
+            env_path("FLEET_CONFIG"),
+            env_path("XDG_CONFIG_HOME"),
+            &home_dir(),
+        )
+    }
+
+    fn file_path_from(
+        fleet_config: Option<PathBuf>,
+        xdg_config_home: Option<PathBuf>,
+        home: &std::path::Path,
+    ) -> PathBuf {
+        if let Some(p) = fleet_config {
+            return p;
         }
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir().join(".config"));
+        let base = xdg_config_home.unwrap_or_else(|| home.join(".config"));
         base.join("fleet").join("fleet.toml")
     }
 
@@ -149,12 +174,27 @@ impl Config {
     /// The session broker socket path. `FLEET_BROKER_SOCKET` beats the
     /// config file beats the default.
     pub fn broker_socket(&self) -> PathBuf {
-        if let Some(p) = std::env::var_os("FLEET_BROKER_SOCKET") {
-            return PathBuf::from(p);
+        Self::broker_socket_from(
+            env_path("FLEET_BROKER_SOCKET"),
+            self.proxy.broker_socket.as_deref(),
+            &home_dir(),
+        )
+    }
+
+    fn broker_socket_from(
+        env_socket: Option<PathBuf>,
+        config_socket: Option<&str>,
+        home: &std::path::Path,
+    ) -> PathBuf {
+        // Every source resolves the same way: a relative path is under
+        // $HOME (the ProxyConfig field's documented rule), never the
+        // process's working directory (issue #5473).
+        if let Some(p) = env_socket {
+            return resolve_under(home, &p);
         }
-        match &self.proxy.broker_socket {
-            Some(p) => resolve_under_home(p),
-            None => resolve_under_home(DEFAULT_BROKER_SOCKET),
+        match config_socket {
+            Some(p) => resolve_under(home, &PathBuf::from(p)),
+            None => resolve_under(home, &PathBuf::from(DEFAULT_BROKER_SOCKET)),
         }
     }
 
@@ -172,9 +212,11 @@ impl Config {
 
     /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
     pub fn state_dir() -> PathBuf {
-        let base = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home_dir().join(".local").join("state"));
+        Self::state_dir_from(env_path("XDG_STATE_HOME"), &home_dir())
+    }
+
+    fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
+        let base = xdg_state_home.unwrap_or_else(|| home.join(".local").join("state"));
         base.join("fleet")
     }
 
@@ -247,6 +289,53 @@ mod tests {
         let (_dir, path) = write_temp("[domains]\nsome-future-domain = false\n");
         let cfg = Config::load_from(&path).unwrap();
         assert!(!cfg.domain_enabled("some-future-domain"));
+    }
+
+    #[test]
+    fn env_paths_ignore_empty_values_and_resolve_under_home() {
+        // #5473: an empty env value is unset, never a literal path —
+        // otherwise the config/state paths go CWD-relative and a
+        // planted ./fleet/fleet.toml in the working directory loads.
+        let home = PathBuf::from("/home/tester");
+        assert_eq!(non_empty_path(Some(PathBuf::new())), None);
+        assert_eq!(
+            non_empty_path(Some(PathBuf::from("/x"))),
+            Some(PathBuf::from("/x"))
+        );
+        assert_eq!(
+            Config::file_path_from(None, None, &home),
+            home.join(".config").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(None, Some(PathBuf::from("/cfg")), &home),
+            PathBuf::from("/cfg").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("/named.toml")), None, &home),
+            PathBuf::from("/named.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(None, &home),
+            home.join(".local").join("state").join("fleet")
+        );
+        assert_eq!(
+            Config::state_dir_from(Some(PathBuf::from("/state")), &home),
+            PathBuf::from("/state").join("fleet")
+        );
+        // A relative FLEET_BROKER_SOCKET in the default's own spelling
+        // names the same socket as the default itself.
+        assert_eq!(
+            Config::broker_socket_from(Some(PathBuf::from(DEFAULT_BROKER_SOCKET)), None, &home),
+            Config::broker_socket_from(None, None, &home)
+        );
+        assert_eq!(
+            Config::broker_socket_from(Some(PathBuf::from("/abs/b.sock")), None, &home),
+            PathBuf::from("/abs/b.sock")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, Some("rel/c.sock"), &home),
+            home.join("rel").join("c.sock")
+        );
     }
 
     #[test]
