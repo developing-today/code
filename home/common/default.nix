@@ -36,10 +36,12 @@ let
   # toolchain pinned by its own rust-toolchain.toml (channel
   # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
   # pattern (cf. rustToolchain in nixos/environment/default.nix).
-  # Used ONLY as the atlas-search unit's ExecStart below: the
-  # package is deliberately not in home.packages, so the Python
-  # CLI stays the resolved `atlas-search` until the step-6
-  # cutover (#5356) says otherwise.
+  # Used as the atlas-search unit's ExecStart below and, since
+  # the step-6 cutover (#5356), as a home package below so the
+  # Rust binary is the resolved `atlas-search` CLI (the Python
+  # CLI is kept alongside as `atlas-search-py`). It was kept
+  # out of home.packages through step 5 so the Python CLI
+  # stayed resolved until the cutover said otherwise.
   atlasSearchToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/atlas-search/rust-toolchain.toml;
   atlasSearch = pkgs.callPackage ../../pkgs/atlas-search {
     rustPlatform = pkgs.makeRustPlatform {
@@ -1681,6 +1683,10 @@ in
       with pkgs;
       [
         libnotify
+        # Atlas search CLI + service binary (pkgs/atlas-search);
+        # step-6 cutover (#5356): the Rust binary is the resolved
+        # `atlas-search` (the Python CLI is kept as atlas-search-py).
+        atlasSearch
         (pkgs.writeShellScriptBin "clef-proxy" ''
           exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
         '')
