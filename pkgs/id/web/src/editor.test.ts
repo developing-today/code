@@ -285,9 +285,7 @@ describe("richSchema footnote nodes (#1347)", () => {
         {
           type: "footnote_definition",
           attrs: { label: "1" },
-          content: [
-            { type: "paragraph", content: [{ type: "text", text: "Body." }] },
-          ],
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Body." }] }],
         },
       ],
     };
@@ -295,9 +293,7 @@ describe("richSchema footnote nodes (#1347)", () => {
     const out = doc.toJSON();
     expect(out.content[1].type).toBe("footnote_definition");
     expect(out.content[1].attrs).toEqual({ label: "1" });
-    expect(out.content[1].content).toEqual([
-      { type: "paragraph", content: [{ type: "text", text: "Body." }] },
-    ]);
+    expect(out.content[1].content).toEqual([{ type: "paragraph", content: [{ type: "text", text: "Body." }] }]);
     const paragraph = out.content[0];
     const reference = paragraph.content.find((n: { type: string }) => n.type === "footnote_reference");
     expect(reference?.attrs).toEqual({ label: "1" });
