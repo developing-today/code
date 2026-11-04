@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -282,6 +282,104 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
     const stored: CoverageSnapshotFile = { baseline: null, current: mk("2026-10-24T00:00:00Z", 90) };
     const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
     expect(snap.baseline?.generatedAt).toBe("2026-10-24T00:00:00Z");
+  });
+});
+
+describe("CoverageSnapshotStore.read validation (#4140)", () => {
+  const validReport = (at: string): CoverageReport => ({
+    generatedAt: at,
+    repos: [
+      {
+        repo: "developing-today/code",
+        openIssues: 100,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
+    ],
+  });
+
+  async function readRaw(raw: unknown): Promise<CoverageSnapshotFile | null> {
+    const dir = await mkdtemp(join(tmpdir(), "coverage-store-read-"));
+    try {
+      const file = join(dir, "coverage-snapshot.json");
+      await writeFile(file, typeof raw === "string" ? raw : JSON.stringify(raw), "utf8");
+      return await new CoverageSnapshotStore(file).read();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  const withCurrent = (extra: Record<string, unknown>): Record<string, unknown> => ({
+    baseline: null,
+    current: validReport("2026-11-01T00:00:00Z"),
+    ...extra,
+  });
+
+  test("a string baseline reads as absent", async () => {
+    expect(await readRaw(withCurrent({ baseline: "junk" }))).toBeNull();
+  });
+
+  test("a baseline without repos reads as absent", async () => {
+    expect(await readRaw(withCurrent({ baseline: { generatedAt: "2026-10-24T00:00:00Z" } }))).toBeNull();
+  });
+
+  test("a non-array repos reads as absent", async () => {
+    expect(
+      await readRaw(withCurrent({ baseline: { generatedAt: "2026-10-24T00:00:00Z", repos: "nope" } })),
+    ).toBeNull();
+  });
+
+  test("garbage row field types read as absent", async () => {
+    const garbageBaseline = {
+      generatedAt: "2026-10-24T00:00:00Z",
+      repos: [{
+        repo: 42,
+        openIssues: "lots",
+        gateNow: null,
+        gateNext: null,
+        poolItems: null,
+        poolUnsetStatus: null,
+        poolUnsetArea: null,
+      }],
+    };
+    expect(await readRaw(withCurrent({ baseline: garbageBaseline }))).toBeNull();
+    const garbageCurrent = {
+      generatedAt: "2026-11-01T00:00:00Z",
+      repos: [{
+        repo: "developing-today/code",
+        openIssues: "lots",
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      }],
+    };
+    expect(await readRaw({ baseline: null, current: garbageCurrent })).toBeNull();
+  });
+
+  test("a malformed weekly reads as absent, so rotation can never promote it into baseline", async () => {
+    const stored = await readRaw(withCurrent({ weekly: "junk" }));
+    expect(stored).toBeNull();
+    const snap = nextCoverageSnapshot(stored, validReport("2026-11-01T00:00:00Z"), NOW);
+    expect(snap.baseline).toBeNull();
+  });
+
+  test("well-formed current-writer files read back unchanged, including pre-weekly/pre-anchorAt shapes", async () => {
+    const legacy: CoverageSnapshotFile = { baseline: null, current: validReport("2026-11-01T00:00:00Z") };
+    expect(await readRaw(legacy)).toEqual(legacy);
+    const baselineAbsent = { current: validReport("2026-11-01T00:00:00Z") };
+    expect(await readRaw(baselineAbsent)).toEqual(baselineAbsent);
+    const full: CoverageSnapshotFile = {
+      baseline: validReport("2026-10-24T00:00:00Z"),
+      current: validReport("2026-11-01T00:00:00Z"),
+      weekly: validReport("2026-11-01T00:00:00Z"),
+      anchorAt: "2026-11-01T00:00:00Z",
+    };
+    expect(await readRaw(full)).toEqual(full);
   });
 });
 
