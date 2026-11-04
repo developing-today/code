@@ -1699,8 +1699,10 @@ mod tests {
         let (_db, store_b) = open();
         ingest_all(&store_a, &chain_of(&alice, 4, topic));
         let before = applied(&store_b, &[&alice], 3);
-        let gate = testing::open_gate()
-            .with_blocks(testing::stub_blocks(&[*testing::key(0xd5).public().as_bytes()], &[]));
+        let gate = testing::open_gate().with_blocks(testing::stub_blocks(
+            &[*testing::key(0xd5).public().as_bytes()],
+            &[],
+        ));
         let (server, _router, mut results) = responder_gated(&store_a, gate).await;
         let client = endpoint_as(testing::key(0xd5)).await;
         let error = sync_with(

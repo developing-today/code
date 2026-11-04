@@ -134,32 +134,32 @@ it is — a valid world capability, minted by the host's admin with
 
 ## CLI Commands
 
-| Command        | Aliases                        | Description                                     |
-| -------------- | ------------------------------ | ----------------------------------------------- |
-| `serve`        |                                | Start server for peer requests                  |
-| `repl`         | `shell`                        | Interactive REPL with pipes and subshells       |
-| `put`          | `in`, `add`, `store`, `import` | Store files in blob store                       |
-| `put-hash`     |                                | Store content by hash only (no named tag)       |
-| `get`          |                                | Retrieve files by name or hash                  |
-| `get-hash`     |                                | Retrieve file by hash with explicit output path |
-| `cat`          | `output`, `out`                | Output file content to stdout                   |
-| `show`         | `view`                         | Find file by pattern and output content         |
-| `peek`         |                                | Preview with configurable head/tail lines       |
-| `find`         |                                | Find files by query, optionally output content  |
-| `search`       |                                | Search files and list all matches               |
-| `list`         | `ls`                           | List all stored files                           |
-| `tag`          | `label`, `link`                | Manage metadata tags on files                   |
-| `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files       |
-| `id`           |                                | Print local node public ID                      |
+| Command        | Aliases                        | Description                                        |
+| -------------- | ------------------------------ | -------------------------------------------------- |
+| `serve`        |                                | Start server for peer requests                     |
+| `repl`         | `shell`                        | Interactive REPL with pipes and subshells          |
+| `put`          | `in`, `add`, `store`, `import` | Store files in blob store                          |
+| `put-hash`     |                                | Store content by hash only (no named tag)          |
+| `get`          |                                | Retrieve files by name or hash                     |
+| `get-hash`     |                                | Retrieve file by hash with explicit output path    |
+| `cat`          | `output`, `out`                | Output file content to stdout                      |
+| `show`         | `view`                         | Find file by pattern and output content            |
+| `peek`         |                                | Preview with configurable head/tail lines          |
+| `find`         |                                | Find files by query, optionally output content     |
+| `search`       |                                | Search files and list all matches                  |
+| `list`         | `ls`                           | List all stored files                              |
+| `tag`          | `label`, `link`                | Manage metadata tags on files                      |
+| `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files          |
+| `id`           |                                | Print local node public ID                         |
 | `key`          |                                | Export or import a passphrase-wrapped identity key |
-| `peers`        |                                | Discover and list known peers                   |
-| `world`        |                                | Mint invites for, and join, multiplayer worlds  |
-| `match-audit`  |                                | Export and verify signed match-audit v0 logs    |
-| `group`        |                                | Groups: create, policy, add, remove, roles, join |
-| `delegate`     |                                | Grant a delegate a scope in a group             |
-| `revoke`       |                                | Revoke a delegation by its grant event ID       |
-| `doc`          |                                | Publish documents; list events/frontier/history |
-| `claim`        |                                | Tag claims on any subject (set, clear, search)  |
+| `peers`        |                                | Discover and list known peers                      |
+| `world`        |                                | Mint invites for, and join, multiplayer worlds     |
+| `match-audit`  |                                | Export and verify signed match-audit v0 logs       |
+| `group`        |                                | Groups: create, policy, add, remove, roles, join   |
+| `delegate`     |                                | Grant a delegate a scope in a group                |
+| `revoke`       |                                | Revoke a delegation by its grant event ID          |
+| `doc`          |                                | Publish documents; list events/frontier/history    |
+| `claim`        |                                | Tag claims on any subject (set, clear, search)     |
 
 ### Tag Subcommands
 
