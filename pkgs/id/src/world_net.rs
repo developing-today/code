@@ -2148,10 +2148,19 @@ mod tests {
     async fn inbound_refusal_backpressures_authorized_streams_but_sheds_preauth() {
         use crate::abuse::{AbusePolicy, BucketLimits};
 
+        // One token per second against a burst of one: a drained bucket
+        // stays empty for ~1 s, so the pre-auth shed below cannot race
+        // the refill. At 1_000 tokens/sec the single burst token
+        // refilled in 1 ms, and any >= 1 ms scheduling stall between
+        // the two pre-auth charges admitted the second one instead —
+        // the intermittent "a pre-auth refusal sheds the stream"
+        // failure (#5195). The authorized leg keeps its shape: the
+        // refusal sleeps the 1 s retry floor and then charges against
+        // the refilled bucket, inside the existing 3 s bound.
         let limits = BucketLimits {
-            frames_per_sec: 1_000,
+            frames_per_sec: 1,
             frame_burst: 1,
-            bytes_per_sec: 1_000,
+            bytes_per_sec: 1,
             byte_burst: 1,
         };
         let evaluator = Arc::new(Mutex::new(AbuseEvaluator::new(
@@ -2164,10 +2173,20 @@ mod tests {
         )));
 
         // Pre-authorization: the first frame fits the burst, the next is
-        // refused immediately — no waiting, the stream is shed.
+        // refused immediately — no waiting, the stream is shed. Every
+        // await in this test is bounded (#5195): a wedged charge fails
+        // loudly here instead of stalling the suite.
         let preauth = [3; 32];
         let flag = AtomicBool::new(false);
-        assert!(charge_inbound_frame(&evaluator, preauth, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, preauth, &flag, 1),
+            )
+            .await
+            .expect("the first pre-auth charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             !tokio::time::timeout(
                 Duration::from_millis(500),
@@ -2182,7 +2201,15 @@ mod tests {
         // charge completes once the bucket refills instead of failing.
         let authed = [4; 32];
         let flag = AtomicBool::new(true);
-        assert!(charge_inbound_frame(&evaluator, authed, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, authed, &flag, 1),
+            )
+            .await
+            .expect("the first authorized charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(3),
