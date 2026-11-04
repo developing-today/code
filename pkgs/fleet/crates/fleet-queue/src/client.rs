@@ -524,6 +524,25 @@ impl Args {
     }
 }
 
+/// Die with a usage error when `args` carries more than `expected`
+/// positionals for `verb` (#5592). `parse_args` collects positionals
+/// without arity checking, and verbs read only the ones they expect —
+/// so an extra positional (a second packet path, a stray word after a
+/// task id, junk after `health`) was silently dropped while the verb
+/// did its real work and exited 0. Every verb rejects extras through
+/// this check before any broker call; unknown `--flags` were already
+/// rejected in `parse_args`, this gives positionals the same treatment.
+fn reject_extra_pos(verb: &str, args: &Args, expected: usize) {
+    if let Some(extra) = extra_positional(&args.pos, expected) {
+        die(2, &format!("{verb}: unexpected extra argument {extra:?}"));
+    }
+}
+
+/// The first positional past `expected`, if any.
+fn extra_positional(pos: &[String], expected: usize) -> Option<&str> {
+    pos.get(expected).map(|s| s.as_str())
+}
+
 fn default_queue() -> String {
     std::env::var("REPO_QUEUE_DEFAULT_QUEUE").unwrap_or_else(|_| DEFAULT_QUEUE.to_string())
 }
@@ -668,6 +687,7 @@ fn validate_via_broker(packet: &Value, quiet: bool) -> Vec<String> {
 
 fn cmd_validate(rest: &[String]) -> i32 {
     let args = parse_args(rest, &[], &[]);
+    reject_extra_pos("validate", &args, 1);
     let path = args
         .pos
         .first()
@@ -686,6 +706,7 @@ fn cmd_validate(rest: &[String]) -> i32 {
 
 fn cmd_enqueue(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue"], &["dry-run"]);
+    reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
         .first()
@@ -767,6 +788,7 @@ fn cmd_enqueue(rest: &[String]) -> i32 {
 
 fn cmd_list(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue", "status", "limit", "not-before"], &[]);
+    reject_extra_pos("list", &args, 0);
     let resp = call(
         "/list",
         &json!({
@@ -809,6 +831,7 @@ fn cmd_list(rest: &[String]) -> i32 {
 
 fn cmd_claim(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue", "worker", "lease-seconds", "lane"], &[]);
+    reject_extra_pos("claim", &args, 0);
     let mut body = json!({
         "queue": opt_queue(&args),
         "worker": opt_worker(&args),
@@ -830,6 +853,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
 
 fn cmd_lane(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "exclusion-reason"], &[]);
+    reject_extra_pos("lane", &args, 1);
     let resp = unwrap_ok(call(
         "/lane",
         &json!({
@@ -844,6 +868,7 @@ fn cmd_lane(rest: &[String]) -> i32 {
 
 fn cmd_bind(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "session-id", "launched-by"], &[]);
+    reject_extra_pos("bind", &args, 1);
     let session_id = args
         .get("session-id")
         .unwrap_or_else(|| die(2, "bind: --session-id is required"));
@@ -866,6 +891,7 @@ fn cmd_heartbeat(rest: &[String]) -> i32 {
         &["worker", "extend-seconds", "progress", "progress-file"],
         &[],
     );
+    reject_extra_pos("heartbeat", &args, 1);
     let resp = unwrap_ok(call(
         "/heartbeat",
         &json!({
@@ -881,6 +907,7 @@ fn cmd_heartbeat(rest: &[String]) -> i32 {
 
 fn cmd_checkpoint(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "stage", "progress", "progress-file"], &[]);
+    reject_extra_pos("checkpoint", &args, 1);
     let stage = args
         .get("stage")
         .unwrap_or_else(|| die(2, "checkpoint: --stage is required"));
@@ -912,6 +939,7 @@ fn cmd_park(rest: &[String]) -> i32 {
         ],
         &[],
     );
+    reject_extra_pos("park", &args, 1);
     if args.has("delay-seconds") && args.has("not-before") {
         die(
             2,
@@ -962,6 +990,7 @@ fn cmd_block(rest: &[String]) -> i32 {
         ],
         &[],
     );
+    reject_extra_pos("block", &args, 1);
     let rc = args
         .get("reason-class")
         .unwrap_or_else(|| die(2, "block: --reason-class is required"));
@@ -984,6 +1013,7 @@ fn cmd_block(rest: &[String]) -> i32 {
 
 fn cmd_cancel(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "reason"], &[]);
+    reject_extra_pos("cancel", &args, 1);
     let reason = args
         .get("reason")
         .unwrap_or_else(|| die(2, "cancel: --reason is required"));
@@ -1004,6 +1034,7 @@ fn cmd_cancel(rest: &[String]) -> i32 {
 
 fn cmd_fail(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "error", "reason-class", "execution"], &[]);
+    reject_extra_pos("fail", &args, 1);
     let error = args
         .get("error")
         .unwrap_or_else(|| die(2, "fail: --error is required"));
@@ -1036,6 +1067,7 @@ fn cmd_complete(rest: &[String]) -> i32 {
         &["worker", "result", "result-file", "telemetry", "execution"],
         &[],
     );
+    reject_extra_pos("complete", &args, 1);
     let mut result_raw = args.get("result");
     if let Some(f) = args.get("result-file") {
         result_raw = Some(match std::fs::read_to_string(&f) {
@@ -1136,6 +1168,7 @@ fn cmd_complete(rest: &[String]) -> i32 {
 
 fn cmd_health(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue"], &[]);
+    reject_extra_pos("health", &args, 0);
     let mut body = json!({});
     if let Some(q) = args.get("queue") {
         body["queue"] = json!(q);
@@ -1173,6 +1206,7 @@ fn cmd_health(rest: &[String]) -> i32 {
 
 fn cmd_signal(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["queue", "reason"], &[]);
+    reject_extra_pos("signal", &args, 0);
     let queue = opt_queue(&args);
     let reason = args
         .get("reason")
@@ -1268,5 +1302,31 @@ pub fn run(args: &[String]) -> i32 {
             eprint(&format!("repo-queue: unknown command {sub:?}"));
             2
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn extra_positional_names_the_first_unexpected_one() {
+        // #5592: at or under the verb's arity there is nothing to reject.
+        assert_eq!(extra_positional(&pos(&[]), 0), None);
+        assert_eq!(extra_positional(&pos(&["a.json"]), 1), None);
+        assert_eq!(extra_positional(&pos(&["123"]), 1), None);
+        // Past it, the FIRST extra is the one named in the usage error:
+        // validate/enqueue read pos[0] only, task verbs pos_i64(0) only,
+        // and list/health/signal read none.
+        assert_eq!(extra_positional(&pos(&["junk"]), 0), Some("junk"));
+        assert_eq!(
+            extra_positional(&pos(&["a.json", "b.json"]), 1),
+            Some("b.json")
+        );
+        assert_eq!(extra_positional(&pos(&["123", "456"]), 1), Some("456"));
     }
 }
