@@ -367,6 +367,7 @@ mod cli_tests {
         assert!(stdout.contains("id"));
     }
 
+    #[cfg(feature = "sandbox")]
     #[test]
     fn match_audit_cli_exports_verifies_and_rejects_tampered_inputs_and_checkpoints() {
         let tmp = TempDir::new().unwrap();
