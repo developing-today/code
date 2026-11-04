@@ -99,6 +99,9 @@ fn init_logging(filter: &str, config: &id::structured_logging::LogConfig) {
     if config.tz_fell_back {
         eprintln!("warning: ID_LOG_TZ value not recognized; log timestamps use UTC");
     }
+    if config.format_fell_back {
+        eprintln!("warning: ID_LOG_FORMAT value not recognized; logs use text format");
+    }
     let timer = Rfc3339TzTimer { zone: config.zone };
 
     let console_layer: Box<dyn Layer<Registry> + Send + Sync> = match config.format {
