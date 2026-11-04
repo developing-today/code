@@ -8,9 +8,10 @@ config, secrets-by-name and proxy-protocol platform crates. Step 2
 (#5430) landed the queue domain — the repo-queue client and the
 queue-broker / secrets-broker serve roles are real below. Step 3
 (#5431) landed the proxy domain — the session broker, its client,
-the hello negotiation and the PATH shims. The remaining domains
-are capability stubs until their own steps land (dispatch #5432,
-search #5433).
+the hello negotiation and the PATH shims. Step 4 (#5432) landed
+the dispatch domain — a thin client over pm-stack dispatch. The
+remaining domain is a capability stub until its own step lands
+(search #5433).
 
 ## Layout
 
@@ -23,7 +24,8 @@ crates/fleet-registry/      the FULL domain registry — every domain's
                             capability ids behind them. Compiled into
                             every variant, so --help is always complete.
 crates/fleet-config/        fleet.toml: [domains] switches, [proxy],
-                            [secrets]; path/ports/socket constants.
+                            [secrets], [dispatch]; path/ports/socket
+                            constants.
 crates/fleet-secrets/       secrets by NAME only (broker first, then
                             `bws` fallback). Values never appear in
                             code, tests, errors or logs.
@@ -51,6 +53,17 @@ crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             repo-queue / queue-broker / secrets-broker
                             artifacts (the `fleet-brokers` package):
                             the migration's rollback inventory.
+crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
+                            client over pm-stack's pm-dispatch —
+                            `dispatch status` (GET /health),
+                            `dispatch launch` (POST /v1/sessions),
+                            `dispatch enqueue` (POST /v1/tasks).
+                            pm-stack is not rewritten (D6); the
+                            bearer token resolves by name through
+                            fleet-secrets, and the client reaches
+                            the service directly (laptop seat) or
+                            through its own CONNECT on the proxy
+                            egress (sandbox seat).
 crates/fleet/               the binary: multicall dispatch, capability
                             stubs, `version`, `capabilities`, help.
 default.nix                 the four variant packages (see below)
@@ -126,3 +139,14 @@ fleet artifact — each verified by health plus a real
 enqueue→claim→complete round-trip before the next begins (the
 evidence lives on #5430). The standalone artifacts above are the
 rollback for every flip.
+
+Step 4 flips nothing live: the dispatch domain is a client, and
+pm-stack keeps running exactly as it did (the step's gate is a
+zero pm-stack diff). What changes is the caller's side — agents
+hold `fleet dispatch status|launch|enqueue` instead of
+hand-rolled curl against pm-dispatch, with the bearer token
+resolved by name (`pm-dispatch.api-token`) through fleet-secrets
+and the transport chosen by seat: direct on the laptop, a CONNECT
+tunnel on the proxy egress from the sandbox. The steward cron's
+call sites move to these verbs only if they want them; no cron
+is rewritten by this epic (the evidence lives on #5432).

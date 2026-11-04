@@ -15,6 +15,7 @@ fleet-registry = { workspace = true }
 fleet-config = { workspace = true }
 fleet-proxy-proto = { workspace = true }
 fleet-queue = { workspace = true, optional = true }
+fleet-dispatch = { workspace = true, optional = true }
 # The proxy CLIENT is part of every variant's registry (the
 # connect capability ships in all three builds); only the broker
 # half (fleet-proxy's `serve` feature) is variant-gated, through
@@ -50,5 +51,5 @@ queue-broker = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/queue-broke
 secrets-broker = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/secrets-broker"]
 search = ["dep:fleet-secrets"]
 search-serve = ["dep:fleet-secrets"]
-dispatch = ["dep:fleet-secrets"]
+dispatch = ["dep:fleet-dispatch"]
 laptop-agent = ["dep:fleet-secrets"]
