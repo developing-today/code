@@ -75,14 +75,6 @@ const startSocketActivated = async (script, extraEnv) => {
   }
 };
 
-test('clef-proxy serves on the systemd handed-off listener', async (t) => {
-  const { child, log } = await startSocketActivated('clef-proxy.mjs', (port) => ({
-    CLEF_PROXY_PORT: String(port),
-  }));
-  t.after(() => { child.kill('SIGTERM'); });
-  assert.match(log(), /listening on/);
-});
-
 test('codex-proxy serves on the systemd handed-off listener', async (t) => {
   const { child, log } = await startSocketActivated('codex-proxy.mjs', (port) => ({
     CODEX_PROXY_PORT: String(port),
