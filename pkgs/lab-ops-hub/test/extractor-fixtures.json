@@ -271,5 +271,26 @@
     "title": "",
     "links": 0,
     "text": "one x"
+  },
+  {
+    "name": "HTML5 named and semicolonless numeric references match container extraction",
+    "html": "<title>&Alpha; &AMP;</title><p>&rarr; &#65 &amp B</p>",
+    "title": "Α &",
+    "links": 0,
+    "text": "→ A & B"
+  },
+  {
+    "name": "ambiguous ampersands use the longest legacy HTML5 reference",
+    "html": "<p>&amp B &notanentity; &doesnotexist;</p>",
+    "title": "",
+    "links": 0,
+    "text": "& B ¬anentity; &doesnotexist;"
+  },
+  {
+    "name": "multi-codepoint HTML5 named reference is preserved",
+    "html": "<p>&NotEqualTilde;</p>",
+    "title": "",
+    "links": 0,
+    "text": "≂̸"
   }
 ]
