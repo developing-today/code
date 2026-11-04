@@ -838,6 +838,18 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://xn--4xa.com/",
         )
 
+    def test_fallback_return_ascii_remapping_has_no_punycode_prefix(self):
+        # Codex review of PR #5231 (round 2): UTS-46 deletes the
+        # U+FE0F variation selector, so the label a_ + U+FE0F remaps
+        # to pure-ASCII a_. The fallback punycode-encoded it anyway,
+        # returning xn--a_- \u2014 a different host than the Worker's
+        # (and the previous codec's) a_. An ASCII remapping returns
+        # directly, with no xn-- prefix.
+        self.assertEqual(
+            validate_crawl_url("http://a_\ufe0f.com/"),
+            "http://a_.com/",
+        )
+
     def test_judges_u0345_by_its_uts46_mapping(self):
         # UTS-46 maps U+0345 (combining Greek ypogegrammeni) to
         # U+03B9 (ι, bidi class L), but NFKC leaves it unchanged, so

@@ -554,9 +554,16 @@ def validate_crawl_url(raw):
                         )
                     except (UnicodeError, ValueError):
                         pass
-                    return "xn--" + unicodedata.normalize("NFKC", candidate).encode(
-                        "punycode"
-                    ).decode("ascii")
+                    normalized = unicodedata.normalize("NFKC", candidate)
+                    if normalized.isascii():
+                        # The remapping can leave a pure-ASCII label
+                        # (UTS-46 deletes U+FE0F, so a_ + U+FE0F
+                        # remaps to a_): return it directly. An xn--
+                        # prefix on an ASCII label names a different
+                        # host than the Worker returns (Codex review
+                        # of PR #5231).
+                        return normalized
+                    return "xn--" + normalized.encode("punycode").decode("ascii")
 
             return_host = (
                 ".".join(
