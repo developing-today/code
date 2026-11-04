@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_logging_malformed_fixed_offset_falls_back_to_utc() {
+    fn test_structured_logging_malformed_fixed_offset_falls_back_to_utc() {
         // #5369: only signed `HHMM` or `HH:MM` are valid fixed offsets.
         // Doubled, shifted, or trailing colons (and out-of-range parts)
         // are malformed and must fall back to UTC with the flag set.
