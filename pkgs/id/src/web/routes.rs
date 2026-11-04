@@ -171,21 +171,7 @@ fn svg_document_starts(data: &[u8]) -> bool {
                 None => return false,
             }
         } else if rest.starts_with(b"<!DOCTYPE") || rest.starts_with(b"<!doctype") {
-            // Ends at the first `>` outside an `[ ... ]` internal subset.
-            let mut subset_depth = 0usize;
-            let mut end = None;
-            for (i, b) in rest.iter().enumerate() {
-                match b {
-                    b'[' => subset_depth += 1,
-                    b']' => subset_depth = subset_depth.saturating_sub(1),
-                    b'>' if subset_depth == 0 => {
-                        end = Some(i);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            match end {
+            match doctype_end(rest) {
                 Some(end) => rest = &rest[end + 1..],
                 None => return false,
             }
@@ -194,6 +180,52 @@ fn svg_document_starts(data: &[u8]) -> bool {
         }
     }
     svg_root_element_opens(rest)
+}
+
+/// Byte index of the `>` that ends a `<!DOCTYPE ...>` declaration at
+/// the start of `rest`. The declaration ends at the first `>` that is
+/// outside the `[ ... ]` internal subset, outside any quoted literal
+/// (`"..."` / `'...'`), and outside any `<!-- ... -->` comment —
+/// brackets and angle brackets inside quotes or comments are data,
+/// not delimiters (Codex P2 on PR #5357, round 4: an entity value of
+/// `"["` used to corrupt the subset depth and reject a legal SVG).
+fn doctype_end(rest: &[u8]) -> Option<usize> {
+    let mut subset_depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut in_comment = false;
+    let mut i = 0usize;
+    while i < rest.len() {
+        if in_comment {
+            if rest[i..].starts_with(b"-->") {
+                in_comment = false;
+                i += 3;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        if let Some(q) = quote {
+            if rest[i] == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if rest[i..].starts_with(b"<!--") {
+            in_comment = true;
+            i += 4;
+            continue;
+        }
+        match rest[i] {
+            b'"' | b'\'' => quote = Some(rest[i]),
+            b'[' => subset_depth += 1,
+            b']' => subset_depth = subset_depth.saturating_sub(1),
+            b'>' if subset_depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Whether `rest` opens an element whose local name is `svg`: the
@@ -3550,6 +3582,21 @@ mod upload_router_tests {
         assert!(!image_bytes_match_declared_type(
             "image/svg+xml",
             &utf16("<html></html>", true, true)
+        ));
+        // Codex P2 on PR #5357 (round 4): brackets inside quoted
+        // literals or comments within the internal subset are data,
+        // not subset delimiters.
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!DOCTYPE svg [<!ENTITY label \"[\">]><svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!DOCTYPE svg [ <!-- [ ] --> <!ENTITY x 'a]b'> ]>\n<svg/>"
+        ));
+        assert!(!image_bytes_match_declared_type(
+            "image/svg+xml",
+            b"<!DOCTYPE svg [<!ENTITY label \"[\">]>"
         ));
         assert!(!image_bytes_match_declared_type(
             "image/png",
