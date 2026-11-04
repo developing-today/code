@@ -62,8 +62,30 @@ interface V2PermissionRequest {
   [k: string]: unknown;
 }
 
-function records(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
+function records(value: unknown, onDrop?: (count: number) => void): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    if (value !== undefined && onDrop) onDrop(1);
+    return [];
+  }
+  const parsed = arrayOf(isRecord)(value)!;
+  if (parsed.dropped > 0) onDrop?.(parsed.dropped);
+  return parsed.values;
+}
+
+/** Parse one endpoint's { data: [...] } container and count malformed rows. */
+function dataRows(response: unknown, onDrop: (count: number) => void): Record<string, unknown>[] {
+  if (response === null) return [];
+  if (!isRecord(response)) {
+    onDrop(1);
+    return [];
+  }
+  const parsed = arrayOf(isRecord)(response.data);
+  if (parsed === null) {
+    onDrop(1);
+    return [];
+  }
+  if (parsed.dropped > 0) onDrop(parsed.dropped);
+  return parsed.values;
 }
 
 function isV2Session(value: unknown): value is V2Session {
@@ -164,14 +186,22 @@ export async function mapServerSessions(
   const sessionRows = arrayOf(isV2Session)(list.data);
   if (sessionRows === null) return null;
   const sessions = sessionRows.values;
+  let droppedElements = sessionRows.dropped;
+  const countDropped = (count: number): void => {
+    droppedElements += count;
+  };
 
   const activeResp = await getJson<unknown>(target, "/api/session/active");
-  const activeData = isRecord(activeResp) && isRecord(activeResp.data) ? activeResp.data : {};
+  let activeData: Record<string, unknown> = {};
+  if (activeResp !== null) {
+    if (isRecord(activeResp) && isRecord(activeResp.data)) activeData = activeResp.data;
+    else countDropped(1);
+  }
   const activeIds = new Set(Object.keys(activeData));
 
   const permResp = await getJson<unknown>(target, "/api/permission/request");
   const pendingBySession = new Map<string, V2PermissionRequest>();
-  const permissionRows = isRecord(permResp) ? records(permResp.data) : [];
+  const permissionRows = dataRows(permResp, countDropped);
   for (const row of permissionRows) {
     const sid = firstString(row.sessionID, row.sessionId);
     if (sid && !pendingBySession.has(sid)) pendingBySession.set(sid, row as V2PermissionRequest);
@@ -198,10 +228,19 @@ export async function mapServerSessions(
   const entries: SessionFeedEntry[] = [];
   for (const s of included) {
     entries.push(
-      await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40, opts.source, now),
+      await mapOne(
+        target,
+        s,
+        activeIds,
+        pendingBySession.get(s.id),
+        opts.messageLimit ?? 40,
+        opts.source,
+        now,
+        countDropped,
+      ),
     );
   }
-  return { entries, tokensBySession, activeIds, droppedElements: sessionRows.dropped };
+  return { entries, tokensBySession, activeIds, droppedElements };
 }
 
 async function mapOne(
@@ -212,6 +251,7 @@ async function mapOne(
   messageLimit: number,
   source: SessionSource | undefined,
   now: number,
+  onDrop: (count: number) => void,
 ): Promise<SessionFeedEntry> {
   const entry: SessionFeedEntry = {
     sessionId: s.id,
@@ -236,20 +276,20 @@ async function mapOne(
   }
 
   const forms = await getJson<unknown>(target, `/api/session/${s.id}/form`);
-  const formRows = isRecord(forms) ? records(forms.data) : [];
+  const formRows = dataRows(forms, onDrop);
   const openForm = formRows[0];
   if (!entry.awaitingQuestion && openForm) {
-    const question = records(openForm.questions)[0];
-    const field = records(openForm.fields)[0];
+    const question = records(openForm.questions, onDrop)[0];
+    const field = records(openForm.fields, onDrop)[0];
     const text = firstString(question?.question, field?.label, openForm.title, openForm.name);
     entry.awaitingQuestion = `Form open: ${text ?? "session form awaiting input"}`;
   }
 
   const msgs = await getJson<unknown>(target, `/api/session/${s.id}/message?limit=${messageLimit}`);
-  const messageRows = isRecord(msgs) ? records(msgs.data) : [];
+  const messageRows = dataRows(msgs, onDrop);
   const data = messageRows.map((message) => ({
     ...message,
-    content: records(message.content),
+    content: records(message.content, onDrop),
   })) as unknown as V2Message[];
   entry.messageCount = data.length;
 

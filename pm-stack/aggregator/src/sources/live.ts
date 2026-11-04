@@ -1659,7 +1659,7 @@ export function liveSource(
       }
       const droppedNote =
         droppedSessionElements > 0
-          ? ` · dropped ${droppedSessionElements} malformed session element(s) (#2543)`
+          ? ` · dropped ${droppedSessionElements} malformed OpenCode wire element(s) (#2543)`
           : "";
       if (incoming.length > 0) {
         const merged = await mergeIntoRegistry(incoming);
