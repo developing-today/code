@@ -440,7 +440,7 @@ describe("handlePaste batch ordering (#1323)", () => {
     uploads.clear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
-      const file = (init?.body as FormData).get("file") as File;
+      const file = (init?.body as FormData | undefined)?.get("file") as File;
       const d = deferred<Response>();
       uploads.set(file.name, d);
       return d.promise;

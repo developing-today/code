@@ -627,7 +627,7 @@ mod tests {
     use p2panda_core::SigningKey;
 
     use super::*;
-    use crate::chain::{decode, sign, ChainExt};
+    use crate::chain::{ChainExt, decode, sign};
 
     fn owner() -> AuthorKey {
         std::array::from_fn(|i| u8::try_from(i).unwrap())
