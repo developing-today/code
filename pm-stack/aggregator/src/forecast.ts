@@ -49,6 +49,16 @@ function addDays(iso: string, days: number): string {
   return new Date(Date.parse(iso) + days * DAY_MS).toISOString();
 }
 
+/** ETA date for a remaining-unit count at a weekly pace, or null when
+ * the horizon is not representable as a Date (an absurdly small pace
+ * would otherwise make toISOString throw a RangeError). */
+function etaDate(asOf: string, remainingUnits: number, pacePerWeek: number): string | null {
+  const weeks = Math.ceil(remainingUnits / pacePerWeek);
+  const ms = Date.parse(asOf) + weeks * 7 * DAY_MS;
+  if (!Number.isFinite(ms) || Math.abs(ms) > 8.64e15) return null;
+  return addDays(asOf, weeks * 7);
+}
+
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
@@ -81,7 +91,8 @@ export interface EpicEtaInput {
   cutoffs: ItemHistoryCutoff[];
   /** Direct native children of the subject. When omitted, children
    * are derived from the latest complete cutoff: issue items whose
-   * parentRef or epicRef is the subject. */
+   * parentRef is the subject (epicRef is ancestor membership and
+   * would also match grandchildren, so it is not used). */
   childRefs?: RefKey[];
   /** Optional comparable-scope rate for the low-evidence case. */
   borrowedBaseline?: BorrowedBaseline;
@@ -136,7 +147,14 @@ export interface EpicEta {
  * result, and every number in it names its window and sample.
  */
 export function deriveEpicEta(input: EpicEtaInput): EpicEta {
-  const complete = completeCutoffs(input.cutoffs);
+  // Rolling-origin honesty (design \u00a75): a forecast "as of" an instant
+  // uses only cutoffs observed at or before that instant \u2014 later
+  // cutoffs are future outcomes and must not leak into scope,
+  // transitions, or coverage.
+  const scopedCutoffs = input.asOf
+    ? input.cutoffs.filter((c) => c.cutoffAt <= input.asOf!)
+    : input.cutoffs;
+  const complete = completeCutoffs(scopedCutoffs);
   const latest = complete[complete.length - 1];
   const asOf = input.asOf ?? latest?.cutoffAt ?? new Date(0).toISOString();
   const limitations: string[] = [];
@@ -154,8 +172,8 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
     },
     inputCoverage: {
       completeWeeks: complete.length,
-      totalCutoffs: input.cutoffs.length,
-      unavailableCutoffs: input.cutoffs.filter((c) => c.coverage.unavailable).length,
+      totalCutoffs: scopedCutoffs.length,
+      unavailableCutoffs: scopedCutoffs.filter((c) => c.coverage.unavailable).length,
     },
   };
 
@@ -176,13 +194,13 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   }
 
   // Scope: direct native child issues at the latest complete cutoff.
+  // Direct means parentRef === subject: epicRef is ANCESTOR membership
+  // (projects.ts walks the whole parent chain), so counting epicRef
+  // would count grandchildren as independent units.
   const childRefs =
     input.childRefs ??
     latest.items
-      .filter(
-        (i) =>
-          i.kind !== "pr" && (i.parentRef === input.subjectRef || i.epicRef === input.subjectRef),
-      )
+      .filter((i) => i.kind !== "pr" && i.parentRef === input.subjectRef)
       .map((i) => i.ref);
   const childSet = new Set(childRefs);
   const children = latest.items.filter((i) => childSet.has(i.ref) && i.kind !== "pr");
@@ -210,7 +228,7 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
   // Throughput series restricted to this scope's children. Weeks are
   // the complete observed buckets from item-history (zero weeks
   // included by construction).
-  const weeks = weeklyTransitions(input.cutoffs)
+  const weeks = weeklyTransitions(scopedCutoffs)
     .map((w) => ({
       cutoffAt: w.cutoffAt,
       completed: w.completedRefs.filter((r) => childSet.has(r)).length,
@@ -282,10 +300,28 @@ export function deriveEpicEta(input: EpicEtaInput): EpicEta {
     limitations.push("observed weekly pace is zero in the primary window; no date is returned");
     return result;
   }
-  const paceP80 = Math.max(lowerQuartile(paceSeries), Number.EPSILON);
+  const paceP80 = lowerQuartile(paceSeries);
   // Whole weeks, rounded up: a partial week is not a completion date.
-  result.p50 = addDays(asOf, Math.ceil(remainingUnits / paceP50) * 7);
-  result.p80 = addDays(asOf, Math.ceil(remainingUnits / paceP80) * 7);
+  result.p50 = etaDate(asOf, remainingUnits, paceP50);
+  if (result.p50 === null) {
+    limitations.push("P50 horizon exceeds the representable date range; no P50 date is returned");
+  }
+  if (paceP80 <= 0) {
+    // An unmeasurable conservative pace is stated, not converted into
+    // a finite denominator: a zero lower-quartile pace (a single
+    // observed zero-completion week can produce one) makes any P80
+    // date indefensible \u2014 an EPSILON pace overflows the Date range
+    // and throws.
+    result.p80 = null;
+    limitations.push(
+      "conservative (lower-quartile) weekly pace is zero in the pace window; no P80 date is defensible",
+    );
+  } else {
+    result.p80 = etaDate(asOf, remainingUnits, paceP80);
+    if (result.p80 === null) {
+      limitations.push("P80 horizon exceeds the representable date range; no P80 date is returned");
+    }
+  }
 
   if (result.status === "forecast") {
     const comparisonRate = comparison.length > 0 ? completionsComparison / comparison.length : 0;
@@ -365,7 +401,12 @@ const STALL_WEIGHTS = {
 
 /** Versioned, explainable stall-risk score for one item (§3). */
 export function deriveStallRisk(input: StallRiskInput): StallRisk {
-  const complete = completeCutoffs(input.cutoffs);
+  // Same rolling-origin rule as deriveEpicEta: only cutoffs observed
+  // at or before asOf take part.
+  const scopedCutoffs = input.asOf
+    ? input.cutoffs.filter((c) => c.cutoffAt <= input.asOf!)
+    : input.cutoffs;
+  const complete = completeCutoffs(scopedCutoffs);
   const latest = complete[complete.length - 1];
   const asOf = input.asOf ?? latest?.cutoffAt ?? new Date(0).toISOString();
   const signals: StallSignal[] = [];
@@ -375,8 +416,18 @@ export function deriveStallRisk(input: StallRiskInput): StallRisk {
   const item = latest?.items.find((i) => i.ref === input.ref);
   if (item && item.blockedBy.length > 0) {
     let fired: StallSignal | null = null;
+    let resolvedBlockers = 0;
     for (const blocker of item.blockedBy) {
-      const first = blockerFirstObserved(input.cutoffs, input.ref, blocker);
+      // A blocker the latest cutoff holds as closed/merged is resolved
+      // (graph.ts treats it the same way), even though the raw
+      // blockedBy relation persists in the history. A blocker absent
+      // from the pool cannot be shown resolved and stays unresolved.
+      const blockerItem = latest.items.find((i) => i.ref === blocker);
+      if (blockerItem && blockerItem.state !== "open") {
+        resolvedBlockers++;
+        continue;
+      }
+      const first = blockerFirstObserved(scopedCutoffs, input.ref, blocker);
       if (first && first.lowerBoundAgeDays >= 7) {
         fired = {
           code: "blocked_edge_age",
@@ -394,7 +445,10 @@ export function deriveStallRisk(input: StallRiskInput): StallRisk {
         contribution: 0,
         known: true,
         observedAt: null,
-        detail: "blocked edges present but none observed unresolved for 7+ days",
+        detail:
+          resolvedBlockers > 0
+            ? "blocked edges present but every in-pool blocker is resolved at the latest complete cutoff; no out-of-pool blocker was observed unresolved for 7+ days"
+            : "blocked edges present but none observed unresolved for 7+ days",
       },
     );
   } else if (item) {

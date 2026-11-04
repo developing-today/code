@@ -148,6 +148,43 @@ describe("deriveEpicEta", () => {
     expect(eta.remainingUnits).toBe(2);
   });
 
+  test("zero lower-quartile pace: P50 present, P80 explicitly unmeasurable, no crash", () => {
+    // Primary weeks [0, 1, 1, 1]: median pace 1, lower quartile 0.
+    const eta = deriveEpicEta({
+      subjectRef: EPIC,
+      cutoffs: history(5, [2, 3, 4, null, null]).slice(0, 5),
+    });
+    expect(eta.status).toBe("forecast");
+    expect(eta.sample.completionsPrimary).toBe(3);
+    expect(eta.p50).not.toBeNull();
+    expect(eta.p80).toBeNull();
+    expect(eta.limitations.join(" ")).toContain("lower-quartile");
+  });
+
+  test("inferred scope counts direct children only, not grandchildren via epicRef", () => {
+    const cutoffs = [
+      cutoff(W[0]!, [
+        item(1),
+        item(2, { parentRef: `${REPO}#1`, epicRef: EPIC }),
+        item(3, { state: "closed" }),
+      ]),
+    ];
+    const eta = deriveEpicEta({ subjectRef: EPIC, cutoffs });
+    expect(eta.remainingUnits).toBe(1);
+    expect(eta.completedUnits).toBe(1);
+  });
+
+  test("asOf excludes later cutoffs: a closure after asOf is not yet a completion", () => {
+    const eta = deriveEpicEta({
+      subjectRef: EPIC,
+      cutoffs: history(3, [4, null, null]),
+      asOf: W[2]!,
+    });
+    expect(eta.asOf).toBe(W[2]!);
+    expect(eta.completedUnits).toBe(0);
+    expect(eta.remainingUnits).toBe(3);
+  });
+
   test("effort stays explicit: unsized and open-ended remaining work are named, not sized", () => {
     const cutoffs = history(4, [null, null, null, null]).slice(0, 5);
     const latest = cutoffs[cutoffs.length - 1]!;
@@ -233,6 +270,18 @@ describe("deriveStallRisk", () => {
     expect(risk.evidenceCoverage).toBe(0.25);
     // Unknown signals contribute nothing.
     expect(risk.score).toBe(30);
+  });
+
+  test("a blocker closed at the latest cutoff is resolved: no blocked-edge points", () => {
+    const cutoffs = [
+      cutoff(W[0]!, [item(7, { blockedBy: [BLOCKER] }), item(9, { state: "open" })]),
+      cutoff(W[2]!, [item(7, { blockedBy: [BLOCKER] }), item(9, { state: "closed" })]),
+    ];
+    const risk = deriveStallRisk({ ref: REF, cutoffs, asOf: W[2]! });
+    const signal = risk.signals.find((s) => s.code === "blocked_edge_age")!;
+    expect(signal.contribution).toBe(0);
+    expect(signal.detail).toContain("resolved");
+    expect(risk.score).toBe(0);
   });
 
   test("all signals firing caps at 100", () => {
