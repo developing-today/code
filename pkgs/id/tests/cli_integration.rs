@@ -626,12 +626,25 @@ mod list_tests {
 
         let list_output = run_cmd_success(&["list"], tmp.path());
 
-        // Output should be hash<tab>name format
+        // Output should be hash<tab>name<tab>origin<tab>uploaded_at format
+        // (#4973: listings carry origin node + upload time).
         for line in list_output.lines() {
             if line.contains("test.list-format.txt") {
                 let parts: Vec<&str> = line.split('\t').collect();
-                assert_eq!(parts.len(), 2, "List output should be hash<tab>name");
+                assert_eq!(
+                    parts.len(),
+                    4,
+                    "List output should be hash<tab>name<tab>origin<tab>uploaded_at"
+                );
                 assert_eq!(parts[0].len(), 64, "Hash should be 64 hex chars");
+                // The file was just stored by this node, so origin is this
+                // node's id and uploaded_at is a unix timestamp.
+                assert_eq!(parts[2].len(), 64, "Origin should be a node id");
+                assert!(
+                    parts[3].parse::<u64>().is_ok(),
+                    "uploaded_at should be unix seconds, got {:?}",
+                    parts[3]
+                );
             }
         }
     }
@@ -665,7 +678,7 @@ mod list_tests {
             let fields: Vec<_> = row.split('\t').collect();
             assert_eq!(
                 fields.len(),
-                2,
+                4,
                 "the stored name must not forge a column: {output:?}"
             );
             assert_eq!(fields[0].len(), 64);

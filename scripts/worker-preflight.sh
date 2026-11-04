@@ -13,7 +13,7 @@ if git -C "$repo_root" show-ref --verify --quiet "$stray_ref"; then
   exit 1
 else
   status=$?
-  if [[ "$status" -ne 1 ]]; then
+  if [[ $status -ne 1 ]]; then
     printf 'worker-preflight: could not verify %s (git show-ref exited %s)\n' "$stray_ref" "$status" >&2
     exit 2
   fi

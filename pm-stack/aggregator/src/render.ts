@@ -3150,7 +3150,9 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
           if (!x.ok) return `${esc(x.repo)} ${esc(x.label)}: ${esc(x.error ?? "failed")}`;
           // Truncation and GitHub's partial-search signal are different
           // failures: say which one it was instead of blurring them.
-          const why = x.incomplete ? "search returned incomplete results, count is a floor" : "page cap reached, count is a floor";
+          const why = x.incomplete
+            ? "search returned incomplete results, count is a floor"
+            : "page cap reached, count is a floor";
           return `${esc(x.repo)} ${esc(x.label)}: ${why}`;
         })
         .join("; ")}. The list below may be missing items from those sources.</div>`
@@ -3161,7 +3163,9 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
           (i) =>
             `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
               .map((l) => `<code>${esc(l)}</code>`)
-              .join(" ")} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
+              .join(
+                " ",
+              )} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
         )
         .join("")}</ul>`
     : `<p class="muted">No open items carry user/review or user/escalated right now${census.complete ? "" : " in the sources that answered"}.</p>`;
@@ -6079,7 +6083,8 @@ export function renderConflicts(inbox: ConflictInbox, provenance: Provenance, de
 <div class="tblwrap"><table><caption>${esc(cls.label)} — item, sources, both values, age</caption><tr><th scope="col">Item</th><th scope="col">Sources</th><th scope="col">Both values</th><th scope="col">Disagreeing for</th><th scope="col">Records</th></tr>${rows}</table></div>`;
     })
     .join("");
-  const oldest = inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
+  const oldest =
+    inbox.oldestAgeDays === null ? "—" : `at least ${inbox.oldestAgeDays} day${inbox.oldestAgeDays === 1 ? "" : "s"}`;
   const body = `<h1>Source conflicts</h1>
 <p class="muted">Every live disagreement the facets already report, in one queue: <strong>${inbox.total}</strong> entr${inbox.total === 1 ? "y" : "ies"} across ${inbox.byClass.filter((c) => c.count > 0).length} class${inbox.byClass.filter((c) => c.count > 0).length === 1 ? "" : "es"} · oldest ${oldest} · assembled ${esc(fmtDate(inbox.generatedAt))}. Machine-first: <a href="/api/conflicts.json">/api/conflicts.json</a>. This page projects; it does not resolve — trust rulings are slice 2 of #1282, so nothing here changes what a render shows.</p>
 <div class="board">
@@ -6236,7 +6241,16 @@ ${rfaSection}
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
 <h2>Source conflicts</h2>
-<div class="card">${view.conflicts ? `<strong><a href="/conflicts">${view.conflicts.total} live source conflict${view.conflicts.total === 1 ? "" : "s"}</a></strong>${view.conflicts.byClass.filter((c) => c.count > 0).map((c) => ` · ${esc(c.label)}: ${c.count}`).join("")}${view.conflicts.oldestAgeDays === null ? "" : ` · oldest at least <strong>${view.conflicts.oldestAgeDays}</strong> day${view.conflicts.oldestAgeDays === 1 ? "" : "s"}`} (#1282 slice 1 — a growing count means the sources keep disagreeing and nobody has ruled on the class)` : `<span class="muted">not assembled for this health view</span>`}</div>
+<div class="card">${
+    view.conflicts
+      ? `<strong><a href="/conflicts">${view.conflicts.total} live source conflict${view.conflicts.total === 1 ? "" : "s"}</a></strong>${view.conflicts.byClass
+          .filter((c) => c.count > 0)
+          .map((c) => ` · ${esc(c.label)}: ${c.count}`)
+          .join(
+            "",
+          )}${view.conflicts.oldestAgeDays === null ? "" : ` · oldest at least <strong>${view.conflicts.oldestAgeDays}</strong> day${view.conflicts.oldestAgeDays === 1 ? "" : "s"}`} (#1282 slice 1 — a growing count means the sources keep disagreeing and nobody has ruled on the class)`
+      : `<span class="muted">not assembled for this health view</span>`
+  }</div>
 <h2>Dashboard comments</h2>
 <div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting)</div>
 <h2>Source facets</h2>

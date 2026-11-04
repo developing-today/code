@@ -1111,7 +1111,8 @@ export function liveSource(
       }));
       if (feed?.saas && feed.saas.length) {
         provenance.usage =
-          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + feedSanitizationNotes;
+          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` +
+          feedSanitizationNotes;
         // The Cloudflare live export overlays tracker prose on BOTH
         // service sources — a healthy fleet feed must not keep stale
         // prose values when a fresh export exists (Codex, PR #2228).

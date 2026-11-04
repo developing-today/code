@@ -41,11 +41,11 @@ Sub-sessions roll up to their root session before attribution, so a root session
 
 Three unit families exist in the current system, and the rollup schema stores and renders them as three distinct measures forever:
 
-| Measure | Source | What it means | Never |
-|---|---|---|---|
-| **Tokens per pool** | usage export `tokens`, gathered per provider/pool | Actual consumption, per pool (pools meter differently; a token total across pools is shown only as per-pool columns, not a blended rate) | converted to dollars |
-| **PAYG dollars** | charges pipeline (#1057) matched charges only | Money Drew actually paid, per service/pool and period | merged with estimates; force-attributed when unmatched |
-| **Plan-pool share-of-window** | quota windows' `percent` / `usedPct` against `resetsAt` | How much of a fixed plan window a scope consumed — the only honest measure for plan pools, whose price is flat | priced out at API list rates |
+| Measure                       | Source                                                  | What it means                                                                                                                            | Never                                                  |
+| ----------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **Tokens per pool**           | usage export `tokens`, gathered per provider/pool       | Actual consumption, per pool (pools meter differently; a token total across pools is shown only as per-pool columns, not a blended rate) | converted to dollars                                   |
+| **PAYG dollars**              | charges pipeline (#1057) matched charges only           | Money Drew actually paid, per service/pool and period                                                                                    | merged with estimates; force-attributed when unmatched |
+| **Plan-pool share-of-window** | quota windows' `percent` / `usedPct` against `resetsAt` | How much of a fixed plan window a scope consumed — the only honest measure for plan pools, whose price is flat                           | priced out at API list rates                           |
 
 Two traps are named and banned in the schema, not just in prose:
 
