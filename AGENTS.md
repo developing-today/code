@@ -43,7 +43,7 @@ At the start of each task, before relying on Git names such as `origin/main`, ru
 The unified fleet schedule registry is `doc/fleet-schedule-registry.md`
 (#4988). Creating, changing, or retiring a schedule on any surface —
 Muse cron, OpenCode/OpenChamber scheduled tasks or laptop systemd
-timers, or Jules — updates that registry in the same pass (same PR /
+timers — updates that registry in the same pass (same PR /
 same run). A schedule that exists on a surface but not in the registry
 is a defect.
 
