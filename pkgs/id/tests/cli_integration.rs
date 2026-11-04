@@ -367,6 +367,103 @@ mod cli_tests {
         assert!(stdout.contains("id"));
     }
 
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn match_audit_cli_exports_verifies_and_rejects_tampered_inputs_and_checkpoints() {
+        let tmp = TempDir::new().unwrap();
+        let log_path = tmp.path().join("reference.malog");
+        let log_path_arg = log_path.to_str().unwrap();
+        let exported = run_cmd(
+            &[
+                "match-audit",
+                "export-tic-tac-toe",
+                "--output",
+                log_path_arg,
+            ],
+            tmp.path(),
+        );
+        assert!(
+            exported.status.success(),
+            "export failed: {}",
+            String::from_utf8_lossy(&exported.stderr)
+        );
+        let exported_report: serde_json::Value = serde_json::from_slice(&exported.stdout).unwrap();
+        assert_eq!(
+            exported_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
+        assert_eq!(exported_report["actual"], "InconclusiveNoObservedMetadata");
+
+        let verified = run_cmd(&["match-audit", "verify", log_path_arg], tmp.path());
+        assert!(
+            verified.status.success(),
+            "verify failed: {}",
+            String::from_utf8_lossy(&verified.stderr)
+        );
+        let verified_report: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+        assert!(verified_report.get("technical_verdict").is_some());
+        assert_eq!(
+            verified_report["technical"]["ResultConfirmed"]["runtime"],
+            "PinnedRuntime"
+        );
+
+        let mut tampered_input =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::InputBlock(block) = &mut tampered_input.entries[0].body
+        else {
+            panic!("reference log starts with an input block")
+        };
+        block.records[0].payload[0] ^= 1;
+        let tampered_input_path = tmp.path().join("tampered-input.malog");
+        std::fs::write(&tampered_input_path, tampered_input.encode().unwrap()).unwrap();
+        let tampered_input_arg = tampered_input_path.to_str().unwrap();
+        let rejected_input = run_cmd(&["match-audit", "verify", tampered_input_arg], tmp.path());
+        assert!(!rejected_input.status.success());
+        let rejected_input_report: serde_json::Value =
+            serde_json::from_slice(&rejected_input.stdout).unwrap();
+        assert_eq!(
+            rejected_input_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
+
+        let mut tampered_checkpoint =
+            id::match_audit::MatchLogV0::decode(&std::fs::read(&log_path).unwrap()).unwrap();
+        let id::match_audit::EntryBodyV0::Checkpoint(checkpoint) =
+            &mut tampered_checkpoint.entries[1].body
+        else {
+            panic!("reference log's second entry is its first checkpoint")
+        };
+        checkpoint.state_hash = p2panda_core::Hash::digest(b"tampered checkpoint");
+        let tampered_checkpoint_path = tmp.path().join("tampered-checkpoint.malog");
+        std::fs::write(
+            &tampered_checkpoint_path,
+            tampered_checkpoint.encode().unwrap(),
+        )
+        .unwrap();
+        let tampered_checkpoint_arg = tampered_checkpoint_path.to_str().unwrap();
+        let rejected_checkpoint = run_cmd(
+            &["match-audit", "verify", tampered_checkpoint_arg],
+            tmp.path(),
+        );
+        assert!(!rejected_checkpoint.status.success());
+        let rejected_checkpoint_report: serde_json::Value =
+            serde_json::from_slice(&rejected_checkpoint.stdout).unwrap();
+        assert_eq!(
+            rejected_checkpoint_report["technical"]["InvalidRecord"]["reason"],
+            "EntryHashMismatch"
+        );
+
+        let oversized_path = tmp.path().join("oversized.malog");
+        std::fs::File::create(&oversized_path)
+            .unwrap()
+            .set_len(128_u64 * 1024 * 1024 + 1)
+            .unwrap();
+        let oversized_arg = oversized_path.to_str().unwrap();
+        let oversized = run_cmd(&["match-audit", "verify", oversized_arg], tmp.path());
+        assert!(!oversized.status.success());
+        assert!(String::from_utf8_lossy(&oversized.stderr).contains("maximum is 134217728"));
+    }
+
     #[test]
     fn test_subcommand_help() {
         let tmp = TempDir::new().unwrap();

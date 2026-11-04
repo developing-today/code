@@ -205,6 +205,7 @@ pub mod local;
 pub mod local_events;
 pub mod log_sync;
 pub use id_core::membership;
+pub mod match_audit;
 pub mod meta_client;
 pub mod note_links;
 pub mod notes;
