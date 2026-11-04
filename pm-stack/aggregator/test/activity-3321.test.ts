@@ -107,9 +107,7 @@ describe("codex findings on PR #5141 (#3321)", () => {
       seq,
     });
     // in-progress (seq 0) -> in-review: first undated transition.
-    const d1 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 0)]]), [
-      undated("in-review", 0),
-    ]);
+    const d1 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 0)]]), [undated("in-review", 0)]);
     // Re-diffing the same observed transition (retry after a failed
     // append, baseline not advanced) reproduces the same id.
     const retry = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 0)]]), [
@@ -117,12 +115,8 @@ describe("codex findings on PR #5141 (#3321)", () => {
     ]);
     expect(retry[0]?.sourceId).toBe(d1[0]?.sourceId);
     // The cycle continues: in-review (seq 1) -> in-progress -> in-review.
-    const d2 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-review", 1)]]), [
-      undated("in-progress", 1),
-    ]);
-    const d3 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 2)]]), [
-      undated("in-review", 2),
-    ]);
+    const d2 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-review", 1)]]), [undated("in-progress", 1)]);
+    const d3 = kaneoChangeDeliveries(new Map([["kaneo:p/t1", undated("in-progress", 2)]]), [undated("in-review", 2)]);
     expect(d2[0]?.sourceId).not.toBe(d1[0]?.sourceId);
     // Same from->to as d1, but a distinct real transition: new id.
     expect(d3[0]?.sourceId).not.toBe(d1[0]?.sourceId);

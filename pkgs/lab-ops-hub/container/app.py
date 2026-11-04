@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Lab Ops Hub crawler container.
 
-Tiny stdlib-only HTTP service. POST /crawl {"url": "..."} -> fetches the page
-with a real HTTP client, extracts title / link count / readable text, returns
-JSON in the same shape the Worker's fallback produces. Runs only on demand
-(Worker starts it via getContainer, sleepAfter=2m kills it when idle), so it
-burns container minutes only while crawling.
+Tiny HTTP service with one IDNA dependency. POST /crawl {"url": "..."} ->
+fetches the page with a real HTTP client, extracts title / link count / readable
+text, returns JSON in the same shape the Worker's fallback produces. Runs only
+on demand (Worker starts it via getContainer, sleepAfter=2m kills it when idle),
+so it burns container minutes only while crawling.
 """
 
 import base64
@@ -22,6 +22,8 @@ import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote, urlparse, urlsplit
+
+import idna
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -521,18 +523,47 @@ def validate_crawl_url(raw):
                 if candidate.isascii():
                     return judged_label
                 try:
-                    return candidate.encode("idna").decode("ascii")
-                except (UnicodeError, ValueError):
-                    # The fallback still owes the Worker the UTS-46
-                    # compatibility mappings NFC does not perform:
-                    # NFKC maps e.g. the fullwidth digit in an RTL
-                    # label the codec's Unicode 3.2 bidi rules refuse
-                    # (the alef + fullwidth-1 label returns the
-                    # Worker's xn--1-zhc, not the unmapped
-                    # xn--4db2378j) - Codex round 2 on PR #3781.
-                    return "xn--" + unicodedata.normalize("NFKC", candidate).encode(
-                        "punycode"
+                    # Match the Worker's WHATWG URL hostname conversion:
+                    # UTS-46 nontransitional, not Python's IDNA2003
+                    # stdlib codec (Unicode 3.2 nameprep).
+                    return idna.encode(
+                        candidate,
+                        uts46=True,
+                        transitional=False,
+                        std3_rules=False,
                     ).decode("ascii")
+                except (UnicodeError, ValueError):
+                    # Preserve the permissive fallback for labels
+                    # python-idna declines — but apply the UTS-46
+                    # mapping FIRST, independently of the strict
+                    # IDNA2008 validation that just failed, and only
+                    # then let NFKC supply any remaining compatibility
+                    # mappings before punycode. NFKC alone maps
+                    # U+03F2 (lunate sigma) to U+03C2 (final sigma)
+                    # where UTS-46 maps it to U+03C3, so a label the
+                    # codec refuses over an underscore (ϲ_.com) came
+                    # back as the final-sigma host xn--_-xmb instead
+                    # of the WHATWG xn--_-zmb — a different hostname
+                    # than the Worker certified (Codex review of
+                    # PR #5231). uts46_remap is mapping only (no
+                    # validity checks), so the permissive reach of
+                    # the fallback is unchanged.
+                    try:
+                        candidate = idna.core.uts46_remap(
+                            candidate, std3_rules=False, transitional=False
+                        )
+                    except (UnicodeError, ValueError):
+                        pass
+                    normalized = unicodedata.normalize("NFKC", candidate)
+                    if normalized.isascii():
+                        # The remapping can leave a pure-ASCII label
+                        # (UTS-46 deletes U+FE0F, so a_ + U+FE0F
+                        # remaps to a_): return it directly. An xn--
+                        # prefix on an ASCII label names a different
+                        # host than the Worker returns (Codex review
+                        # of PR #5231).
+                        return normalized
+                    return "xn--" + normalized.encode("punycode").decode("ascii")
 
             return_host = (
                 ".".join(
