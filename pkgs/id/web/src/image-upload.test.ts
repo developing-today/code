@@ -425,12 +425,7 @@ describe("handlePaste batch ordering (#1323)", () => {
 
   function paste(v: EditorView, files: File[]): void {
     const event = { clipboardData: { files }, preventDefault: vi.fn() };
-    const result = handlePaste!.call(
-      plugin,
-      v,
-      event as unknown as ClipboardEvent,
-      undefined as unknown as Slice,
-    );
+    const result = handlePaste!.call(plugin!, v, event as unknown as ClipboardEvent, undefined as unknown as Slice);
     expect(result).toBe(true);
   }
 
@@ -554,9 +549,7 @@ describe("upload completing after the document shrank (#1379)", () => {
       // upload is in flight: the captured insert position (25) is now
       // out of range and the placeholder decoration is deleted with
       // the replaced range.
-      const smallDoc = richSchema.node("doc", null, [
-        richSchema.node("paragraph", null, [richSchema.text("x")]),
-      ]);
+      const smallDoc = richSchema.node("doc", null, [richSchema.node("paragraph", null, [richSchema.text("x")])]);
       view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, smallDoc.content));
 
       resolveFetch({

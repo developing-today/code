@@ -89,10 +89,7 @@ function parseField(raw: unknown): Field {
       throw new Error(`${key} must be a finite number`);
     }
   }
-  if (
-    raw.enum !== undefined &&
-    (!Array.isArray(raw.enum) || raw.enum.some((item) => typeof item !== "string"))
-  ) {
+  if (raw.enum !== undefined && (!Array.isArray(raw.enum) || raw.enum.some((item) => typeof item !== "string"))) {
     throw new Error("enum must be an array of strings");
   }
   return {

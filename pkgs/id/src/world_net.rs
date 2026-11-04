@@ -29,8 +29,9 @@ use tokio::{
 
 use crate::abuse::{
     AbuseEvaluator, AbusePolicy, BudgetPolicy, BudgetUsage, ConnectionId, Counters, Direction,
-    EndpointId as AbuseEndpointId, NodeId,
+    EndpointId as AbuseEndpointId, NodeId, RefusalReason,
 };
+use crate::event_store::BlockList;
 use crate::frames::{read_frame_body, read_frame_len};
 use crate::world_hub::WorldHub;
 use crate::world_session::{
@@ -119,13 +120,37 @@ impl WorldProtocol {
         local_node: NodeId,
         budgets: BudgetPolicy,
     ) -> Self {
+        Self::build(hub, local_node, budgets, None)
+    }
+
+    /// Like [`WorldProtocol::with_local_node`], with the operator block
+    /// list (#2245) attached to the shared evaluator: a connection from
+    /// an endpoint blocked by key is refused at admission, before any
+    /// session starts, with the evaluator's
+    /// [`RefusalReason::BlockedByOperator`] refusal. The list is
+    /// consulted live, so a block lands on the next connection.
+    #[must_use]
+    pub fn with_blocks(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        blocks: Arc<dyn BlockList>,
+    ) -> Self {
+        Self::build(hub, local_node, BudgetPolicy::default(), Some(blocks))
+    }
+
+    fn build(
+        hub: impl Into<WorldHub>,
+        local_node: NodeId,
+        budgets: BudgetPolicy,
+        blocks: Option<Arc<dyn BlockList>>,
+    ) -> Self {
+        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        if let Some(blocks) = blocks {
+            evaluator = evaluator.with_block_list(blocks);
+        }
         Self {
             hub: hub.into(),
-            abuse: Arc::new(Mutex::new(AbuseEvaluator::with_budgets(
-                AbusePolicy::default(),
-                local_node,
-                budgets,
-            ))),
+            abuse: Arc::new(Mutex::new(evaluator)),
             connection_cap_refusals: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -189,6 +214,22 @@ impl Drop for PeerConnectionRegistration {
     }
 }
 
+/// The remote IP of the connection's selected path, when that path
+/// is a direct IP path (#2245). A connection whose selected path is
+/// a relay or a custom transport has no peer IP an operator block
+/// could name: it yields `None`, and IP blocks never apply to it.
+/// Best-effort by construction — a direct path that opens after
+/// admission is not re-judged, exactly as the issue scopes IP
+/// enforcement to the listener.
+fn direct_ip_of(conn: &Connection) -> Option<std::net::IpAddr> {
+    let paths = conn.paths();
+    let selected = paths.iter().find(|path| path.is_selected())?;
+    match selected.remote_addr() {
+        iroh::TransportAddr::Ip(addr) => Some(addr.ip()),
+        _ => None,
+    }
+}
+
 impl ProtocolHandler for WorldProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // Bound stale endpoint and counter state as new connections arrive;
@@ -198,9 +239,22 @@ impl ProtocolHandler for WorldProtocol {
         let remote = conn.remote_id();
         tracing::debug!("world: connection from node {remote}");
         let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
+        let direct_ip = direct_ip_of(&conn);
         let connection_id = match self.abuse.lock() {
-            Ok(mut abuse) => match abuse.open_connection(remote_endpoint, abuse_now_ms()) {
+            Ok(mut abuse) => match abuse
+                .open_connection_with_direct_ip(remote_endpoint, direct_ip, abuse_now_ms())
+            {
                 Ok(connection_id) => connection_id,
+                Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
+                    // #2245: an operator block is not a cap refusal — it
+                    // is not counted as one, and it offers no retry.
+                    tracing::warn!(
+                        remote = %remote,
+                        "world: operator block; refusing connection"
+                    );
+                    conn.close(0_u32.into(), b"blocked by operator");
+                    return Ok(());
+                }
                 Err(refusal) => {
                     let refusal_count = self
                         .connection_cap_refusals
@@ -454,6 +508,93 @@ pub fn route_frame(frame: &serde_json::Value, world: Option<&str>) -> String {
             serde_json::Value::Object(routed).to_string()
         }
         _ => frame.to_string(),
+    }
+}
+
+const MAX_ADMIN_HISTORY_RECORD_BYTES: usize = crate::world::MAX_RECORDS
+    * (crate::world::MAX_RECORD_KEY_BYTES + crate::world::MAX_RECORD_VALUE_BYTES + 8);
+// Bound the entire transfer, not just the decoded `event` and `records`
+// values. The allowance covers top-level framing, per-event/per-page JSON
+// wrappers, and worst-case quote/backslash escaping in record keys.
+const MAX_ADMIN_HISTORY_RESPONSE_BYTES: usize = crate::world::MAX_ADMIN_HISTORY_BYTES
+    + MAX_ADMIN_HISTORY_RECORD_BYTES
+    + crate::world::MAX_RECORDS * crate::world::MAX_RECORD_KEY_BYTES
+    + (crate::world::MAX_ADMIN_HISTORY_EVENTS + crate::world::MAX_RECORDS + 1) * 256;
+
+#[derive(Default)]
+struct AdminHistoryBudget {
+    event_bytes: usize,
+    record_bytes: usize,
+    record_count: usize,
+    response_bytes: usize,
+}
+
+impl AdminHistoryBudget {
+    fn add_frame(&mut self, bytes: usize) -> Result<()> {
+        self.response_bytes = self
+            .response_bytes
+            .checked_add(bytes)
+            .context("admin history response byte count overflow")?;
+        anyhow::ensure!(
+            self.response_bytes <= MAX_ADMIN_HISTORY_RESPONSE_BYTES,
+            "admin history response exceeds {MAX_ADMIN_HISTORY_RESPONSE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    fn add_event(&mut self, bytes: usize) -> Result<()> {
+        self.event_bytes = self
+            .event_bytes
+            .checked_add(bytes)
+            .context("admin event byte count overflow")?;
+        anyhow::ensure!(
+            self.event_bytes <= crate::world::MAX_ADMIN_HISTORY_BYTES,
+            "admin history events exceed {} bytes",
+            crate::world::MAX_ADMIN_HISTORY_BYTES
+        );
+        Ok(())
+    }
+
+    fn add_record(&mut self, key: &str, value: &serde_json::Value) -> Result<()> {
+        anyhow::ensure!(
+            !key.is_empty() && key.len() <= crate::world::MAX_RECORD_KEY_BYTES,
+            "admin history contains an invalid record key"
+        );
+        anyhow::ensure!(
+            !key.chars().any(char::is_control),
+            "admin history contains a control character in a record key"
+        );
+        let value_bytes = serde_json::to_vec(value)
+            .context("measure an admin history record")?
+            .len();
+        anyhow::ensure!(
+            value_bytes <= crate::world::MAX_RECORD_VALUE_BYTES,
+            "admin history record value exceeds {} bytes",
+            crate::world::MAX_RECORD_VALUE_BYTES
+        );
+        self.record_count = self
+            .record_count
+            .checked_add(1)
+            .context("admin record count overflow")?;
+        anyhow::ensure!(
+            self.record_count <= crate::world::MAX_RECORDS,
+            "admin history contains more than {} records",
+            crate::world::MAX_RECORDS
+        );
+        let entry_bytes = key
+            .len()
+            .checked_add(value_bytes)
+            .and_then(|bytes| bytes.checked_add(8))
+            .context("admin record byte count overflow")?;
+        self.record_bytes = self
+            .record_bytes
+            .checked_add(entry_bytes)
+            .context("admin record byte count overflow")?;
+        anyhow::ensure!(
+            self.record_bytes <= MAX_ADMIN_HISTORY_RECORD_BYTES,
+            "admin history records exceed {MAX_ADMIN_HISTORY_RECORD_BYTES} bytes"
+        );
+        Ok(())
     }
 }
 
@@ -949,7 +1090,8 @@ impl WorldClient {
             .context("host sent no isolation")
     }
 
-    /// List the host's worlds as `(default, [(name, open)])`.
+    /// List the host's worlds as `(default, [(name, open, presence)])`,
+    /// where `presence` is the count of sessions live on the world.
     ///
     /// # Errors
     ///
@@ -957,12 +1099,35 @@ impl WorldClient {
     pub async fn list_worlds(
         &mut self,
         admin_token: &str,
-    ) -> Result<(String, Vec<(String, bool)>)> {
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         self.send_json(&serde_json::json!({
             "type": "list_worlds",
             "admin_token": admin_token,
         }))
         .await?;
+        self.read_worlds_reply("host refused to list worlds").await
+    }
+
+    /// Read the host's public world directory (#812) as
+    /// `(default, [(name, open, presence)])`. No admin token: the
+    /// directory is public metadata — names, loaded state, and
+    /// presence counts, never identities.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the directory is refused.
+    pub async fn directory(&mut self) -> Result<(String, Vec<(String, bool, usize)>)> {
+        self.send_json(&serde_json::json!({
+            "type": "directory",
+        }))
+        .await?;
+        self.read_worlds_reply("host refused the directory").await
+    }
+
+    async fn read_worlds_reply(
+        &mut self,
+        refuse_message: &str,
+    ) -> Result<(String, Vec<(String, bool, usize)>)> {
         let reply = self
             .recv_json()
             .await?
@@ -970,9 +1135,7 @@ impl WorldClient {
         if reply["type"] != "worlds" {
             bail!(
                 "{}",
-                reply["message"]
-                    .as_str()
-                    .unwrap_or("host refused to list worlds")
+                reply["message"].as_str().unwrap_or(refuse_message)
             );
         }
         let default = reply["default"].as_str().unwrap_or_default().to_owned();
@@ -980,7 +1143,13 @@ impl WorldClient {
             .as_array()
             .context("worlds reply had no list")?
             .iter()
-            .filter_map(|w| Some((w["name"].as_str()?.to_owned(), w["open"].as_bool()?)))
+            .filter_map(|w| {
+                Some((
+                    w["name"].as_str()?.to_owned(),
+                    w["open"].as_bool()?,
+                    w["presence"].as_u64().unwrap_or(0) as usize,
+                ))
+            })
             .collect();
         Ok((default, worlds))
     }
@@ -1018,8 +1187,24 @@ impl WorldClient {
     ///
     /// Fails on a malformed frame or stream error.
     pub async fn recv_json(&mut self) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .recv_json_with_frame_bytes()
+            .await?
+            .map(|(frame, _)| frame))
+    }
+
+    /// Receive one JSON frame and report its complete serialized wire size,
+    /// including the four-byte length prefix.
+    async fn recv_json_with_frame_bytes(&mut self) -> Result<Option<(serde_json::Value, usize)>> {
         match read_frame(&mut self.recv).await? {
-            Some(body) => Ok(Some(serde_json::from_slice(&body).context("decode frame")?)),
+            Some(body) => {
+                let bytes = body
+                    .len()
+                    .checked_add(4)
+                    .context("frame byte count overflow")?;
+                let frame = serde_json::from_slice(&body).context("decode frame")?;
+                Ok(Some((frame, bytes)))
+            }
             None => Ok(None),
         }
     }
@@ -1329,6 +1514,131 @@ impl WorldClient {
         }
     }
 
+    /// Export the retained journal-order event window and its records as an
+    /// administrator. Join capabilities cannot request this frame.
+    ///
+    /// # Errors
+    ///
+    /// Host refusal, malformed/out-of-order frames, or an invalid admin token.
+    pub(crate) async fn admin_event_history(
+        &mut self,
+        admin_token: &str,
+    ) -> Result<crate::world::AdminEventHistory> {
+        self.send_json(&serde_json::json!({
+            "type": "event_history_admin",
+            "admin_token": admin_token,
+        }))
+        .await?;
+        let mut budget = AdminHistoryBudget::default();
+        let (begin, frame_bytes) = self
+            .recv_json_with_frame_bytes()
+            .await?
+            .context("host closed before admin history export")?;
+        budget.add_frame(frame_bytes)?;
+        if begin["type"] != "event_history_begin" {
+            bail!(
+                "{}",
+                begin["message"]
+                    .as_str()
+                    .unwrap_or("host refused admin history export")
+            );
+        }
+        let world_id = begin["world_id"]
+            .as_str()
+            .context("history reply has no world ID")?
+            .to_owned();
+        let module_hash = begin["module_hash"].as_str().map(str::to_owned);
+        let current_sequence = begin["current_sequence"]
+            .as_u64()
+            .context("history reply has no sequence")?;
+        let complete = begin["complete"]
+            .as_bool()
+            .context("history reply has no completeness flag")?;
+        let event_count = begin["event_count"]
+            .as_u64()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= crate::world::MAX_ADMIN_HISTORY_EVENTS)
+            .context("history reply has an invalid event count")?;
+        let mut events = Vec::with_capacity(event_count);
+        for _ in 0..event_count {
+            let (frame, frame_bytes) = self
+                .recv_json_with_frame_bytes()
+                .await?
+                .context("host closed during admin history export")?;
+            budget.add_frame(frame_bytes)?;
+            if frame["type"] != "event_history_event" {
+                bail!(
+                    "{}",
+                    frame["message"]
+                        .as_str()
+                        .unwrap_or("unexpected frame during admin history export")
+                );
+            }
+            let event_bytes = serde_json::to_vec(&frame["event"])
+                .context("measure an admin history event")?
+                .len();
+            budget.add_event(event_bytes)?;
+            events.push(
+                serde_json::from_value(frame["event"].clone())
+                    .context("decode an admin history event")?,
+            );
+        }
+        let mut records = crate::world::Records::new();
+        let mut after: Option<String> = None;
+        loop {
+            let (frame, frame_bytes) = self
+                .recv_json_with_frame_bytes()
+                .await?
+                .context("host closed before admin history records")?;
+            budget.add_frame(frame_bytes)?;
+            if frame["type"] != "records" {
+                bail!(
+                    "{}",
+                    frame["message"]
+                        .as_str()
+                        .unwrap_or("unexpected frame during admin history records")
+                );
+            }
+            anyhow::ensure!(
+                frame["sequence"].as_u64() == Some(current_sequence),
+                "admin history records do not match its event sequence"
+            );
+            let page: crate::world::Records = serde_json::from_value(frame["records"].clone())
+                .context("decode admin history records")?;
+            let page_cursor = after.clone();
+            for (key, value) in page {
+                anyhow::ensure!(
+                    after.as_deref().is_none_or(|cursor| key.as_str() > cursor),
+                    "admin history record pages are out of order"
+                );
+                budget.add_record(&key, &value)?;
+                after = Some(key.clone());
+                records.insert(key, value);
+            }
+            match frame["next_after"].as_str() {
+                Some(next) => {
+                    anyhow::ensure!(
+                        after.as_deref() == Some(next),
+                        "invalid admin history cursor"
+                    );
+                    anyhow::ensure!(
+                        page_cursor.as_deref().is_none_or(|cursor| next > cursor),
+                        "admin history record cursor did not advance"
+                    );
+                }
+                None => break,
+            }
+        }
+        Ok(crate::world::AdminEventHistory {
+            world_id,
+            module_hash,
+            current_sequence,
+            complete,
+            events,
+            records,
+        })
+    }
+
     /// Ask for a read-only ticket for the world's records document.
     ///
     /// # Errors
@@ -1569,12 +1879,15 @@ impl WorldSessions {
             let session = self
                 .roots
                 .get(&key.0)
-                .expect("root inserted above")
+                .context("root inserted above")?
                 .open_session(world)
                 .await?;
             self.sessions.insert(key.clone(), session);
         }
-        Ok(self.sessions.get_mut(&key).expect("session inserted above"))
+        Ok(self
+            .sessions
+            .get_mut(&key)
+            .context("session inserted above")?)
     }
 
     /// The live session for (`addr`, `world`), if one is open.
@@ -1838,10 +2151,19 @@ mod tests {
     async fn inbound_refusal_backpressures_authorized_streams_but_sheds_preauth() {
         use crate::abuse::{AbusePolicy, BucketLimits};
 
+        // One token per second against a burst of one: a drained bucket
+        // stays empty for ~1 s, so the pre-auth shed below cannot race
+        // the refill. At 1_000 tokens/sec the single burst token
+        // refilled in 1 ms, and any >= 1 ms scheduling stall between
+        // the two pre-auth charges admitted the second one instead —
+        // the intermittent "a pre-auth refusal sheds the stream"
+        // failure (#5195). The authorized leg keeps its shape: the
+        // refusal sleeps the 1 s retry floor and then charges against
+        // the refilled bucket, inside the existing 3 s bound.
         let limits = BucketLimits {
-            frames_per_sec: 1_000,
+            frames_per_sec: 1,
             frame_burst: 1,
-            bytes_per_sec: 1_000,
+            bytes_per_sec: 1,
             byte_burst: 1,
         };
         let evaluator = Arc::new(Mutex::new(AbuseEvaluator::new(
@@ -1854,10 +2176,20 @@ mod tests {
         )));
 
         // Pre-authorization: the first frame fits the burst, the next is
-        // refused immediately — no waiting, the stream is shed.
+        // refused immediately — no waiting, the stream is shed. Every
+        // await in this test is bounded (#5195): a wedged charge fails
+        // loudly here instead of stalling the suite.
         let preauth = [3; 32];
         let flag = AtomicBool::new(false);
-        assert!(charge_inbound_frame(&evaluator, preauth, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, preauth, &flag, 1),
+            )
+            .await
+            .expect("the first pre-auth charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             !tokio::time::timeout(
                 Duration::from_millis(500),
@@ -1872,7 +2204,15 @@ mod tests {
         // charge completes once the bucket refills instead of failing.
         let authed = [4; 32];
         let flag = AtomicBool::new(true);
-        assert!(charge_inbound_frame(&evaluator, authed, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, authed, &flag, 1),
+            )
+            .await
+            .expect("the first authorized charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(3),
@@ -1930,6 +2270,59 @@ mod tests {
 
     fn join(capability: &str, after: Option<u64>) -> serde_json::Value {
         serde_json::json!({"type": "join", "capability": capability, "after": after})
+    }
+
+    #[test]
+    fn admin_history_client_rejects_over_limit_payload() {
+        let mut event_budget = AdminHistoryBudget::default();
+        assert!(
+            event_budget
+                .add_event(crate::world::MAX_ADMIN_HISTORY_BYTES)
+                .is_ok()
+        );
+        assert!(event_budget.add_event(1).is_err());
+
+        let mut record_budget = AdminHistoryBudget::default();
+        for _ in 0..crate::world::MAX_RECORDS {
+            assert!(
+                record_budget
+                    .add_record("key", &serde_json::Value::Null)
+                    .is_ok()
+            );
+        }
+        assert!(
+            record_budget
+                .add_record("extra", &serde_json::Value::Null)
+                .is_err()
+        );
+        assert!(
+            record_budget
+                .add_record(
+                    "key",
+                    &serde_json::Value::String(
+                        "x".repeat(crate::world::MAX_RECORD_VALUE_BYTES + 1)
+                    )
+                )
+                .is_err()
+        );
+
+        let frame = serde_json::json!({
+            "type": "event_history_begin",
+            "world_id": "lobby",
+            "current_sequence": 0,
+            "complete": true,
+            "event_count": 0,
+            "ignored": "x".repeat(4096),
+        });
+        let wire_bytes = serde_json::to_vec(&frame).unwrap().len() + 4;
+        let mut padded_budget = AdminHistoryBudget {
+            response_bytes: MAX_ADMIN_HISTORY_RESPONSE_BYTES - wire_bytes + 1,
+            ..AdminHistoryBudget::default()
+        };
+        assert!(
+            padded_budget.add_frame(wire_bytes).is_err(),
+            "ignored top-level JSON fields count toward the transfer limit"
+        );
     }
 
     #[tokio::test]

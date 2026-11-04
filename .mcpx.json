@@ -35,14 +35,6 @@
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://mcp.context7.com/mcp"]
     },
-    "jules": {
-      "command": "npx",
-      "args": ["-y", "@google/jules-mcp"]
-    },
-    "antigravity-jules-orchestration": {
-      "command": "npx",
-      "args": ["-y", "@iflow-mcp/scarmonit-antigravity-jules-orchestration"]
-    },
     "antigravity": {
       "command": "npx",
       "args": ["-y", "@ask-llm/antigravity-mcp"]

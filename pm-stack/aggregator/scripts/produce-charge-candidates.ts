@@ -44,6 +44,14 @@
 // label (card brand + mask). No balances, no debt, no account
 // numbers, no account-owner names ever enter the file.
 //
+// Admission (#3161, the charges contract's first rule): a
+// candidate exists only where money demonstrably moved.
+// Declined/failed alerts and amounts merely due are excluded by
+// isNotChargeSubject below, and a candidate's amount is the
+// amount PAID: explicit paid/charged labels outrank a bare total,
+// and a bare total counts only as a standalone label, never as a
+// substring of "Subtotal".
+//
 // Usage: bun run scripts/produce-charge-candidates.ts
 //   [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--out <path>] [--skip-gmail]
 // Defaults: start = first of the current month, end = today,
@@ -70,6 +78,31 @@ const INPUTS_DIR = process.env.CHARGE_INPUTS_DIR;
 async function stagedText(name: string): Promise<string | undefined> {
   if (!INPUTS_DIR) return undefined;
   return readFile(join(INPUTS_DIR, name), "utf8");
+}
+
+/** #4663: the staged manifest period, validated. The manifest period
+ * is a date input like every other in this file, so it is held to the
+ * same isRealCalendarDate standard as the Plaid and Gmail dates, plus
+ * end >= start ordering. Staging that does not describe a real period
+ * is absent staging: throw, so the run fails visibly instead of
+ * writing a period-less candidates file under a success exit. */
+export function stagedManifestPeriod(manifest: { start?: unknown; end?: unknown }): {
+  start: string;
+  end: string;
+} {
+  const { start, end } = manifest;
+  if (
+    typeof start !== "string" ||
+    typeof end !== "string" ||
+    !isRealCalendarDate(start) ||
+    !isRealCalendarDate(end) ||
+    end < start
+  ) {
+    throw new Error(
+      `staged manifest period is not a real calendar window: start=${JSON.stringify(start)} end=${JSON.stringify(end)}`,
+    );
+  }
+  return { start, end };
 }
 
 /** Plaid categories that are money movement, not merchant charges. */
@@ -288,6 +321,15 @@ async function gmailCandidates(
     stagedTriage === undefined
       ? []
       : (JSON.parse(stagedTriage) as unknown[]).map((el) => (typeof el === "string" ? el : JSON.stringify(el)));
+  // Staged mode never falls back to the live CLI (#4660): a staging with
+  // fewer responses than queries is a broken staging, and silently
+  // substituting a live read (or dropping the source) would produce a
+  // partial batch that looks complete. Fail visibly instead.
+  if (INPUTS_DIR && stagedResponses.length !== queries.length) {
+    throw new Error(
+      `staged gmail-triage.json holds ${stagedResponses.length} response(s) for ${queries.length} gmail queries — staging is short; refusing to fall back to the live gmail CLI in staged mode`,
+    );
+  }
   for (const [i, query] of queries.entries()) {
     const stdout =
       stagedResponses[i] ??
@@ -369,11 +411,13 @@ async function main(): Promise<void> {
     // Staged mode: the fetcher's manifest period governs — the staged
     // payloads were fetched for exactly that window.
     const manifest = JSON.parse(await readFile(join(INPUTS_DIR, "charge-inputs-manifest.json"), "utf8")) as {
-      start: string;
-      end: string;
+      start?: unknown;
+      end?: unknown;
     };
-    start = manifest.start;
-    end = manifest.end;
+    // #4663: validate before any candidate work — a field-less or
+    // otherwise unreal manifest period must fail the run here, not
+    // surface as a written candidates file with period {}.
+    ({ start, end } = stagedManifestPeriod(manifest));
   }
   const outPath =
     argValue("--out") ??
@@ -398,6 +442,10 @@ async function main(): Promise<void> {
         );
       }
     } catch (err) {
+      // Staged mode (#4660): any gmail failure means the batch would be
+      // silently partial, so the run fails visibly — non-zero exit, no
+      // candidates file. Live mode keeps the plaid-only fallback.
+      if (INPUTS_DIR) throw err;
       console.error(
         `producer: gmail read failed (${err instanceof Error ? err.message : "error"}); plaid candidates only`,
       );

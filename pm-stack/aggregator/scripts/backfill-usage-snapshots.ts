@@ -17,6 +17,13 @@
 // of CNY 44.64; that is a different observation with no dated source
 // line here, so no record is invented for it.
 //
+// NOTE (2026-11-03 config-name alignment): the service ids below are
+// the pool ids in use on these records' 2026-10-20..25 observation
+// dates (meta:high-usage, openai:codex, opencode-go:personal, ...).
+// They are kept verbatim on purpose: this seed writes HISTORY, and
+// the live rename starts new snapshot series under the config
+// provider ids rather than rewriting the old series.
+//
 // Usage: bun run scripts/backfill-usage-snapshots.ts [--dir <storeDir>]
 // Env: PM_AGG_SNAPSHOTS_DIR, QUOTA_VIEW_PATH, QUOTA_REGISTRY_PATH.
 import { readFile } from "node:fs/promises";

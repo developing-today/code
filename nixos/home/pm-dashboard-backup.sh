@@ -274,12 +274,16 @@ ledger_set credentials ok
 
 # --- optional pm-stack DB dumps (code#1514) --------------------------------
 # The #1514 dump job (Kaneo Postgres + Grist + Pad) publishes its script at
-# ~/tools/pm-stack-db-backup.sh and writes dumps to ~/Backups/db-dumps/<date>/
-# (here: ~/backups/db-dumps/<date>/). When present it runs first and its
-# output rides this archive to all three destinations; until it lands, the
-# archive carries the dashboard state set only and says so in the log.
+# ~/tools/pm-stack-db-backup.sh (a bridge to pm-stack-backup.sh) and writes
+# dumps to ~/backups/pm-stack/<date>/ (here: $DUMP_DIR). When present it runs
+# first and its output rides this archive to all three destinations; until
+# it lands, the archive carries the dashboard state set only and says so in
+# the log. (nix#1365: DUMP_DIR previously pointed at ~/backups/db-dumps,
+# which the dump script never writes — every run with DUMP_RAN=1 then failed
+# verify as required-member-missing. The staged tree keeps its historic
+# db-dumps name; only the source dir changed.)
 DUMP_SCRIPT="${PM_DB_DUMP_SCRIPT:-$HOME/tools/pm-stack-db-backup.sh}"
-DUMP_DIR="$HOME/backups/db-dumps/$DATE"
+DUMP_DIR="$HOME/backups/pm-stack/$DATE"
 DUMP_RAN=0
 if [ -x "$DUMP_SCRIPT" ]; then
   ledger_begin db-dump
@@ -321,6 +325,11 @@ required file aggregator/quota-current.json
 required file aggregator/registry.json
 required file aggregator/quota-gatherer-state.json
 required file aggregator/quota-gatherer-heartbeat.json
+required file aggregator/events.json
+required file aggregator/coverage-snapshot.json
+required file aggregator/aa-last-good.json
+optional file aggregator/views.json
+optional tree aggregator/charge-inputs
 required file meta-quota-export/latest.json
 required file meta-quota-export/history.jsonl
 conditional tree db-dumps
@@ -340,7 +349,8 @@ optional file journals/meta-quota-export.log"
 # before the cursor can advance. A missing file stays a WARN, as
 # before: absent and present-but-unreadable are different events.
 for f in actions.json comments.json fleet-feed.json quota-current.json \
-  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+  registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+  events.json views.json coverage-snapshot.json aa-last-good.json; do
   if [ -f "$AGG/$f" ]; then
     cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
       fail "dataset copy failed: $AGG/$f"
@@ -348,6 +358,8 @@ for f in actions.json comments.json fleet-feed.json quota-current.json \
 done
 if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots" ||
   fail "dataset copy failed: $AGG/snapshots"; fi
+if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
+  fail "dataset copy failed: $AGG/charge-inputs"; fi
 for f in latest.json history.jsonl; do
   if [ -f "$META/$f" ]; then
     cp -a "$META/$f" "$STAGE/meta-quota-export/$f" ||

@@ -288,14 +288,7 @@ export function initCollab(
         );
         return;
       }
-      console.log(
-        "[collab] Sending",
-        batch.length,
-        "of",
-        sendable.steps.length,
-        "steps, version:",
-        sendable.version,
-      );
+      console.log("[collab] Sending", batch.length, "of", sendable.steps.length, "steps, version:", sendable.version);
       send(MSG.STEPS, sendable.version, batch, sendable.clientID);
     }
   };
@@ -326,9 +319,7 @@ export function initCollab(
         const version = msg[1];
         const doc = msg[2];
         const docRecord =
-          doc !== null && typeof doc === "object" && !Array.isArray(doc)
-            ? (doc as Record<string, unknown>)
-            : null;
+          doc !== null && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>) : null;
         if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 0) {
           console.error("[collab] Dropping malformed Init message: invalid version");
           return;
@@ -386,6 +377,10 @@ export function initCollab(
         // Start reconnect cleanup timer (will remove stale cursors after 1s)
         // Must be called after editor is initialized
         onInitReceived(editorInstance.view);
+        // A WebSocket opening is not enough to prove the collaboration
+        // session recovered: the server may accept and immediately drop it
+        // before sending Init. Reset only after the protocol is initialized.
+        reconnectAttempts = 0;
         break;
       }
 
@@ -585,7 +580,6 @@ export function initCollab(
       }
       console.log("[collab] Connected to", wsUrl);
       connected = true;
-      reconnectAttempts = 0;
       updateStatus("connected");
       if (editorInstance) {
         setConnectionState(editorInstance.view, "connected");

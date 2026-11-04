@@ -16,12 +16,7 @@ const contractDocument: unknown = JSON.parse(
 );
 const contract = parseShellContract(contractDocument);
 
-function withFieldType(
-  side: "client" | "server",
-  frameName: string,
-  fieldName: string,
-  type: string,
-): ShellContract {
+function withFieldType(side: "client" | "server", frameName: string, fieldName: string, type: string): ShellContract {
   const malformed = structuredClone(contract);
   const frames = side === "client" ? malformed.client_frames : malformed.server_frames;
   const frame = frames[frameName];
@@ -90,9 +85,7 @@ describe("shell contract validator", () => {
     session.client({ type: "join", capability: cap, after: null, world: null });
     expect(session.phase).toBe("joined");
     expect(() => session.client({ type: "chat", text: "hi" })).not.toThrow();
-    expect(session.violations).toEqual([
-      { index: 1, side: "client", message: expect.stringContaining("chat.text") },
-    ]);
+    expect(session.violations).toEqual([{ index: 1, side: "client", message: expect.stringContaining("chat.text") }]);
   });
 
   it("accepts the frames a joined shell sends", () => {
@@ -260,6 +253,10 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
   }
 
+  deliverRaw(data: string): void {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+
   sent(type: string): Array<Record<string, unknown>> {
     return this.transcript
       .filter((entry) => entry.from === "client" && (entry.frame as { type?: string }).type === type)
@@ -421,5 +418,54 @@ describe("web shell conformance", () => {
         "resize",
       ].sort(),
     );
+  });
+
+  it("rejects malformed frames and bad chunk_bytes in the upload handler (#5034)", async () => {
+    root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
+    const status = () => q("[data-world-status]").textContent;
+    const startUpload = (): FakeSocket => {
+      q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+      setFiles(q<HTMLInputElement>("[data-world-module]"), [
+        new File([new Uint8Array(9000).fill(7)], "game.wasm", { type: "application/wasm" }),
+      ]);
+      q<HTMLButtonElement>("[data-world-install]").click();
+      const upload = FakeSocket.all.at(-1) as FakeSocket;
+      upload.open();
+      return upload;
+    };
+
+    // Non-object frames: error status + socket closed, never a throw or a hang.
+    for (const raw of ["null", "123", '"hi"', "[1,2]"]) {
+      const upload = startUpload();
+      upload.deliverRaw(raw);
+      expect(status()).toBe("Host returned an invalid upload response");
+      expect(upload.readyState).toBe(FakeSocket.CLOSED);
+      expect(upload.sent("install_chunk")).toHaveLength(0);
+    }
+
+    // Fractional and string chunk_bytes take the invalid-chunk-size path.
+    for (const chunkBytes of [100.5, "512"]) {
+      const upload = startUpload();
+      upload.deliver({ type: "upload_ready", chunk_bytes: chunkBytes as unknown as number });
+      expect(status()).toBe("Host returned an invalid module chunk size");
+      expect(upload.readyState).toBe(FakeSocket.CLOSED);
+      expect(upload.sent("install_chunk")).toHaveLength(0);
+      expect(upload.sent("install_end")).toHaveLength(0);
+    }
+  });
+
+  it("rejects malformed frames in the compile handler (#5034)", async () => {
+    root = document.querySelector<HTMLElement>("[data-world-app]") as HTMLElement;
+    const status = () => q("[data-world-status]").textContent;
+    q<HTMLInputElement>("[data-world-admin]").value = "admin-secret";
+    setFiles(q<HTMLInputElement>("[data-world-source]"), [new File(["app [main!] {}"], "main.roc")]);
+    const before = FakeSocket.all.at(-1) as FakeSocket;
+    q<HTMLButtonElement>("[data-world-compile]").click();
+    await vi.waitFor(() => expect(FakeSocket.all.at(-1)).not.toBe(before));
+    const compiler = FakeSocket.all.at(-1) as FakeSocket;
+    compiler.open();
+    compiler.deliverRaw("null");
+    expect(status()).toBe("Host returned an invalid compile response");
+    expect(compiler.readyState).toBe(FakeSocket.CLOSED);
   });
 });

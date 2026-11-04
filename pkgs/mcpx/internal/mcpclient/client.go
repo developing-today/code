@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,6 +124,9 @@ type Client struct {
 	notif Notifications
 	// roots are the directories servers may work within.
 	roots []Root
+	// root is the scope-resolved workspace root this instance serves, named
+	// at initialize when non-empty (decision 0004 §5).
+	root string
 	// clientName and clientVersion identify mcpx on every modern request.
 	clientName, clientVersion string
 	// metaVersion is the version stamped into each request's _meta. Empty
@@ -383,6 +388,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 		onElicit:                 o.OnServerRequest,
 		onURLElicitationRequired: o.OnURLElicitationRequired,
 		roots:                    append([]Root(nil), o.Roots...),
+		root:                     o.Root,
 		modernVersions:           o.ModernVersions,
 		probeTimeout:             o.ProbeTimeout,
 		loopDone:                 make(chan struct{}),
@@ -457,13 +463,33 @@ func (c *Client) initializeLegacy(ctx context.Context, clientName, clientVersion
 }
 
 func (c *Client) initializeParams() json.RawMessage {
-	params, _ := json.Marshal(map[string]any{
+	params := map[string]any{
 		"protocolVersion": ProtocolVersion,
 		// Declared only where mcpx can actually deliver; see capabilities.
 		"capabilities": c.capabilities(false),
 		"clientInfo":   map[string]any{"name": c.clientName, "version": c.clientVersion},
-	})
-	return params
+	}
+	// A scope-resolved instance tells the server which workspace it serves.
+	// initialize params are extensible in every era, so both get the same
+	// fields rather than growing per-server quirks (decision 0004 §5). An
+	// instance with no root -- global scope, or a degraded resolution --
+	// sends nothing and its initialize stays what it always was.
+	if uri, name, ok := c.workspaceRoot(); ok {
+		params["rootUri"] = uri
+		params["workspaceFolders"] = []map[string]any{{"uri": uri, "name": name}}
+	}
+	raw, _ := json.Marshal(params)
+	return raw
+}
+
+// workspaceRoot renders the instance root as the file:// URI and folder name
+// initialize carries. ok is false when the instance serves no root.
+func (c *Client) workspaceRoot() (uri, name string, ok bool) {
+	if c.root == "" {
+		return "", "", false
+	}
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(c.root)}
+	return u.String(), filepath.Base(c.root), true
 }
 
 // finishLegacy records an initialize result and completes the handshake.
@@ -482,6 +508,10 @@ func (c *Client) finishLegacy(ctx context.Context, ir initResult) error {
 	c.Negotiated = ir.ProtocolVersion
 	c.negotiated.Store(ir.ProtocolVersion)
 	c.Era = EraLegacy
+	// Publish the era mirror, as probe and Resume do: a connection that
+	// settled modern and then fell back to a legacy recovery would
+	// otherwise leave the mirror saying modern for its whole life.
+	c.modern.Store(false)
 
 	if h, ok := c.t.(interface{ setNegotiated(string) }); ok {
 		h.setNegotiated(ir.ProtocolVersion)
@@ -926,7 +956,7 @@ func declares(caps map[string]json.RawMessage, capability, flag string) bool {
 // subscriptions/listen, so against a modern server this adds the URI to the
 // connection's listen stream, which is reopened with the new filter.
 func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		l := c.listen
 		c.mu.Unlock()
@@ -942,7 +972,7 @@ func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
 
 // UnsubscribeResource stops notifications for a resource.
 func (c *Client) UnsubscribeResource(ctx context.Context, uri string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		l := c.listen
 		c.mu.Unlock()
@@ -996,7 +1026,7 @@ func (c *Client) ListResourceTemplatesWithHints(ctx context.Context) ([]Resource
 // a modern server this only records the level, and every later request
 // carries it.
 func (c *Client) SetLogLevel(ctx context.Context, level string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		c.logLevel = level
 		c.mu.Unlock()
@@ -1187,7 +1217,7 @@ func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMe
 			}
 			return c.roundTripOnce(ctx, method, params)
 		}
-		if attempt > 0 || !allowReissue || c.Era != EraModern || ctx.Err() != nil || !isStreamLost(err) {
+		if attempt > 0 || !allowReissue || c.modernEra() != EraModern || ctx.Err() != nil || !isStreamLost(err) {
 			return raw, err
 		}
 	}
@@ -1301,7 +1331,7 @@ func (c *Client) roundTripOnce(ctx context.Context, method string, params json.R
 // server/discover instead, which every modern server MUST implement and
 // which, like ping, does nothing but answer.
 func (c *Client) Ping(ctx context.Context) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		return c.call(ctx, "server/discover", json.RawMessage(`{}`), nil)
 	}
 	return c.call(ctx, "ping", json.RawMessage(`{}`), nil)
@@ -1322,7 +1352,7 @@ func (c *Client) nextPage(next *string, sent *string) (string, bool) {
 	if next == nil {
 		return "", false
 	}
-	if *next == "" && c.Era != EraModern {
+	if *next == "" && c.modernEra() != EraModern {
 		return "", false
 	}
 	if sent != nil && *sent == *next {
@@ -1623,7 +1653,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	// modern is server-directed, so the plain call below runs and a
 	// task answer is polled to its terminal result before returning.
 	support := c.resolveTaskSupport(name)
-	if support == taskSupportRequired && c.Era == EraLegacy {
+	if support == taskSupportRequired && c.modernEra() == EraLegacy {
 		raw, err := c.callToolAsLegacyTask(ctx, name, args)
 		if err != nil {
 			// A -32042 can surface from the task-augmented call itself
@@ -1685,7 +1715,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		// only a required tool's: advertising the tasks extension lets
 		// the server answer an optional tool with a task past its eager
 		// window, and the handle is not the tool's result.
-		if c.Era == EraModern && isTaskResult(raw) {
+		if c.modernEra() == EraModern && isTaskResult(raw) {
 			raw, err = c.finishModernTask(ctx, name, raw)
 			if err != nil {
 				return nil, err
@@ -1707,7 +1737,7 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 	var raw json.RawMessage
 	if err := c.call(ctx, "resources/read", params, &raw); err != nil {
 		var re *rpcError
-		if errors.As(err, &re) && (re.Code == codeResourceNotFound || (re.Code == codeInvalidParams && c.Era == EraModern)) {
+		if errors.As(err, &re) && (re.Code == codeResourceNotFound || (re.Code == codeInvalidParams && c.modernEra() == EraModern)) {
 			return nil, &ResourceNotFoundError{URI: uri, err: re}
 		}
 		return nil, err

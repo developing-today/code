@@ -2,7 +2,11 @@
 // inside "Subtotal" as the charged total, and an explicit paid amount
 // wins over an earlier bare total.
 import { describe, expect, test } from "bun:test";
-import { amountFromBody, gmailMessageDay, isNotChargeSubject } from "../scripts/produce-charge-candidates.ts";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { amountFromBody, gmailMessageDay, isNotChargeSubject, stagedManifestPeriod } from "../scripts/produce-charge-candidates.ts";
 
 describe("amountFromBody", () => {
   test("records the paid total, not the subtotal", () => {
@@ -126,5 +130,113 @@ describe("gmailMessageDay (#2448)", () => {
   test("one bad message does not stop the batch: later messages still resolve", () => {
     const days = [{ date: "garbage" }, { date: "Sat, 25 Oct 2026 09:30:00 -0500" }, {}].map(gmailMessageDay);
     expect(days).toEqual(["", "2026-10-25", ""]);
+  });
+});
+
+// #4663: the staged manifest period is validated to the file's
+// isRealCalendarDate standard before any candidate work; a manifest
+// that does not describe a real period fails the run instead of
+// writing a candidates file with period {} under a success exit.
+describe("stagedManifestPeriod (#4663)", () => {
+  test("a field-less manifest throws", () => {
+    expect(() => stagedManifestPeriod({})).toThrow("not a real calendar window");
+  });
+
+  test("a manifest missing one field throws", () => {
+    expect(() => stagedManifestPeriod({ start: "2026-11-01" })).toThrow("not a real calendar window");
+    expect(() => stagedManifestPeriod({ end: "2026-11-02" })).toThrow("not a real calendar window");
+  });
+
+  test("malformed and non-calendar dates throw", () => {
+    expect(() => stagedManifestPeriod({ start: "2026-13-40", end: "2026-11-02" })).toThrow(
+      "not a real calendar window",
+    );
+    expect(() => stagedManifestPeriod({ start: "2026-11-01", end: "2026-02-30" })).toThrow(
+      "not a real calendar window",
+    );
+    expect(() => stagedManifestPeriod({ start: "11/01/2026", end: "2026-11-02" })).toThrow(
+      "not a real calendar window",
+    );
+  });
+
+  test("an inverted window throws", () => {
+    expect(() => stagedManifestPeriod({ start: "2026-11-02", end: "2026-11-01" })).toThrow(
+      "not a real calendar window",
+    );
+  });
+
+  test("a valid window passes through, including a single day", () => {
+    expect(stagedManifestPeriod({ start: "2026-11-01", end: "2026-11-02" })).toEqual({
+      start: "2026-11-01",
+      end: "2026-11-02",
+    });
+    expect(stagedManifestPeriod({ start: "2026-11-01", end: "2026-11-01" })).toEqual({
+      start: "2026-11-01",
+      end: "2026-11-01",
+    });
+  });
+});
+
+// #4660: staged mode must never fall back to the live Gmail CLI. A
+// gmail-triage.json with fewer responses than the producer's queries is
+// a broken staging: the run must fail visibly (non-zero exit, no
+// candidates file) instead of silently writing a plaid-only batch with
+// exit 0. Complete staging keeps working unchanged.
+describe("staged mode gmail staging (#4660)", () => {
+  const script = join(import.meta.dir, "../scripts/produce-charge-candidates.ts");
+
+  function stage(gmailResponses: string[]): { dir: string; out: string } {
+    const dir = mkdtempSync(join(tmpdir(), "charge-inputs-"));
+    writeFileSync(join(dir, "charge-inputs-manifest.json"), JSON.stringify({ start: "2026-10-01", end: "2026-10-31" }));
+    writeFileSync(
+      join(dir, "plaid-transactions.json"),
+      JSON.stringify({
+        ok: true,
+        body: {
+          accounts: [{ account_id: "a1", name: "Visa Card", mask: "1234" }],
+          transactions: [
+            { account_id: "a1", amount: 12.34, date: "2026-10-15", name: "Coffee Shop", merchant_name: "Coffee Shop", category: ["Food and Drink"] },
+          ],
+        },
+      }),
+    );
+    writeFileSync(join(dir, "gmail-triage.json"), JSON.stringify(gmailResponses));
+    return { dir, out: join(dir, "candidates.json") };
+  }
+
+  function runProducer(dir: string, out: string) {
+    return spawnSync(process.execPath, ["run", script, "--out", out], {
+      env: { ...process.env, CHARGE_INPUTS_DIR: dir },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+  }
+
+  const bakery = JSON.stringify({
+    messages: [{ id: "m1", subject: "Receipt from Bakery - $9.99", date: "2026-10-10" }],
+  });
+  const empty = JSON.stringify({ messages: [] });
+
+  test("short staging fails visibly and writes no candidates file", () => {
+    const { dir, out } = stage([bakery]);
+    const res = runProducer(dir, out);
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain("staging is short");
+    expect(existsSync(out)).toBe(false);
+  });
+
+  test("complete staging yields both sources' candidates", () => {
+    const { dir, out } = stage([bakery, empty]);
+    const res = runProducer(dir, out);
+    expect(res.status).toBe(0);
+    const written = JSON.parse(readFileSync(out, "utf8")) as {
+      candidates: { source: string; merchant: string; amountUsd: number }[];
+    };
+    expect(written.candidates).toContainEqual(
+      expect.objectContaining({ source: "gmail", merchant: "Bakery", amountUsd: 9.99 }),
+    );
+    expect(written.candidates).toContainEqual(
+      expect.objectContaining({ source: "plaid", merchant: "Coffee Shop", amountUsd: 12.34 }),
+    );
   });
 });

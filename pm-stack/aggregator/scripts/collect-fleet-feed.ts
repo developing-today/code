@@ -24,8 +24,14 @@
 //   - jules-review-state.json — keeper supervision entries annotate
 //     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
-//     (#899: tiers, dependencies, goal measurements), embedded as-is
-//     after a structural check; absent/malformed = section omitted.
+//     (#899: tiers, dependencies, goal measurements), embedded only
+//     after normalizeOrchestrationSection accepts it (the collector
+//     gate in the publisher -> collector -> aggregator contract,
+//     #1176); absent/malformed = section omitted. The publisher's
+//     pre-publish gate is `bun run contract:check -- --publisher
+//     <path>` (scripts/check-contract-corpus.ts), which runs this
+//     same validator; the shared corpus lives in
+//     test/contract-corpus/v1/.
 //   - the org GitHub Project "Developing Today" (#4, #910 stage 5) —
 //     read via GraphQL Projects v2 into the feed's `projects` pool.
 //     Token plumbing: GITHUB_PROJECT_TOKEN / GH_TOKEN from the env
@@ -73,13 +79,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
-import {
-  disabledProvidersFromConfig,
-  aaAbsent,
-  aaSectionFromSupabase,
-  isAaSection,
-  type AaRawPayload,
-} from "../src/aa.ts";
+import { aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
 import {
   feedSectionStatus,
   normalizeOrchestrationSection,
@@ -89,6 +89,7 @@ import {
   type FleetFeed,
 } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
+import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import type {
   AaFeedSection,
   AaSection,
@@ -184,25 +185,26 @@ const passwordFile =
 function poolFor(provider: string, model: string): string | null {
   switch (provider) {
     case "meta":
-      return "meta:high-usage";
+      return "meta";
     case "claude-code":
       return "anthropic:claude-pro";
     case "openai":
     case "openai-codex":
     case "chatgpt":
-      return "openai:codex";
+      return "openai";
     case "openai.alternate":
       return "openai.alternate";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
     case "opendesign":
-      return "opendesign:go";
+      return "opendesign";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
+    case "antigravity-direct":
     case "antigravity-ls":
     case "antigravity-agy":
     case "google":
-      return model.startsWith("gemini") ? "antigravity:gemini" : "antigravity:claude-gpt";
+      return model.startsWith("gemini") ? "antigravity-direct.gemini" : "antigravity-direct.claude-gpt";
     default:
       // opencode-go is deliberately unattributed in slice 1: which
       // workspace (Personal vs Lab) a sandbox session burns is not
@@ -537,20 +539,14 @@ async function main(): Promise<void> {
   let quotaViewText = "";
   try {
     quotaViewText = await readFile(quotaViewPath, "utf8");
-    // #1114: enforce the deployed config's disabled_providers at pool
-    // assembly. The config read mirrors the AA section's; an unreadable
-    // config leaves the set empty (fail soft, pools unfiltered).
-    let disabledProviderIds: ReadonlySet<string> = new Set();
-    try {
-      disabledProviderIds = disabledProvidersFromConfig(await readFile(opencodeConfigPath, "utf8"));
-    } catch {
-      console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
-    }
-    pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(
-        `collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`,
-      ),
-    );
+    // Pass-through (Drew, 2026-11-03): pool assembly applies NO
+    // disabled_providers filter. The #1114 filter dropped every pool
+    // whose direct config door was disabled — including live pools
+    // burned through model routes and measured by OpenCode (meta, the
+    // Antigravity splits, commandcode, anthropic:claude-pro, deepseek
+    // at removal time). The board displays the OpenCode quota read;
+    // the dated reads extracted here are only its fail-soft fallback.
+    pools = extractQuotaPools(quotaViewText, now);
     markSection("quota", "ok");
   } catch (err) {
     console.error(`collector: quota view unreadable (${sanitizeCollectionError(err)}); emitting no pools`);
@@ -909,8 +905,7 @@ async function main(): Promise<void> {
   // instead of lying quietly. Fail-soft: any git problem becomes
   // state "unknown" with the reason, never a failed collection.
   const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
-  const feed: FleetFeed = {
-    version: 1,
+  const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     checkout,
     meta: { sections: sectionStatuses },
@@ -929,7 +924,7 @@ async function main(): Promise<void> {
     ...(projects ? { projects } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
-  };
+  });
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(

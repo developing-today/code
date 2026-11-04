@@ -92,14 +92,19 @@ manifest, so a new page never touches the chrome. To add one:
    twin when the page has data worth polling.
 4. Wire any new data through `Source` (with its fixture twin), and
    through the fleet feed when the data originates on the sandbox.
-5. Pass the mobile checklist (#1180, 390x844 audit): no page-level
-   horizontal scroll (wide tables live inside `.tblwrap`, `pre` blocks
-   scroll inside themselves); every control-class tap target (nav
-   links, chips, buttons, form controls, checkbox labels) is at least
-   40px tall; the sticky nav never permanently covers content
-   (anchored elements carry `scroll-margin-top`). Inline text links
-   inside prose and table cells are exempt from the 40px floor.
-   Re-run the per-page audit when a page's layout changes materially.
+5. Pass the mobile checklist (#1180) at **390x844**: compare the
+   document's `scrollWidth` with its viewport `clientWidth` and attempt a
+   horizontal scroll (no page-level horizontal movement; a 1px rounding
+   residual is acceptable only when `scrollX` stays zero and no content
+   escapes its wrapper). Keep intentionally wide tables and charts inside
+   `.tblwrap` / `.chart`, and `pre` blocks scrolling inside themselves.
+   Check actual rendered targets: nav links, chips, buttons, selects,
+   form fields, disclosure summaries, and checkbox/radio labels are at
+   least 40px tall (inline text links in prose and table cells are exempt).
+   Follow an in-page link or call `scrollIntoView()` and confirm its target
+   starts below the sticky nav; use enough `scroll-margin-top` for the
+   wrapped mobile nav, not a desktop-only offset. Re-run the per-page audit
+   when a page's layout changes materially.
 
 `/dns` is the worked example: the register file lives on the sandbox
 (#902 owns it), the collector parses it into a `dns` feed section
@@ -343,6 +348,13 @@ alerts-intake-token`, resolved by name at runtime
   `notification_sends` row per attempt. An unacked critical older
   than `ALERT_ACK_WINDOW_MIN` (default 15) escalates with exactly
   one more push (`escalated_at`). Warnings never push in v1.
+- **Measurement**: `/notifications` (#3319) is the read-only weekly
+  sent-vs-acted-on roll-up over `notification_sends`: per class and
+  rolling week, only `outcome = sent` rows count as sends, and a send
+  counts as acted-on when its `acted_on_at` (stamped by Ack) falls
+  within 24 hours. A class under 10% acted-on over the rolling
+  four-week window renders as a default-off _proposal_ — display
+  only; the page never changes a preference or a default.
 - **Ack surface**: `/alerts` lists open incidents with Ack/Close.
   Ack is exactly-once: only the open→acked transition writes an
   event (and stamps the sends' `acted_on_at`); a repeat ack returns
@@ -445,9 +457,26 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 | `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                           |
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                                     |
+| `PM_AGG_ACTIVITY_FILE`     | `./activity-ingestion.json`                         | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                      |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
+
+### Activity ingestion into the event stream (#3321)
+
+Watchdog breach episodes and Kaneo board changes are ingested into the
+#1739 event stream by `src/activity.ts`, with persisted per-source
+checkpoints: replaying a duplicate delivery is a no-op, and a restart
+resumes from the checkpoint instead of re-emitting. Known source
+outages are recorded as gap records (source + time range) and rendered
+on `/events` as holes in the history — never as complete coverage; a
+backfill/recovery pass flips a gap's status. Per-source coverage
+(supported / unsupported / historical ranges) is documented in
+`ACTIVITY_SOURCE_COVERAGE` in `src/activity.ts`, rendered on `/events`,
+and served at `/api/activity.json` together with the checkpoints and
+gaps. GitHub activity is explicitly **unsupported** until the #2072
+webhook/hot-list ingestion lands — #3321's boundary forbids a
+competing receiver.
 
 ## Capability provenance matrix (#1200)
 
@@ -625,10 +654,27 @@ tick visible on /quota.
   what progressed), and the actions the run pushed back into motion.
   The collector embeds it as `feed.orchestration` after a structural
   check (fail-soft; override the path with `ORCHESTRATION_PATH`). The
+  Before publishing, run the publisher's pre-publish gate from this
+  checkout:
+
+  ```sh
+  bun run contract:check -- --publisher /path/to/orchestration.json
+  ```
+
+  `scripts/check-contract-corpus.ts` runs the aggregator's actual
+  validators over the file exactly as the collector gates it, so a
+  #1110-class drift fails at the source, not as missing sections
+  downstream. The
   aggregator serves it raw at `/api/orchestration.json`; the needs-you
   view lets its classification win for anything it names (non-session
   items render as tier cards), and the today view maps its goals —
   until a section exists, the today view derives and labels itself.
+  The shared publisher/collector/aggregator contract corpus (#1176)
+  lives in `test/contract-corpus/v1/` (scrubbed captures of real
+  published orchestration, quota, DNS, registry, and projects sections;
+  synthetic producer-adapter inputs are in `publisher/`), exercised by
+  `test/contract-corpus.test.ts` and `test/contract-collector.test.ts`.
+
 - **DNS register** (slice 3, #906) — the register Markdown (#902's
   file; override with `DNS_REGISTER_PATH`) parsed by `src/dns.ts`
   into a `dns` section: entries with renewal dates, list prices, and
@@ -803,3 +849,23 @@ test/
                     cache/degraded), fixtures story, /health boot
                     (#1137, #1147)
 ```
+
+## Store contract: define semantics (#2953)
+
+Define semantics for externally-spelled keys (#2953). A value keyed by a
+name a caller, document, feed, file, peer or user can spell is stored with
+define semantics, never assignment semantics: the store is built in a Map
+or a null-prototype object and converted at the boundary with
+Object.fromEntries / spread, or the entry is written with
+Object.defineProperty. The non-conforming forms for external keys are
+obj[key] = v, obj[key] ??= ..., dst[k] = src[k] copy loops, and
+Object.assign(dst, src) with an externally-keyed src — all go through
+[[Set]], and for the one spelling "**proto**" [[Set]] invokes the
+Object.prototype setter instead of creating an own property, silently
+dropping the entry or moving the container's prototype. Keys are data:
+preserve, don't reject. Code-constructed tables whose keys are all
+internal are exempt. Probe matrix for every covered site — keys
+"**proto**" (string value), "**proto**" (object value), "constructor",
+"toString", and an ordinary key: the entry exists as an own property with
+its value, a JSON round-trip preserves it, and neither the container's
+prototype nor Object.prototype moves or gains own properties.

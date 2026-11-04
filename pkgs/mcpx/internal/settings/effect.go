@@ -62,6 +62,7 @@ var EffectProbes = map[string]string{
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -175,6 +176,15 @@ var EffectExemptions = map[string]string{
 	"prompt.sample":                      "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"prompt.catalogBudget":               "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"prompt.sampleTimeout":               "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
+	"model.apiKeyEnv":                    "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.baseURL":                      "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.budget":                       "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.default":                      "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.profiles":                     "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.provider":                     "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.providers":                    "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"model.timeout":                      "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
+	"sampling.answerLocally":             "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
 	"prompt.maxTokens":                   "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"prompt.runTimeout":                  "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"http.bodyLimit":                     "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
@@ -266,7 +276,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 193 // deliberate +1 for daemon.roots: its observable effect requires an upstream roots/list request that the e2e harness does not yet issue; daemon/mcpclient unit tests cover the conversion and response path.
+const EffectExemptionPin = 202 // deliberate +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go.
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

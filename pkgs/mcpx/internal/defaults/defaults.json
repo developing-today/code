@@ -160,6 +160,9 @@
   },
   "exec": {
     "timeout": "120s",
+    "hookTimeout": "60s",
+    "resolveTimeout": "3m",
+    "resolveWaitDelay": "2s",
     "workDirs": 8,
     "programs": 64,
     "entries": 8,
@@ -265,7 +268,11 @@
     "taskAfter": "2s"
   },
   "protoTasks": {
-    "pollInterval": "1s"
+    "pollInterval": "1s",
+    "cancelGrace": "5s"
+  },
+  "wasm": {
+    "logLineSize": "64KiB"
   },
   "stdioShutdown": {
     "stdinGrace": "2s",
@@ -292,6 +299,9 @@
   "embeddings": {
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
+  },
+  "proxy": {
+    "timeout": "10m"
   },
   "hooks": {
     "timeout": "2s"
