@@ -658,6 +658,10 @@ in
       Environment = [
         "CODEX_PROXY_PORT=${toString codexProxyPort}"
         "CODEX_PROXY_HOST=127.0.0.1"
+        # Gate 1 cutover (opencode#1154): the in-fork codex credential
+        # sync (opencode#1468) owns the token copy now; the door must
+        # not overwrite the true JWT expiry with its synthetic one.
+        "CODEX_PROXY_TOKEN_SYNC=0"
       ];
     };
     # No Install: codex-proxy.socket owns the listener and activates this
