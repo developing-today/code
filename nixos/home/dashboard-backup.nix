@@ -48,7 +48,7 @@ in
       Service = {
         Type = "oneshot";
         ExecStart = "${dashboardPkg}/bin/dashboard-backup";
-        Path = servicePath;
+        Environment = "PATH=${servicePath}";
       };
     };
 
