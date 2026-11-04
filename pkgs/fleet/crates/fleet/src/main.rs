@@ -7,7 +7,7 @@
 //! builds. Step 2 (#5430) landed the first real domain — queue: the
 //! repo-queue client and the queue-broker / secrets-broker serve
 //! roles run for real below; step 3 (#5431) the proxy domain; step 4
-//! (#5432) the dispatch thin client. A compiled-in domain that has
+//! (#5432) the dispatch thin client; step 6 (#5554) the secrets verb. A compiled-in domain that has
 //! not landed yet answers with the "not implemented yet" form of
 //! the stub — but the *surface* is complete and honest: every
 //! variant renders the full registry, and every missing capability
@@ -38,6 +38,9 @@ use fleet_registry::{
     Capability, CapabilitySet, Domain, Variant, alias_route, capability_set, domain,
     is_known_invocation_name,
 };
+
+#[cfg(feature = "secrets")]
+mod secrets;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const SOURCE_REV: &str = env!("FLEET_SOURCE_REV");
@@ -75,6 +78,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "laptop-agent") {
         caps.insert(Capability::LaptopAgent);
+    }
+    if cfg!(feature = "secrets") {
+        caps.insert(Capability::Secrets);
     }
     caps
 }
@@ -354,6 +360,7 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
         CapState::Available => match d.name {
             "queue" => "included in this build",
             "dispatch" => "included in this build",
+            "secrets" => "included in this build",
             "proxy" => "included in this build",
             "serve" => {
                 "included in this build (queue-broker and secrets-broker roles; \
@@ -476,6 +483,12 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "dispatch")]
             if d.name == "dispatch" {
                 return fleet_dispatch::run(&surface.config, args);
+            }
+            // Step 6 (#5554): the secrets domain runs for real —
+            // the fleet-secrets resolver chain as a verb.
+            #[cfg(feature = "secrets")]
+            if d.name == "secrets" {
+                return secrets::run(&surface.config, args);
             }
             if d.name == "proxy" {
                 return run_proxy(surface, args);

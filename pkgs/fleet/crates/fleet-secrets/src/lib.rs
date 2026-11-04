@@ -205,6 +205,61 @@ impl BrokerSource {
         Ok(response)
     }
 
+    /// One framed request/response over a fresh session-broker
+    /// connection — the exchange [`BrokerSource::resolve`] and
+    /// [`BrokerSource::list_names`] share.
+    fn request(&self, path: &str, name: &str) -> Result<Response, SecretError> {
+        let request = Request {
+            method: "GET".to_string(),
+            path: path.to_string(),
+            body: None,
+            port: Some(fleet_config::PORT_SECRETS_BROKER),
+            token_file: Some(self.token_file.to_string_lossy().into_owned()),
+        };
+        let mut stream = self.connect(name)?;
+        self.exchange(&mut stream, &request, name)
+    }
+
+    /// The broker's names listing (`GET /secrets` — the endpoint the
+    /// step-6 verb's `list` renders). Names only: the broker's reply
+    /// carries no values on this route, and neither does this API.
+    /// Errors are [`SecretError::Unavailable`] under the pseudo-name
+    /// `"names"` — a listing has no single secret to name.
+    pub fn list_names(&self) -> Result<Vec<String>, SecretError> {
+        let name = "names";
+        let response = self.request("/secrets", name)?;
+        match response.status {
+            200 => {
+                let names = response
+                    .body
+                    .get("names")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| SecretError::Unavailable {
+                        source: "secrets-broker",
+                        name: name.to_string(),
+                        detail: "200 response without a \"names\" array".to_string(),
+                    })?;
+                names
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| SecretError::Unavailable {
+                                source: "secrets-broker",
+                                name: name.to_string(),
+                                detail: "\"names\" array holds a non-string entry".to_string(),
+                            })
+                    })
+                    .collect()
+            }
+            status => Err(SecretError::Unavailable {
+                source: "secrets-broker",
+                name: name.to_string(),
+                detail: format!("secrets-broker answered HTTP {status}"),
+            }),
+        }
+    }
+
     fn connect(&self, name: &str) -> Result<UnixStream, SecretError> {
         UnixStream::connect(&self.broker_socket).map_err(|e| SecretError::Unavailable {
             source: "secrets-broker",
@@ -225,15 +280,7 @@ impl SecretSource for BrokerSource {
 
     fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
         validate_name(name)?;
-        let request = Request {
-            method: "GET".to_string(),
-            path: format!("/secret/{name}"),
-            body: None,
-            port: Some(fleet_config::PORT_SECRETS_BROKER),
-            token_file: Some(self.token_file.to_string_lossy().into_owned()),
-        };
-        let mut stream = self.connect(name)?;
-        let response = self.exchange(&mut stream, &request, name)?;
+        let response = self.request(&format!("/secret/{name}"), name)?;
         match response.status {
             200 => {
                 let value = response
@@ -474,6 +521,37 @@ mod tests {
             Err(SecretError::NotFound { source, .. }) => assert_eq!(source, "bws"),
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn broker_list_names_roundtrip_over_a_temp_socket() {
+        use std::os::unix::net::UnixListener;
+
+        let dir =
+            std::env::temp_dir().join(format!("fleet-secrets-list-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("broker.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let req: Request = fleet_proxy_proto::read_typed(&mut stream).unwrap();
+            assert_eq!(req.method, "GET");
+            assert_eq!(req.path, "/secrets");
+            assert_eq!(req.port, Some(fleet_config::PORT_SECRETS_BROKER));
+            let resp = Response {
+                status: 200,
+                body: serde_json::json!({"names": ["a.name", "b.name"]}),
+            };
+            fleet_proxy_proto::write_frame(&mut stream, &resp).unwrap();
+        });
+        let source = BrokerSource {
+            broker_socket: sock,
+            token_file: PathBuf::from("/nonexistent/token"),
+        };
+        let names = source.list_names().unwrap();
+        assert_eq!(names, vec!["a.name".to_string(), "b.name".to_string()]);
+        handle.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
