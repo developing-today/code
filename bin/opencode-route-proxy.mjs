@@ -357,7 +357,7 @@ const demotedPairs = () => {
 // any of the equivalent field names. A quota record with no reset
 // (e.g. a bare paymentRequired) cannot gate: how long it lasts is
 // unknown, and demotion remains its only handling.
-const quotaResetMs = (timeStarted, quotaText) => {
+const quotaResetMs = (timeEnded, quotaText) => {
   let q;
   try {
     q = JSON.parse(quotaText);
@@ -365,8 +365,12 @@ const quotaResetMs = (timeStarted, quotaText) => {
     return null;
   }
   if (!q || typeof q !== "object") return null;
+  // A relative retry delay runs from when the quota response was
+  // RECEIVED (the attempt's time_ended), not from when the request
+  // started: anchoring to the start would let a slow 429 response
+  // consume its own backoff.
   if (Number.isFinite(q.retryAfterMs) && q.retryAfterMs > 0)
-    return timeStarted + q.retryAfterMs;
+    return timeEnded + q.retryAfterMs;
   for (const k of ["resetsAtMs", "resetAtMs", "retryAtMs"])
     if (Number.isFinite(q[k]) && q[k] > 0) return q[k];
   for (const k of ["resetsAt", "resetAt", "retryAt"]) {
@@ -394,7 +398,7 @@ const knownExhaustedPairs = (now) => {
     const since = now - EXHAUSTED_LOOKBACK_MS;
     const quotaRows = db
       .prepare(
-        `SELECT provider_id, model_id, time_started, quota FROM route_attempt
+        `SELECT provider_id, model_id, time_started, time_ended, quota FROM route_attempt
          WHERE quota IS NOT NULL AND outcome != 'success' AND time_started > ?
            AND time_started = (
              SELECT MAX(time_started) FROM route_attempt r2
@@ -418,7 +422,7 @@ const knownExhaustedPairs = (now) => {
     );
     const out = new Map();
     for (const r of quotaRows) {
-      const reset = quotaResetMs(r.time_started, r.quota);
+      const reset = quotaResetMs(r.time_ended, r.quota);
       if (reset === null || reset <= now) continue;
       const key = `${r.provider_id}/${r.model_id}`;
       const successAt = latestSuccess.get(key);
@@ -441,16 +445,21 @@ const knownExhaustedPairs = (now) => {
 // it was, because a known-exhausted leg as last resort beats no
 // route at all. Gate decisions are recorded on stderr, the proxy's
 // diagnostics stream.
-const applyKnownExhaustedGate = (candidates) => {
+const applyKnownExhaustedGate = (cfg, candidates) => {
   if (!candidates.length) return candidates;
   const exhausted = knownExhaustedPairs(nowMs());
   if (!exhausted.size) return candidates;
   const key = (c) => `${c.providerId}/${c.modelKey}`;
   const kept = candidates.filter((c) => !exhausted.has(key(c)));
-  if (!kept.length) {
+  // The fail-safe is evaluated against CREDENTIALED survivors: the
+  // credential-less filter (#3228) runs after this gate, so a kept
+  // list whose only members have no credential would still empty the
+  // route — and the exhausted leaf must then stay as the last resort
+  // instead of the request failing with "no credentialed members".
+  if (!kept.some((c) => hasCredential(cfg, c.providerId))) {
     console.error(
-      "opencode-route-proxy: known-exhausted gate bypassed — every candidate is " +
-        "known-exhausted; keeping the demoted order (#5295)",
+      "opencode-route-proxy: known-exhausted gate bypassed — no credentialed " +
+        "candidate survives it; keeping the demoted order (#5295)",
     );
     return candidates;
   }
@@ -914,7 +923,7 @@ const runCompletion = async (routeId, body, clientSignal, hooks = {}) => {
   const wantStream = Boolean(body.stream);
   let candidates = resolveRoute(cfg, routeId, hooks.variantIn ?? null);
   candidates = applyDemotion(candidates, demotedPairs());
-  candidates = applyKnownExhaustedGate(candidates);
+  candidates = applyKnownExhaustedGate(cfg, candidates);
   if (!candidates.length)
     throw new LeafError(`route ${routeId} has no available members`, {
       tag: "UnknownProvider",

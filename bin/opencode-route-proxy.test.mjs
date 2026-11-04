@@ -204,6 +204,7 @@ const startProxy = async (arg = {}) => {
       "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
       "t-nocred-first": { "selection": "ordered", "targets": ["leafNoCred/m-nc", "leafB/m-b"] },
       "t-nocred-only": { "selection": "ordered", "targets": ["leafNoCred/m-nc"] },
+      "t-gate-nocred": { "selection": "ordered", "targets": ["leafA/m-a", "leafNoCred/m-b"] },
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
@@ -776,7 +777,7 @@ test("config load names invalid windows instead of silently evaluating them", as
 // Seed one quota-bearing failure for a (provider, model) pair, as if
 // the leaf had answered 429 with a Retry-After `retryAfterMs` long at
 // `atMs`. Written straight into the fixture ledger the proxy reads.
-const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs }) => {
+const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs, endedMs }) => {
   const db = new DatabaseSync(dbPath);
   db.prepare(
     `INSERT INTO route_attempt (
@@ -787,7 +788,7 @@ const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs }) => {
      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     atMs,
-    atMs + 50,
+    endedMs ?? atMs + 50,
     null,
     null,
     "seed",
@@ -934,6 +935,57 @@ test("a success after the quota failure clears the gate (#5295)", async () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("gate bypassed when the only survivor has no credential (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+      retryAfterMs: 3_600_000,
+    });
+    // leafA/m-a is known-exhausted and leafNoCred/m-b is not — but
+    // leafNoCred has no credential, so excluding leafA would still
+    // empty the route at the #3228 filter. The gate must bypass and
+    // keep leafA as the last resort instead of failing the request.
+    const res = await p.post({ model: "opencode-route/t-gate-nocred", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("known-exhausted gate bypassed"),
+      `bypass should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("retry delay is anchored to the quota response receipt (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // The 429 took 90s to arrive (started 2 minutes ago, received 30s
+    // ago) and asked for 60 more seconds of backoff. Anchored to the
+    // request start the pair would already be eligible again
+    // (start + 60s < now); anchored to the receipt it is exhausted
+    // for another ~30s.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      endedMs: GATE_NOW - 30_000,
+      retryAfterMs: 60_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
   } finally {
     await p.cleanup();
   }
