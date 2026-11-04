@@ -84,6 +84,40 @@ describe("quota freshness (#1171)", () => {
     expect(isQuotaStale(v, NOW)).toBe(true);
   });
 
+  test("failed gatherer attempts do not mask older successful measurements", () => {
+    const v = view(iso(10 * 60_000), { tickAt: iso(60_000) });
+    v.pools.push({
+      ...v.pools[0],
+      id: "p2",
+    });
+    v.pools[0].freshness = { measuredAt: iso(60_000), source: "quota-current.json", state: "error" };
+    v.pools[0].credentials = [
+      {
+        label: "failed credential",
+        providerId: "test",
+        windows: [],
+        freshness: { measuredAt: iso(60_000), source: "quota-current.json", state: "error" },
+      },
+    ];
+    v.gatherer!.providers = [
+      {
+        providerId: "test",
+        serviceId: "p1",
+        state: "error",
+        measuredAt: iso(60_000),
+        source: "quota-current.json",
+      },
+    ];
+
+    expect(newestMeasurement(v, NOW)).toBe(NOW - 10 * 60_000);
+    expect(isQuotaStale(v, NOW)).toBe(true);
+
+    const h = harness();
+    const status = h.refresher.request(v);
+    expect(status).toMatchObject({ stale: true, refreshing: true, triggered: true });
+    expect(h.calls).toEqual(["stale"]);
+  });
+
   test("missing measurements count as stale", () => {
     expect(isQuotaStale(view(null), NOW)).toBe(true);
   });

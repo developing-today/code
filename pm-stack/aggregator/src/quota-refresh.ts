@@ -29,21 +29,23 @@ export interface RefreshStatus {
 
 export type RefreshTrigger = (reason: "stale" | "manual") => void | Promise<void>;
 
-/** Newest provider/pool measurement in the view, in epoch ms, or null. */
+/** Newest non-error provider/pool measurement in the view, in epoch ms, or null. */
 export function newestMeasurement(view: QuotaView, nowMs = Date.now()): number | null {
   const times: number[] = [];
-  const add = (raw: string | null | undefined) => {
-    if (!raw) return;
+  const add = (raw: string | null | undefined, state?: "ok" | "stale" | "error") => {
+    if (!raw || state === "error") return;
     const t = Date.parse(raw);
     // Future timestamps (clock skew) count as fresh, not as very stale.
     if (!Number.isNaN(t)) times.push(Math.min(t, nowMs));
   };
   for (const pool of view.pools ?? []) {
-    add(pool.freshness?.measuredAt);
-    for (const credential of pool.credentials ?? []) add(credential.freshness?.measuredAt);
+    add(pool.freshness?.measuredAt, pool.freshness?.state);
+    for (const credential of pool.credentials ?? []) {
+      add(credential.freshness?.measuredAt, credential.freshness?.state);
+    }
   }
   if (view.gatherer) {
-    for (const provider of view.gatherer.providers ?? []) add(provider.measuredAt);
+    for (const provider of view.gatherer.providers ?? []) add(provider.measuredAt, provider.state);
   }
   return times.length ? Math.max(...times) : null;
 }
