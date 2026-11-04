@@ -33,7 +33,9 @@ Never claim, bind, launch, or mutate a task in shadow mode.
   (run from the primary clone `~/git/code`). It prints JSON: tasks that
   are claimed, lane-assigned `opencode` in their progress, and carry no
   bound `session_id` yet — the unbound launches this task exists to
-  close — plus the live root-session count for the cap.
+  close — plus the live root-session count for the cap, plus a
+  `stuck_bound` list: bound tasks whose sessions look
+  created-but-never-prompted and dead (step 1's recovery rule, #4758).
 - Concurrency cap: **12** active root sessions across the fleet. Count
   with poll.py (OpenCode server `GET /api/session` on
   http://127.0.0.1:13420, root sessions only; poll.py counts a root as
@@ -61,6 +63,49 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    below, once the task is a candidate again) -- before that, note it
    in the fire log and let Tend's fleet-watchdog (ledger backstop)
    see it. Never relaunch over a live session.
+   RECOVERY RULE for a bound session that never received its prompt
+   (#4758, Phase 3 of design #4912): poll.py's `stuck_bound` list
+   names the candidates — bound session present as a root with no
+   terminal marker (`time.idle`/`outcome`), NOT in the server's
+   active set, silent for at least the 30-minute `ACTIVE_WINDOW_MS`
+   threshold (the same window the cap counter uses — one threshold,
+   not two), and the task's lease expired. For each listed task, in
+   live mode only (in shadow mode, report the row in the fire log and
+   stop there):
+   a. VERIFY zero messages first: fetch the session's messages from
+      the OpenCode server. If the session holds ANY message, has
+      gained any activity marker, or is active after all, it is NOT
+      this case — leave it bound, note it in the fire log, and move
+      on. A live, progressing bound session is never reclaimed or
+      relaunched over (hard rule, unchanged).
+   b. DELETE the verified zero-message session, per-id
+      (`DELETE /api/session/<id>`), BEFORE touching the task. If the
+      delete fails or its effect cannot be verified, fail closed:
+      keep the binding exactly as it is, note it in the fire log,
+      and stop — an un-deleted session with a cleared binding is the
+      duplicate-execution defect this ordering exists to prevent.
+   c. Attempts remain (`attempts < max_attempts` in poll.py's
+      stuck_bound entry): reclaim the task to unbound as the task's
+      `worker_id` — `checkpoint <id> --worker <worker_id> --stage
+      launch_failed` with progress that CLEARS `session_id`
+      (an explicit `"session_id": null`) and
+      keeps the prior id in the audit field `launch_failed_session_id`
+      (plus `launch_failed_at` and the reason). Stage `launch_failed`
+      is a recorded yield poll.py accepts like `handed_off`, so the
+      next fire sees the task as a normal launch candidate and
+      relaunches it through step 4.
+   d. Attempts exhausted (`attempts >= max_attempts`): after the
+      same verified delete, terminally fail the task as its
+      `worker_id` — `fail <id> --worker <worker_id> --error
+      "bound session <id> never received its prompt; attempts
+      exhausted" --reason-class deterministic` with `--execution
+      "{\"lane\": \"opencode\", \"session_id\": \"<the deleted
+      session id>\", \"fallback_reason\": \"launch_failed_attempts_exhausted\"}"`
+      so the bound session id survives in the execution record.
+   The checkpoint/fail progress record IS the watchdog notification:
+   Tend's fleet-watchdog reads the task's progress, so the stage,
+   the audit field, and the execution record above are what it
+   agrees with — no separate channel is sent or needed.
 2. GATE: run the helper `health` for the four queues. If every queue
    shows 0 claimed-with-lane-opencode unbound candidates (poll.py
    returns an empty candidate list), end the fire quietly.
@@ -70,7 +115,9 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 4. For each candidate, highest queue priority first, while cap room
    remains:
    a. Re-verify the task is still claimed, still lane `opencode`,
-   still unbound, and still at stage `handed_off` (re-run poll.py
+   still unbound, and still at a recorded yield stage (`handed_off`,
+   or `launch_failed` for a task reclaimed under step 1's recovery
+   rule) (re-run poll.py
    for that task id -- its candidate filter encodes all four). If
    it changed, skip it -- someone else owns the launch now. A task
    that is assigned `opencode` but NOT handed off belongs to its
