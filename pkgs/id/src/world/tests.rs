@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_accepts_v1_through_v5_headers_and_refuses_newer_at_the_header() {
+    fn restore_accepts_v1_through_v6_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
         // which is exactly where a version-1 binary refuses a version-2
@@ -206,6 +206,7 @@ mod tests {
             JOURNAL_VERSION_REGION_HANDOFF,
             JOURNAL_VERSION_WORLD_BUDGET,
             JOURNAL_VERSION_OPEN_PRESENCE,
+            JOURNAL_VERSION_CHECKPOINT_PARTS,
         ] {
             let restored = WorldCore::restore(
                 "w",
@@ -804,10 +805,36 @@ mod tests {
             journal_version_required_by(&plain_checkpoint),
             JOURNAL_VERSION
         );
+
+        for part in [
+            JournalEntry::CheckpointSnapshotPart {
+                sequence: 1,
+                part_index: 0,
+                part_count: 1,
+                bytes: "state".to_owned(),
+            },
+            JournalEntry::CheckpointEventsPart {
+                sequence: 1,
+                part_index: 0,
+                part_count: 1,
+                events: Vec::new(),
+            },
+            JournalEntry::CheckpointAdminPart {
+                sequence: 1,
+                part_index: 0,
+                part_count: 1,
+                events: Vec::new(),
+            },
+        ] {
+            assert_eq!(
+                journal_version_required_by(&part),
+                JOURNAL_VERSION_CHECKPOINT_PARTS
+            );
+        }
     }
 
     #[test]
-    fn budget_checkpoint_compacts_to_version_5_and_restores() {
+    fn budget_checkpoint_compacts_to_version_6_and_restores() {
         let profile = crate::world_limits::WorldExecutionProfile {
             total_memory_bytes: Some(32 * 1024 * 1024),
             ..Default::default()
@@ -815,21 +842,213 @@ mod tests {
         let mut core = world(8);
         core.execution_profile = profile;
         core.active_module_hash = Some("h".to_owned());
-        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
-        // The compacted journal carries the budget, so its header must
-        // refuse binaries that predate the budget version (#227). New
-        // checkpoints also always carry open-presence metadata (#242), so
-        // the header is the max of the two requirements: the open-presence
-        // version (5), which also refuses pre-budget binaries.
+        // An oversized snapshot forces the bounded part entries, so the
+        // header is version 6, above the open-presence and budget
+        // requirements (#227).
+        let entries = core
+            .checkpoint_entries("state".repeat(50_000))
+            .unwrap();
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_OPEN_PRESENCE,
+                version: JOURNAL_VERSION_CHECKPOINT_PARTS,
                 ..
             }
         ));
         let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
         assert_eq!(restored.core.execution_profile(), profile);
+    }
+
+    #[test]
+    fn checkpoint_parts_are_utf8_safe_bounded_and_restore_all_state() {
+        let mut core = world(16);
+        core.active_module_hash = Some("h".to_owned());
+        core.sequence = 3;
+        let (participant, _) = join(&mut core, "ann");
+        core.open_presence.insert(participant.id);
+
+        let events: Vec<WorldEvent> = (1..=3)
+            .map(|sequence| WorldEvent {
+                sequence,
+                participant_id: participant.id,
+                kind: WorldEventKind::Chat(format!("{}-{sequence}", "é\"".repeat(35_000))),
+            })
+            .collect();
+        core.events = events.clone().into();
+        core.admin_history = std::iter::once(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(participant.id, "ann", true),
+            },
+        })
+        .chain(events.iter().cloned())
+        .collect();
+        core.admin_history_complete = true;
+        let snapshot = "🧭\"".repeat(80_000);
+
+        let entries = core.checkpoint_entries(snapshot.clone()).unwrap();
+        assert!(matches!(
+            entries.first(),
+            Some(JournalEntry::Created {
+                version: JOURNAL_VERSION_CHECKPOINT_PARTS,
+                ..
+            })
+        ));
+        assert!(entries.iter().all(|entry| {
+            serde_json::to_vec(entry).is_ok_and(|bytes| bytes.len() <= MAX_CHECKPOINT_PART_BYTES)
+        }));
+
+        let snapshot_parts: Vec<&str> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::CheckpointSnapshotPart { bytes, .. } => Some(bytes.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(snapshot_parts.len() > 1);
+        assert_eq!(snapshot_parts.concat(), snapshot);
+        let event_parts: Vec<&Vec<WorldEvent>> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::CheckpointEventsPart { events, .. } => Some(events),
+                _ => None,
+            })
+            .collect();
+        assert!(event_parts.len() > 1);
+        assert_eq!(
+            event_parts
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>(),
+            events
+        );
+        let admin_parts: Vec<&Vec<WorldEvent>> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::CheckpointAdminPart { events, .. } => Some(events),
+                _ => None,
+            })
+            .collect();
+        assert!(admin_parts.len() > 1);
+        let expected_admin: Vec<WorldEvent> = std::iter::once(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(participant.id, "ann", true),
+            },
+        })
+        .chain(events.iter().cloned())
+        .collect();
+        assert_eq!(
+            admin_parts
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_admin
+        );
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::Checkpoint {
+                snapshot,
+                events,
+                admin_history: Some(JournalAdminHistory { events: admin_events, complete: true }),
+                open_presence: Some(presence),
+                ..
+            }) if snapshot.is_empty()
+                && events.is_empty()
+                && admin_events.is_empty()
+                && presence == &vec![participant.id]
+        ));
+
+        let restored =
+            WorldCore::restore_replica("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.program.unwrap().snapshot, Some(snapshot));
+        assert_eq!(
+            restored.core.events.iter().cloned().collect::<Vec<_>>(),
+            events
+        );
+        assert_eq!(
+            restored
+                .core
+                .admin_history
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_admin
+        );
+        assert!(restored.core.admin_history_complete);
+        assert_eq!(
+            restored.core.open_presence,
+            BTreeSet::from([participant.id])
+        );
+    }
+
+    #[test]
+    fn restore_rejects_incomplete_duplicate_reordered_or_mismatched_checkpoint_parts() {
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core
+            .checkpoint_entries("s".repeat(MAX_CHECKPOINT_PART_BYTES + 32))
+            .unwrap();
+        let snapshot_indices: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                matches!(entry, JournalEntry::CheckpointSnapshotPart { .. }).then_some(index)
+            })
+            .collect();
+        assert_eq!(snapshot_indices.len(), 2);
+
+        let mut missing = entries.clone();
+        missing.remove(snapshot_indices[1]);
+        assert!(WorldCore::restore("test-world", WorldLimits::default(), missing).is_err());
+
+        let mut duplicate = entries.clone();
+        duplicate.insert(snapshot_indices[1], duplicate[snapshot_indices[0]].clone());
+        let error =
+            WorldCore::restore("test-world", WorldLimits::default(), duplicate).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate or out of order"),
+            "{error:#}"
+        );
+
+        let mut reordered = entries.clone();
+        reordered.swap(snapshot_indices[0], snapshot_indices[1]);
+        let error =
+            WorldCore::restore("test-world", WorldLimits::default(), reordered).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate or out of order"),
+            "{error:#}"
+        );
+
+        let mut mismatched_count = entries.clone();
+        if let JournalEntry::CheckpointSnapshotPart { part_count, .. } =
+            &mut mismatched_count[snapshot_indices[1]]
+        {
+            *part_count += 1;
+        }
+        let error =
+            WorldCore::restore("test-world", WorldLimits::default(), mismatched_count).unwrap_err();
+        assert!(
+            error.to_string().contains("part_count does not match"),
+            "{error:#}"
+        );
+
+        let mut mismatched_sequence = entries;
+        if let JournalEntry::CheckpointSnapshotPart { sequence, .. } =
+            &mut mismatched_sequence[snapshot_indices[1]]
+        {
+            *sequence += 1;
+        }
+        let error = WorldCore::restore("test-world", WorldLimits::default(), mismatched_sequence)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("part sequence does not match"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -1128,10 +1347,7 @@ mod tests {
                         && let Some(id) = value["id"].as_str()
                     {
                         self.answered.insert(id.to_owned());
-                        self.results
-                            .lock()
-                            .unwrap()
-                            .insert(id.to_owned(), value);
+                        self.results.lock().unwrap().insert(id.to_owned(), value);
                     }
                 }
                 Ok(())
@@ -1151,7 +1367,6 @@ mod tests {
                     serde_json::json!({"v": 1, "requests": requests}).to_string(),
                 ))
             }
-
         }
 
         let mut core = world(128);
@@ -2063,7 +2278,10 @@ mod tests {
         }
         assert_eq!(core.admin_history.len(), 2);
         assert!(!core.admin_history_complete);
-        assert_eq!(core.admin_history_ledger.tracked(), core.admin_history.len());
+        assert_eq!(
+            core.admin_history_ledger.tracked(),
+            core.admin_history.len()
+        );
         let rescanned: usize = core
             .admin_history
             .iter()
@@ -2174,8 +2392,7 @@ mod tests {
             panic!("checkpoint entry missing");
         }
         assert!(
-            WorldCore::restore("ledger-restore-bytes", WorldLimits::default(), checkpoint)
-                .is_err(),
+            WorldCore::restore("ledger-restore-bytes", WorldLimits::default(), checkpoint).is_err(),
             "a checkpoint whose admin history exceeds the byte bound must be refused"
         );
     }
@@ -4558,9 +4775,7 @@ mod tests {
         assert_eq!(actor.view_failures, 1, "the oversized view is counted");
 
         let (reply, rx) = tokio::sync::oneshot::channel();
-        actor
-            .handle(WorldCommand::View { token, reply })
-            .await;
+        actor.handle(WorldCommand::View { token, reply }).await;
         let second = rx.await.unwrap();
         assert!(
             matches!(&second, Ok(Some(text)) if text == "recovered view"),
@@ -4720,7 +4935,8 @@ mod tests {
         fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
             // A full 120x50 screen whose cropped serialization is far beyond
             // the presentation limit (6000 populated cells).
-            let cell = serde_json::json!({"symbol": "x", "fg": 1, "bg": 2, "bold": true, "columns": 1});
+            let cell =
+                serde_json::json!({"symbol": "x", "fg": 1, "bg": 2, "bold": true, "columns": 1});
             let cells: Vec<_> = std::iter::repeat_n(cell, 120 * 50).collect();
             Ok(Some(
                 serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": cells})
