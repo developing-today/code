@@ -126,7 +126,9 @@ const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
   cost_usd real)`;
 
 const startProxy = async (arg = {}) => {
-  const timeout = typeof arg === "string" ? arg : "15000";
+  const timeout =
+    typeof arg === "string" ? arg : String(arg.timeoutMs ?? "15000");
+  const leafTimeout = typeof arg === "object" ? arg.leafTimeoutMs : undefined;
   const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
@@ -234,6 +236,9 @@ const startProxy = async (arg = {}) => {
     OPENCODE_ROUTE_PROXY_CONFIG: configPath,
     OPENCODE_ROUTE_PROXY_DB: dbPath,
     OPENCODE_ROUTE_PROXY_TIMEOUT_MS: timeout,
+    ...(leafTimeout !== undefined
+      ? { OPENCODE_ROUTE_PROXY_LEAF_TIMEOUT_MS: String(leafTimeout) }
+      : {}),
     ...(pinnedNow
       ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
       : {}),
@@ -311,6 +316,38 @@ test("configured deadline aborts a slow leaf", async () => {
     await p.cleanup();
   }
 });
+
+test(
+  "per-leaf first-response timeout fails over and records the attempt",
+  async () => {
+    const p = await startProxy({ timeoutMs: "500", leafTimeoutMs: "100" });
+    try {
+      p.leafA.mode = "slow";
+      const start = Date.now();
+      const res = await p.post({
+        model: "opencode-route/t-ordered",
+        messages: MSGS,
+      });
+      assert.equal(res.status, 200);
+      const json = await res.json();
+      assert.equal(json.choices[0].message.content, "LEAF-B");
+      assert.ok(
+        Date.now() - start < 2500,
+        "per-leaf timeout did not shed promptly",
+      );
+      assert.equal(p.leafA.hits, 1);
+      assert.equal(p.leafB.hits, 1);
+      const rows = p.attempts();
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0].outcome, "timeout");
+      assert.equal(rows[0].error_tag, "Transport");
+      assert.equal(rows[0].failed_over_to, "leafB/m-b");
+      assert.equal(rows[1].outcome, "success");
+    } finally {
+      await p.cleanup();
+    }
+  },
+);
 
 test("health and model list are served locally", async () => {
   const p = await startProxy();
