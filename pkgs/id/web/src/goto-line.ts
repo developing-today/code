@@ -13,6 +13,7 @@ import type { EditorView } from "prosemirror-view";
 /** State for the goto-line dialog. */
 let dialogEl: HTMLElement | null = null;
 let dialogInput: HTMLInputElement | null = null;
+let dialogError: HTMLElement | null = null;
 let activeView: EditorView | null = null;
 
 /**
@@ -76,10 +77,29 @@ function createDialog(container: HTMLElement): HTMLElement {
   dialog.setAttribute("aria-label", "Go to line");
   dialog.innerHTML = `
     <label class="goto-line-label" for="goto-line-input">Go to Line:</label>
-    <input type="number" min="1" class="goto-line-input" id="goto-line-input" placeholder="Line #" autocomplete="off" />
+    <input type="number" min="1" class="goto-line-input" id="goto-line-input" placeholder="Line #" autocomplete="off" aria-describedby="goto-line-error" />
+    <span class="goto-line-error" id="goto-line-error" role="alert"></span>
   `;
   container.prepend(dialog);
   return dialog;
+}
+
+/**
+ * Explain why the typed value was rejected, in the dialog itself.
+ *
+ * Before this, invalid input only re-selected the text: no visible or
+ * spoken reason, so "Go to Line" looked broken for out-of-range or
+ * non-integer values (#712).
+ */
+function showGotoLineError(message: string): void {
+  if (dialogInput) dialogInput.setAttribute("aria-invalid", "true");
+  if (dialogError) dialogError.textContent = message;
+}
+
+/** Clear the rejection message once the value changes or the dialog closes. */
+function clearGotoLineError(): void {
+  if (dialogInput) dialogInput.removeAttribute("aria-invalid");
+  if (dialogError) dialogError.textContent = "";
 }
 
 /** Open the goto-line dialog. */
@@ -99,8 +119,10 @@ function openGotoLine(view: EditorView): void {
   if (!dialogEl) {
     dialogEl = createDialog(container);
     dialogInput = dialogEl.querySelector("#goto-line-input");
+    dialogError = dialogEl.querySelector("#goto-line-error");
 
     if (dialogInput) {
+      dialogInput.addEventListener("input", clearGotoLineError);
       dialogInput.addEventListener("keydown", (e: KeyboardEvent) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -124,9 +146,20 @@ function openGotoLine(view: EditorView): void {
               ? (lineStarts[line - 1] ?? null)
               : null;
           if (pos === null || !activeView) {
+            // #712: keep the dialog open, but say why — values that are
+            // empty, not whole numbers, or outside 1..lineCount all used
+            // to be rejected silently.
+            const message =
+              raw === ""
+                ? "Enter a line number."
+                : !/^\d+$/.test(raw)
+                  ? "Enter a whole number."
+                  : `Enter a line between 1 and ${lineCount}.`;
+            showGotoLineError(message);
             dialogInput?.select();
             return;
           }
+          clearGotoLineError();
           const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
           activeView.dispatch(tr);
           activeView.focus();
@@ -144,6 +177,7 @@ function openGotoLine(view: EditorView): void {
 
   activeView = view;
   dialogEl.style.display = "";
+  clearGotoLineError();
 
   // Show line count hint
   const totalLines = getLineCount(view);
@@ -157,6 +191,7 @@ function openGotoLine(view: EditorView): void {
 
 /** Close the goto-line dialog. */
 function closeGotoLine(): void {
+  clearGotoLineError();
   if (dialogEl) {
     dialogEl.style.display = "none";
   }
@@ -190,6 +225,7 @@ export function destroyGotoLineDialog(): void {
     dialogEl.remove();
     dialogEl = null;
     dialogInput = null;
+    dialogError = null;
     activeView = null;
   }
 }

@@ -22,6 +22,14 @@ run_case() {
 
   mkdir -p "${home}/.local/bin" "${home}/.config/systemd/user" "${deploy}/systemd" "${stub_bin}" "${state}"
   cp "${REPO_ROOT}/pm-stack/ready-for-agent/install.sh" "${deploy}/install.sh"
+  cat >"${deploy}/apply-config.sh" <<'APPLY_CONFIG'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'apply-config\n' >>"${STUB_LOG}"
+APPLY_CONFIG
+  cat >"${deploy}/config.json" <<'JSON'
+{"repositories":[{"projectPath":"developing-today/code","localDir":"code","cloneUrl":"https://github.com/developing-today/code.git"}]}
+JSON
   cp "${REPO_ROOT}/pm-stack/ready-for-agent/systemd/ready-for-agent.service" \
     "${deploy}/systemd/ready-for-agent.service"
   if [[ ${unit_matches} == true ]]; then
@@ -34,7 +42,7 @@ run_case() {
     printf '%s\n' "${initial_version}" >"${home}/.ready-agent-version"
     cat >"${home}/.local/bin/ready-for-agent" <<'LAUNCHER'
 #!/usr/bin/env bash
-printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
+  printf 'ready-for-agent %s\n' "$(cat "${HOME}/.ready-agent-version")"
 LAUNCHER
     chmod +x "${home}/.local/bin/ready-for-agent"
   fi
@@ -126,6 +134,7 @@ CURL
 exit 0
 SLEEP
   chmod +x "${stub_bin}/systemctl" "${stub_bin}/npm" "${stub_bin}/git" "${stub_bin}/curl" "${stub_bin}/sleep"
+  chmod +x "${deploy}/apply-config.sh"
 
   if [[ ${name} == clone-fail-retry ]]; then
     # #4839: npm upgrades the package, then the clone step fails; the
@@ -146,6 +155,7 @@ SLEEP
       fail "${name}: retry exited unsuccessfully"
     fi
     grep -Fxq restart "${log}" || fail "${name}: retry did not restart"
+    grep -Fxq apply-config "${log}" || fail "${name}: config helper was not invoked after retry"
     printf '%s\n' "${retry_output}" | grep -Fq 'after restart' || fail "${name}: retry missing after-restart report"
     printf '%s\n' "${retry_output}" | grep -Fq 'already running' && fail "${name}: retry falsely reported no-op"
     [[ ! -f ${marker} ]] || fail "${name}: marker not cleared after verified restart"
@@ -160,6 +170,7 @@ SLEEP
   fi
 
   printf '%s\n' "${output}" | grep -Fq 'ready-for-agent@1.1.0'
+  grep -Fxq apply-config "${log}" || fail "${name}: config helper was not invoked"
   case "${name}" in
   package-change-active)
     grep -Fxq restart "${log}" || fail "${name}: expected restart"

@@ -62,6 +62,7 @@ var EffectProbes = map[string]string{
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -251,6 +252,7 @@ var EffectExemptions = map[string]string{
 	"plugin.annotate":                    "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"plugin.headless":                    "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"plugin.daemonTools":                 "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
+	"plugin.disabledTools":               "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"protoMessages.listMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.readMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.taskAfter":            "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
@@ -275,7 +277,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 202 // deliberate +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go.
+const EffectExemptionPin = 203 // deliberate +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go. Deliberate +1 (2026-11-03, #5242) for plugin.disabledTools: read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host, the same basis as every other plugin.* exemption.
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

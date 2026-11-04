@@ -96,6 +96,11 @@ pub enum TransferError {
     Exists,
     /// A transfer with this ID exists but with different fields.
     ExistsWithDifferentFields,
+    /// The transfer ID belongs to a transfer that already failed:
+    /// TigerBeetle remembers failed transfer IDs and refuses their
+    /// resubmission (`id_already_failed`). A recovery resubmission
+    /// meeting this is a rejected resubmission, not a posting.
+    IdAlreadyFailed,
     /// Another leg of the same linked chain failed; this leg did not post.
     LinkedEventFailed,
     /// The batch ended while this leg's linked chain was still open:

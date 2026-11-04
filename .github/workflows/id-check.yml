@@ -42,15 +42,6 @@ name: id
 # CI tier policy: see .github/ci-policy.md
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-check.yml"
-      - ".github/scripts/id-pr-checks.txt"
-      - ".github/scripts/check-id-pr-checks.sh"
-      - ".github/scripts/check-crash-gate-coverage.sh"
-      - ".github/scripts/check-id-source-snapshot.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -144,6 +135,7 @@ jobs:
       # Cache the nix store on GitHub's cache so PRs do not rebuild
       # unchanged derivations from a cold store every run (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's
@@ -242,6 +234,7 @@ jobs:
           extra-conf: |
             accept-flake-config = true
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # FlakeHub Cache off (#2120): no id-token is granted and the
           # developing-today org is not registered, so the action's

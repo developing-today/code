@@ -29,6 +29,7 @@ import {
   type SessionFeedEntry,
 } from "../src/model.ts";
 import type { HealthView } from "../src/health.ts";
+import type { AuditEvent } from "../src/events.ts";
 import {
   FIXTURE_ATTENTION,
   FIXTURE_BOARD,
@@ -292,12 +293,68 @@ describe("render smoke (fixtures)", () => {
     expect(html).not.toContain("Planning notes");
     expect(html).not.toContain("PM-stack design & phase plan");
   });
+  test("item activity reuses shared events and discloses unknown freshness and partial coverage", async () => {
+    const src = fixtureSource();
+    const item = FIXTURE_BOARD.find((b) => b.id.includes("aggregator")) as BoardItem;
+    const event: AuditEvent = {
+      version: 2,
+      id: "event-1",
+      at: "2026-11-03T10:00:00.000Z",
+      ingestedAt: "2026-11-03T10:00:01.000Z",
+      actor: "watchdog",
+      kind: "watchdog-event",
+      ref: "developing-today/openchamber#210",
+      summary: "source stale",
+      attribution: { confidence: "unknown", asserted: false },
+      source: { identity: "watchdog" },
+      prevHash: "0".repeat(64),
+      hash: "f".repeat(64),
+    };
+    const refs = allRefs([item]);
+    const html = renderItem(
+      item.title,
+      item.id,
+      item.links,
+      await src.items(refs),
+      await src.comments(refs),
+      src.provenance(),
+      {
+        dashComments: [],
+        formRef: item.id,
+        formOpts: { identities: [] },
+        sessions: [],
+        activity: {
+          events: [event],
+          globalHref: "/events?ref=developing-today%2Fopenchamber%23210",
+          gaps: [],
+          coverage: [],
+        },
+      },
+    );
+    expect(html).toContain("watchdog-event");
+    expect(html).toContain("View these events in the global river");
+    expect(html).toContain("Freshness: unknown");
+    expect(html).toContain("not establish complete coverage");
+    expect(html).toContain("No known activity gaps");
+    expect(html).toContain('class="tblwrap"');
+  });
   test("quota view renders pools and model-choice guidance", async () => {
     const src = fixtureSource();
     const html = renderQuota(await src.quota(), src.provenance());
     expect(html).toContain("Quota + throughput");
     expect(html).toContain("Headroom for a new session");
     expect(html).toContain("Antigravity");
+  });
+  test("fresh manual refresh renders a neutral refreshing marker", async () => {
+    const src = fixtureSource();
+    const html = renderQuota(await src.quota(), src.provenance(), await src.usage(), undefined, {
+      stale: false,
+      refreshing: true,
+      triggered: true,
+      lastTriggerAt: "2026-11-03T14:00:00.000Z",
+    });
+    expect(html).toContain("refreshing — the quota gatherer is running; reload for updated data");
+    expect(html).not.toContain("quotas were stale");
   });
   test("attention view renders the tiered needs-you page", async () => {
     const src = fixtureSource();

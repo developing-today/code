@@ -311,8 +311,7 @@ impl BlockList for SharedEventStore {
     /// invents no block.
     fn is_blocked(&self, kind: BlockKind, value: &[u8]) -> bool {
         self.read(|store| {
-            Ok(EventStore::is_blocked(store, kind, value, crate::time::unix_ms())
-                .unwrap_or(false))
+            Ok(EventStore::is_blocked(store, kind, value, crate::time::unix_ms()).unwrap_or(false))
         })
         .unwrap_or(false)
     }
@@ -806,6 +805,7 @@ mod tests {
             note: None,
             link: None,
             checkpoint: None,
+            rotation: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

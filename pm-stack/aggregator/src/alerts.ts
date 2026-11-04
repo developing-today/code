@@ -70,6 +70,21 @@ export interface PushSubscriptionRow {
   gone_count: number;
 }
 
+/** One alerts.notification_sends ledger row (#3319): one per send
+ * attempt, written by logSend; acted_on_at is stamped by the
+ * exactly-once Ack transition. The insert names no timestamp column,
+ * so the send time is the row's defaulted created_at; sent_at is
+ * read first when a row carries one. */
+export interface NotificationSendRow {
+  class: string;
+  object_ref: string;
+  incident_id: string | null;
+  outcome: string;
+  sent_at?: string | null;
+  created_at?: string | null;
+  acted_on_at: string | null;
+}
+
 export interface QuietPrefs {
   start: string;
   end: string;
@@ -374,7 +389,13 @@ export class AlertsStore {
   }
 
   async listSubscriptions(): Promise<PushSubscriptionRow[]> {
-    return this.db.query<PushSubscriptionRow>(`select * from alerts.push_subscriptions order by created_at`);
+    const rows = await this.db.query<PushSubscriptionRow>(
+      `select * from alerts.push_subscriptions order by created_at`,
+    );
+    // #3702 decision 3: old stored prefs are not rewritten, but must not
+    // be reinterpreted on read. Apply the same per-field fallbacks used at
+    // intake so delivery and the prefs page see safe values.
+    return rows.map((row) => ({ ...row, quiet: mergeQuiet(row.quiet) }));
   }
 
   /** Design §4: a 404/410 marks the subscription gone; two consecutive
@@ -527,6 +548,13 @@ export class AlertsStore {
          entry.incidentId ? sqlStr(entry.incidentId) : "null"
        }, ${sqlStr(entry.outcome)})`,
     );
+  }
+
+  /** Every send-ledger row (#3319 roll-up input). The ledger is one
+   * row per attempt, so a full read stays small; the rolling window
+   * is applied by the pure roll-up in src/notifications.ts. */
+  async listSends(): Promise<NotificationSendRow[]> {
+    return this.db.query<NotificationSendRow>(`select * from alerts.notification_sends`);
   }
 }
 

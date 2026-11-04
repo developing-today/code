@@ -1152,6 +1152,33 @@ let
     }
   );
 
+  # fleet multicall binary packages (pkgs/fleet; epic code#5412,
+  # step 1 code#5429). One workspace, capability variants as
+  # separate attrs; the connect-static flavor (musl) is only
+  # offered on Linux, where a static target makes sense.
+  make-fleet = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      fleetPkgs = pkgs.callPackage ../pkgs/fleet {
+        sourceRev = inputs.self.rev or "dirty";
+      };
+    in
+    {
+      packages = {
+        inherit (fleetPkgs)
+          fleet
+          fleet-serve
+          fleet-connect
+          fleet-brokers
+          ;
+      }
+      // pkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+        inherit (fleetPkgs) fleet-connect-static fleet-static;
+      };
+    }
+  );
+
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
@@ -1230,6 +1257,7 @@ let
         make-mcpx-overlay
         make-mcpx-modules
         make-laptop-backups-checks
+        make-fleet
         ;
     }
   ];

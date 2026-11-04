@@ -864,9 +864,7 @@ class ColdStore:
                     # recorded hash, and refuse instead of sealing a
                     # mismatch. The sealed size is the decoded size, not a
                     # third racy stat() of the live source.
-                    frame_hash, plain_size = self._decompress_and_hash_frame(
-                        frame_path
-                    )
+                    frame_hash, plain_size = self._decompress_and_hash_frame(frame_path)
                     if frame_hash != obj_hash:
                         raise ColdStoreError(
                             f"source {src} changed during pack: compressed"
@@ -2093,6 +2091,13 @@ class ColdStore:
         LastModified stamps, so position-first would mask the age
         verdict entirely.) The scan never deletes.
         """
+        if min_age_days < 0:
+            raise ColdStoreError(
+                f"min_age_days must be >= 0 (got {min_age_days}): a negative"
+                " age floor silently disables the eviction age gate"
+            )
+        if keep_newest < 0:
+            raise ColdStoreError(f"keep_newest must be >= 0 (got {keep_newest})")
         epoch = datetime.min.replace(tzinfo=timezone.utc)
         objects = [
             o
@@ -2104,7 +2109,7 @@ class ColdStore:
             key=lambda o: (o["last_modified"] or epoch, o["key"]),
             reverse=True,
         )
-        protected = {o["key"] for o in newest_first[: max(keep_newest, 0)]}
+        protected = {o["key"] for o in newest_first[:keep_newest]}
         now = datetime.now(timezone.utc)
         min_age = timedelta(days=min_age_days)
         conn = self.db()

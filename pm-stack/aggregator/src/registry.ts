@@ -1,23 +1,17 @@
 // The agent/session identity registry (#906 §3). Pure builders + merge:
 // the collector assembles records from the sources it can read (sandbox
-// OpenCode sessions, the Jules keeper state, Muse launch
+// OpenCode sessions, Muse launch
 // records), the fleet feed carries them, and the aggregator merges them
 // with the laptop's live sessions into a durable store — so a session
 // stays in the registry after it expires out of the attention feed.
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
-import { parseRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
+import { isValidRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
 import { isIsoDate } from "./validate.ts";
 
 function isValidTaskRef(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    parseRef(value);
-    return true;
-  } catch {
-    return false;
-  }
+  return isValidRef(value);
 }
 
 /** Agent identity for an OpenCode session entry. */

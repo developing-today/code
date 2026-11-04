@@ -84,6 +84,29 @@
           });
         }
       )
+      # cutter 2.5.0 (code#5269): Qt 6.12's uic rejects the templated class
+      # name "AddressableItemList<>" used in seven of cutter's .ui files
+      # ("Invalid class name"), failing the build and cascading into the
+      # amd toplevel. Mirror upstream's own fix: give the default
+      # instantiation the plain name AddressableItemListView (a using-alias
+      # added to AddressableItemList.h) and use it in the .ui files. Drop
+      # this overlay once nixpkgs ships a cutter whose .ui files pass uic.
+      (final: prev: {
+        cutter = prev.cutter.overrideAttrs (old: {
+          postPatch = (old.postPatch or "") + ''
+            sed -i 's/AddressableItemList&lt;&gt;/AddressableItemListView/g' \
+              src/dialogs/XrefsDialog.ui \
+              src/widgets/BreakpointWidget.ui \
+              src/widgets/FlagsWidget.ui \
+              src/widgets/GlobalsWidget.ui \
+              src/widgets/ListDockWidget.ui \
+              src/widgets/SearchWidget.ui \
+              src/widgets/StringsWidget.ui
+            sed -i 's|^#endif // ADDRESSABLE_ITEM_LIST_H|using AddressableItemListView = AddressableItemList<CutterTreeView>;\n\n#endif // ADDRESSABLE_ITEM_LIST_H|' \
+              src/widgets/AddressableItemList.h
+          '';
+        });
+      })
       # Provides pkgs.openclaw + pkgs.openclawPackages for home/openclaw.
       inputs.nix-openclaw.overlays.default
       # inputs.waybar.overlays.default # ?? !! style.css

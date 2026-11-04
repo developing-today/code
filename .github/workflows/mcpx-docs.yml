@@ -19,13 +19,6 @@ name: mcpx docs
 # differ only in that one value (#1941).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/mcpx-docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -42,6 +35,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           # Same cache posture as mcpx-nixbuild.yml (#2120): no
           # FlakeHub, the GitHub Actions cache is the cache.
@@ -94,6 +88,7 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
         with:
           use-flakehub: false
           use-gha-cache: true
@@ -106,6 +101,10 @@ jobs:
       # argument (#1941).
       - name: Nix build (deploy variant, siteUrl /code/)
         run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
           nix build --impure --print-build-logs --expr \
             '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.mcpx-docs.override { siteUrl = "/code/"; }'
 

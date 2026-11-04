@@ -56,8 +56,8 @@ locally against a SQLite file (`file:` URL) or remotely via
 | `DATABASE_URL`           | libSQL connection URL (defaults to `file:data/projector.db`)              |
 
 `PM_REPOS` is a comma-separated allow-list of `owner/repo` names for intake and
-reconcile (e.g. `developing-today/code,developing-today/opencode,
-developing-today/openchamber,dezren39/nix`).
+reconcile (e.g. `developing-today/code,developing-today-forks/opencode,
+developing-today-forks/openchamber,dezren39/nix`).
 
 ## Run it locally
 
@@ -74,18 +74,21 @@ local source you don't commit.
 
 ### Endpoints
 
-| Route                     | Method | Auth   | Purpose                                              |
-| ------------------------- | ------ | ------ | ---------------------------------------------------- |
-| `/health`                 | GET    | none   | ok + row counts                                      |
-| `/github/webhook`         | POST   | HMAC   | GitHub App webhook intake                            |
-| `/items?refs=a/b#1,c/d#2` | GET    | none   | items (or `?repo=`, `?state=`, `?kind=`, `?limit=`)  |
-| `/comments?refs=…`        | GET    | none   | unified comment stream, newest first                 |
-| `/comments?subject=…`     | GET    | none   | comment stream across everything linked to a subject |
-| `/links?subject=…`        | GET    | none   | registry rows (or `?ref=`)                           |
-| `/links`                  | POST   | bearer | create/update a link                                 |
-| `/links?subject=…&ref=…`  | DELETE | bearer | remove a link                                        |
-| `/subjects/<subject>`     | GET    | none   | joined view: links + live item state + activity      |
-| `/reconcile`              | POST   | bearer | trigger a reconciliation poll                        |
+| Route                                         | Method | Auth   | Purpose                                                           |
+| --------------------------------------------- | ------ | ------ | ----------------------------------------------------------------- |
+| `/health`                                     | GET    | none   | ok + row counts                                                   |
+| `/github/webhook`                             | POST   | HMAC   | GitHub App webhook intake                                         |
+| `/items?refs=a/b#1,c/d#2`                     | GET    | none   | items (or `?repo=`, `?state=`, `?kind=`, `?limit=`)               |
+| `/comments?refs=…`                            | GET    | none   | unified comment stream, newest first                              |
+| `/comments?subject=…`                         | GET    | none   | comment stream across everything linked to a subject              |
+| `/links?subject=…`                            | GET    | none   | registry rows (or `?ref=`)                                        |
+| `/links`                                      | POST   | bearer | create/update a link                                              |
+| `/links?subject=…&ref=…`                      | DELETE | bearer | remove a link                                                     |
+| `/subjects/<subject>`                         | GET    | none   | joined view: links + live item state + activity                   |
+| `/hot?after=<seq>&limit=<n>&high_water=<seq>` | GET    | none   | hot-list page (ascending, exclusive cursor) + issued `high_water` |
+| `/hot/checkpoints?consumer=<id>`              | GET    | none   | a consumer's acked checkpoint cursor                              |
+| `/hot/checkpoints`                            | POST   | bearer | ack a checkpoint `{consumer, cursor, highWater}`                  |
+| `/reconcile`                                  | POST   | bearer | trigger a reconciliation poll                                     |
 
 **Subjects** are external keys:
 
@@ -96,6 +99,42 @@ local source you don't commit.
 - `gh:<ref>` — another item, for one-hop "related" links
 
 `relation` is a loose label: `tracks` | `implements` | `relates`.
+
+## Hot list (#5204)
+
+Alongside the item/comment projection, every handled webhook event also
+appends one normalized row per sub-event to `pmp_hot_events` — a durable,
+queryable change ledger consumers sweep instead of polling GitHub. Rows
+carry a stable `event_id`, the delivery id, repo, event/action, the source
+ref (`owner/repo#N`, or the git ref for pushes), actor, source link and
+source timestamp where available, plus the received timestamp. Full raw
+webhook bodies are never persisted. A push appends one row per commit.
+
+- **Idempotency:** `event_id` is `"<x-github-delivery>:<sub-event>"`, so a
+  redelivery of the same delivery appends nothing twice; distinct
+  deliveries stay distinct rows. `seq` is the monotonic (not necessarily
+  dense) pagination cursor.
+- **Sweep protocol:** `GET /hot?after=<seq>&limit=<n>` returns events in
+  ascending `seq` order strictly after the exclusive cursor, plus the
+  `high_water` the server issued for the sweep. Pass that `high_water`
+  back on later pages to pin the sweep to a fixed window; events arriving
+  mid-sweep belong to the next sweep.
+- **Checkpoints:** a consumer acks only after its sweep completes
+  (`POST /hot/checkpoints`, bearer). Acks are monotonic (a stale ack never
+  rewinds) and a cursor past the sweep's issued `high_water` is rejected,
+  so a failed or partial sweep resumes from its old checkpoint and
+  replays safely. The bound is enforced against server-controlled state:
+  a `high_water` pin on `GET /hot` is clamped to the ledger's actual
+  high-water, and an ack whose claimed `highWater` exceeds the ledger's
+  current high-water is rejected (`high_water_past_server`) -- a caller
+  cannot mint a future bound and skip events that arrive later.
+
+Retention/ownership: the ledger lives in the same namespaced (`pmp_`)
+database as the rest of the projection and is owned by the projector;
+rows are disposable and rebuildable by replaying deliveries, like every
+other projection here. Wiring the live GitHub App fanout/deployment that
+feeds production consumers is a later slice — this slice is the store,
+the projector mapping, and the HTTP protocol only.
 
 ## Read schema for Session K (aggregator UI)
 

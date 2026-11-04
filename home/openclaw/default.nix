@@ -27,7 +27,10 @@ let
   # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
-  opencodeRouteProxyPort = 18750;
+  # The opencode-route provider talks to the OpenCode server facade
+  # directly (127.0.0.1:13420/v1) since the route proxy's retirement
+  # (opencode#1153, 2026-11-04); the proxy's port (18750) is free.
+  opencodeServerPort = 13420;
   # Fixed loopback port of the dedicated embedding server below (#1300).
   embeddingPort = 18791;
   localProvider = port: models: {
@@ -95,7 +98,6 @@ in
     Unit = {
       After = [
         "openclaw-embedding.service"
-        "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "agy-proxy.service"
         "codex-proxy.service"
@@ -103,9 +105,27 @@ in
       ];
       Wants = [
         "openclaw-embedding.service"
-        "opencode-route-proxy.service"
         "mcpx.service"
       ];
+    };
+    Service = {
+      # Materialize the facade credential at every gateway start
+      # (opencode#1146 step 3): the opencode server password lives
+      # in its service record — the same source oc-password-sync
+      # reads — and the provider config references the value below
+      # as an env SecretRef (programs.openclaw.environment reads
+      # the file at start). Rebuilt per start, so a server-side
+      # password rotation heals at the next gateway restart. The
+      # file holds the complete Authorization header value.
+      ExecStartPre = toString (
+        pkgs.writeShellScript "openclaw-facade-auth-materialize" ''
+          set -eu
+          umask 077
+          mkdir -p "$HOME/.local/state/openclaw"
+          PW=$(${pkgs.jq}/bin/jq -r .password "$HOME/.local/state/opencode/service-prod.json")
+          printf 'Basic %s' "$(printf 'opencode:%s' "$PW" | ${pkgs.coreutils}/bin/base64 -w0)" > "$HOME/.local/state/openclaw/opencode-server-auth"
+        ''
+      );
     };
   };
 
@@ -120,6 +140,8 @@ in
       OPENCLAW_GATEWAY_TOKEN = "/run/secrets/openclaw/gateway-token";
       OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
       OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
+      TAVILY_API_KEY = "/run/secrets/openclaw/tavily-api-key";
+      OPENCODE_SERVER_AUTH = "${homeDir}/.local/state/openclaw/opencode-server-auth";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):
@@ -326,22 +348,38 @@ in
         };
       };
 
-      # Model routing: OpenClaw uses only the opencode-route door
-      # (Drew, 2026-10-31). That door is pass-through only — it handles
-      # auth and translates pool routes; the underlying pools are
-      # reached exclusively through OpenCode routes (see QUOTAS.md).
+      # Model routing: OpenClaw uses only the opencode-route pools
+      # (Drew, 2026-10-31), reached through the OpenCode server
+      # facade since the route proxy retired (opencode#1153); the
+      # underlying pools are reached exclusively through OpenCode
+      # routes (see QUOTAS.md).
       models = {
         mode = "merge";
         providers = {
-          # The route proxy (code#2229) fronts the OpenCode route
-          # pools (#2518): each model id is an opencode-route pool.
-          opencode-route = localProvider opencodeRouteProxyPort [
-            (model "workhorse" "Workhorse (OpenCode route pool)")
-            (model "speed" "Speed (OpenCode route pool)")
-            (model "specialist" "Specialist (OpenCode route pool)")
-            (model "summit" "Summit (OpenCode route pool)")
-            (model "scout" "Scout (OpenCode route pool)")
-          ];
+          # The OpenCode server facade fronts the route pools
+          # (#2518): each model id is an opencode-route pool. The
+          # facade requires the server credential, carried as an
+          # Authorization header whose value is an env SecretRef —
+          # materialized at gateway start by the unit's ExecStartPre
+          # from the server's service record, so the credential
+          # itself never enters the store (opencode#1146 step 3).
+          opencode-route = {
+            baseUrl = "http://127.0.0.1:${toString opencodeServerPort}/v1";
+            apiKey = "local-proxy";
+            api = "openai-completions";
+            headers.Authorization = {
+              source = "env";
+              provider = "default";
+              id = "OPENCODE_SERVER_AUTH";
+            };
+            models = [
+              (model "workhorse" "Workhorse (OpenCode route pool)")
+              (model "speed" "Speed (OpenCode route pool)")
+              (model "specialist" "Specialist (OpenCode route pool)")
+              (model "summit" "Summit (OpenCode route pool)")
+              (model "scout" "Scout (OpenCode route pool)")
+            ];
+          };
         };
       };
 
@@ -373,7 +411,7 @@ in
         ownership = "explicit";
         entries = {
           main = {
-            name = "OpenClaw (laptop node)";
+            name = "Shed";
           };
           # The ACP-runtime agent entry (opencode-acp, #2229 mechanism 1)
           # is removed for now: the nix-openclaw generated schema types an
@@ -419,62 +457,62 @@ in
         slots.memory = "memory-lancedb";
 
         entries = {
-        acpx = {
-          enabled = true;
-          config = {
-            # ACP sessions are non-interactive; on Drew's own repos the
-            # fleet posture is approve-all, with unexpected prompts denied
-            # rather than hanging the session.
-            permissionMode = "approve-all";
-            nonInteractivePermissions = "deny";
-            # Per-agent command override for the EMBEDDED acpx runtime.
-            # Without this, acpx defaults to `npx -y opencode-ai acp` —
-            # upstream OpenCode v1, which rejects the fleet's v2 config
-            # (and the npx fetch hangs on this laptop's npmjs route).
-            # The standalone acpx CLI reads ~/.acpx/config.json instead;
-            # that file is kept in sync above, but the plugin ignores it.
-            # Via the ACP-to-HTTP adapter (#1243), not `opencode acp`:
-            # sessions land on the shared serve at 127.0.0.1:13420.
-            # Fallback: command "/etc/profiles/per-user/user/bin/opencode"
-            # with args [ "acp" ] restores the private-server path.
-            agents.opencode = {
-              command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
-              args = [
-                "--server"
-                "http://127.0.0.1:13420"
-              ];
-            };
-            agents.claude = {
-              command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
-            };
-            agents.codex = {
-              command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
-            };
-            agents.agy = {
-              command = "/run/current-system/sw/bin/agy_acp_server";
+          acpx = {
+            enabled = true;
+            config = {
+              # ACP sessions are non-interactive; on Drew's own repos the
+              # fleet posture is approve-all, with unexpected prompts denied
+              # rather than hanging the session.
+              permissionMode = "approve-all";
+              nonInteractivePermissions = "deny";
+              # Per-agent command override for the EMBEDDED acpx runtime.
+              # Without this, acpx defaults to `npx -y opencode-ai acp` —
+              # upstream OpenCode v1, which rejects the fleet's v2 config
+              # (and the npx fetch hangs on this laptop's npmjs route).
+              # The standalone acpx CLI reads ~/.acpx/config.json instead;
+              # that file is kept in sync above, but the plugin ignores it.
+              # Via the ACP-to-HTTP adapter (#1243), not `opencode acp`:
+              # sessions land on the shared serve at 127.0.0.1:13420.
+              # Fallback: command "/etc/profiles/per-user/user/bin/opencode"
+              # with args [ "acp" ] restores the private-server path.
+              agents.opencode = {
+                command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
+                args = [
+                  "--server"
+                  "http://127.0.0.1:13420"
+                ];
+              };
+              agents.claude = {
+                command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+              };
+              agents.codex = {
+                command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+              };
+              agents.agy = {
+                command = "/run/current-system/sw/bin/agy_acp_server";
+              };
             };
           };
-        };
-        slack.enabled = true;
-        codex.enabled = true;
-        copilot.enabled = true;
-        "memory-lancedb" = {
-          enabled = true;
-          config = {
-            embedding = {
-              # Direct OpenAI-compatible path against the fixed local
-              # llama-server above. The apiKey is a placeholder label,
-              # not a credential: the loopback server checks no key
-              # (same posture as localProvider).
-              apiKey = "local-embedding";
-              baseUrl = "http://127.0.0.1:${toString embeddingPort}/v1";
-              model = "Qwen3-Embedding-0.6B-Q8_0";
-              dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
+          slack.enabled = true;
+          codex.enabled = true;
+          copilot.enabled = true;
+          "memory-lancedb" = {
+            enabled = true;
+            config = {
+              embedding = {
+                # Direct OpenAI-compatible path against the fixed local
+                # llama-server above. The apiKey is a placeholder label,
+                # not a credential: the loopback server checks no key
+                # (same posture as localProvider).
+                apiKey = "local-embedding";
+                baseUrl = "http://127.0.0.1:${toString embeddingPort}/v1";
+                model = "Qwen3-Embedding-0.6B-Q8_0";
+                dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
+              };
+              autoRecall = true;
+              autoCapture = false;
             };
-            autoRecall = true;
-            autoCapture = false;
           };
-        };
         };
       };
 

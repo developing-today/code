@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { sanitizeRegistry } from "../src/feed.ts";
 import type { SessionRecord } from "../src/model.ts";
-import { identitiesFromRecords, isSessionRecord, mergeRecords, parseLaunchRecords, recordFromLaunch, recordFromSessionEntry } from "../src/registry.ts";
+import {
+  identitiesFromRecords,
+  isSessionRecord,
+  mergeRecords,
+  parseLaunchRecords,
+  recordFromLaunch,
+  recordFromSessionEntry,
+} from "../src/registry.ts";
 import { sessionRecordIsLive } from "../src/render.ts";
 
 // #3525: isSessionRecord admitted records missing status/agentId/agentLabel
@@ -86,7 +93,12 @@ describe("tokensTotal, when present, must be a finite number >= 0 (#3525)", () =
 
 describe("real producers still pass the gate unchanged (#3525)", () => {
   test("recordFromSessionEntry output passes, with and without tokens", () => {
-    const entry = { sessionId: "ses_feed", source: "claude-code" as const, lastActivityAt: "2026-11-02T00:00:00Z", title: "Feed session" };
+    const entry = {
+      sessionId: "ses_feed",
+      source: "claude-code" as const,
+      lastActivityAt: "2026-11-02T00:00:00Z",
+      title: "Feed session",
+    };
     expect(isSessionRecord(recordFromSessionEntry(entry, 42_000))).toBe(true);
     expect(isSessionRecord(recordFromSessionEntry(entry))).toBe(true);
   });
@@ -115,7 +127,11 @@ describe("a poisoned record drops individually on every admission path (#3525)",
   });
 
   test("feed path: sanitizeRegistry drops poisoned entries, keeps well-formed ones", () => {
-    const sanitized = sanitizeRegistry([valid, { ...validRaw, id: "ses_inf", tokensTotal: Infinity }, rec({ id: "ses_feed_good" })]);
+    const sanitized = sanitizeRegistry([
+      valid,
+      { ...validRaw, id: "ses_inf", tokensTotal: Infinity },
+      rec({ id: "ses_feed_good" }),
+    ]);
     expect(sanitized.rows?.map((r) => r.id)).toEqual(["ses_valid", "ses_feed_good"]);
     expect(sanitized.dropped).toBe(1);
   });

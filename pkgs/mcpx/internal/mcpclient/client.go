@@ -120,6 +120,15 @@ type Client struct {
 	// onURLElicitationRequired opens the URL elicitations a -32042
 	// tools/call error names, when something (the daemon broker) can.
 	onURLElicitationRequired URLElicitationHandler
+	// onSessionSettled, when set, runs after a legacy session recovery
+	// has fully reinitialised -- new session id AND the protocol state
+	// finishLegacy installed from its answer. The transport's
+	// session-adopted hook fires earlier, when the initialize response
+	// headers arrive, so a consumer persisting session state (the
+	// pool's upstream-session record) must read it from here, not from
+	// the adoption moment, or it saves the old session's state against
+	// the new id.
+	onSessionSettled func()
 	// notif holds notification handlers.
 	notif Notifications
 	// roots are the directories servers may work within.
@@ -508,6 +517,10 @@ func (c *Client) finishLegacy(ctx context.Context, ir initResult) error {
 	c.Negotiated = ir.ProtocolVersion
 	c.negotiated.Store(ir.ProtocolVersion)
 	c.Era = EraLegacy
+	// Publish the era mirror, as probe and Resume do: a connection that
+	// settled modern and then fell back to a legacy recovery would
+	// otherwise leave the mirror saying modern for its whole life.
+	c.modern.Store(false)
 
 	if h, ok := c.t.(interface{ setNegotiated(string) }); ok {
 		h.setNegotiated(ir.ProtocolVersion)
@@ -679,6 +692,14 @@ type URLElicitationHandler func(ctx context.Context, elicitations []URLElicitati
 func (c *Client) SetURLElicitationHandler(h URLElicitationHandler) {
 	c.mu.Lock()
 	c.onURLElicitationRequired = h
+	c.mu.Unlock()
+}
+
+// SetSessionSettledHook installs the hook run after a legacy session
+// recovery has fully reinitialised (see onSessionSettled).
+func (c *Client) SetSessionSettledHook(fn func()) {
+	c.mu.Lock()
+	c.onSessionSettled = fn
 	c.mu.Unlock()
 }
 
@@ -952,7 +973,7 @@ func declares(caps map[string]json.RawMessage, capability, flag string) bool {
 // subscriptions/listen, so against a modern server this adds the URI to the
 // connection's listen stream, which is reopened with the new filter.
 func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		l := c.listen
 		c.mu.Unlock()
@@ -968,7 +989,7 @@ func (c *Client) SubscribeResource(ctx context.Context, uri string) error {
 
 // UnsubscribeResource stops notifications for a resource.
 func (c *Client) UnsubscribeResource(ctx context.Context, uri string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		l := c.listen
 		c.mu.Unlock()
@@ -1022,7 +1043,7 @@ func (c *Client) ListResourceTemplatesWithHints(ctx context.Context) ([]Resource
 // a modern server this only records the level, and every later request
 // carries it.
 func (c *Client) SetLogLevel(ctx context.Context, level string) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		c.mu.Lock()
 		c.logLevel = level
 		c.mu.Unlock()
@@ -1213,7 +1234,7 @@ func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMe
 			}
 			return c.roundTripOnce(ctx, method, params)
 		}
-		if attempt > 0 || !allowReissue || c.Era != EraModern || ctx.Err() != nil || !isStreamLost(err) {
+		if attempt > 0 || !allowReissue || c.modernEra() != EraModern || ctx.Err() != nil || !isStreamLost(err) {
 			return raw, err
 		}
 	}
@@ -1254,6 +1275,15 @@ func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
 		return false
 	}
 	c.reinitGen.Add(1)
+	// The recovery has settled: the new session's id and protocol state
+	// are both installed, so a persistence consumer reading the session
+	// now gets the pair that belongs together.
+	c.mu.Lock()
+	settled := c.onSessionSettled
+	c.mu.Unlock()
+	if settled != nil {
+		settled()
+	}
 	// A restarted upstream's catalogue is not the cached one.
 	c.mu.Lock()
 	n := c.notif
@@ -1327,7 +1357,7 @@ func (c *Client) roundTripOnce(ctx context.Context, method string, params json.R
 // server/discover instead, which every modern server MUST implement and
 // which, like ping, does nothing but answer.
 func (c *Client) Ping(ctx context.Context) error {
-	if c.Era == EraModern {
+	if c.modernEra() == EraModern {
 		return c.call(ctx, "server/discover", json.RawMessage(`{}`), nil)
 	}
 	return c.call(ctx, "ping", json.RawMessage(`{}`), nil)
@@ -1348,7 +1378,7 @@ func (c *Client) nextPage(next *string, sent *string) (string, bool) {
 	if next == nil {
 		return "", false
 	}
-	if *next == "" && c.Era != EraModern {
+	if *next == "" && c.modernEra() != EraModern {
 		return "", false
 	}
 	if sent != nil && *sent == *next {
@@ -1649,7 +1679,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	// modern is server-directed, so the plain call below runs and a
 	// task answer is polled to its terminal result before returning.
 	support := c.resolveTaskSupport(name)
-	if support == taskSupportRequired && c.Era == EraLegacy {
+	if support == taskSupportRequired && c.modernEra() == EraLegacy {
 		raw, err := c.callToolAsLegacyTask(ctx, name, args)
 		if err != nil {
 			// A -32042 can surface from the task-augmented call itself
@@ -1711,7 +1741,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		// only a required tool's: advertising the tasks extension lets
 		// the server answer an optional tool with a task past its eager
 		// window, and the handle is not the tool's result.
-		if c.Era == EraModern && isTaskResult(raw) {
+		if c.modernEra() == EraModern && isTaskResult(raw) {
 			raw, err = c.finishModernTask(ctx, name, raw)
 			if err != nil {
 				return nil, err
@@ -1733,7 +1763,7 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 	var raw json.RawMessage
 	if err := c.call(ctx, "resources/read", params, &raw); err != nil {
 		var re *rpcError
-		if errors.As(err, &re) && (re.Code == codeResourceNotFound || (re.Code == codeInvalidParams && c.Era == EraModern)) {
+		if errors.As(err, &re) && (re.Code == codeResourceNotFound || (re.Code == codeInvalidParams && c.modernEra() == EraModern)) {
 			return nil, &ResourceNotFoundError{URI: uri, err: re}
 		}
 		return nil, err

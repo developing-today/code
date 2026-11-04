@@ -172,6 +172,8 @@ var handFlagIndex = map[string][]HandFlag{
 	},
 	"man": {
 		{Name: "install", Usage: "write the page into this directory as man1/mcpx.1"},
+		{Name: "format", Usage: "output format: roff (the man page) or markdown (the generated reference tree)"},
+		{Name: "o", Usage: "write the markdown reference tree into this directory (with --format markdown)"},
 	},
 	"openapi": {
 		{Name: "o", Usage: "write to this file instead of stdout"},
