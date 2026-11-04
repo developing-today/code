@@ -307,6 +307,32 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).not.toContain("1 blocked on an unresolved blocker");
   });
 
+  test("dependency edges carry an arrowhead marker pointing at the blocker (Codex round-2)", () => {
+    const html = renderWith(fixturePool());
+    expect(html).toContain("<marker id=\"dep-arrow-epic-graph-developing-today-code-1\"");
+    expect(html).toContain('marker-end="url(#dep-arrow-epic-graph-developing-today-code-1)"');
+    expect(html).toContain("with an arrowhead pointing at the blocker");
+  });
+
+  test("selector and sections are scoped to the project pool even when the full pool is passed (Codex round-2)", () => {
+    const pool = [
+      item({ number: 1, title: "Epic one", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1) }),
+      // Another Area's epic, present only in the full epicPool the
+      // server passes for membership/blocker resolution.
+      item({ number: 9, title: "Other area epic", kind: "Epic", area: "other-area" }),
+      item({ number: 10, epicRef: R(9), area: "other-area" }),
+    ];
+    const config = projectConfigById("pm-dashboard")!;
+    const items = new Map<RefKey, GhItem>();
+    const detail = buildProjectDetail(config, items, pool, []);
+    expect(detail.poolItems.map((p) => p.ref)).not.toContain(R(9));
+    const html = renderProgramProject(detail, items, PROV, undefined, pool);
+    expect(html).toContain('id="epic-graph-developing-today-code-1"');
+    expect(html).not.toContain('id="epic-graph-developing-today-code-9"');
+    expect(html).not.toContain("Other area epic");
+  });
+
   test("the epic-graph flex layout and its narrow-screen stacking ship in the stylesheet", () => {
     const html = renderWith(fixturePool());
     expect(html).toContain(".epic-graph-flex { display: flex;");

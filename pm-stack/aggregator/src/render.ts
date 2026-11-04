@@ -6695,8 +6695,15 @@ function epicGraphAnchor(ref: RefKey): string {
   return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
 }
 
-function epicGraphSectionHtml(items: ProjectPoolItem[]): string {
-  const selector = epicSelector(items);
+function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+  // Selector entries and rendered sections are scoped to the project's
+  // own pool (selectorItems = detail.poolItems): on a normal project
+  // request the caller passes the entire org pool as `items` for
+  // membership and blocker resolution, and rendering every eligible
+  // epic from every Area would bury this project's section in unrelated
+  // projects (Codex round-2 on #3973). Resolution inside each section
+  // still runs against the full `items` pool.
+  const selector = epicSelector(selectorItems);
   if (!selector.length) {
     return `<h3>Per-epic dependency graph</h3><div class="banner">Dependency graph unavailable: no epic in this pool has items yet, so there is no per-epic graph to draw — this is an unavailable state, not an empty graph.</div>`;
   }
@@ -6751,12 +6758,21 @@ function epicGraphOneHtml(
   const Y = (row: number) => 16 + row * 26;
   const width = X(g.maxDepth) + 340;
   const height = g.nodes.length ? Y(g.nodes.length - 1) + 16 : 32;
+  // Dependency edges carry an arrowhead marker pointing at the blocker
+  // (the `to` node): hierarchy depth alone does not show which sibling
+  // blocks which (Codex round-2 on #3973). The marker id is per-epic --
+  // several epic sections share one page, and duplicate ids would make
+  // every edge reference the first section's marker.
+  const depMarkerId = `dep-arrow-${epicGraphAnchor(g.epic.ref)}`;
+  const depDefs = g.edges.some((e) => e.type === "dependency")
+    ? `<defs><marker id="${depMarkerId}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d29922"/></marker></defs>`
+    : "";
   const edgeLines = g.edges
     .map((e) => {
       const a = pos.get(e.from)!;
       const b = pos.get(e.to)!;
       return e.type === "dependency"
-        ? `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#d29922" stroke-width="1.5" stroke-dasharray="5 3"/>`
+        ? `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#d29922" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#${depMarkerId})"/>`
         : `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#8b949e" stroke-width="1"/>`;
     })
     .join("");
@@ -6776,7 +6792,7 @@ function epicGraphOneHtml(
     })
     .join("");
   const svg = g.edges.length
-    ? `<div class="epic-graph-svg"><svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Dependency graph for epic ${esc(g.epic.ref)}" style="max-width:100%;height:auto">${edgeLines}${nodeShapes}</svg><p class="muted">Solid grey lines are sub-issue hierarchy (parent → child); dashed amber lines are dependency edges (item → blocker). Squares are epics; diamonds are references outside this pool whose status is unknown. Every node's state is also written as text in the list — color is never the only signal.</p></div>`
+    ? `<div class="epic-graph-svg"><svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Dependency graph for epic ${esc(g.epic.ref)}" style="max-width:100%;height:auto">${depDefs}${edgeLines}${nodeShapes}</svg><p class="muted">Solid grey lines are sub-issue hierarchy (parent → child); dashed amber lines are dependency edges, with an arrowhead pointing at the blocker (item → blocker). Squares are epics; diamonds are references outside this pool whose status is unknown. Every node's state is also written as text in the list — color is never the only signal.</p></div>`
     : `<p class="muted">Not yet graphed: this epic's items carry no parent / blocked-by edges yet, so there is no graph to draw. The items are listed below.</p>`;
 
   const listHtml = `<ul class="epic-graph-list">${g.nodes
@@ -6869,7 +6885,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
