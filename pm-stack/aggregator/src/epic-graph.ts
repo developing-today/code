@@ -114,7 +114,9 @@ export interface EpicGraph {
   totalNodes: number;
   /** Nodes left out by the cap (0 when everything is shown). */
   truncated: number;
-  /** Shown nodes that are out-of-pool unresolved refs. */
+  /** Out-of-pool unresolved refs in the full one-hop set, counted
+   * before the node cap: external refs sort last in the node order,
+   * so a capped graph would otherwise report zero of them. */
   externalCount: number;
   /** Pool items in the graph whose epicRef names the epic. */
   memberCount: number;
@@ -349,7 +351,7 @@ export function epicGraph(
     edges,
     totalNodes,
     truncated: totalNodes - shown.length,
-    externalCount: nodes.filter((n) => n.unresolved).length,
+    externalCount: externalRefs.size,
     memberCount: members.length,
     blockedCount,
     rankedBlocked,

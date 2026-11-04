@@ -153,6 +153,20 @@ describe("epicGraph", () => {
     expect(g.rankedBlocked[0]!.blockers).toEqual([R(99)]);
   });
 
+  test("external count is computed before the node cap (Codex round-3)", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1) }),
+      item({ number: 3, epicRef: R(1) }),
+      item({ number: 4, epicRef: R(1), blockedBy: [R(99)] }),
+    ];
+    const g = epicGraph(pool, R(1), 3);
+    // External refs sort last in the node order, so the cap hides the
+    // only external node; the summary count must still report it.
+    expect(g.nodes.map((n) => n.ref)).not.toContain(R(99));
+    expect(g.externalCount).toBe(1);
+  });
+
   test("external nodes keep the dependency links observed for them", () => {
     const g = epicGraph(fixturePool(), R(1));
     const ext = g.nodes.find((n) => n.ref === R(99))!;
@@ -305,6 +319,22 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     const html = renderProgramProject(detail, items, PROV, undefined, pool);
     expect(html).toContain("0 blocked on an unresolved blocker");
     expect(html).not.toContain("1 blocked on an unresolved blocker");
+  });
+
+  test("selector counts resolve against the full pool, entries stay project-scoped (Codex round-3)", () => {
+    const pool = [
+      item({ number: 1, title: "Epic one", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
+      // Closed blocker in another Area: only the full pool resolves it.
+      item({ number: 3, state: "closed", area: "other-area" }),
+    ];
+    const config = projectConfigById("pm-dashboard")!;
+    const items = new Map<RefKey, GhItem>();
+    const detail = buildProjectDetail(config, items, pool, []);
+    const html = renderProgramProject(detail, items, PROV, undefined, pool);
+    // The selector entry agrees with the section: 0 blocked, not 1.
+    expect(html).toContain("1 item \u00b7 0 blocked \u00b7 0 done");
+    expect(html).not.toContain("1 blocked \u00b7");
   });
 
   test("dependency edges carry an arrowhead marker pointing at the blocker (Codex round-2)", () => {

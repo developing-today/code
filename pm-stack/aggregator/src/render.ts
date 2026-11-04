@@ -6703,7 +6703,16 @@ function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPo
   // epic from every Area would bury this project's section in unrelated
   // projects (Codex round-2 on #3973). Resolution inside each section
   // still runs against the full `items` pool.
-  const selector = epicSelector(selectorItems);
+  // The selector rollups are computed from the full `items` pool too,
+  // then filtered to this project's epic refs (Codex round-3 on
+  // #3973): computing them from the scoped pool made a member whose
+  // blocker lives in another Area count as blocked in the selector
+  // while its section — resolving against the full pool — correctly
+  // reported it unblocked.
+  const projectEpicRefs = new Set(
+    selectorItems.filter((i) => i.kind === "Epic").map((i) => i.ref),
+  );
+  const selector = epicSelector(items).filter((e) => projectEpicRefs.has(e.ref));
   if (!selector.length) {
     return `<h3>Per-epic dependency graph</h3><div class="banner">Dependency graph unavailable: no epic in this pool has items yet, so there is no per-epic graph to draw — this is an unavailable state, not an empty graph.</div>`;
   }
