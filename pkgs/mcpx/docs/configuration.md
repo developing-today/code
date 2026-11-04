@@ -1015,7 +1015,10 @@ skipped launcher phases).
 | `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
 | `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
 | `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it |
+| `script.importsCrossProject` | enum | `isolate` | client | no | `--script-imports-cross-project` | `MCPX_SCRIPT_IMPORTS_CROSS_PROJECT` | how to handle a file edge into another project's manifest |
+| `script.importsNetwork` | enum | `on` | client | no | `--script-imports-network` | `MCPX_SCRIPT_IMPORTS_NETWORK` | allow registry lookups when a package has no declared version |
 | `script.importsOnDynamic` | enum | `warn` | client | no | `--script-imports-on-dynamic` | `MCPX_SCRIPT_IMPORTS_ON_DYNAMIC` | what to do about an import() whose specifier is computed |
+| `script.importsOnMissing` | enum | `fail` | client | no | `--script-imports-on-missing` | `MCPX_SCRIPT_IMPORTS_ON_MISSING` | how to handle a package absent from the dependency set |
 | `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime |
 | `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely |
 | `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates |

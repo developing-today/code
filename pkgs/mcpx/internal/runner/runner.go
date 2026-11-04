@@ -141,6 +141,12 @@ type Options struct {
 	// ImportsOnDynamic selects what a computed dynamic import does:
 	// "warn", "fail" or "ignore" (script.importsOnDynamic).
 	ImportsOnDynamic string
+	// ImportsOnMissing controls unresolved package handling.
+	ImportsOnMissing string
+	// ImportsCrossProject controls whether foreign manifests stay isolated.
+	ImportsCrossProject string
+	// ImportsNetwork controls registry lookups for undeclared packages.
+	ImportsNetwork string
 	// ImportsTimeout bounds the graph computation.
 	ImportsTimeout time.Duration
 	Stdout, Stderr interface{ Write([]byte) (int, error) }
@@ -687,10 +693,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				// or node run still serves as the graph oracle.
 				denoBin = found
 			}
+			resolveOpts := preflight.ResolveOptions{
+				Missing:      preflight.MissingMode(opts.ImportsOnMissing),
+				CrossProject: preflight.CrossProjectMode(opts.ImportsCrossProject),
+				Network:      opts.ImportsNetwork != "off",
+			}
+			if opts.Deps != nil {
+				resolveOpts.Explicit = append([]string(nil), opts.Deps.Packages...)
+			}
 			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
-				append(append([]string{}, rt.ConfigArgs...), depsFlags...), execDir)
+				append(append([]string{}, rt.ConfigArgs...), depsFlags...), execDir, resolveOpts)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err
