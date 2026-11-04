@@ -109,14 +109,23 @@ jobs:
           printf 'Formatting %s file(s):\n' "${#format_files[@]}"
           printf '  %s\n' "${format_files[@]}"
           nix run .#format -- "${format_files[@]}"
-          if git diff --quiet; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Stage every tracked change treefmt actually made, not just
+          # the listed files: formatters rewrite companions of listed
+          # files (rustfmt reformats out-of-line mod children of a
+          # listed parent), and staging only the listed files either
+          # silently dropped those companion changes or failed the
+          # commit below with "no changes added to commit" (#5014).
+          # The checkout was clean before treefmt ran, so every
+          # tracked modification present now is treefmt's. Decide
+          # "nothing to commit" from the staged diff instead.
+          git add -u
+          if git diff --cached --quiet; then
             echo "treefmt made no changes."
             record_success
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- "${format_files[@]}"
           git commit -m "style(treefmt): auto-format on main"
           pushed=0
           for attempt in 1 2; do

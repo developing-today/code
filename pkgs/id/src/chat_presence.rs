@@ -51,7 +51,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -161,7 +161,9 @@ impl PresenceHeartbeat {
         let Ok(signature) = Signature::from_slice(&self.signature) else {
             return false;
         };
-        verifying_key.verify(&self.signing_bytes(), &signature).is_ok()
+        verifying_key
+            .verify_strict(&self.signing_bytes(), &signature)
+            .is_ok()
     }
 
     /// Whether the heartbeat claims typing in `channel`.
@@ -710,7 +712,10 @@ mod tests {
             Liveness::Offline
         );
         let roster = table.roster_at(&chan, &[alice], replay_at);
-        assert!(!roster[0].typing, "a replayed typing claim must not refresh");
+        assert!(
+            !roster[0].typing,
+            "a replayed typing claim must not refresh"
+        );
     }
 
     #[test]
@@ -734,8 +739,43 @@ mod tests {
         forged.ts += 1;
         assert!(!forged.verify());
         let mut forged = hb;
-        forged.node = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes();
+        forged.node = SigningKey::from_bytes(&[8u8; 32])
+            .verifying_key()
+            .to_bytes();
         assert!(!forged.verify());
+    }
+
+    #[test]
+    fn verify_rejects_the_small_order_identity_forgery() {
+        // #1386: the identity point is a small-order key, and the shared
+        // forgery (R = identity, S = 0) passes plain verify for any
+        // message under it — only verify_strict keeps it out of the
+        // presence authentication gate.
+        use crate::test_forgeries::{IDENTITY_KEY, identity_forgery};
+        let chan = channel("general");
+        let mut hb = heartbeat(IDENTITY_KEY, vec![chan], 9_600);
+        hb.signature = identity_forgery().to_vec();
+        assert!(!hb.verify());
+    }
+
+    #[test]
+    fn verify_rejects_a_non_canonical_s() {
+        // #1386: a genuine signature mutated to S + L must be refused,
+        // while the original verifies.
+        use crate::test_forgeries::with_non_canonical_s;
+        let chan = channel("general");
+        let alice_key = SigningKey::from_bytes(&[7u8; 32]);
+        let alice = alice_key.verifying_key().to_bytes();
+        let mut hb = heartbeat(alice, vec![chan], 9_700);
+        hb.sign(&alice_key);
+        assert!(hb.verify());
+        let signature: [u8; 64] = hb
+            .signature
+            .clone()
+            .try_into()
+            .expect("signed heartbeat carries a 64-byte signature");
+        hb.signature = with_non_canonical_s(signature).to_vec();
+        assert!(!hb.verify());
     }
 
     #[test]
@@ -863,5 +903,4 @@ mod tests {
             assert_eq!(table.liveness_at(&alice, &chan, 4_200), Liveness::Live);
         }
     }
-
 }

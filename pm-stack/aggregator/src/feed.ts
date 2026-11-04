@@ -28,7 +28,6 @@ import type {
   ChargeRow,
   DnsSection,
   GoalMeasurement,
-  JulesSummary,
   OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
@@ -87,15 +86,13 @@ export interface FleetFeed {
   /** PAYG lines loadFeed's sanitization dropped (#2450), set only
    * when drops occurred; absent on raw parsed feeds and clean loads. */
   paygDropped?: number;
-  /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
+  /** Sandbox-server sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
-  /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
-  julesSummary?: JulesSummary;
   /** The orchestration job's latest section (#899), when one exists. */
   orchestration?: OrchestrationSection;
   /** The DNS/domain register (#902), parsed by the collector (slice 3). */
   dns?: DnsSection;
-  /** Identity-registry records (#906 §3): sandbox OpenCode + Jules + Muse launches. */
+  /** Identity-registry records (#906 §3): sandbox OpenCode + Muse launches. */
   registry?: SessionRecord[];
   /** Usage & billing hub (design §2.3): family-2 services extracted from
    * quota-view.md Part (b) by the collector; absent in older feeds. */
@@ -694,7 +691,7 @@ function isSaasService(v: unknown): v is SaasService {
     (v.paygEstimate === null || isPaygEstimate(v.paygEstimate)) &&
     (v.paygNote === undefined || typeof v.paygNote === "string") &&
     (v.billedUsd === undefined || v.billedUsd === null || isNonNegative(v.billedUsd)) &&
-    (typeof v.measuredAt === "string" || v.measuredAt === null) &&
+    (v.measuredAt === null || isIsoDate(v.measuredAt)) &&
     typeof v.sourceClass === "string" &&
     USAGE_SOURCE_CLASSES.includes(v.sourceClass) &&
     typeof v.sourceNote === "string" &&

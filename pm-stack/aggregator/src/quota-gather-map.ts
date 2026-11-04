@@ -338,7 +338,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (typeof expiry === "number" && Number.isFinite(expiry)) {
     const date = new Date(expiry);
     if (Number.isFinite(date.getTime())) entry.credentialExpiresAt = date.toISOString();
-  } else if (typeof expiry === "string" && Number.isFinite(Date.parse(expiry))) {
+  } else if (isIsoDate(expiry)) {
     entry.credentialExpiresAt = new Date(expiry).toISOString();
   }
   if (result.credentialSource) entry.credentialSource = result.credentialSource;

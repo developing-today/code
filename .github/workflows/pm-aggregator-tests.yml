@@ -15,15 +15,6 @@
 name: pm-aggregator tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pm-stack/**"
-      - ".github/workflows/pm-aggregator-tests.yml"
-  pull_request:
-    paths:
-      - "pm-stack/**"
-      - ".github/workflows/pm-aggregator-tests.yml"
   workflow_dispatch:
 
 permissions:
