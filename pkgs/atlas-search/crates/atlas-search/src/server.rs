@@ -127,7 +127,7 @@ impl Default for RuntimeLimits {
 }
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct RuntimeLimitsFile {
     job_ttl_ms: Option<u64>,
     hard_ttl_ms: Option<u64>,
@@ -175,6 +175,7 @@ pub struct ClientConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawClientConfig {
     name: String,
     token: String,
@@ -182,7 +183,7 @@ struct RawClientConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ServiceConfigFile {
     listen: Option<String>,
     vec_table: Option<String>,
@@ -2299,6 +2300,57 @@ mod tests {
             .unwrap_err(),
             "max_queued_jobs_per_client must be at least 1"
         );
+    }
+
+    #[test]
+    fn service_config_rejects_unknown_keys() {
+        // #5632: a misspelled key in service.json must be a loud
+        // parse error, never a silent fall back to defaults -- the
+        // file carries client tokens, sensitivity ceilings, the
+        // listen address, and the runtime limits. Mirrors the
+        // fleet-config deny_unknown_fields fix (#5460).
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("atlas-service-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        // A fully-spelled config loads.
+        let good = write(
+            "good.json",
+            &format!(
+                r#"{{"listen": "127.0.0.1:18799", "vec_table": "vec_chunks", "limits": {{"max_queued_jobs": 3}}, "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&good, ServeOverrides::default()).unwrap();
+        assert_eq!(settings.limits.max_queued_jobs, 3);
+        // Typo'd top-level key: the limits block must not vanish.
+        let typo_top = write(
+            "typo-top.json",
+            &format!(r#"{{"limts": {{"max_queued_jobs": 0}}, "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&typo_top, ServeOverrides::default()).unwrap_err();
+        assert!(err.contains("unknown field `limts`"), "got: {err}");
+        // Typo'd key inside limits: the cap must not vanish.
+        let typo_inner = write(
+            "typo-inner.json",
+            &format!(r#"{{"limits": {{"max_queued_job": 0}}, "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&typo_inner, ServeOverrides::default()).unwrap_err();
+        assert!(err.contains("unknown field `max_queued_job`"), "got: {err}");
+        // Typo'd key inside a client row.
+        let typo_client = write(
+            "typo-client.json",
+            r#"{"clients": [{"name": "probe", "token": "tok", "ceiling_capp": "personal"}]}"#,
+        );
+        let err = load_service_settings(&typo_client, ServeOverrides::default()).unwrap_err();
+        assert!(err.contains("unknown field"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn start(
