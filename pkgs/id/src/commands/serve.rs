@@ -3212,15 +3212,17 @@ mod tests {
     fn serve_server_config_flag_defaults_to_none() {
         use clap::Parser as _;
         let cli = crate::cli::Cli::try_parse_from(["id", "serve"]).unwrap();
-        let Some(crate::cli::Command::Serve { server_config, .. }) = cli.command else {
+        let Some(crate::cli::Command::Serve(args)) = cli.command else {
             panic!("expected the serve command");
         };
+        let crate::cli::ServeArgs { server_config, .. } = args;
         assert!(server_config.is_none());
         let cli = crate::cli::Cli::try_parse_from(["id", "serve", "--server-config", "ops.toml"])
             .unwrap();
-        let Some(crate::cli::Command::Serve { server_config, .. }) = cli.command else {
+        let Some(crate::cli::Command::Serve(args)) = cli.command else {
             panic!("expected the serve command");
         };
+        let crate::cli::ServeArgs { server_config, .. } = args;
         assert_eq!(server_config, Some(PathBuf::from("ops.toml")));
     }
 }
