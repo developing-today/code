@@ -1,0 +1,236 @@
+import { describe, expect, test } from "bun:test";
+import { epicGraph, epicSelector } from "../src/epic-graph.ts";
+import type { ProjectPoolItem, RefKey } from "../src/model.ts";
+
+const R = (n: number): RefKey => `developing-today/code#${n}` as RefKey;
+
+function item(partial: Partial<ProjectPoolItem> & { number: number }): ProjectPoolItem {
+  return {
+    id: `PVTI_${partial.number}`,
+    url: "https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=1",
+    projectUrl: "https://github.com/orgs/developing-today/projects/4",
+    ref: R(partial.number),
+    repo: "developing-today/code",
+    issueUrl: `https://github.com/developing-today/code/issues/${partial.number}`,
+    title: `item ${partial.number}`,
+    state: "open",
+    contentKind: "issue",
+    status: null,
+    area: "pm-dashboard",
+    horizon: null,
+    kind: null,
+    ...partial,
+  };
+}
+
+function fixturePool(): ProjectPoolItem[] {
+  return [
+    item({ number: 1, title: "Epic one", kind: "Epic" }),
+    item({ number: 2, epicRef: R(1), parentRef: R(1), blockedBy: [R(99)] }),
+    item({ number: 3, epicRef: R(1), parentRef: R(2), blockedBy: [R(2)] }),
+    item({ number: 4, epicRef: R(1), state: "closed" }),
+    item({ number: 5, title: "Other epic", kind: "Epic" }),
+    item({ number: 6, epicRef: R(5), blockedBy: [R(2)] }),
+    item({ number: 7, title: "Epic without children", kind: "Epic" }),
+    item({ number: 8 }),
+  ];
+}
+
+describe("epicSelector", () => {
+  test("lists eligible epics with item and blocked counts", () => {
+    const entries = epicSelector(fixturePool());
+    expect(entries.map((e) => e.ref)).toEqual([R(1), R(5)]);
+    const one = entries[0]!;
+    expect(one.itemCount).toBe(3);
+    expect(one.blockedCount).toBe(2); // #2 waits on out-of-pool #99; #3 waits on open #2
+    expect(one.doneCount).toBe(1); // #4 closed
+    expect(entries[1]!.itemCount).toBe(1);
+    expect(entries[1]!.blockedCount).toBe(1); // #6 waits on open #2
+  });
+
+  test("an epic with no member items is not eligible", () => {
+    const entries = epicSelector(fixturePool());
+    expect(entries.some((e) => e.ref === R(7))).toBe(false);
+  });
+
+  test("no epics in the pool yields an empty selector", () => {
+    expect(epicSelector([item({ number: 1 }), item({ number: 2 })])).toEqual([]);
+  });
+});
+
+describe("epicGraph", () => {
+  test("unknown or non-epic ref is unavailable, never an empty success", () => {
+    const missing = epicGraph(fixturePool(), R(42));
+    expect(missing.status).toBe("unavailable");
+    expect(missing.reason).toContain("not in this pool");
+    const notEpic = epicGraph(fixturePool(), R(8));
+    expect(notEpic.status).toBe("unavailable");
+  });
+
+  test("an epic with no members is unavailable with the reason stated", () => {
+    const g = epicGraph(fixturePool(), R(7));
+    expect(g.status).toBe("unavailable");
+    expect(g.reason).toContain("not yet graphed");
+  });
+
+  test("selection yields exactly the epic pool plus one-hop refs", () => {
+    const g = epicGraph(fixturePool(), R(1));
+    expect(g.status).toBe("ok");
+    expect(g.memberCount).toBe(3);
+    const refs = g.nodes.map((n) => n.ref).sort();
+    // epic #1, members #2 #3 #4, one-hop pool ref #5? no — #6 belongs
+    // to epic #5 and blocks nothing here; #2's blocker #99 is external.
+    expect(refs).toEqual([R(1), R(2), R(3), R(4), R(99)].sort());
+    expect(g.totalNodes).toBe(5);
+    expect(g.truncated).toBe(0);
+  });
+
+  test("one-hop pool refs from another epic are included as pool nodes", () => {
+    const g = epicGraph(fixturePool(), R(5));
+    const two = g.nodes.find((n) => n.ref === R(2));
+    expect(two).toBeDefined();
+    expect(two!.inPool).toBe(true);
+    expect(two!.member).toBe(false);
+    expect(two!.unresolved).toBe(false);
+  });
+
+  test("out-of-pool refs are unresolved external nodes with no fabricated title or state", () => {
+    const g = epicGraph(fixturePool(), R(1));
+    const ext = g.nodes.find((n) => n.ref === R(99));
+    expect(ext).toBeDefined();
+    expect(ext!.inPool).toBe(false);
+    expect(ext!.unresolved).toBe(true);
+    expect(ext!.title).toBeNull();
+    expect(ext!.state).toBeNull();
+    expect(ext!.issueUrl).toBe("https://github.com/developing-today/code/issues/99");
+    expect(g.externalCount).toBe(1);
+  });
+
+  test("dependency edges are distinct from hierarchy edges", () => {
+    const g = epicGraph(fixturePool(), R(1));
+    const kinds = g.edges.map((e) => `${e.type}:${e.from}->${e.to}`).sort();
+    expect(kinds).toContain(`hierarchy:${R(1)}->${R(2)}`);
+    expect(kinds).toContain(`hierarchy:${R(2)}->${R(3)}`);
+    expect(kinds).toContain(`dependency:${R(2)}->${R(99)}`);
+    expect(kinds).toContain(`dependency:${R(3)}->${R(2)}`);
+  });
+
+  test("blocks[] lands as a dependency edge in item-to-blocker orientation", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blocks: [R(3)] }),
+      item({ number: 3, epicRef: R(1) }),
+    ];
+    const g = epicGraph(pool, R(1));
+    expect(g.edges).toContainEqual({ from: R(3), to: R(2), type: "dependency" });
+  });
+
+  test("truncation reports the true total and the cut count", () => {
+    const g = epicGraph(fixturePool(), R(1), 3);
+    expect(g.totalNodes).toBe(5);
+    expect(g.nodes.length).toBe(3);
+    expect(g.truncated).toBe(2);
+    // Edges never point at unshown nodes.
+    const shown = new Set(g.nodes.map((n) => n.ref));
+    for (const e of g.edges) {
+      expect(shown.has(e.from)).toBe(true);
+      expect(shown.has(e.to)).toBe(true);
+    }
+  });
+
+  test("a parent cycle degrades to roots instead of looping", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), parentRef: R(3) }),
+      item({ number: 3, epicRef: R(1), parentRef: R(2) }),
+    ];
+    const g = epicGraph(pool, R(1));
+    expect(g.status).toBe("ok");
+    expect(g.nodes.length).toBe(3);
+    expect(new Set(g.nodes.map((n) => n.row)).size).toBe(3);
+  });
+
+  test("members with no edges still return nodes (absence is data, not an error)", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1) }),
+    ];
+    const g = epicGraph(pool, R(1));
+    expect(g.status).toBe("ok");
+    expect(g.nodes.length).toBe(2);
+    expect(g.edges).toEqual([]);
+    expect(g.blockedCount).toBe(0);
+  });
+});
+
+import type { GhItem, Provenance } from "../src/model.ts";
+import { buildProjectDetail, projectConfigById } from "../src/project-config.ts";
+import { renderProgramProject } from "../src/render.ts";
+
+const PROV: Provenance = {
+  board: "x",
+  roadmap: "x",
+  items: "x",
+  comments: "x",
+  quota: "x",
+  usage: "x",
+  attention: "x",
+  orchestration: "x",
+  dns: "x",
+  registry: "x",
+  aa: "x",
+};
+
+function renderWith(pool: ProjectPoolItem[]): string {
+  const config = projectConfigById("pm-dashboard")!;
+  const items = new Map<RefKey, GhItem>();
+  return renderProgramProject(buildProjectDetail(config, items, pool, []), items, PROV);
+}
+
+describe("renderProgramProject per-epic dependency graph (#3973)", () => {
+  test("selector lists the epic with counts and an anchor to its section", () => {
+    const html = renderWith(fixturePool());
+    expect(html).toContain("Per-epic dependency graph");
+    expect(html).toContain('href="#epic-graph-1"');
+    expect(html).toContain('id="epic-graph-1"');
+    expect(html).toContain("3 items · 2 blocked · 1 done");
+  });
+
+  test("dependency edges render dashed and hierarchy edges solid, with a text legend", () => {
+    const html = renderWith(fixturePool());
+    expect(html).toContain('stroke-dasharray="5 3"');
+    expect(html).toContain("dashed amber lines are dependency edges");
+    expect(html).toContain("Solid grey lines are sub-issue hierarchy");
+  });
+
+  test("the vertical list names blockers and states as text, external refs as unknown", () => {
+    const html = renderWith(fixturePool());
+    expect(html).toContain("not in this pool / status unknown — unresolved");
+    expect(html).toContain("(unresolved)");
+    expect(html).toContain("blocked by:");
+    expect(html).toContain("waiting on 1 unresolved blocker");
+  });
+
+  test("a pool with no eligible epic says unavailable, not an empty graph", () => {
+    const html = renderWith([item({ number: 1 }), item({ number: 2, parentRef: R(1) })]);
+    expect(html).toContain("Dependency graph unavailable: no epic in this pool has items yet");
+    expect(html).not.toContain('id="epic-graph-');
+  });
+
+  test("an epic whose items carry no edges says not yet graphed and still lists items", () => {
+    const html = renderWith([
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1) }),
+    ]);
+    expect(html).toContain("Not yet graphed: this epic's items carry no parent / blocked-by edges yet");
+    expect(html).toContain("blocked by: none observed");
+  });
+
+  test("the epic-graph flex layout and its narrow-screen stacking ship in the stylesheet", () => {
+    const html = renderWith(fixturePool());
+    expect(html).toContain(".epic-graph-flex { display: flex;");
+    expect(html).toContain(".epic-graph-flex { flex-direction: column; }");
+    expect(html).toContain('class="epic-graph-flex"');
+    expect(html).toContain('class="epic-graph-list"');
+  });
+});
