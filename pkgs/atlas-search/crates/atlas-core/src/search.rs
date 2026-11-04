@@ -15,7 +15,7 @@ use crate::embed::QueryEmbedder;
 use crate::error::{Error, Result};
 use crate::filters::Filters;
 use crate::fusion::{FusedEntry, fts_match_expr, fuse};
-use crate::types::{BranchQuery, ChunkDetail, DEFAULT_MODEL, VectorBackend, round6};
+use crate::types::{BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, VectorBackend, round6};
 
 /// The Python's `MESSAGE_TEXT_CAP`.
 pub const MESSAGE_TEXT_CAP: usize = 50_000;
@@ -106,6 +106,33 @@ impl SearchOptions {
     }
 }
 
+/// The seam by which a front-end supplies branch pools to the
+/// search orchestration. The default executor is the backend
+/// itself; serve mode supplies an executor that runs the FTS and
+/// vector branches concurrently while preserving this module's
+/// exact validation, fusion, and rendering semantics.
+pub trait BranchPoolExecutor {
+    fn branch_pools(&self, query: &BranchQuery, filters: &Filters) -> Result<BranchPools>;
+}
+
+/// The production branch executor: one call to the backend, whose
+/// implementations preserve the Python's branch-call pattern.
+pub struct BackendBranchExecutor<'a> {
+    backend: &'a dyn SearchBackend,
+}
+
+impl<'a> BackendBranchExecutor<'a> {
+    pub fn new(backend: &'a dyn SearchBackend) -> BackendBranchExecutor<'a> {
+        BackendBranchExecutor { backend }
+    }
+}
+
+impl BranchPoolExecutor for BackendBranchExecutor<'_> {
+    fn branch_pools(&self, query: &BranchQuery, filters: &Filters) -> Result<BranchPools> {
+        self.backend.branch_pools(query, filters)
+    }
+}
+
 /// The Python's `run_search`. The embedder is only invoked for
 /// vector/hybrid modes; the filters' ceiling is enforced inside
 /// the backend's branch construction (filter-before-rank).
@@ -114,6 +141,26 @@ pub fn run_search(
     embedder: &dyn QueryEmbedder,
     filters: &Filters,
     opts: &SearchOptions,
+) -> Result<Json> {
+    run_search_with_executor(
+        backend,
+        embedder,
+        filters,
+        opts,
+        &BackendBranchExecutor::new(backend),
+    )
+}
+
+/// [`run_search`] with a caller-supplied branch executor. Every
+/// step other than obtaining the branch pools — validation, query
+/// embedding, fusion, detail lookup, and envelope rendering — is
+/// shared with `run_search` verbatim.
+pub fn run_search_with_executor(
+    backend: &dyn SearchBackend,
+    embedder: &dyn QueryEmbedder,
+    filters: &Filters,
+    opts: &SearchOptions,
+    executor: &dyn BranchPoolExecutor,
 ) -> Result<Json> {
     if opts.mode.uses_vector()
         && opts.vector_backend != VectorBackend::Scan
@@ -147,7 +194,7 @@ pub fn run_search(
                 .to_string(),
         );
     }
-    let pools = backend.branch_pools(
+    let pools = executor.branch_pools(
         &BranchQuery {
             match_expr,
             query_vector: qvec,

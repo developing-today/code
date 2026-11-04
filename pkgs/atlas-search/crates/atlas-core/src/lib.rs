@@ -42,6 +42,9 @@ pub use error::{Error, Result};
 pub use filters::{Filters, Sensitivity};
 pub use fusion::{FusedEntry, RRF_K};
 pub use local::LocalBackend;
-pub use search::{SearchMode, SearchOptions, run_get_chunk, run_search};
+pub use search::{
+    BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, run_get_chunk,
+    run_search, run_search_with_executor,
+};
 pub use turso::TursoBackend;
 pub use types::{BranchQuery, DEFAULT_MODEL, DEFAULT_VEC_TABLE, VectorBackend};
