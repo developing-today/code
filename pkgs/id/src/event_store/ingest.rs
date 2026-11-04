@@ -3110,12 +3110,31 @@ mod tests {
         let (_dir, mut store) = open();
         let signer = key(60);
         let events = chain_of(&signer, 2);
-        let again = store
+        store
             .transact(0, |m| {
                 let held = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
                 assert_eq!(held, waiting_rows::Hold::Held);
                 let released = m.release(&events[1].id, 0)?;
                 assert!(released.is_empty());
+                Ok(((), true))
+            })
+            .unwrap();
+
+        // Simulate a durable stale row for the key after it has arrived. The
+        // skipped hold must remove that row in its own transaction; release
+        // itself already deleted the original row above.
+        let stale = Row {
+            id: events[1].id,
+            author: author(&signer),
+            seq: 1,
+            arrived_at: 0,
+            arrival: 0,
+            deps: vec![events[0].id],
+            bytes: events[1].bytes.clone(),
+        };
+        store.write(|txn| waiting_rows::put(txn, &stale)).unwrap();
+        let again = store
+            .transact(0, |m| {
                 let again = m.hold(events[1].clone(), vec![events[0].id], false, 0)?;
                 Ok((again, true))
             })
