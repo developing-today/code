@@ -61,6 +61,67 @@
 //! wins. No failure path creates a partial binding, a store, or any claim
 //! on the key.
 //!
+//! ## Lifecycle transition table (#5048, closing audit of #5047)
+//!
+//! Every name the ceremony mints is claimed once, by one holder, for its
+//! stated lifetime. Each row names the live-state transitions of one public
+//! [`HostedBindingService`] method. Disposition: **conforming** (matches §3.4
+//! / §4 as written), **known gap** (behavior differs from the contract; a
+//! named follow-up owns the fix), or **out of scope** (not part of this
+//! slice).
+//!
+//! | Method | Live state touched | Transitions | Disposition |
+//! | --- | --- | --- | --- |
+//! | `new`, `with_seed`, `set_now_override`, `service_id`, `service_public_key` | none | none | conforming |
+//! | `signup_account`, `account` | account row | creates or refreshes the row; claims no key | conforming |
+//! | `request_challenge` | challenge (live) | inserts a live challenge, expiring after `CHALLENGE_TTL_SECS`; 30/account/hour | conforming; the challenge is not required to belong to an existing account (see `submit_proof`) |
+//! | `canonical_transcript` | none | pure | conforming |
+//! | `submit_proof` | challenge; binding indexes | expiry: no state change (§3.4). Session mismatch, bad or malformed signature, and conflict consume the challenge. Success consumes it and claims the `sub` and `iroh_id` in the indexes | conforming; an unknown account is detected only after the challenge is consumed |
+//! | `complete_browser_ceremony` | as `request_challenge` plus `submit_proof` | composition only | conforming |
+//! | `create_pairing_code` | pairing code (live) | consumed check precedes live-map lookup (#4868); minting supersedes every earlier unexchanged code for the challenge (#4871); 10/account/hour | conforming |
+//! | `exchange_pairing_code` | pairing code; challenge (read only) | removes the code before any check, so it is single-use even on failure; does not consume the challenge | conforming; see (a) |
+//! | `request_delayed_rebind` | challenge; binding; rebind request | expiry: no state change (§3.4, #5048). Session mismatch and bad signature consume the challenge. `active` becomes `rebind_pending`; a pending request reserves the target key | conforming; `SameKey` and `NewKeyBoundElsewhere` after a valid proof leave the challenge consumed, as a successful proof already spent it |
+//! | `cancel_rebind` | rebind request; binding | `pending` becomes `cancelled`; binding `rebind_pending` becomes `active` (re-attested) | known gap tracked by #5643: the request is marked `cancelled` before binding lookup and re-attestation, so `NoBinding` or `RecordEncoding` can fail after that mutation |
+//! | `rebind_with_old_key_authorization` | challenge; binding; rebind request | fast path, or early approval of a pending request (`pending` becomes `effected`). Expiry: no state change. Once proof verification starts, session mismatch or signature failure consumes the challenge; success swaps the key index and appends history | conforming; pre-proof request/binding errors do not consume the challenge; failures after a valid proof leave it consumed |
+//! | `effect_due_rebind` | rebind request; binding | `pending` becomes `effected` once `effective_at` has passed; the target reservation is rechecked before any mutation; `NewKeyBoundElsewhere` leaves the request `pending` | conforming |
+//! | `apply_rebind` (private) | binding; key index; history; rebind records | refuses a foreign key-index owner; appends history; releases the old key from the index; claims the new key | conforming |
+//! | `rebind_request`, `pending_rebind_for_binding`, `rebind_records`, `binding`, `binding_for_sub`, `verify_rebind_record`, `verify_key_signature`, `verify_attestation`, `verify_service_attestation` | none | read only | conforming |
+//!
+//! `verify_challenge_proof` (private, shared by the two rebind entry
+//! points) follows the same §3.4 rule as `submit_proof`: expiry returns
+//! [`RebindError::ChallengeExpired`] with no state change (#5048 correction).
+//! Its doc names the same semantics, so one challenge object has one expiry
+//! meaning on both error surfaces.
+//!
+//! Dispositions for the four audit items:
+//!
+//! - **(a) Expired pairing codes.** No general sweep. A code leaves
+//!   `pairing_codes` only when it is exchanged or superseded for the same
+//!   challenge. An expired, unexchanged code stays in the map and still
+//!   blocks its six-digit string in the collision loop. The hourly rate
+//!   limit does not bound the map's lifetime size. Follow-up #5644: sweep
+//!   expired codes on each `create_pairing_code`.
+//! - **(b) `consumed_challenges` growth.** No bound. IDs are kept for the
+//!   process lifetime, and unpresented expired challenges stay in
+//!   `challenges` the same way. The hourly issuance limit does not bound
+//!   lifetime growth. Pruning entries whose challenge is past
+//!   `CHALLENGE_TTL_SECS` is safe if a later replay then reports
+//!   `UnknownChallenge` rather than `ChallengeReplay`. Follow-up #5644.
+//! - **(c) Reservation scan cost.** `pending_rebind_reserves_iroh` scans
+//!   every retained rebind request. Requests are kept in all statuses, so
+//!   the scan grows with history. A target-key index is the named
+//!   alternative. It is not taken: reservation is a predicate over `Pending`
+//!   requests, so there is one source of truth, and a second index would be
+//!   a second place for state to disagree (the #4887 failure family). The
+//!   cost is accepted at this volume; revisit if request history is pruned
+//!   or grows large.
+//! - **(d) Old-key-side symmetry.** Confirmed without a new reservation. The
+//!   old key stays the binding's current key in `binding_by_iroh`, and the
+//!   binding is `rebind_pending`, for the whole wait. `apply_rebind` releases
+//!   it only when the rebind takes effect, after which it survives only in
+//!   history. This matches the contract: the old key is no longer the
+//!   account's once the rebind is effective.
+//!
 //! ## Device linkage (§1.3)
 //!
 //! Devices bind nothing individually and get no binding records. A device
@@ -698,7 +759,8 @@ pub enum RebindError {
     /// No live challenge with that ID.
     #[error("unknown challenge: request a fresh one")]
     UnknownChallenge,
-    /// The challenge expired; it is consumed and dead.
+    /// The challenge expired. State change: none; the challenge is dead.
+    /// Retry with a fresh challenge.
     #[error("challenge expired: request a fresh challenge")]
     ChallengeExpired,
     /// The challenge was already presented.
@@ -1181,9 +1243,9 @@ impl HostedBindingService {
 
     /// Verify a presented challenge proof the way §3.2 specifies —
     /// existence, expiry, single-use, session match, signature — and
-    /// consume the challenge on first presentation. Shared by the rebind
-    /// paths, which need the same proof of the **new** key's possession
-    /// without §3's conflict outcomes.
+    /// consume it on the first non-expired presentation. Expiry is
+    /// state-free (§3.4). Shared by the rebind paths, which need the same
+    /// proof of the **new** key's possession without §3's conflict outcomes.
     fn verify_challenge_proof(
         &mut self,
         session_sub: &str,
@@ -1199,7 +1261,7 @@ impl HostedBindingService {
             .cloned()
             .ok_or(RebindError::UnknownChallenge)?;
         if self.now() >= challenge.expires_at {
-            self.consume(challenge_id);
+            // §3.4, as in `submit_proof`: expiry is state-free (#4868).
             return Err(RebindError::ChallengeExpired);
         }
         if session_sub != challenge.sub {
@@ -2993,5 +3055,20 @@ mod tests {
                 .pending_rebind_for_binding(&stored.binding_id)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn expired_rebind_challenge_is_not_recorded_as_consumed() {
+        let mut service = service();
+        bind(&mut service, SUB, 21);
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        service.set_now_override(Some(T0 + CHALLENGE_TTL_SECS));
+        for _ in 0..2 {
+            assert_eq!(
+                service.request_delayed_rebind(SUB, &challenge_id, &proof),
+                Err(RebindError::ChallengeExpired)
+            );
+        }
     }
 }
