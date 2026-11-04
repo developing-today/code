@@ -40,7 +40,8 @@ PB_PID=""
 UP_PID=""
 IDLE_PID=""
 DS_PID=""
-trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID $DS_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+SECB_PID=""
+trap 'kill $SB_PID $QB_PID $PB_PID $UP_PID $IDLE_PID $DS_PID $SECB_PID 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
@@ -63,8 +64,8 @@ run() {
   ok "$name"
 }
 
-FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue, queue-broker, secrets-broker, search, search-serve, dispatch, laptop-agent"
-SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve"
+FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue, queue-broker, secrets-broker, search, search-serve, dispatch, laptop-agent, secrets"
+SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets"
 CONNECT_CAPS="Enabled capabilities: proxy-connect"
 
 check_variant() {
@@ -99,6 +100,8 @@ run "serve: fleet dispatch stubs" 69 "this build does not include 'dispatch'" \
   "$SERVE_OUT/bin/fleet" dispatch
 run "serve: fleet laptop-agent stubs" 69 "this build does not include 'laptop-agent'" \
   "$SERVE_OUT/bin/fleet" laptop-agent
+run "connect: fleet secrets stubs" 69 "this build does not include 'secrets'" \
+  "$CONNECT_OUT/bin/fleet" secrets get smoke.secret
 
 echo "== stubs via argv0 alias symlinks =="
 ln -s "$CONNECT_OUT/bin/fleet" "$TMP/repo-queue"
@@ -433,6 +436,88 @@ run "dispatch: an unresolved token name exits 3 before any request" 3 "unresolve
 kill "$DS_PID" 2>/dev/null
 DS_PID=""
 
+echo "== secrets domain: broker-first chain, bws fallback (step 6, #5554) =="
+# Hermetic secrets world: a stub session broker speaking the framed
+# protocol on a scratch socket (it answers /secrets and /secret/<name>
+# itself — the BrokerSource exchange in the legacy dialect, no hello),
+# plus a stub `bws` on PATH whose value for the shared name DIFFERS
+# from the broker's, so the source that answered is provable from the
+# returned value alone.
+SEC="$TMP/secrets"
+mkdir -p "$SEC/bin" "$SEC/home"
+cat > "$SEC/broker.py" <<'SECEOF'
+import socket, struct, json, sys, threading, os
+sock_path = sys.argv[1]
+RESP = {
+    "/secrets": (200, {"names": ["other.name", "smoke.secret"]}),
+    "/secret/smoke.secret": (200, {"key": "smoke.secret", "value": "smoke-broker-value"}),
+}
+def frame(obj):
+    payload = json.dumps(obj).encode()
+    return struct.pack(">Q", len(payload)) + payload
+def readn(conn, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk: raise EOFError
+        buf += chunk
+    return buf
+def handle(conn):
+    try:
+        while True:
+            n = struct.unpack(">Q", readn(conn, 8))[0]
+            req = json.loads(readn(conn, n))
+            status, body = RESP.get(req["path"], (404, {"error": "no such secret"}))
+            conn.sendall(frame({"status": status, "body": body}))
+    except Exception:
+        return
+srv = socket.socket(socket.AF_UNIX)
+if os.path.exists(sock_path): os.unlink(sock_path)
+srv.bind(sock_path); srv.listen(16)
+while True:
+    conn, _ = srv.accept()
+    threading.Thread(target=handle, args=(conn,), daemon=True).start()
+SECEOF
+python3 "$SEC/broker.py" "$SEC/broker.sock" >"$SEC/broker.log" 2>&1 &
+SECB_PID=$!
+cat > "$SEC/bin/bws" <<'EOF'
+#!/usr/bin/env bash
+# fleet-secrets' bws fallback, stubbed: two secrets under fixed ids.
+# smoke.secret exists in BOTH sources with different values (the
+# broker must win); fallback.name exists only here.
+if [ "$1 $2" = "secret list" ]; then
+  echo '[{"id":"id-1","key":"smoke.secret"},{"id":"id-2","key":"fallback.name"}]'
+elif [ "$1 $2" = "secret get" ] && [ "$3" = "id-1" ]; then
+  echo '{"id":"id-1","key":"smoke.secret","value":"smoke-bws-value"}'
+elif [ "$1 $2" = "secret get" ] && [ "$3" = "id-2" ]; then
+  echo '{"id":"id-2","key":"fallback.name","value":"smoke-bws-fallback-value"}'
+else
+  exit 1
+fi
+EOF
+chmod +x "$SEC/bin/bws"
+sleep 1
+secrets_env() {
+  env HOME="$SEC/home" PATH="$SEC/bin:$PATH" FLEET_BROKER_SOCKET="$SEC/broker.sock" "$@"
+}
+run "secrets: --help renders from the registry" 0 "Commands: get, list" \
+  "$FULL_OUT/bin/fleet" secrets --help
+run "secrets: get resolves broker-first (broker value, not bws')" 0 "smoke-broker-value" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get smoke.secret
+run "secrets: list returns the broker's names" 0 "smoke.secret" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets list
+run "secrets: a broker 404 falls back to bws" 0 "smoke-bws-fallback-value" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get fallback.name
+kill "$SECB_PID" 2>/dev/null
+SECB_PID=""
+rm -f "$SEC/broker.sock"
+run "secrets: broker down, get falls back to bws" 0 "smoke-bws-value" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get smoke.secret
+run "secrets: broker down, list fails loud (no bws substitution)" 3 "unavailable via secrets-broker" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets list
+run "secrets: unknown name fails clean through both legs" 3 "unresolved" \
+  secrets_env "$FULL_OUT/bin/fleet" secrets get absent.name
+
 echo "== name narrowing: full build invoked as fleet-connect =="
 ln -s "$FULL_OUT/bin/fleet" "$TMP/fleet-connect"
 run "narrowed: version lists only the connect set" 0 "$CONNECT_CAPS" "$TMP/fleet-connect" version
@@ -440,6 +525,8 @@ run "narrowed: queue stubs with narrowed wording" 69 "invoked as 'fleet-connect'
   "$TMP/fleet-connect" queue health
 run "narrowed: proxy serve stubs with narrowed wording" 69 "invoked as 'fleet-connect'" \
   "$TMP/fleet-connect" proxy serve
+run "narrowed: secrets stubs with narrowed wording" 69 "invoked as 'fleet-connect'" \
+  "$TMP/fleet-connect" secrets get smoke.secret
 run "narrowed: --help marks queue as narrowed out" 0 "[narrowed out by this name]" \
   "$TMP/fleet-connect" --help
 

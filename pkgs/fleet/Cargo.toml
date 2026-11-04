@@ -7,7 +7,8 @@
 # (platform crates + the bin's dispatch/stub machinery + variant
 # builds); step 2 (#5430) the queue domain (crates/fleet-queue);
 # step 3 (#5431) the proxy domain (crates/fleet-proxy); step 4
-# (#5432) the dispatch thin client (crates/fleet-dispatch).
+# (#5432) the dispatch thin client (crates/fleet-dispatch); step 6
+# (#5554) the secrets verb (in the bin crate, over fleet-secrets).
 [workspace]
 members = [
   "crates/fleet-registry",

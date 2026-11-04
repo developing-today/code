@@ -120,6 +120,7 @@ in
       OPENCLAW_GATEWAY_TOKEN = "/run/secrets/openclaw/gateway-token";
       OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
       OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
+      TAVILY_API_KEY = "/run/secrets/openclaw/tavily-api-key";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):
