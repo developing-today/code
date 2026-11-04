@@ -24,8 +24,14 @@
 //   - jules-review-state.json — keeper supervision entries annotate
 //     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
-//     (#899: tiers, dependencies, goal measurements), embedded as-is
-//     after a structural check; absent/malformed = section omitted.
+//     (#899: tiers, dependencies, goal measurements), embedded only
+//     after normalizeOrchestrationSection accepts it (the collector
+//     gate in the publisher -> collector -> aggregator contract,
+//     #1176); absent/malformed = section omitted. The publisher's
+//     pre-publish gate is `bun run contract:check -- --publisher
+//     <path>` (scripts/check-contract-corpus.ts), which runs this
+//     same validator; the shared corpus lives in
+//     test/contract-corpus/v1/.
 //   - the org GitHub Project "Developing Today" (#4, #910 stage 5) —
 //     read via GraphQL Projects v2 into the feed's `projects` pool.
 //     Token plumbing: GITHUB_PROJECT_TOKEN / GH_TOKEN from the env
@@ -72,10 +78,18 @@ import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promi
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dnsSectionFromRegister } from "../src/dns.ts";
-import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
-import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
+import { dnsSectionFromRegister, dnsSectionFromRegisterJson, parseDnsRegister } from "../src/dns.ts";
+import { aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
+import {
+  feedSectionStatus,
+  normalizeOrchestrationSection,
+  orchestrationSectionProblem,
+  sanitizeCollectionError,
+  type FeedSectionStatus,
+  type FleetFeed,
+} from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
+import { assembleCollectorFeed } from "../src/feed-contract.ts";
 import type {
   AaFeedSection,
   AaSection,
@@ -101,15 +115,41 @@ import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
-import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
+import { droppedJulesItemCount, julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
-const outArg = process.argv.indexOf("--out");
-const outPath = outArg >= 0 ? process.argv[outArg + 1] : (process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json"));
+// Strict operator-argument contract (#3352, #3509): the only accepted
+// forms are no arguments or one documented separated `--out <path>`.
+// Every other token — a trailing/empty/flag-like --out value, an
+// --out=<path> join, a duplicate --out, or any unknown or positional
+// token — is a usage error (exit 2) raised here, before any collection,
+// network, subprocess, lock, or file-write side effect.
+function usageError(message: string): never {
+  console.error(`collect-fleet-feed: ${message}; usage: bun run scripts/collect-fleet-feed.ts [--out <path>]`);
+  process.exit(2);
+}
+
+function resolveOutPath(): string {
+  const fallback = process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json");
+  const args = process.argv.slice(2);
+  if (args.length === 0) return fallback;
+  if (args.filter((a) => a === "--out").length > 1)
+    usageError(`duplicate --out (got ${JSON.stringify(args)}); the documented form is a single --out <path>`);
+  if (args[0] === "--out") {
+    const value: string | undefined = args[1];
+    if (value === undefined || value === "" || value.startsWith("--"))
+      usageError(`--out requires a path value (got ${value === undefined ? "no value" : JSON.stringify(value)})`);
+    if (args.length > 2) usageError(`unexpected argument ${JSON.stringify(args[2])}`);
+    return value;
+  }
+  usageError(`unknown argument ${JSON.stringify(args[0])}`);
+}
+
+const outPath = resolveOutPath();
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(
@@ -121,12 +161,17 @@ const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orches
 const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
   join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
+// Slice 2 of #902: register.json sits beside the register Markdown and
+// is the authoritative source for the fields it carries.
+const dnsRegisterJsonPath = process.env.DNS_REGISTER_JSON_PATH ?? join(dirname(dnsRegisterPath), "register.json");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
+const opencodeRuntimeConfigPath =
+  process.env.AA_OPENCODE_RUNTIME_CONFIG_PATH ?? join(HOME, ".local", "state", "opencode", "opencode-runtime.jsonc");
 const serverUrl = process.env.OPENCODE_SERVER_URL ?? process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 /** Session source label for the scraped server: the collector's home host
  * decides — the laptop collector labels its local server
@@ -140,23 +185,26 @@ const passwordFile =
 function poolFor(provider: string, model: string): string | null {
   switch (provider) {
     case "meta":
-      return "meta:high-usage";
+      return "meta";
     case "claude-code":
       return "anthropic:claude-pro";
     case "openai":
     case "openai-codex":
     case "chatgpt":
-      return "openai:codex";
+      return "openai";
+    case "openai.alternate":
+      return "openai.alternate";
     case "cline-pass":
-      return "cline-pass:cline-pass";
+      return "cline-pass";
     case "opendesign":
-      return "opendesign:go";
+      return "opendesign";
     case "deepseek":
-      return "deepseek:api";
+      return "deepseek";
+    case "antigravity-direct":
     case "antigravity-ls":
     case "antigravity-agy":
     case "google":
-      return model.startsWith("gemini") ? "antigravity:gemini" : "antigravity:claude-gpt";
+      return model.startsWith("gemini") ? "antigravity-direct.gemini" : "antigravity-direct.claude-gpt";
     default:
       // opencode-go is deliberately unattributed in slice 1: which
       // workspace (Personal vs Lab) a sandbox session burns is not
@@ -461,7 +509,15 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     console.error("collector: opencode.jsonc unreadable; AA coverage omitted this run");
   }
-  const section = aaSectionFromSupabase(raw, configText, generatedAt);
+  // #4544: the sync-models-owned provider catalogs live in the runtime
+  // overlay; read it when present so AA coverage sees the effective config.
+  let runtimeText: string | null = null;
+  try {
+    runtimeText = await readFile(opencodeRuntimeConfigPath, "utf8");
+  } catch {
+    runtimeText = null;
+  }
+  const section = aaSectionFromSupabase(raw, configText, generatedAt, runtimeText);
   if (!section) return degrade("Supabase payload failed its structural check");
   await writeAaLastGood({ batch: section.batch, configFingerprint: fingerprint, section });
   return section;
@@ -469,6 +525,12 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
 
 async function main(): Promise<void> {
   const now = new Date();
+  const sectionStatuses: NonNullable<FleetFeed["meta"]>["sections"] = {};
+  const markSection = (key: string, status: FeedSectionStatus, error?: unknown) => {
+    sectionStatuses[key] = feedSectionStatus(status, new Date().toISOString(), error);
+  };
+  const isMissingInput = (error: unknown): boolean =>
+    typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
   // Identity-registry records (#906 §3), accumulated across sources below.
   const registry: SessionRecord[] = [];
 
@@ -477,20 +539,18 @@ async function main(): Promise<void> {
   let quotaViewText = "";
   try {
     quotaViewText = await readFile(quotaViewPath, "utf8");
-    // #1114: enforce the deployed config's disabled_providers at pool
-    // assembly. The config read mirrors the AA section's; an unreadable
-    // config leaves the set empty (fail soft, pools unfiltered).
-    let disabledProviderIds: ReadonlySet<string> = new Set();
-    try {
-      disabledProviderIds = disabledProvidersFromConfig(await readFile(opencodeConfigPath, "utf8"));
-    } catch {
-      console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
-    }
-    pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(`collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`),
-    );
+    // Pass-through (Drew, 2026-11-03): pool assembly applies NO
+    // disabled_providers filter. The #1114 filter dropped every pool
+    // whose direct config door was disabled — including live pools
+    // burned through model routes and measured by OpenCode (meta, the
+    // Antigravity splits, commandcode, anthropic:claude-pro, deepseek
+    // at removal time). The board displays the OpenCode quota read;
+    // the dated reads extracted here are only its fail-soft fallback.
+    pools = extractQuotaPools(quotaViewText, now);
+    markSection("quota", "ok");
   } catch (err) {
-    console.error(`collector: quota view unreadable (${err}); emitting no pools`);
+    console.error(`collector: quota view unreadable (${sanitizeCollectionError(err)}); emitting no pools`);
+    markSection("quota", "error", err);
   }
 
   // --- usage & billing hub sections (design §2.3: ride the same feed) ---
@@ -509,6 +569,9 @@ async function main(): Promise<void> {
     payg = extractPaygLines(quotaViewText, registryText);
     charges = extractCharges(quotaViewText, registryText);
     subscriptions = extractSubscriptions(quotaViewText);
+    for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "ok");
+  } else {
+    for (const key of ["saas", "payg", "charges", "subscriptions"]) markSection(key, "skipped");
   }
 
   // --- charges auto-matching (#1057) -------------------------------------
@@ -521,10 +584,7 @@ async function main(): Promise<void> {
   try {
     const candidates = parseChargeCandidates(JSON.parse(await readFile(chargeCandidatesPath, "utf8")));
     if (candidates.length) {
-      const auto = matchCharges(
-        candidates,
-        chargeServiceCatalog(saas ?? [], pools),
-      );
+      const auto = matchCharges(candidates, chargeServiceCatalog(saas ?? [], pools));
       charges = mergeChargeRows(auto.rows, charges ?? []);
       let surfaced = new Set<string>();
       try {
@@ -541,9 +601,13 @@ async function main(): Promise<void> {
       console.log(
         `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,
       );
+      markSection("chargesAttention", "ok");
+    } else {
+      markSection("chargesAttention", "skipped");
     }
-  } catch {
+  } catch (err) {
     console.error("collector: charge candidates unreadable; hub charges stay hand-fed only this run");
+    markSection("chargesAttention", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- server attention + burn -------------------------------------------
@@ -579,23 +643,40 @@ async function main(): Promise<void> {
         }
         if (sessions.length) pool.activeSessions = sessions;
       }
+      markSection("attention", "ok");
     } else {
       console.error("collector: OpenCode server unreachable; attention empty");
+      markSection("attention", "error", "OpenCode server unreachable");
     }
   } catch (err) {
-    console.error(`collector: OpenCode server read failed (${err}); attention empty`);
+    console.error(`collector: OpenCode server read failed (${sanitizeCollectionError(err)}); attention empty`);
+    markSection("attention", "error", err);
   }
 
   // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
   let jules: JulesSummary | undefined;
+  let julesState: unknown;
+  let julesReadable = false;
   try {
-    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as JulesReviewState;
+    julesState = JSON.parse(await readFile(julesStatePath, "utf8")) as unknown;
+    julesReadable = true;
+  } catch (err) {
+    console.error("collector: jules-review state unreadable; no Jules sessions this run");
+    markSection("julesSummary", isMissingInput(err) ? "skipped" : "error", err);
+  }
+  if (julesReadable) {
+    const state = julesState as JulesReviewState;
     const entries = mapJulesItems(state);
     if (entries.length) attention = [...attention, ...entries];
     for (const e of entries) registry.push(recordFromSessionEntry(e));
     jules = julesSummary(state);
-  } catch {
-    console.error("collector: jules-review state unreadable; no Jules sessions this run");
+    const dropped = droppedJulesItemCount(state);
+    if (dropped > 0) {
+      console.error(
+        `collector: jules-review state malformed; skipped ${dropped} item(s), kept ${entries.length} session(s)`,
+      );
+    }
+    markSection("julesSummary", "ok");
   }
 
   // --- Muse launch records (#906 §3) --------------------------------
@@ -609,17 +690,58 @@ async function main(): Promise<void> {
   } catch {
     /* no launch records yet */
   }
+  markSection("registry", registry.length ? "ok" : "skipped");
 
-  // --- DNS register (#902's file, parsed; #906 §1 owns the view) ---------
+  // --- DNS register (#902's files; #906 §1 owns the view) ----------------
+  // Slice 2: register.json is authoritative for the fields it carries;
+  // the Markdown parse supplies the editorial columns and is the
+  // FALLBACK when register.json is missing or malformed — the fallback
+  // is logged, never silent (see dnsSectionFromRegisterJson in dns.ts).
   let dns: DnsSection | undefined;
+  let dnsSourcePath = dnsRegisterPath;
+  let mdText: string | null = null;
+  let mdErr: unknown = null;
   try {
-    const md = await readFile(dnsRegisterPath, "utf8");
+    mdText = await readFile(dnsRegisterPath, "utf8");
+  } catch (err) {
+    mdErr = err;
+  }
+  const mdEntries = mdText ? parseDnsRegister(mdText) : [];
+  let jsonProblem: string | null = null;
+  try {
+    const jsonText = await readFile(dnsRegisterJsonPath, "utf8");
     dns =
-      dnsSectionFromRegister(md, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
-      undefined;
-    if (!dns) console.error("collector: DNS register parsed to zero entries; section omitted");
-  } catch {
-    console.error("collector: DNS register unreadable; section omitted");
+      dnsSectionFromRegisterJson(
+        jsonText,
+        now.toISOString(),
+        "register.json (#902 pipeline) via fleet feed collector",
+        mdEntries,
+      ) ?? undefined;
+    if (!dns) jsonProblem = "register.json did not produce a valid DNS section";
+  } catch (err) {
+    jsonProblem = err instanceof Error ? err.message : String(err);
+  }
+  if (dns) {
+    dnsSourcePath = dnsRegisterJsonPath;
+    markSection("dns", "ok");
+  } else {
+    console.error(
+      `collector: DNS register.json unusable (${jsonProblem ?? "unknown reason"}); FALLING BACK to the register Markdown parse`,
+    );
+    if (mdText) {
+      dns =
+        dnsSectionFromRegister(mdText, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
+        undefined;
+      if (!dns) {
+        console.error("collector: DNS register parsed to zero entries; section omitted");
+        markSection("dns", "error", "register did not produce a valid DNS section");
+      } else {
+        markSection("dns", "ok");
+      }
+    } else {
+      console.error("collector: DNS register unreadable; section omitted");
+      markSection("dns", isMissingInput(mdErr) ? "skipped" : "error", mdErr);
+    }
   }
 
   // --- orchestration section (#899) --------------------------------------
@@ -632,14 +754,21 @@ async function main(): Promise<void> {
     const normalized = normalizeOrchestrationSection(parsed);
     if (normalized) {
       orchestration = normalized;
+      markSection("orchestration", "ok");
     } else {
       console.error(
         `collector: orchestration.json failed its structural check (${orchestrationSectionProblem(parsed)}); section omitted`,
       );
+      markSection(
+        "orchestration",
+        "error",
+        `orchestration section failed structural check: ${orchestrationSectionProblem(parsed)}`,
+      );
     }
-  } catch {
+  } catch (err) {
     // No orchestration file yet (the job has not run) is the normal
     // pre-#899 state — omit the section silently.
+    markSection("orchestration", isMissingInput(err) ? "skipped" : "error", err);
   }
 
   // --- GitHub Project pool (#910 stage 5) --------------------------------
@@ -651,18 +780,19 @@ async function main(): Promise<void> {
     const token = await resolveProjectToken();
     if (!token) {
       console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
+      markSection("projects", "skipped");
     } else {
       projects = await fetchProjectPool(token);
       if (!projects.length) {
         console.error("collector: GitHub Project read returned zero items; projects section omitted");
         projects = undefined;
       }
+      markSection("projects", "ok");
     }
   } catch (err) {
-    console.error(
-      `collector: GitHub Project read failed (${err instanceof Error ? err.message : "error"}); projects section omitted`,
-    );
+    console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
     projects = undefined;
+    markSection("projects", "error", err);
   }
 
   // --- Coverage census (#1220) -------------------------------------------
@@ -675,10 +805,15 @@ async function main(): Promise<void> {
     const token = await resolveProjectToken();
     if (!token) {
       console.error("collector: no GitHub token available; coverage census omitted");
+      markSection("coverage", "skipped");
     } else {
       const count = async (q: string): Promise<number> => {
         const res = await fetch(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(q)}`, {
-          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "pm-aggregator-collector" },
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github+json",
+            "user-agent": "pm-aggregator-collector",
+          },
         });
         if (!res.ok) throw new Error(`search ${res.status}`);
         const body = (await res.json()) as { total_count?: number };
@@ -686,6 +821,7 @@ async function main(): Promise<void> {
         return body.total_count as number;
       };
       const rows: RepoCensus[] = [];
+      let failedRepos = 0;
       for (const repo of REPOS) {
         try {
           const base = `repo:${repo} is:issue is:open`;
@@ -696,22 +832,40 @@ async function main(): Promise<void> {
             gateNext: await count(`${base} label:next`),
           });
         } catch (err) {
-          console.error(`collector: coverage census failed for ${repo} (${err instanceof Error ? err.message : "error"}); repo omitted`);
+          failedRepos++;
+          console.error(
+            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); repo omitted`,
+          );
         }
       }
       if (rows.length) coverage = rows;
+      if (failedRepos === REPOS.length && REPOS.length > 0) {
+        markSection("coverage", "error", "all repository census reads failed");
+      } else if (failedRepos > 0) {
+        markSection("coverage", "error", `${failedRepos} repository census reads failed`);
+      } else {
+        markSection("coverage", "ok");
+      }
     }
   } catch (err) {
-    console.error(`collector: coverage census failed (${err instanceof Error ? err.message : "error"}); section omitted`);
+    console.error(`collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`);
     coverage = undefined;
+    markSection("coverage", "error", err);
   }
 
   // --- AA cost explorer (Supabase ainventory) ------------------------------
   // Always attempted; the section carries its own failure (absent
   // form) so the dashboard can say why instead of showing stale data.
-  const aa = await collectAaSection(now.toISOString());
+  const collectedAa = await collectAaSection(now.toISOString());
+  const aa =
+    collectedAa.status === "absent"
+      ? { ...collectedAa, reason: sanitizeCollectionError(collectedAa.reason) }
+      : collectedAa;
   if (aa.status === "absent") {
-    console.error(`collector: AA section absent (${aa.reason})`);
+    console.error(`collector: AA section absent (${sanitizeCollectionError(aa.reason)})`);
+    markSection("aa", "error", aa.reason);
+  } else {
+    markSection("aa", "ok");
   }
 
   // --- usage snapshot records (hub §4 writers) ---------------------------
@@ -725,7 +879,7 @@ async function main(): Promise<void> {
   if (payg) snapshotRecords.push(...recordsFromPaygLines(payg, "fleet-feed-collector"));
   if (dns) {
     try {
-      const registerStat = await stat(dnsRegisterPath);
+      const registerStat = await stat(dnsSourcePath);
       snapshotRecords.push(...recordsFromDns(dns, registerStat.mtime.toISOString(), "fleet-feed-collector"));
     } catch {
       console.error("collector: DNS register stat failed; dns snapshot records omitted this run");
@@ -743,6 +897,7 @@ async function main(): Promise<void> {
       }
     }
   }
+  markSection("snapshots", dedupedSnapshots.length ? "ok" : "skipped");
 
   // #1116 item 3: this collector runs from the pm-feed checkout of
   // this repo; measure its drift vs origin/main so a stale checkout
@@ -750,10 +905,10 @@ async function main(): Promise<void> {
   // instead of lying quietly. Fail-soft: any git problem becomes
   // state "unknown" with the reason, never a failed collection.
   const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
-  const feed: FleetFeed = {
-    version: 1,
+  const feed: FleetFeed = assembleCollectorFeed({
     generatedAt: now.toISOString(),
     checkout,
+    meta: { sections: sectionStatuses },
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
     julesSummary: jules,
@@ -769,7 +924,7 @@ async function main(): Promise<void> {
     ...(projects ? { projects } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
-  };
+  });
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(

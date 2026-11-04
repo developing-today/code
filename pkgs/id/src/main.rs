@@ -4,7 +4,7 @@
 //! using content-addressed storage backed by Iroh.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 // Import from library
 use id::{
@@ -23,36 +23,140 @@ use id::{
 /// 5. `DEBUG` env var (if truthy) → "debug"
 /// 6. Default → "warn"
 fn get_log_level(cli: &Cli) -> String {
+    resolve_log_level(
+        cli.debug,
+        cli.log_level.as_deref(),
+        std::env::var("RUST_LOG").ok().as_deref(),
+        std::env::var("LOG_LEVEL").ok().as_deref(),
+        std::env::var("DEBUG").ok().as_deref(),
+    )
+}
+
+/// Pure log-level resolution: the environment values are passed in (rather
+/// than read here) so tests can pin the full precedence table without
+/// mutating process environment in parallel. `Some("")` for `rust_log`
+/// means the variable is present, matching the previous `var().is_ok()`
+/// presence check; the empty-string result is the caller's signal to use
+/// the `RUST_LOG` value itself as the base filter.
+fn resolve_log_level(
+    debug_flag: bool,
+    log_level_flag: Option<&str>,
+    rust_log: Option<&str>,
+    log_level_env: Option<&str>,
+    debug_env: Option<&str>,
+) -> String {
     // 1. --debug flag takes highest precedence
-    if cli.debug {
+    if debug_flag {
         return "debug".to_owned();
     }
 
     // 2. --log-level flag
-    if let Some(ref level) = cli.log_level {
-        return level.clone();
+    if let Some(level) = log_level_flag {
+        return level.to_owned();
     }
 
     // 3. RUST_LOG env var - return empty to use EnvFilter's default behavior
-    if std::env::var("RUST_LOG").is_ok() {
+    if rust_log.is_some() {
         return String::new();
     }
 
     // 4. LOG_LEVEL env var
-    if let Ok(level) = std::env::var("LOG_LEVEL") {
-        return level;
+    if let Some(level) = log_level_env {
+        return level.to_owned();
     }
 
     // 5. DEBUG env var (truthy check)
-    if let Ok(debug) = std::env::var("DEBUG") {
+    if let Some(debug) = debug_env {
         let is_truthy = !debug.is_empty() && debug != "0" && debug.to_lowercase() != "false";
         if is_truthy {
             return "debug".to_owned();
         }
     }
 
-    // 6. Default to debug
-    "debug".to_owned()
+    // 6. Default to warn (as documented; --debug is the opt-in for debug)
+    "warn".to_owned()
+}
+
+/// Initialize tracing from the resolved level `filter` and the
+/// structured-logging configuration (#1791; see
+/// `id::structured_logging` for the `ID_LOG_*` variables).
+///
+/// The console destination (stderr) always exists; the file
+/// destination is added when configured. Each destination gets its
+/// own filter, so their levels are independent. A configured file
+/// that cannot be opened, or an unrecognized `ID_LOG_TZ`, warns on
+/// stderr (before tracing starts) and logging continues without that
+/// piece rather than failing the process over its own logs.
+fn init_logging(filter: &str, config: &id::structured_logging::LogConfig) {
+    use id::structured_logging::{LogFormat, Rfc3339TzTimer, SharedFileWriter};
+    use tracing_subscriber::{Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+    if config.tz_fell_back {
+        eprintln!("warning: ID_LOG_TZ value not recognized; log timestamps use UTC");
+    }
+    let timer = Rfc3339TzTimer { zone: config.zone };
+
+    let console_layer: Box<dyn Layer<Registry> + Send + Sync> = match config.format {
+        LogFormat::Json => fmt::layer()
+            .json()
+            .with_writer(std::io::stderr)
+            .with_timer(timer)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_filter(tracing_subscriber::EnvFilter::new(filter))
+            .boxed(),
+        LogFormat::Text => fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_timer(timer)
+            .with_filter(tracing_subscriber::EnvFilter::new(filter))
+            .boxed(),
+    };
+
+    let file_layer: Option<Box<dyn Layer<Registry> + Send + Sync>> =
+        config
+            .file
+            .as_ref()
+            .and_then(|path| match SharedFileWriter::open(path) {
+                Ok(writer) => {
+                    let file_filter = config.file_filter_string(filter);
+                    let layer: Box<dyn Layer<Registry> + Send + Sync> = match config.format {
+                        LogFormat::Json => fmt::layer()
+                            .json()
+                            .with_writer(move || writer.clone())
+                            .with_timer(timer)
+                            .with_current_span(true)
+                            .with_span_list(true)
+                            .with_ansi(false)
+                            .with_filter(tracing_subscriber::EnvFilter::new(&file_filter))
+                            .boxed(),
+                        LogFormat::Text => fmt::layer()
+                            .fmt_fields(id::structured_logging::PlainFields::new())
+                            .with_writer(move || writer.clone())
+                            .with_timer(timer)
+                            .with_ansi(false)
+                            .with_filter(tracing_subscriber::EnvFilter::new(&file_filter))
+                            .boxed(),
+                    };
+                    Some(layer)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not open log file {} ({error}); logging to stderr only",
+                        path.display()
+                    );
+                    None
+                }
+            });
+
+    // Layers are collected into one Vec of boxes on the Registry:
+    // stacking two individually boxed layers does not type-check,
+    // because a layer boxed for Registry is not a Layer for the
+    // already-layered stack.
+    let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = vec![console_layer];
+    if let Some(layer) = file_layer {
+        layers.push(layer);
+    }
+    tracing_subscriber::registry().with(layers).init();
 }
 
 /// Per-module overrides to suppress noisy third-party modules.
@@ -76,7 +180,24 @@ const NOISY_MODULE_FILTERS: &[&str] = &[
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse CLI first so we can use flags for logging configuration
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(id::cli::normalize_args(std::env::args_os()));
+
+    // #2145: `--web-listen` conflicts only with an *explicitly-set*
+    // `--bind`/`--port`; clap defaults must not count, so read the value
+    // sources from a matches pass (`Cli::parse` above already validated
+    // the arguments and would have exited on any error).
+    let (bind_explicit, port_explicit) = {
+        let matches = Cli::command().get_matches();
+        matches
+            .subcommand_matches("serve")
+            .map(|serve| {
+                (
+                    serve.value_source("bind") == Some(clap::parser::ValueSource::CommandLine),
+                    serve.value_source("port") == Some(clap::parser::ValueSource::CommandLine),
+                )
+            })
+            .unwrap_or((false, false))
+    };
 
     // Switch to the data directory if specified.
     // All data paths (.iroh-store, .iroh-key, .iroh-serve.lock) are CWD-relative,
@@ -138,16 +259,24 @@ async fn main() -> Result<()> {
             }
         }
     }
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::new(&filter))
-        .init();
+    // Structured-logging configuration (#1791): format, file
+    // destination with its own level, and timestamp timezone all come
+    // from the ID_LOG_* environment variables; unset means the
+    // historical plain-text stderr stream.
+    let log_config = id::structured_logging::LogConfig::resolve(
+        std::env::var("ID_LOG_FORMAT").ok().as_deref(),
+        std::env::var("ID_LOG_FILE").ok().as_deref(),
+        std::env::var("ID_LOG_FILE_LEVEL").ok().as_deref(),
+        std::env::var("ID_LOG_TZ").ok().as_deref(),
+    );
+    init_logging(&filter, &log_config);
 
     match cli.command {
         None => run_repl(None).await,
         Some(Command::Repl { node }) => run_repl(node).await,
         Some(Command::Serve {
             ephemeral,
+            server_config,
             no_relay,
             no_gossip,
             web,
@@ -162,6 +291,7 @@ async fn main() -> Result<()> {
             dht,
             iroh_port,
             bind,
+            web_listen,
             web_token,
             web_cookie_secure,
             world,
@@ -185,12 +315,14 @@ async fn main() -> Result<()> {
             roc_platform,
             world_native,
             world_source_only,
+            world_module_trust_keys,
             world_runtime,
             allow_node,
             open_writes,
         }) => {
             cmd_serve(ServeOptions {
                 ephemeral,
+                server_config,
                 groups_log: cli.groups_log,
                 no_relay,
                 no_gossip,
@@ -206,6 +338,9 @@ async fn main() -> Result<()> {
                 dht,
                 iroh_port,
                 bind,
+                web_listen,
+                bind_explicit,
+                port_explicit,
                 web_token,
                 web_cookie_secure,
                 world,
@@ -229,6 +364,7 @@ async fn main() -> Result<()> {
                 roc_platform,
                 world_native,
                 world_source_only,
+                world_module_trust_keys,
                 world_runtime,
                 allow_node,
                 open_writes,
@@ -282,6 +418,8 @@ async fn main() -> Result<()> {
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
         }
+        #[cfg(feature = "sandbox")]
+        Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,
         #[cfg(not(feature = "world"))]
@@ -398,6 +536,73 @@ async fn main() -> Result<()> {
                 no_relay,
             )
             .await
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_log_level;
+
+    #[test]
+    fn test_log_level_defaults_to_warn_without_flags_or_env() {
+        assert_eq!(resolve_log_level(false, None, None, None, None), "warn");
+    }
+
+    #[test]
+    fn test_log_level_debug_flag_wins_over_everything() {
+        assert_eq!(
+            resolve_log_level(true, Some("error"), Some("info"), Some("info"), None),
+            "debug"
+        );
+    }
+
+    #[test]
+    fn test_log_level_flag_beats_env() {
+        assert_eq!(
+            resolve_log_level(false, Some("error"), Some("info"), Some("info"), Some("1")),
+            "error"
+        );
+    }
+
+    #[test]
+    fn test_log_level_rust_log_presence_signals_env_filter() {
+        // Present (even empty) RUST_LOG yields the empty sentinel; the
+        // caller then uses the RUST_LOG value itself as the base filter.
+        assert_eq!(
+            resolve_log_level(false, None, Some("info"), Some("error"), Some("1")),
+            ""
+        );
+        assert_eq!(resolve_log_level(false, None, Some(""), None, None), "");
+    }
+
+    #[test]
+    fn test_log_level_log_level_env_beats_debug_env() {
+        assert_eq!(
+            resolve_log_level(false, None, None, Some("info"), Some("1")),
+            "info"
+        );
+    }
+
+    #[test]
+    fn test_log_level_debug_env_truthy_values() {
+        for value in ["1", "true", "TRUE", "yes"] {
+            assert_eq!(
+                resolve_log_level(false, None, None, None, Some(value)),
+                "debug",
+                "DEBUG={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_log_level_debug_env_falsey_values_fall_through_to_warn() {
+        for value in ["", "0", "false", "FALSE"] {
+            assert_eq!(
+                resolve_log_level(false, None, None, None, Some(value)),
+                "warn",
+                "DEBUG={value:?}"
+            );
         }
     }
 }

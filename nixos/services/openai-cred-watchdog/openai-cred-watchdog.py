@@ -2,16 +2,22 @@
 """Watchdog: OpenAI credential invariant for the laptop OpenCode store.
 
 Invariant (recurrence guard for developing-today/code#3216):
-  - provider `openai`: NO credential row with method chatgpt-token-sharing
-    may exist, and the ACTIVE credential method must be chatgpt-browser
-    or chatgpt-headless.
+  - provider `openai.main`: NO credential row with method
+    chatgpt-token-sharing may exist, and the ACTIVE credential method
+    must be chatgpt-browser or chatgpt-headless.
   - provider `openai.alternate`: the ACTIVE credential method must be
     chatgpt-browser or chatgpt-headless.
+
+The main account was renamed `openai` -> `openai.main` in PR #5085;
+the retired `openai` identity is deliberately NOT checked (issue
+#5250): a store still carrying only `openai` rows reports
+`openai.main: no credential rows found` rather than passing.
 
 Read-only. Never prints token values (only credential ids, labels, methods).
 Exit: 0 healthy, 1 violation, 2 check error.
 Usage: openai-cred-watchdog.py [path-to-opencode.db]
 """
+
 import json
 import os
 import sqlite3
@@ -20,7 +26,7 @@ import sys
 DEFAULT_DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
 ALLOWED_ACTIVE_METHODS = {"chatgpt-browser", "chatgpt-headless"}
 BANNED_METHOD = "chatgpt-token-sharing"
-PROVIDERS = ("openai", "openai.alternate")
+PROVIDERS = ("openai.main", "openai.alternate")
 
 
 def method_of(value_json):
@@ -52,7 +58,7 @@ def check(db_path):
         if not creds:
             violations.append(f"{provider}: no credential rows found")
             continue
-        if provider == "openai":
+        if provider == "openai.main":
             for cred_id, label, active, method in creds:
                 if method == BANNED_METHOD:
                     violations.append(
@@ -88,7 +94,9 @@ def main():
         for v in violations:
             print(f"VIOLATION: {v}")
         return 1
-    print("OK: openai credential invariant holds (no token-sharing row; active methods browser/headless)")
+    print(
+        "OK: openai credential invariant holds (no token-sharing row; active methods browser/headless)"
+    )
     return 0
 
 

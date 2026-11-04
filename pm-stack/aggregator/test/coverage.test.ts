@@ -12,6 +12,7 @@ import {
   type CoverageSnapshotFile,
   type RepoCensus,
 } from "../src/coverage.ts";
+import { coverageFromFeed } from "../src/feed.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 
 function poolItem(partial: Partial<ProjectPoolItem> & { repo: string }): ProjectPoolItem {
@@ -55,6 +56,47 @@ describe("isRepoCensus", () => {
     expect(isRepoCensus({ repo: "ab", openIssues: 1, gateNow: 0, gateNext: 0 })).toBe(false);
     expect(isRepoCensus(null)).toBe(false);
   });
+
+  test("rejects negative counts and gate counts above the open total", () => {
+    const valid = { repo: "a/b", openIssues: 10, gateNow: 3, gateNext: 2 };
+    for (const counts of [
+      { openIssues: -1, gateNow: 0, gateNext: 0 },
+      { openIssues: 10, gateNow: -1, gateNext: 0 },
+      { openIssues: 10, gateNow: 0, gateNext: -1 },
+      { openIssues: 10, gateNow: 11, gateNext: 0 },
+      { openIssues: 10, gateNow: 0, gateNext: 11 },
+    ]) {
+      expect(isRepoCensus({ ...valid, ...counts })).toBe(false);
+    }
+  });
+
+  test("requires exactly one valid owner/name repository ref", () => {
+    for (const repo of [
+      "",
+      "/repo",
+      "owner/",
+      "owner/name/extra",
+      "owner name/repo",
+      "owner/repo name",
+      "owner//repo",
+    ]) {
+      expect(isRepoCensus({ repo, openIssues: 1, gateNow: 0, gateNext: 0 })).toBe(false);
+    }
+  });
+});
+
+describe("coverageFromFeed duplicate census rows", () => {
+  test("refuses an ambiguous census instead of choosing a duplicate row", () => {
+    expect(
+      coverageFromFeed({
+        coverage: [
+          { repo: "a/b", openIssues: 10, gateNow: 1, gateNext: 2 },
+          { repo: "a/b", openIssues: 20, gateNow: 3, gateNext: 4 },
+          { repo: "c/d", openIssues: 5, gateNow: 0, gateNext: 1 },
+        ],
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("computeCoverage", () => {
@@ -91,7 +133,11 @@ describe("computeCoverage", () => {
   });
 
   test("repos are sorted and stamped", () => {
-    expect(report.repos.map((r) => r.repo)).toEqual(["developing-today/code", "developing-today/opencode", "dezren39/nix"]);
+    expect(report.repos.map((r) => r.repo)).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+      "dezren39/nix",
+    ]);
     expect(report.generatedAt).toBe("2026-11-01T12:00:00.000Z");
   });
 });
@@ -100,7 +146,15 @@ describe("snapshot rotation + delta", () => {
   const mk = (at: string, codeOpen: number | null): CoverageReport => ({
     generatedAt: at,
     repos: [
-      { repo: "developing-today/code", openIssues: codeOpen, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+      {
+        repo: "developing-today/code",
+        openIssues: codeOpen,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
     ],
   });
 
@@ -157,7 +211,15 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
   const mk = (at: string, codeOpen: number | null): CoverageReport => ({
     generatedAt: at,
     repos: [
-      { repo: "developing-today/code", openIssues: codeOpen, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+      {
+        repo: "developing-today/code",
+        openIssues: codeOpen,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
     ],
   });
 
@@ -234,7 +296,15 @@ describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
         current: {
           generatedAt: "2026-11-01T00:00:00Z",
           repos: [
-            { repo: "developing-today/code", openIssues: open, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+            {
+              repo: "developing-today/code",
+              openIssues: open,
+              gateNow: 1,
+              gateNext: 2,
+              poolItems: 10,
+              poolUnsetStatus: 3,
+              poolUnsetArea: 4,
+            },
           ],
         },
       });

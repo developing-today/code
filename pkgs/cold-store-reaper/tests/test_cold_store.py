@@ -425,6 +425,69 @@ class TestPack(ColdStoreTestBase):
         self.assertEqual(again["bundle_id"], result["bundle_id"])
         self.assertEqual(again["members"], 1)
 
+    def test_pack_refuses_when_source_changes_between_hash_and_compress(self):
+        # #2269 (Codex P1 on PR #923, discussion_r4372814010): pack()
+        # hashed the source and compressed it in two separate reads, so a
+        # file mutated between the passes was sealed with the old hash in
+        # the manifest and the new bytes in the bundle — upload
+        # verification (bundle md5/size) passed, and every future fetch
+        # rejected the restored bytes with a SHA-256 mismatch. pack()
+        # must now refuse instead of sealing a mismatched object.
+        old = b"original version of the file\n" * 20
+        new = b"MUTATED version -- different bytes, different length\n" * 20
+        src = self.write_src("racy.txt", old)
+        expected_hash = hashlib.sha256(old).hexdigest()
+        mutated_hash = hashlib.sha256(new).hexdigest()
+        self.assertNotEqual(expected_hash, mutated_hash)
+
+        real_compress = ColdStore._compress_to_frame
+
+        def mutate_then_compress(store_self, src_arg, frame_path):
+            Path(src_arg).write_bytes(new)
+            return real_compress(store_self, src_arg, frame_path)
+
+        with mock.patch.object(
+            ColdStore,
+            "_compress_to_frame",
+            autospec=True,
+            side_effect=mutate_then_compress,
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "changed during pack.*NOT sealed"
+            ):
+                self.store.pack([str(src)])
+
+        # Nothing was sealed: no bundle/object/member rows carry the
+        # stale recorded hash, no bundle file or temp artifact remains,
+        # and the store still works for the (now stable) current bytes.
+        conn = self.store.db()
+        self.assertEqual(
+            conn.execute("SELECT count(*) AS n FROM bundles").fetchone()["n"], 0
+        )
+        self.assertEqual(
+            conn.execute(
+                "SELECT count(*) AS n FROM objects WHERE hash=?", (expected_hash,)
+            ).fetchone()["n"],
+            0,
+        )
+        self.assertEqual(
+            conn.execute("SELECT count(*) AS n FROM members").fetchone()["n"], 0
+        )
+        conn.close()
+        self.assertEqual(list(self.store.bundles_dir.glob("*.csb")), [])
+        self.assertFalse((self.store.bundles_dir / "bundle.tmp").exists())
+        self.assertFalse((self.store.bundles_dir / "frame.tmp").exists())
+
+        result = self.store.pack([str(src)])
+        self.assertEqual(result["members"], 1)
+        conn = self.store.db()
+        member = conn.execute("SELECT * FROM members").fetchone()
+        conn.close()
+        self.assertEqual(member["object_hash"], mutated_hash)
+        raw = Path(result["path"]).read_bytes()
+        frame = raw[member["offset"] : member["offset"] + member["length"]]
+        self.assertEqual(self.store.decompress_frame(frame), new)
+
 
 class TestUploadFetch(ColdStoreTestBase):
     def test_ensure_folders_idempotent(self):
@@ -648,6 +711,54 @@ class TestStateHygiene(ColdStoreTestBase):
         self.assertNotIn("access_token", json.loads(raw))
         mode = stat.S_IMODE(self.store.state_path.stat().st_mode)
         self.assertEqual(mode, 0o600)
+
+
+class TestAtomicPrivateJson(ColdStoreTestBase):
+    """#3279: private JSON writes are atomic; corrupt files raise
+    ColdStoreError, never a raw JSONDecodeError."""
+
+    @staticmethod
+    def _crashing_dump(obj, f, **kwargs):
+        # Simulate a crash mid-write: partial JSON flushed, then abort.
+        f.write('{"partial": ')
+        f.flush()
+        raise OSError("simulated crash mid-write")
+
+    def test_failed_write_leaves_previous_state_intact(self):
+        self.store.save_state({"folders": {"a": "1"}})
+        with mock.patch("json.dump", side_effect=self._crashing_dump):
+            with self.assertRaises(OSError):
+                self.store.save_state({"folders": {"b": "2"}})
+        self.assertEqual(self.store.load_state(), {"folders": {"a": "1"}})
+        mode = stat.S_IMODE(self.store.state_path.stat().st_mode)
+        self.assertEqual(mode, 0o600)
+        leftovers = [x.name for x in self.home.iterdir() if x.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+
+    def test_failed_write_leaves_previous_credentials_intact(self):
+        before = self.store.load_credentials()
+        with mock.patch("json.dump", side_effect=self._crashing_dump):
+            with self.assertRaises(OSError):
+                self.store._write_private_json(
+                    self.store.credentials_path, {"client_id": "x"}
+                )
+        self.assertEqual(self.store.load_credentials(), before)
+        mode = stat.S_IMODE(self.store.credentials_path.stat().st_mode)
+        self.assertEqual(mode, 0o600)
+
+    def test_corrupt_state_raises_cold_store_error(self):
+        self.store.state_path.write_text('{"folders": {"a": "1"')
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_state()
+        self.assertNotIsInstance(ctx.exception, json.JSONDecodeError)
+        self.assertIn("state.json", str(ctx.exception))
+
+    def test_corrupt_credentials_raises_cold_store_error(self):
+        self.store.credentials_path.write_text('{"client_id": ')
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_credentials()
+        self.assertNotIsInstance(ctx.exception, json.JSONDecodeError)
+        self.assertIn("credentials.json", str(ctx.exception))
 
 
 # ------------------------------------------------------------------ fake D1
@@ -963,6 +1074,125 @@ class TestBackups(ColdStoreTestBase):
         second = self.store.ensure_folders()
         self.assertEqual(first, second)
         self.assertEqual(len(self.fake.folders), count)
+
+    def test_put_backup_verification_mismatch_does_not_ledger(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        upload = self.store._resumable_upload
+
+        def corrupt_after_upload(src, name, folder_id):
+            file_id = upload(src, name, folder_id)
+            self.fake.files[file_id] = b"corrupt stored bytes"
+            return file_id
+
+        with mock.patch.object(
+            self.store, "_resumable_upload", side_effect=corrupt_after_upload
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "verification mismatch"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-upload'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [])
+
+    def test_put_backup_readback_failure_does_not_ledger(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        request = cold_store.http_request
+
+        def fail_metadata_readback(method, url, *args, **kwargs):
+            if method == "GET" and "/files/" in url and "md5Checksum" in url:
+                return 503, {}, b"unavailable"
+            return request(method, url, *args, **kwargs)
+
+        with mock.patch("cold_store.http_request", side_effect=fail_metadata_readback):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "files.get after backup upload failed"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-upload'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(rows, [])
+
+    def test_put_backup_verification_mismatch_trashes_upload(self):
+        # Codex P2 on PR #4330: a failed verification must not leave the
+        # uploaded file live in Drive unledgered - trash it on the way out.
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        upload = self.store._resumable_upload
+        uploaded = []
+
+        def corrupt_after_upload(src, name, folder_id):
+            file_id = upload(src, name, folder_id)
+            uploaded.append(file_id)
+            self.fake.files[file_id] = b"corrupt stored bytes"
+            return file_id
+
+        with mock.patch.object(
+            self.store, "_resumable_upload", side_effect=corrupt_after_upload
+        ):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "verification mismatch"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        self.assertEqual(len(uploaded), 1)
+        self.assertTrue(self.fake.file_meta[uploaded[0]]["trashed"])
+        self.assertEqual([c["id"] for c in self.fake.trashed_calls], uploaded)
+
+    def test_put_backup_readback_failure_trashes_upload(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        request = cold_store.http_request
+
+        def fail_metadata_readback(method, url, *args, **kwargs):
+            if method == "GET" and "/files/" in url and "md5Checksum" in url:
+                return 503, {}, b"unavailable"
+            return request(method, url, *args, **kwargs)
+
+        with mock.patch("cold_store.http_request", side_effect=fail_metadata_readback):
+            with self.assertRaisesRegex(
+                cold_store.ColdStoreError, "files.get after backup upload failed"
+            ):
+                self.store.put_backup("supabase", str(dump))
+
+        self.assertEqual(len(self.fake.trashed_calls), 1)
+        trashed_id = self.fake.trashed_calls[0]["id"]
+        self.assertTrue(self.fake.file_meta[trashed_id]["trashed"])
+
+    def test_put_backup_failed_trash_still_raises_and_names_orphan(self):
+        dump = self.write_src("dump.sql", b"-- backup contents\n")
+        upload = self.store._resumable_upload
+        uploaded = []
+
+        def corrupt_after_upload(src, name, folder_id):
+            file_id = upload(src, name, folder_id)
+            uploaded.append(file_id)
+            self.fake.files[file_id] = b"corrupt stored bytes"
+            return file_id
+
+        request = cold_store.http_request
+
+        def fail_trash(method, url, *args, **kwargs):
+            if method == "PATCH":
+                return 500, {}, b"nope"
+            return request(method, url, *args, **kwargs)
+
+        with mock.patch.object(
+            self.store, "_resumable_upload", side_effect=corrupt_after_upload
+        ):
+            with mock.patch("cold_store.http_request", side_effect=fail_trash):
+                with self.assertRaisesRegex(
+                    cold_store.ColdStoreError,
+                    "verification mismatch.*ALSO failed to trash",
+                ):
+                    self.store.put_backup("supabase", str(dump))
+        self.assertEqual(len(uploaded), 1)
 
     def test_put_backup_naming_routing_ledger(self):
         dump = self.write_src("dump.sql", b"-- fake supabase dump\n" * 10)
@@ -2028,9 +2258,7 @@ class TestOffsetLessLastModified(EvictTestBase):
     as too-young, which is non-evictable by construction."""
 
     def _listed(self):
-        return {
-            o["key"]: o for o in self.store.s3_list_objects("supabase-backups")
-        }
+        return {o["key"]: o for o in self.store.s3_list_objects("supabase-backups")}
 
     def test_offset_less_stamp_parses_to_none(self):
         body = (
@@ -2077,9 +2305,7 @@ class TestOffsetLessLastModified(EvictTestBase):
         scan = self.scan_by_key()
         for name in ("young", "oldtimer", "evict1", "evict2"):
             self.assertEqual(scan[self.keys[name]]["verdict"], "too-young")
-        self.assertEqual(
-            scan[self.keys["unverified"]]["verdict"], "bundle-unverified"
-        )
+        self.assertEqual(scan[self.keys["unverified"]]["verdict"], "bundle-unverified")
         self.assertEqual(self.s3.deleted, [])
 
     def test_aware_stamps_unchanged_in_listing(self):
@@ -2088,7 +2314,6 @@ class TestOffsetLessLastModified(EvictTestBase):
             listed[self.keys["oldtimer"]]["last_modified"],
             datetime(2026, 6, 1, tzinfo=timezone.utc),
         )
-
 
 
 class TestS3ListPageValidation(unittest.TestCase):
@@ -2132,9 +2357,7 @@ class TestS3ListPageValidation(unittest.TestCase):
 
     def test_negative_size_raises(self):
         with self.assertRaises(cold_store.ColdStoreError):
-            cold_store._parse_s3_list_page(
-                self._page(self._entry("<Size>-5</Size>"))
-            )
+            cold_store._parse_s3_list_page(self._page(self._entry("<Size>-5</Size>")))
 
     def test_missing_size_keeps_default_zero(self):
         objects, truncated, token = cold_store._parse_s3_list_page(
@@ -2147,8 +2370,10 @@ class TestS3ListPageValidation(unittest.TestCase):
     def test_valid_page_pagination_and_stamp_unchanged(self):
         body = self._page(
             self._entry("<Size>3</Size>"),
-            extra=("<IsTruncated>true</IsTruncated>"
-                   "<NextContinuationToken>tok2</NextContinuationToken>"),
+            extra=(
+                "<IsTruncated>true</IsTruncated>"
+                "<NextContinuationToken>tok2</NextContinuationToken>"
+            ),
         )
         objects, truncated, token = cold_store._parse_s3_list_page(body)
         self.assertEqual(len(objects), 1)
@@ -2175,14 +2400,10 @@ class TestOffsetLessBackupPick(S3TestBase):
         # a later wall-clock reading, but its zone is unknown, so it
         # is not evidence of newness and must not win the pick
         self.s3.put(naive_key, naive_body, "2026-10-23T02:00:00.000")
-        self.s3.put(
-            "pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z"
-        )
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
         result = self.store.backup_supabase()
         self.assertEqual(result["source_key"], aware_key)
-        self.assertEqual(
-            result["sha256"], hashlib.sha256(aware_body).hexdigest()
-        )
+        self.assertEqual(result["sha256"], hashlib.sha256(aware_body).hexdigest())
 
 
 class TestEvictApply(EvictTestBase):
@@ -2903,7 +3124,6 @@ class TestWorkerDecoder(unittest.TestCase):
         self.assertIn("PASS", proc.stdout)
 
 
-
 class TestD1ResponseShapes(ColdStoreTestBase):
     """Regression (#2618): D1 response handling must not assume object
     shapes — malformed bodies raise ColdStoreError (or fall back to raw
@@ -2956,9 +3176,7 @@ class TestD1ResponseShapes(ColdStoreTestBase):
 
     def test_d1_select_non_object_result_entry_raises_cold_store_error(self):
         with self.assertRaises(cold_store.ColdStoreError):
-            self._select_with_body(
-                b'{"success": true, "result": ["x"]}'
-            )
+            self._select_with_body(b'{"success": true, "result": ["x"]}')
 
     def test_d1_select_controls_unchanged(self):
         rows = self._select_with_body(
@@ -2983,6 +3201,7 @@ class TestD1ResponseShapes(ColdStoreTestBase):
             ):
                 with self.assertRaises(cold_store.ColdStoreError):
                     self.store.sync_manifest()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -163,8 +163,6 @@ export interface BoardItem {
   kaneoUrl?: string;
   /** Every linked issue/PR, from any of the four repos. */
   links: Link[];
-  /** Pad notes linked to the item (planning layer), by title + URL. */
-  notes?: { title: string; url: string }[];
 }
 
 /** One row of the Grist "Roadmap" table (doc "Program roadmap"). */
@@ -207,7 +205,7 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "fixtures" | "stale" | "absent" | "invalid";
+  state: "live" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;
@@ -322,15 +320,28 @@ export interface BurnSegment {
 
 export interface QuotaView {
   pools: QuotaPool[];
+  /** Safe per-credential lifecycle status from the configured provider set. */
+  credentialLifecycle?: import("./credential-lifecycle.ts").CredentialLifecycleRow[];
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
-  /** Feed-load sanitization counts (#2429): present only when the
-   * loader dropped malformed pools/windows/burn segments, so an
+  /** Feed-load sanitization counts (#2429/#3921): present only when the
+   * loader dropped malformed pools, credentials, windows, active sessions,
+   * or burn segments, so an
    * incomplete read is distinguishable from a successful empty one
-   * in the public payload (/api/quota.json projects this view).
+   * in the public payload (/api/quota.json projects this view). Optional
+   * pool freshness and burn-rate drops are counted without dropping the pool.
    * Additive for existing consumers. */
-  dropped?: { pools: number; windows: number; burn: number };
+  dropped?: {
+    pools: number;
+    credentials: number;
+    windows: number;
+    activeSessions: number;
+    burn: number;
+    poolFreshness: number;
+    burnTokensPerMin: number;
+    credentialLifecycle?: number;
+  };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
@@ -452,7 +463,24 @@ export function refKey(ref: GhRef): RefKey {
 export function parseRef(key: RefKey): GhRef {
   const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(key);
   if (!m) throw new Error(`not a repo-qualified ref: ${key}`);
-  return { repo: m[1], number: Number(m[2]) };
+  const number = Number(m[2]);
+  if (!Number.isSafeInteger(number)) throw new Error(`ref number is not a safe integer: ${key}`);
+  return { repo: m[1], number };
+}
+
+/** The one shared ref-validity rule (#4952): a value is a usable RefKey
+ *  only if parseRef accepts it — owner/repo#N shape AND a safe-integer
+ *  number. Boundary validators and store-load gates route through this
+ *  instead of re-checking the shape with a local regex whose \d+ group
+ *  admits numbers parseRef (and refUrl) then throw on. */
+export function isValidRef(value: unknown): value is RefKey {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value as RefKey);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
@@ -557,6 +585,9 @@ export type WhyUserClass = "decision" | "missing-info" | "approval" | "access" |
 export interface TierItemOption {
   id: string;
   label: string;
+  /** The survey question this shortcut answers, when it is one of the
+   *  question's alternate controls. */
+  questionId?: string;
   description?: string;
   /** Predicted effect of picking this option, shown under its button. */
   effect?: string;
@@ -1072,6 +1103,10 @@ export interface DashComment {
   githubState?: "pending" | "posted" | "failed";
   /** kind "github", once posted: the live comment URL. */
   githubUrl?: string;
+  /** kind "github", when githubState is "failed": the last error a
+   *  fleet poster reported (#1210), rendered so a failed comment
+   *  shows why it failed, not just that it did. Cleared on posting. */
+  githubError?: string;
 }
 
 /** Runtime families the session registry tracks. */
@@ -1188,6 +1223,15 @@ export interface DatedRead {
 }
 
 /** One family-2 service: a card on the hub, a page at /quota/service/<id>. */
+export interface ServiceSources {
+  /** The quota-view.md Part (b) section this card was built from, e.g. "### Turso". */
+  quotaViewSection: string;
+  /** The Summary (b) tracker row's first cell, or null when the service has no row. */
+  trackerRow: string | null;
+  /** The evidence-baseline research record behind the card's interpretation. */
+  baselineDoc: string;
+}
+
 export interface SaasService {
   id: string;
   name: string;
@@ -1207,6 +1251,8 @@ export interface SaasService {
   sourceClass: UsageSourceClass;
   /** Where the card's facts came from, human-readable. */
   sourceNote: string;
+  /** Research provenance behind the card (#1058): tracker row, baseline, quota-view section. */
+  sources?: ServiceSources;
   /** Renewal/reset as recorded (may be prose, e.g. "cycle ends 2026-10-31"). */
   nextDate?: string | null;
   /** Expected re-measure cadence in days; older reads render stale. */
@@ -1251,7 +1297,7 @@ export interface ChargeRow {
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled" | "unmatched-charge";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge" | "credential-lifecycle";
   label: string;
   detail: string;
   href: string;
@@ -1290,9 +1336,22 @@ export interface QuotaCurrentEntry {
   serviceId: string;
   credentialId?: string;
   credentialLabel?: string;
+  /** Internal provenance marker: this row came from the configured quota-credential registry. */
+  credentialWatch?: boolean;
+  /** Present only when the provider exposes an authoritative expiry instant. */
+  credentialExpiresAt?: string;
+  /** Provenance class for the provider's credential source; never a credential value. */
+  credentialSource?: "claude-code" | "opencode" | "environment";
   planLabel?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;
+  /** #1268: ISO time of the tick that retained this entry from the
+   *  previous tick after the provider's run errored. The data is
+   *  last-known, never a fresh read: readers classify it stale
+   *  regardless of measuredAt freshness (a retained entry is usually
+   *  only one tick old, well inside the freshness bound). Absent on
+   *  fresh reads. */
+  retainedFromFailedTick?: string;
   source: string;
   error?: string;
   windows: QuotaCurrentWindow[];
@@ -1316,6 +1375,8 @@ export interface QuotaCurrentFile {
   source: string;
   heartbeat: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
+  /** Parser diagnostics for malformed entries removed at the ingest boundary. */
+  sanitized?: { droppedProviders: number; droppedWindows: number };
 }
 
 /**

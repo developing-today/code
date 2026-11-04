@@ -4,11 +4,17 @@
 // bogus target). These tests stub the GitHub lookup/client — no network.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { verifyAttachTarget, type AttachTargetInfo } from "../src/server.ts";
+import type { AttachTargetInfo } from "../src/server.ts";
+
+// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// (#5120), so pin a fixture project before the dynamic import below.
+process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
+const { verifyAttachTarget } = await import("../src/server.ts");
 import { GitHubClient, isNotFoundError } from "../src/github.ts";
 
 const REPO = "developing-today/code";
-const found = (partial: Partial<AttachTargetInfo>): (() => Promise<AttachTargetInfo | null>) =>
+const found =
+  (partial: Partial<AttachTargetInfo>): (() => Promise<AttachTargetInfo | null>) =>
   async () => ({ state: "open", isPullRequest: false, ...partial });
 
 describe("verifyAttachTarget (#3007)", () => {
@@ -125,9 +131,12 @@ describe("GitHubClient.getIssue with stubbed GitHub (#3007)", () => {
   test("open issue parses; pull_request marker absent", async () => {
     stubGitHub(
       () =>
-        new Response(JSON.stringify({ number: 3007, state: "open", html_url: `https://github.com/${REPO}/issues/3007` }), {
-          status: 200,
-        }),
+        new Response(
+          JSON.stringify({ number: 3007, state: "open", html_url: `https://github.com/${REPO}/issues/3007` }),
+          {
+            status: 200,
+          },
+        ),
     );
     try {
       const client = new GitHubClient("12345", pem);

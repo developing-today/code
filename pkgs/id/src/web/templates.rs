@@ -165,6 +165,57 @@ pub fn render_file_list(page: &FileListPage) -> String {
         search_value
     );
     html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
+    // Sort + origin filter (#4973): a plain GET form to /files so sorting
+    // and filtering by origin node and upload time work without JS.
+    let sort_current = page.sort.as_deref().unwrap_or("");
+    let origin_value = page
+        .origin_filter
+        .as_deref()
+        .map(html_escape)
+        .unwrap_or_default();
+    html.push_str("<form method=\"get\" action=\"/files\" class=\"flex items-center gap-1\">");
+    // Preserve the current search + show-deleted state across this GET
+    // submit (Codex review, PR #5191): without these hidden fields,
+    // applying a sort/origin silently cleared the other constraints.
+    if !search_value.is_empty() {
+        let _ = write!(
+            html,
+            "<input type=\"hidden\" name=\"search\" value=\"{}\" />",
+            search_value
+        );
+    }
+    if page.show_deleted {
+        html.push_str(
+            "<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />",
+        );
+    }
+    html.push_str("<select id=\"file-sort\" name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
+    for (value, label) in [
+        ("", "sort: default"),
+        ("uploaded", "sort: upload time"),
+        ("origin", "sort: origin node"),
+    ] {
+        let selected = if value == sort_current {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(
+            html,
+            "<option value=\"{}\"{}>{}</option>",
+            value, selected, label
+        );
+    }
+    html.push_str("</select>");
+    let _ = write!(
+        html,
+        "<input type=\"text\" id=\"file-origin\" name=\"origin\" aria-label=\"Filter by origin node\" class=\"input input-bordered input-xs w-28 bg-base-100\" placeholder=\"origin / unknown\" value=\"{}\" />",
+        origin_value
+    );
+    html.push_str(
+        "<button type=\"submit\" class=\"btn btn-ghost btn-xs font-mono\">apply</button>",
+    );
+    html.push_str("</form>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -291,6 +342,21 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 format!("<span class=\"flex gap-1 flex-wrap\">{}</span>", tag_pills)
             };
 
+            // Origin + upload time (#4973): origin is the node that first
+            // wrote the file (`unknown` when unrecorded); uploaded is the
+            // `created` stamp. Refs only — bytes never travel in a surface.
+            let origin_str = file.origin_node.as_deref().unwrap_or("unknown");
+            let uploaded_str = file
+                .created_at
+                .map(format_unix_timestamp)
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "unknown".to_owned());
+            let origin_html = format!(
+                "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">origin {} \u{00b7} uploaded {}</span>",
+                html_escape(origin_str),
+                uploaded_str
+            );
+
             // Timestamp display — prefer modified_at, fall back to created_at, then tag-parsed
             let display_ts = file.modified_at.or(file.created_at).or(file.timestamp);
             let date_str = display_ts.map(format_unix_timestamp).unwrap_or_default();
@@ -315,7 +381,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                     <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
                     <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
-                    {}{}{}{}\
+                    {}{}{}{}{}\
                     <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
                 deleted_class,
@@ -329,6 +395,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 deleted_badge,
                 tags_html,
                 date_html,
+                origin_html,
                 short_hash,
             );
         }
@@ -344,6 +411,17 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             .as_deref()
             .map(|s| format!("&search={}", urlencoding::encode(s)))
             .unwrap_or_default();
+        let sort_param = page
+            .sort
+            .as_deref()
+            .map(|s| format!("&sort={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let origin_param = page
+            .origin_filter
+            .as_deref()
+            .map(|s| format!("&origin={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let search_param = format!("{search_param}{sort_param}{origin_param}");
 
         html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
@@ -767,7 +845,7 @@ pub fn render_settings(node_id: &str) -> String {
 }
 
 /// Render a browser presentation for the optional multiplayer world.
-pub fn render_world_page(assets: &AssetUrls) -> String {
+pub fn render_world_page(assets: &AssetUrls, world_socket: Option<&str>) -> String {
     let content = r#"
 <section data-world-app class="space-y-5" aria-labelledby="world-title">
   <nav aria-label="World documents" class="text-sm">
@@ -798,29 +876,33 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-host-view class="btn btn-secondary" type="button">View as host (read-only)</button>
       <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
     </div>
     <div data-world-invite-output hidden>
       <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
     </div>
-    <details>
-      <summary class="cursor-pointer text-sm">Host: create a guest invite</summary>
-      <div class="mt-3 flex flex-wrap gap-2">
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Host controls</h2>
+      <div class="flex flex-wrap gap-2">
         <input data-world-admin class="input input-bordered font-mono" type="password" autocomplete="off" aria-label="World admin token" placeholder="World admin token">
-        <button data-world-invite class="btn btn-secondary" type="button">Create invite</button>
+        <button data-world-invite class="btn btn-secondary" type="button">Create guest invite</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+    </section>
+    <section class="rounded border border-base-300 p-3 space-y-3">
+      <h2 class="font-bold">Install or update program</h2>
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-module class="file-input file-input-bordered" type="file" accept=".wasm,application/wasm" aria-label="Wasm world module">
         <input data-world-seed class="input input-bordered w-24" type="number" value="1" aria-label="World seed">
         <button data-world-install class="btn btn-warning" type="button">Install Wasm module</button>
       </div>
-      <div class="mt-3 flex flex-wrap items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
         <input data-world-source class="file-input file-input-bordered" type="file" accept=".roc,text/plain" multiple aria-label="Roc world sources">
         <button data-world-compile class="btn btn-warning" type="button">Compile &amp; install Roc sources</button>
       </div>
       <p class="text-xs opacity-60">Choose main.roc and up to 7 additional .roc files. Each file is limited to 128 KiB and all sources together to 256 KiB. Compilation runs on the host (up to 120 seconds).</p>
       <p class="text-xs opacity-60">Uploads run in the host's import-free Wasmtime sandbox. The current world restarts at its module seed.</p>
-    </details>
+    </section>
   </section>
 
   <section class="grid gap-4 md:grid-cols-2">
@@ -853,7 +935,23 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
   </section>
 </section>
 "#;
-    render_page("World", content, "", assets)
+    // The frontend connects to the app's configured live channel:
+    // the socket travels on the root element as a data attribute
+    // (data-world-socket), which world.ts reads instead of a
+    // hardcoded path (Codex P1 on #3894). No socket declared: no
+    // attribute, and the frontend keeps its historical default.
+    let content = match world_socket {
+        Some(socket) => content.replacen(
+            "data-world-app",
+            &format!(
+                "data-world-app data-world-socket=\"{}\"",
+                html_escape(socket)
+            ),
+            1,
+        ),
+        None => content.to_owned(),
+    };
+    render_page("World", &content, "", assets)
 }
 
 /// Render the peers page showing discovered peers.
@@ -1072,10 +1170,13 @@ mod tests {
 
     #[test]
     fn test_render_world_page_exposes_presentation_controls() {
-        let html = render_world_page(&AssetUrls::default());
+        let html = render_world_page(&AssetUrls::default(), Some("/ws/arena"));
+        assert!(html.contains("data-world-socket=\"/ws/arena\""));
         assert!(html.contains("data-world-app"));
         assert!(html.contains("data-world-invite"));
         assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-host-view"));
+        assert!(html.contains("Install or update program"));
         assert!(html.contains("data-world-world"));
         assert!(html.contains("data-world-chat-form"));
         assert!(html.contains("data-world-input-form"));
@@ -1109,6 +1210,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("No files stored yet"));
@@ -1127,6 +1230,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1136,6 +1240,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("test.txt"));
@@ -1159,6 +1265,7 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 tags: vec![],
+                origin_node: None,
                 is_deleted: false,
             })
             .collect();
@@ -1169,6 +1276,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("51-100 of 300"), "html: {html}");
@@ -1185,6 +1294,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1199,6 +1310,8 @@ mod tests {
             per_page: 200,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1222,6 +1335,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![("note".to_owned(), Some(value))],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1231,6 +1345,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         // Truncated on the char boundary before 'é', with the ellipsis.
@@ -1304,12 +1420,15 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 tags: vec![],
+                origin_node: None,
                 is_deleted: false,
             }],
             page: 1,
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(

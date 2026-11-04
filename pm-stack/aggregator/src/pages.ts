@@ -101,6 +101,15 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "conflicts",
+    title: "Source conflicts",
+    route: "/conflicts",
+    api: "/api/conflicts.json",
+    blurb: "One read-only queue of every live source disagreement, with both values and its age.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "quota",
     title: "Usage & billing",
     route: "/quota",
@@ -138,12 +147,49 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "search",
+    title: "Search",
+    route: "/search",
+    api: "/api/search.json",
+    blurb: "Search board and roadmap work by title or linked issue/PR ref.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
+    id: "events",
+    title: "Events",
+    route: "/events",
+    api: "/api/events.json",
+    blurb: "The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
+    id: "comments-queue",
+    title: "Comments queue",
+    route: "/comments",
+    api: "/api/comments/queue.json",
+    blurb:
+      "Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "program",
     title: "Program status",
     route: "/program",
     api: "/api/program.json",
     blurb:
       "The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.",
+    group: "work",
+    nav: "primary",
+  },
+  {
+    id: "queue",
+    title: "Queue",
+    route: "/queue",
+    api: "/api/queue.json",
+    blurb: "In progress, blocked, recently completed, and next-up work across projects.",
     group: "work",
     nav: "primary",
   },
@@ -156,6 +202,29 @@ export const PAGES: PageDef[] = [
       "Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).",
     group: "ops",
     nav: "primary",
+  },
+  {
+    id: "alerts",
+    title: "Alerts",
+    route: "/alerts",
+    api: "/api/alerts.json",
+    blurb:
+      "The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Supabase ledger.",
+    group: "ops",
+    // Drew 2026-11-01: primary — the ack surface must be one tap from
+    // the bar, not buried in the Pages dropdown (supersedes the
+    // post-#1497 dropdown placement recorded in curation-1497.test).
+    nav: "primary",
+  },
+  {
+    id: "notifications",
+    title: "Notifications",
+    route: "/notifications",
+    api: "/api/notifications.json",
+    blurb:
+      "Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.",
+    group: "ops",
+    nav: "dropdown",
   },
   {
     id: "pages",

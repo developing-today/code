@@ -52,17 +52,17 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
 
 ## Components
 
-| Path | What |
-|---|---|
-| `config.json` | owners, tier rules, exclusions, gaps, App/Worker names |
-| `bin/ghb_common.py` | shared inventory + plan builder |
-| `bin/clone_all.py` | resumable parallel initial clone (from plan.json) |
-| `bin/fetch_mirrors.py` | daily fetch / targeted fetch of named repos |
-| `bin/reconcile.py` | weekly sweep: inventory → plan → clone new → report |
-| `bin/manifest.py` | regenerate MANIFEST.json + FAMILIES.md |
-| `bin/drain_queue.py` | drain Worker queue, fetch pushed repos |
-| `bin/app_setup.py` | App manifest flow, credential storage, install report |
-| `worker/` | Cloudflare Worker webhook receiver (wrangler) |
-| `systemd/` | laptop user units + timers + installer |
-| `docs/RUNBOOK.md` | copy-paste operations: install, add org, upgrade, DR |
-| `tests/` | regression tests (plain python3, no deps) |
+| Path                   | What                                                   |
+| ---------------------- | ------------------------------------------------------ |
+| `config.json`          | owners, tier rules, exclusions, gaps, App/Worker names |
+| `bin/ghb_common.py`    | shared inventory + plan builder                        |
+| `bin/clone_all.py`     | resumable parallel initial clone (from plan.json)      |
+| `bin/fetch_mirrors.py` | daily fetch / targeted fetch of named repos            |
+| `bin/reconcile.py`     | weekly sweep: inventory → plan → clone new → report    |
+| `bin/manifest.py`      | regenerate MANIFEST.json + FAMILIES.md                 |
+| `bin/drain_queue.py`   | drain Worker queue, fetch pushed repos                 |
+| `bin/app_setup.py`     | App manifest flow, credential storage, install report  |
+| `worker/`              | Cloudflare Worker webhook receiver (wrangler)          |
+| `systemd/`             | laptop user units + timers + installer                 |
+| `docs/RUNBOOK.md`      | copy-paste operations: install, add org, upgrade, DR   |
+| `tests/`               | regression tests (plain python3, no deps)              |

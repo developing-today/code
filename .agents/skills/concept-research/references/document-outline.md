@@ -98,7 +98,7 @@ One bullet per recommendation, each marked `agent-preliminary`:
 - the confidence and the evidence that would change it;
 - the reversal cost and the items it affects.
 
-These are not decisions. Only the decision protocol in [decisions.md](/planning/workflow/decisions.md) records decisions, and nothing downstream may promote an `agent-preliminary` item to confirmed.
+These are not decisions. Only the decision protocol in [decisions.md](../../../../planning/workflow/decisions.md) records decisions, and nothing downstream may promote an `agent-preliminary` item to confirmed.
 
 ### `## Cross-concept notes`
 

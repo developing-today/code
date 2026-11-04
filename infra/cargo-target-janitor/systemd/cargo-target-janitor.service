@@ -1,0 +1,6 @@
+[Unit]
+Description=Enforce the fleet Cargo target storage cap
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/cargo-target-janitor --apply

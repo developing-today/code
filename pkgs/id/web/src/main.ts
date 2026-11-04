@@ -8,13 +8,14 @@ import { initHome } from "./home";
 import "./world";
 import "./world";
 import { AutoSaveManager, type SaveResult } from "./auto-save";
-import { type CollabConnection, initCollab } from "./collab";
+import { buildCollabWsUrl, type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
+import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 declare global {
@@ -513,6 +514,26 @@ function onPartialSwapped(_targetSelector: string): void {
  * Initialize search debounce for file search input and show-deleted checkbox.
  * Search triggers after 300ms of inactivity; checkbox triggers immediately.
  */
+/**
+ * Current file-list query params: search + show-deleted + the #4973
+ * sort/origin controls. Every partial refresh (search debounce,
+ * show-deleted toggle, tag WebSocket events) must carry all of them, or
+ * the refresh silently drops the sort order and origin filter while the
+ * controls still show them selected (Codex review, PR #5191).
+ */
+function currentFileListParams(): URLSearchParams {
+  const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
+  const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
+  const sortSelect = document.getElementById("file-sort") as HTMLSelectElement | null;
+  const originInput = document.getElementById("file-origin") as HTMLInputElement | null;
+  const params = new URLSearchParams();
+  if (searchInput?.value) params.set("search", searchInput.value);
+  if (showDeletedCheckbox?.checked) params.set("show_deleted", "true");
+  if (sortSelect?.value) params.set("sort", sortSelect.value);
+  if (originInput?.value) params.set("origin", originInput.value);
+  return params;
+}
+
 function initSearchDebounce(): void {
   const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
   const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
@@ -522,12 +543,7 @@ function initSearchDebounce(): void {
   const doSearch = () => {
     if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
     searchDebounceTimer = setTimeout(() => {
-      const query = searchInput?.value || "";
-      const showDeleted = showDeletedCheckbox?.checked || false;
-      const params = new URLSearchParams();
-      if (query) params.set("search", query);
-      if (showDeleted) params.set("show_deleted", "true");
-      const qs = params.toString();
+      const qs = currentFileListParams().toString();
       const url = qs ? `/api/files?${qs}` : "/api/files";
       fetchPartial(url, "#file-list-content");
     }, 300);
@@ -541,12 +557,7 @@ function initSearchDebounce(): void {
     showDeletedCheckbox.addEventListener("change", () => {
       // Immediate on checkbox change (no debounce)
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-      const query = searchInput?.value || "";
-      const showDeleted = showDeletedCheckbox?.checked || false;
-      const params = new URLSearchParams();
-      if (query) params.set("search", query);
-      if (showDeleted) params.set("show_deleted", "true");
-      const qs = params.toString();
+      const qs = currentFileListParams().toString();
       const url = qs ? `/api/files?${qs}` : "/api/files";
       fetchPartial(url, "#file-list-content");
     });
@@ -664,14 +675,7 @@ async function init(): Promise<void> {
             const lastRefresh = (window as unknown as Record<string, number>).__tagRefreshTs || 0;
             if (now - lastRefresh > 500) {
               (window as unknown as Record<string, number>).__tagRefreshTs = now;
-              const searchInput = document.getElementById("file-search") as HTMLInputElement | null;
-              const showDeletedCheckbox = document.getElementById("show-deleted") as HTMLInputElement | null;
-              const query = searchInput?.value || "";
-              const showDeleted = showDeletedCheckbox?.checked || false;
-              const params = new URLSearchParams();
-              if (query) params.set("search", query);
-              if (showDeleted) params.set("show_deleted", "true");
-              const qs = params.toString();
+              const qs = currentFileListParams().toString();
               const url = qs ? `/api/files?${qs}` : "/api/files";
               fetchPartial(url, "#file-list-content");
             }
@@ -953,7 +957,7 @@ async function init(): Promise<void> {
         // Connect to collab server - editor will be initialized after receiving server doc
         updateStatus("connecting");
         const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws/collab/${docId}`;
+        const wsUrl = buildCollabWsUrl(wsProtocol, window.location.host, docId);
         console.log("[id] Connecting to WebSocket:", wsUrl);
 
         this.collab = initCollab(
@@ -1448,7 +1452,7 @@ async function init(): Promise<void> {
 
   // Ctrl+S to save, Enter to submit tags
   document.addEventListener("keydown", (event: KeyboardEvent) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+    if (isSaveShortcut(event)) {
       event.preventDefault();
       if (app.collab?.editor && app.autoSave) {
         app.autoSave.saveNow();

@@ -91,6 +91,12 @@ pub struct FileListQuery {
     pub search: Option<String>,
     /// Whether to show soft-deleted files. Defaults to false.
     pub show_deleted: Option<bool>,
+    /// Sort order (#4973): `uploaded` (newest upload first) or `origin`
+    /// (origin node A-Z, unknown last). Absent keeps the default order.
+    pub sort: Option<String>,
+    /// Filter to one origin node id, or `unknown` for files with no
+    /// recorded origin (#4973).
+    pub origin: Option<String>,
 }
 
 /// Paginated file list result.
@@ -107,6 +113,10 @@ pub struct FileListPage {
     pub search: Option<String>,
     /// Whether deleted files are shown.
     pub show_deleted: bool,
+    /// The sort order applied, echoed for rendering (#4973).
+    pub sort: Option<String>,
+    /// The origin filter applied, echoed for rendering (#4973).
+    pub origin_filter: Option<String>,
 }
 
 /// Classification of a file based on its tag name pattern.
@@ -143,6 +153,10 @@ pub struct FileInfo {
     pub created_at: Option<u64>,
     /// Last modification timestamp from metadata tags (unix seconds).
     pub modified_at: Option<u64>,
+    /// Node that first wrote the file (#4973), from the `origin` metadata
+    /// tag. `None` for files written before origin stamping existed;
+    /// listings render it as unknown and never guess.
+    pub origin_node: Option<String>,
     /// User-visible tags (excludes system tags like created/modified/deleted/archive.*).
     pub tags: Vec<(String, Option<String>)>,
     /// Whether this file is soft-deleted.
@@ -169,8 +183,13 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
     // suffix: the archive claim path always formats a u64.
     if let Some(pos) = name.rfind(".archive.") {
         let ts_str = &name[pos + ".archive.".len()..];
-        if let Ok(ts) = ts_str.parse::<u64>() {
-            return (FileKind::Archive, Some(ts));
+        // The producer's Display form is unsigned decimal digits only:
+        // parse::<u64>() would also accept a leading '+', a spelling no
+        // producer mints (#4329).
+        if !ts_str.is_empty() && ts_str.bytes().all(|b| b.is_ascii_digit()) {
+            if let Ok(ts) = ts_str.parse::<u64>() {
+                return (FileKind::Archive, Some(ts));
+            }
         }
     }
 
@@ -185,6 +204,12 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
     // Strip trailing 'Z' and optional fractional seconds
     let s = s.strip_suffix('Z').unwrap_or(s);
     let s = if let Some(dot_pos) = s.rfind('.') {
+        // The fraction is a component too: it must be digits, not junk
+        // silently truncated away (#1879).
+        let fraction = &s[dot_pos + 1..];
+        if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
         &s[..dot_pos]
     } else {
         s
@@ -196,12 +221,39 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
         return None;
     }
 
-    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
-    let time_parts: Vec<u64> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
+    // Every component must parse: a non-numeric segment makes the whole
+    // timestamp malformed (#1879). Dropping failed segments let junk like
+    // "2026-03-12-draft" collapse onto the valid "2026-03-12" and parse
+    // as the same instant.
+    let date_strs: Vec<&str> = parts[0].split('-').collect();
+    let time_strs: Vec<&str> = parts[1].split(':').collect();
 
-    if date_parts.len() != 3 || time_parts.len() != 3 {
+    if date_strs.len() != 3 || time_strs.len() != 3 {
         return None;
     }
+
+    // Components must carry the canonical spellings of the documented
+    // format: a 4-digit year and 2-digit everything else, digits
+    // only (#4329). parse::<u64>() alone accepts any width and a leading
+    // '+', so non-canonical spellings like "2026-3-2T6:4:2Z" or a
+    // "+2026" year used to map onto the canonical instant.
+    let canonical =
+        |s: &str, width: usize| s.len() == width && s.bytes().all(|b| b.is_ascii_digit());
+    if !canonical(date_strs[0], 4)
+        || !date_strs[1..].iter().all(|p| canonical(p, 2))
+        || !time_strs.iter().all(|p| canonical(p, 2))
+    {
+        return None;
+    }
+
+    let date_parts: Vec<u64> = date_strs
+        .iter()
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    let time_parts: Vec<u64> = time_strs
+        .iter()
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
 
     let (year, month, day) = (date_parts[0], date_parts[1], date_parts[2]);
     let (hour, min, sec) = (time_parts[0], time_parts[1], time_parts[2]);
@@ -256,11 +308,31 @@ const fn is_leap_year(year: u64) -> bool {
 
 /// Create the main router with all web routes.
 pub fn create_router(state: AppState) -> Router {
-    Router::new()
+    create_router_for_app(state, &super::app_interface::WebInterface::world_app())
+}
+
+/// Create the main router for one packaged app, binding the world
+/// page at the app's [interfaces.web] route and the live channel at
+/// its socket (#2325, adapter mode). With the world app's own
+/// interface the result is byte-identical to create_router: same
+/// routes, same handlers, same state.
+pub fn create_router_for_app(
+    mut state: AppState,
+    interface: &super::app_interface::WebInterface,
+) -> Router {
+    state.web_route = interface.route.clone();
+    state.web_socket = interface.socket.clone();
+    create_router_inner(state)
+}
+
+fn create_router_inner(state: AppState) -> Router {
+    let world_route = state.web_route.clone();
+    let world_socket = state.web_socket.clone();
+    let router = Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
         .route("/files", get(files_page_handler))
-        .route("/world", get(world_page_handler))
+        .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
@@ -308,14 +380,23 @@ pub fn create_router(state: AppState) -> Router {
         // WebSocket for live tag updates
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
         // Static assets
-        .route("/assets/{*path}", get(assets_handler))
-        // Optional authoritative in-memory world session bridge
-        .merge(
-            super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
-                hub: state.world.clone(),
-                cookie_secure: state.cookie_secure,
-            }),
-        )
+        .route("/assets/{*path}", get(assets_handler));
+    // Optional authoritative in-memory world session bridge, bound
+    // at the app's socket when it declares one (#2325). The shared
+    // world HTTP surface (invite, metrics, directory, explore) is
+    // merged either way: an app that declares no live channel still
+    // serves those routes (Codex P2 on #3894).
+    let world_state = super::world_ws::WorldWebState {
+        hub: state.world.clone(),
+        cookie_secure: state.cookie_secure,
+    };
+    let router = match &world_socket {
+        Some(socket) => {
+            router.merge(super::world_ws::world_routes_at(socket).with_state(world_state))
+        }
+        None => router.merge(super::world_ws::world_http_routes().with_state(world_state)),
+    };
+    router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state)
 }
@@ -324,7 +405,11 @@ async fn world_page_handler(State(state): State<AppState>) -> Response {
     if state.world.is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    Html(super::templates::render_world_page(&state.assets)).into_response()
+    Html(super::templates::render_world_page(
+        &state.assets,
+        state.web_socket.as_deref(),
+    ))
+    .into_response()
 }
 
 /// Check if this is a partial request (SPA navigation, returns fragment not full page).
@@ -341,7 +426,12 @@ async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> imp
         .world
         .as_ref()
         .map_or("lobby", |hub| hub.default_world());
-    let content = super::home::render_home(&worlds, default_world, state.world.is_some());
+    let content = super::home::render_home(
+        &worlds,
+        default_world,
+        state.world.is_some(),
+        &state.web_route,
+    );
     if is_partial_request(&headers) {
         Html(render_main_page_wrapper(&content))
     } else {
@@ -744,7 +834,9 @@ async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
 }
 
 /// System tag keys that are excluded from user-visible tags display.
-const SYSTEM_TAG_KEYS: &[&str] = &["created", "modified", "deleted", "name", "file", "path"];
+const SYSTEM_TAG_KEYS: &[&str] = &[
+    "created", "modified", "deleted", "name", "file", "path", "origin",
+];
 
 /// Check if a tag key is a system/internal key that shouldn't be shown in tag pills.
 fn is_system_tag_key(key: &[u8]) -> bool {
@@ -784,9 +876,10 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         .unwrap_or_default();
     let mut created_map: HashMap<String, u64> = HashMap::new();
     let mut modified_map: HashMap<String, u64> = HashMap::new();
+    let mut origin_map: HashMap<String, String> = HashMap::new();
     let mut deleted_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut user_tags_map: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
-    let mut display_name_map: HashMap<String, String> = HashMap::new();
+    let mut display_name_map: HashMap<String, (u8, String)> = HashMap::new();
     for tag in &all_meta_tags {
         if tag.key == "created" {
             if let Some(ref v) = tag.value
@@ -794,6 +887,12 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
                 && let Ok(ts) = s.parse::<u64>()
             {
                 created_map.insert(tag.subject.display_lossy(), ts);
+            }
+        } else if tag.key == "origin" {
+            if let Some(ref v) = tag.value
+                && let Some(s) = v.as_str()
+            {
+                origin_map.insert(tag.subject.display_lossy(), s.to_owned());
             }
         } else if tag.key == "modified" {
             if let Some(ref v) = tag.value
@@ -805,16 +904,14 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         } else if tag.key == "deleted" {
             deleted_set.insert(tag.subject.display_lossy());
         }
-        // Resolve display name from name/file/path tags (prefer name > file > path)
-        if matches!(tag.key.as_bytes(), b"name" | b"file" | b"path") {
-            let subj = tag.subject.display_lossy();
-            if !display_name_map.contains_key(&subj)
-                && let Some(ref v) = tag.value
-                && let Some(s) = v.as_str()
-            {
-                display_name_map.insert(subj, s.to_owned());
-            }
-        }
+        // Resolve display name from name/file/path tags (prefer name > file > path),
+        // regardless of the order in which the tags were returned.
+        record_display_name(
+            &mut display_name_map,
+            tag.subject.display_lossy(),
+            tag.key.as_bytes(),
+            tag.value.as_ref().and_then(|value| value.as_str()),
+        );
         // Collect user-visible tags (not system tags)
         if !is_system_tag_key(&tag.key) {
             user_tags_map
@@ -868,8 +965,11 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
 
         let created_at = created_map.get(&name).copied();
         let modified_at = modified_map.get(&name).copied();
+        let origin_node = origin_map.get(&name).cloned();
         let tags = user_tags_map.remove(&name).unwrap_or_default();
-        let display_name = display_name_map.get(&name).cloned();
+        let display_name = display_name_map
+            .get(&name)
+            .map(|(_, display_name)| display_name.clone());
 
         files.push(FileInfo {
             name,
@@ -881,6 +981,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
             timestamp,
             created_at,
             modified_at,
+            origin_node,
             tags,
             is_deleted,
         });
@@ -920,6 +1021,30 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     });
 
     files
+}
+
+fn record_display_name(
+    display_name_map: &mut std::collections::HashMap<String, (u8, String)>,
+    subject: String,
+    key: &[u8],
+    value: Option<&str>,
+) {
+    let priority = match key {
+        b"name" => 0,
+        b"file" => 1,
+        b"path" => 2,
+        _ => return,
+    };
+    let Some(value) = value else {
+        return;
+    };
+
+    let should_replace = display_name_map
+        .get(&subject)
+        .is_none_or(|(current_priority, _)| priority < *current_priority);
+    if should_replace {
+        display_name_map.insert(subject, (priority, value.to_owned()));
+    }
 }
 
 /// Get a paginated, optionally filtered file list.
@@ -1001,6 +1126,58 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         });
     }
 
+    // Origin filter (#4973): an exact node id, or `unknown` for files
+    // with no recorded origin.
+    let origin_filter = query
+        .origin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    if let Some(ref origin) = origin_filter {
+        if origin == "unknown" {
+            files.retain(|f| f.origin_node.is_none());
+        } else {
+            files.retain(|f| f.origin_node.as_deref() == Some(origin.as_str()));
+        }
+    }
+
+    // Sort (#4973): the default order from get_file_list stands unless a
+    // sort is requested. `uploaded` is the file's created stamp (falling
+    // back to modified, then the tag-parsed timestamp), newest first;
+    // `origin` is A-Z with unknown origins last.
+    let sort = query
+        .sort
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    match sort.as_deref() {
+        Some("uploaded") => {
+            files.sort_by(|a, b| {
+                let ta = a.created_at.or(a.modified_at).or(a.timestamp).unwrap_or(0);
+                let tb = b.created_at.or(b.modified_at).or(b.timestamp).unwrap_or(0);
+                tb.cmp(&ta)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+        }
+        Some("origin") => {
+            files.sort_by(|a, b| {
+                let ka = (
+                    a.origin_node.is_none(),
+                    a.origin_node.as_deref().unwrap_or(""),
+                );
+                let kb = (
+                    b.origin_node.is_none(),
+                    b.origin_node.as_deref().unwrap_or(""),
+                );
+                ka.cmp(&kb)
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
+        }
+        _ => {}
+    }
+
     let total = files.len();
     let (page_files, page, per_page) = paginate(&files, query.page, query.per_page);
 
@@ -1011,6 +1188,8 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         per_page,
         search,
         show_deleted,
+        sort,
+        origin_filter,
     }
 }
 
@@ -1205,21 +1384,34 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         req.name
     );
 
-    // Check save rate limit
-    if let Err(remaining) = state.save_limiter.check(&req.name).await {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let secs = remaining.as_secs_f64().ceil() as u64;
-        tracing::info!(
-            "[routes] Save rate limited for '{}': {}s remaining",
-            req.name,
-            secs
-        );
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            format!("Save rate limited. Try again in {secs}s."),
-        )
-            .into_response();
-    }
+    // Check save rate limit and reserve the filename for this save
+    // (#2466): a second save of the same file arriving while this one is
+    // in flight is refused here instead of racing to the filename tag.
+    // The permit releases the reservation on every exit path below.
+    let permit = match state.save_limiter.acquire(&req.name).await {
+        Ok(permit) => permit,
+        Err(remaining) => {
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let secs = remaining.as_secs_f64().ceil() as u64;
+            tracing::info!(
+                "[routes] Save rate limited for '{}': {}s remaining",
+                req.name,
+                secs
+            );
+            // Structured refusal (#2244 P0-A): machine-readable reason and
+            // retry value in the body, `Retry-After` header alongside.
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, secs.to_string())],
+                Json(serde_json::json!({
+                    "error": format!("Save rate limited. Try again in {secs}s."),
+                    "reason": "rate_limited",
+                    "retry_after_ms": secs.saturating_mul(1_000),
+                })),
+            )
+                .into_response();
+        }
+    };
 
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
@@ -1275,7 +1467,11 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
 
     // Update metadata tags: set created (if first save) and modified
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1286,7 +1482,29 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
+
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                req.name.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
     if let Err(err) = state
         .tag_store
@@ -1329,8 +1547,9 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
         .notify_new_version(&req.name, &new_hash_str)
         .await;
 
-    // Record successful save for rate limiting
-    state.save_limiter.record(&req.name).await;
+    // Record successful save for rate limiting (also releases the
+    // in-flight reservation as the permit drops)
+    permit.complete().await;
 
     Json(SaveResponse {
         hash: new_hash_str,
@@ -1387,7 +1606,11 @@ async fn new_file_handler(
 
     // Set metadata tags: created + modified
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1398,7 +1621,29 @@ async fn new_file_handler(
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
+
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                req.name.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
     if let Err(err) = state
         .tag_store
@@ -1632,7 +1877,11 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
 
     // Set metadata tags (created, modified, content-type)
     let now_str = crate::tags::now_unix().to_string();
-    if let Err(err) = state
+    // `created_fresh` gates the origin stamp below: a legacy file
+    // (created before origin stamping existed) keeps an unknown
+    // origin on overwrite instead of claiming this node (Codex
+    // review, PR #5191).
+    let created_fresh = match state
         .tag_store
         .set_if_absent(
             &state.tag_store.global,
@@ -1643,7 +1892,29 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         )
         .await
     {
-        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+        Ok(fresh) => fresh,
+        Err(err) => {
+            tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+            false
+        }
+    };
+
+    // Stamp this node as the file's origin (#4973) only on a genuine
+    // first write (`created` was absent): the first writer stays the
+    // origin, and legacy files keep an unknown origin.
+    if created_fresh
+        && let Err(err) = state
+            .tag_store
+            .set_if_absent(
+                &state.tag_store.global,
+                filename.as_bytes(),
+                b"origin",
+                Some(state.node_id.as_bytes()),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set origin tag: {:#}", err);
     }
     if let Err(err) = state
         .tag_store
@@ -1777,12 +2048,20 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
         Err(FileOpError::EmptyName) => {
             (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
         }
+        Err(err @ FileOpError::ReservedArchiveName(_)) => {
+            (StatusCode::BAD_REQUEST, err.to_string()).into_response()
+        }
         Err(FileOpError::SameName) => (
             StatusCode::BAD_REQUEST,
             "New name must differ from current name",
         )
             .into_response(),
         Err(FileOpError::NotFound(_)) => (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(FileOpError::InvalidName(_)) => (
+            StatusCode::BAD_REQUEST,
+            "New name must be a safe relative path without padding",
+        )
+            .into_response(),
         Err(err) => {
             tracing::error!("[routes] rename failed: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to rename file").into_response()
@@ -1819,6 +2098,9 @@ async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest
         Err(FileOpError::EmptyName) => {
             (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
         }
+        Err(err @ FileOpError::ReservedArchiveName(_)) => {
+            (StatusCode::BAD_REQUEST, err.to_string()).into_response()
+        }
         Err(FileOpError::SameName) => (
             StatusCode::BAD_REQUEST,
             "New name must differ from current name",
@@ -1827,6 +2109,11 @@ async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest
         Err(FileOpError::NotFound(_)) => {
             (StatusCode::NOT_FOUND, "Source file not found").into_response()
         }
+        Err(FileOpError::InvalidName(_)) => (
+            StatusCode::BAD_REQUEST,
+            "New name must be a safe relative path without padding",
+        )
+            .into_response(),
         Err(err) => {
             tracing::error!("[routes] copy failed: {err}");
             (StatusCode::INTERNAL_SERVER_ERROR, "Failed to copy file").into_response()
@@ -2105,6 +2392,13 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// recurses into any other inline node's `content` rather than
 /// dropping it. The pre-#1306 version handled only top-level
 /// paragraphs/headings and silently deleted everything else on save.
+///
+/// Line endings: plain-mode load (`plain_text_to_prosemirror`) strips
+/// the CR of CRLF endings and this join emits LF only, so a CRLF file
+/// is normalized to LF on save - a deliberate, documented choice
+/// (#1307), pinned by the round-trip tests below; the file's
+/// trailing-newline state is preserved through the load/save pair.
+/// Byte-exact CRLF round-trips remain available in Raw mode.
 ///
 /// Inline atoms carry no `content`, so recursion alone loses them.
 /// Pinned representations (#1491): an `image` contributes its `alt`
@@ -2484,6 +2778,54 @@ mod upload_router_tests {
         (create_router(state.clone()), state, dir, endpoint, docs)
     }
 
+    #[tokio::test]
+    async fn public_entry_point_honours_a_configured_binding() {
+        // A host that has already read its app manifest selects the
+        // binding through the public API alone (Codex P2 on PR #3894):
+        // parse [interfaces.web] with the re-exported parser and build
+        // the app router with the re-exported constructor.
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        // The world page handler 404s when no world is hosted; host
+        // one so the assertions below measure routing (the configured
+        // route registered, the default route absent), not hosting.
+        state.world = Some(crate::world_hub::WorldHub::single(
+            crate::world_session::WorldService::new(
+                crate::world::WorldHandle::spawn(
+                    crate::world::WorldCore::new("lobby", crate::world::WorldLimits::default())
+                        .unwrap(),
+                ),
+                None,
+            ),
+        ));
+        let interface = crate::web::web_interface_from_app_toml(
+            "[interfaces.web]\nmode = \"adapter\"\nroute = \"/arena\"\nsocket = \"/ws/arena\"\n",
+        )
+        .unwrap()
+        .unwrap();
+        let app = crate::web::create_router_for_app(state, &interface);
+        let arena = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/arena")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(arena.status(), axum::http::StatusCode::NOT_FOUND);
+        let world = app
+            .oneshot(
+                Request::builder()
+                    .uri("/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(world.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
     fn multipart_body(file_bytes: &[u8]) -> Vec<u8> {
         multipart_body_named("photo.png", "image/png", file_bytes)
     }
@@ -2616,23 +2958,51 @@ mod upload_router_tests {
         assert_ne!(images[0]["name"], images[1]["name"]);
         assert_ne!(images[0]["hash"], images[1]["hash"]);
         let listed = list_images(router.clone()).await;
-        for (image, bytes) in images.iter().zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()]) {
+        for (image, bytes) in images
+            .iter()
+            .zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()])
+        {
             let name = image["name"].as_str().unwrap();
             let hash = image["hash"].as_str().unwrap();
-            assert_eq!(upload_name_owner(&state.store, name).await.unwrap().unwrap().to_string(), hash);
-            assert!(listed.iter().any(|entry| entry["name"] == name && entry["hash"] == hash));
+            assert_eq!(
+                upload_name_owner(&state.store, name)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .to_string(),
+                hash
+            );
+            assert!(
+                listed
+                    .iter()
+                    .any(|entry| entry["name"] == name && entry["hash"] == hash)
+            );
             let url = image["url"].as_str().unwrap();
             assert!(url.contains(&format!("filename={name}")));
             let (status, _, actual) = get_blob(router.clone(), url).await;
             assert_eq!(status, StatusCode::OK);
             assert_eq!(actual, bytes);
-            for (key, expected) in [(b"content-type".as_slice(), Some("image/png")), (b"created".as_slice(), None)] {
-                let tags = state.tag_store.get_by_key(&state.tag_store.global, name.as_bytes(), key).await.unwrap();
-                let value = tags.first().and_then(|tag| tag.value.as_ref()).and_then(|value| value.as_str()).unwrap();
+            for (key, expected) in [
+                (b"content-type".as_slice(), Some("image/png")),
+                (b"created".as_slice(), None),
+            ] {
+                let tags = state
+                    .tag_store
+                    .get_by_key(&state.tag_store.global, name.as_bytes(), key)
+                    .await
+                    .unwrap();
+                let value = tags
+                    .first()
+                    .and_then(|tag| tag.value.as_ref())
+                    .and_then(|value| value.as_str())
+                    .unwrap();
                 if let Some(expected) = expected {
                     assert_eq!(value, expected);
                 } else {
-                    assert!(value.parse::<u64>().is_ok(), "invalid creation timestamp: {value}");
+                    assert!(
+                        value.parse::<u64>().is_ok(),
+                        "invalid creation timestamp: {value}"
+                    );
                 }
             }
         }
@@ -2971,6 +3341,22 @@ async fn identity_register_handler(
                 .into_response()
         }
         Err(err) => {
+            // #1766: at the admission bound the refusal is a clear,
+            // observable 503 — not a generic 500 — and no existing
+            // identity is affected by it.
+            if let Some(cap) = err.downcast_ref::<super::identity::IdentityCapacityError>() {
+                tracing::warn!("[identity] Registration refused at capacity: {cap}");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({
+                        "error": "identity_capacity_reached",
+                        "detail": cap.to_string(),
+                        "limit": cap.limit,
+                        "registered": cap.registered,
+                    })),
+                )
+                    .into_response();
+            }
             tracing::error!("[identity] Registration failed: {}", err);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
@@ -3120,6 +3506,40 @@ mod tests {
 
     fn para(text: &str) -> serde_json::Value {
         serde_json::json!({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_preserves_trailing_newline() {
+        // #1307 pinned policy: the real load/save pair is byte-stable
+        // for the common shapes, including the trailing newline.
+        for text in ["a\nb\n", "a\nb", "a\n", "\n", ""] {
+            let doc = super::super::markdown::plain_text_to_prosemirror(text);
+            assert_eq!(extract_plain_text(&doc), text, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_normalizes_crlf_to_lf() {
+        // #1307 pinned policy: CRLF normalizes to LF on save, and the
+        // trailing-newline state survives the normalization.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\n");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta");
+    }
+
+    #[test]
+    fn test_plain_mode_roundtrip_preserves_lone_terminal_cr() {
+        // Codex finding on PR #4613: a carriage return that is NOT part
+        // of a CRLF ending is content. Only segments terminated by '\n'
+        // may have their CR stripped; the final segment keeps it.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\r");
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\r\nbeta\r");
+        assert_eq!(extract_plain_text(&doc), "alpha\nbeta\r");
+        // A CR-only line ending mid-file is likewise preserved.
+        let doc = super::super::markdown::plain_text_to_prosemirror("alpha\rbeta\n");
+        assert_eq!(extract_plain_text(&doc), "alpha\rbeta\n");
     }
 
     #[test]
@@ -3275,6 +3695,9 @@ mod tests {
             "auto-2026-report.md",
             "auto-",
             "auto-draft",
+            // Regression (#1879): a near-miss timestamp with a junk date
+            // suffix used to parse as valid and classify as Auto.
+            "auto-2026-03-12-draftT06:42:30",
         ] {
             let (kind, ts) = classify_tag(name);
             assert_eq!(kind, FileKind::Primary, "{name}");
@@ -3311,7 +3734,7 @@ mod tests {
     #[test]
     fn test_parse_iso_timestamp_valid() {
         // 2026-03-12T06:42:30.015Z → should produce a valid timestamp
-        let ts = parse_iso_timestamp("auto-2026-03-12T06:42:30.015Z");
+        let ts = parse_iso_timestamp("2026-03-12T06:42:30.015Z");
         assert!(ts.is_some());
         let t = ts.unwrap();
         // 2026-03-12 is after 2025-01-01 (approx 1735689600)
@@ -3320,9 +3743,70 @@ mod tests {
 
     #[test]
     fn test_parse_iso_timestamp_invalid() {
-        assert!(parse_iso_timestamp("auto-not-a-date").is_none());
-        assert!(parse_iso_timestamp("auto-").is_none());
+        assert!(parse_iso_timestamp("not-a-date").is_none());
+        assert!(parse_iso_timestamp("").is_none());
         assert!(parse_iso_timestamp("noprefix").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_rejects_malformed_components() {
+        // Regression (#1879): a non-numeric component used to be dropped,
+        // so malformed timestamps parsed as the valid instant they
+        // surrounded. The valid control is 2026-03-12T06:42:30Z.
+        assert_eq!(
+            parse_iso_timestamp("2026-03-12T06:42:30Z"),
+            Some(1_773_297_750)
+        );
+        // Junk suffix on the date side.
+        assert!(parse_iso_timestamp("2026-03-12-draftT06:42:30").is_none());
+        // Junk components on the time side.
+        assert!(parse_iso_timestamp("2026-03-12T06:xx:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42:xx:30").is_none());
+        // Extra components, numeric or not (the count check alone is not
+        // enough when a bad segment can be dropped to reach three).
+        assert!(parse_iso_timestamp("2026-03-12-99T06:42:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42:30:30").is_none());
+        // Missing components.
+        assert!(parse_iso_timestamp("2026-03T06:42:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42").is_none());
+        // Junk fractional seconds.
+        assert!(parse_iso_timestamp("2026-03-12T06:42:30.abcZ").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_rejects_noncanonical_spellings() {
+        // Regression (#4329): only the canonical fixed-width spellings
+        // classify; non-padded, over-wide, and '+'-signed components
+        // used to parse onto the canonical instant (control:
+        // 2026-03-12T06:42:30Z is Some(1_773_297_750)).
+        for s in [
+            "2026-3-12T6:42:30Z",
+            "2026-03-12T06:4:2Z",
+            "2026-3-2T6:4:2Z",
+            "+2026-03-12T06:42:30Z",
+            "02026-03-12T06:42:30Z",
+            "2026-003-12T06:42:30Z",
+            "2026-03-12T+06:42:30Z",
+            "2026-03-12T06:42:3Z",
+        ] {
+            assert!(parse_iso_timestamp(s).is_none(), "{s}");
+        }
+    }
+
+    #[test]
+    fn test_classify_tag_noncanonical_spellings_are_primary() {
+        // Regression (#4329): near-miss spellings of the producer-shaped
+        // names are ordinary files, not auto-backups or archives.
+        for name in [
+            "auto-2026-3-12T6:42:30Z",
+            "auto-+2026-03-12T06:42:30Z",
+            "auto-02026-03-12T06:42:30Z",
+            "notes.archive.+123",
+        ] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
     }
 
     #[test]
@@ -3358,7 +3842,7 @@ mod tests {
     #[test]
     fn test_parse_iso_timestamp_epoch() {
         // 1970-01-01T00:00:00.000Z should be 0
-        let ts = parse_iso_timestamp("auto-1970-01-01T00:00:00.000Z");
+        let ts = parse_iso_timestamp("1970-01-01T00:00:00.000Z");
         assert_eq!(ts, Some(0));
     }
 
@@ -3613,5 +4097,122 @@ mod tests {
         assert_eq!(page_items[199], 199);
         assert_eq!(page, 1);
         assert_eq!(per_page, MAX_PER_PAGE);
+    }
+
+    fn resolve_display_name(tags: &[(&str, &str)]) -> Option<String> {
+        let mut display_name_map = std::collections::HashMap::new();
+        for (key, value) in tags {
+            record_display_name(
+                &mut display_name_map,
+                "document.md".to_owned(),
+                key.as_bytes(),
+                Some(value),
+            );
+        }
+        display_name_map
+            .remove("document.md")
+            .map(|(_, display_name)| display_name)
+    }
+
+    #[test]
+    fn test_display_name_priority_is_independent_of_tag_order() {
+        // Alpha order sorts the `file` key before `name` and `path`.
+        assert_eq!(
+            resolve_display_name(&[
+                ("file", "basename.md"),
+                ("name", "Friendly title"),
+                ("path", "/source/basename.md"),
+            ]),
+            Some("Friendly title".to_owned())
+        );
+        assert_eq!(
+            resolve_display_name(&[("file", "basename.md"), ("path", "/source/basename.md")]),
+            Some("basename.md".to_owned())
+        );
+        assert_eq!(
+            resolve_display_name(&[("path", "/source/basename.md")]),
+            Some("/source/basename.md".to_owned())
+        );
+
+        // A single identity tag continues to supply the display name.
+        for (key, value) in [
+            ("name", "Friendly title"),
+            ("file", "basename.md"),
+            ("path", "/source/basename.md"),
+        ] {
+            assert_eq!(
+                resolve_display_name(&[(key, value)]),
+                Some(value.to_owned())
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod collab_route_tests {
+    //! Route-level proof for #2830: the production router registers
+    //! `/ws/collab/{doc_id}` as a single-segment route (see
+    //! `create_router`); the web client percent-encodes the docId into
+    //! that one segment, and axum matches the raw path, so `%2F` stays
+    //! inside the segment and Path extraction percent-decodes it back
+    //! to the exact filename — while a real second segment still
+    //! fails to match. This mini-router uses the identical route
+    //! pattern on the same axum stack; the handler is an echo so the
+    //! decoded value itself is asserted. (Behavior verified against
+    //! the locked axum 0.8.9 with a standalone probe on 2026-11-02;
+    //! in-crate execution currently waits on #4340.)
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        extract::Path,
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use tower::ServiceExt as _;
+
+    async fn echo_doc_id(Path(doc_id): Path<String>) -> String {
+        doc_id
+    }
+
+    async fn get_doc(uri: &str) -> (StatusCode, String) {
+        let app = Router::new().route("/ws/collab/{doc_id}", get(echo_doc_id));
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn encoded_slash_round_trips_to_the_exact_filename() {
+        assert_eq!(
+            get_doc("/ws/collab/a%2Fb.md").await,
+            (StatusCode::OK, "a/b.md".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn encoded_percent_names_round_trip() {
+        // a%20b.md the file, not "a b.md": the client sends a%2520b.md.
+        assert_eq!(
+            get_doc("/ws/collab/a%2520b.md").await,
+            (StatusCode::OK, "a%20b.md".to_owned())
+        );
+        assert_eq!(
+            get_doc("/ws/collab/100%25.md").await,
+            (StatusCode::OK, "100%.md".to_owned())
+        );
+        assert_eq!(
+            get_doc("/ws/collab/notes.md").await,
+            (StatusCode::OK, "notes.md".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_second_segment_does_not_match() {
+        assert_eq!(get_doc("/ws/collab/a/b.md").await.0, StatusCode::NOT_FOUND);
     }
 }

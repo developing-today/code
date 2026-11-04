@@ -221,6 +221,35 @@ func Ops() []Op {
 			CoveredBy: "mcpx_status",
 		},
 		{
+			Name: "sessions_read", Method: "GET", Path: "/v1/sessions",
+			Permission: PermissionRead,
+			Summary:    "The session inventory: every pool's live instances",
+			Description: "One entry per live instance across every pool, as the same " +
+				"InstanceStatus snapshot /v1/status embeds per server: id, pid, " +
+				"holders, key, calls, uptime and idle seconds. An empty inventory " +
+				"is an empty list. Reading only -- killing, detaching or resuming " +
+				"a session is a later operation (#1931).",
+		},
+		{
+			Name: "authz_decisions", Method: "GET", Path: "/v1/authz/decisions",
+			Permission: PermissionRead,
+			Summary:    "The permissive authorisation decision report",
+			Description: "Counts of the authorisation decisions the permissive funnel has recorded " +
+				"(#1972 step 2): by operation, with the permission tier a future policy would " +
+				"require, and by principal, over the bounded recorded window. The dry-run an " +
+				"operator reads before any check is enforced. Reading it is itself a recorded " +
+				"decision, like every declared operation. No credential value exists in the record.",
+		},
+		{
+			Name: "authz_decisions_clear", Method: "DELETE", Path: "/v1/authz/decisions",
+			Permission: PermissionAdmin,
+			Summary:    "Clear the recorded authorisation decisions",
+			Description: "Empties the permissive funnel's decision record (#1972 step 2), so the " +
+				"next report covers only what happened after the clear. Changes no behaviour: " +
+				"the funnel keeps recording and keeps answering yes.",
+			Admin: true, Mutating: true, Idempotent: true,
+		},
+		{
 			Name: "events", Method: "GET", Path: "/v1/events",
 			Permission: PermissionRead,
 			Summary:    "Server-sent event stream",
@@ -507,6 +536,7 @@ func Ops() []Op {
 					Schema: `{"type":"array","items":{"type":"object","properties":{"server":{"type":"string"},"tool":{"type":"string"},"args":{"type":"object"}},"required":["tool"]}}`},
 				{Name: "stopOnError", In: InBody, Type: "boolean", Desc: "stop execution on first failure (default true)"},
 				{Name: "parallel", In: InBody, Type: "boolean", Desc: "execute calls concurrently (default false)"},
+				{Name: "safePrefix", In: InBody, Type: "boolean", Desc: "execute only the safe prefix (#1927): run calls in order until the first destructiveHint-annotated call, which and everything after it are reported skipped with the reason; forces sequential execution"},
 			}, callContextParams()...),
 		},
 		{
@@ -748,6 +778,7 @@ func Ops() []Op {
 	ops = append(ops, settingsOps()...)
 	ops = append(ops, resolveOps()...)
 	ops = append(ops, secretsOps()...)
+	ops = append(ops, writesOps()...)
 	sort.Slice(ops, func(i, j int) bool {
 		if ops[i].Path == ops[j].Path {
 			return ops[i].Method < ops[j].Method

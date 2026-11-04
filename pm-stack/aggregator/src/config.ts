@@ -1,12 +1,37 @@
 // Environment configuration. Secrets are read by NAME from the environment
-// only — never committed, never printed. Everything has a fixture-safe default.
+// only — never committed, never printed. Everything has a fixture-safe
+// default, except the default Source: implicit fixtures require the
+// explicit PM_AGG_DEV=1 switch (#1195).
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
+function parseAggregatorPort(value: string | undefined): number {
+  const normalized = s(value, "4870");
+  const port = Number(normalized);
+  if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid PM_AGG_PORT=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
+  }
+  return port;
+}
+
+function parseAggregatorHosts(value: string | undefined): string[] {
+  const hosts = s(value, "127.0.0.1")
+    .split(",")
+    .map((host) => host.trim())
+    .filter(Boolean);
+  if (hosts.length === 0) {
+    throw new Error(`Invalid PM_AGG_HOSTS=${JSON.stringify(value)}; expected at least one non-empty host`);
+  }
+  return hosts;
+}
+
 export interface Config {
-  /** "fixtures" | "live" — the default Source. */
+  /** Default Source: "live" when PM_AGG_SOURCE=live; "fixtures" when
+   * explicitly requested, or when PM_AGG_DEV=1 allows the implicit
+   * (unset/invalid PM_AGG_SOURCE) fixture default. Anything else
+   * throws at startup rather than silently serving canned data (#1195). */
   source: "fixtures" | "live";
   port: number;
   /** Bind addresses (PM_AGG_HOSTS, comma-separated). Default loopback. */
@@ -15,8 +40,15 @@ export interface Config {
   feedFile: string;
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
+  /** Append-only roadmap annotation store (#1284), separate from comments. */
+  roadmapAnnotationsFile: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
+  /** Saved-views store (#1276) — named per-person filter sets. */
+  viewsFile: string;
+  /** Cross-stack event log store (#1739) — one chronological stream. */
+  eventsFile: string;
+  activityFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
@@ -43,6 +75,9 @@ export interface Config {
     origin: string;
     email: string | null;
     password: string | null;
+    /** Authoritative project slug -> repo registry (#1201):
+     * pm-stack/kaneo-projects.json. Unknown slugs stay unmapped. */
+    projectsFile: string;
   };
   grist: {
     baseUrl: string;
@@ -61,19 +96,46 @@ export interface Config {
   readyForAgent: {
     baseUrl: string;
   };
+  /** Canonical HTTPS origin for the PWA + push deep links (#3316 §4):
+   * Tailscale Serve fronts the aggregator at this origin; the
+   * plain-HTTP tailnet listener is not a secure context and can
+   * never hold a service worker or a push subscription. */
+  publicOrigin: string;
+  /** Alert throat (#3676): escalation ack window + engine cadence. */
+  alerts: {
+    ackWindowMin: number;
+    tickMs: number;
+  };
+}
+
+function parseAggregatorSource(env: Record<string, string | undefined>): "fixtures" | "live" {
+  const raw = env.PM_AGG_SOURCE;
+  const value = raw?.trim() ?? "";
+  // #1195: an explicit choice is always honored — "live" for the
+  // deployment, "fixtures" for deliberate fixture work.
+  if (value === "live" || value === "fixtures") return value;
+  // Anything else (unset, empty, or a typo) silently serving fixtures
+  // would let a non-development deployment look healthy while showing
+  // canned data, so fixture mode here requires the explicit dev switch.
+  if (env.PM_AGG_DEV === "1") return "fixtures";
+  throw new Error(
+    `Refusing to serve fixture data outside explicit dev mode: PM_AGG_SOURCE=${JSON.stringify(raw ?? null)}; ` +
+      `set PM_AGG_SOURCE=live, or PM_AGG_SOURCE=fixtures with PM_AGG_DEV=1`,
+  );
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
-    source: env.PM_AGG_SOURCE === "live" ? "live" : "fixtures",
-    port: Number(s(env.PM_AGG_PORT, "4870")),
-    hosts: s(env.PM_AGG_HOSTS, "127.0.0.1")
-      .split(",")
-      .map((h) => h.trim())
-      .filter(Boolean),
+    source: parseAggregatorSource(env),
+    port: parseAggregatorPort(env.PM_AGG_PORT),
+    hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
+    roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
+    viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
+    eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
+    activityFile: s(env.PM_AGG_ACTIVITY_FILE, join(process.cwd(), "activity-ingestion.json")),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     quotaViewFile: s(
@@ -84,10 +146,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       ),
     ),
     cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
-    supabaseExportFile: s(
-      env.PM_AGG_SUPABASE_EXPORT,
-      join(homedir(), "atlas/supabase-export/latest.json"),
-    ),
+    supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),
     quotaRegistryFile: s(
       env.PM_AGG_QUOTA_REGISTRY,
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
@@ -104,6 +163,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       origin: s(env.KANEO_ORIGIN, s(env.KANEO_CLIENT_URL, "https://kaneo.security.cab")),
       email: env.KANEO_ADMIN_EMAIL ?? null,
       password: env.KANEO_ADMIN_PASSWORD ?? null,
+      // The registry is authoritative for slug -> repo (#1201); the reader
+      // runs with cwd=pm-stack/aggregator, hence the sibling path.
+      projectsFile: s(env.PM_KANEO_PROJECTS_FILE, join(process.cwd(), "..", "kaneo-projects.json")),
     },
     grist: {
       baseUrl: s(env.GRIST_URL, "http://127.0.0.1:8484"),
@@ -124,6 +186,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     readyForAgent: {
       baseUrl: s(env.PM_AGG_RFA_URL, "http://127.0.0.1:6056"),
+    },
+    publicOrigin: s(env.PM_AGG_PUBLIC_ORIGIN, "https://amd-6.raptor-pumpkinseed.ts.net").replace(/\/+$/, ""),
+    alerts: {
+      ackWindowMin: Math.max(1, Math.floor(Number(s(env.ALERT_ACK_WINDOW_MIN, "15"))) || 15),
+      tickMs: 60_000,
     },
   };
 }

@@ -96,6 +96,9 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         tag: None,
         document: Some(doc.clone()),
         removes: None,
+        note: None,
+        link: None,
+        checkpoint: None,
     }
 }
 
@@ -111,6 +114,9 @@ fn tag_ext(subject: Hash, name: &str, value: &str, after: Vec<Hash>) -> ChainExt
         }),
         document: None,
         removes: None,
+        note: None,
+        link: None,
+        checkpoint: None,
     }
 }
 
@@ -122,6 +128,9 @@ fn removal_ext(target: Hash, after: Vec<Hash>) -> ChainExt {
         tag: None,
         document: None,
         removes: Some(target),
+        note: None,
+        link: None,
+        checkpoint: None,
     }
 }
 
@@ -379,6 +388,7 @@ fn test_a_removal_names_its_target_and_carries_nothing_else() {
     // No target.
     let missing = ChainExt {
         removes: None,
+        note: None,
         ..removal_ext(target, vec![])
     };
     assert!(sign(&key, 0, None, None, missing).is_err());

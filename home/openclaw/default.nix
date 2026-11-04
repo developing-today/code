@@ -28,6 +28,8 @@ let
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
   opencodeRouteProxyPort = 18750;
+  # Fixed loopback port of the dedicated embedding server below (#1300).
+  embeddingPort = 18791;
   localProvider = port: models: {
     baseUrl = "http://127.0.0.1:${toString port}/v1";
     # The laptop proxies are loopback-only and do not check an API key;
@@ -42,13 +44,19 @@ in
   imports = [ inputs.nix-openclaw.homeManagerModules.openclaw ];
 
   # Point acpx's harnesses at this laptop's pinned binaries instead of
-  # acpx's default `npx -y ...` upstream downloads: opencode is the pinned
-  # OpenCode fork (the build OpenChamber uses); claude/codex run the local
-  # wrappers in ~/.openclaw/acpx (bundled adapters, no npx fetch); agy is
-  # the system antigravity-acp server.
+  # acpx's default `npx -y ...` upstream downloads: opencode runs through
+  # the ACP-to-HTTP adapter in this repo (bin/opencode-acp-adapter.mjs,
+  # #1243) so OpenClaw sessions land on the standing shared
+  # `opencode serve` at 127.0.0.1:13420 instead of a private per-process
+  # server; claude/codex run the local wrappers in ~/.openclaw/acpx
+  # (bundled adapters, no npx fetch); agy is the system
+  # antigravity-acp server.
+  # FALLBACK (#1243): to revert opencode to the private-server path,
+  # restore opencode.command below (and agents.opencode in the embedded
+  # acpx override) to "/etc/profiles/per-user/user/bin/opencode acp".
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
-      opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
+      opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
       claude.command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
       codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
@@ -62,17 +70,39 @@ in
   # commandcode-proxy unit crash-loops on its already-taken port (#883).
   # The gateway reaches the proxies by port, not by unit; only mcpx and
   # the opencode-route proxy are real unit dependencies.
+  # Stable local embedding endpoint for memory-lancedb (#1300 phase 1):
+  # a dedicated llama-server on a FIXED loopback port, reusing the
+  # llama.cpp build and the Qwen3-Embedding-0.6B GGUF that OpenCode's
+  # messaging embeddings already keep in ~/.cache/opencode (OpenCode's
+  # own per-process embedding servers use dynamic ports, which a static
+  # gateway config cannot point at). If that cache is ever cleared, the
+  # ConditionPathExists below fails this unit loudly instead of the
+  # gateway silently losing vector recall.
+  systemd.user.services.openclaw-embedding = {
+    Unit = {
+      Description = "Local embedding server for OpenClaw memory (llama.cpp)";
+      ConditionPathExists = "${homeDir}/.cache/opencode/models/Qwen3-Embedding-0.6B-Q8_0.gguf";
+    };
+    Service = {
+      ExecStart = "${homeDir}/.cache/opencode/bin/llama.cpp/b11669/llama-b11669/llama-server --embedding --model ${homeDir}/.cache/opencode/models/Qwen3-Embedding-0.6B-Q8_0.gguf --host 127.0.0.1 --port ${toString embeddingPort}";
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
+        "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "commandcode-proxy.service"
-        "design-code-proxy.service"
         "agy-proxy.service"
         "codex-proxy.service"
         "mcpx.service"
       ];
       Wants = [
+        "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "mcpx.service"
       ];
@@ -161,8 +191,7 @@ in
               narHash = "sha256-y4xkNIopeCdJ/C/PiIZeKlfALrmxUrBYg5CXUSqsMXU=";
             };
           in
-          builtins.unsafeDiscardStringContext
-            "path:${pluginTree.outPath}?narHash=${pluginTree.narHash}";
+          builtins.unsafeDiscardStringContext "path:${pluginTree.outPath}?narHash=${pluginTree.narHash}";
       }
     ];
 
@@ -190,6 +219,7 @@ in
       "lobster" # typed workflow runtime for resumable automations
       "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
+      "memory-lancedb" # LanceDB long-term memory; owns plugins.slots.memory (#1300 phase 1)
     ];
 
     # Instance-local skills that encode how this fleet works.
@@ -246,7 +276,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
+          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
@@ -381,39 +411,71 @@ in
         dispatch.enabled = true;
       };
 
-      plugins.entries = {
-        acpx = {
-          enabled = true;
-          config = {
-            # ACP sessions are non-interactive; on Drew's own repos the
-            # fleet posture is approve-all, with unexpected prompts denied
-            # rather than hanging the session.
-            permissionMode = "approve-all";
-            nonInteractivePermissions = "deny";
-            # Per-agent command override for the EMBEDDED acpx runtime.
-            # Without this, acpx defaults to `npx -y opencode-ai acp` —
-            # upstream OpenCode v1, which rejects the fleet's v2 config
-            # (and the npx fetch hangs on this laptop's npmjs route).
-            # The standalone acpx CLI reads ~/.acpx/config.json instead;
-            # that file is kept in sync above, but the plugin ignores it.
-            agents.opencode = {
-              command = "/etc/profiles/per-user/user/bin/opencode";
-              args = [ "acp" ];
+      plugins = {
+        # memory-lancedb owns the memory slot (#1300 phase 1, approved
+        # by Drew 2026-10-26). Reversible: remove this slot line (and
+        # the runtime plugin above) to fall back to the built-in
+        # memory backend.
+        slots.memory = "memory-lancedb";
+
+        entries = {
+          acpx = {
+            enabled = true;
+            config = {
+              # ACP sessions are non-interactive; on Drew's own repos the
+              # fleet posture is approve-all, with unexpected prompts denied
+              # rather than hanging the session.
+              permissionMode = "approve-all";
+              nonInteractivePermissions = "deny";
+              # Per-agent command override for the EMBEDDED acpx runtime.
+              # Without this, acpx defaults to `npx -y opencode-ai acp` —
+              # upstream OpenCode v1, which rejects the fleet's v2 config
+              # (and the npx fetch hangs on this laptop's npmjs route).
+              # The standalone acpx CLI reads ~/.acpx/config.json instead;
+              # that file is kept in sync above, but the plugin ignores it.
+              # Via the ACP-to-HTTP adapter (#1243), not `opencode acp`:
+              # sessions land on the shared serve at 127.0.0.1:13420.
+              # Fallback: command "/etc/profiles/per-user/user/bin/opencode"
+              # with args [ "acp" ] restores the private-server path.
+              agents.opencode = {
+                command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
+                args = [
+                  "--server"
+                  "http://127.0.0.1:13420"
+                ];
+              };
+              agents.claude = {
+                command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+              };
+              agents.codex = {
+                command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+              };
+              agents.agy = {
+                command = "/run/current-system/sw/bin/agy_acp_server";
+              };
             };
-            agents.claude = {
-              command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
-            };
-            agents.codex = {
-              command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
-            };
-            agents.agy = {
-              command = "/run/current-system/sw/bin/agy_acp_server";
+          };
+          slack.enabled = true;
+          codex.enabled = true;
+          copilot.enabled = true;
+          "memory-lancedb" = {
+            enabled = true;
+            config = {
+              embedding = {
+                # Direct OpenAI-compatible path against the fixed local
+                # llama-server above. The apiKey is a placeholder label,
+                # not a credential: the loopback server checks no key
+                # (same posture as localProvider).
+                apiKey = "local-embedding";
+                baseUrl = "http://127.0.0.1:${toString embeddingPort}/v1";
+                model = "Qwen3-Embedding-0.6B-Q8_0";
+                dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
+              };
+              autoRecall = true;
+              autoCapture = false;
             };
           };
         };
-        slack.enabled = true;
-        codex.enabled = true;
-        copilot.enabled = true;
       };
 
       # Direct MCP wiring to the fleet's most useful servers (the same
