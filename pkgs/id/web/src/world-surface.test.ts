@@ -136,6 +136,26 @@ describe("world screen presenter", () => {
     expect(root.textContent).toBe("safe legacy view");
   });
 
+  it("treats printable ASCII as one column and still refuses control bytes (fast path)", () => {
+    const root = document.createElement("div");
+    // Every printable ASCII code point is one grapheme and one column wide.
+    for (let code = 0x20; code <= 0x7e; code++) {
+      const symbol = String.fromCharCode(code);
+      const screen = makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]);
+      expect(renderWorldSurface(root, screen), `U+${code.toString(16)} at width 1`).toBe(true);
+      const wide = makeScreen([
+        { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+        { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+      ]);
+      expect(renderWorldSurface(root, wide), `U+${code.toString(16)} at width 2`).toBe(false);
+    }
+    // DEL and the C1 range remain rejected, as do C0 controls.
+    for (const code of [0x00, 0x1f, 0x7f, 0x9f]) {
+      const screen = makeScreen([{ symbol: String.fromCharCode(code), fg: 0, bg: 0, bold: false, columns: 1 }]);
+      expect(renderWorldSurface(root, screen), `U+${code.toString(16)} is a control`).toBe(false);
+    }
+  });
+
   it("refuses grapheme count violations and mismatched symbol widths", () => {
     const root = document.createElement("div");
     // wide glyph in 1 column
