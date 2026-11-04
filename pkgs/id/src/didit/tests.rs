@@ -476,6 +476,48 @@ fn count_verdict_wrapping_span_stays_due_while_a_record_can_still_count() {
 }
 
 #[test]
+fn count_verdict_overnight_carry_in_span_is_not_unmeetable() {
+    // #5049, Codex review on the fix: the only active span starts Monday
+    // 20:00 and wraps to Tuesday 06:00. On Tuesday the period's countable
+    // time is that carry-in portion, so at 02:00 an unmet count is Due
+    // (a record can still count), and only after 06:00 is it Violated.
+    // 2026-06-15 is a Monday; days are numbered from Monday (0).
+    let mut fed = expectation(
+        0x73,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Day,
+        },
+    );
+    fed.active = ActiveWindow::Hours {
+        hours: vec![HoursSpan {
+            from_minute: 1200,
+            to_minute: 360,
+            days: Some(vec![0]),
+        }],
+        tz: CHICAGO.to_owned(),
+    };
+    for (now, expected) in [
+        (chicago(2026, 6, 16, 2, 0), VerdictState::Due),
+        (chicago(2026, 6, 16, 7, 0), VerdictState::Violated),
+    ] {
+        let verdicts = evaluate(&[fed.clone()], &[], now).expect("evaluate");
+        let today = current(&verdicts, midnight(2026, 6, 16));
+        assert_eq!(today.len(), 1);
+        assert_eq!(today[0].state, expected, "now={now}");
+    }
+    // A record inside the carry-in portion counts toward Tuesday.
+    let carry_in = record(0x74, vec![dog_a()], "fed", chicago(2026, 6, 16, 2, 0));
+    let verdicts = evaluate(&[fed], &[carry_in], chicago(2026, 6, 16, 3, 0)).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 16));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Satisfied);
+    assert_eq!(today[0].count, 1);
+}
+
+#[test]
 fn wrapping_active_span_is_handled() {
     // "Which may not be daytime": 20:00–06:00 is one span across midnight.
     let outside = expectation(

@@ -442,7 +442,9 @@ fn active_spans_between(
     let first = local_date(start, tz)?;
     let last = local_date(end.saturating_sub(1), tz)?;
     let mut spans = Vec::new();
-    let mut date = first;
+    // A span that wraps past midnight began on the preceding local date, so
+    // that date is scanned too: its carry-in portion overlaps this range.
+    let mut date = first.pred_opt().unwrap_or(first);
     loop {
         spans.extend(spans_for_date(tz, active, date)?);
         if date >= last {
