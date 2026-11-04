@@ -546,9 +546,7 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
   const stableItems = watchdogEpisodes.stabilize(items);
   void recordActivity(watchdogDeliveries(stableItems));
   void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
-    console.error(
-      `[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
   });
   return items;
 }

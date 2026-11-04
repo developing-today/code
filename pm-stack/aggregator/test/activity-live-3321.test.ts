@@ -27,7 +27,12 @@ interface HarnessState {
 async function makeSource(
   state: HarnessState,
   opts: {
-    onActivity?: (d: ActivityDelivery[]) => Promise<boolean | { failed: number; failedIds?: string[] }> | boolean | { failed: number; failedIds?: string[] };
+    onActivity?: (
+      d: ActivityDelivery[],
+    ) =>
+      | Promise<boolean | { failed: number; failedIds?: string[] }>
+      | boolean
+      | { failed: number; failedIds?: string[] };
     onSourceGap?: (source: string, from: string, to: string | null) => void;
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
   },
@@ -94,7 +99,11 @@ function installFetch(state: HarnessState): () => void {
 
 describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   test("unacknowledged deliveries are retried with the same id; the undated cycle advances seq", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     const attempts: ActivityDelivery[][] = [];
     let ack = false;
@@ -135,7 +144,11 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   });
 
   test("undated seq resumes above the persisted seen ids after a restart", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     const seen: ActivityDelivery[] = [];
     try {
@@ -165,7 +178,11 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   });
 
   test("a partial poll does not diff or replace the baseline", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     const seen: ActivityDelivery[] = [];
     try {
@@ -192,12 +209,18 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   });
 
   test("overlapping board polls serialize diffing: no A->C phantom transition (PR #5141 codex)", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     const deliveries: ActivityDelivery[] = [];
     let releaseFirst: (() => void) | null = null;
     let firstCallSeen: (() => void) | null = null;
-    const firstCall = new Promise<void>((r) => { firstCallSeen = r; });
+    const firstCall = new Promise<void>((r) => {
+      firstCallSeen = r;
+    });
     let calls = 0;
     try {
       const src = await makeSource(state, {
@@ -206,7 +229,9 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
           calls++;
           if (calls === 1) {
             firstCallSeen!();
-            await new Promise<void>((r) => { releaseFirst = r; });
+            await new Promise<void>((r) => {
+              releaseFirst = r;
+            });
           }
           return true;
         },
@@ -233,7 +258,11 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   });
 
   test("partial failure advances acknowledged cards only: the succeeded card's return move is not lost (PR #5141 codex)", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     const attempts: ActivityDelivery[][] = [];
     let failP2 = true;
@@ -275,7 +304,11 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   });
 
   test("polling failure opens a gap; the next complete poll reports recovery", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     const gaps: { source: string; from: string; to: string | null }[] = [];
     try {
@@ -308,7 +341,11 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
   });
 
   test("a gap noted behind a queued complete poll is not resolved by that poll (PR #5141 codex round 4)", async () => {
-    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const state: HarnessState = {
+      cardStatus: { p1: "in-progress", p2: "in-progress" },
+      failProjects: new Set(),
+      failAll: false,
+    };
     const restore = installFetch(state);
     // Counting wrapper: the queued complete poll (b1) has finished
     // fetching once 6 task reads have been served (baseline 2 +
@@ -316,7 +353,9 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
     // failing b1's own reads.
     let taskFetches = 0;
     let resolveQueuedFetched: (() => void) | null = null;
-    const queuedFetched = new Promise<void>((r) => { resolveQueuedFetched = r; });
+    const queuedFetched = new Promise<void>((r) => {
+      resolveQueuedFetched = r;
+    });
     const mockFetch = globalThis.fetch;
     globalThis.fetch = (async (input: unknown, init?: unknown) => {
       const res = await (mockFetch as (i: unknown, i2?: unknown) => Promise<Response>)(input, init);
@@ -329,7 +368,9 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
     const gaps: { source: string; from: string; to: string | null }[] = [];
     let releaseFirst: (() => void) | null = null;
     let firstCallSeen: (() => void) | null = null;
-    const firstCall = new Promise<void>((r) => { firstCallSeen = r; });
+    const firstCall = new Promise<void>((r) => {
+      firstCallSeen = r;
+    });
     let calls = 0;
     try {
       const src = await makeSource(state, {
@@ -337,7 +378,9 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
           calls++;
           if (calls === 1) {
             firstCallSeen!();
-            await new Promise<void>((r) => { releaseFirst = r; });
+            await new Promise<void>((r) => {
+              releaseFirst = r;
+            });
           }
           return true;
         },

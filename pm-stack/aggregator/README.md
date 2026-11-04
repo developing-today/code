@@ -353,7 +353,7 @@ alerts-intake-token`, resolved by name at runtime
   rolling week, only `outcome = sent` rows count as sends, and a send
   counts as acted-on when its `acted_on_at` (stamped by Ack) falls
   within 24 hours. A class under 10% acted-on over the rolling
-  four-week window renders as a default-off *proposal* — display
+  four-week window renders as a default-off _proposal_ — display
   only; the page never changes a preference or a default.
 - **Ack surface**: `/alerts` lists open incidents with Ack/Close.
   Ack is exactly-once: only the open→acked transition writes an
@@ -452,7 +452,7 @@ Everything defaults to **fixtures** and works with no configuration:
 | `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                           |
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                                     |
-| `PM_AGG_ACTIVITY_FILE`     | `./activity-ingestion.json`                       | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                       |
+| `PM_AGG_ACTIVITY_FILE`     | `./activity-ingestion.json`                         | Activity-ingestion store (#3321) — per-source checkpoints + dedupe seen sets + gap records for the watchdog/Kaneo stream writers                                      |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).

@@ -268,8 +268,7 @@ function isGoalMeasurement(v: unknown): boolean {
     // non-string element would render as "[object Object]".
     g.gaps.every((gap) => typeof gap === "string") &&
     (typeof g.progressedSinceLastRun === "string" ||
-      (Array.isArray(g.progressedSinceLastRun) &&
-        g.progressedSinceLastRun.every((line) => typeof line === "string")))
+      (Array.isArray(g.progressedSinceLastRun) && g.progressedSinceLastRun.every((line) => typeof line === "string")))
   );
 }
 

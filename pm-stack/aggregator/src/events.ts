@@ -195,11 +195,15 @@ function validateAuditExtras(input: NewAuditEvent): { ok: true } | { ok: false; 
   if (input.attribution !== undefined) {
     const a = input.attribution;
     if (
-      typeof a !== "object" || a === null ||
+      typeof a !== "object" ||
+      a === null ||
       !["authenticated", "pre-sso", "unknown"].includes(a.confidence) ||
       typeof a.asserted !== "boolean"
     ) {
-      return { ok: false, error: "event.attribution must be {confidence: authenticated|pre-sso|unknown, asserted: boolean}" };
+      return {
+        ok: false,
+        error: "event.attribution must be {confidence: authenticated|pre-sso|unknown, asserted: boolean}",
+      };
     }
     if (a.confidence === "authenticated" && !a.asserted) {
       return { ok: false, error: "event.attribution: confidence 'authenticated' requires asserted: true" };
@@ -207,7 +211,13 @@ function validateAuditExtras(input: NewAuditEvent): { ok: true } | { ok: false; 
   }
   if (input.source !== undefined) {
     const s = input.source;
-    if (typeof s !== "object" || s === null || typeof s.identity !== "string" || s.identity.trim() === "" || s.identity.length > 200) {
+    if (
+      typeof s !== "object" ||
+      s === null ||
+      typeof s.identity !== "string" ||
+      s.identity.trim() === "" ||
+      s.identity.length > 200
+    ) {
       return { ok: false, error: "event.source.identity must be a non-empty string of at most 200 chars" };
     }
     if (s.link !== undefined && (typeof s.link !== "string" || s.link.length > 500)) {
@@ -239,7 +249,9 @@ function canonicalFields(e: AuditEvent): string {
 
 /** The hash a record must carry given its predecessor's hash. */
 export function eventHash(prevHash: string, e: AuditEvent): string {
-  return createHash("sha256").update(`${prevHash}\n${canonicalFields(e)}`).digest("hex");
+  return createHash("sha256")
+    .update(`${prevHash}\n${canonicalFields(e)}`)
+    .digest("hex");
 }
 
 /** Recompute the chain in stored order and re-stamp prevHash/hash.
@@ -262,14 +274,24 @@ function rechain(events: AuditEvent[]): AuditEvent[] {
  *  record's hash) and is covered by its own hash, so pruning does
  *  not break verification — but a silently edited field, a re-stamped
  *  hash, or a deleted middle record all fail here. */
-export function verifyEventChain(events: readonly AuditEvent[]): { ok: true } | { ok: false; error: string; index: number } {
+export function verifyEventChain(
+  events: readonly AuditEvent[],
+): { ok: true } | { ok: false; error: string; index: number } {
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
     if (eventHash(e.prevHash, e) !== e.hash) {
-      return { ok: false, error: `record ${e.id} (index ${i}): hash does not match its fields — stored record was altered`, index: i };
+      return {
+        ok: false,
+        error: `record ${e.id} (index ${i}): hash does not match its fields — stored record was altered`,
+        index: i,
+      };
     }
     if (i > 0 && e.prevHash !== events[i - 1]!.hash) {
-      return { ok: false, error: `record ${e.id} (index ${i}): prevHash does not match its predecessor — a record was deleted or reordered`, index: i };
+      return {
+        ok: false,
+        error: `record ${e.id} (index ${i}): prevHash does not match its predecessor — a record was deleted or reordered`,
+        index: i,
+      };
     }
   }
   return { ok: true };
@@ -304,9 +326,12 @@ function isAuditEvent(value: unknown): value is AuditEvent {
   const v = value as unknown as Record<string, unknown>;
   return (
     v.version === 2 &&
-    typeof v.id === "string" && v.id !== "" &&
-    typeof v.ingestedAt === "string" && Number.isFinite(Date.parse(v.ingestedAt)) &&
-    typeof v.prevHash === "string" && typeof v.hash === "string"
+    typeof v.id === "string" &&
+    v.id !== "" &&
+    typeof v.ingestedAt === "string" &&
+    Number.isFinite(Date.parse(v.ingestedAt)) &&
+    typeof v.prevHash === "string" &&
+    typeof v.hash === "string"
   );
 }
 
@@ -577,9 +602,14 @@ export class EventsStore {
       try {
         const parsed: unknown = JSON.parse(line);
         if (isAuditEvent(parsed)) pending.push(parsed);
-        else console.error(`[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`);
+        else
+          console.error(
+            `[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`,
+          );
       } catch {
-        console.error(`[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`);
+        console.error(
+          `[events] WARNING: dropping an unparseable retry-outbox line in ${this.outboxFile}: ${line.slice(0, 200)}`,
+        );
       }
     }
     const known = new Set(this.events.map((e) => e.id));
@@ -714,7 +744,10 @@ export class EventsStore {
   /** Append a correction to an existing record (#3322 slice A):
    *  corrections are separate, attributable, append-only records —
    *  the corrected record is never edited. */
-  async recordCorrection(targetId: string, input: Omit<NewAuditEvent, "kind" | "ref"> & { kind?: string; ref?: string }): Promise<AuditEvent> {
+  async recordCorrection(
+    targetId: string,
+    input: Omit<NewAuditEvent, "kind" | "ref"> & { kind?: string; ref?: string },
+  ): Promise<AuditEvent> {
     await this.load();
     const target = this.events.find((e) => e.id === targetId);
     if (!target) throw new Error(`cannot correct event ${targetId}: no such record in the stream`);

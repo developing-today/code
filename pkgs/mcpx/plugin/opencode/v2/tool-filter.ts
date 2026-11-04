@@ -61,10 +61,7 @@ export type ToolFilterInput = {
  * `disabled` are removed; every other key — and every surviving value,
  * by identity — is left exactly as the host built it.
  */
-export function filterContextTools(
-  input: ToolFilterInput,
-  disabled: ReadonlySet<string>,
-): string[] {
+export function filterContextTools(input: ToolFilterInput, disabled: ReadonlySet<string>): string[] {
   if (!input.tools || disabled.size === 0) return [];
   const removed: string[] = [];
   for (const name of Object.keys(input.tools)) {
@@ -83,10 +80,7 @@ export function filterContextTools(
  * no policy, and non-string or non-mcpx entries are dropped, so a
  * malformed record can never hide a tool.
  */
-export async function readDisabledTools(
-  storage: StorageLike,
-  sessionID: string,
-): Promise<Set<string>> {
+export async function readDisabledTools(storage: StorageLike, sessionID: string): Promise<Set<string>> {
   return (await readDisabledToolsPolicy(storage, sessionID)) ?? new Set();
 }
 
@@ -108,12 +102,7 @@ export async function readDisabledToolsPolicy(
   if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
   const list = (raw as { disabled?: unknown }).disabled;
   if (!Array.isArray(list)) return undefined;
-  return new Set(
-    list.filter(
-      (name): name is string =>
-        typeof name === "string" && name.startsWith(MCPX_TOOL_PREFIX),
-    ),
-  );
+  return new Set(list.filter((name): name is string => typeof name === "string" && name.startsWith(MCPX_TOOL_PREFIX)));
 }
 
 /** Record a session's disabled-tools policy (names are filtered on read). */
@@ -144,9 +133,7 @@ export function createToolFilter(storage: StorageLike): ToolFilter {
   const snapshots = new Map<string, ReadonlySet<string>>();
   return {
     async refresh(sessionID) {
-      const next = await readDisabledTools(storage, sessionID).catch(
-        () => undefined,
-      );
+      const next = await readDisabledTools(storage, sessionID).catch(() => undefined);
       if (next !== undefined) snapshots.set(sessionID, next);
     },
     apply(input) {

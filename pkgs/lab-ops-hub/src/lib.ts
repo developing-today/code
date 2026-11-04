@@ -728,11 +728,19 @@ export function extractHtml(html: string): { title: string; links: number; text:
     if (skipDepth === 0) textChunks.push(raw);
   };
   const handleCdataData = (raw: string) => {
-    if (cdataTag === "iframe" || cdataTag === "xmp" || cdataTag === "noembed" || cdataTag === "noframes") handleRawData(raw);
+    if (cdataTag === "iframe" || cdataTag === "xmp" || cdataTag === "noembed" || cdataTag === "noframes")
+      handleRawData(raw);
     else handleData(raw);
   };
   const handleStartTag = (tag: string, selfClosing: boolean) => {
-    if (tag === "title" || tag === "textarea" || tag === "iframe" || tag === "xmp" || tag === "noembed" || tag === "noframes") {
+    if (
+      tag === "title" ||
+      tag === "textarea" ||
+      tag === "iframe" ||
+      tag === "xmp" ||
+      tag === "noembed" ||
+      tag === "noframes"
+    ) {
       if (!selfClosing) cdataTag = tag;
     } else if (tag === "a") links += 1;
     else if (tag === "script" || tag === "style") {
@@ -757,7 +765,13 @@ export function extractHtml(html: string): { title: string; links: number; text:
         // HTMLParser fed without close() — app.py only calls feed() —
         // leaves an unterminated raw-text/RCDATA region unflushed, so
         // its content is dropped, not delivered.
-        if (cdataTag !== "textarea" && cdataTag !== "iframe" && cdataTag !== "xmp" && cdataTag !== "noembed" && cdataTag !== "noframes") {
+        if (
+          cdataTag !== "textarea" &&
+          cdataTag !== "iframe" &&
+          cdataTag !== "xmp" &&
+          cdataTag !== "noembed" &&
+          cdataTag !== "noframes"
+        ) {
           handleCdataData(html.slice(i));
         }
         i = n;

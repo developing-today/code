@@ -20,12 +20,7 @@ import { wirePermissionGate, type PermissionDomainLike } from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { startSamplingWatcher, type GenerateTextLike, type SamplingDaemonLike } from "./sampling.ts";
 import { createSessionEnv } from "./session-env.ts";
-import {
-  createToolFilter,
-  readDisabledToolsPolicy,
-  setDisabledTools,
-  type ToolFilterInput,
-} from "./tool-filter.ts";
+import { createToolFilter, readDisabledToolsPolicy, setDisabledTools, type ToolFilterInput } from "./tool-filter.ts";
 import { createTimingLog, type ExecuteAfterInput, type ToolTimingRecord } from "./timing.ts";
 import { createToolRuntime, registerTools, type ToolDomainLike, type ToolRuntime } from "./tools.ts";
 
@@ -36,10 +31,7 @@ export type McpxV2Context = {
   serverUrl?: string;
   directory?: string;
   session: {
-    hook(
-      name: "context",
-      fn: (input: ContextHookInput & ToolFilterInput) => void,
-    ): void;
+    hook(name: "context", fn: (input: ContextHookInput & ToolFilterInput) => void): void;
   };
   tool: ToolDomainLike & {
     hook(name: "execute.after", fn: (input: ExecuteAfterInput) => void): void;
@@ -97,15 +89,9 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     // exactly like a nonempty one (#5122 Codex re-review, PR #5170).
     // A failed read (null here) also leaves the session untouched:
     // absence was not proven.
-    const existing = await readDisabledToolsPolicy(ctx.storage, sessionID).catch(
-      () => null,
-    );
+    const existing = await readDisabledToolsPolicy(ctx.storage, sessionID).catch(() => null);
     if (existing === undefined) {
-      await setDisabledTools(
-        ctx.storage,
-        sessionID,
-        options.disabledTools ?? [],
-      ).catch(() => undefined);
+      await setDisabledTools(ctx.storage, sessionID, options.disabledTools ?? []).catch(() => undefined);
     }
     await toolFilter.refresh(sessionID).catch(() => undefined);
   };

@@ -42,7 +42,7 @@ JOBS="${2:-dashboard,repo-archive}"
 want_job() { case ",$JOBS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 RECORD="${LAPTOP_BACKUPS_RECORD:-$HOME/backups/dashboard/.last-run.json}"
 NOW_EPOCH="$(date +%s)"
-MAX_AGE_SEC=$(( MAX_AGE_HOURS * 3600 ))
+MAX_AGE_SEC=$((MAX_AGE_HOURS * 3600))
 # A timestamp further in the future than this tolerance cannot be a
 # fresh run: after a backward clock correction it would read as a
 # negative age and pass, masking a stopped backup until real time
@@ -50,15 +50,19 @@ MAX_AGE_SEC=$(( MAX_AGE_HOURS * 3600 ))
 SKEW_TOLERANCE_SEC=300
 violations=0
 
-complain() { echo "laptop-backups-watchdog: FAIL $*" >&2; violations=$((violations + 1)); }
+complain() {
+  echo "laptop-backups-watchdog: FAIL $*" >&2
+  violations=$((violations + 1))
+}
 
 # --- (a) the dashboard run record -------------------------------------------
 if want_job dashboard; then
-if [ ! -f "$RECORD" ]; then
-  complain "pm-dashboard-backup: no run record at $RECORD"
-else
-  verdict="$(RECORD="$RECORD" NOW_EPOCH="$NOW_EPOCH" MAX_AGE_SEC="$MAX_AGE_SEC" SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
-    python3 - <<'PYEOF' 2>/dev/null
+  if [ ! -f "$RECORD" ]; then
+    complain "pm-dashboard-backup: no run record at $RECORD"
+  else
+    verdict="$(
+      RECORD="$RECORD" NOW_EPOCH="$NOW_EPOCH" MAX_AGE_SEC="$MAX_AGE_SEC" SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
+        python3 - <<'PYEOF' 2>/dev/null
 import json, os
 from datetime import datetime, timezone
 try:
@@ -77,13 +81,13 @@ elif age > int(os.environ["MAX_AGE_SEC"]):
 else:
     print("ok")
 PYEOF
-  )"
-  case "$verdict" in
+    )"
+    case "$verdict" in
     ok) ;;
-    unreadable|"") complain "pm-dashboard-backup: run record at $RECORD is unreadable" ;;
+    unreadable | "") complain "pm-dashboard-backup: run record at $RECORD is unreadable" ;;
     *) complain "pm-dashboard-backup: run record $verdict (threshold ${MAX_AGE_HOURS}h)" ;;
-  esac
-fi
+    esac
+  fi
 fi
 
 # --- (b) enabled timers' last triggers ---------------------------------------
@@ -102,17 +106,18 @@ for timer in "${timers[@]}"; do
     complain "$job: timer $timer last trigger unparseable: '$raw'"
     continue
   fi
-  age=$(( NOW_EPOCH - trig_epoch ))
-  if [ "$age" -lt "$(( -SKEW_TOLERANCE_SEC ))" ]; then
-    complain "$job: timer $timer last trigger is $(( -age ))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+  age=$((NOW_EPOCH - trig_epoch))
+  if [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+    complain "$job: timer $timer last trigger is $((-age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
   elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
-    complain "$job: timer $timer last triggered $(( age / 3600 ))h ago (threshold ${MAX_AGE_HOURS}h)"
+    complain "$job: timer $timer last triggered $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
   fi
 done
 
 # --- (c) offsite presence on R2 ----------------------------------------------
 if want_job dashboard && [ "${LAPTOP_BACKUPS_OFFSITE_CHECK:-0}" = "1" ]; then
-  offsite_date="$(RECORD="$RECORD" python3 - <<'PYEOF' 2>/dev/null
+  offsite_date="$(
+    RECORD="$RECORD" python3 - <<'PYEOF' 2>/dev/null
 import json, os
 try:
     print(json.load(open(os.environ["RECORD"]))["date"])
