@@ -21,6 +21,32 @@ let
   opencodeRouteProxyPort = 18750;
   claudeCodeProxyPort = 18749;
   antigravityDirectProxyPort = 18751;
+  # Atlas search service port (code#5350 step 5, #5355): the fleet
+  # inventory entry for 18760. Unlike the proxy lets above, this
+  # value is NOT plumbed into a unit's Environment — it lives in
+  # the service's own config (~/.local/state/atlas-search/
+  # service.json, written by `atlas-search init`) and in the Rust
+  # defaults (server listen, CLI service URL), all 18760. The let
+  # exists so the reservation is recorded where the fleet looks
+  # for one; verified free against this file, the proxy-port
+  # guard (.github/scripts/check-proxy-port-fallbacks.sh), and
+  # the live listener table on 2026-11-04.
+  atlasSearchPort = 18760;
+  # The atlas-search package (pkgs/atlas-search), built with the
+  # toolchain pinned by its own rust-toolchain.toml (channel
+  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # pattern (cf. rustToolchain in nixos/environment/default.nix).
+  # Used ONLY as the atlas-search unit's ExecStart below: the
+  # package is deliberately not in home.packages, so the Python
+  # CLI stays the resolved `atlas-search` until the step-6
+  # cutover (#5356) says otherwise.
+  atlasSearchToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile ../../pkgs/atlas-search/rust-toolchain.toml;
+  atlasSearch = pkgs.callPackage ../../pkgs/atlas-search {
+    rustPlatform = pkgs.makeRustPlatform {
+      cargo = atlasSearchToolchain;
+      rustc = atlasSearchToolchain;
+    };
+  };
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -844,6 +870,40 @@ in
       ];
     };
     Install.WantedBy = [ "default.target" ];
+  };
+
+  # Atlas search service (code#5350 step 5, #5355): the packaged
+  # atlas-search binary's serve mode — one resident Snowflake
+  # embedder shared by every client, the job protocol with its
+  # in-memory temp store + dedupe cache, and per-client ceiling
+  # caps enforced from ~/.local/state/atlas-search/service.json
+  # (0600, written by `atlas-search init`). Binds 127.0.0.1:18760
+  # (atlasSearchPort above); the tailnet exposure is the OpenCode
+  # pattern — a `tailscale serve` mapping on the MagicDNS name in
+  # front of the loopback port — and is created at activation
+  # (step 6), not here: a serve mapping in front of a service
+  # that has not started would be a live exposure change, and
+  # tailscale serve state is imperative tailscaled state in this
+  # fleet (no declarative precedent to land it in).
+  #
+  # LANDED DISABLED — no Install section, so home-manager
+  # creates no wants symlink and the unit cannot auto-start.
+  # Step 6 (#5356, the cutover) adds
+  # Install.WantedBy = [ "default.target" ], issues the real
+  # client tokens via `atlas-search init`, and creates the
+  # tailscale serve mapping, in one change.
+  systemd.user.services.atlas-search = {
+    Unit = {
+      Description = "Atlas search service (hybrid corpus search, serve mode)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${atlasSearch}/bin/atlas-search serve";
+      Restart = "on-failure";
+      RestartSec = 3;
+    };
+    # No Install: landed disabled (step 5) — see the note above.
   };
 
   systemd.user.services.sync-models = {
