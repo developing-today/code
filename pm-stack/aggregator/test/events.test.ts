@@ -5,7 +5,7 @@
 // first), and the fire-and-forget contract: a failing event write
 // never blocks or fails the underlying action.
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -43,20 +43,31 @@ describe("events store (#1739)", () => {
     expect(list[0]?.at).toBe(secondAt);
   });
 
-  test("a failed append rolls back in memory, so a retry cannot duplicate it (PR #5141 codex)", async () => {
-    // Point the store at a path whose parent is a regular file: every
-    // persist fails (mkdir/write under a file), deterministically.
+  test("a failed append cannot duplicate on retry: a stable id replays to the single record (PR #5141 codex; mechanism superseded by #3322 v2)", async () => {
+    // The v1 mechanism (rolling the in-memory append back) was replaced
+    // when main landed the #3322 v2 record() (PR #5137): on a persist
+    // failure the record is queued in the durable retry outbox and kept
+    // in memory, and a caller-supplied stable id makes a retry return
+    // the existing record instead of appending a twin. The #3321
+    // ingestion writer passes id = activity:<source>:<sourceId>.
     const dir = mkdtempSync(join(tmpdir(), "agg-events-blocked-"));
     const blocker = join(dir, "blocker");
     writeFileSync(blocker, "not a directory");
     const store = new EventsStore(join(blocker, "events.json"));
-    await expect(store.record({ ...base })).rejects.toThrow();
-    expect(await store.list()).toHaveLength(0);
-    // The retry the #3321 ingestion path makes after a failed append:
-    // it must fail the same way, not accumulate a second in-memory copy.
-    await expect(store.record({ ...base })).rejects.toThrow();
-    expect(await store.list()).toHaveLength(0);
-    expect(await store.has(base.kind, base.ref)).toBe(false);
+    await expect(store.record({ ...base, id: "activity:test:1" })).rejects.toThrow();
+    // The ingestion retry re-presents the same stable id: it resolves
+    // to the single retained record, never a second copy.
+    const replay = await store.record({ ...base, id: "activity:test:1" });
+    expect(replay.id).toBe("activity:test:1");
+    const blockedList = await store.list();
+    expect(blockedList).toHaveLength(1);
+    expect(blockedList[0]?.id).toBe("activity:test:1");
+    // Same contract on a healthy store: one stable id lands once.
+    const { store: healthy } = tmpStore();
+    const first = await healthy.record({ ...base, id: "activity:test:2" });
+    const second = await healthy.record({ ...base, id: "activity:test:2" });
+    expect(second.id).toBe(first.id);
+    expect(await healthy.list()).toHaveLength(1);
   });
 
   test("record stamps `at` when the writer omits it", async () => {
