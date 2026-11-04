@@ -50,6 +50,30 @@ describe("dashboard notification candidate derivation", () => {
     expect(candidates[1].breakthrough).toBe(true);
   });
 
+  test("emits one digest-only needs-Drew reminder per week after the 48-hour breakthrough", () => {
+    const since = TASK_NOW - (48 * 60 * 60_000 + 8 * 24 * 60 * 60_000);
+    const item = {
+      id: "developing-today/code#3317",
+      kind: "task",
+      title: "Queue engine task",
+      since: new Date(since).toISOString(),
+      lastSeenAt: new Date(TASK_NOW).toISOString(),
+      ref: "developing-today/code#3317",
+    };
+    const make = (now: number) =>
+      buildNotificationCandidates(
+        snapshot({ attention: { drew: [], drewExtra: [item] } as unknown as NotificationSnapshot["attention"] }),
+        now,
+      ).filter((entry) => entry.class === "blocked-age" && entry.escalationStep === "weekly");
+
+    const first = make(TASK_NOW);
+    const nextWeek = make(TASK_NOW + 7 * 24 * 60 * 60_000);
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ digestOnly: true, breakthrough: false, escalationStep: "weekly" });
+    expect(decideNotification(first[0], [], TASK_NOW, false)).toBe("digest");
+    expect(nextWeek[0].stateFingerprint).not.toBe(first[0].stateFingerprint);
+  });
+
   test("only an explicitly sole-door pool gets near-wall warnings; wall candidates need time before reset", () => {
     const quota = {
       pools: [
