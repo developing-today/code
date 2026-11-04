@@ -38,6 +38,8 @@ import {
 } from "./tier-items.ts";
 import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
+import { activityCoverageHtml, gapsHtml, type ActivityCoverage, type GapRecord } from "./activity.ts";
+import type { AuditEvent } from "./events.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import {
   applyInequalityFilters,
@@ -2092,6 +2094,8 @@ export interface ItemExtras {
   epicRollup?: EpicRollup;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
+  /** The shared audit stream, scoped to the item's canonical refs. */
+  activity?: { events: AuditEvent[]; globalHref: string; gaps: GapRecord[]; coverage?: readonly ActivityCoverage[] };
 }
 
 function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
@@ -2111,6 +2115,18 @@ function epicRollupHtml(rollup: EpicRollup): string {
     ? `Children: <strong>${rollup.done}/${rollup.total} done</strong>`
     : `Children: <strong>0 resolved</strong> · completion unknown`;
   return `<p class="muted epic-rollup"><strong>Epic rollup</strong> — ${children} · Status mix: ${statusMix} · Blocked: ${rollup.blocked}</p>`;
+}
+
+export function eventTableHtml(events: readonly AuditEvent[]): string {
+  const rows = events.map((event) => {
+    const source = event.source.link
+      ? `<a href="${esc(event.source.link)}" rel="noopener">${esc(event.source.identity)}</a>`
+      : esc(event.source.identity);
+    const delay = Date.parse(event.ingestedAt) - Date.parse(event.at);
+    const ingested = Number.isFinite(delay) && delay > 0 ? `<span class="muted">(+${Math.round(delay / 1000)}s ingest)</span>` : "";
+    return `<tr><td>${esc(event.at)} ${ingested}</td><td>${esc(event.actor)} <span class="muted">(${esc(event.attribution.confidence)})</span></td><td>${esc(event.kind)}</td><td><code>${esc(event.ref)}</code></td><td>${esc(event.summary)}</td><td>${source}</td></tr>`;
+  }).join("\n");
+  return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
 export function renderItem(
@@ -2160,6 +2176,9 @@ export function renderItem(
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
   const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
+  const activitySection = extras?.activity
+    ? `<h2>Activity stream</h2><p><a href="${esc(extras.activity.globalHref)}">View these events in the global river</a></p><p class="muted"><strong>Freshness: unknown.</strong> The ingestion checkpoint records deliveries, not successful source polls. Known gaps and documented source coverage are shown below.</p>${eventTableHtml(extras.activity.events)}<h3>Known activity gaps</h3><p class="muted">Gap records are source-scoped and do not currently identify affected item refs, so this is the global known-gap list.</p>${gapsHtml(extras.activity.gaps)}<h3>Activity source coverage</h3>${activityCoverageHtml(extras.activity.coverage)}`
+    : "";
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
@@ -2172,8 +2191,8 @@ ${
     : ""
 }
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
-<h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
-${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
+ <h2>Comments</h2><div class="tblwrap"><table><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+ ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
     extras
