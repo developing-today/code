@@ -188,13 +188,22 @@ describe("events store (#1739)", () => {
   });
 
   test("validateStreamEvent refuses impossible calendar dates (#5154)", () => {
-    // Date.parse rolls these over to a neighbouring month instead of
-    // returning NaN; the ingest boundary must refuse them outright.
-    expect(validateStreamEvent({ ...base, at: "2026-02-30" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-02-30T10:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-04-31T10:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-13-01T00:00:00Z" }).ok).toBe(false);
-    expect(validateStreamEvent({ ...base, at: "2026-02-29T10:00:00Z" }).ok).toBe(false);
+    // Date.parse rolls impossible dates over and accepts locale-dependent
+    // non-ISO forms; the ingest boundary must refuse both with its ISO error.
+    for (const at of [
+      "2026-02-30",
+      "2026-02-30T10:00:00Z",
+      "2026-04-31T10:00:00Z",
+      "March 2, 2026",
+      "03/02/2026",
+      "2026-13-01T00:00:00Z",
+      "2026-02-29T10:00:00Z",
+    ]) {
+      expect(validateStreamEvent({ ...base, at })).toEqual({
+        ok: false,
+        error: "event.at must be an ISO timestamp string",
+      });
+    }
     // Controls: real timestamps still validate — leap date, offset,
     // fractional seconds, date-only.
     expect(validateStreamEvent({ ...base, at: "2024-02-29T10:00:00Z" }).ok).toBe(true);
