@@ -77,7 +77,7 @@ describe("collector quota gate (quota-view.md -> feed pools)", () => {
   test("the published view extracts pools that pass the actual pool/window gates", async () => {
     const pools = extractQuotaPools(await publisherText("quota-view.md"), NOW);
     expect(pools.map((p) => p.id)).toContain("anthropic:claude-pro");
-    expect(pools.map((p) => p.id)).toContain("cline-pass:cline-pass");
+    expect(pools.map((p) => p.id)).toContain("cline-pass");
     for (const pool of pools) expect(isQuotaPool(pool)).toBe(true);
     for (const pool of pools) for (const window of pool.windows) expect(isQuotaWindow(window)).toBe(true);
     expect(pools.find((p) => p.id === "anthropic:claude-pro")?.windows[0]?.percent).toBe(68);
