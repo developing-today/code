@@ -53,9 +53,11 @@ min entries to merge 1 with a 1-minute wait (a lone PR is never
 held for a batch), max entries to merge 100, max entries to build
 100, check response timeout 30 minutes. The queue enforces the
 same required check as branch protection — `basic: proxy port
-fallbacks` — which is why `nix ci` also runs on `merge_group`
-events: the queue validates the combined merge-group head, never
-the PR head alone. Operationally: `gh pr merge` now ENQUEUES a
+fallbacks` — which is why the dedicated
+`.github/workflows/proxy-port-fallbacks.yml` runs on both
+`pull_request` and `merge_group` events. The queue validates the
+combined merge-group head, never the PR head alone. Operationally:
+`gh pr merge` now ENQUEUES a
 PR instead of merging it; "in the merge queue" is merge-pending,
 not a failure.
 
@@ -118,7 +120,8 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 
 | workflow                                                       | PR tier                                                                                             | main tier                                                                    | nightly                                                          |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| nix ci                                                         | proxy port fallbacks only                                                                           | full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
+| nix ci                                                         | — (PR and merge-group proxy check is in the dedicated workflow below)                              | proxy port fallbacks + full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
+| proxy-port-fallbacks                                           | `basic: proxy port fallbacks` on `pull_request` and `merge_group`                                   | — (main copy remains in nix-ci.yml)                                           | —                                                                |
 | id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                       | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
 | mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                 | — (main covers it)                                               |
 | id bench                                                       | — (removed)                                                                                         | yes                                                                          | —                                                                |
