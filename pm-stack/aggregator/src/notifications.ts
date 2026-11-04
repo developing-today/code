@@ -26,7 +26,7 @@ export interface NotificationCandidate {
   observedAt: string;
   breakthrough: boolean;
   digestOnly?: boolean;
-  escalationStep?: 24 | 48;
+  escalationStep?: 24 | 48 | "weekly";
 }
 
 export interface NotificationHistoryEntry {
@@ -82,7 +82,7 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
   const since = Date.parse(observedAt);
   if (!Number.isFinite(since) || now - since < BLOCKED_AGE_REMINDER_MS) return [entry];
   const step: 24 | 48 = now - since >= BLOCKED_AGE_BREAKTHROUGH_MS ? 48 : 24;
-  return [
+  const reminders = [
     entry,
     candidate({
       class: "blocked-age",
@@ -97,6 +97,25 @@ function tierItemCandidate(item: TierItem | TieredEntry, now: number): Notificat
       escalationStep: step,
     }),
   ];
+  if (step === 48) {
+    const week = Math.floor((now - since - BLOCKED_AGE_BREAKTHROUGH_MS) / WEEK_MS);
+    if (week > 0) {
+      reminders.push(
+        candidate({
+          class: "blocked-age",
+          objectRef,
+          title: `Weekly reminder: ${item.title ?? itemId}`,
+          body: `This needs-Drew item remains unacted (week ${week} after the 48-hour breakthrough).`,
+          url,
+          observedAt,
+          state: { step: "weekly", week },
+          digestOnly: true,
+          escalationStep: "weekly",
+        }),
+      );
+    }
+  }
+  return reminders;
 }
 
 /** Apply enter-state dedupe, the per-item cooldown, and quiet/digest policy. */
