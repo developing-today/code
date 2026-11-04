@@ -211,6 +211,30 @@ describe("events store (#1739)", () => {
     expect(second.events.map((event) => event.id)).not.toContain("late-event");
   });
 
+  test("pageEvents compares ingestion timestamps as instants, not strings", () => {
+    // Migrated v1 rows keep offset timestamps as ingestedAt: the first
+    // row below is 07:00Z even though its string sorts after the native
+    // 08:00Z row. Lexicographic comparison would pick the wrong
+    // snapshot and wrongly exclude the migrated row from later pages.
+    const mk = (id: string, at: string, ingestedAt: string) => ({
+      ...base,
+      version: 2 as const,
+      id,
+      at,
+      ingestedAt,
+      attribution: { confidence: "unknown" as const, asserted: false },
+      source: { identity: "test" },
+      prevHash: "",
+      hash: "",
+    });
+    const migrated = mk("migrated", "2026-11-04T06:00:00.000Z", "2026-11-04T15:00:00+08:00");
+    const native = mk("native", "2026-11-04T07:30:00.000Z", "2026-11-04T08:00:00.000Z");
+    const first = pageEvents([native, migrated], { limit: 1 });
+    expect(first.snapshotAt).toBe("2026-11-04T08:00:00.000Z");
+    const second = pageEvents([native, migrated], { limit: 1, cursor: first.nextCursor });
+    expect(second.events.map((event) => event.id)).toEqual(["migrated"]);
+  });
+
   test("identities the action-result contract accepts are valid events", async () => {
     // byRun may carry punctuation (stored as appliedByRun); objectRef
     // may run to 300 chars (isObjectRef). Neither may be lost here.

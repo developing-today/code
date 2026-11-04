@@ -1181,7 +1181,14 @@ async function handler(req: Request): Promise<Response> {
     const epicOptions = [...epics.entries()]
       .map(([value, label]) => option(value, label, url.searchParams.get("epic") ?? ""))
       .join("");
-    const preservedRefs = refs.slice(1).map((ref) => `<input type="hidden" name="ref" value="${esc(ref)}">`).join("");
+    // Every ref filter is a visible, editable input: hidden preserved
+    // refs could not be removed, so clearing the visible Ref field
+    // still restricted results to the item's linked refs (Codex P2,
+    // PR #5266). A cleared input submits ref="", which filterEvents
+    // ignores, so clearing an input is removing that ref.
+    const refInputs = (refs.length ? refs : [""])
+      .map((ref, index) => `<label>Ref${index ? ` ${index + 1}` : ""} <input name="ref" value="${esc(ref)}"></label>`)
+      .join("");
     const nextUrl = page.nextCursor ? new URL(url) : null;
     if (nextUrl && page.nextCursor) nextUrl.searchParams.set("cursor", page.nextCursor);
     const apiUrl = new URL(url);
@@ -1198,7 +1205,7 @@ async function handler(req: Request): Promise<Response> {
         `<label>Epic <select name="epic"><option value="">All epics</option>${epicOptions}</select></label>` +
         `<label>Kind <input name="kind" value="${esc(url.searchParams.get("kind") ?? "")}"></label>` +
         `<label>Actor <input name="actor" value="${esc(url.searchParams.get("actor") ?? "")}"></label>` +
-        `<label>Ref <input name="ref" value="${esc(refs[0] ?? "")}"></label>${preservedRefs}` +
+        refInputs +
         `<label>Search <input name="q" value="${esc(url.searchParams.get("q") ?? "")}"></label>` +
         `<label>Page size <select name="limit">${[25, 50, 100].map((n) => option(String(n), String(n), url.searchParams.get("limit") ?? "50")).join("")}</select></label>` +
         `<button type="submit">Filter</button></form>` +

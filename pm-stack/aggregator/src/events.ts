@@ -414,12 +414,17 @@ export function pageEvents(
 ): EventPage {
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 50) || 50));
   const cursor = decodeEventCursor(options.cursor);
+  // Compare ingestion timestamps as instants, never lexicographically:
+  // migrated v1 rows keep their original timestamp as `ingestedAt`,
+  // including UTC offsets and missing fractional seconds, and string
+  // order disagrees with instant order for those (Codex P2, PR #5266).
   const snapshotAt = cursor?.snapshotAt ?? events.reduce(
-    (latest, event) => event.ingestedAt > latest ? event.ingestedAt : latest,
+    (latest, event) => Date.parse(event.ingestedAt) > Date.parse(latest) ? event.ingestedAt : latest,
     "1970-01-01T00:00:00.000Z",
   );
+  const snapshotMs = Date.parse(snapshotAt);
   const visible = events.filter((event) =>
-    event.ingestedAt <= snapshotAt && (!cursor || compareEventOrder(event, cursor) > 0),
+    Date.parse(event.ingestedAt) <= snapshotMs && (!cursor || compareEventOrder(event, cursor) > 0),
   );
   const page = visible.slice(0, limit);
   const last = page.at(-1);

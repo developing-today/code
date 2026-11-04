@@ -252,4 +252,19 @@ describe("server boots from fixtures", () => {
     expect(api.activity.freshness.status).toBe("unknown");
     expect(Array.isArray(api.activity.coverage)).toBe(true);
   });
+
+  test("events page renders every ref filter as a visible editable input", async () => {
+    // Codex P2 on PR #5266: refs beyond the first used to ride along as
+    // hidden inputs, so they could not be edited or removed and
+    // clearing the visible Ref field still restricted the river.
+    const query = new URLSearchParams();
+    query.append("ref", "developing-today/code#3323");
+    query.append("ref", "developing-today/code#3321");
+    const page = await fetch(`http://127.0.0.1:${port}/events?${query}`);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).not.toContain('type="hidden" name="ref"');
+    expect(html).toContain('name="ref" value="developing-today/code#3323"');
+    expect(html).toContain('name="ref" value="developing-today/code#3321"');
+  });
 });
