@@ -515,6 +515,13 @@ export async function fileResponseForKey(
 //   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
 //   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
 //   both test/extractor.test.ts and test/test_extractor_parity.py.
+// - <title> and <textarea> are RCDATA elements (#4008): content is
+//   character data (entities decoded, markup literal) up to the matching
+//   close tag — title data goes to title, textarea data to text.
+// - <iframe>, <xmp>, <noembed>, and <noframes> are raw-text elements
+//   (#4008): content is likewise literal up to the matching close tag
+//   (anchors inside never count), and HTMLParser reports it verbatim —
+//   no entity decoding — as ordinary character data.
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -700,10 +707,12 @@ export function extractHtml(html: string): { title: string; links: number; text:
   let links = 0;
   const textChunks: string[] = [];
   let skipDepth = 0;
-  // Raw-text mode: script/style are HTMLParser CDATA elements, and
-  // HTMLParser likewise reports <title> content as raw character data
-  // (markup inside a title is literal and never counts as links).
-  let cdataTag: "script" | "style" | "title" | null = null;
+  // Raw-text modes: script/style are HTMLParser CDATA elements;
+  // <title>/<textarea> are RCDATA (character data, entities decoded,
+  // markup literal); <iframe>/<xmp>/<noembed>/<noframes> are raw text
+  // (character data verbatim). In every mode only the matching close
+  // tag is markup, so anchors inside never count as links (#4008).
+  let cdataTag: string | null = null;
 
   const handleData = (raw: string) => {
     if (raw === "") return;
@@ -711,9 +720,20 @@ export function extractHtml(html: string): { title: string; links: number; text:
     if (cdataTag === "title") title += data;
     else if (skipDepth === 0) textChunks.push(data);
   };
+  // Raw-text element data: HTMLParser reports it verbatim — no entity
+  // decoding — and the container Extractor appends it to text like any
+  // other character data.
+  const handleRawData = (raw: string) => {
+    if (raw === "") return;
+    if (skipDepth === 0) textChunks.push(raw);
+  };
+  const handleCdataData = (raw: string) => {
+    if (cdataTag === "iframe" || cdataTag === "xmp" || cdataTag === "noembed" || cdataTag === "noframes") handleRawData(raw);
+    else handleData(raw);
+  };
   const handleStartTag = (tag: string, selfClosing: boolean) => {
-    if (tag === "title") {
-      if (!selfClosing) cdataTag = "title";
+    if (tag === "title" || tag === "textarea" || tag === "iframe" || tag === "xmp" || tag === "noembed" || tag === "noframes") {
+      if (!selfClosing) cdataTag = tag;
     } else if (tag === "a") links += 1;
     else if (tag === "script" || tag === "style") {
       skipDepth += 1;
@@ -732,11 +752,18 @@ export function extractHtml(html: string): { title: string; links: number; text:
       // HTMLParser CDATA mode: only the matching close tag is markup.
       const close = new RegExp(`</${cdataTag}(?=[\\s/>])`, "i").exec(html.slice(i));
       if (close === null) {
-        handleData(html.slice(i));
+        // EOF inside the element. For the #4008 elements (textarea and
+        // the raw-text four) the container never sees the tail:
+        // HTMLParser fed without close() — app.py only calls feed() —
+        // leaves an unterminated raw-text/RCDATA region unflushed, so
+        // its content is dropped, not delivered.
+        if (cdataTag !== "textarea" && cdataTag !== "iframe" && cdataTag !== "xmp" && cdataTag !== "noembed" && cdataTag !== "noframes") {
+          handleCdataData(html.slice(i));
+        }
         i = n;
         break;
       }
-      handleData(html.slice(i, i + close.index));
+      handleCdataData(html.slice(i, i + close.index));
       i += close.index;
       // Consume the close tag here, tolerantly: HTMLParser accepts
       // recoverable end tags carrying trailing attributes
