@@ -503,6 +503,10 @@ impl GenerationChain {
 ///   current generation key;
 /// - a *recovery* transition counts only when authored by the
 ///   committed recovery key and not by the key it replaces;
+/// - a transition whose successor is the key it replaces never
+///   counts: it would change the generation without changing the
+///   key, and as a recovery it would leave the compromised key
+///   active;
 /// - a rotation failing [`IssuerRotation::validate`] never counts
 ///   (fail closed, §6).
 ///
@@ -548,6 +552,10 @@ pub fn fold_rotation_chain(
                 RotationMode::Routine => *author == current_key,
                 RotationMode::CompromiseRecovery => *author != current_key,
             })
+            // A transition that installs the very key it replaces
+            // changes nothing; as a recovery it would leave the
+            // compromised key active under a new generation number.
+            .filter(|(_, _, rotation)| rotation.successor_key != current_key)
             .collect();
         candidates.sort_by_key(|(_, event_id, _)| *event_id);
         candidates.dedup_by_key(|(_, event_id, _)| *event_id);
@@ -924,6 +932,36 @@ mod tests {
             rotation.validate(&issuer_id(&gen0_key()), Some(&commitment())),
             Err(RotationError::AssertedCompromiseOnRoutine)
         );
+    }
+
+    #[test]
+    fn a_recovery_installing_the_retired_key_does_not_advance() {
+        // The successor proof is by generation 0 itself (it is the
+        // named successor), so the object validates; the fold must
+        // still refuse it — a recovery that keeps the compromised
+        // key is not a recovery.
+        let recovery = rotation(RotationMode::CompromiseRecovery, 0, None, &gen0_key(), None);
+        let chain = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[(issuer_id(&recovery_key()), event(1), recovery)],
+        );
+        assert_eq!(chain.active_generation(), 0);
+        assert!(chain.recoveries.is_empty());
+        assert_eq!(chain.status, ChainStatus::Settled);
+    }
+
+    #[test]
+    fn a_routine_rotation_to_the_same_key_does_not_advance() {
+        let rotation = rotation(RotationMode::Routine, 0, None, &gen0_key(), None);
+        let chain = fold_rotation_chain(
+            &issuer_id(&gen0_key()),
+            &currency(),
+            Some(&commitment()),
+            &[(issuer_id(&gen0_key()), event(1), rotation)],
+        );
+        assert_eq!(chain.active_generation(), 0);
     }
 
     #[test]
