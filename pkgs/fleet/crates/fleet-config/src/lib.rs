@@ -12,7 +12,9 @@
 //! and `disabled by config on this host` wording — the per-host shaping
 //! and incident lever. A missing file is not an error (defaults rule);
 //! a malformed file is a loud error, never a silent fallback, because a
-//! silently ignored disable would defeat the lever.
+//! silently ignored disable would defeat the lever. Unknown sections and
+//! keys are malformed for this purpose (#5460): a misspelled `[domains]`
+//! table or `idle_exit_secs` key is a parse error, not a silent default.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -35,7 +37,7 @@ pub const DEFAULT_IDLE_EXIT_SECS: u64 = 3600;
 pub const DEFAULT_SECRETS_TOKEN_FILE: &str = ".config/secrets-broker/token";
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// `[domains]` — domain name → enabled. Absent means enabled.
     pub domains: BTreeMap<String, bool>,
@@ -44,7 +46,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ProxyConfig {
     /// Session broker socket path (relative paths resolve under $HOME).
     pub broker_socket: Option<String>,
@@ -52,7 +54,7 @@ pub struct ProxyConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SecretsConfig {
     /// Path of the secrets-broker token file (handed to the session
     /// broker per request; fleet never opens it).
@@ -216,6 +218,35 @@ mod tests {
             Err(ConfigError::Parse { .. }) => {}
             other => panic!("expected Parse error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unknown_section_or_key_is_a_loud_error() {
+        // #5460: a typo must not silently substitute the defaults — a
+        // misspelled [domains] table would otherwise leave the domain
+        // the operator meant to disable enabled.
+        for contents in [
+            "[domain]\nqueue = false\n",
+            "[proxy]\nidle_exit_sec = 60\n",
+            "[proxy]\nbroker_soket = \"/tmp/x.sock\"\n",
+            "[secrets]\ntoken_fil = \"/tmp/tok\"\n",
+            "domainz = 1\n",
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { .. }) => {}
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn domains_stays_an_open_map() {
+        // deny_unknown_fields applies to struct fields, not to domain
+        // names: any domain may be named in [domains].
+        let (_dir, path) = write_temp("[domains]\nsome-future-domain = false\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(!cfg.domain_enabled("some-future-domain"));
     }
 
     #[test]
