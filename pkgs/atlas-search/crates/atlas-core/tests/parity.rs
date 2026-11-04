@@ -178,6 +178,39 @@ fn local_search_envelopes_match_python() {
 }
 
 #[test]
+fn grouped_wrap_range_k_considers_all_candidates() {
+    // #5423: k has no upper bound, and grouped_output's k * 10
+    // consideration window wrapped for wrap-range k (release) or
+    // panicked (debug). 5534023222112865485 * 10 mod 2^64 == 2, so
+    // the pre-fix window collapsed to max(2, pool). A wrap-range k
+    // must now behave exactly like a large sane k: every fused
+    // candidate is considered.
+    let db = build_fixture_db("wrapk");
+    let be =
+        LocalBackend::new(db.to_str().unwrap(), None, DEFAULT_VEC_TABLE, 0).expect("local backend");
+    let exp = expectations();
+    let qvec_raw: Vec<f32> = exp["qvec_raw"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_f64().unwrap() as f32)
+        .collect();
+    let embedder = FixedEmbedder { raw: qvec_raw };
+    let run = |k: usize| {
+        let mut o = SearchOptions::new("how do we back up the database");
+        o.group_by_session = true;
+        o.pool = 2;
+        o.k = k;
+        run_search(&be, &embedder, &default_filters(), &o).expect("grouped search")
+    };
+    let wrap = run(5_534_023_222_112_865_485);
+    let sane = run(1_000_000);
+    assert_eq!(wrap, sane, "wrap-range k must consider all candidates");
+    let results = wrap["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "grouped results must be non-empty");
+}
+
+#[test]
 fn local_get_chunk_matches_python() {
     let db = build_fixture_db("getchunk");
     let be =
