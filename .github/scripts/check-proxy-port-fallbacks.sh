@@ -38,6 +38,11 @@
 # (127.0.0.1:13420), proven byte-identical to the door on the
 # recorded classifier probe before the repoint.
 #
+# Retired 2026-11-04 (opencode#1153): the route proxy (:18750) is
+# gone the same way — let, unit, bin program and this row removed
+# in one change; its only live consumer (OpenClaw) rides the
+# server facade at 127.0.0.1:13420/v1.
+#
 # Retired 2026-11-03 (#5240): the design-code door (:18746) was removed
 # outright (7b51087cc removed its let and unit; a0755459e removed its
 # opencode.jsonc door shell), so its row is gone from the table below,
@@ -59,7 +64,6 @@ proxies=(
   "MUSE_PROXY_PORT|museProxyPort|bin/muse-proxy.mjs|yes"
   "COMMANDCODE_PROXY_PORT|commandcodeProxyPort|bin/commandcode-proxy.mjs|yes"
   "CLAUDE_CODE_PROXY_PORT|claudeCodeProxyPort|bin/claude-code-proxy.mjs|yes"
-  "OPENCODE_ROUTE_PROXY_PORT|opencodeRouteProxyPort|bin/opencode-route-proxy.mjs|no"
 )
 
 failed=0

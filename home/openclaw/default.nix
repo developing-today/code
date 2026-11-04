@@ -27,7 +27,10 @@ let
   # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
-  opencodeRouteProxyPort = 18750;
+  # The opencode-route provider talks to the OpenCode server facade
+  # directly (127.0.0.1:13420/v1) since the route proxy's retirement
+  # (opencode#1153, 2026-11-04); the proxy's port (18750) is free.
+  opencodeServerPort = 13420;
   # Fixed loopback port of the dedicated embedding server below (#1300).
   embeddingPort = 18791;
   localProvider = port: models: {
@@ -95,7 +98,6 @@ in
     Unit = {
       After = [
         "openclaw-embedding.service"
-        "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "agy-proxy.service"
         "codex-proxy.service"
@@ -103,9 +105,27 @@ in
       ];
       Wants = [
         "openclaw-embedding.service"
-        "opencode-route-proxy.service"
         "mcpx.service"
       ];
+    };
+    Service = {
+      # Materialize the facade credential at every gateway start
+      # (opencode#1146 step 3): the opencode server password lives
+      # in its service record — the same source oc-password-sync
+      # reads — and the provider config references the value below
+      # as an env SecretRef (programs.openclaw.environment reads
+      # the file at start). Rebuilt per start, so a server-side
+      # password rotation heals at the next gateway restart. The
+      # file holds the complete Authorization header value.
+      ExecStartPre = toString (
+        pkgs.writeShellScript "openclaw-facade-auth-materialize" ''
+          set -eu
+          umask 077
+          mkdir -p "$HOME/.local/state/openclaw"
+          PW=$(${pkgs.jq}/bin/jq -r .password "$HOME/.local/state/opencode/service-prod.json")
+          printf 'Basic %s' "$(printf 'opencode:%s' "$PW" | ${pkgs.coreutils}/bin/base64 -w0)" > "$HOME/.local/state/openclaw/opencode-server-auth"
+        ''
+      );
     };
   };
 
@@ -121,6 +141,7 @@ in
       OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
       OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
       TAVILY_API_KEY = "/run/secrets/openclaw/tavily-api-key";
+      OPENCODE_SERVER_AUTH = "${homeDir}/.local/state/openclaw/opencode-server-auth";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):
@@ -327,22 +348,38 @@ in
         };
       };
 
-      # Model routing: OpenClaw uses only the opencode-route door
-      # (Drew, 2026-10-31). That door is pass-through only — it handles
-      # auth and translates pool routes; the underlying pools are
-      # reached exclusively through OpenCode routes (see QUOTAS.md).
+      # Model routing: OpenClaw uses only the opencode-route pools
+      # (Drew, 2026-10-31), reached through the OpenCode server
+      # facade since the route proxy retired (opencode#1153); the
+      # underlying pools are reached exclusively through OpenCode
+      # routes (see QUOTAS.md).
       models = {
         mode = "merge";
         providers = {
-          # The route proxy (code#2229) fronts the OpenCode route
-          # pools (#2518): each model id is an opencode-route pool.
-          opencode-route = localProvider opencodeRouteProxyPort [
-            (model "workhorse" "Workhorse (OpenCode route pool)")
-            (model "speed" "Speed (OpenCode route pool)")
-            (model "specialist" "Specialist (OpenCode route pool)")
-            (model "summit" "Summit (OpenCode route pool)")
-            (model "scout" "Scout (OpenCode route pool)")
-          ];
+          # The OpenCode server facade fronts the route pools
+          # (#2518): each model id is an opencode-route pool. The
+          # facade requires the server credential, carried as an
+          # Authorization header whose value is an env SecretRef —
+          # materialized at gateway start by the unit's ExecStartPre
+          # from the server's service record, so the credential
+          # itself never enters the store (opencode#1146 step 3).
+          opencode-route = {
+            baseUrl = "http://127.0.0.1:${toString opencodeServerPort}/v1";
+            apiKey = "local-proxy";
+            api = "openai-completions";
+            headers.Authorization = {
+              source = "env";
+              provider = "default";
+              id = "OPENCODE_SERVER_AUTH";
+            };
+            models = [
+              (model "workhorse" "Workhorse (OpenCode route pool)")
+              (model "speed" "Speed (OpenCode route pool)")
+              (model "specialist" "Specialist (OpenCode route pool)")
+              (model "summit" "Summit (OpenCode route pool)")
+              (model "scout" "Scout (OpenCode route pool)")
+            ];
+          };
         };
       };
 
