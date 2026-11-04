@@ -462,7 +462,7 @@ impl Directory {
         let removals: Vec<(String, String, Vec<String>)> = directory
             .artifacts
             .all()
-            .filter_map(|artifact| match artifact.parsed() {
+            .filter_map(|artifact| match artifact.parsed_for_replay() {
                 Ok(Some(Kind::FriendRemove(removal))) => {
                     Some((removal.a, removal.b, removal.requests))
                 }
@@ -566,7 +566,7 @@ impl Directory {
         let artifacts = ArtifactLog::open_read_only(&artifact_path(path))?;
         let removals: Vec<(String, String, Vec<String>)> = artifacts
             .all()
-            .filter_map(|artifact| match artifact.parsed() {
+            .filter_map(|artifact| match artifact.parsed_for_replay() {
                 Ok(Some(Kind::FriendRemove(removal))) => {
                     Some((removal.a, removal.b, removal.requests))
                 }
@@ -2716,6 +2716,46 @@ mod tests {
         let crashed = Directory::open(&path).unwrap();
         assert!(!crashed.are_friends(&ann, &bo));
         assert_eq!(crashed.artifacts().head_seq(&ann), 1);
+    }
+
+    #[test]
+    fn a_legacy_removal_with_duplicate_request_ids_still_ends_the_friendship_on_recovery() {
+        // Codex P2 on PR #5576: a removal stored before receipt refused
+        // duplicate request IDs (#3146) must still take effect when its
+        // journal entry was lost to a crash. Strict `parsed` rejects the
+        // legacy artifact, so both recovery scans (writer open and
+        // read-only replay) must interpret it with `parsed_for_replay`,
+        // like the artifact log's own replay path.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let (home, _away, ann, bo, ann_credential) = friends_across_servers(Some(&path));
+        let requests = home.friendship_requests(&ann, &bo);
+        assert_eq!(requests.len(), 1);
+        let request = requests[0].clone();
+        drop(home);
+
+        let legacy = SignedArtifact::sign(
+            &key_of(&ann_credential),
+            1,
+            "",
+            artifact::FRIEND_REMOVE,
+            json!({
+                "a": ann,
+                "b": bo,
+                "requests": [request.clone(), request.clone()]
+            }),
+        )
+        .unwrap();
+        assert!(legacy.parsed().is_err());
+        artifact::append(&artifact_path(&path), &legacy).unwrap();
+
+        let replayed = Directory::replay_read_only(&path).unwrap();
+        assert!(!replayed.are_friends(&ann, &bo));
+        drop(replayed);
+
+        let reopened = Directory::open(&path).unwrap();
+        assert!(!reopened.are_friends(&ann, &bo));
+        assert!(reopened.removed_requests.contains(&request));
     }
 
     #[test]

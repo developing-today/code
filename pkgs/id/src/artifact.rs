@@ -430,7 +430,7 @@ impl SignedArtifact {
     /// `home_declared` bounds added for #3187 do not apply, so a declaration
     /// accepted before them still replays (mirroring how replay skips the
     /// frame check in `store`). New receipts always go through `parsed`.
-    fn parsed_for_replay(&self) -> Result<Option<Kind>> {
+    pub(crate) fn parsed_for_replay(&self) -> Result<Option<Kind>> {
         self.parsed_mode(true)
     }
 
