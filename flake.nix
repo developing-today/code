@@ -266,7 +266,7 @@ rec {
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
     # OpenCode 2.x line: developing-today's fork, carrying the model-routing work; the default branch tracks it.
     opencode = {
-      url = "github:developing-today/opencode";
+      url = "github:developing-today-forks/opencode";
     };
     # OpenChamber. Its opencode input deliberately does NOT follow
     # this flake's `opencode` above: the service cascade's module
