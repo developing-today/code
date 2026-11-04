@@ -40,7 +40,7 @@ impl Invite {
             "an invite name cannot contain control characters"
         );
         ensure!(
-            !name.chars().any(crate::petname::is_format_char),
+            !name.chars().any(crate::is_format_char),
             "an invite name cannot contain format characters"
         );
         let name = name.trim();
@@ -342,11 +342,12 @@ mod tests {
 
     #[test]
     fn format_characters_are_refused() {
-        // Representative Cf: soft hyphen, zero-width space, a bidi
-        // override, the BOM/zero-width no-break space, a tag char.
+        // Representative Cf: soft hyphen, zero-width space and joiner, a
+        // bidi override, the BOM/zero-width no-break space, a tag char.
         for name in [
             "Ann\u{ad}Lee",
             "Ann\u{200b}Lee",
+            "Ann\u{200d}Lee",
             "Ann\u{202e}Lee",
             "\u{feff}Ann",
             "Ann\u{e0041}",

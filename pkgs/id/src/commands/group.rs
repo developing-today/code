@@ -671,11 +671,11 @@ mod tests {
 
     #[test]
     fn test_every_named_format_char_is_escaped_alone_and_with_a_space() {
-        // The full Cf set named in #3111's acceptance: U+202A-202E, U+2066-2069,
-        // U+200E/U+200F, U+200B, U+FEFF, U+00AD.
+        // The named Cf cases in #3111's acceptance: U+202A-202E, U+2066-2069,
+        // U+200B-U+200F, U+FEFF, U+00AD.
         let named: Vec<char> = (0x202a..=0x202e)
             .chain(0x2066..=0x2069)
-            .chain([0x200e, 0x200f, 0x200b, 0xfeff, 0x00ad])
+            .chain([0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0xfeff, 0x00ad])
             .map(|cp| char::from_u32(cp).expect("named Cf code point"))
             .collect();
         for c in named {
