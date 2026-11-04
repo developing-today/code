@@ -34,6 +34,16 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - **CI-first verification:** Review the checks actually triggered on the PR and use [`.github/ci-policy.md`](.github/ci-policy.md) to distinguish the basic merge-gating PR tier from the full main tier; formatting is not a merge gate. Run targeted local checks on the laptop when useful; sandboxed workers use CI and must not run builds or tests in the sandbox. If a policy-listed check is missing from the PR, inspect the workflow trigger and report the coverage gap instead of assuming it ran.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
 
+## Testing doctrine
+
+Three tools, used where they fit:
+
+- **PBT (property-based testing):** state invariants that must always hold, then let a generator hammer the code with thousands of random inputs to find counterexamples. Where code has meaningful invariants — parsers, serializers, state machines, replication, ID/crypto formats — state the invariants and cover them with property tests. In Rust here that is `proptest` (already a dev-dependency of `pkgs/id`).
+- **MBT (model-based testing):** where a system's behavior has a spec or design model, build the model and generate tests — and their expected results — from it, instead of hand-writing cases only.
+- **Oracles:** the decision procedure that tells you whether actual output matches expected — the hard part of automated testing. Every automated test names its oracle: a reference implementation, the model, an invariant check, or a golden corpus. A test with no decidable oracle is a smell to fix, not ship.
+
+Example-based tests remain fine for smoke and acceptance coverage; they do not replace PBT/MBT where those fit.
+
 ## Worker Git preflight
 
 At the start of each task, before relying on Git names such as `origin/main`, run `bash "$(git rev-parse --show-toplevel)/scripts/worker-preflight.sh"`. If it reports `refs/heads/origin/main`, stop and escalate; do not delete the branch or alter refs as part of task work. That local branch shadows the remote-tracking ref.
