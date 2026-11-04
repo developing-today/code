@@ -2879,7 +2879,7 @@ mod tests {
     }
 
     #[test]
-    fn a_default_ceiling_is_not_written_and_old_journals_allow_the_whole_catalog() {
+    fn a_default_ceiling_is_not_written_and_old_journals_allow_the_default_ceiling() {
         let mut core = world(8);
         core.active_module_hash = Some("h".to_owned());
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
@@ -2910,9 +2910,12 @@ mod tests {
             ],
         )
         .unwrap();
+        // An old journal with no written ceiling restores to the
+        // current default ceiling: the whole catalog minus the sensor
+        // caps (#2341), which join only an explicit ceiling.
         assert_eq!(
             restored.core.ledger.allowed(),
-            &crate::world_caps::catalog_names()
+            &crate::world_caps::default_ceiling_names()
         );
     }
 
