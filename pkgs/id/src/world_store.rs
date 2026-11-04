@@ -1234,7 +1234,7 @@ mod tests {
         assert_eq!(lease.holder.as_deref(), Some("native-1"));
         assert_eq!(lease.epoch, 1);
         assert_eq!(lease.expires_at_ms, Some(40_000));
-        assert_eq!(lease.transitions.len(), 2);
+        assert_eq!(lease.transitions().count(), 2);
     }
 
     #[test]

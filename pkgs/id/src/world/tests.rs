@@ -634,11 +634,19 @@ mod tests {
         assert_eq!(lease.holder.as_deref(), Some(DO_WRITE_LEASE_HOLDER));
         assert_eq!(lease.epoch, 3);
         assert_eq!(lease.expires_at_ms, None);
-        assert_eq!(lease.transitions.len(), 4);
-        assert_eq!(lease.transitions[0].kind, LeaseTransitionKind::HandedOff);
-        assert_eq!(lease.transitions[1].kind, LeaseTransitionKind::Renewed);
-        assert_eq!(lease.transitions[2].kind, LeaseTransitionKind::Revoked);
-        assert_eq!(lease.transitions[3].kind, LeaseTransitionKind::Granted);
+        let kinds: Vec<LeaseTransitionKind> = lease
+            .transitions()
+            .map(|transition| transition.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                LeaseTransitionKind::HandedOff,
+                LeaseTransitionKind::Renewed,
+                LeaseTransitionKind::Revoked,
+                LeaseTransitionKind::Granted,
+            ]
+        );
         // The ex-holder is fenced at the new epoch, and the returned
         // holder presenting an old epoch is stale.
         assert_eq!(
@@ -688,8 +696,8 @@ mod tests {
         // holder, the epoch, or any program state.
         assert_eq!(lease.holder.as_deref(), Some("native-1"));
         assert_eq!(lease.epoch, 1);
-        assert_eq!(lease.rejections.len(), 1);
-        assert_eq!(lease.rejections[0].operation_id, "op-1");
+        assert_eq!(lease.rejections().count(), 1);
+        assert_eq!(lease.rejections().next().unwrap().operation_id, "op-1");
         assert_eq!(restored.core.current_sequence(), 0);
         assert!(restored.replay.is_empty());
 
@@ -806,6 +814,48 @@ mod tests {
             let error = WorldCore::restore("w", WorldLimits::default(), journal).unwrap_err();
             assert!(error.to_string().contains(needle), "{error:#}");
         }
+    }
+
+    #[test]
+    fn write_lease_rejection_audit_stays_valid_across_later_transitions() {
+        // Codex P1 on PR #5571: an audit is valid against the lease
+        // state at its own journal position, not the final state.
+        // Handoff (epoch 1) -> audit a stale write (observed epoch 1)
+        // -> revoke (epoch 2) -> grant (epoch 3) must restore from the
+        // original journal AND from its compaction: a validator that
+        // replays every transition before any audit would refuse the
+        // audit for naming observed epoch 1 against a final epoch of
+        // 3, bricking the world after compaction.
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                stale_rejection(),
+                JournalEntry::LeaseRevoked {
+                    former_holder: "native-1".to_owned(),
+                    epoch: 2,
+                    reason: "term expired without renewal".to_owned(),
+                },
+                JournalEntry::LeaseGranted {
+                    holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    epoch: 3,
+                    expires_at_ms: None,
+                },
+            ],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease().clone();
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(lease.rejections().count(), 1);
+        lease.validate_history().unwrap();
+
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.write_lease(), &lease);
     }
 
     #[test]

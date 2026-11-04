@@ -1296,6 +1296,15 @@ impl WorldCore {
         // entity, forget an import receipt, or drop an owner epoch.
         let transfers: Option<Vec<HandoffTransferState>> =
             (!self.handoff_transfers.is_empty()).then(|| self.handoff_transfers.clone());
+        // Never compact a lease history that would fail restore
+        // validation into the replacement journal: refuse the
+        // compaction and keep the un-compacted journal instead
+        // (Codex review on PR #5571).
+        if !self.write_lease.is_bootstrap() {
+            self.write_lease
+                .validate_history()
+                .context("write lease history does not validate; keep the journal untrimmed")?;
+        }
         let checkpoint_events: Vec<WorldEvent> = self.events.iter().cloned().collect();
         let checkpoint_admin_events: Vec<WorldEvent> = self.admin_history.iter().cloned().collect();
         // A checkpoint that already fits the per-entry bound stays a single

@@ -688,6 +688,22 @@ pub struct LeaseWriteRejection {
     pub received_at_ms: u64,
 }
 
+/// One entry in a [`WriteLease`]'s audit history, in journal order.
+/// Transitions and rejection audits share one ordered list because
+/// each rejection audit is only valid against the lease state at its
+/// own journal position: a stale write audited at epoch 1 stays valid
+/// after a revocation advances the epoch to 2, and a validator that
+/// replays every transition before any audit would refuse it
+/// (Codex review on PR #5571).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "record", rename_all = "snake_case")]
+pub enum WriteLeaseHistory {
+    /// A lease transition (grant, renewal, handoff, revocation).
+    Transition(WriteLeaseTransition),
+    /// A rejected append attempt the authority audited.
+    Rejection(LeaseWriteRejection),
+}
+
 /// The journal-resident write lease for one world (design #2819,
 /// phase 2 of issue #3804): the derived state the append gate fences
 /// on, rebuilt by journal replay and carried whole in checkpoints so
@@ -709,10 +725,10 @@ pub struct WriteLease {
     /// When the current term expires, in unix milliseconds on the
     /// authority's clock; `None` for an untermed holder.
     pub expires_at_ms: Option<u64>,
-    /// Every transition applied, in journal order.
-    pub transitions: Vec<WriteLeaseTransition>,
-    /// Every audited rejected append attempt, in journal order.
-    pub rejections: Vec<LeaseWriteRejection>,
+    /// Every transition and audited rejection, interleaved in
+    /// journal order — the order is load-bearing (see
+    /// [`WriteLeaseHistory`]).
+    pub history: Vec<WriteLeaseHistory>,
 }
 
 impl Default for WriteLease {
@@ -730,9 +746,24 @@ impl WriteLease {
             holder: Some(DO_WRITE_LEASE_HOLDER.to_owned()),
             epoch: 0,
             expires_at_ms: None,
-            transitions: Vec::new(),
-            rejections: Vec::new(),
+            history: Vec::new(),
         }
+    }
+
+    /// Every transition applied, in journal order.
+    pub fn transitions(&self) -> impl Iterator<Item = &WriteLeaseTransition> {
+        self.history.iter().filter_map(|entry| match entry {
+            WriteLeaseHistory::Transition(transition) => Some(transition),
+            WriteLeaseHistory::Rejection(_) => None,
+        })
+    }
+
+    /// Every audited rejected append attempt, in journal order.
+    pub fn rejections(&self) -> impl Iterator<Item = &LeaseWriteRejection> {
+        self.history.iter().filter_map(|entry| match entry {
+            WriteLeaseHistory::Transition(_) => None,
+            WriteLeaseHistory::Rejection(rejection) => Some(rejection),
+        })
     }
 
     /// Whether this lease is still the untouched bootstrap state (a
@@ -798,14 +829,15 @@ impl WriteLease {
         self.advance_epoch(epoch, "grant")?;
         self.holder = Some(holder.to_owned());
         self.expires_at_ms = expires_at_ms;
-        self.transitions.push(WriteLeaseTransition {
-            kind: LeaseTransitionKind::Granted,
-            from: None,
-            to: Some(holder.to_owned()),
-            epoch,
-            expires_at_ms,
-            reason: None,
-        });
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::Granted,
+                from: None,
+                to: Some(holder.to_owned()),
+                epoch,
+                expires_at_ms,
+                reason: None,
+            }));
         Ok(())
     }
 
@@ -833,14 +865,15 @@ impl WriteLease {
             "journal renewal moves the write lease expiry backwards"
         );
         self.expires_at_ms = Some(expires_at_ms);
-        self.transitions.push(WriteLeaseTransition {
-            kind: LeaseTransitionKind::Renewed,
-            from: Some(holder.to_owned()),
-            to: Some(holder.to_owned()),
-            epoch,
-            expires_at_ms: Some(expires_at_ms),
-            reason: None,
-        });
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::Renewed,
+                from: Some(holder.to_owned()),
+                to: Some(holder.to_owned()),
+                epoch,
+                expires_at_ms: Some(expires_at_ms),
+                reason: None,
+            }));
         Ok(())
     }
 
@@ -867,14 +900,15 @@ impl WriteLease {
         self.advance_epoch(epoch, "handoff")?;
         self.holder = Some(to.to_owned());
         self.expires_at_ms = expires_at_ms;
-        self.transitions.push(WriteLeaseTransition {
-            kind: LeaseTransitionKind::HandedOff,
-            from: Some(from.to_owned()),
-            to: Some(to.to_owned()),
-            epoch,
-            expires_at_ms,
-            reason: None,
-        });
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::HandedOff,
+                from: Some(from.to_owned()),
+                to: Some(to.to_owned()),
+                epoch,
+                expires_at_ms,
+                reason: None,
+            }));
         Ok(())
     }
 
@@ -895,14 +929,15 @@ impl WriteLease {
         self.advance_epoch(epoch, "revocation")?;
         self.holder = None;
         self.expires_at_ms = None;
-        self.transitions.push(WriteLeaseTransition {
-            kind: LeaseTransitionKind::Revoked,
-            from: Some(former_holder.to_owned()),
-            to: None,
-            epoch,
-            expires_at_ms: None,
-            reason: Some(reason.to_owned()),
-        });
+        self.history
+            .push(WriteLeaseHistory::Transition(WriteLeaseTransition {
+                kind: LeaseTransitionKind::Revoked,
+                from: Some(former_holder.to_owned()),
+                to: None,
+                epoch,
+                expires_at_ms: None,
+                reason: Some(reason.to_owned()),
+            }));
         Ok(())
     }
 
@@ -937,7 +972,7 @@ impl WriteLease {
             rejection.reason
         );
         ensure!(
-            !self.rejections.iter().any(|prior| {
+            !self.rejections().any(|prior| {
                 prior.writer == rejection.writer
                     && prior.presented_epoch == rejection.presented_epoch
                     && prior.operation_id == rejection.operation_id
@@ -945,7 +980,7 @@ impl WriteLease {
             "journal audits rejected write {:?} twice",
             rejection.operation_id
         );
-        self.rejections.push(rejection);
+        self.history.push(WriteLeaseHistory::Rejection(rejection));
         Ok(())
     }
 
@@ -960,53 +995,55 @@ impl WriteLease {
     /// state that differs from the claimed one.
     pub fn validate_history(&self) -> Result<()> {
         let mut replayed = Self::bootstrap();
-        for transition in &self.transitions {
-            match transition.kind {
-                LeaseTransitionKind::Granted => replayed.apply_grant(
-                    transition
-                        .to
-                        .as_deref()
-                        .context("lease grant transition names no holder")?,
-                    transition.epoch,
-                    transition.expires_at_ms,
-                )?,
-                LeaseTransitionKind::Renewed => replayed.apply_renew(
-                    transition
-                        .to
-                        .as_deref()
-                        .context("lease renewal transition names no holder")?,
-                    transition.epoch,
-                    transition
-                        .expires_at_ms
-                        .context("lease renewal transition names no expiry")?,
-                )?,
-                LeaseTransitionKind::HandedOff => replayed.apply_handoff(
-                    transition
-                        .from
-                        .as_deref()
-                        .context("lease handoff transition names no source")?,
-                    transition
-                        .to
-                        .as_deref()
-                        .context("lease handoff transition names no target")?,
-                    transition.epoch,
-                    transition.expires_at_ms,
-                )?,
-                LeaseTransitionKind::Revoked => replayed.apply_revoke(
-                    transition
-                        .from
-                        .as_deref()
-                        .context("lease revocation transition names no holder")?,
-                    transition.epoch,
-                    transition
-                        .reason
-                        .as_deref()
-                        .context("lease revocation transition names no reason")?,
-                )?,
+        for entry in &self.history {
+            match entry {
+                WriteLeaseHistory::Transition(transition) => match transition.kind {
+                    LeaseTransitionKind::Granted => replayed.apply_grant(
+                        transition
+                            .to
+                            .as_deref()
+                            .context("lease grant transition names no holder")?,
+                        transition.epoch,
+                        transition.expires_at_ms,
+                    )?,
+                    LeaseTransitionKind::Renewed => replayed.apply_renew(
+                        transition
+                            .to
+                            .as_deref()
+                            .context("lease renewal transition names no holder")?,
+                        transition.epoch,
+                        transition
+                            .expires_at_ms
+                            .context("lease renewal transition names no expiry")?,
+                    )?,
+                    LeaseTransitionKind::HandedOff => replayed.apply_handoff(
+                        transition
+                            .from
+                            .as_deref()
+                            .context("lease handoff transition names no source")?,
+                        transition
+                            .to
+                            .as_deref()
+                            .context("lease handoff transition names no target")?,
+                        transition.epoch,
+                        transition.expires_at_ms,
+                    )?,
+                    LeaseTransitionKind::Revoked => replayed.apply_revoke(
+                        transition
+                            .from
+                            .as_deref()
+                            .context("lease revocation transition names no holder")?,
+                        transition.epoch,
+                        transition
+                            .reason
+                            .as_deref()
+                            .context("lease revocation transition names no reason")?,
+                    )?,
+                },
+                WriteLeaseHistory::Rejection(rejection) => {
+                    replayed.apply_rejection(rejection.clone())?;
+                }
             }
-        }
-        for rejection in &self.rejections {
-            replayed.apply_rejection(rejection.clone())?;
         }
         ensure!(
             replayed == *self,
