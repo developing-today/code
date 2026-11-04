@@ -49,6 +49,10 @@ import fetch_mirrors
 
 COALESCE_S = 15 * 60
 CHRONIC_DRAIN_FAILURES = 5
+# The Worker performs one KV delete per acked id, and Cloudflare caps an
+# invocation at 1,000 KV operations — acks are sent in batches well
+# under that ceiling so a multi-page backlog can always drain.
+ACK_BATCH_SIZE = 500
 
 
 def worker_req(path, payload=None):
@@ -63,6 +67,19 @@ def worker_req(path, payload=None):
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read() or b"{}")
+
+
+def ack_events(cfg, ids):
+    """Acknowledge ids in bounded batches (ACK_BATCH_SIZE per request).
+
+    A single /queue/ack request carrying a whole multi-page backlog
+    exceeds the Worker's per-invocation KV-operation limit once more
+    than ~1,000 events are ackable; the Worker then fails mid-batch
+    after partially deleting it. Bounded requests drain any backlog.
+    """
+    path = cfg["worker"]["queue_poll_path"] + "/ack"
+    for i in range(0, len(ids), ACK_BATCH_SIZE):
+        worker_req(path, {"ids": ids[i:i + ACK_BATCH_SIZE]})
 
 
 def queue_events(queue_poll_path):
@@ -243,7 +260,7 @@ def main():
     with open(state_path, "w") as f:
         json.dump(state, f, indent=0)
     if ack:
-        worker_req(cfg["worker"]["queue_poll_path"] + "/ack", {"ids": ack})
+        ack_events(cfg, ack)
     print(json.dumps({"events": len(events), "fetched": fetched,
                       "failed": failed, "unplanned": unplanned,
                       "dropped_foreign": len(dropped),

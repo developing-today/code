@@ -277,4 +277,16 @@ summary = json.loads(buf.getvalue().strip().splitlines()[-1])
 check("pagination: all 501 events handled in one run", summary["events"] == 501)
 
 
+# 15. multi-page backlog: acks are batched under the Worker KV ceiling.
+# 1,200 ackable (unplanned) events must arrive as bounded /queue/ack
+# requests — never one request over the 1,000-KV-operation limit.
+h = Harness([ev(f"bulk-{i}", f"owner/bulk-{i}") for i in range(1200)], [], {})
+check("ack batching: exit 0", h.run() == 0)
+check("ack batching: every event acked", len(h.acked_ids()) == 1200)
+check("ack batching: no request exceeds the batch bound",
+      all(len(call) <= drain_queue.ACK_BATCH_SIZE for call in h.ack_calls))
+check("ack batching: backlog split across multiple requests",
+      len(h.ack_calls) == 3)
+
+
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
