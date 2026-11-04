@@ -4,7 +4,7 @@
 # Self-contained workspace on the pkgs/id pattern. Crates land one step at
 # a time; step 1 (#5351) is atlas-embed only.
 [workspace]
-members = ["crates/atlas-embed", "crates/atlas-core"]
+members = ["crates/atlas-embed", "crates/atlas-core", "crates/atlas-search"]
 resolver = "2"
 
 [workspace.package]
