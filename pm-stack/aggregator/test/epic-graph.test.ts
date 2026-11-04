@@ -138,6 +138,36 @@ describe("epicGraph", () => {
     }
   });
 
+  test("blocked summaries are computed before the node cap", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1) }),
+      item({ number: 3, epicRef: R(1) }),
+      item({ number: 4, epicRef: R(1) }),
+      item({ number: 5, epicRef: R(1), blockedBy: [R(99)] }),
+    ];
+    const g = epicGraph(pool, R(1), 3);
+    expect(g.nodes.map((n) => n.ref)).not.toContain(R(5));
+    expect(g.blockedCount).toBe(1); // #5 is blocked even though the cap hides it
+    expect(g.rankedBlocked.map((r) => r.ref)).toEqual([R(5)]);
+    expect(g.rankedBlocked[0]!.blockers).toEqual([R(99)]);
+  });
+
+  test("external nodes keep the dependency links observed for them", () => {
+    const g = epicGraph(fixturePool(), R(1));
+    const ext = g.nodes.find((n) => n.ref === R(99))!;
+    expect(ext.dependents).toEqual([R(2)]); // #2 is blocked by #99, so #99 blocks #2
+    expect(ext.blockers).toEqual([]);
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blocks: [R(98)] }),
+    ];
+    const g2 = epicGraph(pool, R(1));
+    const ext2 = g2.nodes.find((n) => n.ref === R(98))!;
+    expect(ext2.blockers).toEqual([R(2)]); // #2 blocks #98, so #98 is blocked by #2
+    expect(ext2.dependents).toEqual([]);
+  });
+
   test("a parent cycle degrades to roots instead of looping", () => {
     const pool = [
       item({ number: 1, title: "Epic", kind: "Epic" }),
@@ -191,8 +221,8 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
   test("selector lists the epic with counts and an anchor to its section", () => {
     const html = renderWith(fixturePool());
     expect(html).toContain("Per-epic dependency graph");
-    expect(html).toContain('href="#epic-graph-1"');
-    expect(html).toContain('id="epic-graph-1"');
+    expect(html).toContain('href="#epic-graph-developing-today-code-1"');
+    expect(html).toContain('id="epic-graph-developing-today-code-1"');
     expect(html).toContain("3 items · 2 blocked · 1 done");
   });
 
@@ -224,6 +254,57 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     ]);
     expect(html).toContain("Not yet graphed: this epic's items carry no parent / blocked-by edges yet");
     expect(html).toContain("blocked by: none observed");
+  });
+
+  test("epics with the same number in different repos get distinct anchors", () => {
+    const other = (n: number): RefKey => `dezren39/nix#${n}` as RefKey;
+    const pool = [
+      item({ number: 1, title: "Epic one", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1) }),
+      item({
+        number: 1,
+        title: "Nix epic one",
+        kind: "Epic",
+        ref: other(1),
+        repo: "dezren39/nix",
+        issueUrl: "https://github.com/dezren39/nix/issues/1",
+      }),
+      item({
+        number: 2,
+        epicRef: other(1),
+        ref: other(2),
+        repo: "dezren39/nix",
+        issueUrl: "https://github.com/dezren39/nix/issues/2",
+      }),
+    ];
+    const html = renderWith(pool);
+    expect(html).toContain('id="epic-graph-developing-today-code-1"');
+    expect(html).toContain('id="epic-graph-dezren39-nix-1"');
+    expect(html).toContain('href="#epic-graph-dezren39-nix-1"');
+  });
+
+  test("the epic selector nav is isolated from the global nav styles", () => {
+    const html = renderWith(fixturePool());
+    expect(html).toContain('class="epic-graph-selector"');
+    expect(html).toContain(".epic-graph-selector { position: static; }");
+    expect(html).toContain(".epic-graph-selector a { white-space: normal;");
+  });
+
+  test("the graph resolves against the full pool, not the Area-filtered detail pool", () => {
+    const pool = [
+      item({ number: 1, title: "Epic one", kind: "Epic" }),
+      item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
+      // The blocker is closed but lives in another Area, so the
+      // Area-filtered detail pool does not hold it; the full epicPool does.
+      item({ number: 3, state: "closed", area: "other-area" }),
+    ];
+    const config = projectConfigById("pm-dashboard")!;
+    const items = new Map<RefKey, GhItem>();
+    const detail = buildProjectDetail(config, items, pool, []);
+    expect(detail.poolItems.map((p) => p.ref)).not.toContain(R(3));
+    const html = renderProgramProject(detail, items, PROV, undefined, pool);
+    expect(html).toContain("0 blocked on an unresolved blocker");
+    expect(html).not.toContain("1 blocked on an unresolved blocker");
   });
 
   test("the epic-graph flex layout and its narrow-screen stacking ship in the stylesheet", () => {

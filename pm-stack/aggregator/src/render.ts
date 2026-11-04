@@ -435,6 +435,8 @@ body.xp-plan .xpl-costcol { display: none; }
   .epic-graph-side { flex: 0 0 320px; max-width: 100%; }
   .epic-graph-list { margin: 0; padding-left: 18px; }
   .epic-graph-list li { margin: 4px 0; }
+  .epic-graph-selector { position: static; }
+  .epic-graph-selector a { white-space: normal; display: inline; min-height: 0; padding: 0; }
   @media (max-width: 720px) { .epic-graph-flex { flex-direction: column; } .epic-graph-side { flex: none; width: 100%; } }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
@@ -6686,15 +6688,22 @@ function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summari
  * are dashed amber, hierarchy edges solid grey, and every node's
  * state is written as text — color is never the only signal. Empty
  * or unavailable graph data says so; it is never an empty success. */
+/** Section anchor for one epic's graph, derived from the canonical ref
+ * (owner/repo#number), never the bare issue number: two repositories
+ * can hold epics with the same number, and bare-number ids collide. */
+function epicGraphAnchor(ref: RefKey): string {
+  return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+}
+
 function epicGraphSectionHtml(items: ProjectPoolItem[]): string {
   const selector = epicSelector(items);
   if (!selector.length) {
     return `<h3>Per-epic dependency graph</h3><div class="banner">Dependency graph unavailable: no epic in this pool has items yet, so there is no per-epic graph to draw — this is an unavailable state, not an empty graph.</div>`;
   }
-  const selectorHtml = `<nav aria-label="Epic graph selector"><ul class="epic-graph-list">${selector
+  const selectorHtml = `<nav class="epic-graph-selector" aria-label="Epic graph selector"><ul class="epic-graph-list">${selector
     .map(
       (e) =>
-        `<li><a href="#epic-graph-${e.number}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
+        `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
     )
     .join("")}</ul></nav>`;
   const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
@@ -6706,7 +6715,7 @@ function epicGraphOneHtml(
   entry: ReturnType<typeof epicSelector>[number],
 ): string {
   const g = epicGraph(items, entry.ref);
-  const heading = `<h4 id="epic-graph-${entry.number}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
+  const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
   if (g.status === "unavailable" || !g.epic) {
     return `<section>${heading}<div class="banner">Dependency graph unavailable: ${esc(g.reason ?? "no graph data for this epic")}.</div></section>`;
   }
@@ -6721,18 +6730,16 @@ function epicGraphOneHtml(
     : "";
 
   // Ranked summary: open member items by how many unresolved blockers
-  // they wait on (the full transitive unblock ranking is #3974; this
-  // is the per-epic blocked summary beside the graph).
-  const ranked = g.nodes
-    .filter((n) => n.member && !n.epic && n.state === "open")
-    .map((n) => ({ node: n, blockers: n.blockers.filter(unresolvedOf) }))
-    .filter((r) => r.blockers.length > 0)
-    .sort((a, b) => b.blockers.length - a.blockers.length || a.node.ref.localeCompare(b.node.ref));
+  // they wait on, from the graph's pre-cap ranking (the full transitive
+  // unblock ranking is #3974; this is the per-epic blocked summary
+  // beside the graph). Never derived from the capped node list: a
+  // member the cap hid is still waiting.
+  const ranked = g.rankedBlocked;
   const rankedHtml = ranked.length
     ? `<ul class="epic-graph-list">${ranked
         .map(
           (r) =>
-            `<li><a href="${esc(r.node.issueUrl)}">${esc(r.node.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
+            `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${r.blockers.map((b) => `<a href="${esc(refUrl(b))}">${esc(b)}</a>`).join(", ")}</li>`,
         )
         .join("")}</ul>`
     : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
@@ -6862,7 +6869,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(detail.poolItems)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool)}${cards}${more}`;
   }
 
   let roadmapHtml: string;

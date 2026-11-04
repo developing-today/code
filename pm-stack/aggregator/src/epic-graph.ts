@@ -120,6 +120,11 @@ export interface EpicGraph {
   memberCount: number;
   /** Open member items waiting on at least one unresolved blocker. */
   blockedCount: number;
+  /** Every open member waiting on unresolved blockers, computed over
+   * the full member set BEFORE the node cap, worst-blocked first. The
+   * ranked summary renders from this, never from the capped nodes:
+   * a member the cap hid is still blocked. */
+  rankedBlocked: { ref: RefKey; issueUrl: string; blockers: RefKey[] }[];
   maxDepth: number;
 }
 
@@ -135,6 +140,7 @@ function unavailable(reason: string): EpicGraph {
     externalCount: 0,
     memberCount: 0,
     blockedCount: 0,
+    rankedBlocked: [],
     maxDepth: 0,
   };
 }
@@ -254,16 +260,24 @@ export function epicGraph(
   for (const root of roots) visit(root, 0);
   for (const { ref } of shown) visit(ref, 0); // cycle leftovers become roots
 
-  let blockedCount = 0;
+  // Summaries cover the FULL member set, before the node cap: a member
+  // hidden by the cap is still blocked, still counted, still ranked.
+  const unresolvedBlockersOf = (item: ProjectPoolItem): RefKey[] =>
+    (item.blockedBy ?? []).filter((b) => {
+      const blocker = byRef.get(b);
+      return blocker === undefined || blocker.state === "open";
+    });
+  const blockedCount = members.filter(
+    (m) => m.state === "open" && unresolvedBlockersOf(m).length > 0,
+  ).length;
+  const rankedBlocked = members
+    .filter((m) => m.ref !== epicRef && m.state === "open")
+    .map((m) => ({ ref: m.ref, issueUrl: m.issueUrl, blockers: unresolvedBlockersOf(m) }))
+    .filter((r) => r.blockers.length > 0)
+    .sort((a, b) => b.blockers.length - a.blockers.length || byRefOrder(a.ref, b.ref));
+
   const nodes: EpicGraphNode[] = shown.map(({ item, ref }) => {
     const pos = layout.get(ref) ?? { depth: 0, row: 0 };
-    if (item && item.epicRef === epicRef && item.state === "open") {
-      const blocked = (item.blockedBy ?? []).some((b) => {
-        const blocker = byRef.get(b);
-        return blocker === undefined || blocker.state === "open";
-      });
-      if (blocked) blockedCount += 1;
-    }
     if (!item) {
       return {
         ref,
@@ -301,6 +315,26 @@ export function epicGraph(
   });
   nodes.sort((a, b) => a.row - b.row);
 
+  // External nodes have no pool item to read relations from, but the
+  // edges already observed name them: a member blocked by an external
+  // ref means that ref blocks the member, and a member's blocks[] entry
+  // naming an external ref means the ref is blocked by the member.
+  // Fill the external nodes' lists from the edges so the text list
+  // agrees with the graph instead of reporting "none observed".
+  const nodeByRef = new Map(nodes.map((n) => [n.ref, n]));
+  for (const e of edges) {
+    if (e.type !== "dependency") continue;
+    const from = nodeByRef.get(e.from);
+    const to = nodeByRef.get(e.to);
+    if (from?.unresolved && !from.blockers.includes(e.to)) from.blockers.push(e.to);
+    if (to?.unresolved && !to.dependents.includes(e.from)) to.dependents.push(e.from);
+  }
+  for (const n of nodes) {
+    if (!n.unresolved) continue;
+    n.blockers.sort(byRefOrder);
+    n.dependents.sort(byRefOrder);
+  }
+
   return {
     status: "ok",
     reason: null,
@@ -318,6 +352,7 @@ export function epicGraph(
     externalCount: nodes.filter((n) => n.unresolved).length,
     memberCount: members.length,
     blockedCount,
+    rankedBlocked,
     maxDepth: nodes.reduce((m, n) => Math.max(m, n.depth), 0),
   };
 }
