@@ -1875,7 +1875,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_first_starts_converge_on_the_winners_host_key() {
+    async fn test_concurrent_first_starts_converge_on_the_winners_host_key() {
         // All callers line up behind a barrier so their first reads race
         // the winner's create_new write: the losers must load the winner's
         // key (via the AlreadyExists winner-read and/or the parse retry),
@@ -1908,7 +1908,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_partially_written_host_key_pem_is_retried_until_it_parses() {
+    async fn test_a_partially_written_host_key_pem_is_retried_until_it_parses() {
         // The interleaving from #3465: the reader observes the winner's
         // file between create_new and the completed write. The partial
         // PEM is already on disk before the load starts, so the first
@@ -1935,7 +1935,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unparseable_host_key_errors_and_is_never_regenerated() {
+    async fn test_an_unparseable_host_key_errors_and_is_never_regenerated() {
         // Past the creation-race deadline a bad PEM is corrupt, not
         // racing: the load errors and the file is left exactly as found.
         let dir = tempfile::tempdir().unwrap();
