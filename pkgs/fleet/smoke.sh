@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Per-variant smoke suite for the fleet workspace skeleton
-# (step 1, developing-today/code#5429).
+# Per-variant smoke suite for the fleet workspace
+# (step 1, developing-today/code#5429; queue-domain sections added
+# by step 2, #5430).
 #
 # Usage:
 #   smoke.sh <fleet-out> <fleet-serve-out> <fleet-connect-out> <fleet-connect-static-out>
@@ -28,7 +29,9 @@ STATIC_OUT=${4:?missing fleet-connect-static output path}
 PASS=0
 FAIL=0
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+SB_PID=""
+QB_PID=""
+trap 'kill $SB_PID $QB_PID 2>/dev/null; rm -rf "$TMP"' EXIT
 
 ok()   { PASS=$((PASS + 1)); echo "ok   - $1"; }
 bad()  { FAIL=$((FAIL + 1)); echo "FAIL - $1"; }
@@ -94,13 +97,53 @@ ln -s "$CONNECT_OUT/bin/fleet" "$TMP/atlas-search"
 ln -s "$SERVE_OUT/bin/fleet" "$TMP/queue-broker"
 run "connect as repo-queue stubs 69" 69 "this build does not include 'queue'" "$TMP/repo-queue"
 run "connect as atlas-search stubs 69" 69 "this build does not include 'search'" "$TMP/atlas-search"
-run "serve as queue-broker reaches the (unimplemented) broker role" 69 "not implemented yet" "$TMP/queue-broker"
+run "serve as queue-broker reaches the real broker role (missing token file: exit 3)" 3 "cannot read token file" \
+  env QUEUE_BROKER_TOKEN_FILE="$TMP/no-such-token" "$TMP/queue-broker"
 
 echo "== compiled in but not implemented yet (exit 69) =="
 run "full: fleet proxy connect is the skeleton stub" 69 "not implemented yet" \
   "$FULL_OUT/bin/fleet" proxy connect
 run "connect: fleet proxy connect is the skeleton stub" 69 "not implemented yet" \
   "$CONNECT_OUT/bin/fleet" proxy connect
+
+echo "== queue domain: serve roles bind + answer; client surface (step 2, #5430) =="
+# Scratch token files: the roles refuse to start without them. The
+# contents are dummies — these instances serve nothing real.
+printf 'smoke-secrets-token\n' > "$TMP/sb-token"
+printf 'smoke-queue-token\n' > "$TMP/qb-token"
+
+# secrets-broker role on a scratch port: /health answers unauthenticated.
+env SECRETS_BROKER_BIND=127.0.0.1:19800 SECRETS_BROKER_TOKEN_FILE="$TMP/sb-token" \
+  "$SERVE_OUT/bin/fleet" serve secrets-broker >"$TMP/sb.log" 2>&1 &
+SB_PID=$!
+# queue-broker role on a scratch port: /healthz answers
+# unauthenticated. Its secrets URL points at a dead port so a
+# credential fetch fails fast (exit 3) rather than retrying — enough
+# to prove the client reached the broker and read its envelope.
+env QUEUE_BROKER_BIND=127.0.0.1:19801 QUEUE_BROKER_TOKEN_FILE="$TMP/qb-token" \
+  QUEUE_BROKER_SECRETS_URL=http://127.0.0.1:9 QUEUE_BROKER_SECRETS_TOKEN_FILE="$TMP/sb-token" \
+  "$FULL_OUT/bin/fleet" serve queue-broker >"$TMP/qb.log" 2>&1 &
+QB_PID=$!
+sleep 1
+run "secrets-broker role: /health answers" 0 '"ok":true' curl -sf http://127.0.0.1:19800/health
+run "queue-broker role: /healthz answers" 0 '"service":"queue-broker"' curl -sf http://127.0.0.1:19801/healthz
+
+# Client surface (the census gap §1): --help renders from the
+# registry; --version reports the release through the argv0 route.
+mkdir -p "$TMP/full"
+ln -s "$FULL_OUT/bin/fleet" "$TMP/full/repo-queue"
+run "repo-queue: --help renders the queue commands" 0 "Commands: validate" "$TMP/full/repo-queue" --help
+run "repo-queue: --version reports the fleet release" 0 "repo-queue 0.1.0" "$TMP/full/repo-queue" --version
+run "fleet queue: --help renders the queue commands" 0 "Commands: validate" "$FULL_OUT/bin/fleet" queue --help
+
+# Client -> broker wiring: health reaches the scratch queue-broker,
+# which answers with its credential failure (exit 3, broker wording).
+run "repo-queue: health reaches the broker (creds fail fast, exit 3)" 3 "secrets broker" \
+  env REPO_QUEUE_BROKER_URL=http://127.0.0.1:19801 REPO_QUEUE_TOKEN_FILE="$TMP/qb-token" \
+  "$TMP/full/repo-queue" health
+kill "$SB_PID" "$QB_PID" 2>/dev/null
+SB_PID=""
+QB_PID=""
 
 echo "== name narrowing: full build invoked as fleet-connect =="
 ln -s "$FULL_OUT/bin/fleet" "$TMP/fleet-connect"

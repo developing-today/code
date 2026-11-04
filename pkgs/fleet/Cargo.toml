@@ -3,14 +3,16 @@
 #
 # Self-contained workspace on the pkgs/atlas-search pattern: own Cargo.toml,
 # Cargo.lock and rust-toolchain.toml, no workspace relationship to the repo
-# root. Crates land one step at a time; step 1 (#5429) is the skeleton:
-# platform crates + the bin's dispatch/stub machinery + variant builds.
+# root. Crates land one step at a time: step 1 (#5429) the skeleton
+# (platform crates + the bin's dispatch/stub machinery + variant
+# builds); step 2 (#5430) the queue domain (crates/fleet-queue).
 [workspace]
 members = [
   "crates/fleet-registry",
   "crates/fleet-config",
   "crates/fleet-secrets",
   "crates/fleet-proxy-proto",
+  "crates/fleet-queue",
   "crates/fleet",
 ]
 resolver = "2"
@@ -26,6 +28,7 @@ fleet-registry = { path = "crates/fleet-registry" }
 fleet-config = { path = "crates/fleet-config" }
 fleet-secrets = { path = "crates/fleet-secrets" }
 fleet-proxy-proto = { path = "crates/fleet-proxy-proto" }
+fleet-queue = { path = "crates/fleet-queue" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"

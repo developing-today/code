@@ -3,10 +3,12 @@
 One Rust binary for the whole fleet surface (epic
 developing-today/code#5412; design note
 `doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/`). This
-workspace is step 1 (#5429): the skeleton. The registry, config,
-secrets-by-name and proxy-protocol platform crates are real; the
-domain commands are capability stubs until their own steps land
-(queue #5430, proxy #5431, search #5432, dispatch #5433).
+workspace began as the step-1 (#5429) skeleton: the registry,
+config, secrets-by-name and proxy-protocol platform crates. Step 2
+(#5430) landed the queue domain — the repo-queue client and the
+queue-broker / secrets-broker serve roles are real below. The
+remaining domains are capability stubs until their own steps land
+(proxy #5431, dispatch #5432, search #5433).
 
 ## Layout
 
@@ -26,6 +28,14 @@ crates/fleet-secrets/       secrets by NAME only (broker first, then
 crates/fleet-proxy-proto/   session-broker wire protocol: 4-byte BE
                             length + JSON frames, hello/capability
                             handshake, major-version window (N, N-1).
+crates/fleet-queue/         the queue domain (step 2): the repo-queue
+                            client, the queue-broker and secrets-broker
+                            roles, and packet validation — the broker
+                            family's first source home (code#5362).
+                            Its src/bin/ builds the standalone
+                            repo-queue / queue-broker / secrets-broker
+                            artifacts (the `fleet-brokers` package):
+                            the migration's rollback inventory.
 crates/fleet/               the binary: multicall dispatch, capability
                             stubs, `version`, `capabilities`, help.
 default.nix                 the four variant packages (see below)
@@ -48,6 +58,7 @@ their domain through argv0.
 | `fleet-serve`         | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve |
 | `fleet-connect`       | connect | proxy-connect (dynamic)                                             |
 | `fleet-connect-static`| connect | proxy-connect (musl static, runs anywhere)                          |
+| `fleet-brokers`       | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)  |
 
 Every package installs its binary as `bin/fleet`; the hyphen
 variants also get a `bin/fleet-serve` / `bin/fleet-connect` symlink
@@ -84,5 +95,10 @@ The connect variants carry the D7 size contract: **≤ 2 MiB hard
 gate** (target ≤ 1.5 MiB), enforced in `default.nix` postFixup
 against the final stripped artifact and re-asserted by smoke.sh.
 
-No package here installs anything live: no units, no PATH changes,
-no flips. The first live flip is step 2.
+Step 1 installed nothing live. Step 2 performs the queue pilot's
+flips — the laptop's broker units re-point at `fleet serve
+<role>`, then the sandbox `~/tools/bin/repo-queue` symlink at the
+fleet artifact — each verified by health plus a real
+enqueue→claim→complete round-trip before the next begins (the
+evidence lives on #5430). The standalone artifacts above are the
+rollback for every flip.
