@@ -1767,6 +1767,17 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/digest.json") {
     const kind = url.searchParams.get("kind") === "weekly" ? "weekly" : "daily";
+    const date = url.searchParams.get("date");
+    // Share the /digest handler's archive resolution (#5279 Codex): a
+    // dated request returns the stored digest verbatim, so the machine
+    // twin of a weekly or historical page is the digest it displays.
+    if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      const archived =
+        (await readDigestArchive(cfg.digestsDir, date, kind)) ??
+        (kind === "daily" ? null : await readDigestArchive(cfg.digestsDir, date, "daily"));
+      if (archived) return json(archived);
+      return json({ error: `no ${kind} digest archived for ${date}` }, 404);
+    }
     return json(await digestContext(kind));
   }
   if (path === "/api/digests.json") {

@@ -84,6 +84,12 @@ export interface ProjectPoolItem {
   labels?: string[];
   author?: string;
   updatedAt?: string;
+  /** Completion timestamps from the linked issue/PR, when the
+   * projection carried them: an issue's closedAt, a PR's mergedAt
+   * (or its closedAt when closed unmerged). The digest's Done
+   * section selects by these, never by updatedAt (#5279 Codex). */
+  closedAt?: string;
+  mergedAt?: string;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;

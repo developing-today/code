@@ -199,6 +199,60 @@ describe("buildDigest", () => {
     expect(outlook.items[0].note).not.toContain("before its");
   });
 
+  test("done selects by completion time, not last update (#5279 Codex)", () => {
+    const d = buildDigest(
+      inputs({
+        pool: [
+          // Closed long ago, commented today: not done today.
+          item({ number: 10, state: "closed", updatedAt: "2026-11-02T12:00:00Z", closedAt: "2026-10-20T08:00:00Z" }),
+          // Merged this morning, untouched since: done today.
+          item({
+            number: 11,
+            state: "merged",
+            contentKind: "pr",
+            updatedAt: "2026-10-20T08:00:00Z",
+            mergedAt: "2026-11-02T07:00:00Z",
+          }),
+        ],
+      }),
+    );
+    const done = section(d, "done");
+    expect(done.items.map((i) => i.ref)).toEqual(["developing-today/code#11"]);
+    expect(done.items[0].note).toContain("completed 2026-11-02T07:00:00Z");
+  });
+
+  test("quota outlook preserves provider error/stale states (#5279 Codex)", () => {
+    const degraded: QuotaView = {
+      ...quota,
+      pools: [
+        {
+          id: "pool-down",
+          provider: "Down",
+          plan: "Plan",
+          state: "error",
+          freshness: { measuredAt: "2026-11-02T06:00:00Z", source: "gatherer", state: "error", error: "boom" },
+          windows: [{ name: "weekly", unit: "tokens", limit: 1000, used: 100, resetsAt: "2026-11-09T00:00:00Z", percent: 10 }],
+        },
+        {
+          id: "pool-stale",
+          provider: "Stale",
+          plan: "Plan",
+          state: "stale",
+          freshness: { measuredAt: "2026-11-01T06:00:00Z", source: "gatherer", state: "stale" },
+          windows: [{ name: "weekly", unit: "tokens", limit: 1000, used: 950, resetsAt: "2026-11-09T00:00:00Z", percent: 95 }],
+        },
+      ],
+    };
+    const d = buildDigest(inputs({ quota: degraded }));
+    const outlook = section(d, "quota");
+    const byRef = new Map(outlook.items.map((i) => [i.ref, i.note]));
+    expect(byRef.get("pool-down")).toContain("provider read error");
+    expect(byRef.get("pool-down")).toContain("boom");
+    expect(byRef.get("pool-stale")).toContain("provider read stale");
+    expect(outlook.stale).toBe(true);
+    expect(outlook.staleNote).toContain("Down");
+  });
+
   test("chat text states freshness and links every section item", () => {
     const text = digestText(buildDigest(inputs()));
     expect(text).toContain("PM daily digest — 2026-11-02");

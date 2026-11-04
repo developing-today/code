@@ -7160,7 +7160,7 @@ export function renderDigest(
         .join("")}</ul>`
     : `<h2>Archive</h2><p class="muted">No digests archived yet — the generator (scripts/generate-digest.ts) writes one per day.</p>`;
   const body = `<h1>PM ${esc(digest.kind)} digest — ${esc(digest.date)}</h1>
-<p class="muted">Generated ${esc(digest.generatedAt)} from the canonical projection · window ${digest.windowHours}h from ${esc(digest.windowStart)} · machine twin: <a href="/api/digest.json">/api/digest.json</a></p>
+<p class="muted">Generated ${esc(digest.generatedAt)} from the canonical projection · window ${digest.windowHours}h from ${esc(digest.windowStart)} · machine twin: <a href="${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}">${esc(`/api/digest.json?date=${digest.date}&kind=${digest.kind}`)}</a></p>
 ${freshness}
 ${sections}
 ${archiveLinks}`;

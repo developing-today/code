@@ -168,15 +168,20 @@ export function buildDigest(inputs: DigestInputs): Digest {
   const moved = cap(movedAll);
 
   // --- Done: closed/merged inside the window ----------------------------
+  // Selection is by completion time (mergedAt/closedAt), not the last
+  // update: a comment on an old closed issue must not resurrect it as
+  // "done today" (#5279 Codex). Items whose projection carried no
+  // completion stamp fall back to updatedAt.
+  const completedAt = (i: ProjectPoolItem) => i.mergedAt ?? i.closedAt ?? i.updatedAt;
   const doneAll = inputs.pool
-    .filter((i) => (i.state === "closed" || i.state === "merged") && inWindow(i.updatedAt))
-    .sort(byUpdatedDesc)
+    .filter((i) => (i.state === "closed" || i.state === "merged") && inWindow(completedAt(i)))
+    .sort((a, b) => (completedAt(b) ?? "").localeCompare(completedAt(a) ?? ""))
     .map(
       (i): DigestItem => ({
         ref: i.ref,
         title: i.title,
         url: i.issueUrl,
-        note: `${i.state} · updated ${i.updatedAt ?? "unknown"}`,
+        note: `${i.state} · completed ${completedAt(i) ?? "unknown"}`,
       }),
     );
   const done = cap(doneAll);
@@ -265,11 +270,18 @@ export function buildDigest(inputs: DigestInputs): Digest {
       }
     }
     const cappedQ = cap(items);
+    const degradedProviders = inputs.quota.pools
+      .filter((p) => (p.freshness?.state ?? p.state) === "error" || (p.freshness?.state ?? p.state) === "stale")
+      .map((p) => p.provider);
     quotaSection = {
       id: "quota",
       title: "Quota outlook",
-      stale: quotaFresh.stale,
-      staleNote: quotaFresh.note,
+      stale: quotaFresh.stale || degradedProviders.length > 0,
+      staleNote:
+        quotaFresh.note ??
+        (degradedProviders.length
+          ? `provider reads degraded for ${[...new Set(degradedProviders)].join(", ")} — affected pools are marked in their notes`
+          : null),
       sourceAgeMs: quotaFresh.ageMs,
       items: cappedQ.items,
       truncated: cappedQ.truncated,
@@ -321,6 +333,21 @@ function quotaPoolNote(pool: QuotaPool, now: Date): string | null {
   const state = poolState(pool);
   const worst = pool.windows.reduce((m, w) => Math.max(m, windowPercent(w)), 0);
   const parts: string[] = [];
+  // Provider freshness (#5279 Codex): quota-current marks a pool
+  // error/stale while retaining its historical windows, but poolState()
+  // derives only utilization — without this, a failed pool with low
+  // windows would vanish from the outlook and a stale high reading
+  // would read as a current forecast.
+  const degraded = pool.freshness?.state ?? (pool.state === "error" || pool.state === "stale" ? pool.state : null);
+  if (degraded === "error") {
+    parts.push(
+      `provider read error${pool.freshness?.error ? `: ${pool.freshness.error}` : ""} — current readings unavailable; any figures below are the last successful read`,
+    );
+  } else if (degraded === "stale") {
+    parts.push(
+      `provider read stale${pool.freshness?.measuredAt ? ` (measured ${pool.freshness.measuredAt})` : ""} — figures are the last read, not current`,
+    );
+  }
   if (state === "walled") parts.push(pool.wallLiftsAt ? `walled until ${pool.wallLiftsAt}` : "walled");
   else if (state === "near") parts.push(`near wall — fullest window ${Math.round(worst)}% used`);
   // Wall prediction: at the measured burn, a token window fills before
