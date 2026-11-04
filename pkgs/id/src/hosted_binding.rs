@@ -952,8 +952,9 @@ impl HostedBindingService {
             .ok_or(CeremonyError::UnknownChallenge)?;
         let now = self.now();
         if now >= challenge.expires_at {
-            self.challenges.remove(challenge_id);
-            self.consumed_challenges.insert(challenge_id.to_owned());
+            // §3.4: expiry is state-free — the challenge is neither
+            // removed nor recorded as consumed, so a repeat presentation
+            // returns ChallengeExpired again, never ChallengeReplay (#4868).
             return Err(CeremonyError::ChallengeExpired);
         }
         if session_sub != challenge.sub {
@@ -1095,14 +1096,17 @@ impl HostedBindingService {
         session_sub: &str,
         challenge_id: &str,
     ) -> Result<String, CeremonyError> {
+        // The consumed check comes first: consume() removes a challenge
+        // from the live map, so checking the map first would make this
+        // ChallengeReplay branch unreachable (#4868).
+        if self.consumed_challenges.contains(challenge_id) {
+            return Err(CeremonyError::ChallengeReplay);
+        }
         let challenge = self
             .challenges
             .get(challenge_id)
             .cloned()
             .ok_or(CeremonyError::UnknownChallenge)?;
-        if self.consumed_challenges.contains(challenge_id) {
-            return Err(CeremonyError::ChallengeReplay);
-        }
         let now = self.now();
         if now >= challenge.expires_at {
             return Err(CeremonyError::ChallengeExpired);
@@ -1971,6 +1975,53 @@ mod tests {
             service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
             Err(CeremonyError::ChallengeReplay)
         );
+    }
+
+    #[test]
+    fn expired_challenge_is_not_recorded_as_consumed() {
+        // #4868: expiry is state-free (§3.4), so presenting the same
+        // expired challenge again returns ChallengeExpired, not
+        // ChallengeReplay.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(21);
+        let iroh_id = key.verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS + 1));
+        let signature = key.sign(&HostedBindingService::canonical_transcript(&challenge));
+        for _ in 0..2 {
+            assert_eq!(
+                service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
+                Err(CeremonyError::ChallengeExpired)
+            );
+        }
+    }
+
+    #[test]
+    fn create_pairing_code_reports_replay_for_a_consumed_challenge() {
+        // #4868: a challenge consumed by a failed submit (bad signature)
+        // is dead; create_pairing_code must return ChallengeReplay, not
+        // UnknownChallenge. Unknown and live challenges are unchanged.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(22);
+        let iroh_id = key.verifying_key().to_bytes();
+        assert_eq!(
+            service.create_pairing_code(SUB, "no-such-challenge"),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let bad = root_key(23).sign(&HostedBindingService::canonical_transcript(&challenge));
+        assert_eq!(
+            service.submit_proof(SUB, &challenge.challenge_id, &bad.to_bytes(), None),
+            Err(CeremonyError::BadSignature)
+        );
+        assert_eq!(
+            service.create_pairing_code(SUB, &challenge.challenge_id),
+            Err(CeremonyError::ChallengeReplay)
+        );
+        let live = service.request_challenge(SUB, &iroh_id).unwrap();
+        assert!(service.create_pairing_code(SUB, &live.challenge_id).is_ok());
     }
 
     #[test]
