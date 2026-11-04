@@ -934,9 +934,11 @@ export interface RegistrySanitization {
  * dropped individually. */
 export function sanitizeRegistry(v: unknown): RegistrySanitization {
   if (v === undefined) return { dropped: 0 };
-  if (!Array.isArray(v)) return { rows: [], dropped: 1 };
-  const rows = v.filter(isSessionRecord);
-  return { rows, dropped: v.length - rows.length };
+  // Shared container primitive (#2576 Phase 1): a non-array section is one
+  // shape failure; malformed array entries drop individually and count.
+  const parsed = arrayOf(isSessionRecord)(v);
+  if (parsed === null) return { rows: [], dropped: 1 };
+  return { rows: parsed.values, dropped: parsed.dropped };
 }
 
 /** A PAYG line safe for both the attention derivation and the quota renderer. */

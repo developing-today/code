@@ -165,6 +165,10 @@ function dateTimeCentral(date: string, hhmm: string): string {
  * flow through the shared conversion unchanged.
  */
 function resetDateTimeCentral(date: string, hhmm: string): string | null {
+  // Gate the calendar date and clock time with the shared primitive FIRST:
+  // dateTimeCentral supplies the Central-time offset conversion, but the
+  // ingest contract's real-date check belongs to validate.ts (#2470).
+  if (parseIsoDate(`${date}T${hhmm}`) === null) return null;
   try {
     return dateTimeCentral(date, hhmm);
   } catch {
@@ -339,6 +343,9 @@ const extractClinePass: Extractor = (s) => {
   // pool's read unparseable (raw null, so the caller retains the previous
   // read) instead of rolling Feb-30 into March or throwing out of the
   // extractor and silently discarding the already-matched percentages.
+  // The shared primitive owns calendar validity; dateTimeCentral owns the
+  // Central-time offset conversion.
+  if (parseIsoDate(`${measured[1]}T${measured[2]}`) === null) return null;
   let base: number;
   try {
     base = Date.parse(dateTimeCentral(measured[1], measured[2]));

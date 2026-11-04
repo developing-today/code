@@ -157,7 +157,7 @@ export async function mapServerSessions(
   opts: { messageLimit?: number; maxDetailed?: number; source?: SessionSource } = {},
 ): Promise<MappedSessions | null> {
   const list = await getJson<unknown>(target, "/api/session?limit=100");
-  if (!isRecord(list) || !Array.isArray(list.data)) return null;
+  if (!isRecord(list)) return null;
   // Element-wise validation (#2543): one null/mistyped session is dropped
   // and counted; its valid siblings still map, and no id-less row is
   // fabricated. A non-array container stays a shape failure (null).

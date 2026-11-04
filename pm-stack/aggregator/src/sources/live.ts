@@ -1640,6 +1640,7 @@ export function liveSource(
       // Muse launches) merged with the laptop server's live
       // sessions, accumulated into the durable store.
       const incoming: SessionRecord[] = [];
+      let droppedSessionElements = 0;
       const feed = await getFeed();
       if (feed?.registry) {
         for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
@@ -1647,6 +1648,8 @@ export function liveSource(
       try {
         const mapped = await laptopMapped();
         if (mapped) {
+          // Element-wise drops are surfaced, never swallowed (#2543).
+          droppedSessionElements = mapped.droppedElements;
           for (const e of mapped.entries) {
             incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
           }
@@ -1654,6 +1657,10 @@ export function liveSource(
       } catch {
         /* laptop part fails soft, like attention */
       }
+      const droppedNote =
+        droppedSessionElements > 0
+          ? ` · dropped ${droppedSessionElements} malformed session element(s) (#2543)`
+          : "";
       if (incoming.length > 0) {
         const merged = await mergeIntoRegistry(incoming);
         lastRegistryMergedCount = merged.length;
@@ -1662,12 +1669,12 @@ export function liveSource(
         // contribution labelled as what it is. (This string used to
         // headline the incoming batch, so one page carried two counts
         // for "records" with nothing explaining the difference.)
-        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
         return merged;
       }
       const store = await loadRegistryStore();
       lastRegistryMergedCount = store.length;
-      provenance.registry = "store only (no live registry source reachable)";
+      provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
       return store;
     },
     async coverage(): Promise<SourceCoverage[]> {
