@@ -1760,8 +1760,10 @@ mod tests {
         let (_db, mut b) = open();
         populate(&mut a, &[(1, 4)]);
         let (before_a, before_b) = (ids(&a), ids(&b));
-        let gate = testing::open_gate()
-            .with_blocks(testing::stub_blocks(&[*testing::key(0xd1).public().as_bytes()], &[]));
+        let gate = testing::open_gate().with_blocks(testing::stub_blocks(
+            &[*testing::key(0xd1).public().as_bytes()],
+            &[],
+        ));
         let (dialer, acceptor) = loopback_gated(
             &mut a,
             &mut b,
@@ -1778,7 +1780,10 @@ mod tests {
             refused.downcast_ref::<PullRefused>().is_some(),
             "{refused:#}"
         );
-        assert!(dialer.is_err(), "the dialer's session ends with the refusal");
+        assert!(
+            dialer.is_err(),
+            "the dialer's session ends with the refusal"
+        );
         assert_eq!(ids(&b), before_b, "no event crossed to the blocked peer");
         assert_eq!(ids(&a), before_a, "the server's store is unchanged");
     }

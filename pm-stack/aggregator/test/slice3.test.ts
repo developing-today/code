@@ -252,6 +252,46 @@ describe("dns register parser", () => {
     expect(dnsSectionFromRegisterJson(dup, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
   });
 
+  test("register.json section: impossible renewal dates yield null, leap date kept (#4858)", () => {
+    const mdEntries = parseDnsRegister(REGISTER_MD);
+    const row = (domain: string, next_renewal: string) => ({
+      domain,
+      registrar: "Porkbun",
+      dns_hosted_at: "Porkbun",
+      next_renewal,
+      auto_renew: true,
+      renewal_price_usd: 10,
+    });
+    // One impossible row poisons the whole JSON section: the builder
+    // returns null on ANY malformation so the caller falls back to
+    // the Markdown parse, mirroring the #2199 Markdown cases (#4835).
+    for (const bad of ["2027-02-30", "2026-13-01", "2026-00-10", "2026-04-31"]) {
+      const json = JSON.stringify({ domains: [row("good.example", "2027-01-15"), row("bad.example", bad)] });
+      expect(dnsSectionFromRegisterJson(json, "2026-11-01T17:00:00Z", "t", mdEntries)).toBeNull();
+    }
+    // Real dates still parse, including the leap date.
+    const ok = JSON.stringify({ domains: [row("leap.example", "2024-02-29"), row("real.example", "2027-01-15")] });
+    const section = dnsSectionFromRegisterJson(ok, "2026-11-01T17:00:00Z", "t", mdEntries);
+    expect(section?.entries.map((e) => e.domain)).toEqual(["leap.example", "real.example"]);
+    expect(section?.totalAnnualListUsd).toBe(20);
+    expect(isDnsSection(section)).toBe(true);
+  });
+
+  test("isDnsSection rejects impossible entry renewal dates (#4858)", () => {
+    const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(good).not.toBeNull();
+    expect(isDnsSection(good)).toBe(true);
+    const withRenewal = (renewal: unknown) => ({
+      ...good,
+      entries: good!.entries.map((e, i) => (i === 0 ? { ...e, renewal } : e)),
+    });
+    for (const bad of ["2027-02-30", "2026-13-01", "2026-00-10", "2026-04-31", "soon", 20270209, undefined]) {
+      expect(isDnsSection(withRenewal(bad))).toBe(false);
+    }
+    expect(isDnsSection(withRenewal("2024-02-29"))).toBe(true);
+    expect(isDnsSection(withRenewal("2027-01-15"))).toBe(true);
+  });
+
   test("isDnsSection owns the finite-number + status rules (#2412)", () => {
     const good = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
     expect(good).not.toBeNull();

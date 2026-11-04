@@ -622,8 +622,7 @@ async function resolveOpenCodeServer(): Promise<{ baseUrl: string; authHeaders: 
   let password = process.env.OPENCODE_SERVER_PASSWORD?.trim() || "";
   if (!url || !password) {
     try {
-      const filePath =
-        process.env.OPENCODE_AUTH_FILE ?? join(HOME, ".local", "state", "opencode", "service-prod.json");
+      const filePath = process.env.OPENCODE_AUTH_FILE ?? join(HOME, ".local", "state", "opencode", "service-prod.json");
       const svc = JSON.parse(await readFile(filePath, "utf8")) as { url?: unknown; password?: unknown };
       if (!url && typeof svc.url === "string" && svc.url.trim()) url = svc.url.trim();
       if (!password && typeof svc.password === "string") password = svc.password;

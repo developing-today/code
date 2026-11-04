@@ -24,6 +24,7 @@ rec {
       lib.make-mcpx-overlay
       lib.make-mcpx-modules
       lib.make-laptop-backups-checks
+      lib.make-fleet
     ];
   inputs = {
     nixgl = {
@@ -95,7 +96,6 @@ rec {
     # the two can never drift apart again.
     nixpkgs.follows = "nixpkgs-unstable";
     nixpkgs-25.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
-    nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
     # 2026-11-02: nixpkgs-unstable now follows the fleet-wide pin in
     # dezren39/fleet, so code, opencode and openchamber all build
     # against the SAME nixpkgs revision and share one store closure.
@@ -106,7 +106,9 @@ rec {
     # update dezren39/fleet's flake, then re-lock here.
     fleet.url = "github:dezren39/fleet";
     nixpkgs-unstable.follows = "fleet/nixpkgs";
-    nixpkgs-master.url = "github:NixOS/nixpkgs"; # ?shallow=1";
+    # No master or stable-channel nixpkgs inputs (#3327, Drew directive 2026-10-31):
+    # amd draws only from the nixos-unstable set (nixpkgs-unstable, fleet-pinned).
+    # Master revs skip Hydra and force source builds; do not re-add a master input.
 
     sops-nix = {
       # TODO: update! way out of date even as of 2026-03
@@ -264,7 +266,7 @@ rec {
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
     # OpenCode 2.x line: developing-today's fork, carrying the model-routing work; the default branch tracks it.
     opencode = {
-      url = "github:developing-today/opencode";
+      url = "github:developing-today-forks/opencode";
     };
     # OpenChamber. Its opencode input deliberately does NOT follow
     # this flake's `opencode` above: the service cascade's module
@@ -272,7 +274,7 @@ rec {
     # OpenChamber's own lock file, so the modules and the packages
     # they manage always come from the same, upstream-paired pins.
     openchamber = {
-      url = "github:developing-today/openchamber";
+      url = "github:developing-today-forks/openchamber";
     };
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer
     # intelligence source on the laptop). Home Manager module + overlay;

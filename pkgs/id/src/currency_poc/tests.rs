@@ -12,7 +12,8 @@
 use super::executor::{ConversionExecutor, ConversionRequest, RateQuote};
 use super::intent::{FileIntentStore, InMemoryIntentStore, IntentRecord, IntentState, IntentStore};
 use super::ledger::{
-    Account, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer, TransferError,
+    Account, AccountError, AccountFlags, AccountId, InMemoryLedger, LedgerBackend, Transfer,
+    TransferError,
 };
 use super::recovery::{ReconcileOutcome, RecoveryPolicy, reconcile};
 
@@ -1103,7 +1104,10 @@ fn uppercase_extension_alias_is_scanned_and_blocks_conflicting_put() {
     let alias = dir.join(format!("{:032x}.JSON", 10));
     std::fs::rename(dir.join(canonical_name(10)), &alias).expect("rename to .JSON alias");
 
-    assert_eq!(store.get(10).expect("get via .JSON alias"), Some(original.clone()));
+    assert_eq!(
+        store.get(10).expect("get via .JSON alias"),
+        Some(original.clone())
+    );
     let listed = store.unresolved().expect("listing via .JSON alias");
     assert_eq!(listed, vec![original.clone()]);
 
@@ -1115,7 +1119,9 @@ fn uppercase_extension_alias_is_scanned_and_blocks_conflicting_put() {
         .put(&conflicting)
         .expect_err("conflicting put over the .JSON alias must fail closed");
     assert!(
-        error.to_string().contains("refusing to write conversion 10"),
+        error
+            .to_string()
+            .contains("refusing to write conversion 10"),
         "unexpected put error: {error}"
     );
     // The alias still holds the original record, byte for byte.
@@ -1164,16 +1170,22 @@ fn canonical_file_holding_another_conversions_record_blocks_get_and_put() {
 
     let get_error = store.get(10).expect_err("occupied get must fail closed");
     assert!(
-        get_error.to_string().contains("currently stores conversion 9"),
+        get_error
+            .to_string()
+            .contains("currently stores conversion 9"),
         "unexpected get error: {get_error}"
     );
     let intruder = bare_record(
         10,
         vec![funding_transfer(601, ISSUER_SRC, USER_SRC, 10_000, SRC)],
     );
-    let put_error = store.put(&intruder).expect_err("occupied put must fail closed");
+    let put_error = store
+        .put(&intruder)
+        .expect_err("occupied put must fail closed");
     assert!(
-        put_error.to_string().contains("currently stores conversion 9"),
+        put_error
+            .to_string()
+            .contains("currently stores conversion 9"),
         "unexpected put error: {put_error}"
     );
     assert_eq!(
@@ -1185,7 +1197,10 @@ fn canonical_file_holding_another_conversions_record_blocks_get_and_put() {
     // it, and the listing yields it exactly once.
     assert_eq!(store.get(9).expect("get occupant"), Some(occupant));
     let listed = store.unresolved().expect("listing with an occupant");
-    assert_eq!(listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(), vec![9]);
+    assert_eq!(
+        listed.iter().map(|r| r.conversion_id).collect::<Vec<_>>(),
+        vec![9]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1208,11 +1223,13 @@ fn state_only_divergent_copies_resolve_to_the_most_advanced_state() {
     submitted.state = IntentState::Submitted;
     let (other_dir, mut other_store) = empty_file_store("states4578-b");
     other_store.put(&submitted).expect("seed submitted");
-    std::fs::copy(other_dir.join(canonical_name(11)), dir.join(canonical_name(11)))
-        .expect("plant advanced canonical copy");
+    std::fs::copy(
+        other_dir.join(canonical_name(11)),
+        dir.join(canonical_name(11)),
+    )
+    .expect("plant advanced canonical copy");
     let _ = std::fs::remove_dir_all(&other_dir);
-    std::fs::copy(dir.join(canonical_name(11)), dir.join("stray.json"))
-        .expect("plant stray copy");
+    std::fs::copy(dir.join(canonical_name(11)), dir.join("stray.json")).expect("plant stray copy");
     // Downgrade the stray to the Recorded copy's bytes: rewrite it
     // from a fresh store holding only the Recorded record.
     let (old_dir, mut old_store) = empty_file_store("states4578-c");
@@ -1258,7 +1275,9 @@ fn put_never_deletes_a_filesystem_alias_of_the_canonical_file() {
 
     let mut submitted = recorded.clone();
     submitted.state = IntentState::Submitted;
-    store.put(&submitted).expect("state-advancing put over an alias");
+    store
+        .put(&submitted)
+        .expect("state-advancing put over an alias");
 
     assert_eq!(
         store.get(10).expect("get after alias put"),
@@ -1326,4 +1345,337 @@ fn canonically_blocked_conversion_is_skipped_and_reported_during_listing() {
     assert_eq!(outcomes, vec![(2, ReconcileOutcome::Abandoned)]);
     assert!(stray.exists(), "the blocked record's copy stays on disk");
     let _ = std::fs::remove_dir_all(&dir);
+}
+// ---- Live-cluster scenarios (#2289 acceptance item 1) ----
+//
+// The scenarios above run against InMemoryLedger; the ones below run
+// the same acceptance paths against a real single-replica cluster
+// (super::harness::TestCluster) through the official-client binding
+// (super::tb_ledger::TigerBeetleLedger). Ignored by default: they need
+// the pinned TigerBeetle binary. Run with:
+//   TIGERBEETLE_POC_BINARY=<path> cargo test -p id --features currency-poc-tb \
+//     currency_poc::tests::live -- --ignored
+
+#[cfg(feature = "currency-poc-tb")]
+use super::harness::TestCluster;
+#[cfg(feature = "currency-poc-tb")]
+use super::tb_ledger::TigerBeetleLedger;
+
+#[cfg(feature = "currency-poc-tb")]
+fn funded_tb_ledger(address: &str) -> TigerBeetleLedger {
+    let mut ledger = TigerBeetleLedger::connect(address).expect("connect to live cluster");
+    let results = ledger.create_accounts(&[
+        account(ISSUER_SRC, SRC, false),
+        account(ISSUER_DST, DST, false),
+        account(USER_SRC, SRC, true),
+        account(LP_SRC, SRC, false),
+        account(FEE, SRC, false),
+        account(LP_DST, DST, true),
+        account(USER_DST, DST, false),
+    ]);
+    assert!(
+        results.iter().all(|result| result.is_ok()),
+        "live account creation failed: {results:?}"
+    );
+    let results = ledger.create_transfers(&[
+        funding_transfer(501, ISSUER_SRC, USER_SRC, 10_000, SRC),
+        funding_transfer(502, ISSUER_DST, LP_DST, 50_000, DST),
+    ]);
+    assert!(
+        results.iter().all(|result| result.is_ok()),
+        "live funding transfers failed: {results:?}"
+    );
+    ledger
+}
+
+#[cfg(feature = "currency-poc-tb")]
+type LiveExecutor = ConversionExecutor<TigerBeetleLedger, InMemoryIntentStore>;
+
+#[cfg(feature = "currency-poc-tb")]
+fn live_executor(port: u16) -> (TestCluster, LiveExecutor) {
+    let cluster = TestCluster::start(port).expect("live cluster should start");
+    let ledger = funded_tb_ledger(&cluster.address);
+    (
+        cluster,
+        ConversionExecutor::new(ledger, InMemoryIntentStore::new()),
+    )
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_posted_conversion_legs_findable_by_user_data_128() {
+    let (_cluster, mut executor) = live_executor(30021);
+    let record = executor.execute(&request()).expect("conversion posts");
+    assert_eq!(record.state, IntentState::Posted);
+    assert_eq!(record.amount_out, 2_000);
+
+    let legs = executor.backend.transfers_with_user_data_128(777);
+    assert_eq!(legs.len(), 3);
+    assert!(legs.iter().all(|leg| leg.user_data_128 == 777));
+
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_SRC)
+            .unwrap()
+            .spendable(),
+        8_975
+    );
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        2_000
+    );
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(LP_DST)
+            .unwrap()
+            .spendable(),
+        48_000
+    );
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_atomic_failure_moves_nothing() {
+    let (_cluster, mut executor) = live_executor(30022);
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+
+    let drain = funding_transfer(900, LP_DST, USER_DST, 49_000, DST);
+    assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
+
+    let before_user = executor.backend.account_balance(USER_SRC).unwrap();
+    let before_lp_src = executor.backend.account_balance(LP_SRC).unwrap();
+    assert!(executor.submit(&mut record).is_err());
+
+    assert_eq!(
+        executor.backend.account_balance(USER_SRC).unwrap(),
+        before_user
+    );
+    assert_eq!(
+        executor.backend.account_balance(LP_SRC).unwrap(),
+        before_lp_src
+    );
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty(),
+        "no leg of a failed linked batch may be stored"
+    );
+    assert_eq!(record.state, IntentState::Submitted);
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_failed_conversion_recovery_reports_resubmission_rejected() {
+    let (_cluster, mut executor) = live_executor(30025);
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+
+    // Same insufficient-liquidity failure as
+    // live_atomic_failure_moves_nothing: the linked batch fails, no
+    // leg is stored, and the intent stays Submitted.
+    let drain = funding_transfer(900, LP_DST, USER_DST, 49_000, DST);
+    assert!(executor.backend.create_transfers(&[drain])[0].is_ok());
+    assert!(executor.submit(&mut record).is_err());
+    assert_eq!(record.state, IntentState::Submitted);
+
+    // TigerBeetle remembers the failed transfer IDs, so the
+    // recovery resubmission is refused (id_already_failed). That
+    // must surface as ResubmissionRejected for this record — not a
+    // panic in the binding — and the record stays unresolved.
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(
+        outcomes,
+        vec![(777, ReconcileOutcome::ResubmissionRejected)]
+    );
+    let stored = executor
+        .store
+        .get(777)
+        .expect("read intent")
+        .expect("intent still stored");
+    assert_eq!(stored.state, IntentState::Submitted);
+    assert!(
+        executor
+            .backend
+            .transfers_with_user_data_128(777)
+            .is_empty()
+    );
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        49_000,
+        "only the drain posted; the failed conversion moved nothing"
+    );
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_zero_user_data_128_query_matches_exactly() {
+    let (_cluster, mut executor) = live_executor(30026);
+    let record = executor.execute(&request()).expect("conversion posts");
+    assert_eq!(record.state, IntentState::Posted);
+
+    // Funding transfers are stamped user_data_128 = 0. TigerBeetle
+    // treats a zero query filter as "no filter", so the binding
+    // must post-filter exactly: only the two funding transfers
+    // match, never the conversion legs stamped 777.
+    let zero = executor.backend.transfers_with_user_data_128(0);
+    assert_eq!(zero.len(), 2);
+    assert!(zero.iter().all(|transfer| transfer.user_data_128 == 0));
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_codes_zero_and_one_stay_distinct() {
+    let (_cluster, mut executor) = live_executor(30027);
+    let backend = &mut executor.backend;
+
+    // Accounts: code 0 is created; the same ID retried with code 1
+    // is a different record, not an idempotent Exists.
+    let account_zero = account(424_242, SRC, false);
+    assert_eq!(account_zero.code, 0);
+    assert!(backend.create_accounts(&[account_zero.clone()])[0].is_ok());
+    let mut account_one = account_zero.clone();
+    account_one.code = 1;
+    assert_eq!(
+        backend.create_accounts(&[account_one])[0],
+        Err(AccountError::ExistsWithDifferentFields)
+    );
+    // The rejected retry must not rewrite what lookups report.
+    assert_eq!(backend.lookup_account(424_242).unwrap().code, 0);
+
+    // Transfers: the same rule on a funded pair.
+    let transfer_zero = funding_transfer(910, ISSUER_SRC, USER_SRC, 10, SRC);
+    assert!(backend.create_transfers(&[transfer_zero.clone()])[0].is_ok());
+    let mut transfer_one = transfer_zero;
+    transfer_one.code = 1;
+    assert_eq!(
+        backend.create_transfers(&[transfer_one])[0],
+        Err(TransferError::ExistsWithDifferentFields)
+    );
+    assert_eq!(backend.lookup_transfer(910).unwrap().code, 0);
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_crash_after_submission_recovers_without_double_posting() {
+    let (_cluster, mut executor) = live_executor(30023);
+    let mut record = executor.prepare(&request()).expect("intent prepared");
+    record.state = IntentState::Submitted;
+    executor.store.put(&record).unwrap();
+    let results = executor.backend.create_transfers(&record.legs);
+    assert!(
+        results
+            .iter()
+            .all(|result| matches!(result, Ok(()) | Err(TransferError::Exists)))
+    );
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::AlreadyPosted)]);
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        2_000,
+        "balances must reflect exactly one posting"
+    );
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_crash_before_submission_resubmits_same_ids() {
+    let (_cluster, mut executor) = live_executor(30024);
+    let record = executor.prepare(&request()).expect("intent prepared");
+    assert_eq!(record.state, IntentState::Recorded);
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("reconcile");
+    assert_eq!(outcomes, vec![(777, ReconcileOutcome::Resubmitted)]);
+    assert_eq!(executor.backend.transfers_with_user_data_128(777).len(), 3);
+    assert_eq!(
+        executor
+            .backend
+            .account_balance(USER_DST)
+            .unwrap()
+            .credits_posted,
+        2_000
+    );
+
+    let outcomes = reconcile(
+        &mut executor.backend,
+        &mut executor.store,
+        RecoveryPolicy::Resubmit,
+    )
+    .expect("second reconcile is a no-op");
+    assert!(outcomes.is_empty());
+}
+
+#[cfg(feature = "currency-poc-tb")]
+#[test]
+#[ignore = "requires the pinned tigerbeetle binary (TIGERBEETLE_POC_BINARY or PATH)"]
+fn live_same_request_twice_posts_once() {
+    // Codex review, PR #5072: resubmitting an already-posted linked
+    // chain must be an idempotent success, as with the in-memory
+    // backend — TigerBeetle reports Exists for the first leg and
+    // LinkedEventFailed for the rest, which the binding translates
+    // back to per-leg Exists after verifying the stored legs.
+    let (_cluster, mut executor) = live_executor(30028);
+    let first = executor.execute(&request()).expect("first execution posts");
+    assert_eq!(first.state, IntentState::Posted);
+    let balances_after_first = (
+        executor.backend.account_balance(USER_SRC).unwrap(),
+        executor.backend.account_balance(USER_DST).unwrap(),
+        executor.backend.account_balance(LP_DST).unwrap(),
+    );
+
+    let second = executor
+        .execute(&request())
+        .expect("same-request retry is an idempotent success");
+    assert_eq!(second.state, IntentState::Posted);
+    assert_eq!(second.legs, first.legs);
+    assert_eq!(
+        executor.backend.account_balance(USER_SRC).unwrap(),
+        balances_after_first.0,
+        "retry must not move balances a second time"
+    );
+    assert_eq!(
+        executor.backend.account_balance(USER_DST).unwrap(),
+        balances_after_first.1
+    );
+    assert_eq!(
+        executor.backend.account_balance(LP_DST).unwrap(),
+        balances_after_first.2
+    );
+    assert_eq!(executor.backend.transfers_with_user_data_128(777).len(), 3);
 }

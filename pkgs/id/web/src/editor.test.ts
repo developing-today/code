@@ -253,6 +253,54 @@ describe("richSchema list tight attrs (#1469)", () => {
 });
 
 // ============================================================================
+// #1347: footnote_reference / footnote_definition round-trip (codec mirror)
+// ============================================================================
+
+describe("richSchema footnote nodes (#1347)", () => {
+  it("declares footnote_reference as an inline atom with a label attr", () => {
+    const spec = richSchema.nodes.footnote_reference.spec;
+    expect(spec.inline).toBe(true);
+    expect(spec.atom).toBe(true);
+    expect(spec.attrs?.label).toEqual({ default: "" });
+  });
+
+  it("declares footnote_definition as a block with a label attr and block content", () => {
+    const spec = richSchema.nodes.footnote_definition.spec;
+    expect(spec.group).toBe("block");
+    expect(spec.content).toBe("block+");
+    expect(spec.attrs?.label).toEqual({ default: "" });
+  });
+
+  it("parses a codec footnote doc through Node.fromJSON without throwing", () => {
+    const json = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "Text." },
+            { type: "footnote_reference", attrs: { label: "1" } },
+          ],
+        },
+        {
+          type: "footnote_definition",
+          attrs: { label: "1" },
+          content: [{ type: "paragraph", content: [{ type: "text", text: "Body." }] }],
+        },
+      ],
+    };
+    const doc = richSchema.nodeFromJSON(json);
+    const out = doc.toJSON();
+    expect(out.content[1].type).toBe("footnote_definition");
+    expect(out.content[1].attrs).toEqual({ label: "1" });
+    expect(out.content[1].content).toEqual([{ type: "paragraph", content: [{ type: "text", text: "Body." }] }]);
+    const paragraph = out.content[0];
+    const reference = paragraph.content.find((n: { type: string }) => n.type === "footnote_reference");
+    expect(reference?.attrs).toEqual({ label: "1" });
+  });
+});
+
+// ============================================================================
 // #2005: ordered_list parseDOM start parsing — only non-negative safe
 // integers survive; everything else falls back to 1 (no reinterpretation)
 // ============================================================================

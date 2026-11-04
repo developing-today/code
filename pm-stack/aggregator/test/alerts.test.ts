@@ -644,7 +644,16 @@ describe("push subscription redaction (#3693)", () => {
     // Serialize exactly as the /api/push/subscriptions handlers do.
     const getBody = JSON.stringify({ subscriptions: [row].map(toPublicSubscription) });
     const postBody = JSON.stringify({ subscription: toPublicSubscription(row) });
-    const expectedFields = ["id", "endpoint", "classes", "quiet", "user_agent", "created_at", "last_seen_at", "gone_count"];
+    const expectedFields = [
+      "id",
+      "endpoint",
+      "classes",
+      "quiet",
+      "user_agent",
+      "created_at",
+      "last_seen_at",
+      "gone_count",
+    ];
     for (const body of [getBody, postBody]) {
       expect(body).not.toContain(sentinelP256dh);
       expect(body).not.toContain(sentinelAuth);

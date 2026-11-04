@@ -50,8 +50,8 @@ trap cleanup EXIT
 
 echo "==> generating the current /v1 OpenAPI document"
 (
-	cd "$PKG_DIR"
-	go run ./cmd/mcpx openapi
+  cd "$PKG_DIR"
+  go run ./cmd/mcpx openapi
 ) >"$WORK_DIR/openapi.json"
 
 python3 - "$WORK_DIR/openapi.json" "$WORK_DIR/openapi-sdk.json" <<'PY'
@@ -86,19 +86,19 @@ EOF
 
 echo "==> generating an SDK client with oapi-codegen ${GEN_VERSION}"
 (
-	cd "$WORK_DIR"
-	go run "$GENERATOR" \
-		-config oapi-codegen.yaml \
-		-o client.gen.go \
-		openapi-sdk.json
+  cd "$WORK_DIR"
+  go run "$GENERATOR" \
+    -config oapi-codegen.yaml \
+    -o client.gen.go \
+    openapi-sdk.json
 )
 
 echo "==> compiling the generated client"
 (
-	cd "$WORK_DIR"
-	go mod init sdkcheck >/dev/null 2>&1
-	go mod tidy >/dev/null 2>&1
-	go build ./...
+  cd "$WORK_DIR"
+  go mod init sdkcheck >/dev/null 2>&1
+  go mod tidy >/dev/null 2>&1
+  go build ./...
 )
 
 echo "==> OK: /v1/openapi.json generates a client that compiles"

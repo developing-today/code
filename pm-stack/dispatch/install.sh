@@ -14,9 +14,11 @@
 #   supabase_url, supabase_service_role_key (rendered into
 #   ~/pm-stack/dispatch/.env, mode 600). Fleet Supabase is muse-dev2;
 #   the key's source of truth is Bitwarden
-#   `supabase.muse-dev2.service-role-key`. (The un-namespaced
-#   `supabase.service-role-key` in Bitwarden is the DELETED legacy
-#   muse-dev project's key — never use it; see code#5120.)
+#   `supabase.muse-dev2.service-role-key`. (The un-namespaced trio
+#   was flipped to muse-dev2 values at the 2026-10-30 cutover and
+#   renamed on 2026-11-04 to `supabase.legacy-muse-dev.*`; the
+#   DELETED legacy project's preserved key is
+#   `supabase.muse-dev.service-role-key` — never use it; see code#5120.)
 # - NOT in sops: DISPATCH_API_TOKEN lives in ~/secrets/dispatch.env
 #   (mode 600, laptop-only), which the unit also reads. This script
 #   ensures that file exists and carries a generated
@@ -135,8 +137,8 @@ if [ "$CHANGED" -eq 1 ]; then
 
   cd "$DST"
   bun install --silent
-  echo "$SRC_HASH" > "$DST/.deploy-tree-hash"
-  echo "$SRC_INPUTS" > "$DST/.deploy-inputs-hash"
+  echo "$SRC_HASH" >"$DST/.deploy-tree-hash"
+  echo "$SRC_INPUTS" >"$DST/.deploy-inputs-hash"
 fi
 
 systemctl --user daemon-reload

@@ -32,7 +32,17 @@ const valid = rec({
 describe("isSessionRecord taskRefs hygiene (#2408, #4284)", () => {
   test("accepts empty and string-array taskRefs, rejects absent taskRefs", () => {
     expect(isSessionRecord({ id: "a", source: "s", label: "l" })).toBe(false);
-    expect(isSessionRecord({ id: "a", source: "s", label: "l", status: "succeeded", agentId: "claude-code", agentLabel: "Muse", taskRefs: [] })).toBe(true);
+    expect(
+      isSessionRecord({
+        id: "a",
+        source: "s",
+        label: "l",
+        status: "succeeded",
+        agentId: "claude-code",
+        agentLabel: "Muse",
+        taskRefs: [],
+      }),
+    ).toBe(true);
     expect(isSessionRecord({ ...valid, taskRefs: [] })).toBe(true);
     expect(isSessionRecord(valid)).toBe(true);
     expect(isSessionRecord({ ...valid, taskRefs: ["developing-today/code#123", "developing-today/code#2408"] })).toBe(
