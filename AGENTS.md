@@ -34,6 +34,19 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - **CI-first verification:** Review the checks actually triggered on the PR and use [`.github/ci-policy.md`](.github/ci-policy.md) to distinguish the basic merge-gating PR tier from the full main tier; formatting is not a merge gate. Run targeted local checks on the laptop when useful; sandboxed workers use CI and must not run builds or tests in the sandbox. If a policy-listed check is missing from the PR, inspect the workflow trigger and report the coverage gap instead of assuming it ran.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
 
+## Worker Git preflight
+
+At the start of each task, before relying on Git names such as `origin/main`, run `bash "$(git rev-parse --show-toplevel)/scripts/worker-preflight.sh"`. If it reports `refs/heads/origin/main`, stop and escalate; do not delete the branch or alter refs as part of task work. That local branch shadows the remote-tracking ref.
+
+## Fleet schedules
+
+The unified fleet schedule registry is `doc/fleet-schedule-registry.md`
+(#4988). Creating, changing, or retiring a schedule on any surface —
+Muse cron, OpenCode/OpenChamber scheduled tasks or laptop systemd
+timers — updates that registry in the same pass (same PR /
+same run). A schedule that exists on a surface but not in the registry
+is a defect.
+
 ## Research, design and delivery workflow
 
 Use it when a request, from one sentence to pages of voice-transcribed notes, should become researched documents, designs, plans or parallel PRs. Contracts: [`planning/workflow/`](planning/workflow/README.md). Where documents go: [`planning/DOCUMENTATION_ARCHITECTURE.md`](planning/DOCUMENTATION_ARCHITECTURE.md). Tool: `python3 -I scripts/research_workflow.py` (`check`, `status`, `ready`).

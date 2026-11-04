@@ -144,7 +144,8 @@ impl WorldProtocol {
         budgets: BudgetPolicy,
         blocks: Option<Arc<dyn BlockList>>,
     ) -> Self {
-        let mut evaluator = AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
+        let mut evaluator =
+            AbuseEvaluator::with_budgets(AbusePolicy::default(), local_node, budgets);
         if let Some(blocks) = blocks {
             evaluator = evaluator.with_block_list(blocks);
         }
@@ -171,7 +172,13 @@ impl WorldProtocol {
     /// operator-visibility surface for budgets, alongside
     /// [`WorldProtocol::abuse_counters`].
     #[must_use]
-    pub fn budget_usage(&self) -> Vec<(crate::abuse::BudgetScope, crate::abuse::BudgetLimit, BudgetUsage)> {
+    pub fn budget_usage(
+        &self,
+    ) -> Vec<(
+        crate::abuse::BudgetScope,
+        crate::abuse::BudgetLimit,
+        BudgetUsage,
+    )> {
         self.abuse
             .lock()
             .map(|abuse| abuse.budget_usage(abuse_now_ms()))
@@ -241,9 +248,11 @@ impl ProtocolHandler for WorldProtocol {
         let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
         let direct_ip = direct_ip_of(&conn);
         let connection_id = match self.abuse.lock() {
-            Ok(mut abuse) => match abuse
-                .open_connection_with_direct_ip(remote_endpoint, direct_ip, abuse_now_ms())
-            {
+            Ok(mut abuse) => match abuse.open_connection_with_direct_ip(
+                remote_endpoint,
+                direct_ip,
+                abuse_now_ms(),
+            ) {
                 Ok(connection_id) => connection_id,
                 Err(refusal) if refusal.reason == RefusalReason::BlockedByOperator => {
                     // #2245: an operator block is not a cap refusal — it
@@ -1133,10 +1142,7 @@ impl WorldClient {
             .await?
             .context("host closed without replying")?;
         if reply["type"] != "worlds" {
-            bail!(
-                "{}",
-                reply["message"].as_str().unwrap_or(refuse_message)
-            );
+            bail!("{}", reply["message"].as_str().unwrap_or(refuse_message));
         }
         let default = reply["default"].as_str().unwrap_or_default().to_owned();
         let worlds = reply["worlds"]
@@ -1879,12 +1885,15 @@ impl WorldSessions {
             let session = self
                 .roots
                 .get(&key.0)
-                .expect("root inserted above")
+                .context("root inserted above")?
                 .open_session(world)
                 .await?;
             self.sessions.insert(key.clone(), session);
         }
-        Ok(self.sessions.get_mut(&key).expect("session inserted above"))
+        Ok(self
+            .sessions
+            .get_mut(&key)
+            .context("session inserted above")?)
     }
 
     /// The live session for (`addr`, `world`), if one is open.
@@ -2148,10 +2157,19 @@ mod tests {
     async fn inbound_refusal_backpressures_authorized_streams_but_sheds_preauth() {
         use crate::abuse::{AbusePolicy, BucketLimits};
 
+        // One token per second against a burst of one: a drained bucket
+        // stays empty for ~1 s, so the pre-auth shed below cannot race
+        // the refill. At 1_000 tokens/sec the single burst token
+        // refilled in 1 ms, and any >= 1 ms scheduling stall between
+        // the two pre-auth charges admitted the second one instead —
+        // the intermittent "a pre-auth refusal sheds the stream"
+        // failure (#5195). The authorized leg keeps its shape: the
+        // refusal sleeps the 1 s retry floor and then charges against
+        // the refilled bucket, inside the existing 3 s bound.
         let limits = BucketLimits {
-            frames_per_sec: 1_000,
+            frames_per_sec: 1,
             frame_burst: 1,
-            bytes_per_sec: 1_000,
+            bytes_per_sec: 1,
             byte_burst: 1,
         };
         let evaluator = Arc::new(Mutex::new(AbuseEvaluator::new(
@@ -2164,10 +2182,20 @@ mod tests {
         )));
 
         // Pre-authorization: the first frame fits the burst, the next is
-        // refused immediately — no waiting, the stream is shed.
+        // refused immediately — no waiting, the stream is shed. Every
+        // await in this test is bounded (#5195): a wedged charge fails
+        // loudly here instead of stalling the suite.
         let preauth = [3; 32];
         let flag = AtomicBool::new(false);
-        assert!(charge_inbound_frame(&evaluator, preauth, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, preauth, &flag, 1),
+            )
+            .await
+            .expect("the first pre-auth charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             !tokio::time::timeout(
                 Duration::from_millis(500),
@@ -2182,7 +2210,15 @@ mod tests {
         // charge completes once the bucket refills instead of failing.
         let authed = [4; 32];
         let flag = AtomicBool::new(true);
-        assert!(charge_inbound_frame(&evaluator, authed, &flag, 1).await);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                charge_inbound_frame(&evaluator, authed, &flag, 1),
+            )
+            .await
+            .expect("the first authorized charge should return promptly"),
+            "the first frame fits the burst"
+        );
         assert!(
             tokio::time::timeout(
                 Duration::from_secs(3),

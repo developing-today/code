@@ -282,6 +282,9 @@ pub async fn remove_serve_lock() -> Result<()> {
 pub struct ServeOptions {
     /// Use an in-memory store.
     pub ephemeral: bool,
+    /// Operator server config to load at startup (#5119 slice 1);
+    /// `None` reads no file and keeps today's behaviour exactly.
+    pub server_config: Option<PathBuf>,
     /// Group log for the group-warning watcher (the global
     /// `--groups-log` option); `None` reads the default
     /// `groups.jsonl`, exactly as the group commands resolve it.
@@ -872,9 +875,50 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
+/// The loaded operator server config and the provisioning it ran
+/// (#5119 slice 1). Kept at startup scope so the later slices — the
+/// pull gate from `config.pull_policy()` and the freshness window in
+/// seitan admission — wire into live serving from this one load.
+#[cfg(feature = "world")]
+#[derive(Debug)]
+pub struct StartedServerConfig {
+    /// The parsed config.
+    pub config: crate::server_config::ServerConfig,
+    /// The accounts and group events provisioning applied.
+    pub provisioned: crate::server_config::Provisioned,
+    /// What the provisioning run created.
+    pub report: crate::server_config::Report,
+}
+
+/// Load the operator server config at `path` and run startup
+/// provisioning from it (#5119 slice 1).
+///
+/// # Errors
+///
+/// Fails when the file cannot be read or parses badly — the
+/// [`crate::server_config::ServerConfig::parse`] error is named, per
+/// that parser's startup-failing contract — or when provisioning is
+/// refused (for example a group creator the create rule does not
+/// allow).
+#[cfg(feature = "world")]
+pub fn start_server_config(path: &Path) -> Result<StartedServerConfig> {
+    let config = crate::server_config::ServerConfig::load(path)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    let mut provisioned = crate::server_config::Provisioned::new();
+    let report = provisioned
+        .apply(&config)
+        .map_err(|error| anyhow::anyhow!("server config {}: {error}", path.display()))?;
+    Ok(StartedServerConfig {
+        config,
+        provisioned,
+        report,
+    })
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
+        server_config,
         groups_log,
         no_relay,
         no_gossip,
@@ -947,6 +991,34 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_cap_policy,
         world_source_only,
     )?;
+    // #5119 slice 1: load the operator server config before any
+    // startup work, so a malformed file fails fast naming the parse
+    // error, and run startup provisioning from it. No flag = no file
+    // read and exactly today's behaviour. The loaded state stays in
+    // scope for the pull-gate and freshness slices that consume it.
+    #[cfg(not(feature = "world"))]
+    if server_config.is_some() {
+        anyhow::bail!(
+            "--server-config was given, but this id binary was built without \
+             the `world` feature, which owns the server config; \
+             rebuild with `--features world` to serve with one"
+        );
+    }
+    #[cfg(feature = "world")]
+    let _started_server_config = match &server_config {
+        Some(path) => {
+            let started = start_server_config(path)?;
+            status!(
+                "server config: loaded {} (provisioned {} user(s), {} group(s), {} member(s))",
+                path.display(),
+                started.report.users_created,
+                started.report.groups_created,
+                started.report.members_added
+            );
+            Some(started)
+        }
+        None => None,
+    };
     // #2145: resolve the web listener set once, before any startup work,
     // so a flag conflict or a malformed [web_bindings] line fails fast.
     let web_bindings = resolve_web_bindings(
@@ -957,6 +1029,34 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         port,
         &defaults().web_bindings,
     )?;
+    // #2147 (slice 1): restore the persisted publication set at boot.
+    // The registry is the persisted half of dynamic publication: the
+    // set an operator published in an earlier run is read back here,
+    // named line by line so the restored set is inspectable in the
+    // startup log, and the boot shadow warnings the issue requires
+    // are re-issued for any persisted mount that shadows an Explorer
+    // route without an acknowledgement. Applying the set to live
+    // listeners is the next slice; a malformed registry fails startup
+    // loudly (in Registry::load) rather than restoring nothing
+    // silently.
+    let publications =
+        crate::publications::Registry::load(&crate::publications::publications_file())?;
+    if !publications.publications.is_empty() {
+        status!(
+            "publications: restoring {} persisted publication(s)",
+            publications.publications.len()
+        );
+        for publication in &publications.publications {
+            status!(
+                "publications: world {} at {}",
+                publication.world,
+                publication.placement.describe()
+            );
+        }
+        for warning in publications.boot_warnings(crate::publications::KNOWN_EXPLORER_ROUTES) {
+            status!("{warning}");
+        }
+    }
     let apps_root = std::env::var_os("ID_APPS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("apps"));
@@ -3035,4 +3135,94 @@ mod tests {
 
     // Integration tests for lock file functions require file system access
     // and are tested via the integration test suite
+
+    // #5119 slice 1: serve loads a ServerConfig through --server-config.
+
+    #[cfg(feature = "world")]
+    fn serve_config_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("id-serve-config-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn start_server_config_applies_provisioning() {
+        let dir = serve_config_dir("applies");
+        let path = dir.join("server.toml");
+        // Real Ed25519 public keys: the parser rejects byte patterns
+        // that are not valid Edwards points.
+        let id = |n: u8| {
+            ed25519_dalek::SigningKey::from_bytes(&[n; 32])
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        std::fs::write(
+            &path,
+            format!(
+                "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[users]]\nkey = \"bo\"\nid = \"{}\"\n\n\
+                 [[groups]]\nkey = \"team\"\nname = \"Team\"\ncreator = \"ann\"\n\n\
+                 [[groups.members]]\nuser = \"bo\"\nrole = \"write\"\n",
+                id(1),
+                id(2)
+            ),
+        )
+        .unwrap();
+        let started = start_server_config(&path).unwrap();
+        assert_eq!(started.report.users_created, 2);
+        assert_eq!(started.report.groups_created, 1);
+        assert_eq!(started.report.members_added, 1);
+        // A second run over the same state creates nothing: the
+        // Provisioned value from the first run is what serve keeps.
+        let mut provisioned = started.provisioned;
+        let again = provisioned.apply(&started.config).unwrap();
+        assert_eq!(again, crate::server_config::Report::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn start_server_config_fails_startup_on_a_malformed_file() {
+        let dir = serve_config_dir("malformed");
+        let path = dir.join("server.toml");
+        std::fs::write(&path, "[[users]]\nkey = \"ann\"\nid = \"not-hex\"\n").unwrap();
+        let err = start_server_config(&path).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("server config"), "{message}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn start_server_config_fails_startup_on_a_missing_file() {
+        let dir = serve_config_dir("missing");
+        let path = dir.join("absent.toml");
+        let err = start_server_config(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("server config"), "{err:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_server_config_flag_defaults_to_none() {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::try_parse_from(["id", "serve"]).unwrap();
+        let Some(crate::cli::Command::Serve(args)) = cli.command else {
+            panic!("expected the serve command");
+        };
+        let crate::cli::ServeArgs { server_config, .. } = args;
+        assert!(server_config.is_none());
+        let cli = crate::cli::Cli::try_parse_from(["id", "serve", "--server-config", "ops.toml"])
+            .unwrap();
+        let Some(crate::cli::Command::Serve(args)) = cli.command else {
+            panic!("expected the serve command");
+        };
+        let crate::cli::ServeArgs { server_config, .. } = args;
+        assert_eq!(server_config, Some(PathBuf::from("ops.toml")));
+    }
 }

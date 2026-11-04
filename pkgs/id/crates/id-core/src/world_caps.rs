@@ -46,6 +46,18 @@
 //! | `outside_ceiling`| The server or the world's capability ceiling excludes it.           |
 //! | `result_too_large`| The serialized result event exceeded the maximum event size.       |
 //!
+//! Location refusals reuse those codes with specific reasons (#2341):
+//! `cap_denied` with reason `consent_required` (no per-use consent) or
+//! `os_permission_denied` (the OS refused the permission), `outside_ceiling`
+//! with reason `precision_ceiling` (the fix is less precise than the
+//! ceiling allows), and `failed` with reason `no_fix` (no fix available).
+//!
+//! **Sensor caps are per-use.** The `loc.*` capabilities are sensor caps:
+//! a wildcard (`*`) grant never reaches them and grant-on-use never mints
+//! a durable grant for them — a world needs an explicit ceiling entry
+//! *and* an explicit grant, and each use still passes the consent seam.
+//! [`is_sensor_cap`] names the set; the ledger enforces it.
+//!
 //! **Local, not signed.** The granted set, the policy and the usage counts
 //! ([`CapUsage`]) belong to the hosting node and are journaled there. None of
 //! them is signed or replicated. A usage count reports what happened and bounds
@@ -71,6 +83,16 @@ pub const MAX_ARGS_BYTES: usize = 8 * 1024;
 pub const MAX_EVENT_BYTES: usize = 64 * 1024;
 /// Most distinct tick intervals one program may subscribe to.
 pub const MAX_TICK_INTERVALS: usize = 4;
+/// Most concurrent `loc.watch` subscriptions one program may hold (#2341).
+pub const MAX_LOC_WATCHES: usize = 4;
+/// The `loc.watch` interval floor in milliseconds (#2341). A watch may
+/// not sample faster than this: GNSS fixes are power-hungry, and a
+/// sub-floor interval buys no accuracy — the fix itself takes about
+/// this long to refresh on phone and ESP32 GNSS hardware. Hosts should
+/// expect a `loc.watch` to dominate a long session's battery budget;
+/// programs that only need a position should use one-shot
+/// `loc.position` instead.
+pub const MIN_LOC_WATCH_INTERVAL_MS: u64 = 5_000;
 
 /// Usage key that aggregates every unknown capability name.
 ///
@@ -287,7 +309,7 @@ const CHAT_HISTORY_BOUNDS: &[ProviderBound] = &[
 /// Bounds for `records.read`: argument bytes plus the page byte cap.
 const RECORDS_READ_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
-    ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES),
+    ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES),
 ];
 /// Bounds for `schedule.at`: argument bytes, id bytes, pending cap, and horizon.
 const SCHEDULE_AT_BOUNDS: &[ProviderBound] = &[
@@ -306,6 +328,20 @@ const TICK_BOUNDS: &[ProviderBound] = &[
     ProviderBound::Items(MAX_TICK_INTERVALS),
     ProviderBound::WorldLimit("min_tick_ms"),
 ];
+/// Argument schema for `loc.position`: an optional precision ceiling in
+/// whole metres. A fix less precise than the ceiling is refused with
+/// `outside_ceiling` / `precision_ceiling`, never silently degraded.
+const LOC_POSITION_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "max_accuracy_m",
+    value_type: ArgumentType::UnsignedInteger,
+    required: false,
+}];
+/// Bounds for `loc.position`: the argument byte cap.
+const LOC_POSITION_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARGS_BYTES)];
+/// Bounds for `loc.watch`: the concurrent-watch cap. The interval
+/// floor ([`MIN_LOC_WATCH_INTERVAL_MS`]) is enforced by
+/// [`parse_loc_watch_interval_ms`].
+const LOC_WATCH_BOUNDS: &[ProviderBound] = &[ProviderBound::Items(MAX_LOC_WATCHES)];
 
 define_provider_registry! {
     "time.now" => {
@@ -395,6 +431,25 @@ define_provider_registry! {
         bounds: COMMON_REQUEST_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Included,
+    },
+    // Sensor caps (#2341): excluded from default ceilings, so a world
+    // reaches them only through an explicit ceiling entry and an
+    // explicit grant, and each use passes the consent seam.
+    "loc.position" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(LOC_POSITION_ARGUMENTS),
+        bounds: LOC_POSITION_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+    },
+    "loc.watch" => {
+        version: 1,
+        kind: ProviderKind::Subscription,
+        argument_schema: ArgumentSchema::Subscription("loc.watch:<positive-milliseconds>"),
+        bounds: LOC_WATCH_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
     },
     "Key" => {
         version: 1,
@@ -532,8 +587,30 @@ pub const MAX_SCHEDULE_HORIZON_DAYS: u64 = 30;
 pub const MAX_SCHEDULE_HORIZON_MS: u64 = MAX_SCHEDULE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
 /// Most schedules delivered in one wakeup. Any left due fire on the next.
 pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
-/// Largest page of records returned by `records.read`, in bytes.
+/// Largest page of records served over the session protocol and the
+/// host view, in bytes. Cap results are not served this way: a
+/// `records.read` result is delivered through `result_event` and is
+/// bounded by [`MAX_RECORDS_RESULT_PAGE_BYTES`] instead (#4888).
 pub const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+
+/// Bytes of [`MAX_EVENT_BYTES`] reserved for the `result_event`
+/// envelope around a `records.read` value: the outer
+/// `{"cap":"result","id":...,"ok":true,"value":...}` object (request
+/// ids are at most [`MAX_NAME_BYTES`] long), the value's own
+/// `{"records":[...],"next_after":...}` wrapper, and a serialized
+/// `next_after` key (record keys are at most 256 bytes, and JSON
+/// escaping at most doubles that, plus the quotes). The fixed parts
+/// measure under 200 bytes and the escaped key under 514, so 1024
+/// leaves slack rather than sitting on the edge.
+pub const RESULT_EVENT_ENVELOPE_BYTES: usize = 1024;
+
+/// Largest page of records a `records.read` cap result may carry, in
+/// bytes of serialized `{"key":...,"value":...}` entries (plus one
+/// array comma each). Derived from the event limit minus the envelope
+/// allowance, so a page admitted under this bound always fits the
+/// `result_event` that delivers it: it can never be replaced by a
+/// `result_too_large` error (#4888).
+pub const MAX_RECORDS_RESULT_PAGE_BYTES: usize = MAX_EVENT_BYTES - RESULT_EVENT_ENVELOPE_BYTES;
 
 /// Check a schedule id: 1 to [`MAX_SCHEDULE_ID_BYTES`] bytes, all printable
 /// ASCII (space through `~`), so no control characters reach the journal.
@@ -845,6 +922,58 @@ impl CapError {
         }
     }
 
+    /// The capability was not granted, and `reason` says why.
+    #[must_use]
+    pub fn denied_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::Denied,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// A ceiling excludes the capability, and `reason` says why.
+    #[must_use]
+    pub fn outside_ceiling_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::OutsideCeiling,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// The provider failed, and `reason` says why.
+    #[must_use]
+    pub fn failed_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::Failed,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// Location use without per-use consent (#2341): `cap_denied`.
+    #[must_use]
+    pub fn consent_required() -> Self {
+        Self::denied_with("consent_required")
+    }
+
+    /// The OS refused the location permission (#2341): `cap_denied`.
+    #[must_use]
+    pub fn os_permission_denied() -> Self {
+        Self::denied_with("os_permission_denied")
+    }
+
+    /// The available fix is less precise than the precision ceiling
+    /// allows (#2341): `outside_ceiling`.
+    #[must_use]
+    pub fn precision_ceiling() -> Self {
+        Self::outside_ceiling_with("precision_ceiling")
+    }
+
+    /// No location fix is available (#2341): `failed`.
+    #[must_use]
+    pub fn no_fix() -> Self {
+        Self::failed_with("no_fix")
+    }
+
     /// The provider failed.
     #[must_use]
     pub const fn failed() -> Self {
@@ -902,6 +1031,196 @@ impl CapError {
     }
 }
 
+/// Whether `cap` is a sensor capability (#2341). Sensor caps are
+/// per-use by default: a wildcard grant never reaches them, and
+/// grant-on-use never mints a durable grant for them. Today the sensor
+/// caps are the `loc.*` family; naming the prefix here keeps the ledger
+/// rule in one place when more sensor families land.
+#[must_use]
+pub fn is_sensor_cap(cap: &str) -> bool {
+    cap.starts_with("loc.")
+}
+
+/// Where a location reading came from (#2341). The source is part of
+/// the reading: an imprecise source is named, never silently degraded
+/// to look like a precise one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationSource {
+    /// Satellite positioning (phone GNSS, ESP32 GNSS module).
+    Gnss,
+    /// Network positioning (Wi-Fi / cell).
+    Network,
+    /// IP geolocation — kilometre-scale accuracy, named as such.
+    Ip,
+    /// The caller supplied the fix itself.
+    CallerSupplied,
+}
+
+impl LocationSource {
+    /// The wire name of the source.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Gnss => "gnss",
+            Self::Network => "network",
+            Self::Ip => "ip",
+            Self::CallerSupplied => "caller_supplied",
+        }
+    }
+
+    /// Parse a wire name, if it is one.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "gnss" => Some(Self::Gnss),
+            "network" => Some(Self::Network),
+            "ip" => Some(Self::Ip),
+            "caller_supplied" => Some(Self::CallerSupplied),
+            _ => None,
+        }
+    }
+}
+
+/// One location reading (#2341): the typed shape every `loc.position`
+/// result and `loc.watch` delivery carries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LocationReading {
+    /// Latitude in degrees, -90..=90.
+    pub lat: f64,
+    /// Longitude in degrees, -180..=180.
+    pub lon: f64,
+    /// Accuracy radius in metres; smaller is more precise.
+    pub accuracy_m: f64,
+    /// Age of the fix in milliseconds when delivered.
+    pub fix_age_ms: u64,
+    /// Where the fix came from.
+    pub source: LocationSource,
+}
+
+impl LocationReading {
+    /// Validate the reading's ranges. A reading that fails is a
+    /// provider bug, not data a program should ever see.
+    ///
+    /// # Errors
+    ///
+    /// Names the first out-of-range field.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.lat.is_finite() && (-90.0..=90.0).contains(&self.lat),
+            "lat out of range"
+        );
+        ensure!(
+            self.lon.is_finite() && (-180.0..=180.0).contains(&self.lon),
+            "lon out of range"
+        );
+        ensure!(
+            self.accuracy_m.is_finite() && self.accuracy_m >= 0.0,
+            "accuracy_m out of range"
+        );
+        Ok(())
+    }
+
+    /// The wire object: exactly `{lat, lon, accuracy_m, fix_age_ms, source}`.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "lat": self.lat,
+            "lon": self.lon,
+            "accuracy_m": self.accuracy_m,
+            "fix_age_ms": self.fix_age_ms,
+            "source": self.source.as_str(),
+        })
+    }
+
+    /// Refuse the reading when it is less precise than the precision
+    /// ceiling allows: an imprecise fix must be refusable rather than
+    /// plausible-looking (#2341).
+    ///
+    /// # Errors
+    ///
+    /// [`CapError::precision_ceiling`] when `accuracy_m` exceeds the
+    /// ceiling.
+    pub fn refuse_beyond_ceiling(&self, ceiling_m: f64) -> Result<(), CapError> {
+        if self.accuracy_m > ceiling_m {
+            return Err(CapError::precision_ceiling());
+        }
+        Ok(())
+    }
+}
+
+/// Per-use consent for a sensor capability (#2341). Consent is a seam
+/// the host fills in (browser permission prompt, phone OS permission,
+/// device policy); the pure core only maps the state to the refusal
+/// vocabulary so every host refuses the same way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocationConsent {
+    /// Consent granted for this use.
+    Granted,
+    /// No consent on record: refuse with `consent_required`.
+    ConsentRequired,
+    /// The OS refused the permission: refuse with `os_permission_denied`.
+    OsPermissionDenied,
+}
+
+impl LocationConsent {
+    /// The refusal for this consent state, or `None` when use may proceed.
+    #[must_use]
+    pub fn refusal(&self) -> Option<CapError> {
+        match self {
+            Self::Granted => None,
+            Self::ConsentRequired => Some(CapError::consent_required()),
+            Self::OsPermissionDenied => Some(CapError::os_permission_denied()),
+        }
+    }
+}
+
+/// Parse a `loc.watch` subscription spec (#2341): `loc.watch` alone
+/// takes the interval floor, `loc.watch:<milliseconds>` names an
+/// interval at or above the floor.
+///
+/// # Errors
+///
+/// [`CapError::bad_args`] for a foreign spec, a non-numeric interval,
+/// or an interval below [`MIN_LOC_WATCH_INTERVAL_MS`].
+pub fn parse_loc_watch_interval_ms(spec: &str) -> Result<u64, CapError> {
+    let Some(rest) = spec.strip_prefix("loc.watch") else {
+        return Err(CapError::bad_args_with("not a loc.watch spec"));
+    };
+    if rest.is_empty() {
+        return Ok(MIN_LOC_WATCH_INTERVAL_MS);
+    }
+    let Some(ms) = rest.strip_prefix(':') else {
+        return Err(CapError::bad_args_with("not a loc.watch spec"));
+    };
+    let ms: u64 = ms
+        .parse()
+        .map_err(|_| CapError::bad_args_with("loc.watch interval is not a number"))?;
+    if ms < MIN_LOC_WATCH_INTERVAL_MS {
+        return Err(CapError::bad_args_with(
+            "loc.watch interval below the floor",
+        ));
+    }
+    Ok(ms)
+}
+
+/// The event that closes an open `loc.watch` when consent is withdrawn
+/// (#2341): exactly
+/// `{"cap":"loc.watch","event":"revoked","reason":"consent_withdrawn"}`.
+#[must_use]
+pub fn loc_watch_revocation_event() -> String {
+    serde_json::json!({"cap":"loc.watch","event":"revoked","reason":"consent_withdrawn"})
+        .to_string()
+}
+
+/// A `loc.watch` delivery event: the reading under the `loc.watch` cap.
+#[must_use]
+pub fn loc_watch_reading_event(reading: &LocationReading) -> String {
+    let mut event = reading.to_json();
+    event["cap"] = serde_json::json!("loc.watch");
+    event.to_string()
+}
+
 /// How a capability was used since the world opened.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapUsage {
@@ -915,7 +1234,8 @@ pub struct CapUsage {
 /// asked for.
 ///
 /// A use is allowed only when the capability is allowed **and** granted. `*` in
-/// the grant set counts as every allowed name.
+/// the grant set counts as every allowed name — except sensor caps
+/// ([#2341](is_sensor_cap)), which a wildcard never reaches.
 #[derive(Clone, Debug)]
 pub struct CapLedger {
     granted: BTreeSet<String>,
@@ -963,10 +1283,12 @@ impl CapLedger {
         &self.allowed
     }
 
-    /// Whether `cap` is allowed and granted (`*` grants everything allowed).
+    /// Whether `cap` is allowed and granted (`*` grants everything
+    /// allowed except sensor caps, which need an explicit grant).
     #[must_use]
     pub fn is_granted(&self, cap: &str) -> bool {
-        self.allowed.contains(cap) && (self.granted.contains(cap) || self.granted.contains("*"))
+        self.allowed.contains(cap)
+            && (self.granted.contains(cap) || (self.granted.contains("*") && !is_sensor_cap(cap)))
     }
 
     /// Record one use of `cap` and decide it.
@@ -999,9 +1321,16 @@ impl CapLedger {
             entry.denied += 1;
             return Decision::Deny(CapError::actor_denied());
         }
-        if self.granted.contains(cap) || self.granted.contains("*") {
+        if self.granted.contains(cap) || (self.granted.contains("*") && !is_sensor_cap(cap)) {
             entry.allowed += 1;
             return Decision::Allow;
+        }
+        if is_sensor_cap(cap) {
+            // Sensor caps are per-use (#2341): neither a wildcard grant
+            // nor grant-on-use reaches them, so an ungranted use is a
+            // consent refusal — never a silently minted durable grant.
+            entry.denied += 1;
+            return Decision::Deny(CapError::consent_required());
         }
         if self.grant_on_use {
             entry.allowed += 1;
@@ -1028,7 +1357,21 @@ impl CapLedger {
     #[must_use]
     pub fn effective(&self) -> BTreeSet<String> {
         if self.granted.contains("*") {
-            return self.allowed.clone();
+            // The wildcard expands to every allowed name except sensor
+            // caps (#2341); explicitly granted sensor caps still count.
+            let mut effective: BTreeSet<String> = self
+                .allowed
+                .iter()
+                .filter(|name| !is_sensor_cap(name.as_str()))
+                .cloned()
+                .collect();
+            effective.extend(
+                self.granted
+                    .intersection(&self.allowed)
+                    .filter(|name| is_sensor_cap(name.as_str()))
+                    .cloned(),
+            );
+            return effective;
         }
         self.granted.intersection(&self.allowed).cloned().collect()
     }
@@ -1321,6 +1664,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn records_result_pages_always_fit_the_result_event() {
+        // A page admitted at the cap-result bound, delivered with the
+        // longest request id and a longest, escape-heavy next_after key,
+        // stays a records result — never result_too_large (#4888).
+        let entry = serde_json::json!({"key": "k", "value": "x".repeat(1024)});
+        let entry_bytes = serde_json::to_vec(&entry).unwrap().len() + 1;
+        let mut records = Vec::new();
+        let mut used = 0;
+        while used + entry_bytes <= MAX_RECORDS_RESULT_PAGE_BYTES {
+            records.push(entry.clone());
+            used += entry_bytes;
+        }
+        assert!(!records.is_empty());
+        // 256 raw key bytes (128 backslash+quote pairs), the longest a
+        // record key may be, and the worst case for JSON escaping.
+        let next_after: String = (0..128)
+            .flat_map(|_| [char::from_u32(92).unwrap(), '"'])
+            .collect();
+        assert_eq!(next_after.len(), 256);
+        let value = serde_json::json!({
+            "records": records,
+            "next_after": next_after,
+        });
+        let event = result_event(&"i".repeat(MAX_NAME_BYTES), Ok(value));
+        assert!(event.len() <= MAX_EVENT_BYTES, "event is {}", event.len());
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["ok"], true, "{event}");
+        assert!(event["value"]["records"].is_array());
+        // The registry reports the cap-result bound for records.read.
+        assert!(
+            RECORDS_READ_BOUNDS
+                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
+        );
+        // The session-protocol page budget is a separate, larger bound.
+        assert_eq!(MAX_RECORDS_PAGE_BYTES, 768 * 1024);
+    }
+
     fn names(list: &[&str]) -> BTreeSet<String> {
         list.iter().map(|name| (*name).to_owned()).collect()
     }
@@ -1358,6 +1739,8 @@ mod tests {
                 "schedule.at",
                 "schedule.cancel",
                 "world.info",
+                "loc.position",
+                "loc.watch",
                 "Key",
                 "Screen",
                 "RocJson",
@@ -1365,9 +1748,9 @@ mod tests {
                 "RocCap",
                 "RocText",
             ],
-            "registry retains the exact pre-change 17-name catalog and order"
+            "registry retains the catalog names and order (17 pre-#2341 names plus loc.position/loc.watch)"
         );
-        assert_eq!(PROVIDER_REGISTRY.entries().len(), 17);
+        assert_eq!(PROVIDER_REGISTRY.entries().len(), 19);
         assert!(
             PROVIDER_REGISTRY
                 .entries()
@@ -1402,12 +1785,30 @@ mod tests {
                 .get("records.read")
                 .unwrap()
                 .bounds
-                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_PAGE_BYTES))
+                .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
         );
-        // Every provider registered today opted in explicitly, so the
-        // default ceiling is still the whole catalog — naming the choice
-        // changed no world's effective ceiling.
-        assert_eq!(default_ceiling_names(), catalog_names());
+        // Every non-sensor provider opted in explicitly. The sensor
+        // caps (#2341) registered as Excluded, so the default ceiling
+        // is the catalog minus loc.* — registering them widened no
+        // existing world's authority.
+        assert_eq!(
+            default_ceiling_names(),
+            catalog_names()
+                .difference(&names(&["loc.position", "loc.watch"]))
+                .cloned()
+                .collect::<BTreeSet<String>>()
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY
+                .get("loc.position")
+                .unwrap()
+                .default_ceiling,
+            DefaultCeiling::Excluded
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY.get("loc.watch").unwrap().default_ceiling,
+            DefaultCeiling::Excluded
+        );
     }
 
     #[test]
@@ -1445,7 +1846,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_ceiling_is_the_whole_catalog() {
+    fn the_default_ceiling_is_the_catalog_minus_sensor_caps() {
         let mut ledger = CapLedger::new(names(&["time.now"]), false);
         assert_eq!(ledger.allowed(), &default_ceiling_names());
         assert!(ledger.is_granted("time.now"));
@@ -1455,11 +1856,13 @@ mod tests {
             Decision::Deny(CapError::denied())
         );
         ledger.set_granted(names(&["*"]));
-        assert_eq!(ledger.effective(), catalog_names());
+        // The wildcard reaches every allowed name except the sensor
+        // caps (#2341), which the default ceiling already excludes.
+        assert_eq!(ledger.effective(), default_ceiling_names());
         assert_eq!(
             ledger.decide("chat.say"),
             Decision::Allow,
-            "a wildcard grant reaches every catalog name"
+            "a wildcard grant reaches every non-sensor catalog name"
         );
     }
 
@@ -1582,5 +1985,193 @@ mod tests {
         validate_ceiling_names(&["time.now".to_owned()]).unwrap();
         assert!(validate_ceiling_names(&["*".to_owned()]).is_err());
         assert!(validate_ceiling_names(&["time.nwo".to_owned()]).is_err());
+    }
+
+    /// A ledger whose ceiling explicitly names the sensor caps, as a
+    /// world that wants location must set up (#2341).
+    fn loc_ledger(granted: &[&str], grant_on_use: bool) -> CapLedger {
+        let mut ledger = CapLedger::new(names(granted), grant_on_use);
+        let mut allowed = default_ceiling_names();
+        allowed.insert("loc.position".to_owned());
+        allowed.insert("loc.watch".to_owned());
+        ledger.set_allowed(allowed);
+        ledger
+    }
+
+    #[test]
+    fn a_wildcard_grant_never_reaches_loc_caps() {
+        let mut ledger = loc_ledger(&["*"], false);
+        assert!(!ledger.is_granted("loc.position"));
+        assert!(!ledger.is_granted("loc.watch"));
+        assert_eq!(
+            ledger.decide("loc.position"),
+            Decision::Deny(CapError::consent_required()),
+            "a wildcard grant must never reach loc.*"
+        );
+        assert!(
+            !ledger.effective().contains("loc.position"),
+            "effective authority excludes sensor caps under a wildcard"
+        );
+        // The same wildcard still reaches ordinary caps.
+        assert_eq!(ledger.decide("time.now"), Decision::Allow);
+    }
+
+    #[test]
+    fn an_explicit_grant_reaches_loc_caps() {
+        let mut ledger = loc_ledger(&["loc.position", "loc.watch"], false);
+        assert!(ledger.is_granted("loc.position"));
+        assert_eq!(ledger.decide("loc.position"), Decision::Allow);
+        assert_eq!(ledger.decide("loc.watch"), Decision::Allow);
+        assert!(ledger.effective().contains("loc.watch"));
+    }
+
+    #[test]
+    fn grant_on_use_never_mints_a_sensor_grant() {
+        let mut ledger = loc_ledger(&[], true);
+        assert_eq!(
+            ledger.decide("loc.position"),
+            Decision::Deny(CapError::consent_required())
+        );
+        assert!(
+            !ledger.granted().contains("loc.position"),
+            "grant-on-use must not record a durable sensor grant"
+        );
+        // Grant-on-use still works for ordinary caps.
+        assert_eq!(ledger.decide("time.now"), Decision::AllowAndGrant);
+    }
+
+    #[test]
+    fn loc_caps_stay_outside_the_default_ceiling() {
+        // No explicit ceiling entry: even an explicit grant is refused
+        // at the ceiling, like every other excluded provider (#838).
+        let mut ledger = CapLedger::new(names(&["loc.position"]), false);
+        assert_eq!(
+            ledger.decide("loc.position"),
+            Decision::Deny(CapError::outside_ceiling())
+        );
+    }
+
+    #[test]
+    fn a_location_reading_carries_the_typed_shape() {
+        let reading = LocationReading {
+            lat: 30.2672,
+            lon: -97.7431,
+            accuracy_m: 5.0,
+            fix_age_ms: 250,
+            source: LocationSource::Gnss,
+        };
+        reading.validate().unwrap();
+        assert_eq!(
+            reading.to_json(),
+            serde_json::json!({
+                "lat": 30.2672,
+                "lon": -97.7431,
+                "accuracy_m": 5.0,
+                "fix_age_ms": 250,
+                "source": "gnss",
+            })
+        );
+        for (wire, source) in [
+            ("gnss", LocationSource::Gnss),
+            ("network", LocationSource::Network),
+            ("ip", LocationSource::Ip),
+            ("caller_supplied", LocationSource::CallerSupplied),
+        ] {
+            assert_eq!(LocationSource::parse(wire), Some(source));
+            assert_eq!(source.as_str(), wire);
+        }
+        assert_eq!(LocationSource::parse("gps"), None);
+        let bad = LocationReading {
+            lat: 91.0,
+            ..reading
+        };
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn an_imprecise_fix_is_refused_at_the_precision_ceiling() {
+        // IP geolocation: kilometre-scale, named as such.
+        let ip_fix = LocationReading {
+            lat: 30.2672,
+            lon: -97.7431,
+            accuracy_m: 5_000.0,
+            fix_age_ms: 60_000,
+            source: LocationSource::Ip,
+        };
+        let refusal = ip_fix.refuse_beyond_ceiling(100.0).unwrap_err();
+        assert_eq!(refusal, CapError::precision_ceiling());
+        assert_eq!(refusal.code(), "outside_ceiling");
+        assert_eq!(
+            refusal.reason().map(String::as_str),
+            Some("precision_ceiling")
+        );
+        // The same fix is fine for a consumer whose ceiling allows it,
+        // and a precise fix passes a tight ceiling.
+        ip_fix.refuse_beyond_ceiling(10_000.0).unwrap();
+        let gnss_fix = LocationReading {
+            accuracy_m: 5.0,
+            source: LocationSource::Gnss,
+            ..ip_fix
+        };
+        gnss_fix.refuse_beyond_ceiling(100.0).unwrap();
+    }
+
+    #[test]
+    fn consent_states_map_to_the_refusal_vocabulary() {
+        assert_eq!(LocationConsent::Granted.refusal(), None);
+        let required = LocationConsent::ConsentRequired.refusal().unwrap();
+        assert_eq!(required, CapError::consent_required());
+        assert_eq!(required.code(), "cap_denied");
+        assert_eq!(
+            required.reason().map(String::as_str),
+            Some("consent_required")
+        );
+        let os_denied = LocationConsent::OsPermissionDenied.refusal().unwrap();
+        assert_eq!(os_denied, CapError::os_permission_denied());
+        assert_eq!(os_denied.code(), "cap_denied");
+        assert_eq!(
+            os_denied.reason().map(String::as_str),
+            Some("os_permission_denied")
+        );
+        let no_fix = CapError::no_fix();
+        assert_eq!(no_fix.code(), "failed");
+        assert_eq!(no_fix.reason().map(String::as_str), Some("no_fix"));
+    }
+
+    #[test]
+    fn loc_watch_specs_enforce_the_interval_floor() {
+        assert_eq!(
+            parse_loc_watch_interval_ms("loc.watch"),
+            Ok(MIN_LOC_WATCH_INTERVAL_MS)
+        );
+        assert_eq!(parse_loc_watch_interval_ms("loc.watch:60000"), Ok(60_000));
+        assert_eq!(
+            parse_loc_watch_interval_ms("loc.watch:100"),
+            Err(CapError::bad_args_with(
+                "loc.watch interval below the floor"
+            ))
+        );
+        assert!(parse_loc_watch_interval_ms("loc.watch:fast").is_err());
+        assert!(parse_loc_watch_interval_ms("time.tick:5000").is_err());
+    }
+
+    #[test]
+    fn consent_withdrawal_closes_an_open_watch_with_the_revocation_event() {
+        assert_eq!(
+            loc_watch_revocation_event(),
+            "{\"cap\":\"loc.watch\",\"event\":\"revoked\",\"reason\":\"consent_withdrawn\"}"
+        );
+        let reading = LocationReading {
+            lat: 30.2672,
+            lon: -97.7431,
+            accuracy_m: 12.0,
+            fix_age_ms: 0,
+            source: LocationSource::Network,
+        };
+        let delivered: serde_json::Value =
+            serde_json::from_str(&loc_watch_reading_event(&reading)).unwrap();
+        assert_eq!(delivered["cap"], "loc.watch");
+        assert_eq!(delivered["source"], "network");
+        assert_eq!(delivered["accuracy_m"], 12.0);
     }
 }

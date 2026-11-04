@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bws-to-sops -- mirror EVERY Bitwarden Secrets Manager secret into one
 # sops/age-encrypted YAML file, keyed by the bws secret key (e.g.
-# `google.jules-api-key`, `cloudflare.api-token-ai-inference`).
+# `muse.sdk-token`, `cloudflare.api-token-ai-inference`).
 #
 #   lib/bws-to-sops.sh              sync all secrets -> secrets/sops/common/bws.yaml
 #   lib/bws-to-sops.sh --dry-run    list what would be written (key names only)
@@ -17,7 +17,7 @@
 # ~/.config/bws/access-token, then secrets/sops/common/bitwarden.yaml.
 #
 # Use a mirrored value from NixOS with sops-nix, e.g.:
-#   sops.secrets.foo = { sopsFile = lib.from-root "secrets/sops/common/bws.yaml"; key = "google.jules-api-key"; };
+#   sops.secrets.foo = { sopsFile = lib.from-root "secrets/sops/common/bws.yaml"; key = "muse.sdk-token"; };
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"

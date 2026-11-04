@@ -8,8 +8,8 @@
 /** The four working repositories (design record, "Request and intent"). */
 export const REPOS = [
   "developing-today/code",
-  "developing-today/opencode",
-  "developing-today/openchamber",
+  "developing-today-forks/opencode",
+  "developing-today-forks/openchamber",
   "dezren39/nix",
 ] as const;
 
@@ -84,6 +84,12 @@ export interface ProjectPoolItem {
   labels?: string[];
   author?: string;
   updatedAt?: string;
+  /** Completion timestamps from the linked issue/PR, when the
+   * projection carried them: an issue's closedAt, a PR's mergedAt
+   * (or its closedAt when closed unmerged). The digest's Done
+   * section selects by these, never by updatedAt (#5279 Codex). */
+  closedAt?: string;
+  mergedAt?: string;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
@@ -441,20 +447,6 @@ export interface SourceCoverage {
   detail: string;
 }
 
-/** Keeper run totals for Jules, parsed from jules-review-state.json. */
-export interface JulesSummary {
-  /** When the keeper last ran (its `last_run`). */
-  at: string | null;
-  /** Sessions the keeper currently tracks in its `items` map. */
-  tracked: number;
-  /** Totals from the note written by the keeper's last run, when it parses. */
-  total?: number;
-  completed?: number;
-  failed?: number;
-  inProgress?: number;
-  awaitingFeedback?: number;
-  awaitingPlan?: number;
-}
 
 export function refKey(ref: GhRef): RefKey {
   return `${ref.repo}#${ref.number}`;
@@ -466,6 +458,21 @@ export function parseRef(key: RefKey): GhRef {
   const number = Number(m[2]);
   if (!Number.isSafeInteger(number)) throw new Error(`ref number is not a safe integer: ${key}`);
   return { repo: m[1], number };
+}
+
+/** The one shared ref-validity rule (#4952): a value is a usable RefKey
+ *  only if parseRef accepts it — owner/repo#N shape AND a safe-integer
+ *  number. Boundary validators and store-load gates route through this
+ *  instead of re-checking the shape with a local regex whose \d+ group
+ *  admits numbers parseRef (and refUrl) then throw on. */
+export function isValidRef(value: unknown): value is RefKey {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value as RefKey);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
@@ -570,6 +577,9 @@ export type WhyUserClass = "decision" | "missing-info" | "approval" | "access" |
 export interface TierItemOption {
   id: string;
   label: string;
+  /** The survey question this shortcut answers, when it is one of the
+   *  question's alternate controls. */
+  questionId?: string;
   description?: string;
   /** Predicted effect of picking this option, shown under its button. */
   effect?: string;

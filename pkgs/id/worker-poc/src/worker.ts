@@ -95,9 +95,7 @@ export class WorldObject {
     if (this.guest) return Promise.resolve(this.guest);
     if (!this.guestPromise) {
       this.guestPromise = (async () => {
-        const rows = this.sql
-          .exec(`SELECT step, snapshot FROM journal ORDER BY step DESC LIMIT 1`)
-          .toArray();
+        const rows = this.sql.exec(`SELECT step, snapshot FROM journal ORDER BY step DESC LIMIT 1`).toArray();
         const guest = await loadHostedModule(MANIFEST, COUNTER_WASM as WebAssembly.Module, SEED);
         if (rows.length > 0) {
           guest.restore(asBytes(rows[0].snapshot));
@@ -134,9 +132,7 @@ export class WorldObject {
     if (req.method === "POST" && url.pathname === "/step") {
       // Validate before touching the guest: a malformed request must never
       // mutate state it cannot journal.
-      const body = (await req.json().catch(() => null)) as
-        | { participant?: unknown; event?: unknown }
-        | null;
+      const body = (await req.json().catch(() => null)) as { participant?: unknown; event?: unknown } | null;
       const participant = body?.participant;
       const event = body?.event;
       if (
@@ -165,8 +161,13 @@ export class WorldObject {
         snapshotHash = await sha256Hex(snapshot);
         this.sql.exec(
           `INSERT INTO journal (step, participant, event, snapshot, view, records, snapshot_hash) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          nextStep, participant, event, snapshot, dec.decode(view),
-          records ? dec.decode(records) : null, snapshotHash,
+          nextStep,
+          participant,
+          event,
+          snapshot,
+          dec.decode(view),
+          records ? dec.decode(records) : null,
+          snapshotHash,
         );
       } catch (err) {
         // Any failure before the journal commit may leave the guest advanced

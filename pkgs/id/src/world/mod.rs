@@ -47,8 +47,8 @@ mod tests;
 
 pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use core::WorldCore;
 pub(crate) use core::AdminHistoryByteLedger;
+pub use core::WorldCore;
 pub use handle::WorldHandle;
 pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use replica::{
@@ -69,9 +69,8 @@ pub use replication_receiver::{
 };
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
-    constant_time_eq, hex_decode_32, legacy_sanitize_display_name, sanitize_chat,
-    is_pre_fix_mint_display_name, pre_fix_sanitize_display_name,
-    sanitize_display_name, token_digest,
+    constant_time_eq, hex_decode_32, is_pre_fix_mint_display_name, legacy_sanitize_display_name,
+    pre_fix_sanitize_display_name, sanitize_chat, sanitize_display_name, token_digest,
 };
 
 /// Identity of one live connection. It stays in memory only and is never part
@@ -99,6 +98,9 @@ pub(crate) const MAX_ADMIN_HISTORY_BYTES: usize = 64 * 1024 * 1024;
 /// still closing), compaction is skipped and the complete append-only journal
 /// is retained. Restore enforces the same bound regardless of current config.
 pub(crate) const MAX_CHECKPOINT_OPEN_PRESENCE: usize = 4096;
+/// Largest encoded JSON checkpoint part entry. This remains below the v1
+/// replication payload limit so each part is carried whole in one frame.
+pub const MAX_CHECKPOINT_PART_BYTES: usize = 192 * 1024;
 
 /// Bounded limits for one world.
 #[derive(Clone, Debug)]
@@ -295,10 +297,11 @@ impl WorldScopes {
     /// connected participant may read; `chat.say` also needs `CHAT`.
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
-        match crate::world_caps::PROVIDER_REGISTRY.get(cap).map_or(
-            crate::world_caps::RequiredScope::Join,
-            |provider| provider.required_scope,
-        ) {
+        match crate::world_caps::PROVIDER_REGISTRY
+            .get(cap)
+            .map_or(crate::world_caps::RequiredScope::Join, |provider| {
+                provider.required_scope
+            }) {
             crate::world_caps::RequiredScope::Chat => self.contains(Self::CHAT),
             // Reading chat needs only the right to read it (`CHAT` or
             // `HISTORY`), the same rule the event stream applies.
@@ -912,6 +915,41 @@ pub enum JournalEntry {
         /// the payload, hex-encoded, per design #2818 §3).
         destination_event: WorldEvent,
     },
+    /// One UTF-8-safe part of a compacted program snapshot. The complete set
+    /// immediately precedes its checkpoint and is keyed by that checkpoint's
+    /// sequence.
+    CheckpointSnapshotPart {
+        /// Sequence of the checkpoint these bytes belong to.
+        sequence: u64,
+        /// Zero-based position within this part set.
+        part_index: u32,
+        /// Number of parts in this set.
+        part_count: u32,
+        /// UTF-8 snapshot bytes for this part.
+        bytes: String,
+    },
+    /// One bounded part of the retained participant-event window.
+    CheckpointEventsPart {
+        /// Sequence of the checkpoint these events belong to.
+        sequence: u64,
+        /// Zero-based position within this part set.
+        part_index: u32,
+        /// Number of parts in this set.
+        part_count: u32,
+        /// Ordered events in this part.
+        events: Vec<WorldEvent>,
+    },
+    /// One bounded part of the retained admin-history window.
+    CheckpointAdminPart {
+        /// Sequence of the checkpoint these events belong to.
+        sequence: u64,
+        /// Zero-based position within this part set.
+        part_index: u32,
+        /// Number of parts in this set.
+        part_count: u32,
+        /// Ordered events in this part.
+        events: Vec<WorldEvent>,
+    },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
     Checkpoint {
@@ -1013,16 +1051,22 @@ pub const JOURNAL_VERSION_WORLD_BUDGET: u32 = 4;
 /// assigned version 4 to the world-budget contract above.)
 pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 5;
 
+/// Header version required by compacted checkpoint part entries. Older
+/// binaries refuse these entries at the header check instead of silently
+/// restoring an incomplete checkpoint.
+pub const JOURNAL_VERSION_CHECKPOINT_PARTS: u32 = 6;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_OPEN_PRESENCE;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_CHECKPOINT_PARTS;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
-/// version 4 for entries persisting a per-world total memory budget, and
-/// version 5 for checkpoints with open-presence metadata. Checkpoints combine
-/// the requirements of their transfers, retained events, profile and presence field.
+/// version 4 for entries persisting a per-world total memory budget, version 5
+/// for checkpoints with open-presence metadata, and version 6 for checkpoint
+/// part entries. Checkpoints combine the requirements of their transfers,
+/// retained events, profile and presence field.
 #[must_use]
 pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
     // A persisted budget always requires the budget version, on top of any
@@ -1038,6 +1082,9 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
             JOURNAL_VERSION_REGION_HANDOFF
         }
+        JournalEntry::CheckpointSnapshotPart { .. }
+        | JournalEntry::CheckpointEventsPart { .. }
+        | JournalEntry::CheckpointAdminPart { .. } => JOURNAL_VERSION_CHECKPOINT_PARTS,
         JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
             WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
             _ => JOURNAL_VERSION,

@@ -165,6 +165,55 @@ pub fn render_file_list(page: &FileListPage) -> String {
         search_value
     );
     html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
+    // Sort + origin filter (#4973): a plain GET form to /files so sorting
+    // and filtering by origin node and upload time work without JS.
+    let sort_current = page.sort.as_deref().unwrap_or("");
+    let origin_value = page
+        .origin_filter
+        .as_deref()
+        .map(html_escape)
+        .unwrap_or_default();
+    html.push_str("<form method=\"get\" action=\"/files\" class=\"flex items-center gap-1\">");
+    // Preserve the current search + show-deleted state across this GET
+    // submit (Codex review, PR #5191): without these hidden fields,
+    // applying a sort/origin silently cleared the other constraints.
+    if !search_value.is_empty() {
+        let _ = write!(
+            html,
+            "<input type=\"hidden\" name=\"search\" value=\"{}\" />",
+            search_value
+        );
+    }
+    if page.show_deleted {
+        html.push_str("<input type=\"hidden\" name=\"show_deleted\" value=\"true\" />");
+    }
+    html.push_str("<select id=\"file-sort\" name=\"sort\" aria-label=\"Sort files\" class=\"select select-bordered select-xs bg-base-100\">");
+    for (value, label) in [
+        ("", "sort: default"),
+        ("uploaded", "sort: upload time"),
+        ("origin", "sort: origin node"),
+    ] {
+        let selected = if value == sort_current {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(
+            html,
+            "<option value=\"{}\"{}>{}</option>",
+            value, selected, label
+        );
+    }
+    html.push_str("</select>");
+    let _ = write!(
+        html,
+        "<input type=\"text\" id=\"file-origin\" name=\"origin\" aria-label=\"Filter by origin node\" class=\"input input-bordered input-xs w-28 bg-base-100\" placeholder=\"origin / unknown\" value=\"{}\" />",
+        origin_value
+    );
+    html.push_str(
+        "<button type=\"submit\" class=\"btn btn-ghost btn-xs font-mono\">apply</button>",
+    );
+    html.push_str("</form>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -291,6 +340,21 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 format!("<span class=\"flex gap-1 flex-wrap\">{}</span>", tag_pills)
             };
 
+            // Origin + upload time (#4973): origin is the node that first
+            // wrote the file (`unknown` when unrecorded); uploaded is the
+            // `created` stamp. Refs only — bytes never travel in a surface.
+            let origin_str = file.origin_node.as_deref().unwrap_or("unknown");
+            let uploaded_str = file
+                .created_at
+                .map(format_unix_timestamp)
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "unknown".to_owned());
+            let origin_html = format!(
+                "<span class=\"text-base-content/40 whitespace-nowrap text-xs\">origin {} \u{00b7} uploaded {}</span>",
+                html_escape(origin_str),
+                uploaded_str
+            );
+
             // Timestamp display — prefer modified_at, fall back to created_at, then tag-parsed
             let display_ts = file.modified_at.or(file.created_at).or(file.timestamp);
             let date_str = display_ts.map(format_unix_timestamp).unwrap_or_default();
@@ -315,7 +379,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                     <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
                     <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
-                    {}{}{}{}\
+                    {}{}{}{}{}\
                     <code class=\"font-mono text-base-content/40\">{}</code>\
                 </li>",
                 deleted_class,
@@ -329,6 +393,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 deleted_badge,
                 tags_html,
                 date_html,
+                origin_html,
                 short_hash,
             );
         }
@@ -344,6 +409,17 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             .as_deref()
             .map(|s| format!("&search={}", urlencoding::encode(s)))
             .unwrap_or_default();
+        let sort_param = page
+            .sort
+            .as_deref()
+            .map(|s| format!("&sort={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let origin_param = page
+            .origin_filter
+            .as_deref()
+            .map(|s| format!("&origin={}", urlencoding::encode(s)))
+            .unwrap_or_default();
+        let search_param = format!("{search_param}{sort_param}{origin_param}");
 
         html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
@@ -1132,6 +1208,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("No files stored yet"));
@@ -1150,6 +1228,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1159,6 +1238,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         assert!(html.contains("test.txt"));
@@ -1182,6 +1263,7 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 tags: vec![],
+                origin_node: None,
                 is_deleted: false,
             })
             .collect();
@@ -1192,6 +1274,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("51-100 of 300"), "html: {html}");
@@ -1208,6 +1292,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1222,6 +1308,8 @@ mod tests {
             per_page: 200,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(html.contains("0-0 of 300"), "html: {html}");
@@ -1245,6 +1333,7 @@ mod tests {
             created_at: None,
             modified_at: None,
             tags: vec![("note".to_owned(), Some(value))],
+            origin_node: None,
             is_deleted: false,
         }];
         let page = FileListPage {
@@ -1254,6 +1343,8 @@ mod tests {
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list(&page);
         // Truncated on the char boundary before 'é', with the ellipsis.
@@ -1327,12 +1418,15 @@ mod tests {
                 created_at: None,
                 modified_at: None,
                 tags: vec![],
+                origin_node: None,
                 is_deleted: false,
             }],
             page: 1,
             per_page: 50,
             search: None,
             show_deleted: false,
+            sort: None,
+            origin_filter: None,
         };
         let html = render_file_list_content(&page);
         assert!(

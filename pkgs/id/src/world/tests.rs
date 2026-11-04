@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_accepts_v1_through_v5_headers_and_refuses_newer_at_the_header() {
+    fn restore_accepts_v1_through_v6_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
         // which is exactly where a version-1 binary refuses a version-2
@@ -206,6 +206,7 @@ mod tests {
             JOURNAL_VERSION_REGION_HANDOFF,
             JOURNAL_VERSION_WORLD_BUDGET,
             JOURNAL_VERSION_OPEN_PRESENCE,
+            JOURNAL_VERSION_CHECKPOINT_PARTS,
         ] {
             let restored = WorldCore::restore(
                 "w",
@@ -804,10 +805,36 @@ mod tests {
             journal_version_required_by(&plain_checkpoint),
             JOURNAL_VERSION
         );
+
+        for part in [
+            JournalEntry::CheckpointSnapshotPart {
+                sequence: 1,
+                part_index: 0,
+                part_count: 1,
+                bytes: "state".to_owned(),
+            },
+            JournalEntry::CheckpointEventsPart {
+                sequence: 1,
+                part_index: 0,
+                part_count: 1,
+                events: Vec::new(),
+            },
+            JournalEntry::CheckpointAdminPart {
+                sequence: 1,
+                part_index: 0,
+                part_count: 1,
+                events: Vec::new(),
+            },
+        ] {
+            assert_eq!(
+                journal_version_required_by(&part),
+                JOURNAL_VERSION_CHECKPOINT_PARTS
+            );
+        }
     }
 
     #[test]
-    fn budget_checkpoint_compacts_to_version_5_and_restores() {
+    fn budget_checkpoint_compacts_to_version_6_and_restores() {
         let profile = crate::world_limits::WorldExecutionProfile {
             total_memory_bytes: Some(32 * 1024 * 1024),
             ..Default::default()
@@ -815,21 +842,247 @@ mod tests {
         let mut core = world(8);
         core.execution_profile = profile;
         core.active_module_hash = Some("h".to_owned());
-        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
-        // The compacted journal carries the budget, so its header must
-        // refuse binaries that predate the budget version (#227). New
-        // checkpoints also always carry open-presence metadata (#242), so
-        // the header is the max of the two requirements: the open-presence
-        // version (5), which also refuses pre-budget binaries.
+        // An oversized snapshot forces the bounded part entries, so the
+        // header is version 6, above the open-presence and budget
+        // requirements (#227).
+        let entries = core.checkpoint_entries("state".repeat(50_000)).unwrap();
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_OPEN_PRESENCE,
+                version: JOURNAL_VERSION_CHECKPOINT_PARTS,
                 ..
             }
         ));
         let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
         assert_eq!(restored.core.execution_profile(), profile);
+    }
+
+    #[test]
+    fn checkpoint_parts_are_utf8_safe_bounded_and_restore_all_state() {
+        let mut core = world(16);
+        core.active_module_hash = Some("h".to_owned());
+        core.sequence = 3;
+        let (participant, _) = join(&mut core, "ann");
+        core.open_presence.insert(participant.id);
+
+        let events: Vec<WorldEvent> = (1..=3)
+            .map(|sequence| WorldEvent {
+                sequence,
+                participant_id: participant.id,
+                kind: WorldEventKind::Chat(format!("{}-{sequence}", "é\"".repeat(35_000))),
+            })
+            .collect();
+        core.events = events.clone().into();
+        core.admin_history = std::iter::once(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(participant.id, "ann", true),
+            },
+        })
+        .chain(events.iter().cloned())
+        .collect();
+        core.admin_history_complete = true;
+        let snapshot = "🧭\"".repeat(80_000);
+
+        let entries = core.checkpoint_entries(snapshot.clone()).unwrap();
+        assert!(matches!(
+            entries.first(),
+            Some(JournalEntry::Created {
+                version: JOURNAL_VERSION_CHECKPOINT_PARTS,
+                ..
+            })
+        ));
+        assert!(entries.iter().all(|entry| {
+            serde_json::to_vec(entry).is_ok_and(|bytes| bytes.len() <= MAX_CHECKPOINT_PART_BYTES)
+        }));
+
+        let snapshot_parts: Vec<&str> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::CheckpointSnapshotPart { bytes, .. } => Some(bytes.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(snapshot_parts.len() > 1);
+        assert_eq!(snapshot_parts.concat(), snapshot);
+        let event_parts: Vec<&Vec<WorldEvent>> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::CheckpointEventsPart { events, .. } => Some(events),
+                _ => None,
+            })
+            .collect();
+        assert!(event_parts.len() > 1);
+        assert_eq!(
+            event_parts
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>(),
+            events
+        );
+        let admin_parts: Vec<&Vec<WorldEvent>> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::CheckpointAdminPart { events, .. } => Some(events),
+                _ => None,
+            })
+            .collect();
+        assert!(admin_parts.len() > 1);
+        let expected_admin: Vec<WorldEvent> = std::iter::once(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(participant.id, "ann", true),
+            },
+        })
+        .chain(events.iter().cloned())
+        .collect();
+        assert_eq!(
+            admin_parts
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_admin
+        );
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::Checkpoint {
+                snapshot,
+                events,
+                admin_history: Some(JournalAdminHistory { events: admin_events, complete: true }),
+                open_presence: Some(presence),
+                ..
+            }) if snapshot.is_empty()
+                && events.is_empty()
+                && admin_events.is_empty()
+                && presence == &vec![participant.id]
+        ));
+
+        let restored =
+            WorldCore::restore_replica("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.program.unwrap().snapshot, Some(snapshot));
+        assert_eq!(
+            restored.core.events.iter().cloned().collect::<Vec<_>>(),
+            events
+        );
+        assert_eq!(
+            restored
+                .core
+                .admin_history
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_admin
+        );
+        assert!(restored.core.admin_history_complete);
+        assert_eq!(
+            restored.core.open_presence,
+            BTreeSet::from([participant.id])
+        );
+    }
+
+    #[test]
+    fn checkpoint_split_handles_a_single_multibyte_char_snapshot() {
+        // Regression (Codex review on PR #5316): when retained events force
+        // a split, the snapshot itself can be one multibyte character; the
+        // splitter's midpoint search must not floor to an empty prefix and
+        // give up on the character's only valid endpoint.
+        let mut core = world(16);
+        core.active_module_hash = Some("h".to_owned());
+        core.sequence = 3;
+        let events: Vec<WorldEvent> = (1..=3)
+            .map(|sequence| WorldEvent {
+                sequence,
+                participant_id: 0,
+                kind: WorldEventKind::Chat(format!("{}-{sequence}", "x".repeat(70_000))),
+            })
+            .collect();
+        core.events = events.clone().into();
+        core.admin_history = events.clone().into();
+        core.admin_history_complete = true;
+
+        let entries = core.checkpoint_entries("\u{1f9ed}".to_owned()).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::CheckpointSnapshotPart { .. }))
+        );
+        assert!(entries.iter().all(|entry| {
+            serde_json::to_vec(entry).is_ok_and(|bytes| bytes.len() <= MAX_CHECKPOINT_PART_BYTES)
+        }));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.program.and_then(|program| program.snapshot),
+            Some("\u{1f9ed}".to_owned())
+        );
+    }
+
+    #[test]
+    fn restore_rejects_incomplete_duplicate_reordered_or_mismatched_checkpoint_parts() {
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core
+            .checkpoint_entries("s".repeat(MAX_CHECKPOINT_PART_BYTES + 32))
+            .unwrap();
+        let snapshot_indices: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                matches!(entry, JournalEntry::CheckpointSnapshotPart { .. }).then_some(index)
+            })
+            .collect();
+        assert_eq!(snapshot_indices.len(), 2);
+
+        let mut missing = entries.clone();
+        missing.remove(snapshot_indices[1]);
+        assert!(WorldCore::restore("test-world", WorldLimits::default(), missing).is_err());
+
+        let mut duplicate = entries.clone();
+        duplicate.insert(snapshot_indices[1], duplicate[snapshot_indices[0]].clone());
+        let error =
+            WorldCore::restore("test-world", WorldLimits::default(), duplicate).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate or out of order"),
+            "{error:#}"
+        );
+
+        let mut reordered = entries.clone();
+        reordered.swap(snapshot_indices[0], snapshot_indices[1]);
+        let error =
+            WorldCore::restore("test-world", WorldLimits::default(), reordered).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate or out of order"),
+            "{error:#}"
+        );
+
+        let mut mismatched_count = entries.clone();
+        if let JournalEntry::CheckpointSnapshotPart { part_count, .. } =
+            &mut mismatched_count[snapshot_indices[1]]
+        {
+            *part_count += 1;
+        }
+        let error =
+            WorldCore::restore("test-world", WorldLimits::default(), mismatched_count).unwrap_err();
+        assert!(
+            error.to_string().contains("part_count does not match"),
+            "{error:#}"
+        );
+
+        let mut mismatched_sequence = entries;
+        if let JournalEntry::CheckpointSnapshotPart { sequence, .. } =
+            &mut mismatched_sequence[snapshot_indices[1]]
+        {
+            *sequence += 1;
+        }
+        let error = WorldCore::restore("test-world", WorldLimits::default(), mismatched_sequence)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("part sequence does not match"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -1097,6 +1350,89 @@ mod tests {
         let oversized_result = &results["records-oversized"];
         assert_eq!(oversized_result["ok"], false, "{oversized_result}");
         assert_eq!(oversized_result["error"], "bad_args");
+    }
+
+    #[tokio::test]
+    async fn records_read_pages_fit_the_result_event_that_delivers_them() {
+        // Regression for #4888: sixteen ~8 KiB records total ~128 KiB,
+        // which the old 768 KiB page admission accepted whole — and
+        // result_event then replaced the entire page with a
+        // result_too_large error above 64 KiB, so the program never saw
+        // a single record. The page must now stop at the cap-result
+        // bound and deliver records, with next_after naming the rest.
+        // Captured results are shared with the test through a handle, not
+        // republished as records: a full page result is ~64 KiB, and
+        // parse_records caps one record value at MAX_RECORD_VALUE_BYTES
+        // (8 KiB), so a records readout makes deliver() refuse the
+        // publication and the test would read an empty channel (#5128).
+        // The delivery under test is the result event reaching update().
+        #[derive(Debug, Default)]
+        struct PageProbe {
+            answered: BTreeSet<String>,
+            results: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>>,
+        }
+
+        impl WorldProgram for PageProbe {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value =
+                        serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                    if value["cap"] == "result"
+                        && let Some(id) = value["id"].as_str()
+                    {
+                        self.answered.insert(id.to_owned());
+                        self.results.lock().unwrap().insert(id.to_owned(), value);
+                    }
+                }
+                Ok(())
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                let requests: Vec<serde_json::Value> = [(
+                    "records-page",
+                    "records.read",
+                    serde_json::json!({}),
+                )]
+                .into_iter()
+                .filter(|(id, _, _)| !self.answered.contains(*id))
+                .map(|(id, cap, args)| serde_json::json!({"id": id, "cap": cap, "args": args}))
+                .collect();
+                Ok(Some(
+                    serde_json::json!({"v": 1, "requests": requests}).to_string(),
+                ))
+            }
+        }
+
+        let mut core = world(128);
+        core.ledger
+            .set_granted(BTreeSet::from(["records.read".to_owned()]));
+        let captured: Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let probe = PageProbe {
+            results: captured.clone(),
+            ..Default::default()
+        };
+        let mut actor = WorldActor::for_test(core, Box::new(probe), None);
+        let mut injected = Records::new();
+        for index in 0..16 {
+            injected.insert(
+                format!("r{index:02}"),
+                serde_json::Value::String("x".repeat(8000)),
+            );
+        }
+        actor.records_sender.send_replace((0, Arc::new(injected)));
+
+        actor.after_change().await;
+
+        let captured = captured.lock().unwrap();
+        let page = &captured["records-page"];
+        assert_eq!(page["ok"], true, "{page}");
+        let delivered = page["value"]["records"].as_array().unwrap();
+        // Each serialized entry is 8025 bytes with its comma; the
+        // 64512-byte cap-result bound admits exactly 8 of the 16.
+        assert_eq!(delivered.len(), 8, "{page}");
+        assert_eq!(delivered[0]["key"], "r00");
+        assert_eq!(page["value"]["next_after"], "r07");
     }
 
     #[tokio::test]
@@ -1976,7 +2312,10 @@ mod tests {
         }
         assert_eq!(core.admin_history.len(), 2);
         assert!(!core.admin_history_complete);
-        assert_eq!(core.admin_history_ledger.tracked(), core.admin_history.len());
+        assert_eq!(
+            core.admin_history_ledger.tracked(),
+            core.admin_history.len()
+        );
         let rescanned: usize = core
             .admin_history
             .iter()
@@ -2087,8 +2426,7 @@ mod tests {
             panic!("checkpoint entry missing");
         }
         assert!(
-            WorldCore::restore("ledger-restore-bytes", WorldLimits::default(), checkpoint)
-                .is_err(),
+            WorldCore::restore("ledger-restore-bytes", WorldLimits::default(), checkpoint).is_err(),
             "a checkpoint whose admin history exceeds the byte bound must be refused"
         );
     }
@@ -2541,7 +2879,7 @@ mod tests {
     }
 
     #[test]
-    fn a_default_ceiling_is_not_written_and_old_journals_allow_the_whole_catalog() {
+    fn a_default_ceiling_is_not_written_and_old_journals_allow_the_default_ceiling() {
         let mut core = world(8);
         core.active_module_hash = Some("h".to_owned());
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
@@ -2572,9 +2910,12 @@ mod tests {
             ],
         )
         .unwrap();
+        // An old journal with no written ceiling restores to the
+        // current default ceiling: the whole catalog minus the sensor
+        // caps (#2341), which join only an explicit ceiling.
         assert_eq!(
             restored.core.ledger.allowed(),
-            &crate::world_caps::catalog_names()
+            &crate::world_caps::default_ceiling_names()
         );
     }
 
@@ -4471,9 +4812,7 @@ mod tests {
         assert_eq!(actor.view_failures, 1, "the oversized view is counted");
 
         let (reply, rx) = tokio::sync::oneshot::channel();
-        actor
-            .handle(WorldCommand::View { token, reply })
-            .await;
+        actor.handle(WorldCommand::View { token, reply }).await;
         let second = rx.await.unwrap();
         assert!(
             matches!(&second, Ok(Some(text)) if text == "recovered view"),
@@ -4574,6 +4913,113 @@ mod tests {
         assert_eq!(
             actor.view_failures, 1,
             "the fallback triggers a view failure count"
+        );
+    }
+
+    struct OversizedFallbackText;
+
+    impl WorldProgram for OversizedFallbackText {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            // A non-screen fallback text far beyond the presentation limit.
+            Ok(Some("y".repeat(9000)))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            _width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            let pad = "x".repeat(9000);
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_over_limit_fallback_text_is_bounded_by_presentation_bytes() {
+        let mut core = WorldCore::new("oversized-fallback-text", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedFallbackText), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token,
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains("world presentation exceeds 8192 bytes")),
+            "an over-limit fallback text is refused, not delivered: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an over-limit fallback must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 2,
+            "the oversized layout and the over-limit fallback are both counted"
+        );
+    }
+
+    struct OversizedFallbackScreen;
+
+    impl WorldProgram for OversizedFallbackScreen {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            // A full 120x50 screen whose cropped serialization is far beyond
+            // the presentation limit (6000 populated cells).
+            let cell =
+                serde_json::json!({"symbol": "x", "fg": 1, "bg": 2, "bold": true, "columns": 1});
+            let cells: Vec<_> = std::iter::repeat_n(cell, 120 * 50).collect();
+            Ok(Some(
+                serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": cells})
+                    .to_string(),
+            ))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            _width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            let pad = "x".repeat(9000);
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_over_limit_cropped_fallback_screen_is_bounded_by_presentation_bytes() {
+        let mut core = WorldCore::new("oversized-fallback-screen", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedFallbackScreen), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token,
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(error) if error.to_string().contains("world presentation exceeds 8192 bytes")),
+            "an over-limit cropped fallback screen is refused, not delivered: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an over-limit cropped fallback must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 2,
+            "the oversized layout and the over-limit cropped fallback are both counted"
         );
     }
 
@@ -5692,6 +6138,65 @@ mod schedule_tests {
         );
     }
 
+    /// Item 10-2 (#796/#5239): a schedule test that sets a ceiling.
+    /// `schedule.at` is granted, but the world's capability ceiling excludes
+    /// it, so the use is refused (and counted) and nothing pends — the
+    /// grant itself is kept, so lifting the ceiling would restore it.
+    #[tokio::test]
+    async fn a_schedule_outside_the_ceiling_is_refused_and_pends_nothing() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("sched-ceiling", &["schedule.at"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        assert!(
+            actor.core.ledger.granted().contains("schedule.at"),
+            "the grant is kept under the ceiling"
+        );
+        assert!(
+            !actor.core.ledger.is_granted("schedule.at"),
+            "is_granted is allowed-and-granted: false while the ceiling excludes it"
+        );
+        assert!(
+            !actor.core.ledger.effective().contains("schedule.at"),
+            "the ceiling excludes schedule.at from the effective set"
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "nap", "at": EPOCH_MS + 60_000}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "s1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor.core.ledger.usage()["schedule.at"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.schedules.is_empty(),
+            "a ceiling-refused schedule pends nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::ScheduleSet { .. })),
+            "a ceiling-refused request journals no schedule set"
+        );
+    }
+
     #[tokio::test]
     async fn a_due_schedule_fires_once_and_the_program_receives_it() {
         let (mut actor, clock, token, journal) =
@@ -5739,6 +6244,44 @@ mod schedule_tests {
                 .filter(|entry| matches!(entry, JournalEntry::ScheduleFired { .. }))
                 .count(),
             1
+        );
+    }
+
+    /// Item 10-2 (#796/#5239): a schedule fire never reaches joiners.
+    /// The fire is a host `System` event delivered to the program; a
+    /// joiner's catch-up page (`events_after`) must not carry it, while a
+    /// genuine participant event on the same page still comes through.
+    #[test]
+    fn a_schedule_fire_never_reaches_joiners_via_events_after() {
+        let mut core = world(8);
+        let (_, token) = core
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        // Positive control: a participant event is visible to joiners.
+        assert_eq!(core.input(&token, b"move").unwrap().sequence, 1);
+        // A delivered fire, retained as host events are, carrying the
+        // schedule-fired payload for schedule "siesta" (an id that is
+        // not a substring of any EventPage field name — "nap" is one
+        // of needs_snapshot, which false-positives a whole-page scan).
+        let fire = WorldEvent {
+            sequence: 2,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: schedule_fired_event("siesta", false),
+            },
+        };
+        core.sequence = fire.sequence;
+        core.events.push_back(fire);
+        let page = core.events_after(&token, 0).unwrap();
+        assert_eq!(
+            page.events.len(),
+            1,
+            "only the participant event reaches a joiner: {page:?}"
+        );
+        assert!(matches!(page.events[0].kind, WorldEventKind::Input(_)));
+        assert!(
+            !format!("{:?}", page.events).contains("siesta"),
+            "the schedule fire leaked to a joiner via events_after"
         );
     }
 

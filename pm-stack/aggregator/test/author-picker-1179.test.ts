@@ -84,6 +84,7 @@ beforeAll(async () => {
     env: {
       ...Bun.env,
       PM_AGG_PORT: String(port),
+      PM_AGG_SOURCE: "fixtures",
       PM_AGG_FEED_FILE: join(dir, "no-feed.json"),
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
       PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),

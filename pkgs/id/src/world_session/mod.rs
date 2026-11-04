@@ -2683,6 +2683,11 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             }
+            // The clamp to the presentation maximum (120x50) is intentional,
+            // not a validation gap: F14.2 (.opencode/plans/phase-14-close-out.md)
+            // accepts viewports up to the transport bound (500x200) and clamps
+            // them to MAX_SCREEN_WIDTH x MAX_SCREEN_HEIGHT for presentation
+            // (#942 verdict). Do not narrow the accepted range to 120x50.
             let clamped_width = usize::from(width).min(crate::world_presentation::MAX_SCREEN_WIDTH);
             let clamped_height =
                 usize::from(height).min(crate::world_presentation::MAX_SCREEN_HEIGHT);

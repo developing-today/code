@@ -1,22 +1,17 @@
 // The agent/session identity registry (#906 §3). Pure builders + merge:
 // the collector assembles records from the sources it can read (sandbox
-// OpenCode sessions, the Jules keeper state, Muse launch
+// OpenCode sessions, Muse launch
 // records), the fleet feed carries them, and the aggregator merges them
 // with the laptop's live sessions into a durable store — so a session
 // stays in the registry after it expires out of the attention feed.
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
-import { parseRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
+import { isValidRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
+import { isIsoDate } from "./validate.ts";
 
 function isValidTaskRef(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    parseRef(value);
-    return true;
-  } catch {
-    return false;
-  }
+  return isValidRef(value);
 }
 
 /** Agent identity for an OpenCode session entry. */
@@ -170,12 +165,32 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
   // this filter today and throws TypeError once the sort reaches it.
   // Timestamps must be string-or-absent; a poisoned record is rejected,
   // not coerced (the #2347 load-filter precedent).
+  // #5078: a string is not enough — mergeRecords string-compares
+  // lastSeenAt, so a non-ISO stamp ("March 2, 2026" sorts after every
+  // ISO stamp) wins recency forever, and impossible dates (2026-02-30)
+  // roll to other instants in registryActivityMs. Present timestamps
+  // must be real ISO dates via isIsoDate, as isSnapshotRecord and the
+  // charge/subscription row guards already require; absent stays fine.
   return (
     typeof r.id === "string" &&
     typeof r.source === "string" &&
     typeof r.label === "string" &&
-    (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
-    (r.startedAt === undefined || typeof r.startedAt === "string") &&
+    // #3525: render.ts dereferences status (sessionRecordIsLive calls
+    // r.status.toLowerCase()), agentId/agentLabel (identitiesFromRecords
+    // interpolates agentLabel) and tokensTotal (renderSessions sums it,
+    // sessionRecordLine formats it with toLocaleString()) unconditionally.
+    // SessionRecord requires string status/agentId/agentLabel, so a record
+    // missing any of them is poisoned and rejected, not coerced (the
+    // #2347/#2376 precedent). tokensTotal is optional on SessionRecord, so
+    // absent is fine; when present it must be a finite number >= 0 — a
+    // string/Infinity/negative/object value poisons the page token total.
+    typeof r.status === "string" &&
+    typeof r.agentId === "string" &&
+    typeof r.agentLabel === "string" &&
+    (r.tokensTotal === undefined ||
+      (typeof r.tokensTotal === "number" && Number.isFinite(r.tokensTotal) && r.tokensTotal >= 0)) &&
+    (r.lastSeenAt === undefined || isIsoDate(r.lastSeenAt)) &&
+    (r.startedAt === undefined || isIsoDate(r.startedAt)) &&
     // #2408/#2485/#4284: mergeRecords spreads taskRefs as an array, and
     // querying/rendering dereferences it unconditionally (spread in
     // matchesText, .some in the ?task= filter and the item-page linked-

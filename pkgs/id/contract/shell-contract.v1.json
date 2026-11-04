@@ -122,6 +122,12 @@
         }
       }
     },
+    "directory": {
+      "class": "query",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {}
+    },
     "list_worlds": {
       "class": "admin",
       "phases": ["opening"],

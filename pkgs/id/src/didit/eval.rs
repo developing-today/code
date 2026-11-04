@@ -149,9 +149,25 @@ fn count_verdicts(
             .collect();
         matching.sort_by_key(|record| record.at);
         let count = matching.len() as u64;
+        // No record can count after the period's last active span closes:
+        // records are filtered to spans clipped to this period, so the last
+        // countable instant is the latest span end inside the period (for
+        // `Always` that is the period end itself, leaving it unchanged). A
+        // period with no active span at all is unmeetable from its start.
+        // A wrapping span is clipped at the period end, matching the
+        // `record.at < end` filter above.
+        let last_countable = spans
+            .iter()
+            .filter(|(span_start, span_end)| *span_start < end && *span_end > start)
+            .map(|(_, span_end)| (*span_end).min(end))
+            .max();
+        let unmeetable = match last_countable {
+            Some(deadline) => deadline <= now,
+            None => start <= now,
+        };
         let state = if count >= required {
             VerdictState::Satisfied
-        } else if end <= now {
+        } else if end <= now || unmeetable {
             VerdictState::Violated
         } else {
             VerdictState::Due
@@ -200,6 +216,22 @@ fn interval_verdicts(
     }
     spans.sort_unstable();
     spans.dedup();
+    // Adjacent spans are one continuous active stretch split only by
+    // the calendar: an Always day ends where the next begins, and a
+    // non-wrapping sleep window's active complement is cut at
+    // midnight. Merge spans that touch or overlap before judging, so
+    // a record gap crossing the seam is judged as the single
+    // consecutive gap it is (#5144) — split at the seam, each edge gap
+    // could pass while the real gap ran to nearly twice the max.
+    // Verdict windows below therefore span the merged stretch.
+    let mut merged: Vec<(i64, i64)> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match merged.last_mut() {
+            Some(last) if span.0 <= last.1 => last.1 = last.1.max(span.1),
+            _ => merged.push(span),
+        }
+    }
+    let spans = merged;
     let mut verdicts = Vec::new();
     for (start, end) in spans {
         let mut matching: Vec<&Record> = records
@@ -410,7 +442,9 @@ fn active_spans_between(
     let first = local_date(start, tz)?;
     let last = local_date(end.saturating_sub(1), tz)?;
     let mut spans = Vec::new();
-    let mut date = first;
+    // A span that wraps past midnight began on the preceding local date, so
+    // that date is scanned too: its carry-in portion overlaps this range.
+    let mut date = first.pred_opt().unwrap_or(first);
     loop {
         spans.extend(spans_for_date(tz, active, date)?);
         if date >= last {

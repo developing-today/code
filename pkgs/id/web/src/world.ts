@@ -613,14 +613,20 @@ function initWorld(): void {
       );
     });
     upload.addEventListener("message", async (message) => {
-      let frame: WorldFrame;
+      let parsed: unknown;
       try {
-        frame = JSON.parse(String(message.data)) as typeof frame;
+        parsed = JSON.parse(String(message.data)) as unknown;
       } catch {
         setStatus("Host returned an invalid upload response", "error");
         upload.close();
         return;
       }
+      if (!isRecord(parsed) || typeof parsed.type !== "string") {
+        setStatus("Host returned an invalid upload response", "error");
+        upload.close();
+        return;
+      }
+      const frame = parsed as WorldFrame;
       if (frame.type === "error") {
         setStatus(frame.message ?? "Module install failed", "error");
         upload.close();
@@ -629,7 +635,12 @@ function initWorld(): void {
       if (frame.type === "upload_ready" && !uploadStarted) {
         uploadStarted = true;
         const chunkBytes = frame.chunk_bytes;
-        if (!chunkBytes || chunkBytes < 1 || chunkBytes > 6 * 1024) {
+        if (
+          typeof chunkBytes !== "number" ||
+          !Number.isInteger(chunkBytes) ||
+          chunkBytes < 1 ||
+          chunkBytes > 6 * 1024
+        ) {
           setStatus("Host returned an invalid module chunk size", "error");
           upload.close();
           return;
@@ -734,14 +745,20 @@ function initWorld(): void {
       );
     });
     compiler.addEventListener("message", (message) => {
-      let frame: WorldFrame;
+      let parsed: unknown;
       try {
-        frame = JSON.parse(String(message.data)) as WorldFrame;
+        parsed = JSON.parse(String(message.data)) as unknown;
       } catch {
         setStatus("Host returned an invalid compile response", "error");
         compiler.close();
         return;
       }
+      if (!isRecord(parsed) || typeof parsed.type !== "string") {
+        setStatus("Host returned an invalid compile response", "error");
+        compiler.close();
+        return;
+      }
+      const frame = parsed as WorldFrame;
       if (frame.type === "error") {
         setStatus(frame.message ?? "Roc compilation failed", "error");
         appendLine(log, `compile error: ${frame.message ?? "Roc compilation failed"}`);

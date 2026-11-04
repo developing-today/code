@@ -97,7 +97,6 @@ in
         "openclaw-embedding.service"
         "opencode-route-proxy.service"
         "commandcode-proxy.service"
-        "design-code-proxy.service"
         "agy-proxy.service"
         "codex-proxy.service"
         "mcpx.service"
@@ -277,7 +276,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
+          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
@@ -420,62 +419,62 @@ in
         slots.memory = "memory-lancedb";
 
         entries = {
-        acpx = {
-          enabled = true;
-          config = {
-            # ACP sessions are non-interactive; on Drew's own repos the
-            # fleet posture is approve-all, with unexpected prompts denied
-            # rather than hanging the session.
-            permissionMode = "approve-all";
-            nonInteractivePermissions = "deny";
-            # Per-agent command override for the EMBEDDED acpx runtime.
-            # Without this, acpx defaults to `npx -y opencode-ai acp` —
-            # upstream OpenCode v1, which rejects the fleet's v2 config
-            # (and the npx fetch hangs on this laptop's npmjs route).
-            # The standalone acpx CLI reads ~/.acpx/config.json instead;
-            # that file is kept in sync above, but the plugin ignores it.
-            # Via the ACP-to-HTTP adapter (#1243), not `opencode acp`:
-            # sessions land on the shared serve at 127.0.0.1:13420.
-            # Fallback: command "/etc/profiles/per-user/user/bin/opencode"
-            # with args [ "acp" ] restores the private-server path.
-            agents.opencode = {
-              command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
-              args = [
-                "--server"
-                "http://127.0.0.1:13420"
-              ];
-            };
-            agents.claude = {
-              command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
-            };
-            agents.codex = {
-              command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
-            };
-            agents.agy = {
-              command = "/run/current-system/sw/bin/agy_acp_server";
+          acpx = {
+            enabled = true;
+            config = {
+              # ACP sessions are non-interactive; on Drew's own repos the
+              # fleet posture is approve-all, with unexpected prompts denied
+              # rather than hanging the session.
+              permissionMode = "approve-all";
+              nonInteractivePermissions = "deny";
+              # Per-agent command override for the EMBEDDED acpx runtime.
+              # Without this, acpx defaults to `npx -y opencode-ai acp` —
+              # upstream OpenCode v1, which rejects the fleet's v2 config
+              # (and the npx fetch hangs on this laptop's npmjs route).
+              # The standalone acpx CLI reads ~/.acpx/config.json instead;
+              # that file is kept in sync above, but the plugin ignores it.
+              # Via the ACP-to-HTTP adapter (#1243), not `opencode acp`:
+              # sessions land on the shared serve at 127.0.0.1:13420.
+              # Fallback: command "/etc/profiles/per-user/user/bin/opencode"
+              # with args [ "acp" ] restores the private-server path.
+              agents.opencode = {
+                command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
+                args = [
+                  "--server"
+                  "http://127.0.0.1:13420"
+                ];
+              };
+              agents.claude = {
+                command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+              };
+              agents.codex = {
+                command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+              };
+              agents.agy = {
+                command = "/run/current-system/sw/bin/agy_acp_server";
+              };
             };
           };
-        };
-        slack.enabled = true;
-        codex.enabled = true;
-        copilot.enabled = true;
-        "memory-lancedb" = {
-          enabled = true;
-          config = {
-            embedding = {
-              # Direct OpenAI-compatible path against the fixed local
-              # llama-server above. The apiKey is a placeholder label,
-              # not a credential: the loopback server checks no key
-              # (same posture as localProvider).
-              apiKey = "local-embedding";
-              baseUrl = "http://127.0.0.1:${toString embeddingPort}/v1";
-              model = "Qwen3-Embedding-0.6B-Q8_0";
-              dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
+          slack.enabled = true;
+          codex.enabled = true;
+          copilot.enabled = true;
+          "memory-lancedb" = {
+            enabled = true;
+            config = {
+              embedding = {
+                # Direct OpenAI-compatible path against the fixed local
+                # llama-server above. The apiKey is a placeholder label,
+                # not a credential: the loopback server checks no key
+                # (same posture as localProvider).
+                apiKey = "local-embedding";
+                baseUrl = "http://127.0.0.1:${toString embeddingPort}/v1";
+                model = "Qwen3-Embedding-0.6B-Q8_0";
+                dimensions = 1024; # Qwen3-Embedding-0.6B hidden size
+              };
+              autoRecall = true;
+              autoCapture = false;
             };
-            autoRecall = true;
-            autoCapture = false;
           };
-        };
         };
       };
 

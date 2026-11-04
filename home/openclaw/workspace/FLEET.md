@@ -21,7 +21,7 @@ Standing repo rules: merge commits only · never force-push main · **never touc
 
 ## Other standing context
 
-- **mcpx** — Drew's MCP gateway: one daemon fronts the fleet's MCP servers (codedb, fff, chrome-devtools, context7, jules, desktop-commander, …). This gateway also has direct MCP wiring to the most useful of those (see openclaw.json `mcp.servers`).
+- **mcpx** — Drew's MCP gateway: one daemon fronts the fleet's MCP servers (codedb, fff, chrome-devtools, context7, desktop-commander, …). This gateway also has direct MCP wiring to the most useful of those (see openclaw.json `mcp.servers`).
 - **Notes system** — Emanote Zettelkasten: `dezren39/zettel` + `developing-today/zettel`. Drew brain-dumps; agents explode into small interlinked notes and push.
 - **Basement lab cluster** (goal, in progress) — Talos + Cozystack + TALM, Postgres (CNPG), RustFS, ~12 Threadripper machines. **Hard rule: no HashiCorp tooling.**
 - **Supabase `muse-dev`** — Muse's platform project (backups to R2). Not OpenClaw's concern unless asked.
