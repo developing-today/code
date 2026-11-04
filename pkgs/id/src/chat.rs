@@ -39,8 +39,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
+use crate::text::sanitize_chat;
 use crate::waiting::AuthorKey;
-use crate::world::sanitize_chat;
 
 /// The kind of a `chat.message.v1` event, as the header's `kind` names it.
 pub const CHAT_MESSAGE_KIND: &str = "chat.message.v1";
