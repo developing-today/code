@@ -340,6 +340,17 @@ describe("render smoke (fixtures)", () => {
     expect(html).toContain("Headroom for a new session");
     expect(html).toContain("Antigravity");
   });
+  test("fresh manual refresh renders a neutral refreshing marker", async () => {
+    const src = fixtureSource();
+    const html = renderQuota(await src.quota(), src.provenance(), await src.usage(), undefined, {
+      stale: false,
+      refreshing: true,
+      triggered: true,
+      lastTriggerAt: "2026-11-03T14:00:00.000Z",
+    });
+    expect(html).toContain("refreshing — the quota gatherer is running; reload for updated data");
+    expect(html).not.toContain("quotas were stale");
+  });
   test("attention view renders the tiered needs-you page", async () => {
     const src = fixtureSource();
     const view = buildAttention(await src.attention(), await src.orchestration());
