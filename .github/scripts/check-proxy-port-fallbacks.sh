@@ -30,6 +30,16 @@
 # the retirement note in home/common/default.nix. They are deliberately
 # NOT rows here — restoring one means restoring its let from git
 # history and re-adding its row in the same change (#2961).
+#
+# Retired 2026-11-03 (#5240): the design-code door (:18746) was removed
+# outright (7b51087cc removed its let and unit; a0755459e removed its
+# opencode.jsonc door shell), so its row is gone from the table below,
+# same pattern as the 2026-10-30 retirements; bin/design-code-proxy.mjs
+# remains as history. The codex door program (:18744) is NOT retired —
+# only its opencode.jsonc provider was (1dad07b4a re-seated the
+# openai-codex routes onto openai-plan) — so the CODEX row keeps its
+# let and bin/ fallback checks with has_config "no": there is no
+# baseURL left in opencode.jsonc for it to match.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -39,8 +49,7 @@ config_file="$repo_root/.opencode/opencode.jsonc"
 # var | let binding | proxy script | has an opencode.jsonc baseURL
 proxies=(
   "CLEF_PROXY_PORT|clefProxyPort|bin/clef-proxy.mjs|no"
-  "CODEX_PROXY_PORT|codexProxyPort|bin/codex-proxy.mjs|yes"
-  "DESIGN_CODE_PROXY_PORT|designCodeProxyPort|bin/design-code-proxy.mjs|yes"
+  "CODEX_PROXY_PORT|codexProxyPort|bin/codex-proxy.mjs|no"
   "MUSE_PROXY_PORT|museProxyPort|bin/muse-proxy.mjs|yes"
   "COMMANDCODE_PROXY_PORT|commandcodeProxyPort|bin/commandcode-proxy.mjs|yes"
   "CLAUDE_CODE_PROXY_PORT|claudeCodeProxyPort|bin/claude-code-proxy.mjs|yes"

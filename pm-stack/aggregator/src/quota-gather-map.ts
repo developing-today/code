@@ -14,6 +14,7 @@
 // its raw usage on the entry and yields no windows (never zeros).
 import type { QuotaCurrentEntry, QuotaCurrentWindow, SnapshotRecord } from "./model.ts";
 import { safeProviderReason } from "./credential-lifecycle.ts";
+import { isIsoDate } from "./validate.ts";
 
 /** The subset of a quota-module result the mapper reads. */
 export interface QuotaProviderResult {
@@ -72,7 +73,7 @@ export function serviceIdFor(providerId: string): string {
     case "claude":
       return "anthropic:claude-pro";
     case "codex":
-      return "openai";
+      return "openai.main";
     case "cline-pass":
       return "cline-pass";
     case "command-code":
@@ -337,7 +338,7 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (typeof expiry === "number" && Number.isFinite(expiry)) {
     const date = new Date(expiry);
     if (Number.isFinite(date.getTime())) entry.credentialExpiresAt = date.toISOString();
-  } else if (typeof expiry === "string" && Number.isFinite(Date.parse(expiry))) {
+  } else if (isIsoDate(expiry)) {
     entry.credentialExpiresAt = new Date(expiry).toISOString();
   }
   if (result.credentialSource) entry.credentialSource = result.credentialSource;
@@ -628,8 +629,12 @@ export function entryFromTurso(
   const periodStart =
     sub?.current_billing_period_start ?? sub?.current_period_start ?? sub?.period_start ?? sub?.starts_at;
   const resetsAt = normalizeResetAt(periodEnd);
-  const startMs = typeof periodStart === "string" ? Date.parse(periodStart) : Number.NaN;
-  const endMs = typeof periodEnd === "string" ? Date.parse(periodEnd) : Number.NaN;
+  // Gate both stamps with isIsoDate before Date.parse (#5091): Date.parse
+  // rolls impossible dates (2026-02-30 -> Mar 2) and parses non-ISO strings
+  // timezone-dependently, so a malformed period would silently publish a
+  // window length days off. A present-but-invalid stamp yields null.
+  const startMs = isIsoDate(periodStart) ? Date.parse(periodStart) : Number.NaN;
+  const endMs = isIsoDate(periodEnd) ? Date.parse(periodEnd) : Number.NaN;
   const windowSeconds =
     Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs ? Math.round((endMs - startMs) / 1000) : null;
 

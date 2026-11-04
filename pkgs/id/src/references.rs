@@ -455,25 +455,31 @@ impl LocalIndex {
                 ClaimState::Uncontested
             }
         };
-        let candidate = |match_kind: MatchKind, surface: String, author: AuthorKey, state: ClaimState| {
-            Candidate {
-                target_id: object.id,
-                kind: sigil,
-                match_kind,
-                provenance: Provenance {
-                    store: self.store.clone(),
-                    author,
-                    claim_state: state,
-                },
-                surface,
-            }
-        };
+        let candidate =
+            |match_kind: MatchKind, surface: String, author: AuthorKey, state: ClaimState| {
+                Candidate {
+                    target_id: object.id,
+                    kind: sigil,
+                    match_kind,
+                    provenance: Provenance {
+                        store: self.store.clone(),
+                        author,
+                        claim_state: state,
+                    },
+                    surface,
+                }
+            };
         // Tier 1: the viewer's petname, `@` only.
         if sigil == Sigil::Actor {
             if let Some(petname) = self.petnames.get(&object.id) {
                 if fold(petname) == folded {
                     let state = claim_state(MatchKind::Petname, petname);
-                    return Some(candidate(MatchKind::Petname, petname.clone(), object.author, state));
+                    return Some(candidate(
+                        MatchKind::Petname,
+                        petname.clone(),
+                        object.author,
+                        state,
+                    ));
                 }
             }
         }
@@ -484,11 +490,21 @@ impl LocalIndex {
             .find(|claim| fold(&claim.text) == folded)
         {
             let state = claim_state(MatchKind::ExactClaim, &claim.text);
-            return Some(candidate(MatchKind::ExactClaim, object.current_label().to_owned(), claim.author, state));
+            return Some(candidate(
+                MatchKind::ExactClaim,
+                object.current_label().to_owned(),
+                claim.author,
+                state,
+            ));
         }
         if fold(&object.title) == folded {
             let state = claim_state(MatchKind::ExactTitle, &object.title);
-            return Some(candidate(MatchKind::ExactTitle, object.current_label().to_owned(), object.author, state));
+            return Some(candidate(
+                MatchKind::ExactTitle,
+                object.current_label().to_owned(),
+                object.author,
+                state,
+            ));
         }
         // Tier 3: prefix, then token, then full-text. A prefix that matches an alias claim
         // keeps that claim's author as provenance — the claim, not the object, is what the
@@ -498,16 +514,40 @@ impl LocalIndex {
             .iter()
             .find(|claim| fold(&claim.text).starts_with(folded))
         {
-            return Some(candidate(MatchKind::Prefix, object.current_label().to_owned(), claim.author, ClaimState::Uncontested));
+            return Some(candidate(
+                MatchKind::Prefix,
+                object.current_label().to_owned(),
+                claim.author,
+                ClaimState::Uncontested,
+            ));
         }
         if fold(&object.title).starts_with(folded) {
-            return Some(candidate(MatchKind::Prefix, object.current_label().to_owned(), object.author, ClaimState::Uncontested));
+            return Some(candidate(
+                MatchKind::Prefix,
+                object.current_label().to_owned(),
+                object.author,
+                ClaimState::Uncontested,
+            ));
         }
-        if object.title.split_whitespace().any(|word| fold(word.trim_matches(|chr: char| !chr.is_alphanumeric())) == folded) {
-            return Some(candidate(MatchKind::Token, object.current_label().to_owned(), object.author, ClaimState::Uncontested));
+        if object
+            .title
+            .split_whitespace()
+            .any(|word| fold(word.trim_matches(|chr: char| !chr.is_alphanumeric())) == folded)
+        {
+            return Some(candidate(
+                MatchKind::Token,
+                object.current_label().to_owned(),
+                object.author,
+                ClaimState::Uncontested,
+            ));
         }
         if fold(&object.title).contains(folded) {
-            return Some(candidate(MatchKind::FullText, object.current_label().to_owned(), object.author, ClaimState::Uncontested));
+            return Some(candidate(
+                MatchKind::FullText,
+                object.current_label().to_owned(),
+                object.author,
+                ClaimState::Uncontested,
+            ));
         }
         None
     }
@@ -636,7 +676,13 @@ mod tests {
         [n; 32]
     }
 
-    fn object(seed: &[u8], kind: Sigil, title: &str, claims: Vec<(&str, u8)>, by: u8) -> IndexedObject {
+    fn object(
+        seed: &[u8],
+        kind: Sigil,
+        title: &str,
+        claims: Vec<(&str, u8)>,
+        by: u8,
+    ) -> IndexedObject {
         IndexedObject {
             id: Hash::digest(seed),
             kind,
@@ -689,19 +735,25 @@ mod tests {
 
         let resolution = index.resolve(Sigil::Actor, "ann");
         assert_eq!(resolution.candidates.len(), 2);
-        assert!(resolution
-            .candidates
-            .iter()
-            .all(|candidate| candidate.match_kind == MatchKind::Petname));
-        assert!(resolution
-            .candidates
-            .iter()
-            .all(|candidate| candidate.contested()));
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.match_kind == MatchKind::Petname)
+        );
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.contested())
+        );
         assert!(resolution.is_contested());
         assert_eq!(resolution.single(), None);
-        assert!(index
-            .insert_unambiguous(Sigil::Actor, "ann", author(9))
-            .is_err());
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Actor, "ann", author(9))
+                .is_err()
+        );
     }
 
     #[test]
@@ -743,10 +795,12 @@ mod tests {
                 MatchKind::FullText
             ]
         );
-        assert!(resolution
-            .candidates
-            .iter()
-            .all(|candidate| candidate.provenance.store == StoreId::local()));
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.provenance.store == StoreId::local())
+        );
     }
 
     #[test]
@@ -782,14 +836,18 @@ mod tests {
         ]);
         let resolution = index.resolve(Sigil::Actor, "sam");
         assert_eq!(resolution.candidates.len(), 2);
-        assert!(resolution
-            .candidates
-            .iter()
-            .all(|candidate| candidate.contested()));
+        assert!(
+            resolution
+                .candidates
+                .iter()
+                .all(|candidate| candidate.contested())
+        );
         assert_eq!(resolution.single(), None);
-        assert!(index
-            .insert_unambiguous(Sigil::Actor, "sam", author(9))
-            .is_err());
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Actor, "sam", author(9))
+                .is_err()
+        );
     }
 
     #[test]
@@ -918,12 +976,16 @@ mod tests {
         let actor = index.resolve(Sigil::Actor, "atlas");
         assert!(!actor.is_contested());
         assert!(actor.single().is_some());
-        assert!(index
-            .insert_unambiguous(Sigil::Actor, "atlas", author(9))
-            .is_ok());
-        assert!(index
-            .insert_unambiguous(Sigil::Topic, "atlas", author(9))
-            .is_ok());
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Actor, "atlas", author(9))
+                .is_ok()
+        );
+        assert!(
+            index
+                .insert_unambiguous(Sigil::Topic, "atlas", author(9))
+                .is_ok()
+        );
     }
 
     #[test]

@@ -1,0 +1,383 @@
+//! fleet-config — the one place fleet configuration resolves
+//! (design note §1/§7, epic developing-today/code#5412).
+//!
+//! Sources, in precedence order:
+//!   1. env overrides (`FLEET_CONFIG`, `FLEET_BROKER_SOCKET`);
+//!   2. the config file — `$FLEET_CONFIG`, else
+//!      `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`;
+//!   3. compiled-in defaults matching today's live systems.
+//!
+//! The `[domains]` table is the config-level domain disable (§7): a
+//! domain set to `false` dispatches to the capability stub with exit 69
+//! and `disabled by config on this host` wording — the per-host shaping
+//! and incident lever. A missing file is not an error (defaults rule);
+//! a malformed file is a loud error, never a silent fallback, because a
+//! silently ignored disable would defeat the lever. Unknown sections and
+//! keys are malformed for this purpose (#5460): a misspelled `[domains]`
+//! table or `idle_exit_secs` key is a parse error, not a silent default.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use serde::Deserialize;
+
+/// The session broker's socket, as the Python broker runs it today.
+pub const DEFAULT_BROKER_SOCKET: &str = ".cache/laptop-agent/broker.sock";
+/// The proxy's per-port routing table (§4): port → service name.
+pub const PORT_LAPTOP_AGENT: u16 = 4799;
+pub const PORT_SECRETS_BROKER: u16 = 4800;
+pub const PORT_QUEUE_BROKER: u16 = 4801;
+/// Broker idle exit (§4: retained from the Python broker — a warmth
+/// cache that exits when cold is a feature on a shared sandbox).
+pub const DEFAULT_IDLE_EXIT_SECS: u64 = 3600;
+/// The token file whose contents the session broker sends as
+/// `X-Agent-Token` for secrets-broker requests. fleet only ever names
+/// this file; the broker reads it per request (§1: token files stay
+/// files, read per request, never stored, never logged).
+pub const DEFAULT_SECRETS_TOKEN_FILE: &str = ".config/secrets-broker/token";
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    /// `[domains]` — domain name → enabled. Absent means enabled.
+    pub domains: BTreeMap<String, bool>,
+    pub proxy: ProxyConfig,
+    pub secrets: SecretsConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProxyConfig {
+    /// Session broker socket path (relative paths resolve under $HOME).
+    pub broker_socket: Option<String>,
+    pub idle_exit_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecretsConfig {
+    /// Path of the secrets-broker token file (handed to the session
+    /// broker per request; fleet never opens it).
+    pub token_file: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ConfigError {
+    /// The config file exists but does not parse. Carries the path and
+    /// the parser's message — never config *values* beyond what the
+    /// parser itself reports.
+    Parse { path: PathBuf, message: String },
+    /// The config file exists but cannot be read.
+    Read { path: PathBuf, message: String },
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::Parse { path, message } => {
+                write!(
+                    f,
+                    "fleet: cannot parse config {}: {message}",
+                    path.display()
+                )
+            }
+            ConfigError::Read { path, message } => {
+                write!(f, "fleet: cannot read config {}: {message}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// An env var read as a path, with an empty value treated as unset.
+/// Empty-string env vars are a routine artifact (systemd units,
+/// templated exports), and the XDG base-directory spec treats an
+/// empty base as invalid; taking one literally here would turn the
+/// config file, the state dir, and the broker socket into
+/// CWD-relative paths (issue #5473).
+fn non_empty_path(value: Option<PathBuf>) -> Option<PathBuf> {
+    value.filter(|p| !p.as_os_str().is_empty())
+}
+
+fn env_path(var: &str) -> Option<PathBuf> {
+    non_empty_path(std::env::var_os(var).map(PathBuf::from))
+}
+
+fn home_dir() -> PathBuf {
+    env_path("HOME").unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn resolve_under(home: &std::path::Path, path: &std::path::Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        home.join(path)
+    }
+}
+
+fn resolve_under_home(path: &str) -> PathBuf {
+    resolve_under(&home_dir(), &PathBuf::from(path))
+}
+
+impl Config {
+    /// The config file path: `$FLEET_CONFIG`, else
+    /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
+    pub fn file_path() -> PathBuf {
+        Self::file_path_from(
+            env_path("FLEET_CONFIG"),
+            env_path("XDG_CONFIG_HOME"),
+            &home_dir(),
+        )
+    }
+
+    fn file_path_from(
+        fleet_config: Option<PathBuf>,
+        xdg_config_home: Option<PathBuf>,
+        home: &std::path::Path,
+    ) -> PathBuf {
+        if let Some(p) = fleet_config {
+            return p;
+        }
+        let base = xdg_config_home.unwrap_or_else(|| home.join(".config"));
+        base.join("fleet").join("fleet.toml")
+    }
+
+    /// Load configuration. A missing file yields defaults; a malformed
+    /// or unreadable file is an error (see the crate docs for why).
+    pub fn load() -> Result<Config, ConfigError> {
+        let path = Self::file_path();
+        Self::load_from(&path)
+    }
+
+    pub fn load_from(path: &std::path::Path) -> Result<Config, ConfigError> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => toml::from_str(&text).map_err(|e| ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+            Err(e) => Err(ConfigError::Read {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    /// Is a domain enabled on this host? Default yes; `[domains]`
+    /// decides. Unknown names are enabled (the registry, not config,
+    /// decides what exists).
+    pub fn domain_enabled(&self, domain: &str) -> bool {
+        self.domains.get(domain).copied().unwrap_or(true)
+    }
+
+    /// The session broker socket path. `FLEET_BROKER_SOCKET` beats the
+    /// config file beats the default.
+    pub fn broker_socket(&self) -> PathBuf {
+        Self::broker_socket_from(
+            env_path("FLEET_BROKER_SOCKET"),
+            self.proxy.broker_socket.as_deref(),
+            &home_dir(),
+        )
+    }
+
+    fn broker_socket_from(
+        env_socket: Option<PathBuf>,
+        config_socket: Option<&str>,
+        home: &std::path::Path,
+    ) -> PathBuf {
+        // Every source resolves the same way: a relative path is under
+        // $HOME (the ProxyConfig field's documented rule), never the
+        // process's working directory (issue #5473).
+        if let Some(p) = env_socket {
+            return resolve_under(home, &p);
+        }
+        match config_socket {
+            Some(p) => resolve_under(home, &PathBuf::from(p)),
+            None => resolve_under(home, &PathBuf::from(DEFAULT_BROKER_SOCKET)),
+        }
+    }
+
+    pub fn idle_exit_secs(&self) -> u64 {
+        self.proxy.idle_exit_secs.unwrap_or(DEFAULT_IDLE_EXIT_SECS)
+    }
+
+    /// The secrets-broker token *file path* (never its contents).
+    pub fn secrets_token_file(&self) -> PathBuf {
+        match &self.secrets.token_file {
+            Some(p) => resolve_under_home(p),
+            None => resolve_under_home(DEFAULT_SECRETS_TOKEN_FILE),
+        }
+    }
+
+    /// `~/.local/state/fleet` (or `$XDG_STATE_HOME/fleet`).
+    pub fn state_dir() -> PathBuf {
+        Self::state_dir_from(env_path("XDG_STATE_HOME"), &home_dir())
+    }
+
+    fn state_dir_from(xdg_state_home: Option<PathBuf>, home: &std::path::Path) -> PathBuf {
+        let base = xdg_state_home.unwrap_or_else(|| home.join(".local").join("state"));
+        base.join("fleet")
+    }
+
+    /// The materialized PATH shim dir (§4), regenerated from the
+    /// negotiated services map at every connect/init.
+    pub fn shims_dir() -> PathBuf {
+        Self::state_dir().join("shims")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_temp(contents: &str) -> (tempfile_dir::Dir, PathBuf) {
+        let dir = tempfile_dir::Dir::new();
+        let path = dir.path().join("fleet.toml");
+        std::fs::write(&path, contents).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn missing_file_is_defaults() {
+        let cfg = Config::load_from(PathBuf::from("/nonexistent/fleet.toml").as_path()).unwrap();
+        assert!(cfg.domain_enabled("queue"));
+        assert_eq!(cfg.idle_exit_secs(), DEFAULT_IDLE_EXIT_SECS);
+    }
+
+    #[test]
+    fn domains_table_disables() {
+        let (_dir, path) = write_temp("[domains]\nqueue = false\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(!cfg.domain_enabled("queue"));
+        assert!(cfg.domain_enabled("search"));
+    }
+
+    #[test]
+    fn malformed_file_is_a_loud_error() {
+        let (_dir, path) = write_temp("this is = = not toml [[");
+        match Config::load_from(&path) {
+            Err(ConfigError::Parse { .. }) => {}
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_section_or_key_is_a_loud_error() {
+        // #5460: a typo must not silently substitute the defaults — a
+        // misspelled [domains] table would otherwise leave the domain
+        // the operator meant to disable enabled.
+        for contents in [
+            "[domain]\nqueue = false\n",
+            "[proxy]\nidle_exit_sec = 60\n",
+            "[proxy]\nbroker_soket = \"/tmp/x.sock\"\n",
+            "[secrets]\ntoken_fil = \"/tmp/tok\"\n",
+            "domainz = 1\n",
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { .. }) => {}
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn domains_stays_an_open_map() {
+        // deny_unknown_fields applies to struct fields, not to domain
+        // names: any domain may be named in [domains].
+        let (_dir, path) = write_temp("[domains]\nsome-future-domain = false\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(!cfg.domain_enabled("some-future-domain"));
+    }
+
+    #[test]
+    fn env_paths_ignore_empty_values_and_resolve_under_home() {
+        // #5473: an empty env value is unset, never a literal path —
+        // otherwise the config/state paths go CWD-relative and a
+        // planted ./fleet/fleet.toml in the working directory loads.
+        let home = PathBuf::from("/home/tester");
+        assert_eq!(non_empty_path(Some(PathBuf::new())), None);
+        assert_eq!(
+            non_empty_path(Some(PathBuf::from("/x"))),
+            Some(PathBuf::from("/x"))
+        );
+        assert_eq!(
+            Config::file_path_from(None, None, &home),
+            home.join(".config").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(None, Some(PathBuf::from("/cfg")), &home),
+            PathBuf::from("/cfg").join("fleet").join("fleet.toml")
+        );
+        assert_eq!(
+            Config::file_path_from(Some(PathBuf::from("/named.toml")), None, &home),
+            PathBuf::from("/named.toml")
+        );
+        assert_eq!(
+            Config::state_dir_from(None, &home),
+            home.join(".local").join("state").join("fleet")
+        );
+        assert_eq!(
+            Config::state_dir_from(Some(PathBuf::from("/state")), &home),
+            PathBuf::from("/state").join("fleet")
+        );
+        // A relative FLEET_BROKER_SOCKET in the default's own spelling
+        // names the same socket as the default itself.
+        assert_eq!(
+            Config::broker_socket_from(Some(PathBuf::from(DEFAULT_BROKER_SOCKET)), None, &home),
+            Config::broker_socket_from(None, None, &home)
+        );
+        assert_eq!(
+            Config::broker_socket_from(Some(PathBuf::from("/abs/b.sock")), None, &home),
+            PathBuf::from("/abs/b.sock")
+        );
+        assert_eq!(
+            Config::broker_socket_from(None, Some("rel/c.sock"), &home),
+            home.join("rel").join("c.sock")
+        );
+    }
+
+    #[test]
+    fn proxy_settings_resolve() {
+        let (_dir, path) =
+            write_temp("[proxy]\nidle_exit_secs = 60\nbroker_socket = \"/tmp/b.sock\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.idle_exit_secs(), 60);
+        assert_eq!(cfg.broker_socket(), PathBuf::from("/tmp/b.sock"));
+    }
+}
+
+/// Minimal tempdir for tests (avoids a dev-dependency for one helper).
+#[cfg(test)]
+mod tempfile_dir {
+    use std::path::PathBuf;
+
+    pub struct Dir(PathBuf);
+
+    impl Dir {
+        pub fn new() -> Dir {
+            let mut p = std::env::temp_dir();
+            p.push(format!(
+                "fleet-config-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Dir(p)
+        }
+
+        pub fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}

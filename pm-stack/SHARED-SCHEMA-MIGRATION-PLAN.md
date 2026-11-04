@@ -17,7 +17,7 @@ namespaced-table decision or the #3142 storage choice.
   where the service already runs on libSQL (projector).
 - **Each product layer owns its source of truth; the projector is glue,
   not a source of truth** (see map's "How to read the map"). Migration
-  moves the *storage location*, never the ownership.
+  moves the _storage location_, never the ownership.
 - **Every move is independently shippable and reversible**: each move
   ships behind a read-fallback (dual-read or export-replay) and names its
   rollback before it lands. No flag-day cutovers.
@@ -65,7 +65,7 @@ so Move 1 itself ships as a sequence of small PRs.
 
 ### Move 2 — Projector DB → shared groups, `pmp_links` as canonical `shared_links` source
 
-Second because the projector is disposable *except* `pmp_links`, and
+Second because the projector is disposable _except_ `pmp_links`, and
 Move 1 must be stable first (aggregator reads projector views for link
 joins). Steps:
 
@@ -117,9 +117,9 @@ DB filename/schema/restore path not evidenced in checked-in code).
 ## Verification for this slice
 
 - [x] Map's projector.db / `pmp_` inventory re-verified against
-  `projector/schema.sql`, `projector/src/store.ts`, and
-  `projector/README.md` at this branch's base (tables, views,
-  `file:data/projector.db` default, backup-gap statement all current;
-  line citations drifted by a few lines, substance unchanged — map left
-  untouched to keep this slice planning-only).
+      `projector/schema.sql`, `projector/src/store.ts`, and
+      `projector/README.md` at this branch's base (tables, views,
+      `file:data/projector.db` default, backup-gap statement all current;
+      line citations drifted by a few lines, substance unchanged — map left
+      untouched to keep this slice planning-only).
 - [ ] Plan-doc lint/links check per repo tooling + CI on the slice PR.

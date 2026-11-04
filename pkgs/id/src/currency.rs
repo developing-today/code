@@ -548,8 +548,14 @@ mod tests {
         let forward_order = [(author, rate_8000.clone()), (author, rate_9000.clone())];
         let reverse_order = [(author, rate_9000.clone()), (author, rate_8000)];
         let expected = Some(AuthorisationState::Live(rate_9000));
-        assert_eq!(fold_authorisation(7, &author, &forward_order, &[]), expected);
-        assert_eq!(fold_authorisation(7, &author, &reverse_order, &[]), expected);
+        assert_eq!(
+            fold_authorisation(7, &author, &forward_order, &[]),
+            expected
+        );
+        assert_eq!(
+            fold_authorisation(7, &author, &reverse_order, &[]),
+            expected
+        );
     }
 
     #[test]

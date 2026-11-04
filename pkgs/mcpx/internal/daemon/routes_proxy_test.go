@@ -3,10 +3,13 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
@@ -195,5 +198,100 @@ func TestHandleChatCompletionsUpstreamProxy(t *testing.T) {
 	}
 	if resp["id"] != "chatcmpl-mock" {
 		t.Errorf("expected chatcmpl-mock, got %v", resp["id"])
+	}
+}
+
+func TestProxyUpstreamTimeoutReturnsBadGateway(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer upstream.Close()
+
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := settings.NewSet(sch).WithOverrides(map[string]string{
+		"proxy.timeout": "25ms",
+	}, "test")
+	s := &Server{reg: &Registry{}, set: set}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("X-Upstream-Url", upstream.URL)
+	w := httptest.NewRecorder()
+	started := time.Now()
+
+	s.handleChatCompletions(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body: %s", w.Code, w.Body.String())
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("timed-out upstream took %s, want under 500ms", elapsed)
+	}
+}
+
+func TestProxyCapsFeedbackCopyAndForwardsFullStream(t *testing.T) {
+	const captureLimit = 1 << 20
+	const chunk = "data: " + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" + "\n\n"
+	var body strings.Builder
+	for body.Len() <= captureLimit {
+		body.WriteString(chunk)
+	}
+	upstreamBody := body.String()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("upstream response writer does not support flushing")
+			return
+		}
+		for start := 0; start < len(upstreamBody); start += len(chunk) {
+			end := min(start+len(chunk), len(upstreamBody))
+			if _, err := io.WriteString(w, upstreamBody[start:end]); err != nil {
+				t.Errorf("write upstream chunk: %v", err)
+				return
+			}
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	fs, err := logstore.NewFeedbackStore(filepath.Join(t.TempDir(), "feedback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	s := &Server{reg: &Registry{feedbackStore: fs}}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
+	req.Header.Set("X-Upstream-Url", upstream.URL)
+	w := httptest.NewRecorder()
+	s.handleChatCompletions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != upstreamBody {
+		t.Fatalf("proxied body length = %d, want %d", len(got), len(upstreamBody))
+	}
+
+	rec, err := fs.Get(w.Header().Get("X-Mcpx-Trace-Id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Output) > captureLimit+100 {
+		t.Fatalf("feedback output length = %d, exceeds capped size", len(rec.Output))
+	}
+	if !strings.HasPrefix(rec.Output, upstreamBody[:captureLimit]) {
+		t.Fatal("feedback output does not preserve the captured response prefix")
+	}
+	if !strings.Contains(rec.Output, "truncated after") {
+		t.Fatalf("feedback output lacks truncation marker: %q", rec.Output[len(rec.Output)-min(len(rec.Output), 100):])
 	}
 }

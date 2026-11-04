@@ -1,7 +1,12 @@
-// Tests for the pure parsing core of cloudflare-quota-export.mjs.
-// Run: node --test pm-stack/cloudflare-export/
+// Tests for cloudflare-quota-export parsing and CLI entry-point behavior.
+// Run: node --test pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   aiNeuronsDayAlerts,
   aiNeuronsDayAlertThreshold,
@@ -51,6 +56,7 @@ const ACCOUNT = {
 };
 const NOW = new Date("2026-10-29T10:00:00Z");
 const START = cycleStartUtc(NOW);
+const EXPORTER_PATH = fileURLToPath(new URL("./cloudflare-quota-export.mjs", import.meta.url));
 
 test("API_REQUEST_TIMEOUT_MS: bounded below the 120s service deadline", () => {
   // cloudflare-quota-export.service has TimeoutStartSec=120; a stalled
@@ -58,6 +64,57 @@ test("API_REQUEST_TIMEOUT_MS: bounded below the 120s service deadline", () => {
   // document instead of being killed with a stale latest.json in place.
   assert.ok(API_REQUEST_TIMEOUT_MS > 0);
   assert.ok(API_REQUEST_TIMEOUT_MS < 120_000);
+});
+
+test("CLI: runs main via file and directory symlinks (#4325)", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cloudflare-export-entrypoint-"));
+  const links = path.join(home, "links");
+  fs.mkdirSync(links);
+  const fileLink = path.join(links, "export.mjs");
+  const dirLink = path.join(links, "export-dir");
+  fs.symlinkSync(EXPORTER_PATH, fileLink);
+  fs.symlinkSync(path.dirname(EXPORTER_PATH), dirLink, "dir");
+  const env = { ...process.env, HOME: home, CLOUDFLARE_API_TOKEN: "" };
+
+  try {
+    for (const [name, entry] of [
+      ["direct", EXPORTER_PATH],
+      ["file-symlink", fileLink],
+      ["directory-symlink", path.join(dirLink, path.basename(EXPORTER_PATH))],
+    ]) {
+      const outDir = path.join(home, name);
+      const result = spawnSync(process.execPath, [entry, "--out-dir", outDir], {
+        env,
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      assert.equal(result.status, 2, `${name}: ${result.stderr}`);
+      const doc = JSON.parse(fs.readFileSync(path.join(outDir, "latest.json"), "utf8"));
+      assert.equal(doc.service, "cloudflare");
+      assert.equal(doc.status, "no-token");
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("importing cloudflare-quota-export.mjs as a library does not run main (#4325)", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cloudflare-export-import-"));
+  try {
+    const result = spawnSync(process.execPath, [
+      "--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(EXPORTER_PATH).href)});`,
+    ], {
+      env: { ...process.env, HOME: home, CLOUDFLARE_API_TOKEN: "" },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.equal(fs.existsSync(path.join(home, "atlas", "cloudflare-export")), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("cycleStartUtc: first of the month, UTC", () => {

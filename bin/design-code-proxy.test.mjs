@@ -444,3 +444,62 @@ test('a primary that stalls mid-stream has its client stream torn down by the ti
   assert.equal(await Promise.race([read, bounded]), 'torn-down');
   assert.equal(fallback.calls, 0);
 });
+
+// #4225: DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS goes through the strict
+// parseProxyMillis helper. Overflow and non-decimal spellings must
+// refuse to start (naming the variable) instead of silently truncating
+// to ~24.8 days or 16 ms; a valid value is honoured (the #2097 tests
+// above already pin short values through startProxy).
+const spawnProxyRaw = async (extraEnv) => {
+  const port = await freePort();
+  const env = { ...process.env };
+  delete env.OPEN_DESIGN_API_KEY;
+  delete env.AMR_API_KEY;
+  const child = spawn(process.execPath, [path.join(binDir, 'design-code-proxy.mjs')], {
+    env: { ...env, DESIGN_CODE_PROXY_PORT: String(port), ...extraEnv },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let log = '';
+  child.stdout.on('data', d => { log += d; });
+  child.stderr.on('data', d => { log += d; });
+  return { child, port, log: () => log };
+};
+
+const waitForExit = (child, ms = 5000) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('proxy did not exit in time')), ms);
+  child.on('exit', code => { clearTimeout(timer); resolve(code); });
+});
+
+test('a backend timeout above 2^31-1 refuses to start, naming the variable (#4225)', async () => {
+  const { child, log } = await spawnProxyRaw({ DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS: '2147483648' });
+  const code = await waitForExit(child);
+  assert.notEqual(code, 0);
+  assert.match(log(), /DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS/);
+  assert.match(log(), /2147483648/);
+});
+
+test('non-decimal backend timeout spellings refuse to start (#4225)', async () => {
+  for (const bad of ['0x10', '1e5']) {
+    const { child, log } = await spawnProxyRaw({ DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS: bad });
+    const code = await waitForExit(child);
+    assert.notEqual(code, 0, `${bad} should refuse to start`);
+    assert.match(log(), /DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS/);
+  }
+});
+
+test('a valid backend timeout value is honoured (#4225)', async () => {
+  const { child, port } = await spawnProxyRaw({ DESIGN_CODE_PROXY_BACKEND_TIMEOUT_MS: '5000' });
+  try {
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
+        if (res.ok) break;
+      } catch { /* not up yet */ }
+      if (Date.now() > deadline) throw new Error('proxy with a valid timeout did not start');
+      await new Promise(r => setTimeout(r, 50));
+    }
+  } finally {
+    child.kill('SIGKILL');
+  }
+});

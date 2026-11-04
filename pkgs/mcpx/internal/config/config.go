@@ -743,6 +743,13 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 			s = &cp
 		}
 	}
+	// Spawn placeholders (decision 0004 §4, #960): unknown or malformed
+	// ${mcpx.*} tokens in args/env/cwd are a load-time error naming the
+	// server and field, validated here so every load path (ResolveAll
+	// is the choke point) is covered.
+	if err := ValidatePlaceholders(name, s); err != nil {
+		return nil, err
+	}
 	ex := s.Mcpx
 	if ex == nil {
 		ex = &Extras{}

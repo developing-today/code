@@ -832,8 +832,18 @@ export function applyCloudflareExport(
   const cf = services.find((s) => s.id === "cloudflare");
   if (!cf) return services;
   const byId = new Map(
+    // A negative measurement is a broken export, not live data: drop it
+    // here as applySupabaseExport does, so the metric keeps its prose or
+    // null fallback instead of stamping a negative used/percent.
     doc.metrics
-      .filter((m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used))
+      .filter(
+        (m) =>
+          m &&
+          typeof m.id === "string" &&
+          typeof m.used === "number" &&
+          Number.isFinite(m.used) &&
+          m.used >= 0,
+      )
       .map((m) => [m.id, m]),
   );
   if (!byId.size) return services;

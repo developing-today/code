@@ -308,7 +308,7 @@
 
         # =======================================================================
         # Formatter: nix fmt
-        # Uses treefmt to orchestrate rustfmt + biome + prettier + nixfmt + statix + shfmt + taplo
+        # Uses treefmt to orchestrate rustfmt + biome + prettier + nixfmt + statix + shfmt + taplo + just
         # =======================================================================
         formatter = pkgs.writeShellScriptBin "formatter" ''
           export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
@@ -599,6 +599,18 @@
               echo "taplo-check passed at $(date)" > $out/result.txt
             '';
           };
+          justfmt-check = pkgs.stdenv.mkDerivation {
+            name = "id-justfmt-check";
+            src = ./.;
+            nativeBuildInputs = [ pkgs.just ];
+            buildPhase = ''
+              just --fmt --check --justfile ./justfile
+            '';
+            installPhase = ''
+              mkdir -p $out
+              echo "justfmt-check passed at $(date)" > $out/result.txt
+            '';
+          };
           prettier-check = pkgs.stdenv.mkDerivation {
             name = "id-prettier-check";
             src = ./.;
@@ -655,6 +667,7 @@
             buildFeatures = [
               "web"
               "sandbox"
+              "ssh"
               "world"
             ];
 

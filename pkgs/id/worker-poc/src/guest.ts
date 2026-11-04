@@ -61,7 +61,15 @@ export class PlazaGuest {
   ): Promise<PlazaGuest> {
     const instance = await WebAssembly.instantiate(module, {});
     const ex = instance.exports as unknown as PlazaExports;
-    for (const name of ["memory", "plaza_alloc", "plaza_free", "plaza_init", "plaza_update", "plaza_view", "plaza_out_len"] as const) {
+    for (const name of [
+      "memory",
+      "plaza_alloc",
+      "plaza_free",
+      "plaza_init",
+      "plaza_update",
+      "plaza_view",
+      "plaza_out_len",
+    ] as const) {
       if (ex[name] === undefined) throw new Error(`guest must export \`${name}\``);
     }
     if ((ex.plaza_snapshot === undefined) !== (ex.plaza_restore === undefined)) {
@@ -110,7 +118,9 @@ export class PlazaGuest {
       // ID above i32::MAX); -Infinity is a negative non-finite and is
       // rejected.
       if (typeof participant !== "number" || Number.isNaN(participant)) {
-        throw new Error(`guest participant must be a non-negative integer, got ${String(participant)} (NaN or non-number)`);
+        throw new Error(
+          `guest participant must be a non-negative integer, got ${String(participant)} (NaN or non-number)`,
+        );
       }
       if (participant === -Infinity) {
         throw new Error("guest participant must be a non-negative integer, got -Infinity");

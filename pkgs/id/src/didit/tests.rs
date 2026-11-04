@@ -397,6 +397,127 @@ fn dst_day_is_twenty_three_hours() {
 }
 
 #[test]
+fn count_verdict_is_violated_after_last_active_span_closes() {
+    // #5049: CountPerPeriod 2/Day with the default active window
+    // (07:00-22:00 America/Chicago) and no records. Once the period's last
+    // active span closes, no further record can count in the period, so an
+    // unmet count is Violated, not Due until the period end.
+    let fed = expectation(
+        0x70,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 2,
+            period: Period::Day,
+        },
+    );
+    for (now, expected) in [
+        (chicago(2026, 6, 15, 23, 0), VerdictState::Violated),
+        // Exactly at the span close is already unmeetable.
+        (chicago(2026, 6, 15, 22, 0), VerdictState::Violated),
+        // Mid-span control: a record can still count, so still Due.
+        (chicago(2026, 6, 15, 12, 0), VerdictState::Due),
+    ] {
+        let verdicts = evaluate(&[fed.clone()], &[], now).expect("evaluate");
+        let today = current(&verdicts, midnight(2026, 6, 15));
+        assert_eq!(today.len(), 1);
+        assert_eq!(today[0].state, expected, "now={now}");
+        assert_eq!(today[0].count, 0);
+    }
+    // ActiveWindow::Always is unchanged: its span is the whole period, so
+    // late in the period an unmet count is still Due. (A Custom period is
+    // used here because `Always` periods are UTC-calendar based; the
+    // anchor pins the window start to the same Chicago midnight.)
+    let fed_always = always(expectation(
+        0x72,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 2,
+            period: Period::Custom(PeriodCustom {
+                anchor: midnight(2026, 6, 15),
+                length_seconds: 86_400,
+            }),
+        },
+    ));
+    let verdicts = evaluate(&[fed_always], &[], chicago(2026, 6, 15, 23, 0)).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 15));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Due);
+}
+
+#[test]
+fn count_verdict_wrapping_span_stays_due_while_a_record_can_still_count() {
+    // #5049 wrapping case: the active span wraps past midnight
+    // (20:00-06:00). At 07:00 the previous night's span has closed, but
+    // tonight's span still offers countable time inside today's period,
+    // so an unmet count stays Due.
+    let mut fed = expectation(
+        0x71,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Day,
+        },
+    );
+    fed.active = ActiveWindow::Hours {
+        hours: vec![HoursSpan {
+            from_minute: 1200,
+            to_minute: 360,
+            days: None,
+        }],
+        tz: CHICAGO.to_owned(),
+    };
+    let verdicts = evaluate(&[fed], &[], chicago(2026, 6, 16, 7, 0)).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 16));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Due);
+}
+
+#[test]
+fn count_verdict_overnight_carry_in_span_is_not_unmeetable() {
+    // #5049, Codex review on the fix: the only active span starts Monday
+    // 20:00 and wraps to Tuesday 06:00. On Tuesday the period's countable
+    // time is that carry-in portion, so at 02:00 an unmet count is Due
+    // (a record can still count), and only after 06:00 is it Violated.
+    // 2026-06-15 is a Monday; days are numbered from Monday (0).
+    let mut fed = expectation(
+        0x73,
+        vec![dog_a()],
+        "fed",
+        Window::CountPerPeriod {
+            count: 1,
+            period: Period::Day,
+        },
+    );
+    fed.active = ActiveWindow::Hours {
+        hours: vec![HoursSpan {
+            from_minute: 1200,
+            to_minute: 360,
+            days: Some(vec![0]),
+        }],
+        tz: CHICAGO.to_owned(),
+    };
+    for (now, expected) in [
+        (chicago(2026, 6, 16, 2, 0), VerdictState::Due),
+        (chicago(2026, 6, 16, 7, 0), VerdictState::Violated),
+    ] {
+        let verdicts = evaluate(&[fed.clone()], &[], now).expect("evaluate");
+        let today = current(&verdicts, midnight(2026, 6, 16));
+        assert_eq!(today.len(), 1);
+        assert_eq!(today[0].state, expected, "now={now}");
+    }
+    // A record inside the carry-in portion counts toward Tuesday.
+    let carry_in = record(0x74, vec![dog_a()], "fed", chicago(2026, 6, 16, 2, 0));
+    let verdicts = evaluate(&[fed], &[carry_in], chicago(2026, 6, 16, 3, 0)).expect("evaluate");
+    let today = current(&verdicts, midnight(2026, 6, 16));
+    assert_eq!(today.len(), 1);
+    assert_eq!(today[0].state, VerdictState::Satisfied);
+    assert_eq!(today[0].count, 1);
+}
+
+#[test]
 fn wrapping_active_span_is_handled() {
     // "Which may not be daytime": 20:00–06:00 is one span across midnight.
     let outside = expectation(
@@ -596,4 +717,144 @@ fn canonical_and_kind_checks() {
         decode_entity_body(&future).expect_err("future version"),
         DiditError::Version(_)
     ));
+}
+#[test]
+fn interval_gap_crossing_midnight_is_judged_across_the_seam() {
+    // #5144: an Always expectation is one continuous active stretch,
+    // but spans arrive per local day. A gap crossing midnight must be
+    // judged as the single consecutive gap it is, not as two edge
+    // gaps that each fit under the max.
+    let outside = always(expectation(
+        0xE0,
+        vec![dog_a()],
+        "outside",
+        Window::Interval {
+            min_seconds: 0,
+            max_seconds: 3_600,
+        },
+    ));
+    // 2026-06-15T00:00:00Z; an Always expectation evaluates in UTC.
+    let day = 1_781_481_600;
+    let mut records = Vec::new();
+    // Hourly through Jun 15, then 01:00 and 02:00 on Jun 16 — the
+    // 00:00 record is skipped, so the consecutive gap across the
+    // seam is 23:00 -> 01:00 = 7200s, twice the max.
+    for hour in 0..24i64 {
+        records.push(record(
+            0x30 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day + hour * 3_600,
+        ));
+    }
+    records.push(record(0x48, vec![dog_a()], "outside", day + 25 * 3_600));
+    records.push(record(0x49, vec![dog_a()], "outside", day + 26 * 3_600));
+    let now = day + 26 * 3_600 + 1_800;
+    let verdicts = evaluate(&[outside], &records, now).expect("evaluate");
+    assert_eq!(verdicts.len(), 1, "the two days merge into one span");
+    let verdict = &verdicts[0];
+    assert_eq!(verdict.state, VerdictState::Violated);
+    assert_eq!(verdict.count, 26);
+    assert!(
+        verdict.detail.contains("7200"),
+        "the cross-seam gap is the violation: {}",
+        verdict.detail
+    );
+    // The verdict window reflects the merged continuous span.
+    assert_eq!(verdict.window_start, day);
+    assert_eq!(verdict.window_end, day + 2 * 86_400);
+}
+
+#[test]
+fn interval_gap_inside_one_day_still_violates() {
+    // The same 7200s gap inside a single day was always judged by the
+    // pair check; merging spans must keep that verdict (#5144 control).
+    let outside = always(expectation(
+        0xE1,
+        vec![dog_a()],
+        "outside",
+        Window::Interval {
+            min_seconds: 0,
+            max_seconds: 3_600,
+        },
+    ));
+    let day = 1_781_481_600; // 2026-06-15T00:00:00Z
+    let mut records = Vec::new();
+    // Hourly through Jun 14, so the previous day is satisfied and the
+    // merged span's first gap is zero.
+    for hour in 0..24i64 {
+        records.push(record(
+            0x30 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day - 86_400 + hour * 3_600,
+        ));
+    }
+    // Hourly through Jun 15 with 12:00 skipped: 11:00 -> 13:00 = 7200s.
+    for hour in 0..24i64 {
+        if hour == 12 {
+            continue;
+        }
+        records.push(record(
+            0x50 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day + hour * 3_600,
+        ));
+    }
+    let now = day + 13 * 3_600 + 1_800;
+    let verdicts = evaluate(&[outside], &records, now).expect("evaluate");
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(verdicts[0].state, VerdictState::Violated);
+    assert_eq!(verdicts[0].count, 47);
+    assert!(
+        verdicts[0].detail.contains("7200"),
+        "{}",
+        verdicts[0].detail
+    );
+}
+
+#[test]
+fn interval_gap_crossing_sleep_window_seam_is_judged_across_it() {
+    // #5144: a non-wrapping sleep window's active complement is cut
+    // at midnight — yesterday's (wake, midnight) piece and today's
+    // (midnight, sleep) piece are one continuous stretch, and a gap
+    // across that seam is one consecutive gap.
+    let mut outside = expectation(
+        0xE2,
+        vec![dog_a()],
+        "outside",
+        Window::Interval {
+            min_seconds: 0,
+            max_seconds: 3_600,
+        },
+    );
+    // Asleep 01:00-07:00 UTC; active 07:00 -> 01:00 across midnight.
+    outside.active = ActiveWindow::SleepWindow {
+        from_minute: 60,
+        to_minute: 420,
+        tz: "UTC".to_owned(),
+    };
+    let day = 1_781_481_600; // 2026-06-15T00:00:00Z
+    let mut records = Vec::new();
+    // Hourly 07:00-23:00 on Jun 15.
+    for hour in 7..24i64 {
+        records.push(record(
+            0x30 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day + hour * 3_600,
+        ));
+    }
+    // The 00:00 hour is skipped; the next record is 00:45, still
+    // inside the active stretch: 23:00 -> 00:45 = 6300s > 3600s max.
+    records.push(record(0x48, vec![dog_a()], "outside", day + 86_400 + 2_700));
+    let now = day + 86_400 + 3_000;
+    let verdicts = evaluate(&[outside], &records, now).expect("evaluate");
+    let seam = current(&verdicts, day + 7 * 3_600);
+    assert_eq!(seam.len(), 1, "one verdict for the merged seam span");
+    assert_eq!(seam[0].state, VerdictState::Violated);
+    assert_eq!(seam[0].count, 18);
+    assert!(seam[0].detail.contains("6300"), "{}", seam[0].detail);
+    assert_eq!(seam[0].window_end, day + 86_400 + 3_600);
 }

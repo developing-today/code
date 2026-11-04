@@ -87,6 +87,30 @@ describe("entryFromResult", () => {
     expect(absent.state).toBe("unconfigured");
     expect(absent.credentialWatch).toBe(true);
   });
+  test.each([
+    ["impossible timestamp", "2026-02-30T00:00:00.000Z"],
+    ["impossible date-only value", "2026-04-31"],
+    ["non-ISO string", "March 2, 2026"],
+  ])("rejects %s credential expiry strings", (_kind, credentialExpiresAt) => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const entry = entryFromResult({ ...OK_RESULT, credentialExpiresAt }, tick);
+    expect(entry.credentialExpiresAt).toBeUndefined();
+  });
+
+  test("maps a valid ISO credential expiry string", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validIso = entryFromResult(
+      { ...OK_RESULT, credentialExpiresAt: "2027-01-15T00:00:00.000Z" },
+      tick,
+    );
+    expect(validIso.credentialExpiresAt).toBe("2027-01-15T00:00:00.000Z");
+  });
+
+  test("maps numeric epoch-ms credential expiry", () => {
+    const tick = "2026-10-27T05:00:00.000Z";
+    const validEpoch = entryFromResult({ ...OK_RESULT, credentialExpiresAt: 1793438427299 }, tick);
+    expect(validEpoch.credentialExpiresAt).toBe("2026-10-31T09:20:27.299Z");
+  });
   test("falls back for invalid fetchedAt values without dropping a mixed batch", () => {
     const tickIso = "2026-11-02T03:00:00.000Z";
     const fetchedAts = [1e16, -1e16, 0, -1, NaN, Infinity, -Infinity, undefined, 1793075143879];
@@ -530,7 +554,7 @@ describe("entryFromFileExport (Meta #1301 convention)", () => {
 
 describe("serviceIdFor", () => {
   test("known pools map to hub ids; others pass through", () => {
-    expect(serviceIdFor("codex")).toBe("openai");
+    expect(serviceIdFor("codex")).toBe("openai.main");
     expect(serviceIdFor("deepseek")).toBe("deepseek");
     expect(serviceIdFor("meta")).toBe("meta");
     expect(serviceIdFor("opendesign")).toBe("opendesign");
@@ -618,6 +642,40 @@ describe("entryFromTurso (#1049)", () => {
     const empty = entryFromTurso({ organization: { usage: {} } }, subDoc, { measuredAt: at });
     expect(empty.state).toBe("error");
     expect(empty.windows).toEqual([]);
+  });
+});
+
+describe("entryFromTurso period stamps (#5091)", () => {
+  const usageDoc = { organization: { usage: { databases: 3 } } };
+  const at = "2026-10-29T02:30:00.000Z";
+  const subWith = (start: unknown, end: unknown) => ({
+    subscription: {
+      plan: "starter",
+      current_billing_period_start: start,
+      current_billing_period_end: end,
+    },
+  });
+  const windowSecondsOf = (sub: unknown): number | null => {
+    const entry = entryFromTurso(usageDoc, sub as never, { measuredAt: at });
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.length).toBeGreaterThan(0);
+    return entry.windows[0].windowSeconds;
+  };
+  test("impossible period start yields a null window, not a rolled-over length", () => {
+    // 2026-02-30 does not exist; raw Date.parse rolls it to Mar 2 and would
+    // publish a 28-day window against the 2026-03-30 end.
+    expect(windowSecondsOf(subWith("2026-02-30T00:00:00Z", "2026-03-30T00:00:00Z"))).toBeNull();
+  });
+  test("impossible period end yields a null window", () => {
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-02-30T00:00:00Z"))).toBeNull();
+  });
+  test("non-ISO period stamps yield a null window", () => {
+    // Raw Date.parse accepts these (timezone-dependently); the gate refuses.
+    expect(windowSecondsOf(subWith("February 1, 2026", "March 3, 2026"))).toBeNull();
+  });
+  test("valid ISO period stamps still compute the window", () => {
+    // 2026-02-01 -> 2026-03-03 is exactly 30 days.
+    expect(windowSecondsOf(subWith("2026-02-01T00:00:00Z", "2026-03-03T00:00:00Z"))).toBe(2_592_000);
   });
 });
 
