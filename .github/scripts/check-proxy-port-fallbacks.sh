@@ -8,8 +8,7 @@
 # variables:
 #
 #   - bin/<name>-proxy.mjs: parseProxyPort('<VAR>', <port>) (or the older
-#     process.env.<VAR> || '<port>' form, or antigravity-direct's
-#     Number(process.env.<VAR> || <port>) form)
+#     process.env.<VAR> || '<port>' form)
 #   - .opencode/opencode.jsonc: {env:<VAR>:-<port>} in the provider
 #     baseURL (opencode's {env:VAR} substitution has no fallback of its
 #     own; the :- form is what keeps a non-shell launch — systemd
@@ -25,6 +24,9 @@
 # Retired 2026-10-30 (bce524fc): agy-proxy (:18743) and
 # antigravity-ls-proxy (:18745) — their lets and units were removed and
 # antigravity-direct (:18751, below) is the single Antigravity door.
+# Retired 2026-11-04 (opencode#1414): the antigravity-direct door itself
+# is gone — let, unit, session var, bin program and this row removed in
+# one change; the provider id lives on over the in-fork native provider.
 # Their bin/ scripts remain in the repo as history, uninvoked, and
 # their disabled opencode.jsonc providers keep the old fallbacks; see
 # the retirement note in home/common/default.nix. They are deliberately
@@ -54,7 +56,6 @@ proxies=(
   "COMMANDCODE_PROXY_PORT|commandcodeProxyPort|bin/commandcode-proxy.mjs|yes"
   "CLAUDE_CODE_PROXY_PORT|claudeCodeProxyPort|bin/claude-code-proxy.mjs|yes"
   "OPENCODE_ROUTE_PROXY_PORT|opencodeRouteProxyPort|bin/opencode-route-proxy.mjs|no"
-  "ANTIGRAVITY_DIRECT_PORT|antigravityDirectProxyPort|bin/antigravity-direct.mjs|yes"
 )
 
 failed=0
