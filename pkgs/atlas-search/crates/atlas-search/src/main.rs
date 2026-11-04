@@ -16,6 +16,7 @@
 //! backend/transport failures (Python tracebacks, also exit 1 —
 //! the binary prints the message instead of the traceback).
 
+mod fetch_model;
 mod pyjson;
 mod render;
 mod server;
@@ -62,6 +63,8 @@ enum Cmd {
     Serve(ServeArgs),
     /// generate the service config + v1 client table (0600)
     Init(InitArgs),
+    /// download + verify the pinned Snowflake model into the state dir (step 5)
+    FetchModel,
 }
 
 #[derive(Args)]
@@ -301,10 +304,6 @@ fn pick_backend(
 
 // ------------------------------------------------------------ embedder --
 
-/// The pinned model revision (fixtures/README.md; step 5 fetches
-/// it into the state dir — design section 4, Q1 as ruled).
-const MODEL_REV: &str = "95c2741480856aa9666782eb4afe11959938017f";
-
 fn resolve_model_dir() -> Option<PathBuf> {
     if let Ok(d) = std::env::var("ATLAS_MODEL_DIR")
         && !d.is_empty()
@@ -313,12 +312,16 @@ fn resolve_model_dir() -> Option<PathBuf> {
         return if p.is_dir() { Some(p) } else { None };
     }
     let home = home_dir();
-    let state = home.join(format!(".local/state/atlas-search/model/{MODEL_REV}"));
+    let state = home.join(format!(
+        ".local/state/atlas-search/model/{}",
+        fetch_model::MODEL_REV
+    ));
     if state.is_dir() {
         return Some(state);
     }
     let hf = home.join(format!(
-        ".cache/huggingface/hub/models--Snowflake--snowflake-arctic-embed-m-v2.0/snapshots/{MODEL_REV}"
+        ".cache/huggingface/hub/models--Snowflake--snowflake-arctic-embed-m-v2.0/snapshots/{}",
+        fetch_model::MODEL_REV
     ));
     if hf.is_dir() {
         return Some(hf);
@@ -336,6 +339,18 @@ fn resolve_ort_lib() -> Option<PathBuf> {
     let cand = home_dir().join(".local/state/atlas-search/ort/libonnxruntime.so");
     if cand.is_file() {
         return Some(cand);
+    }
+    // The packaged binary's closure path, baked in at build time
+    // (step 5, #5355): pkgs/atlas-search/default.nix compiles with
+    // ATLAS_SEARCH_ORT_LIB_DEFAULT set to its onnxruntime store
+    // path, so the packaged build resolves the runtime from its
+    // own closure — no env, no state-dir staging. Dev builds do
+    // not set it and never reach this branch.
+    if let Some(p) = option_env!("ATLAS_SEARCH_ORT_LIB_DEFAULT") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
     }
     None
 }
@@ -684,6 +699,10 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     server::serve_forever(settings, engine).map_err(|m| (1, m))
 }
 
+fn cmd_fetch_model() -> Result<(), CliError> {
+    fetch_model::fetch_model().map_err(|m| (2, m))
+}
+
 fn cmd_init(args: InitArgs) -> Result<(), CliError> {
     let path = server::resolve_service_config_path(args.config.as_deref());
     let summary = server::init_service_config(&path, args.force).map_err(|m| (2, m))?;
@@ -706,6 +725,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::GetChunk(args) => cmd_get_chunk(args),
         Cmd::Serve(args) => cmd_serve(args),
         Cmd::Init(args) => cmd_init(args),
+        Cmd::FetchModel => cmd_fetch_model(),
     }
 }
 
