@@ -1217,15 +1217,20 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         });
     }
 
-    // Deduplicate files with the same hash, display name, and user tags
+    // Deduplicate files with the same hash, display name, user tags, and
+    // recorded origin (#5382). Origin is part of the key: the origin filter
+    // in get_file_list_page runs after this deduplication, so collapsing
+    // same-content files from distinct origins here would make the
+    // discarded origin unqueryable.
     {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         files.retain(|f| {
             let dedup_key = format!(
-                "{}|{}|{:?}",
+                "{}|{}|{:?}|{:?}",
                 f.hash,
                 f.display_name.as_deref().unwrap_or(&f.name),
-                f.tags
+                f.tags,
+                f.origin_node
             );
             seen.insert(dedup_key)
         });
@@ -3006,6 +3011,74 @@ mod save_publication_tests {
                 .unwrap();
             assert_eq!(tags.len(), 1, "{key:?}: {tags:?}");
             assert_eq!(tags[0].value.as_ref().unwrap().as_str(), Some(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn file_list_dedup_preserves_same_content_files_with_distinct_origins() {
+        let (state, _endpoint, _docs) = state().await;
+        let outcome = state
+            .store
+            .blobs()
+            .add_bytes(b"shared content".to_vec())
+            .await
+            .unwrap();
+        let hash = outcome.hash;
+        for name in ["alpha.md", "beta.md"] {
+            state
+                .store
+                .tags()
+                .set(iroh_blobs::api::Tag::from(name.to_owned()), hash)
+                .await
+                .unwrap();
+        }
+        // Same display name and same user tag for both files; only the
+        // recorded origin differs (#5382).
+        for (subject, origin) in [("alpha.md", "node-alpha"), ("beta.md", "node-beta")] {
+            for (key, value) in [
+                ("name", "shared.md"),
+                ("topic", "shared"),
+                ("origin", origin),
+            ] {
+                state
+                    .tag_store
+                    .set_singleton(
+                        &state.tag_store.global,
+                        subject.as_bytes(),
+                        key.as_bytes(),
+                        Some(value.as_bytes()),
+                        b"",
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        let files = get_file_list(&state).await;
+        let mut origins: Vec<String> = files
+            .iter()
+            .filter(|f| f.hash == hash.to_string())
+            .filter_map(|f| f.origin_node.clone())
+            .collect();
+        origins.sort();
+        assert_eq!(
+            origins,
+            vec!["node-alpha".to_owned(), "node-beta".to_owned()],
+            "both distinct-origin rows must survive deduplication: {files:?}"
+        );
+
+        // Filtering by either recorded origin returns its own row.
+        for (origin, expected_name) in [("node-alpha", "alpha.md"), ("node-beta", "beta.md")] {
+            let page = get_file_list_page(
+                &state,
+                &FileListQuery {
+                    origin: Some(origin.to_owned()),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert_eq!(page.total, 1, "origin filter {origin}");
+            assert_eq!(page.files[0].name, expected_name, "origin filter {origin}");
         }
     }
 
