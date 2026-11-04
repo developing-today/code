@@ -213,19 +213,63 @@ export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
  * sometimes publishes, so requiring strictly an array would reject real
  * sections.
  */
+const GOAL_MOMENTUMS: readonly string[] = ["moving", "stalled", "blocked", "no-work-lined-up"];
+const LINED_UP_HORIZONS: readonly string[] = ["today", "tomorrow", "next-3-days", "longer", "incoming"];
+const LINED_UP_STATUSES: readonly string[] = ["in-progress", "queued", "blocked", "done-recently"];
+
+// #3897: element gates for the per-goal arrays. todayFromSection reads
+// element fields directly (t.horizon, s.blocker), so a record alone is
+// not enough — the fields it dereferences must be the right shapes, or
+// the designed invalid-section fallback never happens and the consumer
+// throws (or silently renders falsified state) instead. linedUp
+// blockedBy stays out of scope here (#4316 owns the nested shape).
+function isLinedUpElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.title === "string" &&
+    typeof v.horizon === "string" &&
+    LINED_UP_HORIZONS.includes(v.horizon) &&
+    (v.status === undefined || (typeof v.status === "string" && LINED_UP_STATUSES.includes(v.status))) &&
+    (v.horizonWhy === undefined || typeof v.horizonWhy === "string")
+  );
+}
+
+function isStalledElement(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.title === "string" &&
+    typeof v.since === "string" &&
+    (v.blocker === undefined || typeof v.blocker === "string")
+  );
+}
+
 function isGoalMeasurement(v: unknown): boolean {
   if (typeof v !== "object" || v === null) return false;
   const g = v as Partial<GoalMeasurement>;
   return (
+    // #3897: the scalar fields todayFromSection renders (project name,
+    // momentum state, summary) were never checked — a goal missing them
+    // passed and rendered nameless / silently "stalled".
+    typeof g.goal === "string" &&
+    g.goal.length > 0 &&
+    typeof g.momentum === "string" &&
+    GOAL_MOMENTUMS.includes(g.momentum) &&
+    typeof g.summary === "string" &&
+    (typeof g.goalId === "string" || g.goalId === null) &&
     Array.isArray(g.linedUp) &&
     Array.isArray(g.stalled) &&
     Array.isArray(g.gaps) &&
     // #2417: todayFromSection dereferences every lined-up / stalled
     // element, so a non-record element must fail here, at the gate —
     // presence of the arrays alone let [null] through to a TypeError.
-    g.linedUp.every(isRecord) &&
-    g.stalled.every(isRecord) &&
-    (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
+    g.linedUp.every(isLinedUpElement) &&
+    g.stalled.every(isStalledElement) &&
+    // #3897: gaps are joined into the rendered detail line, so a
+    // non-string element would render as "[object Object]".
+    g.gaps.every((gap) => typeof gap === "string") &&
+    (typeof g.progressedSinceLastRun === "string" ||
+      (Array.isArray(g.progressedSinceLastRun) &&
+        g.progressedSinceLastRun.every((line) => typeof line === "string")))
   );
 }
 
