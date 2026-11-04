@@ -52,7 +52,17 @@ beforeAll(async () => {
       goals: [],
       actions: [],
     },
-    registry: [{ id: "ses-health-1", source: "opencode-sandbox", label: "Health probe session", status: "idle", agentId: "opencode:main", agentLabel: "OpenCode · main (sandbox)", taskRefs: [] }],
+    registry: [
+      {
+        id: "ses-health-1",
+        source: "opencode-sandbox",
+        label: "Health probe session",
+        status: "idle",
+        agentId: "opencode:main",
+        agentLabel: "OpenCode · main (sandbox)",
+        taskRefs: [],
+      },
+    ],
   };
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));

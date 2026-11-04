@@ -77,6 +77,88 @@ fn resolve_log_level(
     "warn".to_owned()
 }
 
+/// Initialize tracing from the resolved level `filter` and the
+/// structured-logging configuration (#1791; see
+/// `id::structured_logging` for the `ID_LOG_*` variables).
+///
+/// The console destination (stderr) always exists; the file
+/// destination is added when configured. Each destination gets its
+/// own filter, so their levels are independent. A configured file
+/// that cannot be opened, or an unrecognized `ID_LOG_TZ`, warns on
+/// stderr (before tracing starts) and logging continues without that
+/// piece rather than failing the process over its own logs.
+fn init_logging(filter: &str, config: &id::structured_logging::LogConfig) {
+    use id::structured_logging::{LogFormat, Rfc3339TzTimer, SharedFileWriter};
+    use tracing_subscriber::{Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+    if config.tz_fell_back {
+        eprintln!("warning: ID_LOG_TZ value not recognized; log timestamps use UTC");
+    }
+    let timer = Rfc3339TzTimer { zone: config.zone };
+
+    let console_layer: Box<dyn Layer<Registry> + Send + Sync> = match config.format {
+        LogFormat::Json => fmt::layer()
+            .json()
+            .with_writer(std::io::stderr)
+            .with_timer(timer)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_filter(tracing_subscriber::EnvFilter::new(filter))
+            .boxed(),
+        LogFormat::Text => fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_timer(timer)
+            .with_filter(tracing_subscriber::EnvFilter::new(filter))
+            .boxed(),
+    };
+
+    let file_layer: Option<Box<dyn Layer<Registry> + Send + Sync>> =
+        config
+            .file
+            .as_ref()
+            .and_then(|path| match SharedFileWriter::open(path) {
+                Ok(writer) => {
+                    let file_filter = config.file_filter_string(filter);
+                    let layer: Box<dyn Layer<Registry> + Send + Sync> = match config.format {
+                        LogFormat::Json => fmt::layer()
+                            .json()
+                            .with_writer(move || writer.clone())
+                            .with_timer(timer)
+                            .with_current_span(true)
+                            .with_span_list(true)
+                            .with_ansi(false)
+                            .with_filter(tracing_subscriber::EnvFilter::new(&file_filter))
+                            .boxed(),
+                        LogFormat::Text => fmt::layer()
+                            .fmt_fields(id::structured_logging::PlainFields::new())
+                            .with_writer(move || writer.clone())
+                            .with_timer(timer)
+                            .with_ansi(false)
+                            .with_filter(tracing_subscriber::EnvFilter::new(&file_filter))
+                            .boxed(),
+                    };
+                    Some(layer)
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not open log file {} ({error}); logging to stderr only",
+                        path.display()
+                    );
+                    None
+                }
+            });
+
+    // Layers are collected into one Vec of boxes on the Registry:
+    // stacking two individually boxed layers does not type-check,
+    // because a layer boxed for Registry is not a Layer for the
+    // already-layered stack.
+    let mut layers: Vec<Box<dyn Layer<Registry> + Send + Sync>> = vec![console_layer];
+    if let Some(layer) = file_layer {
+        layers.push(layer);
+    }
+    tracing_subscriber::registry().with(layers).init();
+}
+
 /// Per-module overrides to suppress noisy third-party modules.
 /// These are appended to whatever base level is active, unless the user
 /// explicitly sets a level for that module in `RUST_LOG`
@@ -110,10 +192,8 @@ async fn main() -> Result<()> {
             .subcommand_matches("serve")
             .map(|serve| {
                 (
-                    serve.value_source("bind")
-                        == Some(clap::parser::ValueSource::CommandLine),
-                    serve.value_source("port")
-                        == Some(clap::parser::ValueSource::CommandLine),
+                    serve.value_source("bind") == Some(clap::parser::ValueSource::CommandLine),
+                    serve.value_source("port") == Some(clap::parser::ValueSource::CommandLine),
                 )
             })
             .unwrap_or((false, false))
@@ -179,10 +259,17 @@ async fn main() -> Result<()> {
             }
         }
     }
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(tracing_subscriber::EnvFilter::new(&filter))
-        .init();
+    // Structured-logging configuration (#1791): format, file
+    // destination with its own level, and timestamp timezone all come
+    // from the ID_LOG_* environment variables; unset means the
+    // historical plain-text stderr stream.
+    let log_config = id::structured_logging::LogConfig::resolve(
+        std::env::var("ID_LOG_FORMAT").ok().as_deref(),
+        std::env::var("ID_LOG_FILE").ok().as_deref(),
+        std::env::var("ID_LOG_FILE_LEVEL").ok().as_deref(),
+        std::env::var("ID_LOG_TZ").ok().as_deref(),
+    );
+    init_logging(&filter, &log_config);
 
     match cli.command {
         None => run_repl(None).await,
@@ -331,6 +418,8 @@ async fn main() -> Result<()> {
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
         }
+        #[cfg(feature = "sandbox")]
+        Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,
         #[cfg(not(feature = "world"))]

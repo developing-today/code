@@ -51,6 +51,9 @@ pub enum FileOpError {
     /// The name is rooted or contains a traversal component.
     #[error("name must be a safe relative path: {0}")]
     InvalidName(String),
+    /// The name collides with the namespace used for system archives.
+    #[error("name is reserved for archives: {0}")]
+    ReservedArchiveName(String),
     /// Source and destination are the same name.
     #[error("new name must differ from the current name")]
     SameName,
@@ -104,11 +107,15 @@ pub struct DeleteOutcome {
 }
 
 /// File operations over a blob [`Store`] and a [`TagStore`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FileOps<'a> {
     store: &'a Store,
     tags: &'a TagStore,
     blob_wait: Duration,
+    /// Node that originated a write, stamped as the file's `origin` tag
+    /// (#4973). `None` when the caller does not know its node id: no
+    /// origin is stamped and listings show the file's origin as unknown.
+    origin: Option<String>,
 }
 
 /// Serialises archive-name resolve+claim within this process (#2462).
@@ -182,6 +189,7 @@ impl<'a> FileOps<'a> {
             store,
             tags,
             blob_wait: Duration::ZERO,
+            origin: None,
         }
     }
 
@@ -195,6 +203,16 @@ impl<'a> FileOps<'a> {
     #[must_use]
     pub const fn with_blob_wait(mut self, wait: Duration) -> Self {
         self.blob_wait = wait;
+        self
+    }
+
+    /// Stamp writes with `origin` (a node id) as the file's origin node
+    /// (#4973). The stamp is set-if-absent: the node that first wrote a
+    /// file stays its origin across later writes and renames, and files
+    /// written before origin stamping existed simply have no origin tag.
+    #[must_use]
+    pub fn with_origin(mut self, origin: String) -> Self {
+        self.origin = Some(origin);
         self
     }
 
@@ -242,6 +260,9 @@ impl<'a> FileOps<'a> {
                 .any(|component| component.is_empty() || matches!(component, "." | ".."))
         {
             return Err(FileOpError::InvalidName(name.to_owned()));
+        }
+        if is_archive_tag_name(name) {
+            return Err(FileOpError::ReservedArchiveName(name.to_owned()));
         }
         Ok(())
     }
@@ -314,7 +335,11 @@ impl<'a> FileOps<'a> {
     /// Name `hash` as `name`, after verifying the blob is complete in the store.
     ///
     /// Sets the `created` tag only if absent and always refreshes `modified`,
-    /// then auto-tags `name`/`file`.
+    /// stamps the `origin` node on a genuine first write (no `created` tag
+    /// recorded yet) if one is configured, then auto-tags `name`/`file`.
+    /// A legacy file that predates origin stamping keeps an unknown origin
+    /// when it is overwritten: absence of an `origin` tag alone does not
+    /// prove this write is the file's first.
     pub async fn put(&self, name: &str, hash: Hash) -> Result<(), FileOpError> {
         Self::validate_name(name)?;
         if !self.blob_present(hash).await? {
@@ -337,6 +362,15 @@ impl<'a> FileOps<'a> {
         let ns = &self.tags.global;
         let now = now_unix().to_string();
         let subject = name.as_bytes();
+        // Origin is stamped only for a genuine first write: a name with a
+        // `created` tag but no `origin` tag is a legacy file whose true
+        // origin is unknown and must stay unknown (Codex review, PR #5191).
+        let first_write = self
+            .tags
+            .get_by_key(ns, subject, b"created")
+            .await
+            .map(|existing| existing.is_empty())
+            .unwrap_or(false);
         let created = if reset_created {
             self.tags
                 .set_singleton(ns, subject, b"created", Some(now.as_bytes()), b"")
@@ -356,6 +390,15 @@ impl<'a> FileOps<'a> {
             .await
         {
             tracing::warn!("failed to set modified tag for {name}: {e:#}");
+        }
+        if first_write
+            && let Some(origin) = &self.origin
+            && let Err(e) = self
+                .tags
+                .set_if_absent(ns, subject, b"origin", Some(origin.as_bytes()), b"")
+                .await
+        {
+            tracing::warn!("failed to set origin tag for {name}: {e:#}");
         }
         if let Err(e) = self.tags.auto_tag(ns, subject, None).await {
             tracing::warn!("failed to auto-tag {name}: {e:#}");
@@ -607,6 +650,24 @@ mod archive_name_tests {
 
     fn hash(byte: u8) -> Hash {
         Hash::from([byte; 32])
+    }
+
+    #[test]
+    fn fileops_rejects_archive_shaped_names_but_allows_lookalikes() {
+        for name in [
+            "report.archive.0",
+            "report.archive.1700000000",
+            "report.archive.18446744073709551616",
+        ] {
+            assert!(matches!(
+                FileOps::validate_name(name),
+                Err(FileOpError::ReservedArchiveName(found)) if found == name
+            ));
+        }
+
+        for name in ["a.archive.notes", "a.archive.+1", "a.archive.١"] {
+            assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
+        }
     }
 
     /// Two replaces of one name within the same second must not share an

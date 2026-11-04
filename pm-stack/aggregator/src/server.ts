@@ -21,6 +21,16 @@ import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } 
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { EventsStore, emitEvent } from "./events.ts";
+import {
+  IngestionStore,
+  WatchdogEpisodeStabilizer,
+  ingestActivity,
+  createWatchdogGapSyncQueue,
+  watchdogDeliveries,
+  activityCoverageHtml,
+  gapsHtml,
+  ACTIVITY_SOURCE_COVERAGE,
+} from "./activity.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
@@ -153,6 +163,7 @@ async function coverageSnapshot(
 const actionsStore = new ActionsStore(cfg.actionsFile);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const activityStore = new IngestionStore(cfg.activityFile);
 
 /** #1739: the event log's fire-and-forget sink for source-side
  *  writers (orchestration publishes, registry merges). Never awaited,
@@ -160,6 +171,54 @@ const eventsStore = new EventsStore(cfg.eventsFile);
 function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
   void emitEvent(eventsStore, event);
 }
+
+/** #3321: the activity-ingestion sink for the source-side writers
+ *  (watchdog episodes, Kaneo board changes). Dedupe + checkpoints
+ *  live in the store. The returned promise resolves true only when
+ *  every delivery is durable (ingested or already seen): the live
+ *  source awaits it as the acknowledgment that lets it discard its
+ *  Kaneo baseline (Codex P2, PR #5141) — failed deliveries retain
+ *  their cards' baseline entries so the next poll retries the same
+ *  stable delivery ids, while acknowledged cards advance. */
+async function recordActivity(
+  deliveries: Parameters<typeof ingestActivity>[2],
+): Promise<{ failed: number; failedIds: string[] }> {
+  const result = await ingestActivity(activityStore, eventsStore, deliveries);
+  return { failed: result.failed, failedIds: result.failedIds };
+}
+
+/** #3321: the source-gap sink for the live source's polling gaps
+ *  (Codex P2, PR #5141): a non-null `to` records (or extends) the
+ *  open gap for the source; a null `to` is recovery — the open gap
+ *  resolves as backfilled, since polling has resumed and the next
+ *  diff lands against the preserved baseline. Never throws into the
+ *  source's read path. */
+async function recordSourceGap(source: string, from: string, to: string | null): Promise<void> {
+  try {
+    if (to !== null) {
+      await activityStore.recordGap(source, from, to);
+      return;
+    }
+    for (const gap of await activityStore.gaps()) {
+      if (gap.source === source && gap.status === "open") {
+        // Recovery happened now, not at the last failed poll: extend
+        // the gap window to the recovery moment as it resolves
+        // (Codex P2, PR #5141).
+        await activityStore.resolveGap(gap.id, "backfilled", new Date().toISOString());
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[activity] WARNING: source gap record failed for ${source}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** #3321: pins watchdog episodes to their first-observed `since`
+ *  (Codex P2, PR #5141) — watchdogTierItems assigns `now` for
+ *  several breach kinds, so without this the stream would gain a
+ *  new "episode" on every attention render of one outage. */
+const watchdogEpisodes = new WatchdogEpisodeStabilizer();
 async function hasStreamEvent(kind: string, ref: string): Promise<boolean> {
   return eventsStore.has(kind, ref);
 }
@@ -173,6 +232,9 @@ function pickSource(): Source {
         standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
         onEvent: recordStreamEvent,
         hasEvent: hasStreamEvent,
+        onActivity: recordActivity,
+        onSourceGap: recordSourceGap,
+        seenActivityIds: (source) => activityStore.seenIds(source),
       })
     : fixtureSource();
 }
@@ -442,6 +504,12 @@ async function searchContext(query: string) {
   return { query, results: searchWork(board, rows, items, query), items };
 }
 
+// #3321: watchdog gap-sync passes run whole and in observation
+// order through this queue (Codex P2, PR #5141 round 5) — see
+// createWatchdogGapSyncQueue in activity.ts for why the bare
+// fire-and-forget sync interleaved.
+const enqueueWatchdogGapSync = createWatchdogGapSyncQueue();
+
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
 // current diagnoses (feed age + probes via the health assembly —
 // its probe cache keeps this cheap — plus the orchestration
@@ -454,7 +522,7 @@ async function searchContext(query: string) {
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
   const health = await healthContext(false);
-  return watchdogTierItems({
+  const items = watchdogTierItems({
     now: Date.now(),
     feedAgeMs: health.feed.ageMs,
     feedGeneratedAt: health.feed.generatedAt,
@@ -470,6 +538,17 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
         ...(s.probedAt ? { probedAt: s.probedAt } : {}),
       })),
   });
+  // #3321: every derivation is also an ingestion pass — the current
+  // breach episodes go to the stream (dedupe makes re-derivation a
+  // no-op) and the gap records sync with the breach set. Episodes
+  // are stabilized first (first-observed `since` wins until the
+  // breach clears), so one continuous outage is one delivery.
+  const stableItems = watchdogEpisodes.stabilize(items);
+  void recordActivity(watchdogDeliveries(stableItems));
+  void enqueueWatchdogGapSync(activityStore, stableItems).catch((err) => {
+    console.error(`[activity] WARNING: watchdog gap sync failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
+  return items;
 }
 
 async function attentionContext(opts: { census?: boolean } = {}) {
@@ -1030,7 +1109,10 @@ async function handler(req: Request): Promise<Response> {
       ref: url.searchParams.get("ref") ?? undefined,
       actor: url.searchParams.get("actor") ?? undefined,
     });
-    return json({ events });
+    // #3322 slice A: the audit health surface rides along — pending
+    // retry-outbox count + hash-chain integrity verdict.
+    const health = await eventsStore.health();
+    return json({ events, health });
   }
   if (path === "/events") {
     // #1739: the human page over the same stream /api/events.json
@@ -1053,8 +1135,20 @@ async function handler(req: Request): Promise<Response> {
         `<h1>Events</h1><p>${events.length} event(s), newest first. ` +
         `Machine twin: <a href="/api/events.json">/api/events.json</a> (filters: kind, ref, actor).</p>` +
         `<table><thead><tr><th>at</th><th>actor</th><th>kind</th><th>ref</th><th>summary</th></tr></thead>` +
-        `<tbody>${rows}</tbody></table></body></html>`,
+        `<tbody>${rows}</tbody></table>` +
+        `<h2>Activity gaps</h2>` +
+        gapsHtml(await activityStore.gaps()) +
+        `<h2>Activity source coverage</h2>` +
+        activityCoverageHtml() +
+        `</body></html>`,
     );
+  }
+  if (path === "/api/activity.json") {
+    // #3321: activity-ingestion state — per-source checkpoints, gap
+    // records, and the documented source coverage. The machine twin
+    // of the sections the /events page renders below its table.
+    const [checkpoints, gaps] = await Promise.all([activityStore.checkpoints(), activityStore.gaps()]);
+    return json({ checkpoints, gaps, coverage: ACTIVITY_SOURCE_COVERAGE });
   }
   if (path === "/api/views.json") {
     // #1276: the saved views, per owner (?owner=<kind>:<id>) or all.

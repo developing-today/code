@@ -223,8 +223,7 @@ export function mergeOpencodeConfigTexts(baseText: string, overlayText: string):
     return null;
   }
   if (typeof base !== "object" || base === null || typeof overlay !== "object" || overlay === null) return null;
-  const isObj = (v: unknown): v is Record<string, unknown> =>
-    typeof v === "object" && v !== null && !Array.isArray(v);
+  const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
   const merge = (b: unknown, o: unknown): unknown => {
     if (!isObj(b) || !isObj(o)) return o;
     const out: Record<string, unknown> = { ...b };
@@ -1126,9 +1125,8 @@ export function aaSectionFromSupabase(
     // (tracked default + runtime overlay) so the sync-owned providers'
     // models stay visible after the split.
     const effectiveText =
-      (opencodeRuntimeText
-        ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText)
-        : null) ?? opencodeConfigText;
+      (opencodeRuntimeText ? mergeOpencodeConfigTexts(opencodeConfigText, opencodeRuntimeText) : null) ??
+      opencodeConfigText;
     const inputs = parseOpencodeCoverageInputs(effectiveText);
     if (inputs) coverage = computeAaCoverage(measuredNames, inputs);
     catalog = aaCatalogFromConfig(effectiveText, { configs, rankings }, prices) ?? undefined;

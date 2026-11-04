@@ -468,6 +468,21 @@ export function parseRef(key: RefKey): GhRef {
   return { repo: m[1], number };
 }
 
+/** The one shared ref-validity rule (#4952): a value is a usable RefKey
+ *  only if parseRef accepts it — owner/repo#N shape AND a safe-integer
+ *  number. Boundary validators and store-load gates route through this
+ *  instead of re-checking the shape with a local regex whose \d+ group
+ *  admits numbers parseRef (and refUrl) then throw on. */
+export function isValidRef(value: unknown): value is RefKey {
+  if (typeof value !== "string") return false;
+  try {
+    parseRef(value as RefKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+)/g;
 
 /** Every GitHub issue/PR URL in a piece of text, as ref keys (deduplicated). */

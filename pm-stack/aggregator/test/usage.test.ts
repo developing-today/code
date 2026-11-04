@@ -557,7 +557,7 @@ describe("hub renders", () => {
       source: "api",
       observedBy: "backfill:quota-view.md",
     };
-    usage.history = { ...usage.history, "deepseek": [rec] };
+    usage.history = { ...usage.history, deepseek: [rec] };
     const html = renderQuota(await src.quota(), src.provenance(), usage);
     expect(html).toContain("DeepSeek PAYG reserve balance");
     expect(html).toContain("¥44.63");

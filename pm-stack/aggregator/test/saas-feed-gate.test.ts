@@ -111,9 +111,7 @@ describe("fleet feed SaaS sanitization (#2451)", () => {
     const src = await sourceWith([VALID, null]);
     const usage = await src.usage();
     expect(usage.services).toEqual([VALID]);
-    expect(usage.attention).toContainEqual(
-      expect.objectContaining({ kind: "over-limit", label: "Turso — Rows" }),
-    );
+    expect(usage.attention).toContainEqual(expect.objectContaining({ kind: "over-limit", label: "Turso — Rows" }));
     const html = renderQuota(await src.quota(), src.provenance(), usage);
     expect(html).toContain("Turso");
     expect(src.provenance().usage).toContain("dropped 1 malformed SaaS service row(s)");
