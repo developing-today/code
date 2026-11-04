@@ -190,6 +190,18 @@ export async function getItems(db: Client, refs: string[]): Promise<ItemRow[]> {
   return r.rows as unknown as ItemRow[];
 }
 
+/** Remove a deleted GitHub item and its projected activity/link rows atomically. */
+export async function deleteItem(db: Client, ref: string): Promise<void> {
+  await db.batch(
+    [
+      { sql: "DELETE FROM pmp_links WHERE ref = ?", args: [ref] },
+      { sql: "DELETE FROM pmp_comments WHERE ref = ?", args: [ref] },
+      { sql: "DELETE FROM pmp_items WHERE ref = ?", args: [ref] },
+    ],
+    "write",
+  );
+}
+
 export async function listItems(
   db: Client,
   opts: { repo?: string; state?: string; kind?: string; limit?: number },

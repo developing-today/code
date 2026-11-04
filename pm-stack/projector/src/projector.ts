@@ -7,6 +7,7 @@ import type { upsertItem, upsertComment, markCommentDeleted, recordPush, ItemRow
 // fake, independent of libSQL.
 export interface ProjectorStore {
   upsertItem(i: Omit<ItemRow, "fetched_at">): Promise<void>;
+  deleteItem(ref: string): Promise<void>;
   upsertComment(c: Omit<CommentRow, "fetched_at">): Promise<void>;
   markCommentDeleted(c: Omit<CommentRow, "fetched_at">): Promise<void>;
   recordPush(p: {
@@ -187,7 +188,16 @@ export async function applyEvent(
   switch (event) {
     case "issues": {
       const issue = payload.issue;
-      if (issue) await applyIssue(issue);
+      if (issue) {
+        if (payload.action === "deleted") {
+          const ref = itemRef(repo, issue.number);
+          await store.deleteItem(ref);
+          addRef(ref);
+          wrote = true;
+        } else {
+          await applyIssue(issue);
+        }
+      }
       break;
     }
     case "pull_request": {

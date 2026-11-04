@@ -19,6 +19,7 @@ function fakeStore() {
   const comments = new Map<string, Omit<CommentRow, "fetched_at">>();
   const pushes: any[] = [];
   const deleted: string[] = [];
+  const deletedItems: string[] = [];
   const store: ProjectorStore = {
     async upsertItem(i) {
       const prev = items.get(i.ref);
@@ -26,6 +27,13 @@ function fakeStore() {
         i = { ...i, draft: prev.draft, merged: prev.merged, merged_at: prev.merged_at };
       }
       items.set(i.ref, i);
+    },
+    async deleteItem(ref) {
+      deletedItems.push(ref);
+      items.delete(ref);
+      for (const [id, comment] of comments) {
+        if (comment.ref === ref) comments.delete(id);
+      }
     },
     async upsertComment(c) {
       comments.set(c.id, c);
@@ -38,7 +46,7 @@ function fakeStore() {
       pushes.push(p);
     },
   };
-  return { store, items, comments, pushes, deleted };
+  return { store, items, comments, pushes, deleted, deletedItems };
 }
 
 describe("projector: repo allow-list", () => {
@@ -73,6 +81,34 @@ describe("projector: issues", () => {
     expect(r.refs).toEqual(["developing-today/code#100"]);
     expect(items.get("developing-today/code#100")?.kind).toBe("issue");
     expect(JSON.parse(items.get("developing-today/code#100")!.labels)).toEqual(["bug", "status:backlog"]);
+  });
+
+  test("opened then deleted issue removes the item and reports its ref", async () => {
+    const { store, items, deletedItems } = fakeStore();
+    const issue = {
+      number: 102,
+      title: "Deleted issue",
+      state: "open",
+      html_url: "https://github.com/developing-today/code/issues/102",
+      url: "https://api.github.com/repos/developing-today/code/issues/102",
+      created_at: "2026-10-25T00:00:00Z",
+      updated_at: "2026-10-25T00:00:00Z",
+    };
+
+    await applyEvent(store, "issues", {
+      action: "opened",
+      repository: { full_name: "developing-today/code" },
+      issue,
+    });
+    const result = await applyEvent(store, "issues", {
+      action: "deleted",
+      repository: { full_name: "developing-today/code" },
+      issue,
+    });
+
+    expect(items.has("developing-today/code#102")).toBe(false);
+    expect(deletedItems).toEqual(["developing-today/code#102"]);
+    expect(result).toEqual({ refs: ["developing-today/code#102"], wrote: true });
   });
 
   test("issue with pull_request field is classified as a PR", async () => {

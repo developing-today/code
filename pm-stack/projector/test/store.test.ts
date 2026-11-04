@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   migrate,
   upsertItem,
+  deleteItem,
   upsertComment,
   markCommentDeleted,
   upsertLink,
@@ -81,6 +82,19 @@ describe("store: items", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].title).toBe("Fix widget");
     expect(rows[0].state).toBe("open");
+  });
+
+  test("deleting an item removes its links and comments", async () => {
+    const ref = "developing-today/code#99";
+    await upsertItem(db, item({ ref, number: 99 }));
+    await upsertLink(db, { subject: "grist:doc/table/row", ref, relation: "tracks" });
+    await upsertComment(db, comment({ id: "delete-item-comment", ref }));
+
+    await deleteItem(db, ref);
+
+    expect(await getItems(db, [ref])).toHaveLength(0);
+    expect(await getComments(db, [ref], { includeDeleted: true })).toHaveLength(0);
+    expect(await getLinks(db, { ref })).toHaveLength(0);
   });
 
   test("monotonic guard: stale updated_at does not overwrite", async () => {
