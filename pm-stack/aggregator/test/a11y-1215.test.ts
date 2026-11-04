@@ -127,7 +127,7 @@ describe("the emitted explorer script stays valid (#1215, Codex P1 on PR #3308)"
     }));
     expect(scripts.length).toBeGreaterThan(0);
     const module = scripts.find((script) => script.tag.includes('type="module"') && !script.tag.includes(" src="));
-    expect(module?.body).toContain('/assets/aa-explorer-computations.js');
+    expect(module?.body).toContain("/assets/aa-explorer-computations.js");
     for (const script of scripts) {
       if (script.tag.includes('type="application/json"')) continue;
       const source = script.body.replace(/^\s*import [^\n]*\n/, "");

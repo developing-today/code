@@ -808,17 +808,22 @@ export function applyCloudflareExport(
   nowMs: number = Date.now(),
 ): SaasService[] {
   if (!doc || doc.status !== "ok" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
-  const measuredMs = Date.parse(doc.measuredAt);
-  if (!Number.isFinite(measuredMs)) return services;
+  // Real-calendar ISO only (#5018): Date.parse rolls impossible dates
+  // over (2026-02-30 -> Mar 2) and accepts non-ISO strings, so the
+  // freshness window must be computed from parseIsoDate's verdict.
+  const measured = parseIsoDate(doc.measuredAt);
+  if (!measured) return services;
+  const measuredMs = measured.getTime();
   if (nowMs - measuredMs > CLOUDFLARE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   // A tick that ran just before a UTC month rollover carries the
   // previous cycle's totals; overlaying them would compare a full month
   // against a fresh one's limits. Documents without cycleStart (older
   // producers) stay backwards compatible.
   if (doc.cycleStart) {
-    const cycleMs = Date.parse(doc.cycleStart);
-    if (!Number.isFinite(cycleMs)) return services;
-    const cycle = new Date(cycleMs);
+    // Same real-calendar rule (#5018): an impossible cycleStart must not
+    // roll into a neighbouring month and evade the same-month check.
+    const cycle = parseIsoDate(doc.cycleStart);
+    if (!cycle) return services;
     const current = new Date(nowMs);
     if (cycle.getUTCFullYear() !== current.getUTCFullYear() || cycle.getUTCMonth() !== current.getUTCMonth()) {
       return services;
@@ -827,8 +832,18 @@ export function applyCloudflareExport(
   const cf = services.find((s) => s.id === "cloudflare");
   if (!cf) return services;
   const byId = new Map(
+    // A negative measurement is a broken export, not live data: drop it
+    // here as applySupabaseExport does, so the metric keeps its prose or
+    // null fallback instead of stamping a negative used/percent.
     doc.metrics
-      .filter((m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used))
+      .filter(
+        (m) =>
+          m &&
+          typeof m.id === "string" &&
+          typeof m.used === "number" &&
+          Number.isFinite(m.used) &&
+          m.used >= 0,
+      )
       .map((m) => [m.id, m]),
   );
   if (!byId.size) return services;
@@ -930,12 +945,13 @@ export function applySupabaseExport(
 ): SaasService[] {
   if (!doc || (doc.status !== "ok" && doc.status !== "partial")) return services;
   // The freshness anchor must be a real calendar date, not merely a
-  // string Date.parse accepts (#2508): a non-string or impossible
+  // string Date.parse accepts (#2508, #5018): a non-string or impossible
   // timestamp cannot pass the gate and corrupt the card.
+  if (typeof doc.measuredAt !== "string" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
   const measured = parseIsoDate(doc.measuredAt);
-  if (measured === null || !Array.isArray(doc.metrics)) return services;
+  if (measured === null) return services;
   const measuredMs = measured.getTime();
-  const measuredAt = doc.measuredAt ?? measured.toISOString();
+  const measuredAt = doc.measuredAt;
   if (nowMs - measuredMs > SUPABASE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   const supabase = services.find((s) => s.id === "supabase");
   if (!supabase) return services;

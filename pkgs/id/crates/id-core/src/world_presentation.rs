@@ -231,9 +231,12 @@ impl ScreenSurface {
     /// Crop a screen to a connection-local viewport without changing world state.
     /// Cropping through the second column of a wide glyph replaces that partial
     /// glyph with a blank cell so the returned grid remains valid.
+    /// A zero viewport dimension is treated as 1, so the returned grid
+    /// always satisfies the same 1..=MAX dimension invariant as
+    /// `from_cells` (a detached or resizing terminal can report 0).
     pub fn fit(&self, width: usize, height: usize) -> Self {
-        let width = width.min(usize::from(self.width));
-        let height = height.min(usize::from(self.height));
+        let width = width.min(usize::from(self.width)).max(1);
+        let height = height.min(usize::from(self.height)).max(1);
         let mut cells = Vec::with_capacity(width * height);
         for y in 0..height {
             let start = y * usize::from(self.width);
@@ -1036,11 +1039,10 @@ mod tests {
 
     #[test]
     fn text_parses_and_round_trips() {
-        let parsed = parse_surface(
-            r#"{"kind":"text","version":1,"lines":["hello","wide 界 line"]}"#,
-        )
-        .unwrap()
-        .unwrap();
+        let parsed =
+            parse_surface(r#"{"kind":"text","version":1,"lines":["hello","wide 界 line"]}"#)
+                .unwrap()
+                .unwrap();
         let WorldSurface::Text(text) = &parsed else {
             panic!("expected a text surface");
         };
@@ -1064,19 +1066,21 @@ mod tests {
         let text = TextSurface::with_width(4, vec!["abcdefghij".to_owned()]).unwrap();
         assert_eq!(text.lines, ["abcd", "efgh", "ij"]);
         let text = TextSurface::with_width(3, vec!["ab界cd".to_owned()]).unwrap();
-        assert!(text
-            .lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3));
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= 3)
+        );
         assert_eq!(text.lines.concat(), "ab界cd");
 
         // The default is 80 and any requested width is capped like a screen.
         let text = TextSurface::with_width(10_000, vec!["x".repeat(200)]).unwrap();
         assert_eq!(usize::from(text.width), MAX_SCREEN_WIDTH);
-        assert!(text
-            .lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH));
+        assert!(
+            text.lines
+                .iter()
+                .all(|line| UnicodeWidthStr::width(line.as_str()) <= MAX_SCREEN_WIDTH)
+        );
         assert!(TextSurface::with_width(0, vec!["x".to_owned()]).is_err());
     }
 
@@ -1138,6 +1142,27 @@ mod tests {
         assert_eq!(cropped.cells[0].symbol, " ");
         assert_eq!(cropped.cells[0].columns, 1);
         assert!(cropped.render_ansi().is_some());
+    }
+
+    #[test]
+    fn test_fit_treats_a_zero_viewport_dimension_as_one() {
+        let screen = grid(4, 2, " ");
+        for (requested, expected) in [((0, 2), (1, 2)), ((4, 0), (4, 1)), ((0, 0), (1, 1))] {
+            let fitted = screen.fit(requested.0, requested.1);
+            assert_eq!(
+                (usize::from(fitted.width), usize::from(fitted.height)),
+                expected,
+                "fit{requested:?}"
+            );
+            assert_eq!(fitted.cells.len(), expected.0 * expected.1);
+            assert!(fitted.render_ansi().is_some(), "fit{requested:?}");
+        }
+    }
+
+    #[test]
+    fn test_fit_to_the_source_dimensions_is_the_identity() {
+        let screen = grid(4, 2, "x");
+        assert_eq!(screen.fit(4, 2), screen);
     }
 
     #[test]

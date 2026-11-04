@@ -84,12 +84,8 @@ let
   dashboardPkg = pkgs.writeShellScriptBin "pm-dashboard-backup" (
     builtins.readFile ./pm-dashboard-backup.sh
   );
-  openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (
-    builtins.readFile ./openclaw-backup.sh
-  );
-  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (
-    builtins.readFile ./atlas-backup.sh
-  );
+  openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (builtins.readFile ./openclaw-backup.sh);
+  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (builtins.readFile ./atlas-backup.sh);
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
   );
@@ -328,7 +324,13 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours} ${watchdogJobs}";
-            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            # LAPTOP_BACKUPS_OFFSITE_CHECK (#3914): the watchdog also
+            # asserts the dashboard backup's date dir exists on R2.
+            # servicePath carries rclone and ~/tools/bin carries bws.
+            Environment = [
+              "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+              "LAPTOP_BACKUPS_OFFSITE_CHECK=1"
+            ];
           };
         };
       })

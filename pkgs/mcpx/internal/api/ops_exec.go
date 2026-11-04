@@ -131,6 +131,7 @@ const execOptionsSchema = `{"type":"object","properties":{
   "autoInstall":{"type":"string","enum":["off","fallback","always"],"description":"the resolved deps.autoInstall"}
 },"additionalProperties":false,"description":"the script's dependency set (#1913): where its packages come from"},
 "task":{"type":"object","properties":{"ttl":{"type":"integer","description":"milliseconds the result is kept"}},"additionalProperties":false},
+"dryRun":{"type":"boolean","description":"run the script with every tool call intercepted (#1927): no call executes, each is reported as a call frame marked dryRun and answered with a schema-valid synthetic result"},
 "ns":{"type":"array","items":{"type":"string"},"description":"restrict the generated client to these namespaces"},
 "args":{"type":"array","items":{"type":"string"},"description":"arguments handed to the script"},
 "export":{"type":"string","description":"call this exported function instead of the default one"},

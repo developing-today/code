@@ -8,7 +8,6 @@ import { applySupabaseExport, extractSaasServices, type SupabaseExportDoc } from
 import { entryFromFileExport, entryFromResult, entryFromTurso } from "../src/quota-gather-map.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { aggregateBillingUsage } from "../src/sources/github-billing.ts";
-import { droppedJulesItemCount, mapJulesItems } from "../src/sources/jules.ts";
 
 const NOW = Date.parse("2026-10-29T15:00:00Z");
 
@@ -189,7 +188,7 @@ Measured ${measured} ~04:48 CDT
 `;
 
 describe("extractClinePass date anchors (#2383)", () => {
-  const pool = (view: string) => extractQuotaPools(view, new Date("2026-10-29T12:00:00Z")).find((p) => p.id === "cline-pass:cline-pass")!;
+  const pool = (view: string) => extractQuotaPools(view, new Date("2026-10-29T12:00:00Z")).find((p) => p.id === "cline-pass")!;
 
   test("control read anchors both resets to a real measured date", () => {
     const p = pool(CLINE_VIEW("2026-10-25", "5"));
@@ -209,17 +208,9 @@ describe("extractClinePass date anchors (#2383)", () => {
   });
 });
 
-describe("sources/jules wire containers (#2531)", () => {
-  test("a null item is dropped and counted; valid siblings map", () => {
-    const state = { items: { a: null, b: { state: "IN_PROGRESS", title: "ok" } } };
-    expect(droppedJulesItemCount(state)).toBe(1);
-    expect(mapJulesItems(state).map((e) => e.sessionId)).toEqual(["b"]);
-  });
-
-  test("a string items container fabricates no phantom sessions", () => {
-    expect(mapJulesItems({ items: "nope" }).length).toBe(0);
-  });
-});
+// sources/jules.ts was retired with the Jules decommission (#5098) on
+// current main: the keeper-state wire container no longer exists, so
+// #2531's boundary is covered by the registry sanitizer (#2539) instead.
 
 describe("sources/github-billing per-item validation (#2493)", () => {
   test("an impossible date drops only its item; a negative amount contributes zero", () => {

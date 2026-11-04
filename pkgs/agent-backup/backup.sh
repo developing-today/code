@@ -48,7 +48,6 @@ done
 # Small, irreplaceable things only. Missing paths are skipped silently -- not
 # every agent is signed in on every machine.
 CANDIDATES=(
-  "$HOME/.config/jules/api-key"
   "$HOME/.local/share/opencode/auth.json"
   "$HOME/.config/opencode/auth.json"
   "$HOME/.config/opencode/opencode.jsonc"

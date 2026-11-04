@@ -128,6 +128,13 @@ type Options struct {
 	Capabilities []string          `json:"capabilities,omitempty"`
 	Artifacts    *ArtifactOptions  `json:"artifacts,omitempty"`
 	Task         *TaskOptions      `json:"task,omitempty"`
+	// DryRun runs the script with every tool call intercepted
+	// (#1927 rung: dry run): no call reaches a server, each returns a
+	// schema-valid synthetic result, and the calls that would have
+	// run are reported as call frames marked dryRun. The static
+	// scanner cannot see dynamic calls; a dry run sees all of them,
+	// at the cost of the results being fake.
+	DryRun bool `json:"dryRun,omitempty"`
 
 	// NS restricts the generated client to these namespaces, and Args are
 	// handed to the script. Neither is in the design's list, and both are
@@ -319,6 +326,10 @@ type CallInfo struct {
 	OK              bool   `json:"ok"`
 	Error           string `json:"error,omitempty"`
 	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	// DryRun marks a call that was intercepted by a dry run: it was
+	// reported, never executed, and the script saw a synthetic
+	// result.
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // ArgsHash is the stable fingerprint of a call's arguments: sha256 of
@@ -342,6 +353,11 @@ func ArgsHash(args any) string {
 type CallRegistry struct {
 	mu    sync.Mutex
 	sinks map[string]*callSink
+	// dryRuns are the runs whose calls are intercepted rather than
+	// executed (#1927 dry run). The daemon's call path consults
+	// IsDryRun before dispatching; the exec service marks the run
+	// for the length of the run.
+	dryRuns map[string]bool
 }
 
 // callSink is one run's registered sink plus its delivery lifetime:
@@ -355,7 +371,31 @@ type callSink struct {
 
 // NewCallRegistry builds an empty registry.
 func NewCallRegistry() *CallRegistry {
-	return &CallRegistry{sinks: map[string]*callSink{}}
+	return &CallRegistry{sinks: map[string]*callSink{}, dryRuns: map[string]bool{}}
+}
+
+// RegisterDryRun marks runID as a dry run until the returned
+// function is called: the daemon's call path intercepts its calls
+// instead of executing them. The unregister is idempotent.
+func (r *CallRegistry) RegisterDryRun(runID string) (unregister func()) {
+	r.mu.Lock()
+	r.dryRuns[runID] = true
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			delete(r.dryRuns, runID)
+			r.mu.Unlock()
+		})
+	}
+}
+
+// IsDryRun reports whether runID is currently marked as a dry run.
+func (r *CallRegistry) IsDryRun(runID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dryRuns[runID]
 }
 
 // Register installs sink for runID and returns the function that
@@ -406,7 +446,7 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 	info := &CallInfo{
 		Server: server, Tool: tool, ArgsHash: ArgsHash(args),
 		DurationMs: dur.Milliseconds(), OK: callErr == nil,
-		DestructiveHint: destructive,
+		DestructiveHint: destructive, DryRun: r.IsDryRun(runID),
 	}
 	if callErr != nil {
 		info.Error = callErr.Error()
@@ -454,6 +494,10 @@ type Result struct {
 	// dispatched (non-JavaScript) run does not have: no generated
 	// client, no enforced permission profiles.
 	Notice string `json:"notice,omitempty"`
+	// DryRun records that the run was a dry run (#1927): every tool
+	// call was intercepted and answered synthetically, so nothing
+	// the script "did" happened.
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // Source supplies the generated client the script is run against.
@@ -834,9 +878,18 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// each call as a call frame, interleaved with the run's own output
 	// exactly where it happened.
 	unregisterCalls := func() {}
+	unregisterDryRun := func() {}
 	if s.Calls != nil {
 		unregisterCalls = s.Calls.Register(runID, emitFrame)
+		if opts.DryRun {
+			// Marked for the whole run: the daemon's call path
+			// checks the registry before dispatching a call that
+			// carries this run id, and answers it synthetically.
+			unregisterDryRun = s.Calls.RegisterDryRun(runID)
+			res.DryRun = true
+		}
 	}
+	defer unregisterDryRun()
 	// Safety net only: the explicit close below, before the terminal
 	// frames, is the one that orders call frames ahead of them.
 	defer unregisterCalls()
@@ -942,6 +995,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// frame lands here, in order, and drops any report that comes
 	// later — nothing may be written to the stream after end.
 	unregisterCalls()
+	unregisterDryRun()
 	if sinkErr != nil {
 		// The consumer left. Nothing more can be delivered, and the script
 		// has already been killed by the cancelled context.
