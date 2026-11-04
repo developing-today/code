@@ -424,7 +424,9 @@ pub struct Challenge {
 }
 
 /// Short-lived pairing code for the own-node variant (§3.3b): single-use,
-/// expires with the challenge, rate-limited per account.
+/// expires with the challenge, rate-limited per account. At most one live
+/// code exists per challenge: minting a new code supersedes every earlier
+/// unexchanged code for the same challenge (#4871).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PairingCode {
     /// The pending ceremony's challenge.
@@ -1082,7 +1084,9 @@ impl HostedBindingService {
     /// Variant (b), own-node, browser side: mint a short-lived pairing code
     /// tied to the pending ceremony. The browser displays it; the user
     /// enters it on their node. Single-use, expires with the challenge,
-    /// rate-limited per account.
+    /// rate-limited per account. Minting supersedes every previously
+    /// minted, unexchanged code for the same challenge (#4871), so asking
+    /// for a fresh code revokes the old one.
     ///
     /// # Errors
     ///
@@ -1119,6 +1123,13 @@ impl HostedBindingService {
             return Err(CeremonyError::RateLimited);
         }
         log.push(now);
+
+        // Minting supersedes every earlier unexchanged code for this
+        // challenge (#4871): at most one live pairing code per ceremony,
+        // so "that code went to the wrong place, give me a new one"
+        // actually revokes the old one.
+        self.pairing_codes
+            .retain(|_, existing| existing.challenge_id != challenge.challenge_id);
 
         let mut rng = rand::rng();
         let code = loop {
@@ -1924,6 +1935,45 @@ mod tests {
             service.exchange_pairing_code(&code),
             Err(CeremonyError::UnknownChallenge)
         );
+    }
+
+    #[test]
+    fn minting_a_pairing_code_supersedes_earlier_codes_for_the_challenge() {
+        let mut service = service();
+        signup(&mut service, SUB);
+        let iroh_id = root_key(17).verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let other = service.request_challenge(SUB, &iroh_id).unwrap();
+
+        let code_a = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+        let other_code = service
+            .create_pairing_code(SUB, &other.challenge_id)
+            .unwrap();
+        let code_b = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+
+        // The superseded code no longer exchanges. (If the RNG happened to
+        // re-issue the superseded string as the new live code, code_a IS
+        // code_b and there is nothing distinct left to reject.)
+        if code_a != code_b {
+            assert_eq!(
+                service.exchange_pairing_code(&code_a),
+                Err(CeremonyError::UnknownChallenge)
+            );
+        }
+        // The surviving code exchanges and returns the challenge, once.
+        let exchanged = service.exchange_pairing_code(&code_b).unwrap();
+        assert_eq!(exchanged.challenge_id, challenge.challenge_id);
+        assert_eq!(
+            service.exchange_pairing_code(&code_b),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        // Supersede is per-challenge: the other ceremony's code is untouched.
+        let other_exchanged = service.exchange_pairing_code(&other_code).unwrap();
+        assert_eq!(other_exchanged.challenge_id, other.challenge_id);
     }
 
     #[test]
