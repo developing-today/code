@@ -8,7 +8,8 @@
 //! adds [`FanOut`]: resolution across several stores' indexes with a deterministic merge
 //! (see its docs for the ordering and provenance rules). There is still no locator fetch
 //! (following a stored reference's hints to render a target in another store) and no
-//! hosted-store search here; those remain later #5178 slices.
+//! hosted-store search here; those remain later #5178 slices. The fan-out design
+//! record is `doc/2026-11-04T15-33-00Z_design_friendly_name_fanout.md`.
 //!
 //! The rules that matter, from the spec:
 //!
@@ -480,7 +481,7 @@ impl LocalIndex {
     /// provenance, duplicates and contested candidates included, nothing picked.
     #[must_use]
     pub fn resolve(&self, sigil: Sigil, phrase: &str) -> Resolution {
-        let phrase = phrase.trim().trim_start_matches(['@', '#']);
+        let phrase = normalize_phrase(phrase);
         let folded = fold(phrase);
         let mut candidates: Vec<Candidate> = Vec::new();
         if !folded.is_empty() {
@@ -699,7 +700,7 @@ impl FanOut {
     /// ordered candidates with per-store provenance and cross-store contested state.
     #[must_use]
     pub fn resolve(&self, sigil: Sigil, phrase: &str) -> Resolution {
-        let phrase = phrase.trim().trim_start_matches(['@', '#']);
+        let phrase = normalize_phrase(phrase);
         let mut candidates: Vec<Candidate> = Vec::new();
         for store in &self.stores {
             candidates.extend(store.resolve(sigil, phrase).candidates);
@@ -872,6 +873,19 @@ pub fn parse_typed(typed: &str) -> Option<(Sigil, &str)> {
 /// Case-folds a name for comparison. (Display keeps the original case; only matching folds.)
 fn fold(text: &str) -> String {
     text.trim().to_lowercase()
+}
+
+/// Normalizes a typed phrase for matching: trims whitespace and strips the leading
+/// sigil run, tolerating whitespace between repeated sigils (`# #atlas`). Matching
+/// and claimant counting must both see this one normalized phrase — if counting saw
+/// a partially stripped phrase, its folded form would keep a sigil, match no claim,
+/// and silently clear a real contest (Codex finding on PR #5553).
+fn normalize_phrase(phrase: &str) -> &str {
+    let mut phrase = phrase.trim();
+    while phrase.starts_with(['@', '#']) {
+        phrase = phrase[1..].trim();
+    }
+    phrase
 }
 
 #[cfg(test)]
@@ -1406,6 +1420,34 @@ mod tests {
         let rendered = render(&reference, &fanout.stores()[1]);
         assert_eq!(rendered.state, RenderState::Unresolved);
         assert_eq!(rendered.current_label, None);
+    }
+
+    #[test]
+    fn fanout_repeated_sigils_still_count_claimants_and_stay_contested() {
+        // Regression (Codex finding on PR #5553): "# #atlas" was normalized one way
+        // for matching and another way for claimant counting — the counting form kept
+        // a sigil, matched no claim, and cleared the contest, so insert_unambiguous
+        // silently picked the exact-claim candidate over the exact-title one.
+        let claimed = object(
+            b"sigil-claim",
+            Sigil::Topic,
+            "Field Notes",
+            vec![("atlas", 2)],
+            1,
+        );
+        let titled = object(b"sigil-title", Sigil::Topic, "Atlas", vec![], 3);
+        let fanout = FanOut::new(vec![
+            store_index("a-store", vec![claimed]),
+            store_index("b-store", vec![titled]),
+        ]);
+        let resolution = fanout.resolve(Sigil::Topic, "# #atlas");
+        assert_eq!(resolution.candidates.len(), 2);
+        assert!(resolution.candidates.iter().all(|c| c.contested()));
+        assert!(
+            fanout
+                .insert_unambiguous(Sigil::Topic, "# #atlas", author(9))
+                .is_err()
+        );
     }
 
     #[test]
