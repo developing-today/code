@@ -226,7 +226,10 @@ pub enum TechnicalVerdictV0 {
         reason: IntegrityFailureV0,
     },
     /// Full-history replay reproduced the claimed final state.
-    ResultConfirmed { runtime: RuntimeScopeV0 },
+    ResultConfirmed {
+        /// Runtime scope for this full-history result.
+        runtime: RuntimeScopeV0,
+    },
     /// Replay diverged; interval endpoints name checkpoints, not exact ticks.
     ReplayDiverges {
         /// The first checkpoint interval whose state hashes differ.
