@@ -267,6 +267,8 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
     vi.advanceTimersByTime(10_000);
 
     expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
   it("drops non-array frames and still initializes from a later valid INIT (#2824)", () => {
     const onEditorReady = vi.fn();
     const { conn, socket } = openCollab(onEditorReady);
