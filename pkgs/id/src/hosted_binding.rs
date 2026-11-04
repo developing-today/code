@@ -424,7 +424,9 @@ pub struct Challenge {
 }
 
 /// Short-lived pairing code for the own-node variant (§3.3b): single-use,
-/// expires with the challenge, rate-limited per account.
+/// expires with the challenge, rate-limited per account. At most one live
+/// code exists per challenge: minting a new code supersedes every earlier
+/// unexchanged code for the same challenge (#4871).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PairingCode {
     /// The pending ceremony's challenge.
@@ -952,8 +954,9 @@ impl HostedBindingService {
             .ok_or(CeremonyError::UnknownChallenge)?;
         let now = self.now();
         if now >= challenge.expires_at {
-            self.challenges.remove(challenge_id);
-            self.consumed_challenges.insert(challenge_id.to_owned());
+            // §3.4: expiry is state-free — the challenge is neither
+            // removed nor recorded as consumed, so a repeat presentation
+            // returns ChallengeExpired again, never ChallengeReplay (#4868).
             return Err(CeremonyError::ChallengeExpired);
         }
         if session_sub != challenge.sub {
@@ -1082,7 +1085,9 @@ impl HostedBindingService {
     /// Variant (b), own-node, browser side: mint a short-lived pairing code
     /// tied to the pending ceremony. The browser displays it; the user
     /// enters it on their node. Single-use, expires with the challenge,
-    /// rate-limited per account.
+    /// rate-limited per account. Minting supersedes every previously
+    /// minted, unexchanged code for the same challenge (#4871), so asking
+    /// for a fresh code revokes the old one.
     ///
     /// # Errors
     ///
@@ -1095,14 +1100,17 @@ impl HostedBindingService {
         session_sub: &str,
         challenge_id: &str,
     ) -> Result<String, CeremonyError> {
+        // The consumed check comes first: consume() removes a challenge
+        // from the live map, so checking the map first would make this
+        // ChallengeReplay branch unreachable (#4868).
+        if self.consumed_challenges.contains(challenge_id) {
+            return Err(CeremonyError::ChallengeReplay);
+        }
         let challenge = self
             .challenges
             .get(challenge_id)
             .cloned()
             .ok_or(CeremonyError::UnknownChallenge)?;
-        if self.consumed_challenges.contains(challenge_id) {
-            return Err(CeremonyError::ChallengeReplay);
-        }
         let now = self.now();
         if now >= challenge.expires_at {
             return Err(CeremonyError::ChallengeExpired);
@@ -1128,6 +1136,15 @@ impl HostedBindingService {
                 break candidate;
             }
         };
+        // Minting supersedes every earlier unexchanged code for this
+        // challenge (#4871): at most one live pairing code per ceremony,
+        // so "that code went to the wrong place, give me a new one"
+        // actually revokes the old one. The supersede runs after the new
+        // code is generated, while the old codes are still in the map, so
+        // the collision loop above can never re-issue a just-revoked
+        // string as its replacement.
+        self.pairing_codes
+            .retain(|_, existing| existing.challenge_id != challenge.challenge_id);
         self.pairing_codes.insert(
             code.clone(),
             PairingCode {
@@ -1927,6 +1944,44 @@ mod tests {
     }
 
     #[test]
+    fn minting_a_pairing_code_supersedes_earlier_codes_for_the_challenge() {
+        let mut service = service();
+        signup(&mut service, SUB);
+        let iroh_id = root_key(17).verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let other = service.request_challenge(SUB, &iroh_id).unwrap();
+
+        let code_a = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+        let other_code = service
+            .create_pairing_code(SUB, &other.challenge_id)
+            .unwrap();
+        let code_b = service
+            .create_pairing_code(SUB, &challenge.challenge_id)
+            .unwrap();
+
+        // The superseded code no longer exchanges. The replacement is
+        // generated while the old code is still in the map, so the two
+        // strings are always distinct.
+        assert_ne!(code_a, code_b);
+        assert_eq!(
+            service.exchange_pairing_code(&code_a),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        // The surviving code exchanges and returns the challenge, once.
+        let exchanged = service.exchange_pairing_code(&code_b).unwrap();
+        assert_eq!(exchanged.challenge_id, challenge.challenge_id);
+        assert_eq!(
+            service.exchange_pairing_code(&code_b),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        // Supersede is per-challenge: the other ceremony's code is untouched.
+        let other_exchanged = service.exchange_pairing_code(&other_code).unwrap();
+        assert_eq!(other_exchanged.challenge_id, other.challenge_id);
+    }
+
+    #[test]
     fn wrong_key_consumes_and_retry_needs_a_fresh_challenge() {
         let mut service = service();
         signup(&mut service, SUB);
@@ -1971,6 +2026,53 @@ mod tests {
             service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
             Err(CeremonyError::ChallengeReplay)
         );
+    }
+
+    #[test]
+    fn expired_challenge_is_not_recorded_as_consumed() {
+        // #4868: expiry is state-free (§3.4), so presenting the same
+        // expired challenge again returns ChallengeExpired, not
+        // ChallengeReplay.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(21);
+        let iroh_id = key.verifying_key().to_bytes();
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        service.set_now_override(Some(1_700_000_000 + CHALLENGE_TTL_SECS + 1));
+        let signature = key.sign(&HostedBindingService::canonical_transcript(&challenge));
+        for _ in 0..2 {
+            assert_eq!(
+                service.submit_proof(SUB, &challenge.challenge_id, &signature.to_bytes(), None),
+                Err(CeremonyError::ChallengeExpired)
+            );
+        }
+    }
+
+    #[test]
+    fn create_pairing_code_reports_replay_for_a_consumed_challenge() {
+        // #4868: a challenge consumed by a failed submit (bad signature)
+        // is dead; create_pairing_code must return ChallengeReplay, not
+        // UnknownChallenge. Unknown and live challenges are unchanged.
+        let mut service = service();
+        signup(&mut service, SUB);
+        let key = root_key(22);
+        let iroh_id = key.verifying_key().to_bytes();
+        assert_eq!(
+            service.create_pairing_code(SUB, "no-such-challenge"),
+            Err(CeremonyError::UnknownChallenge)
+        );
+        let challenge = service.request_challenge(SUB, &iroh_id).unwrap();
+        let bad = root_key(23).sign(&HostedBindingService::canonical_transcript(&challenge));
+        assert_eq!(
+            service.submit_proof(SUB, &challenge.challenge_id, &bad.to_bytes(), None),
+            Err(CeremonyError::BadSignature)
+        );
+        assert_eq!(
+            service.create_pairing_code(SUB, &challenge.challenge_id),
+            Err(CeremonyError::ChallengeReplay)
+        );
+        let live = service.request_challenge(SUB, &iroh_id).unwrap();
+        assert!(service.create_pairing_code(SUB, &live.challenge_id).is_ok());
     }
 
     #[test]

@@ -189,6 +189,7 @@ async fn main() -> Result<()> {
         Some(Command::Repl { node }) => run_repl(node).await,
         Some(Command::Serve {
             ephemeral,
+            server_config,
             no_relay,
             no_gossip,
             web,
@@ -234,6 +235,7 @@ async fn main() -> Result<()> {
         }) => {
             cmd_serve(ServeOptions {
                 ephemeral,
+                server_config,
                 groups_log: cli.groups_log,
                 no_relay,
                 no_gossip,
@@ -329,6 +331,8 @@ async fn main() -> Result<()> {
         Some(Command::Claim { json, command }) => {
             id::commands::cmd_claim(cli.event_store, json, command).await
         }
+        #[cfg(feature = "sandbox")]
+        Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,
         #[cfg(not(feature = "world"))]

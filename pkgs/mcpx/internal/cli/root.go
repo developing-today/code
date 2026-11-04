@@ -474,8 +474,16 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 func (a *App) CmdMan(ctx context.Context, args []string) error {
 	fs := newFlagSet("man")
 	install := fs.String("install", "", "write the page into this directory as man1/mcpx.1")
+	format := fs.String("format", "roff", "output format: roff (the man page) or markdown (the generated reference tree)")
+	out := fs.String("o", "", "write the markdown reference tree into this directory (with --format markdown)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
+	}
+	if *format == "markdown" {
+		return a.writeMarkdownReference(*out)
+	}
+	if *format != "roff" {
+		return fmt.Errorf("unknown --format %q: roff or markdown", *format)
 	}
 	page := ManPage(a.Version)
 	if *install == "" {

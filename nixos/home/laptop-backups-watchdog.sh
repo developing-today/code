@@ -12,7 +12,16 @@
 #       so a nightly failure can never masquerade as freshness;
 #   (b) both backup timers (pm-dashboard-backup.timer and
 #       repo-archive-backup.timer) last triggered within the same
-#       threshold, per `systemctl --user show -p LastTriggerUSec`.
+#       threshold, per `systemctl --user show -p LastTriggerUSec`;
+#   (c) when LAPTOP_BACKUPS_OFFSITE_CHECK=1 (the module sets it for
+#       the service; #3914), the dashboard backup's own date - the
+#       run record's `date` - is present on the R2 offsite:
+#       r2bak:supabase-backups/dashboard/<date>/dashboard-<date>.tar.zst
+#       exists. A complete run record whose upload silently landed
+#       nothing (2026-10-29..2026-11-01, #3914) passes (a) and (b);
+#       only an object listing sees the absence. Credentials come
+#       from Bitwarden exactly as in pm-dashboard-backup.sh, and
+#       rclone/bws resolve via PATH so tests can stub both.
 # repo-archive-backup is covered via its timer's last-trigger time
 # only: its script and restic credentials live outside this repo, so
 # no run record is required of it (stated in laptop-backups.nix too).
@@ -100,6 +109,61 @@ for timer in "${timers[@]}"; do
     complain "$job: timer $timer last triggered $(( age / 3600 ))h ago (threshold ${MAX_AGE_HOURS}h)"
   fi
 done
+
+# --- (c) offsite presence on R2 ----------------------------------------------
+if want_job dashboard && [ "${LAPTOP_BACKUPS_OFFSITE_CHECK:-0}" = "1" ]; then
+  offsite_date="$(RECORD="$RECORD" python3 - <<'PYEOF' 2>/dev/null
+import json, os
+try:
+    print(json.load(open(os.environ["RECORD"]))["date"])
+except Exception:
+    pass
+PYEOF
+  )"
+  if [ -z "$offsite_date" ]; then
+    : # (a) already named the missing or unreadable record
+  elif ! command -v rclone >/dev/null 2>&1 || ! command -v bws >/dev/null 2>&1; then
+    complain "pm-dashboard-backup: cannot verify offsite presence for $offsite_date: rclone/bws not on PATH"
+  else
+    if [ -z "${BWS_ACCESS_TOKEN:-}" ] && [ -f "$HOME/.config/bws/access-token" ]; then
+      BWS_ACCESS_TOKEN="$(cat "$HOME/.config/bws/access-token")"
+      export BWS_ACCESS_TOKEN
+    fi
+    BWS_LIST="$(bws secret list 2>/dev/null || true)"
+    bws_get() {
+      printf '%s' "$BWS_LIST" | python3 -c 'import json,sys
+k = sys.argv[1]
+for s in json.load(sys.stdin):
+    if s.get("key") == k:
+        print(s.get("value", "")); break' "$1" 2>/dev/null
+    }
+    R2_ACCESS_KEY_ID="$(bws_get cloudflare.r2-backups-access-key-id)"
+    R2_SECRET_ACCESS_KEY="$(bws_get cloudflare.r2-backups-secret-access-key)"
+    R2_ENDPOINT="$(bws_get cloudflare.r2-endpoint)"
+    if [ -z "$R2_ACCESS_KEY_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ]; then
+      complain "pm-dashboard-backup: cannot verify offsite presence for $offsite_date: R2 credentials incomplete in Bitwarden"
+    else
+      case "$R2_ENDPOINT" in
+      http://* | https://*) ;;
+      *) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
+      esac
+      R2_ENDPOINT="${R2_ENDPOINT%/}"
+      export RCLONE_CONFIG_R2BAK_TYPE="s3"
+      export RCLONE_CONFIG_R2BAK_PROVIDER="Cloudflare"
+      export RCLONE_CONFIG_R2BAK_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
+      export RCLONE_CONFIG_R2BAK_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+      export RCLONE_CONFIG_R2BAK_ENDPOINT="$R2_ENDPOINT"
+      export RCLONE_CONFIG_R2BAK_REGION="auto"
+      # The r2-backups token cannot HeadBucket (see pm-dashboard-backup.sh).
+      export RCLONE_CONFIG_R2BAK_NO_CHECK_BUCKET="true"
+      offsite_listing="$(rclone lsf "r2bak:supabase-backups/dashboard/$offsite_date/" 2>/dev/null || true)"
+      case "$offsite_listing" in
+      *"dashboard-$offsite_date.tar.zst"*) ;;
+      *) complain "pm-dashboard-backup: offsite absence on R2: dashboard/$offsite_date/dashboard-$offsite_date.tar.zst not found (run record says complete)" ;;
+      esac
+    fi
+  fi
+fi
 
 if [ "$violations" -gt 0 ]; then
   echo "laptop-backups-watchdog: $violations violation(s)" >&2

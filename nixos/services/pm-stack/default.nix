@@ -36,9 +36,12 @@
 # credentials BY NAME, exactly as the hand units consumed them).
 # pm-dispatch's env files are external the same way:
 # ~/pm-stack/dispatch/.env (rendered by pm-stack/dispatch/install.sh
-# from the same SOPS file) and ~/secrets/dispatch.env (operator secrets
-# that are not in SOPS). install.sh remains the env renderer and the
-# fallback installer; this module owns the unit lifecycle.
+# from the same SOPS file — it carries the GitHub App material and the
+# fleet Supabase config: supabase_url + supabase_service_role_key for
+# muse-dev2) and ~/secrets/dispatch.env (operator-only secrets that
+# are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
+# renderer and the fallback installer; this module owns the unit
+# lifecycle.
 #
 # The Kaneo stack is the exception to the checkout model: pm-kaneo
 # runs deploy.sh from the ~/pm-stack deployment dir, because the
@@ -153,6 +156,12 @@ in
               # (pre-switch) unit resolves them identically.
               "PM_AGG_EVENTS_FILE=${aggState}/events.json"
               "PM_AGG_VIEWS_FILE=${aggState}/views.json"
+              # The activity-ingestion store (#3321) is runtime state
+              # too: left at its cwd default its first persisted
+              # delivery created activity-ingestion.json inside this
+              # checkout (Codex P1 on PR #5141, same failure class as
+              # code#4906 above).
+              "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json"
             ];
             Restart = "on-failure";
             RestartSec = 5;
@@ -171,10 +180,13 @@ in
             WorkingDirectory = "${repo}/pm-stack/dispatch";
             ExecStart = "${bun} run src/server.ts";
             # The env files stay outside the module, exactly like the
-            # aggregator's: install.sh renders the sops-derived file,
-            # and the operator file is laptop-only. The "-" keeps the
-            # hand unit's semantics — a missing operator file degrades
-            # the service instead of crash-looping it.
+            # aggregator's: install.sh renders the sops-derived file
+            # (GitHub App + Supabase config), and the operator file is
+            # laptop-only (DISPATCH_API_TOKEN). The "-" keeps the hand
+            # unit's semantics — a missing operator file degrades the
+            # service instead of crash-looping it. systemd applies the
+            # files in order, so the operator file wins on a collision:
+            # it must never carry SUPABASE_* lines (install.sh warns).
             EnvironmentFile = [
               "${stackDir}/dispatch/.env"
               "-${home}/secrets/dispatch.env"

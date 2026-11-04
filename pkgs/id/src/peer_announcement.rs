@@ -13,7 +13,7 @@ const SIGNATURE_DOMAIN: &[u8] = b"developing-today/id/peer-announcement/v2\0";
 const MAX_PEER_ANNOUNCEMENT_FRAME_BYTES: usize = 1_024;
 
 /// Signed gossip envelope. The plain `PeerAnnouncement` remains unchanged for the
-/// `/iroh-meta/2` response format; only gossip uses this versioned wrapper.
+/// `/iroh-meta/3` response format; only gossip uses this versioned wrapper.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SignedPeerAnnouncement {
     version: u8,

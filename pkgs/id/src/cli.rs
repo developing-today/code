@@ -26,6 +26,7 @@
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   match-audit Export and verify signed match-audit v0 logs
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
@@ -362,6 +363,14 @@ pub enum Command {
         /// or temporary file sharing sessions.
         #[arg(long)]
         ephemeral: bool,
+        /// Path to the operator server config TOML (#5119 slice 1).
+        ///
+        /// When given, the config is loaded at startup: a malformed
+        /// file fails startup naming the parse error, and startup
+        /// provisioning runs from the loaded config. Without the
+        /// flag no file is read and serve behaves exactly as before.
+        #[arg(long)]
+        server_config: Option<PathBuf>,
         /// Disable relay servers and use direct connections only.
         ///
         /// May prevent connections through NATs or firewalls.
@@ -1234,6 +1243,10 @@ pub enum Command {
     /// ```
     #[command(subcommand)]
     World(Box<WorldCommand>),
+    /// Export and verify signed match-audit v0 logs.
+    #[cfg(feature = "sandbox")]
+    #[command(subcommand)]
+    MatchAudit(MatchAuditCommand),
     /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
@@ -1637,6 +1650,24 @@ pub struct RevokeArgs {
     /// Print JSON instead of a line.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Subcommands for `id match-audit`.
+#[cfg(feature = "sandbox")]
+#[derive(Subcommand, Debug)]
+pub enum MatchAuditCommand {
+    /// Export a reference tic-tac-toe transcript using synthetic demo keys.
+    #[command(name = "export-tic-tac-toe")]
+    ExportTicTacToe {
+        /// Write the binary v0 log to this path.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Verify a v0 log against the pinned bundled tic-tac-toe program.
+    Verify {
+        /// Binary match-audit v0 log.
+        log: PathBuf,
+    },
 }
 
 /// Subcommands for `id world`.

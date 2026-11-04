@@ -445,7 +445,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		// is what happened on every call that arrived while a new daemon
 		// was still reading schemas -- so read them now, and refuse if
 		// they cannot be read: failing open is the one wrong answer here.
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "its annotations could not be read: " + err.Error()}
@@ -557,7 +557,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 		}
 		tools, _, at := p.CachedSchemas()
 		if at.IsZero() || p.SchemaExpired() {
-			fresh, _, err := p.RefreshSchemas(ctx)
+			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				ledgerRefusal = ErrUnknownOutcome{Record: record,
 					Reason: "could not verify whether this tool is read-only: " + err.Error()}
@@ -635,7 +635,7 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 	// fail-open this gate exists to prevent.
 	all, _, at := p.CachedSchemas()
 	if at.IsZero() || p.SchemaExpired() {
-		fresh, _, err := p.RefreshSchemas(ctx)
+		fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 		if err != nil {
 			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
 				Reason: "write policy: its annotations could not be read: " + err.Error()}

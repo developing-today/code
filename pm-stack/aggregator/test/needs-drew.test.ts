@@ -136,11 +136,14 @@ describe("needs-drew census (#1226)", () => {
   });
 
   test("only a flagged page marks the source incomplete; a clean sweep stays complete", async () => {
-    const clean = await buildNeedsDrewCensus(fakeFetch(() => ({ total: 0, items: [] })), {
-      now: NOW,
-      repos: [REPO],
-      labels: ["user/review"],
-    });
+    const clean = await buildNeedsDrewCensus(
+      fakeFetch(() => ({ total: 0, items: [] })),
+      {
+        now: NOW,
+        repos: [REPO],
+        labels: ["user/review"],
+      },
+    );
     expect(clean.complete).toBe(true);
     expect(clean.sources[0].incomplete).toBeUndefined();
   });
@@ -273,7 +276,14 @@ describe("needs-drew census rendering", () => {
       ...base,
       complete: false,
       sources: [
-        { repo: "dezren39/nix", label: "user/review" as const, ok: false, count: 0, fetchedAt: NOW.toISOString(), error: "HTTP 403" },
+        {
+          repo: "dezren39/nix",
+          label: "user/review" as const,
+          ok: false,
+          count: 0,
+          fetchedAt: NOW.toISOString(),
+          error: "HTTP 403",
+        },
       ],
     });
     expect(html).toContain("Label census incomplete");

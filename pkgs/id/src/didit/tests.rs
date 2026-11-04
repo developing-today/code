@@ -597,3 +597,139 @@ fn canonical_and_kind_checks() {
         DiditError::Version(_)
     ));
 }
+#[test]
+fn interval_gap_crossing_midnight_is_judged_across_the_seam() {
+    // #5144: an Always expectation is one continuous active stretch,
+    // but spans arrive per local day. A gap crossing midnight must be
+    // judged as the single consecutive gap it is, not as two edge
+    // gaps that each fit under the max.
+    let outside = always(expectation(
+        0xE0,
+        vec![dog_a()],
+        "outside",
+        Window::Interval {
+            min_seconds: 0,
+            max_seconds: 3_600,
+        },
+    ));
+    // 2026-06-15T00:00:00Z; an Always expectation evaluates in UTC.
+    let day = 1_781_481_600;
+    let mut records = Vec::new();
+    // Hourly through Jun 15, then 01:00 and 02:00 on Jun 16 — the
+    // 00:00 record is skipped, so the consecutive gap across the
+    // seam is 23:00 -> 01:00 = 7200s, twice the max.
+    for hour in 0..24i64 {
+        records.push(record(
+            0x30 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day + hour * 3_600,
+        ));
+    }
+    records.push(record(0x48, vec![dog_a()], "outside", day + 25 * 3_600));
+    records.push(record(0x49, vec![dog_a()], "outside", day + 26 * 3_600));
+    let now = day + 26 * 3_600 + 1_800;
+    let verdicts = evaluate(&[outside], &records, now).expect("evaluate");
+    assert_eq!(verdicts.len(), 1, "the two days merge into one span");
+    let verdict = &verdicts[0];
+    assert_eq!(verdict.state, VerdictState::Violated);
+    assert_eq!(verdict.count, 26);
+    assert!(
+        verdict.detail.contains("7200"),
+        "the cross-seam gap is the violation: {}",
+        verdict.detail
+    );
+    // The verdict window reflects the merged continuous span.
+    assert_eq!(verdict.window_start, day);
+    assert_eq!(verdict.window_end, day + 2 * 86_400);
+}
+
+#[test]
+fn interval_gap_inside_one_day_still_violates() {
+    // The same 7200s gap inside a single day was always judged by the
+    // pair check; merging spans must keep that verdict (#5144 control).
+    let outside = always(expectation(
+        0xE1,
+        vec![dog_a()],
+        "outside",
+        Window::Interval {
+            min_seconds: 0,
+            max_seconds: 3_600,
+        },
+    ));
+    let day = 1_781_481_600; // 2026-06-15T00:00:00Z
+    let mut records = Vec::new();
+    // Hourly through Jun 14, so the previous day is satisfied and the
+    // merged span's first gap is zero.
+    for hour in 0..24i64 {
+        records.push(record(
+            0x30 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day - 86_400 + hour * 3_600,
+        ));
+    }
+    // Hourly through Jun 15 with 12:00 skipped: 11:00 -> 13:00 = 7200s.
+    for hour in 0..24i64 {
+        if hour == 12 {
+            continue;
+        }
+        records.push(record(
+            0x50 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day + hour * 3_600,
+        ));
+    }
+    let now = day + 13 * 3_600 + 1_800;
+    let verdicts = evaluate(&[outside], &records, now).expect("evaluate");
+    assert_eq!(verdicts.len(), 1);
+    assert_eq!(verdicts[0].state, VerdictState::Violated);
+    assert_eq!(verdicts[0].count, 47);
+    assert!(verdicts[0].detail.contains("7200"), "{}", verdicts[0].detail);
+}
+
+#[test]
+fn interval_gap_crossing_sleep_window_seam_is_judged_across_it() {
+    // #5144: a non-wrapping sleep window's active complement is cut
+    // at midnight — yesterday's (wake, midnight) piece and today's
+    // (midnight, sleep) piece are one continuous stretch, and a gap
+    // across that seam is one consecutive gap.
+    let mut outside = expectation(
+        0xE2,
+        vec![dog_a()],
+        "outside",
+        Window::Interval {
+            min_seconds: 0,
+            max_seconds: 3_600,
+        },
+    );
+    // Asleep 01:00-07:00 UTC; active 07:00 -> 01:00 across midnight.
+    outside.active = ActiveWindow::SleepWindow {
+        from_minute: 60,
+        to_minute: 420,
+        tz: "UTC".to_owned(),
+    };
+    let day = 1_781_481_600; // 2026-06-15T00:00:00Z
+    let mut records = Vec::new();
+    // Hourly 07:00-23:00 on Jun 15.
+    for hour in 7..24i64 {
+        records.push(record(
+            0x30 + hour as u8,
+            vec![dog_a()],
+            "outside",
+            day + hour * 3_600,
+        ));
+    }
+    // The 00:00 hour is skipped; the next record is 00:45, still
+    // inside the active stretch: 23:00 -> 00:45 = 6300s > 3600s max.
+    records.push(record(0x48, vec![dog_a()], "outside", day + 86_400 + 2_700));
+    let now = day + 86_400 + 3_000;
+    let verdicts = evaluate(&[outside], &records, now).expect("evaluate");
+    let seam = current(&verdicts, day + 7 * 3_600);
+    assert_eq!(seam.len(), 1, "one verdict for the merged seam span");
+    assert_eq!(seam[0].state, VerdictState::Violated);
+    assert_eq!(seam[0].count, 18);
+    assert!(seam[0].detail.contains("6300"), "{}", seam[0].detail);
+    assert_eq!(seam[0].window_end, day + 86_400 + 3_600);
+}

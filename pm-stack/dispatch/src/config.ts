@@ -1,5 +1,8 @@
 // Environment configuration. Secrets are read by NAME from the environment
-// only — never committed, never printed. Everything has a fixture-safe default.
+// only — never committed, never printed. Everything has a fixture-safe
+// default except SUPABASE_URL, which is required: its previous default
+// pointed at the deleted legacy muse-dev project (#5120), so a missing
+// value now fails loudly at startup instead of silently queueing nowhere.
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -97,6 +100,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       appPem = null;
     }
   }
+  const supabaseUrl = env.SUPABASE_URL?.trim();
+  if (!supabaseUrl) {
+    throw new Error(
+      "SUPABASE_URL is not set: pm-dispatch requires the fleet Supabase (muse-dev2) project URL. There is no default — the previous one pointed at the deleted legacy muse-dev project (#5120). The laptop deployment renders it from the pm-stack SOPS file (pm-stack/dispatch/install.sh).",
+    );
+  }
   return {
     port,
     hosts,
@@ -104,7 +113,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     apiToken: env.DISPATCH_API_TOKEN?.trim() ? env.DISPATCH_API_TOKEN.trim() : null,
     oidcAudience: s(env.DISPATCH_OIDC_AUDIENCE, "pm-dispatch"),
     repoAllowlist: allowlist,
-    supabaseUrl: s(env.SUPABASE_URL, "https://nltgxorqwxhgfzseiirt.supabase.co").replace(/\/$/, ""),
+    supabaseUrl: supabaseUrl.replace(/\/$/, ""),
     supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY?.trim() ? env.SUPABASE_SERVICE_ROLE_KEY.trim() : null,
     opencodeUrl: s(env.OPENCODE_URL, "http://127.0.0.1:13420").replace(/\/$/, ""),
     opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),

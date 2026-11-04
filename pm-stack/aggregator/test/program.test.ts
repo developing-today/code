@@ -353,9 +353,7 @@ describe("project registry", () => {
     };
     expect(validateProjectConfigs([{ ...base, repoCards: [repoCard] }])).toEqual([]);
     for (const date of ["2026-02-30", "2026-13-01", "2026-00-00", "2026-04-31", "2026-02-29"]) {
-      const errors = validateProjectConfigs([
-        { ...base, repoCards: [{ ...repoCard, openIssuesAsOf: date }] },
-      ]);
+      const errors = validateProjectConfigs([{ ...base, repoCards: [{ ...repoCard, openIssuesAsOf: date }] }]);
       expect(errors.some((e) => e.includes("openIssuesAsOf"))).toBe(true);
     }
     const badLinks = validateProjectConfigs([
@@ -496,7 +494,12 @@ describe("renderProgramProject", () => {
     expect(fleetHtml).toContain("1,119 open issues");
     // Per-repo cards + sweep health render (#1126).
     expect(fleetHtml).toContain("Per-repo cards");
-    for (const repo of ["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/nix"]) {
+    for (const repo of [
+      "developing-today/code",
+      "developing-today/opencode",
+      "developing-today/openchamber",
+      "dezren39/nix",
+    ]) {
       expect(fleetHtml).toContain(repo);
     }
     expect(fleetHtml).toContain("Open issues (GitHub search, 2026-10-29)");
@@ -506,9 +509,20 @@ describe("renderProgramProject", () => {
 
   test("detail builder splits pool and roadmap by repo for the fleet cards (#1126)", () => {
     const pool = [
-      poolItem({ area: "fleet-ops", repo: "developing-today/code", ref: "developing-today/code#1", title: "code item" }),
+      poolItem({
+        area: "fleet-ops",
+        repo: "developing-today/code",
+        ref: "developing-today/code#1",
+        title: "code item",
+      }),
       poolItem({ area: "fleet-ops", repo: "dezren39/nix", ref: "dezren39/nix#2", number: 2, title: "nix item" }),
-      poolItem({ area: "pm-dashboard", repo: "developing-today/code", ref: "developing-today/code#3", number: 3, title: "other area" }),
+      poolItem({
+        area: "pm-dashboard",
+        repo: "developing-today/code",
+        ref: "developing-today/code#3",
+        number: 3,
+        title: "other area",
+      }),
     ];
     const fleet = projectConfigById("repo-fleet")!;
     const detail = buildProjectDetail(fleet, new Map(), pool, FIXTURE_ROADMAP);
