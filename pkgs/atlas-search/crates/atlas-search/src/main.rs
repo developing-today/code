@@ -553,13 +553,43 @@ fn print_output(out: &Json, text: bool) {
     }
 }
 
+/// Unchecked signed->unsigned conversion for the proto request
+/// translation, whose callers validate the counts first
+/// ([`count`], in `cmd_search`). Never use this on raw CLI input:
+/// it clamps negatives to 0, which is how #5407's silent empty
+/// searches happened.
 fn u(v: i64) -> usize {
     usize::try_from(v).unwrap_or(0)
+}
+
+/// Validate one CLI count flag against the service's request
+/// contract (design section 2; `validate_request` in server.rs):
+/// `--k` at least 1, `--pool` between 1 and 400, and the
+/// zero-is-valid counts (`--expand`, `--trunc`, `--neighbors`)
+/// merely non-negative. Out-of-range values are a fatal (exit 2),
+/// never a silent clamp to 0 (#5407).
+fn count(flag: &str, v: i64, min: i64, max: Option<i64>) -> Result<usize, CliError> {
+    if v >= min && max.is_none_or(|m| v <= m) {
+        return Ok(usize::try_from(v).expect("range-checked count converts"));
+    }
+    let msg = match (min, max) {
+        (_, Some(m)) => format!("{flag} must be between {min} and {m} (design section 2)"),
+        (1, None) => format!("{flag} must be at least 1"),
+        _ => format!("{flag} must not be negative"),
+    };
+    Err((2, msg))
 }
 
 // -------------------------------------------------------------- commands --
 
 fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
+    // Count validation comes first (#5407): before the via-service
+    // attempt and any backend/embedder work, so an out-of-range
+    // count fails identically whether or not a service is running.
+    let k = count("--k", args.k, 1, None)?;
+    let pool = count("--pool", args.pool, 1, Some(400))?;
+    let expand = count("--expand", args.expand, 0, None)?;
+    let trunc = count("--trunc", args.vector.trunc, 0, None)?;
     let mut note: Option<String> = None;
     match try_via_service_search(&args) {
         Ok(Some(out)) => {
@@ -579,7 +609,6 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
         args.until.clone(),
     )
     .map_err(map_err)?;
-    let trunc = u(args.vector.trunc);
     let backend = pick_backend(&args.backend, &args.vector.vec_table, trunc)?;
     let embedder = CliEmbedder::new(args.vector.model.clone(), args.vector.embedder);
     let opts = SearchOptions {
@@ -589,10 +618,10 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             ModeChoice::Fts => SearchMode::Fts,
             ModeChoice::Vector => SearchMode::Vector,
         },
-        k: u(args.k),
-        pool: u(args.pool),
+        k,
+        pool,
         group_by_session: args.group_by_session,
-        expand: u(args.expand),
+        expand,
         with_message: args.with_message,
         model: args.vector.model.clone(),
         embedder_label: match args.vector.embedder {
@@ -617,11 +646,12 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
 }
 
 fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
+    let neighbors = count("--neighbors", args.neighbors, 0, None)?;
     let note = via_service_note_get_chunk(&args.backend);
     // The Python's get-chunk takes no vector args: pick_backend
     // sees the defaults (getattr fallbacks in its main()).
     let backend = pick_backend(&args.backend, atlas_core::DEFAULT_VEC_TABLE, 0)?;
-    let mut out = run_get_chunk(backend.as_ref(), args.chunk_id, u(args.neighbors))
+    let mut out = run_get_chunk(backend.as_ref(), args.chunk_id, neighbors)
         .map_err(|e| map_get_chunk_err(e, args.chunk_id))?;
     if let Some(note) = note {
         push_note(&mut out, note);
@@ -686,6 +716,43 @@ fn main() -> ExitCode {
         Err((code, msg)) => {
             eprintln!("atlas-search: {msg}");
             ExitCode::from(code)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_validation_mirrors_the_service_contract() {
+        // k: at least 1 (server.rs validate_request)
+        assert_eq!(count("--k", 1, 1, None), Ok(1));
+        assert_eq!(count("--k", 10, 1, None), Ok(10));
+        assert_eq!(
+            count("--k", 0, 1, None).unwrap_err(),
+            (2, "--k must be at least 1".to_string())
+        );
+        assert!(count("--k", -1, 1, None).is_err());
+        // pool: 1..=400 (design section 2)
+        assert_eq!(count("--pool", 400, 1, Some(400)), Ok(400));
+        assert_eq!(
+            count("--pool", 401, 1, Some(400)).unwrap_err(),
+            (
+                2,
+                "--pool must be between 1 and 400 (design section 2)".to_string()
+            )
+        );
+        assert!(count("--pool", 0, 1, Some(400)).is_err());
+        assert!(count("--pool", -5, 1, Some(400)).is_err());
+        // zero-is-valid counts: 0 stays valid, negatives do not
+        for flag in ["--expand", "--trunc", "--neighbors"] {
+            assert_eq!(count(flag, 0, 0, None), Ok(0), "{flag}");
+            assert_eq!(
+                count(flag, -1, 0, None).unwrap_err(),
+                (2, format!("{flag} must not be negative")),
+                "{flag}"
+            );
         }
     }
 }
