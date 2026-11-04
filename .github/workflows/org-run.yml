@@ -9,6 +9,12 @@ name: org-run (generic dispatch runner)
 # immediately. The file is self-contained; a dedicated repo can adopt
 # it unchanged later.
 #
+# Runner parity (placement, 2026-11-04): the `runner` input below
+# matches fleet-run's deltas in developing-today/fleet — legs run on
+# GitHub-hosted ubuntu-24.04 or, for org repos, Blacksmith
+# (blacksmith-4vcpu-ubuntu-2404). See docs/placement.md in
+# developing-today/fleet.
+#
 # Single-shot — one repo, one command:
 #
 #   gh workflow run org-run.yml --repo developing-today/code \
@@ -129,6 +135,14 @@ on:
         type: number
         required: false
         default: 60
+      runner:
+        description: "Runner provider for the legs: github (ubuntu-24.04) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
+        type: choice
+        required: false
+        default: "github"
+        options:
+          - github
+          - blacksmith
 
 permissions:
   contents: read
@@ -270,7 +284,7 @@ jobs:
   run:
     name: "run (${{ matrix.repo }} #${{ matrix.idx }})"
     needs: setup
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     # The input is clamped into range so an out-of-range value can
     # never set an absurd timeout; the validate step then fails the
     # run fast with the reason.
