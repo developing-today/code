@@ -505,6 +505,38 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
     }
 }
 
+const PROXY_SERVE_USAGE: &str = "\
+Usage: fleet proxy serve
+
+Run the session proxy (the broker) in the foreground, binding the
+broker socket from fleet config (FLEET_BROKER_SOCKET / broker_socket).
+
+Takes no arguments.";
+
+/// What the arguments after `fleet proxy serve` ask for. The serve
+/// leaf takes no arguments at all (`fleet_proxy::serve::run` is
+/// config-only), so anything trailing is either a help request or a
+/// mistake — never something to silently drop before the broker
+/// socket is bound (#5575; the #5488/#5560 bug class on the proxy
+/// leaf, reached directly and via the `laptop-agent-broker` argv0
+/// alias, whose implied arg lands in exactly this position).
+#[derive(Debug, PartialEq, Eq)]
+enum ProxyServeArgs {
+    Run,
+    Help,
+    Reject(String),
+}
+
+fn classify_proxy_serve_args(tail: &[String]) -> ProxyServeArgs {
+    if tail.iter().any(|a| is_help_flag(a)) {
+        ProxyServeArgs::Help
+    } else if let Some(first) = tail.first() {
+        ProxyServeArgs::Reject(first.clone())
+    } else {
+        ProxyServeArgs::Run
+    }
+}
+
 /// The proxy domain's leaves (step 3, #5431). `required_capability`
 /// has already mapped serve → ProxyServe and connect/init →
 /// ProxyConnect, and cap_state has already stubbed at 69 where the
@@ -515,16 +547,25 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
     let client = format!("fleet {} ({})", VERSION, build_name(&surface.compiled));
     let capabilities = fleet_proxy_proto::capability_ids(&surface.usable());
     match args.first().map(|s| s.as_str()) {
-        Some("serve") => {
-            #[cfg(feature = "proxy-serve")]
-            {
-                fleet_proxy::serve::run(config)
+        Some("serve") => match classify_proxy_serve_args(&args[1..]) {
+            ProxyServeArgs::Help => {
+                println!("{PROXY_SERVE_USAGE}");
+                EXIT_OK
             }
-            #[cfg(not(feature = "proxy-serve"))]
-            {
-                unreachable!("proxy serve dispatched without the proxy-serve capability")
+            ProxyServeArgs::Reject(arg) => usage_error(&format!(
+                "'fleet proxy serve' takes no arguments, got {arg:?}\n\n{PROXY_SERVE_USAGE}"
+            )),
+            ProxyServeArgs::Run => {
+                #[cfg(feature = "proxy-serve")]
+                {
+                    fleet_proxy::serve::run(config)
+                }
+                #[cfg(not(feature = "proxy-serve"))]
+                {
+                    unreachable!("proxy serve dispatched without the proxy-serve capability")
+                }
             }
-        }
+        },
         Some("connect") => {
             let parsed = match fleet_proxy::client::ConnectArgs::parse(&args[1..]) {
                 Ok(a) => a,
@@ -703,6 +744,34 @@ mod tests {
             serve,
             &args(&["queue-broker", "--bind", "--help"])
         ));
+    }
+
+    #[test]
+    fn proxy_serve_args_classify_help_and_reject_strays() {
+        // Bare serve runs the broker; the argv0 alias route
+        // (laptop-agent-broker) lands here with the same tail.
+        assert_eq!(classify_proxy_serve_args(&args(&[])), ProxyServeArgs::Run);
+        for flag in ["--help", "-h", "help"] {
+            assert_eq!(
+                classify_proxy_serve_args(&args(&[flag])),
+                ProxyServeArgs::Help,
+                "{flag} after proxy serve must print usage, not bind the socket"
+            );
+        }
+        // Help wins anywhere in the tail (mirrors verb_status, #5560);
+        // any other stray is rejected, never silently dropped.
+        assert_eq!(
+            classify_proxy_serve_args(&args(&["--bogus", "--help"])),
+            ProxyServeArgs::Help
+        );
+        assert_eq!(
+            classify_proxy_serve_args(&args(&["--bogus"])),
+            ProxyServeArgs::Reject("--bogus".to_string())
+        );
+        assert_eq!(
+            classify_proxy_serve_args(&args(&["extra", "args"])),
+            ProxyServeArgs::Reject("extra".to_string())
+        );
     }
 
     #[test]
