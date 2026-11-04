@@ -30,11 +30,24 @@ pub const PORT_QUEUE_BROKER: u16 = 4801;
 /// Broker idle exit (§4: retained from the Python broker — a warmth
 /// cache that exits when cold is a feature on a shared sandbox).
 pub const DEFAULT_IDLE_EXIT_SECS: u64 = 3600;
+/// The laptop's tailnet address — the proxy's one reach target in
+/// v1 (fleet-proxy's CONNECT construction dials it through the
+/// egress proxy). Config can name another host for a future relay.
+pub const DEFAULT_TARGET_HOST: &str = "100.99.113.103";
+/// The tailnet egress proxy's port on the host named by
+/// `HTTPS_PROXY` — fixed by the tunnel setup, as in
+/// laptop-proxy-connect.py (the URL's own port is not used).
+pub const DEFAULT_EGRESS_PROXY_PORT: u16 = 3130;
+/// The token file the session broker reads when a request names
+/// none — the laptop-agent token, exactly the Python broker's
+/// default (`la.TOKEN_FILE`).
+pub const DEFAULT_BROKER_TOKEN_FILE: &str = "tools/laptop-agent-token";
+
 /// The token file whose contents the session broker sends as
 /// `X-Agent-Token` for secrets-broker requests. fleet only ever names
 /// this file; the broker reads it per request (§1: token files stay
 /// files, read per request, never stored, never logged).
-pub const DEFAULT_SECRETS_TOKEN_FILE: &str = ".config/secrets-broker/token";
+pub const DEFAULT_SECRETS_TOKEN_FILE: &str = "tools/secrets-broker-token";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -51,6 +64,34 @@ pub struct ProxyConfig {
     /// Session broker socket path (relative paths resolve under $HOME).
     pub broker_socket: Option<String>,
     pub idle_exit_secs: Option<u64>,
+    /// The reach target for CONNECT tunnels (default
+    /// [`DEFAULT_TARGET_HOST`]).
+    pub target_host: Option<String>,
+    /// Port of the egress proxy on the `HTTPS_PROXY` host (default
+    /// [`DEFAULT_EGRESS_PROXY_PORT`]).
+    pub egress_proxy_port: Option<u16>,
+    /// Dial the target directly instead of through a CONNECT tunnel
+    /// (a broker running on the target host itself; also the
+    /// hermetic-test mode). Default false — today's topology.
+    pub direct: Option<bool>,
+    /// The routing table the broker advertises in its hello
+    /// (§4: the services map IS the routing table). Empty means the
+    /// built-in table ([`Config::services`]).
+    #[serde(default)]
+    pub services: Vec<ServiceConfig>,
+}
+
+/// One row of the proxy routing table: a laptop port and the
+/// service the broker routes to it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceConfig {
+    pub port: u16,
+    pub name: String,
+    /// Per-service version string for the hello map; absent means
+    /// the built-in default for the name (see [`Config::services`]).
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -202,6 +243,56 @@ impl Config {
         self.proxy.idle_exit_secs.unwrap_or(DEFAULT_IDLE_EXIT_SECS)
     }
 
+    /// The proxy's reach target (see [`DEFAULT_TARGET_HOST`]).
+    pub fn target_host(&self) -> &str {
+        self.proxy
+            .target_host
+            .as_deref()
+            .unwrap_or(DEFAULT_TARGET_HOST)
+    }
+
+    /// The egress proxy port on the `HTTPS_PROXY` host.
+    pub fn egress_proxy_port(&self) -> u16 {
+        self.proxy
+            .egress_proxy_port
+            .unwrap_or(DEFAULT_EGRESS_PROXY_PORT)
+    }
+
+    /// Whether the broker dials the target directly (no CONNECT).
+    pub fn proxy_direct(&self) -> bool {
+        self.proxy.direct.unwrap_or(false)
+    }
+
+    /// The routing table: config's `[proxy] services`, or the
+    /// built-in table matching today's live system — 4799 the
+    /// (Python) laptop-agent daemon, 4800/4801 the fleet broker
+    /// roles (§4: a serve build without a role advertises a map
+    /// without its port; the table is how that is said).
+    pub fn services(&self) -> Vec<ServiceConfig> {
+        if !self.proxy.services.is_empty() {
+            return self.proxy.services.clone();
+        }
+        let fleet_version = env!("CARGO_PKG_VERSION").to_string();
+        [
+            (PORT_LAPTOP_AGENT, "laptop-agent", "python".to_string()),
+            (PORT_SECRETS_BROKER, "secrets-broker", fleet_version.clone()),
+            (PORT_QUEUE_BROKER, "queue-broker", fleet_version),
+        ]
+        .into_iter()
+        .map(|(port, name, version)| ServiceConfig {
+            port,
+            name: name.to_string(),
+            version: Some(version),
+        })
+        .collect()
+    }
+
+    /// The token file the session broker reads when a request names
+    /// none (see [`DEFAULT_BROKER_TOKEN_FILE`]).
+    pub fn default_token_file(&self) -> PathBuf {
+        resolve_under_home(DEFAULT_BROKER_TOKEN_FILE)
+    }
+
     /// The secrets-broker token *file path* (never its contents).
     pub fn secrets_token_file(&self) -> PathBuf {
         match &self.secrets.token_file {
@@ -289,6 +380,30 @@ mod tests {
         let (_dir, path) = write_temp("[domains]\nsome-future-domain = false\n");
         let cfg = Config::load_from(&path).unwrap();
         assert!(!cfg.domain_enabled("some-future-domain"));
+    }
+
+    #[test]
+    fn services_default_to_the_live_table() {
+        let cfg = Config::default();
+        let services = cfg.services();
+        assert_eq!(services.len(), 3);
+        assert_eq!(services[0].port, PORT_LAPTOP_AGENT);
+        assert_eq!(services[0].name, "laptop-agent");
+        assert_eq!(services[1].port, PORT_SECRETS_BROKER);
+        assert_eq!(services[2].port, PORT_QUEUE_BROKER);
+        assert!(services.iter().all(|s| s.version.is_some()));
+        assert_eq!(cfg.target_host(), DEFAULT_TARGET_HOST);
+        assert_eq!(cfg.egress_proxy_port(), DEFAULT_EGRESS_PROXY_PORT);
+        assert!(!cfg.proxy_direct());
+    }
+
+    #[test]
+    fn services_come_from_config_when_declared() {
+        let (_dir, path) = write_temp("[[proxy.services]]\nport = 4799\nname = \"laptop-agent\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        let services = cfg.services();
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].name, "laptop-agent");
     }
 
     #[test]

@@ -196,6 +196,29 @@ fn unix_roundtrip(data: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(&buf).map_err(|e| format!("session proxy bad reply: {e}"))
 }
 
+/// Which broker program to auto-start: a sibling `fleet` binary
+/// next to the running one wins (step 3, #5431 — `fleet proxy
+/// serve` is the Python broker's successor); the standalone
+/// broker builds from the fleet-brokers rollback package have no
+/// fleet beside them and keep the Python spawn below.
+fn broker_program() -> (String, Vec<String>) {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let fleet = dir.join("fleet");
+            if fleet.exists() {
+                return (
+                    fleet.to_string_lossy().into_owned(),
+                    vec!["proxy".to_string(), "serve".to_string()],
+                );
+            }
+        }
+    }
+    (
+        "python3".to_string(),
+        vec![format!("{}/tools/laptop-agent-broker.py", home())],
+    )
+}
+
 fn spawn_broker() {
     let dir = format!("{}/.cache/laptop-agent", home());
     let _ = std::fs::create_dir_all(&dir);
@@ -210,8 +233,9 @@ fn spawn_broker() {
         ),
         Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
     };
-    let _ = std::process::Command::new("python3")
-        .arg(format!("{}/tools/laptop-agent-broker.py", home()))
+    let (program, prefix_args) = broker_program();
+    let _ = std::process::Command::new(program)
+        .args(prefix_args)
         .stdout(out)
         .stderr(err)
         .stdin(std::process::Stdio::null())
