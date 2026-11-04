@@ -283,7 +283,7 @@ in
         body = ''
           # Repo fleet
 
-          - All new code goes in **developing-today/code** (this laptop's NixOS flake is its root, ~/code). Other fleet repos: developing-today/opencode, developing-today/openchamber, dezren39/nix.
+          - All new code goes in **developing-today/code** (this laptop's NixOS flake is its root, ~/code). Other fleet repos: developing-today-forks/opencode, developing-today-forks/openchamber, dezren39/nix.
           - Work in worktrees on branches; review `git status` before every commit; surgical staging; merge commits only; never force-push; never `git stash`.
           - Finished + verified work is merged (by you), never parked in drafts. Blocked work gets an issue plus a named next action.
           - Never touch the `vertexinc` org.

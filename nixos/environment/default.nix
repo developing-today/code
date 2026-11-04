@@ -261,10 +261,10 @@ let
 
   scaleElectron2x = wrapElectronWithFlags "scaled2x" [ "--force-device-scale-factor=2" ];
 
-  # OpenChamber's Electron GUI, built from the developing-today/openchamber fork.
+  # OpenChamber's Electron GUI, built from the developing-today-forks/openchamber fork.
   openchamber-desktop = inputs.openchamber.packages.${system}.openchamber-desktop;
 
-  # OpenChamber CLI/server built from the developing-today/openchamber fork.
+  # OpenChamber CLI/server built from the developing-today-forks/openchamber fork.
   openchamber = inputs.openchamber.packages.${system}.openchamber;
 
   # Meta's Muse Code agent. Hand-rolled because it is not in nixpkgs and the

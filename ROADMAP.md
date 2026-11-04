@@ -41,8 +41,8 @@ A row here records intent. It does not settle a product question and it is not a
 | Repository                     | Relation                                                                                                                                 |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `dezren39/darwin-nix`                 | The macOS flake. Builds `mcpx` from here via a pinned source-only input; its vendored copy was deleted on 2026-10-19 (dezren39/darwin-nix#468). |
-| `developing-today/opencode`    | OpenCode fork. Calls the `mcpx` CLI and daemon.                                                                                          |
-| `developing-today/openchamber` | OpenChamber fork, built against the fork of OpenCode.                                                                                    |
+| `developing-today-forks/opencode`    | OpenCode fork. Calls the `mcpx` CLI and daemon.                                                                                          |
+| `developing-today-forks/openchamber` | OpenChamber fork, built against the fork of OpenCode.                                                                                    |
 
 ## Done
 

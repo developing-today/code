@@ -984,8 +984,8 @@ in
   # The three standing services are defined by the fleet's layered
   # modules now, not by hand-rolled units in this file:
   #
-  #   services.openchamber  developing-today/openchamber, nix/modules
-  #   services.opencode     developing-today/opencode fork, nix/modules
+  #   services.openchamber  developing-today-forks/openchamber, nix/modules
+  #   services.opencode     developing-today-forks/opencode fork, nix/modules
   #   services.mcpx         developing-today/code, pkgs/mcpx/modules
   #
   # Each layer's enable cascades to the one below with mkDefault, so
