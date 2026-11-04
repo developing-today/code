@@ -23,6 +23,8 @@ pub const TIC_TAC_TOE_REFERENCE_ID: &str = "id.apps.tic-tac-toe/reference-v0";
 /// Bundled Wasm build used by the reference exporter and verifier.
 pub const TIC_TAC_TOE_REFERENCE_WASM: &[u8] =
     include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
+const TIC_TAC_TOE_RULES_V0: &[u8] =
+    b"tic-tac-toe/v0; cells=0..8; x-first; invalid-occupied-post-win-ignored";
 /// RNG identifier for the reference match's eight-byte little-endian seed.
 pub const U64_LE_RNG_V0: &str = "id.seed.u64-le/v0";
 
@@ -267,6 +269,8 @@ pub struct CheckpointIntervalV0 {
 pub enum InconclusiveReasonV0 {
     /// The pinned program build is unavailable.
     MissingProgramBuild,
+    /// The log's signed rules hash is not supported by this verifier.
+    UnsupportedRules,
     /// A required runtime or replay capability is unavailable.
     MissingReplayCapability,
     /// The requested audit did not include the complete history.
@@ -557,9 +561,7 @@ pub fn export_tic_tac_toe_reference(
         world_id: world_id.into(),
         program_id: TIC_TAC_TOE_REFERENCE_ID.to_owned(),
         program_hash: Hash::digest(TIC_TAC_TOE_REFERENCE_WASM),
-        rules_hash: Hash::digest(
-            b"tic-tac-toe/v0; cells=0..8; x-first; invalid-occupied-post-win-ignored",
-        ),
+        rules_hash: Hash::digest(TIC_TAC_TOE_RULES_V0),
         tick_rate: 1,
         rng_algorithm: U64_LE_RNG_V0.to_owned(),
         seed_commitment: Hash::digest(&seed_reveal),
@@ -709,6 +711,9 @@ fn replay_tic_tac_toe(log: &MatchLogV0) -> TechnicalVerdictV0 {
     {
         return inconclusive(InconclusiveReasonV0::MissingProgramBuild);
     }
+    if log.header.rules_hash != Hash::digest(TIC_TAC_TOE_RULES_V0) {
+        return inconclusive(InconclusiveReasonV0::UnsupportedRules);
+    }
     if log.header.tick_rate != 1 || log.header.rng_algorithm != U64_LE_RNG_V0 {
         return inconclusive(InconclusiveReasonV0::MissingReplayCapability);
     }
@@ -778,6 +783,7 @@ fn replay_tic_tac_toe(log: &MatchLogV0) -> TechnicalVerdictV0 {
     }
     match world.records() {
         Ok(Some(records)) if records == log.footer.result_claim => {}
+        Ok(Some(_)) => return diverges(interval_start, log.footer.final_tick),
         Ok(_) => return inconclusive(InconclusiveReasonV0::MissingReplayCapability),
         Err(_) => return inconclusive(InconclusiveReasonV0::MissingReplayCapability),
     }
@@ -1017,6 +1023,10 @@ mod tests {
     }
 
     fn reseal(log: &mut MatchLogV0, players: &[IdSigningKey; 2]) {
+        log.header_signatures = players
+            .iter()
+            .map(|key| sign_header(key, &log.header).unwrap())
+            .collect();
         let mut previous = header_hash(&log.header).unwrap();
         for entry in &mut log.entries {
             *entry = chain_entry(previous, entry.body.clone()).unwrap();
@@ -1154,6 +1164,53 @@ mod tests {
                 first_mismatching_interval: CheckpointIntervalV0 {
                     start_tick: 0,
                     end_tick: 1,
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn unsupported_rules_hash_is_inconclusive_even_when_the_log_is_signed() {
+        let players = [key(1), key(2)];
+        let mut log = export_tic_tac_toe_reference(
+            [&players[0], &players[1]],
+            "reference-match-rules",
+            "reference-world-rules",
+            7,
+        )
+        .unwrap();
+        log.header.rules_hash = Hash::digest(b"different rules");
+        reseal(&mut log, &players);
+
+        let report = verify_tic_tac_toe_v0(&log.encode().unwrap());
+        assert_eq!(
+            report.technical,
+            TechnicalVerdictV0::Inconclusive {
+                reason: InconclusiveReasonV0::UnsupportedRules,
+            }
+        );
+    }
+
+    #[test]
+    fn replayed_result_claim_mismatch_is_a_divergence() {
+        let players = [key(1), key(2)];
+        let mut log = export_tic_tac_toe_reference(
+            [&players[0], &players[1]],
+            "reference-match-result",
+            "reference-world-result",
+            7,
+        )
+        .unwrap();
+        log.footer.result_claim = b"claimed a different result".to_vec();
+        reseal(&mut log, &players);
+
+        let report = verify_tic_tac_toe_v0(&log.encode().unwrap());
+        assert!(matches!(
+            report.technical,
+            TechnicalVerdictV0::ReplayDiverges {
+                first_mismatching_interval: CheckpointIntervalV0 {
+                    start_tick: 5,
+                    end_tick: 5,
                 }
             }
         ));
