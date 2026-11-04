@@ -649,10 +649,27 @@ tick visible on /quota.
   what progressed), and the actions the run pushed back into motion.
   The collector embeds it as `feed.orchestration` after a structural
   check (fail-soft; override the path with `ORCHESTRATION_PATH`). The
+  Before publishing, run the publisher's pre-publish gate from this
+  checkout:
+
+  ```sh
+  bun run contract:check -- --publisher /path/to/orchestration.json
+  ```
+
+  `scripts/check-contract-corpus.ts` runs the aggregator's actual
+  validators over the file exactly as the collector gates it, so a
+  #1110-class drift fails at the source, not as missing sections
+  downstream. The
   aggregator serves it raw at `/api/orchestration.json`; the needs-you
   view lets its classification win for anything it names (non-session
   items render as tier cards), and the today view maps its goals —
   until a section exists, the today view derives and labels itself.
+  The shared publisher/collector/aggregator contract corpus (#1176)
+  lives in `test/contract-corpus/v1/` (scrubbed captures of real
+  published orchestration, quota, DNS, registry, and projects sections;
+  synthetic producer-adapter inputs are in `publisher/`), exercised by
+  `test/contract-corpus.test.ts` and `test/contract-collector.test.ts`.
+
 - **DNS register** (slice 3, #906) — the register Markdown (#902's
   file; override with `DNS_REGISTER_PATH`) parsed by `src/dns.ts`
   into a `dns` section: entries with renewal dates, list prices, and
