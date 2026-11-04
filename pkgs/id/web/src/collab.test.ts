@@ -178,15 +178,11 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
 
   it("caps repeated open-then-drop failures until Init succeeds", () => {
     const statuses: string[] = [];
-    const conn = track(initCollab(
-      "ws://example.test/collab",
-      makeContainer(),
-      "doc-1",
-      "notes.md",
-      null,
-      undefined,
-      (status) => statuses.push(status),
-    ));
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", null, undefined, (status) =>
+        statuses.push(status),
+      ),
+    );
 
     let socket = FakeWebSocket.instances[0];
     // The initial connection plus ten reconnects all reach OPEN, but the
@@ -207,15 +203,11 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
 
   it("starts a fresh retry budget after receiving Init", () => {
     const statuses: string[] = [];
-    const conn = track(initCollab(
-      "ws://example.test/collab",
-      makeContainer(),
-      "doc-1",
-      "notes.md",
-      null,
-      undefined,
-      (status) => statuses.push(status),
-    ));
+    const conn = track(
+      initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", null, undefined, (status) =>
+        statuses.push(status),
+      ),
+    );
 
     let socket = FakeWebSocket.instances[0];
     for (let i = 0; i < 10; i++) {
@@ -252,11 +244,7 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
   });
 
   it("does not reconnect after an intentional disconnect", () => {
-    const conn = track(initCollab(
-      "ws://example.test/collab",
-      makeContainer(),
-      "doc-1",
-    ));
+    const conn = track(initCollab("ws://example.test/collab", makeContainer(), "doc-1"));
     const socket = FakeWebSocket.instances[0];
 
     socket.open();

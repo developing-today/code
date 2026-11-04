@@ -1955,11 +1955,12 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                     found
                 }
             };
-        let single_start = is_link_reference_definition_start(def_stripped).then(|| {
-            let close =
-                link_reference_definition_label_close(def_stripped).expect("start shape checked");
-            (vec![line], def_stripped[close + 2..].to_string(), i + 1)
-        });
+        let single_start = if is_link_reference_definition_start(def_stripped) {
+            link_reference_definition_label_close(def_stripped)
+                .map(|close| (vec![line], def_stripped[close + 2..].to_string(), i + 1))
+        } else {
+            None
+        };
         // A line carrying a list marker starts a NEW list item
         // and so a fresh block: `- [url]: ...` after `- Body` is a
         // definition in its own item, not a continuation of the
@@ -1973,8 +1974,9 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             && (!in_footnote_block || new_list_item)
             && (single_start.is_some() || multiline_start.is_some())
         {
-            let (mut block, mut after, mut j) =
-                single_start.or(multiline_start).expect("start checked");
+            let Some((mut block, mut after, mut j)) = single_start.or(multiline_start) else {
+                continue;
+            };
             // Rollback point for a title attempted on a FOLLOWING
             // line (twenty-first cut): (block length, `after`, j)
             // before the first such line is appended. A title that

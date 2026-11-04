@@ -1879,12 +1879,15 @@ impl WorldSessions {
             let session = self
                 .roots
                 .get(&key.0)
-                .expect("root inserted above")
+                .context("root inserted above")?
                 .open_session(world)
                 .await?;
             self.sessions.insert(key.clone(), session);
         }
-        Ok(self.sessions.get_mut(&key).expect("session inserted above"))
+        Ok(self
+            .sessions
+            .get_mut(&key)
+            .context("session inserted above")?)
     }
 
     /// The live session for (`addr`, `world`), if one is open.
