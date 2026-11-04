@@ -260,6 +260,13 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `tldr-update.timer`                      | `OnCalendar=Mon`                         | `tldr-update.service`                      | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `worktree-reaper.timer`                  | `OnCalendar=*-*-*`                       | `worktree-reaper.service`                  | laptop (user systemd) | not recorded | not recorded  | not recorded | 2026-11-03  |
 
+Retired repository timer: `pm-stack/aggregator/systemd/kill-collector-drill.timer`
+(weekly Sunday 04:17, sandbox system unit) was removed on 2026-11-04 because
+it targeted the retired sandbox collector. The drill script is laptop-only
+(`amd`) until a laptop-hosted schedule is deliberately installed; the live
+sandbox's installed-unit state still requires the operator audit linked from
+issue #1319.
+
 ## Surface 3 — Jules schedules (1 entry, retired)
 
 | name/id                     | repo/scope            | cadence                  | prompt (summary; verbatim in #2265)                                                                                                                                                                                                                 | budget expectation                                      | owner                           | kill criteria                                                                                  | created     | last review | state                                                                                                                                                |
