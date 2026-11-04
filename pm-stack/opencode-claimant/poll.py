@@ -29,14 +29,13 @@ Prints one JSON object:
                                               # null when count unknown
   }
 
-Read-only by construction: it issues only PostgREST GETs (through the
-queue helper module, which fetches the service-role key transiently —
-the value is never printed or stored) and one GET to the laptop
-OpenCode server. The claimant treats a null cap_room as NO launch room:
-an unreadable session list must never become a launch decision.
+Read-only by construction: it issues only queue-broker /list reads
+(the broker holds the queue credentials; poll.py presents only the
+broker's client token) and GETs to the laptop OpenCode server. The
+claimant treats a null cap_room as NO launch room: an unreadable
+session list must never become a launch decision.
 """
 
-import importlib.util
 import json
 import os
 import re
@@ -201,8 +200,12 @@ def summarize_cap(sessions, active_ids, now_ms):
     return len(roots), active, max(0, CAP - active)
 
 
-HELPER = os.environ.get(
-    "REPO_QUEUE_HELPER", os.path.expanduser("~/hatch/tools/repo-queue.py")
+BROKER_URL = os.environ.get(
+    "REPO_QUEUE_BROKER_URL", "http://100.99.113.103:4801"
+)
+BROKER_TOKEN_FILE = os.environ.get(
+    "REPO_QUEUE_TOKEN_FILE",
+    os.path.expanduser("~/.config/queue-broker/token"),
 )
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
@@ -211,11 +214,25 @@ AUTH_FILE = os.environ.get(
 )
 
 
-def load_helper():
-    spec = importlib.util.spec_from_file_location("repo_queue", HELPER)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def fetch_claimed(queue):
+    """Claimed rows for one queue via the queue-broker's rich /list
+    (read-only). Raises on any broker failure: a claimant that cannot
+    see the ledger must fail closed, never guess."""
+    with open(BROKER_TOKEN_FILE) as f:
+        token = f.read().strip()
+    body = json.dumps(
+        {"queue": queue, "status": "claimed", "limit": 500, "rich": True}
+    ).encode()
+    req = urllib.request.Request(
+        BROKER_URL.rstrip("/") + "/list", data=body, method="POST"
+    )
+    req.add_header("X-Agent-Token", token)
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=60) as res:
+        data = json.loads(res.read() or "null")
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        raise RuntimeError(f"queue-broker /list failed for {queue}: {data!r:.200}")
+    return data.get("rows") or []
 
 
 def fetch_active_ids():
@@ -266,8 +283,6 @@ def fetch_sessions():
 
 
 def main():
-    helper = load_helper()
-    key = helper.get_service_key()
     now_ms = int(time.time() * 1000)
     # Sessions first: stuck-bound classification (#4758) needs the
     # session list and the server's active set, and the cap summary
@@ -281,16 +296,7 @@ def main():
                 session_by_id[s["id"]] = s
     out = {"queues": {}, "candidates": [], "stuck_bound": []}
     for q in QUEUES:
-        rows = (
-            helper.http(
-                "GET",
-                f"tasks?queue=eq.{q}&status=eq.claimed"
-                "&select=id,queue,status,worker_id,priority,progress,lease_until,lane_id,attempts,max_attempts"
-                "&limit=500",
-                key,
-            )
-            or []
-        )
+        rows = fetch_claimed(q)
         cands = []
         stuck = []
         for r in rows:
