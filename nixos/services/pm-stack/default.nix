@@ -162,6 +162,9 @@ in
               # checkout (Codex P1 on PR #5141, same failure class as
               # code#4906 above).
               "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json"
+              # The digest archive (#1278) is runtime state too: one
+              # JSON per day, rendered verbatim by /digest?date=<date>.
+              "PM_AGG_DIGESTS_DIR=${aggState}/digests"
             ];
             Restart = "on-failure";
             RestartSec = 5;
@@ -236,6 +239,42 @@ in
               "QUOTA_SNAPSHOTS_DIR=${aggState}/snapshots"
             ];
             ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/gather-quota.ts";
+          };
+        };
+
+        pm-digest-daily = {
+          Unit = {
+            Description = "PM daily digest — generate + archive + deliver the day's digest (NixOS; runs from ~/git/code checkout, #1278)";
+            After = [ "network-online.target" "pm-aggregator.service" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 300;
+            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            EnvironmentFile = "${aggState}/.env";
+            Environment = [
+              "PM_AGG_SOURCE=live"
+              "PM_AGG_DIGESTS_DIR=${aggState}/digests"
+            ];
+            ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/generate-digest.ts --kind daily";
+          };
+        };
+
+        pm-digest-weekly = {
+          Unit = {
+            Description = "PM weekly digest — generate + archive + deliver the week's roll-up (NixOS; runs from ~/git/code checkout, #1278)";
+            After = [ "network-online.target" "pm-aggregator.service" ];
+          };
+          Service = {
+            Type = "oneshot";
+            TimeoutStartSec = 300;
+            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            EnvironmentFile = "${aggState}/.env";
+            Environment = [
+              "PM_AGG_SOURCE=live"
+              "PM_AGG_DIGESTS_DIR=${aggState}/digests"
+            ];
+            ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/generate-digest.ts --kind weekly";
           };
         };
 
@@ -362,6 +401,28 @@ in
             RandomizedDelaySec = 20;
             Persistent = true;
             Unit = "quota-gatherer.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-digest-daily = {
+          Unit.Description = "Run the PM daily digest every morning at 07:00 local (pm-stack, #1278)";
+          Timer = {
+            OnCalendar = "*-*-* 07:00:00";
+            RandomizedDelaySec = 60;
+            Persistent = true;
+            Unit = "pm-digest-daily.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-digest-weekly = {
+          Unit.Description = "Run the PM weekly digest on Mondays at 07:05 local (pm-stack, #1278)";
+          Timer = {
+            OnCalendar = "Mon *-*-* 07:05:00";
+            RandomizedDelaySec = 60;
+            Persistent = true;
+            Unit = "pm-digest-weekly.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };
