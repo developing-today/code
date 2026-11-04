@@ -61,9 +61,16 @@ export type Options = {
 
 /** A tool-name list from an option array or a separated env string. */
 const nameList = (v: unknown): string[] | undefined => {
-  if (Array.isArray(v)) return v.map(String).map((x) => x.trim()).filter(Boolean);
+  if (Array.isArray(v))
+    return v
+      .map(String)
+      .map((x) => x.trim())
+      .filter(Boolean);
   if (typeof v === "string")
-    return v.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+    return v
+      .split(/[\s,]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
   return undefined;
 };
 

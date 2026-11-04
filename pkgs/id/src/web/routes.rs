@@ -2048,6 +2048,9 @@ async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameReq
         Err(FileOpError::EmptyName) => {
             (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
         }
+        Err(err @ FileOpError::ReservedArchiveName(_)) => {
+            (StatusCode::BAD_REQUEST, err.to_string()).into_response()
+        }
         Err(FileOpError::SameName) => (
             StatusCode::BAD_REQUEST,
             "New name must differ from current name",
@@ -2094,6 +2097,9 @@ async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest
         }
         Err(FileOpError::EmptyName) => {
             (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
+        }
+        Err(err @ FileOpError::ReservedArchiveName(_)) => {
+            (StatusCode::BAD_REQUEST, err.to_string()).into_response()
         }
         Err(FileOpError::SameName) => (
             StatusCode::BAD_REQUEST,

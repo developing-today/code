@@ -7,17 +7,11 @@
 //
 // Loose v1 by design: identity is (source, session id); task linkage is
 // whatever refs the session's title/PR/branch or launch record names.
-import { parseRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
+import { isValidRef, refsInText, type SessionFeedEntry, type SessionRecord } from "./model.ts";
 import { isIsoDate } from "./validate.ts";
 
 function isValidTaskRef(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  try {
-    parseRef(value);
-    return true;
-  } catch {
-    return false;
-  }
+  return isValidRef(value);
 }
 
 /** Agent identity for an OpenCode session entry. */

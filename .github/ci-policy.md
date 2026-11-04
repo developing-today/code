@@ -165,3 +165,9 @@ pair `queue: max` with a cancel-in-progress expression that
 can evaluate true for `issues`/`pull_request_target` events
 (a GitHub validation error, openchamber#84) — the sweeper
 stays schedule-only for this reason.
+
+## Nix cache backend reliability (#774)
+
+Magic Nix Cache is a performance optimization, not a CI verdict. The eight `DeterminateSystems/magic-nix-cache-action` steps in `id-check.yml`, `id-bench.yml`, `id-e2e-nightly.yml`, `mcpx-docs.yml`, `mcpx-nixbuild.yml`, and `mcpx-realsoftware-nightly.yml` are best-effort (`continue-on-error: true`): a cache service throttle (including HTTP 418) or 5xx must fall through to a cold build, while the subsequent build/check remains authoritative.
+
+The required `nix flake check` in `nix-ci.yml` intentionally has no shared cache. The October 2026 #774 incidents on PRs #771 and #747 showed that cache-backend failures can masquerade as code failures. This change keeps the current Magic Nix Cache / GitHub Actions cache choice and does not migrate to Cachix or another backend; evaluate that separately.
