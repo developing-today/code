@@ -76,7 +76,7 @@ gap is recorded, not worked around.
 ## Token
 
 Resolved by **name** from Bitwarden Secrets Manager at runtime
-(`supabase.access-token-muse-cli`, override `SUPABASE_TOKEN_SECRET_NAME`;
+(`supabase.muse-dev2.access-token-muse-cli`, override `SUPABASE_TOKEN_SECRET_NAME`;
 `SUPABASE_MANAGEMENT_TOKEN` wins if set). The value is sent only to
 `api.supabase.com` and is never written to the document, a log line, a fixture,
 or argv.

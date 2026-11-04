@@ -49,7 +49,7 @@
 //     the Test_Runs data, and the price event log's v_current_prices),
 //     read through v_latest_import_batch via the Management API SQL endpoint.
 //     Token plumbing mirrors the Projects read: the Bitwarden secret
-//     named `supabase.access-token-muse-cli` (the sbp_ management
+//     named `supabase.muse-dev2.access-token-muse-cli` (the sbp_ management
 //     token), resolved by resolveBwsSecret and sent only to
 //     api.supabase.com. Any failure embeds the section in its absent
 //     form ({status:"absent", reason}) — the feed never fails over it.
@@ -445,7 +445,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   const lastGood = await readAaLastGood();
   const degrade = (reason: string): AaFeedSection =>
     lastGood ? { ...lastGood.section, stale: true, staleReason: reason } : aaAbsent(reason, generatedAt);
-  const token = await resolveBwsSecret("supabase.access-token-muse-cli");
+  const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
   if (!token) return degrade("no Supabase management token available (bws)");
   // Project ref: env override, else the Bitwarden supabase.muse-dev2.project-ref
   // secret (the same resolve-by-name discipline as the token), else the
