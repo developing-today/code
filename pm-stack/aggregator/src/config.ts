@@ -137,7 +137,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
-    activityFile: s(env.PM_AGG_ACTIVITY_FILE, join(process.cwd(), "activity-ingestion.json")),
+    // Default is the state dir, NOT cwd (#5389): aggregator runtime state
+    // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
+    // cwd default let an env-less run write this store into whatever
+    // checkout it started from -- in the primary clone that dirtied the
+    // tree and blocked pm-git-sync. install.sh renders PM_AGG_ACTIVITY_FILE
+    // to this same path for the unit.
+    activityFile: s(
+      env.PM_AGG_ACTIVITY_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "activity-ingestion.json"),
+    ),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     digestsDir: s(env.PM_AGG_DIGESTS_DIR, join(process.cwd(), "digests")),
