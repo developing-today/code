@@ -668,10 +668,16 @@ export function entryFromTurso(
 
   const push = (name: string, rawUsed: number | null, limit: number, value: number, valueLabel: string): void => {
     if (rawUsed == null) return;
+    const rawPctOfLimit = (rawUsed / limit) * 100;
+    const pctOfLimit = pct3(rawUsed, limit);
+    // The raw count can be finite while scaling it to a percentage
+    // overflows, or the source can report a value outside its quota.
+    // Neither is a usable live window (#2579).
+    if (!isPercentOf(100)(rawPctOfLimit) || !isPercentOf(100)(pctOfLimit)) return;
     entry.windows.push({
       name,
       value,
-      pctOfLimit: pct3(rawUsed, limit),
+      pctOfLimit,
       valueLabel,
       windowSeconds,
       resetsAt,

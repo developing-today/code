@@ -327,9 +327,9 @@ function goWorkspace(name: "drewrypope" | "popesdrew"): Extractor {
   };
 }
 
-/** A "resets in Nd Nh" offset is a plan window, never a date decades out.
- * Ten years is far beyond any quota window; a larger offset is drift. */
-const MAX_CLINEPASS_RESET_OFFSET_DAYS = 3650;
+/** ClinePass has 5-hour, weekly, and monthly windows; an offset beyond a
+ * year is not a plausible reset for any of them (#2383). */
+const MAX_CLINEPASS_RESET_OFFSET_DAYS = 366;
 
 const extractClinePass: Extractor = (s) => {
   const measured = first(s, /Measured (\d{4}-\d{2}-\d{2}) ~(\d{2}:\d{2}) CDT/i);
@@ -339,24 +339,24 @@ const extractClinePass: Extractor = (s) => {
   );
   if (!measured || !m) return null;
   // The measured capture is the anchor for both relative resets (#2383).
-  // It must be a real calendar date: an impossible one makes only THIS
-  // pool's read unparseable (raw null, so the caller retains the previous
-  // read) instead of rolling Feb-30 into March or throwing out of the
-  // extractor and silently discarding the already-matched percentages.
-  // The shared primitive owns calendar validity; dateTimeCentral owns the
-  // Central-time offset conversion.
-  if (parseIsoDate(`${measured[1]}T${measured[2]}`) === null) return null;
-  let base: number;
-  try {
-    base = Date.parse(dateTimeCentral(measured[1], measured[2]));
-  } catch {
-    return null;
+  // The measured capture anchors reset dates, not the percentages. If it
+  // is an impossible calendar/wall time, retain the matched windows and
+  // mark only their resets unknown (#2383). The shared primitive owns
+  // date validity; dateTimeCentral owns the Central-time offset conversion.
+  let base: number | null = null;
+  if (parseIsoDate(`${measured[1]}T${measured[2]}`) !== null) {
+    try {
+      const anchor = dateTimeCentral(measured[1], measured[2]);
+      base = parseIsoDate(anchor)?.getTime() ?? null;
+    } catch {
+      // Nonexistent Central wall time: keep the read, with no reset anchor.
+    }
   }
-  if (!Number.isFinite(base)) return null;
   const rel = (d: string, h: string): string | null => {
     const days = Number(d);
     const hours = Number(h);
     if (
+      base === null ||
       !Number.isInteger(days) ||
       !Number.isInteger(hours) ||
       days < 0 ||
@@ -366,7 +366,11 @@ const extractClinePass: Extractor = (s) => {
     ) {
       return null;
     }
-    const iso = new Date(base + (days * 24 + hours) * 3_600_000).toISOString();
+    const resetMs = base + (days * 24 + hours) * 3_600_000;
+    if (!Number.isFinite(resetMs)) return null;
+    const reset = new Date(resetMs);
+    if (!Number.isFinite(reset.getTime())) return null;
+    const iso = reset.toISOString();
     return parseIsoDate(iso) === null ? null : iso;
   };
   return {

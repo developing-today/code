@@ -109,6 +109,17 @@ describe("entryFromTurso (#2553)", () => {
     expect(names).not.toContain("databases");
     expect(entry.windows.every((w) => (w.value ?? 0) >= 0)).toBe(true);
   });
+
+  test("out-of-range derived percents are omitted while valid siblings survive", () => {
+    const entry = entryFromTurso(
+      { organization: { usage: { databases: 101, rows_read: 120 } } } as never,
+      null,
+      { measuredAt: "2026-10-29T15:00:00Z" },
+    );
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.map((w) => w.name)).toEqual(["rows-read"]);
+    expect(entry.windows.every((w) => w.pctOfLimit !== null && w.pctOfLimit >= 0 && w.pctOfLimit <= 100)).toBe(true);
+  });
 });
 
 const SUPABASE_VIEW = `
@@ -196,15 +207,20 @@ describe("extractClinePass date anchors (#2383)", () => {
     expect(p.windows.find((w) => w.name === "weekly")!.resetsAt).toBe("2026-10-31T08:48:00.000Z");
   });
 
-  test("an impossible measured date makes only this pool's read unparseable", () => {
+  test("an impossible measured anchor keeps percentages and nulls only its resets", () => {
     const p = pool(CLINE_VIEW("2026-02-30", "5"));
-    expect(p.windows).toEqual([]);
+    expect(p.windows.map((w) => w.name)).toEqual(["5-hour", "weekly", "monthly"]);
+    expect(p.windows.find((w) => w.name === "5-hour")!.used).toBe(10);
+    expect(p.windows.find((w) => w.name === "weekly")!.used).toBe(26);
+    expect(p.windows.find((w) => w.name === "monthly")!.used).toBe(69);
+    expect(p.windows.every((w) => w.resetsAt === null)).toBe(true);
   });
 
   test("an oversized reset offset is dropped, the percentages survive", () => {
     const p = pool(CLINE_VIEW("2026-10-25", "200000"));
     expect(p.windows.map((w) => w.name)).toEqual(["5-hour", "weekly", "monthly"]);
     expect(p.windows.find((w) => w.name === "weekly")!.resetsAt).toBeNull();
+    expect(p.windows.find((w) => w.name === "monthly")!.resetsAt).toBeNull();
   });
 });
 
