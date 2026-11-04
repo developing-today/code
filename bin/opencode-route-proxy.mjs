@@ -396,24 +396,28 @@ const knownExhaustedPairs = (now) => {
   try {
     db = openDb();
     const since = now - EXHAUSTED_LOOKBACK_MS;
+    // All ordering is by COMPLETION time (time_ended): with
+    // overlapping requests, start-time ordering can mistake a
+    // success that finished before a quota response arrived for a
+    // recovery after it.
     const quotaRows = db
       .prepare(
         `SELECT provider_id, model_id, time_started, time_ended, quota FROM route_attempt
-         WHERE quota IS NOT NULL AND outcome != 'success' AND time_started > ?
-           AND time_started = (
-             SELECT MAX(time_started) FROM route_attempt r2
+         WHERE quota IS NOT NULL AND outcome != 'success' AND time_ended > ?
+           AND time_ended = (
+             SELECT MAX(time_ended) FROM route_attempt r2
              WHERE r2.provider_id = route_attempt.provider_id
                AND r2.model_id = route_attempt.model_id
                AND r2.quota IS NOT NULL AND r2.outcome != 'success'
-               AND r2.time_started > ?
+               AND r2.time_ended > ?
            )`,
       )
       .all(since, since);
     const successRows = db
       .prepare(
-        `SELECT provider_id, model_id, MAX(time_started) AS latest
+        `SELECT provider_id, model_id, MAX(time_ended) AS latest
          FROM route_attempt
-         WHERE outcome = 'success' AND time_started > ?
+         WHERE outcome = 'success' AND time_ended > ?
          GROUP BY provider_id, model_id`,
       )
       .all(since);
@@ -426,7 +430,7 @@ const knownExhaustedPairs = (now) => {
       if (reset === null || reset <= now) continue;
       const key = `${r.provider_id}/${r.model_id}`;
       const successAt = latestSuccess.get(key);
-      if (successAt !== undefined && successAt > r.time_started) continue;
+      if (successAt !== undefined && successAt > r.time_ended) continue;
       out.set(key, reset);
     }
     return out;

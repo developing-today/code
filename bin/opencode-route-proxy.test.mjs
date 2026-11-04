@@ -990,3 +990,56 @@ test("retry delay is anchored to the quota response receipt (#5295)", async () =
     await p.cleanup();
   }
 });
+
+test("an overlapping success completed before the quota response does not clear the gate (#5295)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    // Quota failure: started 2 minutes ago, the 429 arrived 10s ago.
+    seedQuotaFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 120_000,
+      endedMs: GATE_NOW - 10_000,
+      retryAfterMs: 3_600_000,
+    });
+    // Overlapping success: STARTED after the failing request (so
+    // start-time ordering would call it the latest word) but
+    // COMPLETED a minute ago — before the 429 was received. It is
+    // not a recovery; the gate must hold.
+    const db = new DatabaseSync(p.dbPath);
+    db.prepare(
+      `INSERT INTO route_attempt (
+         time_started, time_ended, session_id, assistant_message_id,
+         route_id, provider_id, model_id, variant, outcome,
+         error_tag, error_code, error_status, error_message, retryable,
+         output_started, failed_over_to, quota
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      GATE_NOW - 110_000,
+      GATE_NOW - 60_000,
+      null,
+      null,
+      "seed",
+      "leafA",
+      "m-a",
+      null,
+      "success",
+      null,
+      null,
+      null,
+      null,
+      1,
+      0,
+      null,
+      null,
+    );
+    db.close();
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
