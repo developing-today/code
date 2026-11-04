@@ -538,7 +538,7 @@ const TITLE_REPO_ALIASES: Record<string, string> = {
   code: "developing-today/code",
   opencode: "developing-today-forks/opencode",
   openchamber: "developing-today-forks/openchamber",
-  nix: "dezren39/nix",
+  nix: "dezren39/darwin-nix",
 };
 
 /**

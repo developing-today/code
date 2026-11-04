@@ -10,7 +10,7 @@ export const REPOS = [
   "developing-today/code",
   "developing-today-forks/opencode",
   "developing-today-forks/openchamber",
-  "dezren39/nix",
+  "dezren39/darwin-nix",
 ] as const;
 
 /** "owner/repo#123" — the registry's canonical key for an issue or PR. */

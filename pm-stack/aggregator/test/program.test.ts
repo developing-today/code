@@ -200,7 +200,7 @@ describe("project registry", () => {
     // tracked and explained, and the Grist-vs-Project status disagreement
     // for #1080/#1081 is surfaced as an honest gap naming both readings.
     for (const n of [501, 502, 503, 504, 505, 506, 507, 508]) {
-      expect(lab.trackedRefs).toContain(`dezren39/nix#${n}`);
+      expect(lab.trackedRefs).toContain(`dezren39/darwin-nix#${n}`);
     }
     expect(labGaps).toContain("dezren39/nix (#501-#508)");
     expect(labGaps).toContain("Hardware inventory + firmware/BMC audit");
@@ -209,8 +209,8 @@ describe("project registry", () => {
     const disagreement = (lab.editorial?.gaps ?? []).find((e) => e.title.includes("Status sources disagree"));
     expect(disagreement?.refs).toContain("developing-today/code#1080");
     expect(disagreement?.refs).toContain("developing-today/code#1081");
-    expect(disagreement?.refs).toContain("dezren39/nix#501");
-    expect(disagreement?.refs).toContain("dezren39/nix#502");
+    expect(disagreement?.refs).toContain("dezren39/darwin-nix#501");
+    expect(disagreement?.refs).toContain("dezren39/darwin-nix#502");
 
     const id = projectConfigById("id")!;
     for (const n of [1076, 1077, 1078, 1235, 1239, 1240]) {
@@ -293,7 +293,7 @@ describe("project registry", () => {
       "developing-today/code",
       "developing-today-forks/opencode",
       "developing-today-forks/openchamber",
-      "dezren39/nix",
+      "dezren39/darwin-nix",
     ]);
     for (const card of cards) {
       expect(card.role.length).toBeGreaterThan(0);
@@ -316,7 +316,7 @@ describe("project registry", () => {
     const refs = allProjectRefs();
     expect(refs).toContain("developing-today-forks/opencode#365");
     expect(refs).toContain("developing-today-forks/openchamber#214");
-    expect(refs).toContain("dezren39/nix#512");
+    expect(refs).toContain("dezren39/darwin-nix#512");
   });
 
   test("validation catches duplicates, malformed refs, and impossible dates", () => {
@@ -430,7 +430,7 @@ describe("project registry", () => {
     for (const r of TRACKED_REFS) expect(refs).toContain(r);
     expect(refs).toContain("developing-today/code#1080"); // lab-cluster epic
     expect(refs).toContain("developing-today/code#911"); // repo-fleet + pm next
-    expect(refs).toContain("dezren39/nix#254"); // mcpx editorial
+    expect(refs).toContain("dezren39/darwin-nix#254"); // mcpx editorial
     expect(new Set(refs).size).toBe(refs.length);
   });
 });
@@ -498,7 +498,7 @@ describe("renderProgramProject", () => {
       "developing-today/code",
       "developing-today-forks/opencode",
       "developing-today-forks/openchamber",
-      "dezren39/nix",
+      "dezren39/darwin-nix",
     ]) {
       expect(fleetHtml).toContain(repo);
     }
@@ -530,7 +530,7 @@ describe("renderProgramProject", () => {
       "developing-today/code",
       "developing-today-forks/opencode",
       "developing-today-forks/openchamber",
-      "dezren39/nix",
+      "dezren39/darwin-nix",
     ]);
     const byRepo = new Map(detail.repoCards.map((c) => [c.card.repo, c]));
     expect(byRepo.get("developing-today/code")?.poolItems.map((p) => p.title)).toEqual(["code item"]);
