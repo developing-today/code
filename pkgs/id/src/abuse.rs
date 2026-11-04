@@ -15,7 +15,8 @@
 //!   connection cap per peer.
 //! - [`Refusal`] — the one structured refusal contract: a reason and
 //!   a bounded `retry_after_ms` (1 s floor / 60 s cap for temporary
-//!   refusals; absent for permanent blocks). Local `Refusal` enums in
+//!   refusals; absent for permanent blocks, including requests larger
+//!   than a bucket's burst capacity). Local `Refusal` enums in
 //!   `event_store` / `directory` are ingest- and directory-specific
 //!   and are not this contract.
 //! - [`BudgetPolicy`] — the #2247 rolling-window budgets:
@@ -66,6 +67,8 @@ pub enum RefusalReason {
     RateLimited,
     /// The byte budget is exhausted; retry after it refills.
     BudgetExhausted,
+    /// The request exceeds a bucket's capacity and can never be admitted.
+    RequestTooLarge,
     /// An operator block: permanent, no retry is offered.
     BlockedByOperator,
     /// The subject is not (or not yet) authorized for this surface.
@@ -80,7 +83,8 @@ pub struct Refusal {
     pub reason: RefusalReason,
     /// When to retry, in milliseconds. Temporary refusals are
     /// clamped to [`RETRY_FLOOR_MS`]..=[`RETRY_CAP_MS`]; permanent
-    /// blocks ([`RefusalReason::BlockedByOperator`]) carry `None`.
+    /// refusals ([`RefusalReason::BlockedByOperator`] and
+    /// [`RefusalReason::RequestTooLarge`]) carry `None`.
     pub retry_after_ms: Option<u64>,
 }
 
@@ -92,11 +96,14 @@ pub const RETRY_CAP_MS: u64 = 60_000;
 
 impl Refusal {
     /// A temporary refusal with `retry_after_ms` clamped to the
-    /// bounded range. Permanent-block reasons ignore the delay and
+    /// bounded range. Permanent-refusal reasons ignore the delay and
     /// carry `None`.
     #[must_use]
     pub fn new(reason: RefusalReason, retry_after_ms: u64) -> Self {
-        if reason == RefusalReason::BlockedByOperator {
+        if matches!(
+            reason,
+            RefusalReason::BlockedByOperator | RefusalReason::RequestTooLarge
+        ) {
             return Self {
                 reason,
                 retry_after_ms: None,
@@ -109,7 +116,9 @@ impl Refusal {
     }
 
     /// The retry delay as whole seconds, rounded up, for an HTTP
-    /// `Retry-After` header. `None` for permanent blocks.
+    /// `Retry-After` header. `None` for permanent refusals such as
+    /// operator blocks or costs exceeding bucket capacity; callers
+    /// must not present those as retryable 429s.
     #[must_use]
     pub fn retry_after_secs_ceil(&self) -> Option<u64> {
         self.retry_after_ms.map(|ms| ms.div_ceil(1_000))
@@ -120,6 +129,16 @@ impl Refusal {
     pub fn blocked_by_operator() -> Self {
         Self {
             reason: RefusalReason::BlockedByOperator,
+            retry_after_ms: None,
+        }
+    }
+
+    /// A request whose cost is larger than the bucket capacity can
+    /// never be admitted, regardless of elapsed time.
+    #[must_use]
+    pub fn request_too_large() -> Self {
+        Self {
+            reason: RefusalReason::RequestTooLarge,
             retry_after_ms: None,
         }
     }
@@ -208,6 +227,11 @@ impl TokenBucket {
         self.tokens_milli >= cost.saturating_mul(1_000)
     }
 
+    /// Whether `cost` can ever fit in this bucket, even when full.
+    fn exceeds_capacity(&self, cost: u64) -> bool {
+        cost.saturating_mul(1_000) > self.capacity_milli
+    }
+
     /// Milliseconds until `cost` tokens are available (0 if now).
     fn retry_after_ms(&mut self, cost: u64, now_ms: u64) -> u64 {
         self.refill(now_ms);
@@ -267,7 +291,6 @@ impl Default for AbusePolicy {
         }
     }
 }
-
 
 /// Which way traffic crosses a budget scope (#2247).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -867,9 +890,10 @@ impl AbuseEvaluator {
     ///
     /// # Errors
     ///
-    /// Returns the frame-rate refusal first, then the byte-bucket
-    /// refusal, then the budget refusal, matching the precedence of
-    /// the checks.
+    /// Returns [`RefusalReason::RequestTooLarge`] without a retry when
+    /// either cost exceeds its bucket capacity. Otherwise, returns the
+    /// frame-rate refusal first, then the byte-bucket refusal, then
+    /// the budget refusal, matching the precedence of the checks.
     pub fn check_frame_and_bytes_budgeted(
         &mut self,
         endpoint: EndpointId,
@@ -886,6 +910,9 @@ impl AbuseEvaluator {
             } else {
                 (&mut state.preauth_frames, &mut state.preauth_bytes)
             };
+            if frames.exceeds_capacity(1) || byte_bucket.exceeds_capacity(bytes) {
+                return Err(Refusal::request_too_large());
+            }
             let frame_retry =
                 (!frames.can_take(1, now_ms)).then(|| frames.retry_after_ms(1, now_ms));
             let byte_retry = (!byte_bucket.can_take(bytes, now_ms))
@@ -1069,7 +1096,8 @@ impl AbuseEvaluator {
     ///
     /// Returns a [`RefusalReason::RateLimited`] refusal, with the
     /// bounded retry delay the bucket implies, when the bucket is
-    /// empty.
+    /// empty; a zero-capacity bucket returns
+    /// [`RefusalReason::RequestTooLarge`] without a retry.
     pub fn check_frame(
         &mut self,
         endpoint: EndpointId,
@@ -1082,6 +1110,9 @@ impl AbuseEvaluator {
         } else {
             &mut state.preauth_frames
         };
+        if bucket.exceeds_capacity(1) {
+            return Err(Refusal::request_too_large());
+        }
         if bucket.try_take(1, now_ms) {
             self.registry
                 .record(self.local_node, endpoint, 1, 0, now_ms);
@@ -1100,7 +1131,8 @@ impl AbuseEvaluator {
     ///
     /// Returns a [`RefusalReason::BudgetExhausted`] refusal, with
     /// the bounded retry delay the bucket implies, when the bucket
-    /// cannot cover `bytes`.
+    /// cannot cover `bytes`; costs larger than the bucket capacity
+    /// return [`RefusalReason::RequestTooLarge`] without a retry.
     pub fn check_bytes(
         &mut self,
         endpoint: EndpointId,
@@ -1114,6 +1146,9 @@ impl AbuseEvaluator {
         } else {
             &mut state.preauth_bytes
         };
+        if bucket.exceeds_capacity(bytes) {
+            return Err(Refusal::request_too_large());
+        }
         if bucket.try_take(bytes, now_ms) {
             self.registry
                 .record(self.local_node, endpoint, 0, bytes, now_ms);
@@ -1130,8 +1165,10 @@ impl AbuseEvaluator {
     ///
     /// # Errors
     ///
-    /// Returns the frame-rate refusal first when both budgets are
-    /// exhausted; otherwise returns the byte-budget refusal.
+    /// Returns [`RefusalReason::RequestTooLarge`] without a retry when
+    /// either cost exceeds its bucket capacity. Otherwise, returns the
+    /// frame-rate refusal first when both budgets are exhausted, then
+    /// the byte-budget refusal.
     pub fn check_frame_and_bytes(
         &mut self,
         endpoint: EndpointId,
@@ -1146,6 +1183,9 @@ impl AbuseEvaluator {
             } else {
                 (&mut state.preauth_frames, &mut state.preauth_bytes)
             };
+            if frames.exceeds_capacity(1) || byte_bucket.exceeds_capacity(bytes) {
+                return Err(Refusal::request_too_large());
+            }
             let frame_retry =
                 (!frames.can_take(1, now_ms)).then(|| frames.retry_after_ms(1, now_ms));
             let byte_retry = (!byte_bucket.can_take(bytes, now_ms))
@@ -1255,7 +1295,74 @@ mod tests {
         // Half a second refills 256 KiB.
         eval.check_bytes(ep, true, 256 * 1024, 500)
             .expect("refilled");
-        assert!(eval.check_bytes(ep, true, 1, 500).is_err());
+        let refused = eval.check_bytes(ep, true, 1, 500).unwrap_err();
+        assert_eq!(refused.reason, RefusalReason::BudgetExhausted);
+        assert!((RETRY_FLOOR_MS..=RETRY_CAP_MS).contains(&refused.retry_after_ms.unwrap()));
+    }
+
+    #[test]
+    fn over_capacity_bytes_are_permanent_at_present_and_far_future() {
+        let policy = AbusePolicy {
+            authorized: BucketLimits {
+                byte_burst: 4,
+                ..AbusePolicy::default().authorized
+            },
+            ..AbusePolicy::default()
+        };
+        let mut eval = AbuseEvaluator::new(policy, [1; 32]);
+        for now_ms in [0, 1_000_000_000] {
+            let refusal = eval.check_bytes(endpoint(80), true, 5, now_ms).unwrap_err();
+            assert_eq!(refusal.reason, RefusalReason::RequestTooLarge);
+            assert_eq!(refusal.retry_after_ms, None);
+        }
+    }
+
+    #[test]
+    fn zero_capacity_frame_bucket_is_a_permanent_refusal() {
+        let policy = AbusePolicy {
+            authorized: BucketLimits {
+                frame_burst: 0,
+                ..AbusePolicy::default().authorized
+            },
+            ..AbusePolicy::default()
+        };
+        let mut eval = AbuseEvaluator::new(policy, [1; 32]);
+        for now_ms in [0, 1_000_000_000] {
+            let refusal = eval.check_frame(endpoint(81), true, now_ms).unwrap_err();
+            assert_eq!(refusal.reason, RefusalReason::RequestTooLarge);
+            assert_eq!(refusal.retry_after_ms, None);
+        }
+    }
+
+    #[test]
+    fn combined_check_permanently_refuses_costs_over_either_capacity() {
+        let frame_policy = AbusePolicy {
+            authorized: BucketLimits {
+                frame_burst: 0,
+                ..AbusePolicy::default().authorized
+            },
+            ..AbusePolicy::default()
+        };
+        let mut frame_eval = AbuseEvaluator::new(frame_policy, [1; 32]);
+        let frame_refusal = frame_eval
+            .check_frame_and_bytes(endpoint(82), true, 0, 0)
+            .unwrap_err();
+        assert_eq!(frame_refusal.reason, RefusalReason::RequestTooLarge);
+        assert_eq!(frame_refusal.retry_after_ms, None);
+
+        let byte_policy = AbusePolicy {
+            authorized: BucketLimits {
+                byte_burst: 4,
+                ..AbusePolicy::default().authorized
+            },
+            ..AbusePolicy::default()
+        };
+        let mut byte_eval = AbuseEvaluator::new(byte_policy, [1; 32]);
+        let byte_refusal = byte_eval
+            .check_frame_and_bytes(endpoint(83), true, 5, 0)
+            .unwrap_err();
+        assert_eq!(byte_refusal.reason, RefusalReason::RequestTooLarge);
+        assert_eq!(byte_refusal.retry_after_ms, None);
     }
 
     #[test]
@@ -1365,6 +1472,10 @@ mod tests {
         assert_eq!(Refusal::blocked_by_operator().retry_after_ms, None);
         assert_eq!(
             Refusal::new(RefusalReason::BlockedByOperator, 5_000).retry_after_ms,
+            None
+        );
+        assert_eq!(
+            Refusal::new(RefusalReason::RequestTooLarge, 5_000).retry_after_ms,
             None
         );
     }

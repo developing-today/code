@@ -403,8 +403,9 @@ mod tests {
         let refusal = charge_frame(&mut abuse, endpoint, true, 5, 0).unwrap_err();
         assert_eq!(
             refusal.0.reason,
-            crate::abuse::RefusalReason::BudgetExhausted
+            crate::abuse::RefusalReason::RequestTooLarge
         );
+        assert_eq!(refusal.0.retry_after_ms, None);
         assert!(abuse.counters().get(&[9; 32], &endpoint).is_none());
 
         // The refused frame did not consume the frame allowance.
