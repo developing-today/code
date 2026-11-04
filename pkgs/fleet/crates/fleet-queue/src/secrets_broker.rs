@@ -116,13 +116,21 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
         })
         .collect();
     // Fetch values with a small worker pool over a shared index.
+    // Every per-item failure is counted: a refresh that could not fetch
+    // a listed secret must fail as a whole (the caller keeps serving the
+    // previous cache, per the stale-while-revalidate contract in run())
+    // instead of installing the partial map and evicting the secrets it
+    // failed to fetch (#5504).
+    let total = items.len();
     let items = Arc::new(items);
     let idx = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let failed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let got = Arc::new(RwLock::new(HashMap::new()));
     let mut handles = Vec::new();
     for _ in 0..8 {
         let items = Arc::clone(&items);
         let idx = Arc::clone(&idx);
+        let failed = Arc::clone(&failed);
         let got = Arc::clone(&got);
         let token = token.clone();
         handles.push(std::thread::spawn(move || {
@@ -132,11 +140,16 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
                     return;
                 }
                 let (id, key) = &items[i];
-                if let Ok(raw) = bws_run(&["secret", "get", id, "-o", "json"], &token) {
-                    if let Ok(v) = serde_json::from_str::<Value>(&raw) {
-                        if let Some(val) = v.get("value").and_then(|x| x.as_str()) {
-                            got.write().unwrap().insert(key.clone(), val.to_string());
-                        }
+                let fetched = bws_run(&["secret", "get", id, "-o", "json"], &token)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .and_then(|v| v.get("value").and_then(|x| x.as_str()).map(str::to_string));
+                match fetched {
+                    Some(val) => {
+                        got.write().unwrap().insert(key.clone(), val);
+                    }
+                    None => {
+                        failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
             }
@@ -144,6 +157,12 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     }
     for h in handles {
         let _ = h.join();
+    }
+    let failed = failed.load(std::sync::atomic::Ordering::SeqCst);
+    if failed > 0 {
+        return Err(format!(
+            "{failed} of {total} secret fetches failed; keeping the previous cache"
+        ));
     }
     let map = got.read().unwrap().clone();
     let n = map.len();
