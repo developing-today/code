@@ -177,11 +177,14 @@ function recordStreamEvent(event: Parameters<typeof emitEvent>[1]): void {
  *  live in the store. The returned promise resolves true only when
  *  every delivery is durable (ingested or already seen): the live
  *  source awaits it as the acknowledgment that lets it discard its
- *  Kaneo baseline (Codex P2, PR #5141) — a false return retains the
- *  baseline so the next poll retries the same stable delivery ids. */
-async function recordActivity(deliveries: Parameters<typeof ingestActivity>[2]): Promise<boolean> {
+ *  Kaneo baseline (Codex P2, PR #5141) — failed deliveries retain
+ *  their cards' baseline entries so the next poll retries the same
+ *  stable delivery ids, while acknowledged cards advance. */
+async function recordActivity(
+  deliveries: Parameters<typeof ingestActivity>[2],
+): Promise<{ failed: number; failedIds: string[] }> {
   const result = await ingestActivity(activityStore, eventsStore, deliveries);
-  return result.failed === 0;
+  return { failed: result.failed, failedIds: result.failedIds };
 }
 
 /** #3321: the source-gap sink for the live source's polling gaps

@@ -199,9 +199,9 @@ describe("ingestion store (#3321)", () => {
     const { events, store } = tmpStores();
     const deliveries = watchdogDeliveries([watchdogItem("watchdog:fleet-feed", 120_000)]);
     const first = await store.ingest(events, deliveries);
-    expect(first).toEqual({ ingested: 1, duplicates: 0, failed: 0 });
+    expect(first).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [] });
     const second = await store.ingest(events, deliveries);
-    expect(second).toEqual({ ingested: 0, duplicates: 1, failed: 0 });
+    expect(second).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [] });
     const stream = await events.list();
     expect(stream).toHaveLength(1);
     expect(stream[0]?.kind).toBe("watchdog-event");
@@ -229,7 +229,7 @@ describe("ingestion store (#3321)", () => {
     const store2 = new IngestionStore(activityFile);
     const events2 = new EventsStore(eventsFile);
     const replay = await store2.ingest(events2, deliveries);
-    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0 });
+    expect(replay).toEqual({ ingested: 0, duplicates: 1, failed: 0, failedIds: [] });
     expect(await events2.list()).toHaveLength(1);
     const cp = await store2.checkpoint("kaneo");
     expect(cp?.deliveries).toBe(1);
@@ -245,9 +245,9 @@ describe("ingestion store (#3321)", () => {
       },
     };
     const first = await store.ingest(failing, deliveries);
-    expect(first).toEqual({ ingested: 0, duplicates: 0, failed: 1 });
+    expect(first).toEqual({ ingested: 0, duplicates: 0, failed: 1, failedIds: [deliveries[0]!.sourceId] });
     const retry = await store.ingest(events, deliveries);
-    expect(retry).toEqual({ ingested: 1, duplicates: 0, failed: 0 });
+    expect(retry).toEqual({ ingested: 1, duplicates: 0, failed: 0, failedIds: [] });
   });
 
   test("gap lifecycle end-to-end: outage opens a rendered hole, backfill flips it", async () => {

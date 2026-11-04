@@ -695,7 +695,7 @@ export function liveSource(
     // returning void is treated as acknowledged (legacy callers).
     onActivity?: (
       deliveries: ActivityDelivery[],
-    ) => Promise<boolean | { failed: number } | void> | boolean | { failed: number } | void;
+    ) => Promise<boolean | { failed: number; failedIds?: string[] } | void> | boolean | { failed: number; failedIds?: string[] } | void;
     // Kaneo polling-gap sink (#3321, Codex P2 on PR #5141): called
     // with (source, gapFrom, failureTime) while polls are failing or
     // partial, and with (source, gapFrom, null) on the first complete
@@ -805,9 +805,20 @@ export function liveSource(
    *  that appeared or changed status vs the old baseline, keep it for
    *  unchanged cards. Only call once the change deliveries for this
    *  transition are acknowledged durable — or when there were none. */
-  function advanceKaneoBaseline(cards: readonly KaneoCardSnapshot[]): void {
+  function advanceKaneoBaseline(cards: readonly KaneoCardSnapshot[], retain?: ReadonlySet<string>): void {
     const next = new Map<string, KaneoCardSnapshot>();
     for (const c of cards) {
+      // Partial ingestion failure (Codex P2, PR #5141): a card whose
+      // delivery was NOT acknowledged keeps its previous baseline
+      // entry (and its seq counter), so the next poll re-diffs exactly
+      // that card with the same stable delivery ids; acknowledged
+      // cards advance normally, so their later moves are never lost
+      // behind another card's retry.
+      if (retain?.has(c.id)) {
+        const before = prevKaneoCards?.get(c.id);
+        if (before) next.set(c.id, before);
+        continue;
+      }
       const before = prevKaneoCards?.get(c.id);
       const changed = !before || before.status !== c.status;
       const seq = changed ? (c.seq ?? 0) + 1 : (c.seq ?? 0);
@@ -1068,13 +1079,27 @@ export function liveSource(
                     : typeof ack === "object" && ack !== null
                       ? (ack.failed ?? 0)
                       : 0;
-                if (failed > 0) {
+                const failedIds =
+                  typeof ack === "object" && ack !== null && Array.isArray(ack.failedIds) ? ack.failedIds : null;
+                if (failed === 0) {
+                  advanceKaneoBaseline(cards);
+                } else if (failedIds) {
+                  // Advance every acknowledged card; retain only the
+                  // failed deliveries' cards for retry (Codex P2,
+                  // PR #5141).
+                  const failedCards = new Set(
+                    deliveries.filter((d) => failedIds.includes(d.sourceId)).map((d) => d.ref),
+                  );
+                  console.error(
+                    `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
+                      "baseline retained for the failed cards only, so the next poll retries them",
+                  );
+                  advanceKaneoBaseline(cards, failedCards);
+                } else {
                   console.error(
                     `[activity] WARNING: ${failed} kaneo deliveries were not ingested; ` +
                       "board baseline retained so the next poll retries them",
                   );
-                } else {
-                  advanceKaneoBaseline(cards);
                 }
               }
             } else {

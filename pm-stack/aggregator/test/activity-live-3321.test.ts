@@ -27,7 +27,7 @@ interface HarnessState {
 async function makeSource(
   state: HarnessState,
   opts: {
-    onActivity?: (d: ActivityDelivery[]) => Promise<boolean> | boolean;
+    onActivity?: (d: ActivityDelivery[]) => Promise<boolean | { failed: number; failedIds?: string[] }> | boolean | { failed: number; failedIds?: string[] };
     onSourceGap?: (source: string, from: string, to: string | null) => void;
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
   },
@@ -227,6 +227,48 @@ describe("live kaneo activity (#3321, PR #5141 codex)", () => {
       expect(p1Moves.some((s) => s.includes("in-progress -> in-review"))).toBe(true);
       expect(p1Moves.some((s) => s.includes("in-review -> in-progress"))).toBe(true);
       expect(p1Moves).toHaveLength(2);
+    } finally {
+      restore();
+    }
+  });
+
+  test("partial failure advances acknowledged cards only: the succeeded card's return move is not lost (PR #5141 codex)", async () => {
+    const state: HarnessState = { cardStatus: { p1: "in-progress", p2: "in-progress" }, failProjects: new Set(), failAll: false };
+    const restore = installFetch(state);
+    const attempts: ActivityDelivery[][] = [];
+    let failP2 = true;
+    try {
+      const src = await makeSource(state, {
+        onActivity: async (d) => {
+          attempts.push(d);
+          if (failP2) {
+            const p2 = d.filter((x) => x.ref.includes("t-p2"));
+            return { failed: p2.length, failedIds: p2.map((x) => x.sourceId) };
+          }
+          return { failed: 0, failedIds: [] };
+        },
+      });
+      await src.board(); // baseline: both cards in-progress
+      state.cardStatus.p1 = "in-review";
+      state.cardStatus.p2 = "in-review";
+      await src.board(); // both move; p2's delivery fails, p1's lands
+      expect(attempts).toHaveLength(1);
+      const p2FailedId = attempts[0]!.find((x) => x.ref.includes("t-p2"))!.sourceId;
+      // p1 returns before the next poll; p2 stays in-review. Because
+      // p1's baseline advanced, its return move diffs and emits; p2's
+      // retained baseline re-diffs its failed change with the same id.
+      state.cardStatus.p1 = "in-progress";
+      failP2 = false;
+      await src.board();
+      expect(attempts).toHaveLength(2);
+      const second = attempts[1]!;
+      const p1Return = second.find((x) => x.ref.includes("t-p1"));
+      expect(p1Return?.summary).toContain("in-review -> in-progress");
+      const p2Retry = second.find((x) => x.ref.includes("t-p2"));
+      expect(p2Retry?.sourceId).toBe(p2FailedId);
+      // A third identical poll emits nothing: both baselines advanced.
+      await src.board();
+      expect(attempts).toHaveLength(2);
     } finally {
       restore();
     }

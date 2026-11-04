@@ -434,7 +434,7 @@ export class IngestionStore {
   async ingest(
     events: Pick<EventsStore, "record">,
     deliveries: readonly ActivityDelivery[],
-  ): Promise<{ ingested: number; duplicates: number; failed: number }> {
+  ): Promise<{ ingested: number; duplicates: number; failed: number; failedIds: string[] }> {
     const run = this.ingestChain.then(() => this.ingestSerialized(events, deliveries));
     this.ingestChain = run.then(
       () => {},
@@ -446,11 +446,12 @@ export class IngestionStore {
   private async ingestSerialized(
     events: Pick<EventsStore, "record">,
     deliveries: readonly ActivityDelivery[],
-  ): Promise<{ ingested: number; duplicates: number; failed: number }> {
+  ): Promise<{ ingested: number; duplicates: number; failed: number; failedIds: string[] }> {
     await this.load();
     let ingested = 0;
     let duplicates = 0;
     let failed = 0;
+    const failedIds: string[] = [];
     let dirty = false;
     for (const d of deliveries) {
       const seen = (this.data.seen[d.source] ??= []);
@@ -484,6 +485,7 @@ export class IngestionStore {
         });
       } catch (err) {
         failed++;
+        failedIds.push(d.sourceId);
         console.error(
           `[activity] WARNING: stream append failed for ${d.source} delivery ${d.sourceId} ` +
             `(${err instanceof Error ? err.message : String(err)}); left unseen so a replay can retry it.`,
@@ -500,7 +502,7 @@ export class IngestionStore {
       dirty = true;
     }
     if (dirty) await this.persist();
-    return { ingested, duplicates, failed };
+    return { ingested, duplicates, failed, failedIds };
   }
 
   /** Record (or extend) an open gap for a source window. An already
@@ -562,8 +564,8 @@ export async function ingestActivity(
   store: IngestionStore,
   events: Pick<EventsStore, "record">,
   deliveries: readonly ActivityDelivery[],
-): Promise<{ ingested: number; duplicates: number; failed: number }> {
-  if (!deliveries.length) return { ingested: 0, duplicates: 0, failed: 0 };
+): Promise<{ ingested: number; duplicates: number; failed: number; failedIds: string[] }> {
+  if (!deliveries.length) return { ingested: 0, duplicates: 0, failed: 0, failedIds: [] };
   try {
     return await store.ingest(events, deliveries);
   } catch (err) {
@@ -571,7 +573,7 @@ export async function ingestActivity(
       `[activity] WARNING: ingestion failed (${err instanceof Error ? err.message : String(err)}); ` +
         `deliveries stay unseen and a later pass can retry them.`,
     );
-    return { ingested: 0, duplicates: 0, failed: deliveries.length };
+    return { ingested: 0, duplicates: 0, failed: deliveries.length, failedIds: deliveries.map((d) => d.sourceId) };
   }
 }
 
