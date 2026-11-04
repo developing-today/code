@@ -71,7 +71,7 @@ impl std::fmt::Display for SecretError {
             SecretError::InvalidName(name) => {
                 write!(
                     f,
-                    "invalid secret name {name:?}: names may not contain '/', '?', '#', whitespace, or control characters"
+                    "invalid secret name {name:?}: names may not contain '/', '?', '#', '%', whitespace, or control characters, and may not be '.' or '..'"
                 )
             }
             SecretError::NotFound { source, name } => {
@@ -102,10 +102,19 @@ impl std::error::Error for SecretError {}
 /// Names become URL path segments (`GET /secret/<name>`); validate
 /// before any source sees them.
 pub fn validate_name(name: &str) -> Result<(), SecretError> {
+    // A name is interpolated raw as one path segment, so the encoded
+    // and dot-segment spellings of the refused characters are refused
+    // too (issue #5469): a percent sign introduces every percent-encoded
+    // spelling (an encoded slash decodes to a separator, an encoded
+    // dot pair decodes to a dot segment), and a name that is exactly a
+    // dot segment is removed by path normalization — the request would
+    // no longer name a secret under the secret prefix at all.
     if name.is_empty()
-        || name
-            .chars()
-            .any(|c| c == '/' || c == '?' || c == '#' || c.is_whitespace() || c.is_control())
+        || name == "."
+        || name == ".."
+        || name.chars().any(|c| {
+            c == '/' || c == '?' || c == '#' || c == '%' || c.is_whitespace() || c.is_control()
+        })
     {
         return Err(SecretError::InvalidName(name.to_string()));
     }
@@ -412,7 +421,10 @@ mod tests {
 
     #[test]
     fn name_validation_rejects_path_material() {
-        for bad in ["", "a/b", "a?b", "a#b", "a b", "a\tb", "a\u{7}b"] {
+        for bad in [
+            "", "a/b", "a?b", "a#b", "a b", "a\tb", "a\u{7}b", ".", "..", "%2e%2e", "%2f", "a%2fb",
+            "a%3fb", "a%23b",
+        ] {
             assert!(validate_name(bad).is_err(), "name {bad:?} must be rejected");
         }
         for good in [
