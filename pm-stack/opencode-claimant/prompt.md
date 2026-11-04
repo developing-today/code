@@ -76,15 +76,34 @@ Never claim, bind, launch, or mutate a task in shadow mode.
    that is assigned `opencode` but NOT handed off belongs to its
    claiming lane, which is working it: never launch into it.
    b. Create the worker session on the standing OpenCode server:
-   `POST /api/session` with JSON body `{"directory": <the repo's
-   laptop primary>, "title": <names the queue task and issue>,
-   "model": {"id": <route model>, "providerID": "opencode-route"},
-   "agent": "build"}`. The model goes in the `model` OBJECT --
-   there is no `modelID` field; a create body with one is rejected
-   before any session exists (2026-11-02, task 5857: the fire's one
-   launch window closed while the request shape was corrected).
-   From the moment creation succeeds, the session id is KNOWN and
-   the steps below are ordered so it can never be lost.
+   `POST /api/session` with JSON body `{"location":
+   {"directory": <the repo's laptop primary>}, "title": <names the
+   queue task and issue>, "model": {"id": <route model>,
+   "providerID": "opencode-route"}, "agent": "build"}`. The v2
+   server takes the directory ONLY as the `location` object
+   (`Location.PublicRef`); a top-level `directory` is an unknown key
+   and is silently stripped, landing the session at the server
+   default location (/home/user) under the wrong project (#4870;
+   the working dispatch client, pm-stack/dispatch/src/opencode.ts,
+   sends exactly this `location` shape). The model goes in the
+   `model` OBJECT -- there is no `modelID` field; a create body
+   with one is rejected before any session exists (2026-11-02,
+   task 5857: the fire's one launch window closed while the
+   request shape was corrected).
+   VERIFY BEFORE BINDING: the create response returns the created
+   session including its `location`. Before step c, check that the
+   response's `location.directory` equals the repo primary you
+   requested. A mismatch (or a missing `location`) is a CREATION
+   FAILURE: do not bind, do not prompt -- `DELETE
+   /api/session/<session id>` to remove the misplaced session,
+   checkpoint the failure on the task, and leave the task unbound
+   for the next fire, exactly like any other creation failure in
+   step 5. Never bind a session whose location you have not
+   verified: a bound session at the wrong location runs under the
+   wrong project and poisons session->repo attribution.
+   From the moment creation succeeds AND verifies, the session id
+   is KNOWN and the steps below are ordered so it can never be
+   lost.
    c. BIND AT LAUNCH, immediately after creation and BEFORE sending
    the prompt or anything else that can interleave: run the helper
    `bind <id> --worker opencode-claimant --session-id <session id>`
