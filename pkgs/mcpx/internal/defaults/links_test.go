@@ -291,8 +291,25 @@ func topLevelNames(root string) (map[string]bool, error) {
 
 // TestReferencesInSkipsProtocolMethods pins the #5211 distinction at the
 // extraction level: method identifiers are not references, while a real
-// path that merely shares their namespace still is.
+// path that merely shares their namespace still is. Every registered
+// method is exercised with its own namespace in tops -- otherwise a
+// non-`tools` case would be discarded by the top-level-name check
+// regardless of whether the exclusion works, and the registry could rot
+// untested (Codex review on the #5211 PR).
 func TestReferencesInSkipsProtocolMethods(t *testing.T) {
+	for method := range protocolMethods {
+		ns, _, _ := strings.Cut(method, "/")
+		tops := map[string]bool{ns: true}
+		if got := referencesIn("See `"+method+"`.", tops); len(got) != 0 {
+			t.Errorf("referencesIn(%q) = %v, want no references", method, got)
+		}
+		// A non-method in the same namespace is still a path claim: the
+		// exclusion is whole identifiers, never a namespace prefix.
+		bogus := ns + "/frobnicate"
+		if got := referencesIn("See `"+bogus+"`.", tops); len(got) != 1 || got[0].path != bogus {
+			t.Errorf("referencesIn(%q) = %v, want the one reference", bogus, got)
+		}
+	}
 	tops := map[string]bool{"tools": true, "internal": true}
 	doc := "Call `tools/call` after `tools/list`; expect `tools/list_changed`.\n" +
 		"The tool itself is `tools/docs-history`, and `internal/cli/root.go` is a file."
