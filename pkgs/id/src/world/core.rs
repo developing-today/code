@@ -72,15 +72,22 @@ fn split_checkpoint_snapshot(sequence: u64, snapshot: &str) -> Result<Vec<Journa
             while low <= high {
                 let middle = low + (high - low) / 2;
                 let end = floor_char_boundary(snapshot, middle);
-                let fits = end > start
-                    && checkpoint_part_json_len(&JournalEntry::CheckpointSnapshotPart {
-                        sequence,
-                        // Maximal-width placeholders ensure the final indices
-                        // and count can only make the serialized entry smaller.
-                        part_index: u32::MAX,
-                        part_count: u32::MAX,
-                        bytes: snapshot[start..end].to_owned(),
-                    })? <= MAX_CHECKPOINT_PART_BYTES;
+                if end <= start {
+                    // The midpoint fell inside the first character, so the
+                    // floored prefix is empty: this says nothing about the
+                    // size limit, and the search must advance to a larger
+                    // endpoint instead of excluding the character's end.
+                    low = middle.saturating_add(1);
+                    continue;
+                }
+                let fits = checkpoint_part_json_len(&JournalEntry::CheckpointSnapshotPart {
+                    sequence,
+                    // Maximal-width placeholders ensure the final indices
+                    // and count can only make the serialized entry smaller.
+                    part_index: u32::MAX,
+                    part_count: u32::MAX,
+                    bytes: snapshot[start..end].to_owned(),
+                })? <= MAX_CHECKPOINT_PART_BYTES;
                 if fits {
                     best_end = end;
                     low = middle.saturating_add(1);
@@ -122,28 +129,36 @@ fn split_checkpoint_events(
     events: &[WorldEvent],
     kind: CheckpointEventPartKind,
 ) -> Result<Vec<JournalEntry>> {
+    // Size each event once and accumulate: re-serializing the growing
+    // candidate chunk per event would make splitting quadratic in the
+    // window size. The accumulated length is conservative -- maximal-width
+    // index placeholders for the entry overhead and one comma byte per
+    // event -- and every finished part is re-checked exactly below.
+    let overhead = checkpoint_part_json_len(&checkpoint_event_part(
+        kind,
+        sequence,
+        u32::MAX,
+        u32::MAX,
+        Vec::new(),
+    ))?;
     let mut chunks: Vec<Vec<WorldEvent>> = Vec::new();
-    let mut current = Vec::new();
+    let mut current: Vec<WorldEvent> = Vec::new();
+    let mut current_len = overhead;
     for event in events {
-        let mut candidate = current.clone();
-        candidate.push(event.clone());
-        let candidate_entry = checkpoint_event_part(kind, sequence, u32::MAX, u32::MAX, candidate);
-        if checkpoint_part_json_len(&candidate_entry)? > MAX_CHECKPOINT_PART_BYTES {
-            ensure!(
-                !current.is_empty(),
-                "one event cannot fit in a checkpoint part"
-            );
+        let event_len = serde_json::to_vec(event)
+            .context("serialize checkpoint event")?
+            .len()
+            + 1;
+        ensure!(
+            overhead + event_len <= MAX_CHECKPOINT_PART_BYTES,
+            "one event cannot fit in a checkpoint part"
+        );
+        if current_len + event_len > MAX_CHECKPOINT_PART_BYTES {
             chunks.push(std::mem::take(&mut current));
-            current.push(event.clone());
-            let single_entry =
-                checkpoint_event_part(kind, sequence, u32::MAX, u32::MAX, current.clone());
-            ensure!(
-                checkpoint_part_json_len(&single_entry)? <= MAX_CHECKPOINT_PART_BYTES,
-                "one event cannot fit in a checkpoint part"
-            );
-        } else {
-            current.push(event.clone());
+            current_len = overhead;
         }
+        current.push(event.clone());
+        current_len += event_len;
     }
     if !current.is_empty() || chunks.is_empty() {
         chunks.push(current);

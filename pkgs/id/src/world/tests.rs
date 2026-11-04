@@ -987,6 +987,40 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_split_handles_a_single_multibyte_char_snapshot() {
+        // Regression (Codex review on PR #5316): when retained events force
+        // a split, the snapshot itself can be one multibyte character; the
+        // splitter's midpoint search must not floor to an empty prefix and
+        // give up on the character's only valid endpoint.
+        let mut core = world(16);
+        core.active_module_hash = Some("h".to_owned());
+        core.sequence = 3;
+        let events: Vec<WorldEvent> = (1..=3)
+            .map(|sequence| WorldEvent {
+                sequence,
+                participant_id: 0,
+                kind: WorldEventKind::Chat(format!("{}-{sequence}", "x".repeat(70_000))),
+            })
+            .collect();
+        core.events = events.clone().into();
+        core.admin_history = events.clone().into();
+        core.admin_history_complete = true;
+
+        let entries = core.checkpoint_entries("\u{1f9ed}".to_owned()).unwrap();
+        assert!(entries
+            .iter()
+            .any(|entry| matches!(entry, JournalEntry::CheckpointSnapshotPart { .. })));
+        assert!(entries.iter().all(|entry| {
+            serde_json::to_vec(entry).is_ok_and(|bytes| bytes.len() <= MAX_CHECKPOINT_PART_BYTES)
+        }));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.program.and_then(|program| program.snapshot),
+            Some("\u{1f9ed}".to_owned())
+        );
+    }
+
+    #[test]
     fn restore_rejects_incomplete_duplicate_reordered_or_mismatched_checkpoint_parts() {
         let mut core = world(8);
         core.active_module_hash = Some("h".to_owned());
