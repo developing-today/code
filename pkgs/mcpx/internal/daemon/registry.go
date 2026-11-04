@@ -54,7 +54,11 @@ type Registry struct {
 	// earlier swaps. A cleanup must not remove sessions created by a later
 	// reload that re-adds the same server name.
 	reloadMu sync.Mutex
-	mu       sync.RWMutex
+	// pendingSessionCleanup protects persisted records until the removed
+	// pool has drained and can terminate them with its last live config.
+	// Access is serialized by reloadMu.
+	pendingSessionCleanup map[string]int
+	mu                    sync.RWMutex
 	// pools may be shared between names; views never are. A view carries the
 	// per-name presentation -- namespace, tool subset, prelude, profiles --
 	// that must not follow the shared process.

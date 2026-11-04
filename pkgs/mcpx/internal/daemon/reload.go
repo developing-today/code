@@ -106,6 +106,12 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 	for _, p := range orphans {
 		p.CloseDrained()
 	}
+	if r.pendingSessionCleanup == nil {
+		r.pendingSessionCleanup = map[string]int{}
+	}
+	for p := range removedPools {
+		r.pendingSessionCleanup[p.Name()]++
+	}
 
 	// Drained, not closed: a call running on an orphan finishes on it, as it
 	// does on a lazy restart. Close would cut one that ran past its grace.
@@ -120,6 +126,11 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 				if !reconfigured {
 					p.CleanupRemovedSessionRecords()
 				}
+				if r.pendingSessionCleanup[p.Name()] <= 1 {
+					delete(r.pendingSessionCleanup, p.Name())
+				} else {
+					r.pendingSessionCleanup[p.Name()]--
+				}
 				r.reloadMu.Unlock()
 			}
 		}
@@ -127,6 +138,13 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 		r.mu.RLock()
 		configured := make(map[string]bool, len(r.pools))
 		for name := range r.pools {
+			configured[name] = true
+		}
+		// A later reload can have no orphan pools while an earlier removed
+		// pool is still draining. Keep those records out of the generic
+		// discard path until the owner has attempted DELETE with its last
+		// live config.
+		for name := range r.pendingSessionCleanup {
 			configured[name] = true
 		}
 		var sessions pool.SessionStore
