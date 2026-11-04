@@ -201,13 +201,26 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                     }
                 }
                 "pr-set" => {
+                    // Canonical pr-set keys name at least two distinct PRs in
+                    // strictly ascending order (DEDUPE_PATTERNS_DOC: <n>-<n>[-...]
+                    // sorted). A single number is the `pr` family's key, and a
+                    // repeated number is not a set — both spellings would give
+                    // the same coverage a second valid dedupe key (#5482).
                     let parts: Vec<&str> = tail.split('-').collect();
-                    if parts.iter().all(|p| all_digits(p)) {
+                    let nums: Vec<i64> = parts
+                        .iter()
+                        .filter(|p| all_digits(p))
+                        .filter_map(|p| p.parse().ok())
+                        .collect();
+                    if parts.len() >= 2
+                        && nums.len() == parts.len()
+                        && nums.windows(2).all(|w| w[0] < w[1])
+                    {
                         return Some(DedupeMatch {
                             family: fam.into(),
                             repo: repo.to_string(),
                             num: None,
-                            nums: Some(parts.iter().filter_map(|p| p.parse().ok()).collect()),
+                            nums: Some(nums),
                             origin: None,
                         });
                     }
@@ -228,11 +241,17 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                                     || b == b'-'
                             });
                         let wb = week.as_bytes();
+                        // Shape YYYY-Www plus a real ISO week (01..=53):
+                        // W00/W99 name no week, so a key spelled with one can
+                        // never dedupe against a real week's key (#5482).
                         let week_ok = week.len() == 8
                             && all_digits(&week[..4])
                             && week.as_bytes()[4] == b'-'
                             && wb[5] == b'W'
-                            && all_digits(&week[6..]);
+                            && all_digits(&week[6..])
+                            && week[6..]
+                                .parse::<u32>()
+                                .is_ok_and(|w| (1..=53).contains(&w));
                         if slug_ok && week_ok {
                             return Some(DedupeMatch {
                                 family: fam.into(),
@@ -465,4 +484,50 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
         "not_before": packet.get("not_before").cloned().unwrap_or(Value::Null),
         "max_attempts": max_attempts,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pr_set_keys_are_canonical() {
+        // A lone number is the `pr` family's spelling, not a pr-set.
+        assert!(match_dedupe("repo-health:v1:pr-set:developing-today/code:5424").is_none());
+        // A repeated number is not a set.
+        assert!(match_dedupe("repo-health:v1:pr-set:developing-today/code:5424-5424").is_none());
+        // Unsorted is not the canonical (sorted) spelling.
+        assert!(match_dedupe("repo-health:v1:pr-set:developing-today/code:5424-100").is_none());
+        // The canonical two-number and three-number shapes match.
+        let m = match_dedupe("repo-health:v1:pr-set:developing-today/code:100-5424")
+            .expect("two-number pr-set matches");
+        assert_eq!(m.nums.as_deref(), Some([100, 5424].as_slice()));
+        assert!(match_dedupe("repo-health:v1:pr-set:developing-today/code:100-200-5424").is_some());
+        // The single-PR family is untouched.
+        assert!(match_dedupe("repo-health:v1:pr:developing-today/code:pr:5424").is_some());
+    }
+
+    #[test]
+    fn maintenance_keys_name_real_iso_weeks() {
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W44")
+                .is_some()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W53")
+                .is_some()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W54")
+                .is_none()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W99")
+                .is_none()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W00")
+                .is_none()
+        );
+    }
 }
